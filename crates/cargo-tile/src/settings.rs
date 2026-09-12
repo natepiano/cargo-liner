@@ -16,9 +16,6 @@ use tui_pane::SettingsRow;
 
 use crate::app::App;
 use crate::app::CaptureStartupNotice;
-use crate::capture_root::RootOwner;
-use crate::capture_root::SharedCaptureDirectory;
-use crate::capture_root::SharedDirectoryState;
 use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CAPTURE_ASSOCIATION;
@@ -76,6 +73,9 @@ use crate::progress::CaptureCleanup;
 use crate::progress::CaptureGeneration;
 use crate::progress::CaptureKey;
 use crate::progress::PathFailure;
+use crate::root_scan::RootOwner;
+use crate::root_scan::SharedCaptureDirectory;
+use crate::root_scan::SharedDirectoryState;
 
 /// Which setting a selected row edits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -709,7 +709,6 @@ mod tests {
     use crate::app::App;
     use crate::app::CaptureStartupNotice;
     use crate::birth_stamp::IdentityEvidence;
-    use crate::capture_root::RootOwner;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
     use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
     use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
@@ -732,6 +731,7 @@ mod tests {
     use crate::progress::CaptureRoot;
     use crate::progress::CaptureRootIndex;
     use crate::progress::PathFailure;
+    use crate::root_scan::RootOwner;
 
     /// Construct retained evidence without resolving or accessing a fixture path.
     fn observed_root() -> AccountCaptureDirectory {
@@ -754,9 +754,9 @@ mod tests {
     /// Give settings a retained publication identity without scanning a process.
     fn association_key(pid: u32, root: usize, generation: &str) -> CaptureKey {
         let directory = tempfile::tempdir().expect("capture root");
-        let scan = crate::capture_root::RootScan::open(
+        let scan = crate::root_scan::RootScan::open(
             directory.path(),
-            &mut crate::capture_root::RootHistory::default(),
+            &mut crate::root_scan::RootHistory::default(),
         )
         .expect("open capture root");
         CaptureKey {

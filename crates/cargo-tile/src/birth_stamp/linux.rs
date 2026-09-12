@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 
 use super::BirthStamp;
 use super::Observation;
+use super::kernel_observation::cached_boot;
 use crate::constants::BIRTH_BOOT_ID_PATH;
 use crate::constants::BIRTH_PROC_DIRECTORY;
 use crate::constants::BIRTH_STAT_COMM_END;
@@ -20,7 +21,7 @@ static BOOT: OnceLock<Result<String, Error>> = OnceLock::new();
 
 /// The verifier and its session diagnostic share exactly one cached boot result.
 pub(super) fn boot() -> &'static io::Result<String> {
-    super::cached_boot(&BOOT, || fs::read_to_string(BIRTH_BOOT_ID_PATH))
+    cached_boot(&BOOT, || fs::read_to_string(BIRTH_BOOT_ID_PATH))
 }
 
 /// Read the registered shim pid, not this scanner or an intermediate child.
@@ -54,7 +55,7 @@ fn start_ticks(stat: &[u8]) -> Result<u64, ()> {
         .nth(BIRTH_STAT_START_INDEX)
         .ok_or(())?;
     let field = std::str::from_utf8(field).map_err(|_| ())?;
-    super::decimal(field)
+    BirthStamp::decimal(field)
 }
 
 #[cfg(test)]

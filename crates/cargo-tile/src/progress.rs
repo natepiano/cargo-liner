@@ -57,16 +57,6 @@ use sysinfo::Users;
 use crate::birth_stamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
-use crate::capture_root;
-use crate::capture_root::EffectiveUser;
-use crate::capture_root::Enumeration;
-use crate::capture_root::RootHistory;
-use crate::capture_root::RootIncarnation;
-use crate::capture_root::RootOwner;
-use crate::capture_root::RootScan;
-use crate::capture_root::SharedCaptureDirectory;
-use crate::capture_root::SweepBudget;
-use crate::capture_root::SweepDisposition;
 use crate::constants::BAR_GLYPH_FIRST;
 use crate::constants::BAR_GLYPH_LAST;
 use crate::constants::BUILD_FINISHED_MARKER;
@@ -95,6 +85,16 @@ use crate::registration::ParseError;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
 use crate::registration::VerifiedRegistration;
+use crate::root_scan;
+use crate::root_scan::EffectiveUser;
+use crate::root_scan::Enumeration;
+use crate::root_scan::RootHistory;
+use crate::root_scan::RootIncarnation;
+use crate::root_scan::RootOwner;
+use crate::root_scan::RootScan;
+use crate::root_scan::SharedCaptureDirectory;
+use crate::root_scan::SweepBudget;
+use crate::root_scan::SweepDisposition;
 
 /// Cargo's count of the work in front of it, as its progress bar reports
 /// it: units finished out of units planned.
@@ -341,7 +341,7 @@ impl CaptureRoot {
         Self {
             path,
             uid,
-            cleanup: if capture_root::effective_user() == EffectiveUser::Known(uid) {
+            cleanup: if root_scan::effective_user() == EffectiveUser::Known(uid) {
                 CaptureCleanup::Here
             } else {
                 CaptureCleanup::AccountNextRun
@@ -352,13 +352,13 @@ impl CaptureRoot {
     #[cfg(test)]
     fn for_test(path: &Path) -> Self {
         let uid = std::fs::metadata(path).map_or_else(
-            |_| match capture_root::effective_user() {
+            |_| match root_scan::effective_user() {
                 EffectiveUser::Known(uid) => uid,
                 EffectiveUser::Unavailable => u32::MAX,
             },
             |metadata| metadata.uid(),
         );
-        Self::account(capture_root::canonical_capture_path(path), uid)
+        Self::account(root_scan::canonical_capture_path(path), uid)
     }
 }
 
@@ -382,9 +382,9 @@ pub(crate) struct CaptureRoots {
 impl CaptureRoots {
     /// Tests supply their own parent; production always supplies `CAPTURE_ROOT`.
     pub(crate) fn from_parent(parent: &Path) -> Self {
-        let _ = capture_root::prepare_shared_directory(parent);
+        let _ = root_scan::prepare_shared_directory(parent);
         Self {
-            parent:   CaptureParent::Shared(capture_root::canonical_capture_path(parent)),
+            parent:   CaptureParent::Shared(root_scan::canonical_capture_path(parent)),
             accounts: RefCell::default(),
         }
     }
@@ -407,8 +407,8 @@ impl CaptureRoots {
         // Final parent symlinks must not redirect the account inventory.
         if !matches!(
             SharedCaptureDirectory::inspect(parent).state,
-            crate::capture_root::SharedDirectoryState::Shared { .. }
-                | crate::capture_root::SharedDirectoryState::NotShared { .. }
+            crate::root_scan::SharedDirectoryState::Shared { .. }
+                | crate::root_scan::SharedDirectoryState::NotShared { .. }
         ) {
             return Vec::new();
         }
@@ -556,7 +556,7 @@ impl Capture {
     ) -> Self {
         let shared_directory = match &roots.parent {
             CaptureParent::Shared(parent) => {
-                let _ = capture_root::prepare_shared_directory(parent);
+                let _ = root_scan::prepare_shared_directory(parent);
                 SharedCaptureDirectory::inspect(parent)
             },
             #[cfg(test)]
@@ -1929,7 +1929,7 @@ mod tests {
     fn shared_parent_discovers_accounts_each_scan_and_ignores_foreign_owned_directories() {
         let parent = tempdir().unwrap();
         let roots = CaptureRoots::from_parent(parent.path());
-        let uid = match capture_root::effective_user() {
+        let uid = match root_scan::effective_user() {
             EffectiveUser::Known(uid) => uid,
             EffectiveUser::Unavailable => panic!("reader uid"),
         };

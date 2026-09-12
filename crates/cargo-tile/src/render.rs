@@ -66,7 +66,6 @@ use crate::attract;
 use crate::attract::BackdropNotice;
 use crate::attract::Grid;
 use crate::attract::Work;
-use crate::capture_root::RootIncarnation;
 use crate::constants::ACCOUNT_HEADING_CLOSE;
 use crate::constants::ACCOUNT_HEADING_OPEN;
 use crate::constants::ANCESTRY_ELISION;
@@ -143,6 +142,7 @@ use crate::progress::CounterState;
 use crate::progress::Progress;
 use crate::progress::RunState;
 use crate::registration::WorkingDirectoryIdentity;
+use crate::root_scan::RootIncarnation;
 use crate::roster::FamilyHead;
 use crate::roster::ParentFamily;
 use crate::roster::Roster;
@@ -3488,9 +3488,9 @@ mod tests {
     /// A real directory supplies an incarnation without requiring a second account.
     fn capture_context() -> CaptureContext {
         let root = tempfile::tempdir().expect("capture root");
-        let scan = crate::capture_root::RootScan::open(
+        let scan = crate::root_scan::RootScan::open(
             root.path(),
-            &mut crate::capture_root::RootHistory::default(),
+            &mut crate::root_scan::RootHistory::default(),
         )
         .expect("open capture root");
         CaptureContext {
@@ -3617,17 +3617,17 @@ mod tests {
         let parent = tempfile::tempdir().expect("root parent");
         let path = parent.path().join("capture");
         std::fs::create_dir(&path).expect("first root");
-        let mut history = crate::capture_root::RootHistory::default();
+        let mut history = crate::root_scan::RootHistory::default();
         let first_scan =
-            crate::capture_root::RootScan::open(&path, &mut history).expect("scan first root");
+            crate::root_scan::RootScan::open(&path, &mut history).expect("scan first root");
         let mut context = capture_context();
         context.incarnation = first_scan.incarnation();
         let mut retained = same_second("~/x", 40);
         retained.process.provenance = RowProvenance::Direct(context.clone());
         std::fs::rename(&path, parent.path().join("previous")).expect("retain previous root");
         std::fs::create_dir(&path).expect("replacement root");
-        let replacement_scan = crate::capture_root::RootScan::open(&path, &mut history)
-            .expect("scan replacement root");
+        let replacement_scan =
+            crate::root_scan::RootScan::open(&path, &mut history).expect("scan replacement root");
         context.incarnation = replacement_scan.incarnation();
         let mut current = same_second("~/x", 41);
         current.process.provenance = RowProvenance::Direct(context);

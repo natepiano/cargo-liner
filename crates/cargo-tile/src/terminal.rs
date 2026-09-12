@@ -826,7 +826,7 @@ fraying = "leading"
                     }],
                     sccache:          SccacheServer::Stopped,
                     root_status:      Vec::new(),
-                    shared_directory: crate::capture_root::SharedCaptureDirectory::default(),
+                    shared_directory: crate::root_scan::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
             assert!(drain_scans(&mut app, &scans));
@@ -868,7 +868,7 @@ fraying = "leading"
                     }],
                     sccache:          SccacheServer::Stopped,
                     root_status:      Vec::new(),
-                    shared_directory: crate::capture_root::SharedCaptureDirectory::default(),
+                    shared_directory: crate::root_scan::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
 

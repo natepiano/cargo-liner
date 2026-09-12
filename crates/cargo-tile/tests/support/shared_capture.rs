@@ -8,8 +8,6 @@ use std::path::Path;
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-use crate::capture_root::RootOwner;
-use crate::capture_root::SharedCaptureDirectory;
 use crate::config::Config;
 use crate::constants::RUSTUP_HOME_ENV;
 use crate::constants::SHIM_LOCK_RETRY_ATTEMPTS;
@@ -36,6 +34,8 @@ use crate::processes::RootReadStatus;
 use crate::progress::Capture;
 use crate::progress::CaptureCleanup;
 use crate::progress::CaptureRoots;
+use crate::root_scan::RootOwner;
+use crate::root_scan::SharedCaptureDirectory;
 use crate::settings::capture_root_status;
 use crate::settings::shared_directory_status;
 

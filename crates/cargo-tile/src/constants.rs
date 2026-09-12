@@ -943,9 +943,8 @@ pub(crate) const CAPTURE_INVALID_BASENAME: &str = "capture log name is not a sin
 /// Oversize registrations cannot establish a complete readable live set.
 pub(crate) const CAPTURE_REGISTRATION_TOO_LARGE: &str =
     "capture registration exceeds its byte limit";
-/// A directory no longer matching the sampled handles cannot authorize cleanup.
-pub(crate) const CAPTURE_DIRECTORY_CHANGED: &str = "capture directory changed during the scan";
 /// A capped sample is not evidence of a fully observed live set.
+#[cfg(test)]
 pub(crate) const CAPTURE_DIRECTORY_INCOMPLETE: &str = "capture directory inventory is incomplete";
 /// Directory under [`CAPTURE_ROOT`], one file per run still in flight,
 /// each named for the pid of the shim that captured it.
@@ -1011,9 +1010,10 @@ pub(crate) const PROGRESS_HEADING_PHASE_MARGIN: u16 = 1;
 /// Bytes of a run log's end to read for the counter. Sized to hold the
 /// bar's last redraw across a burst of diagnostics printed over it.
 pub(crate) const RUN_LOG_TAIL_BYTES: u64 = 64 * 1024;
-/// Shared cleanup allowance across every owned root in one scan: registration
-/// and log removal attempts. Retained staging records, foreign roots, and
-/// incompletely enumerated roots consume none.
+/// Shared cleanup allowance across every owned root in one scan. Each admitted
+/// pair reserves two units before its first unlink attempt, including pairs found
+/// in partial inventories. Pairs skipped before reservation consume none, and a
+/// missing log does not reduce the reservation.
 ///
 /// The shim removes ordinary captures on exit; runs killed outright leave
 /// artifacts behind. Limiting work avoids clearing a large backlog in one scan.

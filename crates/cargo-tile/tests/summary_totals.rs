@@ -8,8 +8,6 @@ mod attract;
 mod birth_stamp;
 #[path = "../src/capture.rs"]
 mod capture;
-#[path = "../src/capture_root.rs"]
-mod capture_root;
 #[path = "../src/cli.rs"]
 mod cli;
 #[path = "../src/config.rs"]
@@ -44,6 +42,8 @@ mod random;
 mod registration;
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/root_scan/mod.rs"]
+mod root_scan;
 #[path = "../src/roster.rs"]
 mod roster;
 #[path = "../src/sccache.rs"]

@@ -16,7 +16,6 @@ use tui_pane::NoToastAction;
 
 use crate::attract::Attract;
 use crate::attract::AttractMode;
-use crate::capture_root::SharedCaptureDirectory;
 use crate::config;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -26,6 +25,7 @@ use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::processes::AccountCaptureDirectory;
+use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
 use crate::tiles::TileGrid;

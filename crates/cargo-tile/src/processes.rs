@@ -64,9 +64,6 @@ use crate::birth_stamp::LifetimeEvidence;
 use crate::birth_stamp::ProcessLifetime;
 #[cfg(target_os = "linux")]
 use crate::birth_stamp::Verification;
-use crate::capture_root::RootIncarnation;
-use crate::capture_root::RootOwner;
-use crate::capture_root::SharedCaptureDirectory;
 use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
 #[cfg(target_os = "linux")]
@@ -133,6 +130,9 @@ use crate::registration::RegistrationCandidate;
 use crate::registration::VerifiedRegistration;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::registration::WriterHome;
+use crate::root_scan::RootIncarnation;
+use crate::root_scan::RootOwner;
+use crate::root_scan::SharedCaptureDirectory;
 use crate::sccache::SccacheServer;
 
 /// Identity of an invocation, independent of its displayed process or row source.

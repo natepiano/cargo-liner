@@ -10,8 +10,6 @@ mod attract;
 mod birth_stamp;
 #[path = "../src/capture.rs"]
 mod capture;
-#[path = "../src/capture_root.rs"]
-mod capture_root;
 #[path = "../src/cli.rs"]
 mod cli;
 #[path = "../src/config.rs"]
@@ -46,6 +44,8 @@ mod random;
 mod registration;
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/root_scan/mod.rs"]
+mod root_scan;
 #[path = "../src/roster.rs"]
 mod roster;
 #[path = "../src/sccache.rs"]
@@ -79,11 +79,6 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
-    use crate::capture_root::RootHistory;
-    use crate::capture_root::RootOwner;
-    use crate::capture_root::RootScan;
-    use crate::capture_root::SweepBudget;
-    use crate::capture_root::SweepDisposition;
     use crate::constants::CAPTURE_ACL_TEST_DIRECTORIES;
     use crate::constants::CAPTURE_ACL_TEST_DIRECTORY_MODE;
     use crate::constants::CAPTURE_ACL_TEST_FILE_MODE;
@@ -92,6 +87,11 @@ mod tests {
     use crate::constants::CAPTURE_STATE_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
     use crate::constants::PERMISSION_BITS;
+    use crate::root_scan::RootHistory;
+    use crate::root_scan::RootOwner;
+    use crate::root_scan::RootScan;
+    use crate::root_scan::SweepBudget;
+    use crate::root_scan::SweepDisposition;
 
     /// One owner, one removable pair, and three directories with known permissions.
     struct CaptureRoot {
@@ -160,8 +160,10 @@ mod tests {
             let counts = scan.sweep(&mut budget, |_| {
                 SweepDisposition::Remove(PathBuf::from("log"))
             });
-            assert_eq!(counts.removed, 2);
-            assert_eq!(counts.skipped, 0);
+            assert_eq!(counts.removed_files(), 2);
+            assert_eq!(counts.skipped_pair_attempts(), 0);
+            assert_eq!(counts.incomplete_inventories(), 0);
+            assert_eq!(counts.unavailable_roots(), 0);
             assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT - 2);
             self.assert_removed();
         }
@@ -182,8 +184,13 @@ mod tests {
             let counts = scan.sweep(&mut budget, |_| {
                 SweepDisposition::Remove(PathBuf::from("log"))
             });
-            assert_eq!(counts.removed, 0);
-            assert!(counts.skipped > 0, "unproved candidates are counted");
+            assert_eq!(counts.removed_files(), 0);
+            assert!(
+                counts.skipped_pair_attempts() > 0,
+                "unproved candidates are counted"
+            );
+            assert_eq!(counts.incomplete_inventories(), 0);
+            assert_eq!(counts.unavailable_roots(), 0);
             self.assert_retained();
         }
     }

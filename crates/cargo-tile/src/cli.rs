@@ -26,7 +26,6 @@ use clap::Parser;
 use clap::Subcommand;
 use rustix::process::geteuid;
 
-use crate::capture_root;
 use crate::constants::ACCOUNT_HOOK_REPORT_FLAG;
 use crate::constants::BINARY_NAME;
 use crate::constants::CAPTURE_ROOT;
@@ -39,6 +38,7 @@ use crate::hook::HookOperationOutcome;
 use crate::hook::HookState;
 use crate::hook::ToolchainHookOutcome;
 use crate::hook::ToolchainHookReport;
+use crate::root_scan;
 use crate::terminal;
 
 /// `cargo-tile`, as the command line sees it.
@@ -169,7 +169,7 @@ fn report(outcome: io::Result<()>) -> ExitCode {
 /// Put the shim in front of every toolchain's cargo, reporting each
 /// failure without preventing the remaining toolchains from installing.
 fn install() -> io::Result<()> {
-    if let Err(error) = capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT)) {
+    if let Err(error) = root_scan::prepare_shared_directory(Path::new(CAPTURE_ROOT)) {
         eprintln!("{BINARY_NAME}: {CAPTURE_ROOT}: {error}");
     }
     let toolchains = Hook::reports(HookOperation::Install)?
@@ -209,7 +209,7 @@ fn all_accounts(operation: HookOperation) -> io::Result<()> {
     }
     let accounts = hook::system_accounts()?;
     if operation == HookOperation::Install {
-        capture_root::prepare_shared_directory(Path::new(CAPTURE_ROOT))?;
+        root_scan::prepare_shared_directory(Path::new(CAPTURE_ROOT))?;
     }
     let parent = Path::new(CAPTURE_ROOT)
         .parent()
