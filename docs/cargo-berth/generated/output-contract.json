@@ -5296,6 +5296,34 @@
             }
           ]
         },
+        "ReservationReportSnapshot": {
+          "description": "One reservation's lifecycle and protection, independent of its board placement.",
+          "properties": {
+            "lifecycle": {
+              "$ref": "#/$defs/reservation_lifecycle",
+              "description": "Its point-in-time lifecycle reading."
+            },
+            "merge_extent": {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "The exact derived branch surface or the evidence retained on failure."
+            },
+            "race_extent": {
+              "$ref": "#/$defs/RaceExtent",
+              "description": "The run's effective editing scope, independent of branch integration."
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The reservation selected by the caller."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "lifecycle",
+            "race_extent",
+            "merge_extent"
+          ],
+          "type": "object"
+        },
         "ReservationRetentionRef": {
           "minLength": 1,
           "type": "string"
@@ -8484,22 +8512,8 @@
         "reservation_lifecycle_query": {
           "anyOf": [
             {
-              "description": "The selected reservation and its current lifecycle.",
-              "properties": {
-                "lifecycle": {
-                  "$ref": "#/$defs/reservation_lifecycle",
-                  "description": "Its point-in-time lifecycle reading."
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation selected by the caller."
-                }
-              },
-              "required": [
-                "reservation_id",
-                "lifecycle"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/ReservationReportSnapshot",
+              "description": "The selected reservation's current lifecycle and extents."
             },
             {
               "$ref": "#/$defs/reservation_lifecycle_query_rejection",
@@ -12330,6 +12344,34 @@
             }
           ]
         },
+        "ReservationReportSnapshot": {
+          "description": "One reservation's lifecycle and protection, independent of its board placement.",
+          "properties": {
+            "lifecycle": {
+              "$ref": "#/$defs/reservation_lifecycle",
+              "description": "Its point-in-time lifecycle reading."
+            },
+            "merge_extent": {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "The exact derived branch surface or the evidence retained on failure."
+            },
+            "race_extent": {
+              "$ref": "#/$defs/RaceExtent",
+              "description": "The run's effective editing scope, independent of branch integration."
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The reservation selected by the caller."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "lifecycle",
+            "race_extent",
+            "merge_extent"
+          ],
+          "type": "object"
+        },
         "ReservationRetentionRef": {
           "minLength": 1,
           "type": "string"
@@ -14733,22 +14775,8 @@
         "reservation_lifecycle_query": {
           "anyOf": [
             {
-              "description": "The selected reservation and its current lifecycle.",
-              "properties": {
-                "lifecycle": {
-                  "$ref": "#/$defs/reservation_lifecycle",
-                  "description": "Its point-in-time lifecycle reading."
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation selected by the caller."
-                }
-              },
-              "required": [
-                "reservation_id",
-                "lifecycle"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/ReservationReportSnapshot",
+              "description": "The selected reservation's current lifecycle and extents."
             },
             {
               "$ref": "#/$defs/reservation_lifecycle_query_rejection",
@@ -15850,6 +15878,318 @@
     },
     "reservation_lifecycle_query": {
       "$defs": {
+        "MergeExtent": {
+          "description": "The branch's independently observed merge protection, including inability to answer.",
+          "oneOf": [
+            {
+              "description": "Replay of an acquisition predating derivation must still protect its declaration.",
+              "properties": {
+                "protection": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The immutable acquisition scope protects until the first successful observation."
+                },
+                "status": {
+                  "const": "not_derived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "protection"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Successful emptiness ends merge protection without ending the editing run.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that proved this empty answer."
+                },
+                "status": {
+                  "const": "empty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Exactly the net branch change and its currently dirty paths are protected.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that established the protected surface."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Net branch and dirty paths, independent of the run's declaration."
+                },
+                "status": {
+                  "const": "protected",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Failure preserves the last answer and explains why no fresh answer is available.",
+              "properties": {
+                "failure": {
+                  "description": "Why the current observation could not establish a replacement answer.",
+                  "type": "string"
+                },
+                "retained_evidence": {
+                  "$ref": "#/$defs/RetainedMergeEvidence",
+                  "description": "The preceding answer, or explicit evidence that none has yet succeeded."
+                },
+                "status": {
+                  "const": "unavailable",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "retained_evidence",
+                "failure"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "MergeExtentKey": {
+          "description": "Every repository fact whose movement can change the branch's merge surface.",
+          "properties": {
+            "head": {
+              "description": "The branch tip whose net change will reach trunk.",
+              "type": "string"
+            },
+            "trunk": {
+              "description": "Trunk movement can integrate an otherwise unchanged holder.",
+              "type": "string"
+            },
+            "working_tree": {
+              "$ref": "#/$defs/WorkingTreeFingerprint",
+              "description": "Uncommitted paths independently extend that net change."
+            }
+          },
+          "required": [
+            "trunk",
+            "head",
+            "working_tree"
+          ],
+          "type": "object"
+        },
+        "RaceExtent": {
+          "description": "The effective editing scope, whose lifetime follows checkpoint and release.",
+          "oneOf": [
+            {
+              "description": "This run may still edit the paths it declared or first touched.",
+              "properties": {
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Declared or first-touched paths this live run may edit."
+                },
+                "status": {
+                  "const": "editing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The run has checkpointed or released and refuses no later run in this checkout.",
+              "properties": {
+                "status": {
+                  "const": "ended",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ReservationReportSnapshot": {
+          "description": "One reservation's lifecycle and protection, independent of its board placement.",
+          "properties": {
+            "lifecycle": {
+              "$ref": "#/$defs/reservation_lifecycle",
+              "description": "Its point-in-time lifecycle reading."
+            },
+            "merge_extent": {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "The exact derived branch surface or the evidence retained on failure."
+            },
+            "race_extent": {
+              "$ref": "#/$defs/RaceExtent",
+              "description": "The run's effective editing scope, independent of branch integration."
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The reservation selected by the caller."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "lifecycle",
+            "race_extent",
+            "merge_extent"
+          ],
+          "type": "object"
+        },
+        "ReservationScope": {
+          "oneOf": [
+            {
+              "description": "One repository path paired with its declared reservation semantics.",
+              "properties": {
+                "kind": {
+                  "const": "file",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "The normalized repository-relative path.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "One repository path paired with its declared reservation semantics.",
+              "properties": {
+                "kind": {
+                  "const": "tree",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "The normalized repository-relative path.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ReservationScopeSet": {
+          "description": "The non-empty atomic footprint protected by one reservation.",
+          "items": {
+            "$ref": "#/$defs/ReservationScope"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "RetainedMergeEvidence": {
+          "description": "Evidence retained through failure, distinguishing an initial declaration from a successful\nobservation.",
+          "oneOf": [
+            {
+              "description": "No Git observation has succeeded; keep the acquisition's conservative protection.",
+              "properties": {
+                "protection": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The immutable acquisition scope protects until the first successful observation."
+                },
+                "status": {
+                  "const": "not_derived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "protection"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A completed observation proved that the branch held no unmerged paths.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that proved this empty answer."
+                },
+                "status": {
+                  "const": "empty",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A completed observation established these exact unmerged paths.",
+              "properties": {
+                "key": {
+                  "$ref": "#/$defs/MergeExtentKey",
+                  "description": "The exact inputs that established the protected surface."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Net branch and dirty paths, independent of the run's declaration."
+                },
+                "status": {
+                  "const": "protected",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "key",
+                "scopes"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "WorkingTreeFingerprint": {
+          "description": "The modified path sets shared by drift comparison and merge-extent cache keys.",
+          "properties": {
+            "tracked_paths": {
+              "description": "Staged and unstaged tracked paths, normalized together.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "untracked_paths": {
+              "description": "Untracked files also belong to the branch's uncommitted surface.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "tracked_paths",
+            "untracked_paths"
+          ],
+          "type": "object"
+        },
         "protected_reservation_tip": {
           "description": "The fixed checkpoint commit used for ordinary integration evidence.",
           "minLength": 1,
@@ -16036,22 +16376,8 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "anyOf": [
         {
-          "description": "The selected reservation and its current lifecycle.",
-          "properties": {
-            "lifecycle": {
-              "$ref": "#/$defs/reservation_lifecycle",
-              "description": "Its point-in-time lifecycle reading."
-            },
-            "reservation_id": {
-              "$ref": "#/$defs/uuid_v7_identifier",
-              "description": "The reservation selected by the caller."
-            }
-          },
-          "required": [
-            "reservation_id",
-            "lifecycle"
-          ],
-          "type": "object"
+          "$ref": "#/$defs/ReservationReportSnapshot",
+          "description": "The selected reservation's current lifecycle and extents."
         },
         {
           "$ref": "#/$defs/reservation_lifecycle_query_rejection",

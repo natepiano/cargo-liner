@@ -162,8 +162,9 @@ pub(crate) enum IntegrationEvidenceStatus {
     ObjectUnknown,
 }
 
+#[cfg(test)]
 impl IntegrationEvidenceStatus {
-    /// Derive the edit decision for an outstanding reservation from its current evidence.
+    /// Reproduce the historical checkpoint-only decision for existing journal fixtures.
     pub(crate) const fn edit_blocking_status(&self) -> EditBlockingStatus {
         match self {
             Self::Integrated { .. } => EditBlockingStatus::Clear,

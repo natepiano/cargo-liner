@@ -277,6 +277,14 @@ impl Reservation {
     /// The branch surface observed independently of this run's editing scope.
     pub(crate) const fn merge_extent(&self) -> &MergeExtent { &self.merge_extent }
 
+    /// Evaluate a planned extent with the same lifecycle and decision rules as live checks.
+    pub(crate) fn with_merge_extent(&self, merge_extent: MergeExtent) -> Self {
+        Self {
+            merge_extent,
+            ..self.clone()
+        }
+    }
+
     /// Read the scope belonging to exactly the ground this checkout asks about.
     pub(super) fn protection_in_worktree(
         &self,

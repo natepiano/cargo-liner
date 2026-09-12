@@ -19,9 +19,12 @@ use super::rows::SettledOrderingConstraint;
 use super::rows::UnresolvedOverlap;
 use super::rows::WaitingConstraint;
 use crate::ids::ReservationId;
+use crate::output::ReservationReportSnapshot;
 use crate::presentation;
 use crate::presentation::EnvelopePresentation;
 use crate::reconcile::ReconciliationReport;
+use crate::reservation::MergeExtent;
+use crate::reservation::RaceExtent;
 use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -63,25 +66,31 @@ pub(super) struct CompleteBoardReport<'board> {
     pub(super) git_cost:                           &'board BoardGitCost,
 }
 
-/// One reservation's placement-independent lifecycle report.
+/// One reservation's placement-independent lifecycle and extent report.
 #[derive(Serialize)]
-struct ReservationLifecycleReport<'lifecycle> {
+struct ReservationReport<'reservation> {
     #[serde(rename = "Reservation")]
     reservation_id: ReservationId,
     #[serde(rename = "Lifecycle")]
-    lifecycle:      &'lifecycle ReservationLifecycleSnapshot,
+    lifecycle:      &'reservation ReservationLifecycleSnapshot,
+    #[serde(rename = "Race extent")]
+    race_extent:    &'reservation RaceExtent,
+    #[serde(rename = "Merge extent")]
+    merge_extent:   &'reservation MergeExtent,
 }
 
-/// Render one retained reservation's lifecycle without restating the complete board.
+/// Render one retained reservation's lifecycle and extents without restating the complete board.
 pub(crate) fn reservation_lifecycle_presentation(
-    reservation_id: ReservationId,
-    reservation_lifecycle_snapshot: &ReservationLifecycleSnapshot,
+    snapshot: &ReservationReportSnapshot,
 ) -> EnvelopePresentation {
-    let reservation_lifecycle_report = ReservationLifecycleReport {
+    let reservation_id = snapshot.reservation_id;
+    let reservation_report = ReservationReport {
         reservation_id,
-        lifecycle: reservation_lifecycle_snapshot,
+        lifecycle: &snapshot.lifecycle,
+        race_extent: &snapshot.race_extent,
+        merge_extent: &snapshot.merge_extent,
     };
-    serde_json::to_string_pretty(&reservation_lifecycle_report).map_or_else(
+    serde_json::to_string_pretty(&reservation_report).map_or_else(
         |error| {
             presentation::engine_message_block(
                 "cargo-berth could not render the reservation lifecycle report.",
@@ -103,10 +112,13 @@ pub(crate) fn reservation_lifecycle_presentation(
 pub(crate) fn reservation_lifecycle_snapshot(
     report: &ReconciliationReport,
     reservation_id: ReservationId,
-) -> Result<ReservationLifecycleSnapshot, ReservationReplayError> {
+) -> Result<ReservationReportSnapshot, ReservationReplayError> {
     let reservations = RetainedReservationSet::replay(report.journal_snapshot.events())?;
-    reservations
-        .reservation(reservation_id)?
-        .evidence_state()
-        .map(ReservationLifecycleSnapshot::from)
+    let reservation = reservations.reservation(reservation_id)?;
+    Ok(ReservationReportSnapshot {
+        reservation_id,
+        lifecycle: ReservationLifecycleSnapshot::from(reservation.evidence_state()?),
+        race_extent: reservation.race_extent(),
+        merge_extent: reservation.merge_extent().clone(),
+    })
 }

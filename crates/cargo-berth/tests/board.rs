@@ -163,7 +163,7 @@ fn populated_board_presentation_carries_the_complete_board_report() {
 }
 
 #[test]
-fn waiting_successor_lifecycle_is_queryable_while_omitted_from_board_rows() {
+fn waiting_successor_lifecycle_and_extents_are_queryable_while_omitted_from_board_rows() {
     let fixture = ordered_fixture();
     fs::write(
         fixture.successor_root.join("src/lib.rs"),
@@ -176,6 +176,19 @@ fn waiting_successor_lifecycle_is_queryable_while_omitted_from_board_rows() {
         &["commit", "--quiet", "-m", "successor work"],
     );
     let protected_tip = git_stdout(&fixture.successor_root, &["rev-parse", "HEAD"]);
+    let editing = reservation_report(fixture.repository.path(), &fixture.successor_id);
+    assert_eq!(
+        editing["race_extent"],
+        serde_json::json!({
+            "status": "editing",
+            "scopes": [{"kind": "file", "path": "src/lib.rs"}],
+        })
+    );
+    assert_eq!(editing["merge_extent"]["status"], "protected");
+    assert_eq!(
+        editing["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
+    );
     let released = run_berth_with_run(
         &fixture.successor_root,
         &["release", &fixture.successor_id, "--json"],
@@ -210,6 +223,11 @@ fn waiting_successor_lifecycle_is_queryable_while_omitted_from_board_rows() {
 #[test]
 fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows() {
     let repository = initialized_repository();
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "configure berth"],
+    );
     let (_blocker_directory, blocker_root) = foreign_worktree(&repository, "blocker");
     let (_deferred_directory, deferred_root) = foreign_worktree(&repository, "deferred");
     dirty_source(&blocker_root, "src/lib.rs");
@@ -265,6 +283,238 @@ fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows
         "outstanding",
         &deferred_tip,
     );
+}
+
+#[test]
+fn waiting_reservation_report_retains_merge_evidence_when_its_holder_is_unavailable() {
+    let fixture = ordered_fixture();
+    dirty_source(&fixture.successor_root, "src/branch.rs");
+    let observed = reservation_report(fixture.repository.path(), &fixture.successor_id);
+    assert_eq!(observed["merge_extent"]["status"], "protected");
+    assert_eq!(
+        observed["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/branch.rs"}])
+    );
+    fs::rename(
+        &fixture.successor_root,
+        fixture
+            .successor_root
+            .with_file_name("unavailable-successor"),
+    )
+    .expect("holder should move without updating git metadata");
+
+    let unavailable = reservation_report(fixture.repository.path(), &fixture.successor_id);
+    assert_eq!(
+        unavailable["race_extent"],
+        serde_json::json!({
+            "status": "editing",
+            "scopes": [{"kind": "file", "path": "src/lib.rs"}],
+        })
+    );
+    assert_eq!(unavailable["merge_extent"]["status"], "unavailable");
+    assert_eq!(
+        unavailable["merge_extent"]["retained_evidence"],
+        observed["merge_extent"]
+    );
+    assert!(
+        !unavailable["merge_extent"]["failure"]
+            .as_str()
+            .expect("unavailable merge extent should explain its failure")
+            .is_empty()
+    );
+    let complete_board = board_data(fixture.repository.path());
+    assert!(!has_reservation_snapshot(
+        &complete_board,
+        &fixture.successor_id
+    ));
+}
+
+#[test]
+fn outstanding_reservation_report_retains_empty_evidence_when_trunk_is_unreadable() {
+    let repository = initialized_repository();
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "configure berth"],
+    );
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "empty-holder");
+    let (_reader_directory, reader_root) = foreign_worktree(&repository, "outside-reader");
+    let id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
+    fs::write(holder_root.join("src/lib.rs"), "pub fn checkpointed() {}\n")
+        .expect("holder source should write");
+    git(&holder_root, &["add", "src/lib.rs"]);
+    git(&holder_root, &["commit", "--quiet", "-m", "holder work"]);
+    let protected_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
+    let released = run_berth_with_run(&holder_root, &["release", &id, "--json"], FIRST_RUN);
+    assert!(released.status.success());
+    assert_eq!(json_output(&released)["status"], "outstanding");
+
+    // Empty the branch without integrating or releasing its outstanding checkpoint.
+    git(&holder_root, &["reset", "--hard", "--quiet", "main"]);
+    let observed = reservation_report(&reader_root, &id);
+    assert_eq!(
+        observed["lifecycle"],
+        serde_json::json!({"status": "outstanding", "protected_tip": protected_tip})
+    );
+    assert_eq!(
+        observed["race_extent"],
+        serde_json::json!({"status": "ended"})
+    );
+    assert_eq!(observed["merge_extent"]["status"], "empty");
+    git(repository.path(), &["update-ref", "-d", "refs/heads/main"]);
+
+    let unavailable = reservation_report(&reader_root, &id);
+    assert_eq!(unavailable["lifecycle"], observed["lifecycle"]);
+    assert_eq!(unavailable["race_extent"], observed["race_extent"]);
+    assert_eq!(unavailable["merge_extent"]["status"], "unavailable");
+    assert_eq!(
+        unavailable["merge_extent"]["retained_evidence"],
+        observed["merge_extent"]
+    );
+    assert_eq!(
+        unavailable["merge_extent"]["retained_evidence"]["status"],
+        "empty"
+    );
+}
+
+#[test]
+fn outstanding_reservation_report_retains_protected_evidence_when_trunk_is_unreadable() {
+    let repository = initialized_repository();
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "configure berth"],
+    );
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "protected-holder");
+    let (_reader_directory, reader_root) = foreign_worktree(&repository, "outside-reader");
+    let id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
+    fs::write(holder_root.join("src/lib.rs"), "pub fn checkpointed() {}\n")
+        .expect("holder source should write");
+    git(&holder_root, &["add", "src/lib.rs"]);
+    git(&holder_root, &["commit", "--quiet", "-m", "holder work"]);
+    let protected_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
+    let released = run_berth_with_run(&holder_root, &["release", &id, "--json"], FIRST_RUN);
+    assert!(released.status.success());
+    assert_eq!(json_output(&released)["status"], "outstanding");
+
+    let observed = reservation_report(&reader_root, &id);
+    assert_eq!(
+        observed["lifecycle"],
+        serde_json::json!({"status": "outstanding", "protected_tip": protected_tip})
+    );
+    assert_eq!(
+        observed["race_extent"],
+        serde_json::json!({"status": "ended"})
+    );
+    assert_eq!(observed["merge_extent"]["status"], "protected");
+    assert_eq!(observed["merge_extent"]["key"]["head"], protected_tip);
+    assert_eq!(
+        observed["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
+    );
+    git(repository.path(), &["update-ref", "-d", "refs/heads/main"]);
+
+    let unavailable = reservation_report(&reader_root, &id);
+    assert_eq!(unavailable["lifecycle"], observed["lifecycle"]);
+    assert_eq!(unavailable["race_extent"], observed["race_extent"]);
+    assert_eq!(unavailable["merge_extent"]["status"], "unavailable");
+    assert_eq!(
+        unavailable["merge_extent"]["retained_evidence"],
+        observed["merge_extent"]
+    );
+    assert_eq!(
+        unavailable["merge_extent"]["retained_evidence"]["status"],
+        "protected"
+    );
+}
+
+#[test]
+fn reservation_report_retains_declared_protection_when_first_derivation_fails() {
+    let repository = initialized_repository();
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "unobserved-holder");
+    let id = reservation_id(&claim(&holder_root, "tree:src", FIRST_RUN));
+    assert_eq!(
+        journal_operation_count_for_reservation(repository.path(), "merge_extent_observed", &id),
+        0,
+        "the holder must disappear before its first merge observation"
+    );
+    fs::rename(
+        &holder_root,
+        holder_root.with_file_name("unavailable-holder"),
+    )
+    .expect("holder should move without updating git metadata");
+
+    let report = reservation_report(repository.path(), &id);
+    let declared_scopes = serde_json::json!([{"kind": "tree", "path": "src"}]);
+    assert_eq!(
+        report["race_extent"],
+        serde_json::json!({"status": "editing", "scopes": declared_scopes})
+    );
+    assert_eq!(report["merge_extent"]["status"], "unavailable");
+    assert_eq!(
+        report["merge_extent"]["retained_evidence"],
+        serde_json::json!({"status": "not_derived", "protection": declared_scopes})
+    );
+    let complete_board = board_data(repository.path());
+    let snapshot = board_reservation_snapshot(&complete_board, &id);
+    assert_eq!(report["race_extent"], snapshot["race_extent"]);
+    assert_eq!(report["merge_extent"], snapshot["merge_extent"]);
+}
+
+#[test]
+fn released_legacy_reservation_report_preserves_its_not_derived_declaration() {
+    let repository = initialized_repository();
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "legacy-holder");
+    let id = reservation_id(&claim(&holder_root, "tree:src", FIRST_RUN));
+    let resolved = run_berth_with_run(
+        &holder_root,
+        &[
+            "resolve",
+            &id,
+            "--abandon",
+            "--why",
+            "discard legacy work",
+            "--json",
+        ],
+        FIRST_RUN,
+    );
+    assert!(resolved.status.success());
+
+    // Legacy ledgers retain dispositions without ever recording a derived merge extent.
+    let journal_path = repository.path().join(JOURNAL_PATH);
+    let legacy_events = fs::read_to_string(&journal_path)
+        .expect("isolated journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .filter(|event| event["op"] != "merge_extent_observed")
+        .enumerate()
+        .map(|(index, mut event)| {
+            event["projection_generation"] = serde_json::json!(index + 1);
+            serde_json::to_string(&event).expect("legacy event should serialize")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&journal_path, format!("{legacy_events}\n"))
+        .expect("isolated legacy journal should write");
+    invalidate_projection(repository.path());
+
+    let report = reservation_report(repository.path(), &id);
+    assert_eq!(report["lifecycle"]["status"], "released_without_checkpoint");
+    assert_eq!(
+        report["race_extent"],
+        serde_json::json!({"status": "ended"})
+    );
+    assert_eq!(
+        report["merge_extent"],
+        serde_json::json!({
+            "status": "not_derived",
+            "protection": [{"kind": "tree", "path": "src"}],
+        })
+    );
+    let complete_board = board_data(repository.path());
+    let snapshot = board_reservation_snapshot(&complete_board, &id);
+    assert_eq!(report["race_extent"], snapshot["race_extent"]);
+    assert_eq!(report["merge_extent"], snapshot["merge_extent"]);
 }
 
 #[test]
@@ -1169,12 +1419,27 @@ fn assert_reservation_lifecycle(
     expected_status: &str,
     protected_tip: &str,
 ) {
-    let lifecycle = reservation_lifecycle(repository_root, reservation_id);
+    let report = reservation_report(repository_root, reservation_id);
+    let lifecycle = &report["lifecycle"];
     assert_eq!(lifecycle["status"], expected_status);
     assert_eq!(lifecycle["protected_tip"], protected_tip);
+    assert_eq!(
+        report["race_extent"],
+        serde_json::json!({"status": "ended"})
+    );
+    assert_eq!(report["merge_extent"]["status"], "protected");
+    assert_eq!(report["merge_extent"]["key"]["head"], protected_tip);
+    assert_eq!(
+        report["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
+    );
 }
 
 fn reservation_lifecycle(repository_root: &Path, reservation_id: &str) -> serde_json::Value {
+    reservation_report(repository_root, reservation_id)["lifecycle"].clone()
+}
+
+fn reservation_report(repository_root: &Path, reservation_id: &str) -> serde_json::Value {
     let output = run_berth(
         repository_root,
         &["board", "--reservation", reservation_id, "--json"],
@@ -1205,17 +1470,19 @@ fn reservation_lifecycle(repository_root: &Path, reservation_id: &str) -> serde_
         envelope["payload"]["data"]["reservation_id"],
         reservation_id
     );
-    let lifecycle = &envelope["payload"]["data"]["lifecycle"];
+    let data = &envelope["payload"]["data"];
     let report = rendered_board_report(&envelope, "reservation lifecycle");
     assert_eq!(
         report,
         serde_json::json!({
             "Reservation": reservation_id,
-            "Lifecycle": lifecycle,
+            "Lifecycle": data["lifecycle"],
+            "Race extent": data["race_extent"],
+            "Merge extent": data["merge_extent"],
         })
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains(ENTER_ALTERNATE_SCREEN));
-    lifecycle.clone()
+    data.clone()
 }
 
 fn assert_preserved_board_envelope_fields(

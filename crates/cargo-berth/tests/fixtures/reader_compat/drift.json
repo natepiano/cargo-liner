@@ -1,0 +1,22 @@
+{
+  "status": "clear",
+  "payload": {
+    "kind": "drift",
+    "data": {
+      "comparison": "full_phase_start",
+      "widening": {
+        "status": "not_needed"
+      },
+      "results": [
+        {
+          "status": "unchanged",
+          "reservation_id": "01a092bc-ee51-7eb3-86dd-efd1c7f3af92"
+        }
+      ],
+      "scope_acquisition": {
+        "status": "permitted"
+      }
+    },
+    "alerts": []
+  }
+}

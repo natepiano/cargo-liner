@@ -23,7 +23,7 @@ use crate::reservation::ReservationReplayError;
 pub(crate) enum BoardOutputSelection {
     /// Assemble the complete board and use its selected renderer.
     CompleteBoard,
-    /// Read one reservation's lifecycle independently of board placement.
+    /// Read one reservation's lifecycle and extents independently of board placement.
     ReservationLifecycleFor(ReservationId),
 }
 
@@ -130,8 +130,8 @@ fn execute_reservation_lifecycle(
     reservation_id: ReservationId,
 ) -> BoardDisplayOutcome {
     match board::reservation_lifecycle_snapshot(report, reservation_id) {
-        Ok(reservation_lifecycle_snapshot) => BoardDisplayOutcome::HeadlessResponse(
-            OutputEnvelope::reservation_lifecycle(reservation_id, reservation_lifecycle_snapshot),
+        Ok(reservation_report) => BoardDisplayOutcome::HeadlessResponse(
+            OutputEnvelope::reservation_lifecycle(reservation_report),
         ),
         Err(ReservationReplayError::UnknownReservation(reservation_id)) => {
             BoardDisplayOutcome::HeadlessResponse(

@@ -5,7 +5,16 @@
 //! the verb writes. The frozen front-end corpus supplies the text these comparisons are
 //! held to, so a change to what a user is told fails here rather than reaching a user.
 
+#[path = "support/reader_compat_hooks.rs"]
+mod reader_compat_hooks;
+
 use cargo_berth_test_support::git_command;
+use reader_compat_hooks::AmbientHarnessSession;
+use reader_compat_hooks::HookFeedback;
+use reader_compat_hooks::HookResponseEvent;
+use reader_compat_hooks::expected_hook_feedback;
+use reader_compat_hooks::hook_feedback;
+use reader_compat_hooks::spawn_hook_verb;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -36,7 +45,6 @@ const AMBIENT_STALE_SESSION: &str = "ambient-stale-session";
 const BOARD_SESSION: &str = "board-session";
 const INCURSION_SESSION: &str = "incursion-session";
 const ORPHAN_SESSION_START_ENTRY: &str = "test_session_start_renders_real_orphan_recovery_actions";
-const POST_TOOL_USE_EVENT: &str = "PostToolUse";
 const POST_TOOL_USE_LOST_EVIDENCE_REWRITTEN_ENTRY: &str =
     "test_hooks_render_both_lost_evidence_recoveries";
 const POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY: &str =
@@ -62,7 +70,6 @@ const POST_TOOL_USE_STALE_SESSION_ENTRY: &str =
 const POST_TOOL_USE_WIDENED_ENTRY: &str = "test_incursion_board_read_cost_is_constant#4";
 const QUIET_DRIFT_SESSION: &str = "quiet-drift-session";
 const REPLAY_DRIFT_SESSION: &str = "replay-drift-session";
-const SESSION_START_EVENT: &str = "SessionStart";
 const SESSION_START_CONTENTION_DETAIL: &str = "The engine already spent its single 10-second retry budget; the hook did not invoke board \
      again. Run `cargo-berth board --json` when the ledger is free.";
 const SESSION_START_CONTENTION_SUMMARY: &str =
@@ -145,44 +152,12 @@ const TRUNK_BRANCH: &str = "main";
 /// The loose reference file the trunk branch is published at.
 const TRUNK_REFERENCE_PATH: &str = ".git/refs/heads/main";
 
-/// The harness event one hook response answers, and the continuation field it states.
-///
-/// The two events state different response objects, and the difference is a contract:
-/// `berth_post_bash.sh` reports `continue`, and `berth_session_start.sh` deliberately
-/// reports none, because a session-start response cannot stop anything the harness is
-/// already going to do. Naming the event rather than passing its bare string keeps that
-/// difference on one type instead of at every comparison.
-#[derive(Clone, Copy)]
-enum HookResponseEvent {
-    /// A `PostToolUse` response, which states that the session continues.
-    PostToolUse,
-    /// A `SessionStart` response, which states no continuation field at all.
-    SessionStart,
-}
-
 /// How completely one produced response has to account for its frozen corpus text.
 enum FrozenTextCoverage {
     /// The produced lines are exactly the frozen lines and carry nothing else.
     ExactlyTheFrozenLines,
     /// The produced lines carry the frozen lines inside the engine's wider report.
     TheFrozenLinesInsideTheReport,
-}
-
-impl HookResponseEvent {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::PostToolUse => POST_TOOL_USE_EVENT,
-            Self::SessionStart => SESSION_START_EVENT,
-        }
-    }
-}
-
-/// Whether the hook process inherits a harness session identity from its environment.
-enum AmbientHarnessSession<'session> {
-    /// The environment names a harness session the hook must not adopt.
-    Present(&'session str),
-    /// The environment names no harness session.
-    Absent,
 }
 
 /// One token of a recovery argv frozen by the front-end corpus.
@@ -1579,6 +1554,7 @@ fn spawn_pre_tool_use(
     ambient_session: &AmbientHarnessSession<'_>,
 ) -> TestResult<Output> {
     spawn_hook_verb(
+        Path::new(BERTH_EXECUTABLE),
         repository_root,
         "pre-tool-use",
         &serde_json::to_vec(payload)?,
@@ -1609,40 +1585,6 @@ fn spawn_pre_tool_use_with_run(
         .take()
         .ok_or_else(|| failure("hook stdin should be piped"))?;
     piped_stdin.write_all(&serde_json::to_vec(payload)?)?;
-    drop(piped_stdin);
-    Ok(child.wait_with_output()?)
-}
-
-/// Run one public hook verb the way the harness runs it: raw payload on standard input.
-fn spawn_hook_verb(
-    working_directory: &Path,
-    hook_event: &str,
-    stdin: &[u8],
-    ambient_session: &AmbientHarnessSession<'_>,
-) -> TestResult<Output> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-berth"));
-    command
-        .args(["hook", hook_event])
-        .current_dir(working_directory)
-        .env_remove("CARGO_BERTH_RUN");
-    match *ambient_session {
-        AmbientHarnessSession::Present(session_id) => {
-            command.env("CARGO_BERTH_SESSION_ID", session_id);
-        },
-        AmbientHarnessSession::Absent => {
-            command.env_remove("CARGO_BERTH_SESSION_ID");
-        },
-    }
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut piped_stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| failure("hook stdin should be piped"))?;
-    piped_stdin.write_all(stdin)?;
     drop(piped_stdin);
     Ok(child.wait_with_output()?)
 }
@@ -1838,13 +1780,6 @@ fn failure(message: impl Into<String>) -> Box<dyn Error> {
 struct CorpusIdentifier {
     observed: String,
     frozen:   String,
-}
-
-/// The two sentences one hook response puts in front of the reader.
-#[derive(Debug)]
-struct HookFeedback {
-    system_message:     String,
-    additional_context: String,
 }
 
 /// One incursion a `PostToolUse` drift reported, named as the corpus names it.
@@ -2416,6 +2351,7 @@ fn run_post_tool_use_with_ambient_session(
     ambient_session: &AmbientHarnessSession<'_>,
 ) -> TestResult<Output> {
     spawn_hook_verb(
+        Path::new(BERTH_EXECUTABLE),
         working_directory,
         "post-tool-use",
         &serde_json::to_vec(payload)?,
@@ -2425,6 +2361,7 @@ fn run_post_tool_use_with_ambient_session(
 
 fn run_post_tool_use_stdin(working_directory: &Path, stdin: &[u8]) -> TestResult<Output> {
     spawn_hook_verb(
+        Path::new(BERTH_EXECUTABLE),
         working_directory,
         "post-tool-use",
         stdin,
@@ -2438,6 +2375,7 @@ fn run_session_start(
     ambient_session: &AmbientHarnessSession<'_>,
 ) -> TestResult<Output> {
     spawn_hook_verb(
+        Path::new(BERTH_EXECUTABLE),
         working_directory,
         "session-start",
         &serde_json::to_vec(payload)?,
@@ -2447,87 +2385,12 @@ fn run_session_start(
 
 fn run_session_start_stdin(working_directory: &Path, stdin: &[u8]) -> TestResult<Output> {
     spawn_hook_verb(
+        Path::new(BERTH_EXECUTABLE),
         working_directory,
         "session-start",
         stdin,
         &AmbientHarnessSession::Absent,
     )
-}
-
-/// One hook response, read the way a harness reads it.
-fn hook_feedback(
-    output: &Output,
-    event: HookResponseEvent,
-    context: &str,
-) -> TestResult<HookFeedback> {
-    let event_name = event.name();
-    if output.status.code() != Some(0) {
-        return Err(failure(format!(
-            "{context} should exit 0 like the hook it replaces, exited with {:?}: stderr={}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    if !output.stderr.is_empty() {
-        return Err(failure(format!(
-            "{context} should keep its response on stdout: stderr={}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    let response: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
-        failure(format!(
-            "{context} stdout should be one hook response object: {error}; stdout={}",
-            String::from_utf8_lossy(&output.stdout)
-        ))
-    })?;
-    let observed_event = required_string(&response, "/hookSpecificOutput/hookEventName", context)?;
-    if observed_event != event_name {
-        return Err(failure(format!(
-            "{context} should name the {event_name} event, named {observed_event:?}"
-        )));
-    }
-    assert_stated_continuation(&response, event, context)?;
-    Ok(HookFeedback {
-        system_message:     required_string(&response, "/systemMessage", context)?.to_owned(),
-        additional_context: required_string(
-            &response,
-            "/hookSpecificOutput/additionalContext",
-            context,
-        )?
-        .to_owned(),
-    })
-}
-
-/// Each event states its own continuation field, and `SessionStart` states none.
-///
-/// `berth_post_bash.sh` reports `continue`, so a `PostToolUse` response reports it too. The
-/// installed `berth_session_start.sh` deliberately reports no continuation field, because a
-/// session-start response cannot stop anything the harness is already going to do; moving
-/// the two events onto one shared writer must not add the field the installed hook omits.
-fn assert_stated_continuation(
-    response: &Value,
-    event: HookResponseEvent,
-    context: &str,
-) -> TestResult {
-    let stated = response.get("continue");
-    match event {
-        HookResponseEvent::PostToolUse => {
-            if stated == Some(&Value::Bool(true)) {
-                return Ok(());
-            }
-            Err(failure(format!(
-                "{context} should report that the session continues: {response}"
-            )))
-        },
-        HookResponseEvent::SessionStart => stated.map_or_else(
-            || Ok(()),
-            |stated| {
-                Err(failure(format!(
-                    "{context} states a continuation field the installed hook omits: {stated}"
-                )))
-            },
-        ),
-    }
 }
 
 fn assert_post_tool_use_feedback_matches_corpus(
@@ -2648,16 +2511,7 @@ fn corpus_expected_hook_feedback(corpus_entry_name: &str) -> TestResult<HookFeed
     let entry = corpus_entry(corpus_entry_name)?;
     let stdout = required_string(entry, "/expected/stdout", corpus_entry_name)?;
     let response: Value = serde_json::from_str(stdout)?;
-    Ok(HookFeedback {
-        system_message:     required_string(&response, "/systemMessage", corpus_entry_name)?
-            .to_owned(),
-        additional_context: required_string(
-            &response,
-            "/hookSpecificOutput/additionalContext",
-            corpus_entry_name,
-        )?
-        .to_owned(),
-    })
+    expected_hook_feedback(&response, corpus_entry_name)
 }
 
 /// Compare one produced coordination-identity refusal against its frozen recovery.

@@ -1,0 +1,180 @@
+{
+  "status": "board_ready",
+  "payload": {
+    "kind": "board",
+    "data": {
+      "journal_position": {
+        "generation": 4,
+        "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+      },
+      "recovered_bypasses_this_invocation": [],
+      "integration_order": "undeclared",
+      "ready_now": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "waiting": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "settled_ordering_constraints": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "unresolved_overlaps": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "recorded_overlap_answers": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "unconstrained_reservations": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": [
+          {
+            "reservation_id": "01a092bc-ee51-7eb3-86dd-efd1c7f3af92",
+            "holder": {
+              "worktree_id": "01a092bc-ee23-7c12-8592-42b142957ba1",
+              "worktree_root": "{WORKTREE_ROOT}",
+              "branch": {
+                "kind": "attached",
+                "reference": "refs/heads/main"
+              },
+              "liveness": "live"
+            },
+            "source": {
+              "kind": "explicit"
+            },
+            "purpose": {
+              "kind": "explained",
+              "explanation": "reader compatibility fixture"
+            },
+            "scopes": [
+              {
+                "path": "claimed.txt",
+                "kind": "file"
+              }
+            ],
+            "race_extent": {
+              "status": "editing",
+              "scopes": [
+                {
+                  "path": "claimed.txt",
+                  "kind": "file"
+                }
+              ]
+            },
+            "merge_extent": {
+              "status": "protected",
+              "key": {
+                "trunk": "ef4cfabe274d7622a1eb203278d596bef597e395",
+                "head": "ef4cfabe274d7622a1eb203278d596bef597e395",
+                "working_tree": {
+                  "tracked_paths": [],
+                  "untracked_paths": [
+                    "claimed.txt"
+                  ]
+                }
+              },
+              "scopes": [
+                {
+                  "path": "claimed.txt",
+                  "kind": "file"
+                }
+              ]
+            },
+            "lifecycle": {
+              "stage": "active"
+            },
+            "integration_evidence": {
+              "kind": "active_work"
+            },
+            "edit_blocking_status": "blocking",
+            "visibility": "active_constraint",
+            "freshness": {
+              "status": "fresh",
+              "last_activity_at": "{LAST_ACTIVITY_AT}"
+            },
+            "ahead_behind_main": {
+              "status": "counts",
+              "ahead": 0,
+              "behind": 0
+            }
+          }
+        ]
+      },
+      "resolved": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "available_forced_permits": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "bypass_audit": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "outstanding_incursions": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "recorded_incursion_answers": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "alerts": {
+        "journal_position": {
+          "generation": 4,
+          "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
+        },
+        "entries": []
+      },
+      "git_cost": {
+        "trunk_resolution_calls": 1,
+        "worktree_list_calls": 1,
+        "reservation_evidence_revalidations": 0,
+        "protected_predecessor_ancestry_queries": 0,
+        "worktree_ahead_behind_computations": 0,
+        "orphan_recovery_evidence_queries": 0,
+        "merge_extent_worktree_status_queries": 1,
+        "merge_extent_path_queries": 0
+      }
+    },
+    "alerts": []
+  }
+}

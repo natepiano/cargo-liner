@@ -73,7 +73,9 @@ use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::LifecycleTransitionError;
+use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
+use crate::reservation::RaceExtent;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationLifecycleSnapshot;
@@ -858,15 +860,23 @@ enum ProjectionRepairJournalEffect {
 #[schemars(rename = "reservation_lifecycle_query")]
 #[serde(untagged)]
 pub(crate) enum ReservationLifecycleQueryPayload {
-    /// The selected reservation and its current lifecycle.
-    Snapshot {
-        /// The reservation selected by the caller.
-        reservation_id: ReservationId,
-        /// Its point-in-time lifecycle reading.
-        lifecycle:      ReservationLifecycleSnapshot,
-    },
+    /// The selected reservation's current lifecycle and extents.
+    Snapshot(Box<ReservationReportSnapshot>),
     /// A typed caller-correctable rejection.
     Rejected(ReservationLifecycleQueryRejection),
+}
+
+/// One reservation's lifecycle and protection, independent of its board placement.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct ReservationReportSnapshot {
+    /// The reservation selected by the caller.
+    pub(crate) reservation_id: ReservationId,
+    /// Its point-in-time lifecycle reading.
+    pub(crate) lifecycle:      ReservationLifecycleSnapshot,
+    /// The run's effective editing scope, independent of branch integration.
+    pub(crate) race_extent:    RaceExtent,
+    /// The exact derived branch surface or the evidence retained on failure.
+    pub(crate) merge_extent:   MergeExtent,
 }
 
 /// Why a named reservation lifecycle query was rejected.
@@ -1440,15 +1450,10 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build a successful placement-independent reservation lifecycle response.
-    pub(crate) fn reservation_lifecycle(
-        reservation_id: ReservationId,
-        reservation_lifecycle_snapshot: ReservationLifecycleSnapshot,
-    ) -> Self {
-        let presentation = board::reservation_lifecycle_presentation(
-            reservation_id,
-            &reservation_lifecycle_snapshot,
-        );
+    /// Build a placement-independent response with the reservation's lifecycle and extents.
+    pub(crate) fn reservation_lifecycle(snapshot: ReservationReportSnapshot) -> Self {
+        let reservation_id = snapshot.reservation_id;
+        let presentation = board::reservation_lifecycle_presentation(&snapshot);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Board,
@@ -1459,10 +1464,7 @@ impl OutputEnvelope {
             message: format!("Reservation {reservation_id} lifecycle was read."),
             presentation,
             payload: OutputPayload::from_facts(OutputFacts::Reservation(
-                ReservationLifecycleQueryPayload::Snapshot {
-                    reservation_id,
-                    lifecycle: reservation_lifecycle_snapshot,
-                },
+                ReservationLifecycleQueryPayload::Snapshot(Box::new(snapshot)),
             )),
         }
     }

@@ -1,0 +1,8 @@
+{
+  "continue": true,
+  "systemMessage": "cargo-berth widened this worktree reservation footprint.",
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "AUTO-WIDEN: reservation 01a092bc-ee51-7eb3-86dd-efd1c7f3af92 now covers file:additional.txt"
+  }
+}

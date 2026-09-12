@@ -1,0 +1,28 @@
+{
+  "status": "clear",
+  "payload": {
+    "kind": "check",
+    "data": {
+      "status": "clear",
+      "scopes": [
+        {
+          "path": "claimed.txt",
+          "kind": "file"
+        }
+      ],
+      "acquisition": {
+        "kind": "already_held",
+        "reservation_id": "01a092bc-ee51-7eb3-86dd-efd1c7f3af92",
+        "coordination_run_id": "01a092bc-ee51-7eb3-86dd-efcdd3aafdec",
+        "phase_start_head": "ef4cfabe274d7622a1eb203278d596bef597e395",
+        "marker_publication": {
+          "status": "published"
+        },
+        "session_mapping_publication": {
+          "status": "published"
+        }
+      }
+    },
+    "alerts": []
+  }
+}

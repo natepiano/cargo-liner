@@ -1446,6 +1446,7 @@ mod merge_extent {
     //! A claim protects the net branch merge and the live run's editing scope independently.
 
     use std::collections::BTreeSet;
+    use std::fmt::Write;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -1846,6 +1847,8 @@ mod merge_extent {
         );
         assert_eq!(reservation["race_extent"]["status"], "ended");
         assert!(!scope_paths(&reservation["scopes"]).contains("second.rs"));
+        assert_eq!(reservation["edit_blocking_status"], "blocking");
+        assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
 
         assert_refused(&fixture.outsider, "file:second.rs", THIRD_RUN, &id);
 
@@ -1861,6 +1864,196 @@ mod merge_extent {
         assert_eq!(dirty_reservation["scopes"], reservation["scopes"]);
         assert_allowed(&fixture.holder, "file:first.rs", SECOND_RUN);
         assert_allowed(&fixture.outsider, "file:first.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn evidence_decisions_follow_extents_that_empty_and_reappear() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+
+        let empty = board(fixture.trunk());
+        let reservation = snapshot(&empty, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(reservation["edit_blocking_status"], "clear");
+        assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
+
+        commit(&fixture.holder, "later.rs", "later branch work\n");
+        // A new trunk object makes checkpoint evidence change in the same transaction
+        // that must replace the previously empty extent with this later branch work.
+        commit(fixture.trunk(), "trunk.rs", "independent trunk work\n");
+        let protected = board(fixture.trunk());
+        let reservation = snapshot(&protected, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "protected");
+        assert_eq!(reservation["edit_blocking_status"], "blocking");
+        assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
+        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
+
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-edit", "--no-ff", "holder"],
+        );
+        let integrated = board(fixture.trunk());
+        let reservation = snapshot(&integrated, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(reservation["edit_blocking_status"], "clear");
+        assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
+        assert_allowed(&fixture.outsider, "file:later.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn historical_checkpoint_only_evidence_stays_unchanged_when_replayed() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
+        let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        commit(&fixture.holder, "later.rs", "later branch work\n");
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--ff-only", &checkpoint],
+        );
+        board(fixture.trunk());
+
+        // Recreate the old derivation in this temporary ledger only. Its evidence says
+        // clear even though the outstanding reservation's branch still protects later.rs.
+        let mut historical_events = events(fixture.trunk());
+        let historical_evidence = historical_events
+            .iter_mut()
+            .rev()
+            .find(|event| event["op"] == "evidence_revalidated" && event["reservation_id"] == id)
+            .expect("integrated checkpoint should have evidence");
+        assert_eq!(historical_evidence["status"]["status"], "integrated");
+        historical_evidence["edit_blocking_status"] = Value::from("clear");
+        let historical_evidence = historical_evidence.clone();
+        let mut historical_journal = String::new();
+        for event in historical_events {
+            writeln!(&mut historical_journal, "{event}")
+                .expect("historical journal record should format");
+        }
+        fs::write(fixture.trunk().join(JOURNAL), &historical_journal)
+            .expect("isolated historical journal should write");
+        fs::remove_file(fixture.trunk().join(PROJECTION)).expect("projection should remove");
+
+        let replayed = board(fixture.trunk());
+        assert_eq!(snapshot(&replayed, &id)["edit_blocking_status"], "blocking");
+        assert_eq!(
+            latest_evidence(&events(fixture.trunk()), &id),
+            &historical_evidence
+        );
+        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
+
+        commit(fixture.trunk(), "trunk.rs", "advance evidence target\n");
+        let updated = board(fixture.trunk());
+        assert_evidence_matches_snapshot(fixture.trunk(), &id, snapshot(&updated, &id));
+        let journal = fs::read_to_string(fixture.trunk().join(JOURNAL))
+            .expect("historical journal should remain readable");
+        assert!(journal.starts_with(&historical_journal));
+        assert!(events(fixture.trunk()).contains(&historical_evidence));
+    }
+
+    #[test]
+    fn release_evidence_uses_empty_extent_when_the_checkpoint_is_not_integrated() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        GIT.run(&fixture.holder, ["reset", "--hard", "--quiet", "main"]);
+        let empty = board(fixture.trunk());
+        let reservation = snapshot(&empty, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["status"],
+            "not_integrated"
+        );
+        assert_eq!(reservation["edit_blocking_status"], "clear");
+
+        let released = berth(&fixture.outsider, &["release", &id, "--json"], THIRD_RUN);
+        succeed(&released);
+        assert_eq!(
+            json(&released)["payload"]["data"]["status"],
+            "evidence_revalidated"
+        );
+        assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
+        assert_allowed(&fixture.outsider, "file:checkpoint.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn outstanding_release_stays_clear_with_retained_empty_extent_and_unreadable_trunk() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
+        let checkpointed = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&checkpointed);
+        assert_eq!(json(&checkpointed)["status"], "outstanding");
+        GIT.run(&fixture.holder, ["reset", "--hard", "--quiet", "main"]);
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["status"],
+            "not_integrated"
+        );
+
+        let evidence = release_outstanding_with_unreadable_trunk(&fixture, &id, reservation);
+        assert_eq!(evidence["edit_blocking_status"], "clear");
+        let checked = berth(
+            &fixture.outsider,
+            &["check", "file:checkpoint.rs", "--json"],
+            THIRD_RUN,
+        );
+        succeed(&checked);
+        let checked = json(&checked);
+        assert_eq!(checked["status"], evidence["edit_blocking_status"]);
+        assert_eq!(checked["blocked_by"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn outstanding_release_stays_blocking_with_retained_protection_and_unreadable_trunk() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
+        let checkpointed = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&checkpointed);
+        assert_eq!(json(&checkpointed)["status"], "outstanding");
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["merge_extent"]["status"], "protected");
+        assert_eq!(
+            scope_paths(&reservation["merge_extent"]["scopes"]),
+            BTreeSet::from(["checkpoint.rs".to_owned()])
+        );
+
+        let evidence = release_outstanding_with_unreadable_trunk(&fixture, &id, reservation);
+        assert_eq!(evidence["edit_blocking_status"], "blocking");
+        let checked = berth(
+            &fixture.outsider,
+            &["check", "file:checkpoint.rs", "--json"],
+            THIRD_RUN,
+        );
+        assert_eq!(checked.status.code(), Some(1), "{}", json(&checked));
+        assert_eq!(
+            evidence["edit_blocking_status"] == "blocking",
+            !checked.status.success()
+        );
+        let checked = json(&checked);
+        assert_eq!(checked["status"], "blocked_by_overlap");
+        assert_eq!(checked["blocked_by"], serde_json::json!([id]));
+        assert_allowed(&fixture.outsider, "file:declared.rs", THIRD_RUN);
     }
 
     #[test]
@@ -2666,6 +2859,13 @@ mod merge_extent {
         for root in [&fixture.outsider, &fixture.holder] {
             let released = berth(root, &["release", &id, "--json"], FIRST_RUN);
             succeed(&released);
+            if root == &fixture.outsider {
+                assert_eq!(
+                    json(&released)["payload"]["data"]["status"],
+                    "evidence_revalidated"
+                );
+                assert_evidence_matches_snapshot(fixture.trunk(), &id, snapshot(&integrated, &id));
+            }
             let observed = board(fixture.trunk());
             let reservation = snapshot(&observed, &id);
             assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
@@ -2902,6 +3102,90 @@ mod merge_extent {
             .lines()
             .map(|line| serde_json::from_str(line).expect("journal event should decode"))
             .collect()
+    }
+
+    fn release_outstanding_with_unreadable_trunk(
+        fixture: &Repository,
+        id: &str,
+        reservation: &Value,
+    ) -> Value {
+        assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+        assert_eq!(reservation["race_extent"]["status"], "ended");
+        GIT.run(fixture.trunk(), ["switch", "--quiet", "--detach"]);
+        GIT.run(fixture.trunk(), ["update-ref", "-d", "refs/heads/main"]);
+
+        // Materialize object_unknown first: otherwise release returns the reconciliation
+        // result before it reaches outstanding_operation's unreadable-trunk branch.
+        let unavailable = board(fixture.trunk());
+        let retained = snapshot(&unavailable, id);
+        assert_eq!(retained["lifecycle"]["stage"], "outstanding");
+        assert_eq!(retained["race_extent"]["status"], "ended");
+        assert_eq!(retained["merge_extent"]["status"], "unavailable");
+        assert_eq!(
+            retained["merge_extent"]["retained_evidence"],
+            reservation["merge_extent"]
+        );
+        assert_eq!(
+            retained["integration_evidence"]["status"]["status"],
+            "object_unknown"
+        );
+        let before_release = events(fixture.trunk()).len();
+
+        let released = berth(&fixture.outsider, &["release", id, "--json"], THIRD_RUN);
+        succeed(&released);
+        let released = json(&released);
+        assert_eq!(released["status"], "object_unknown");
+        assert_eq!(
+            released["payload"]["data"]["status"],
+            "evidence_revalidated"
+        );
+        let journal = events(fixture.trunk());
+        assert_eq!(journal.len(), before_release + 1);
+        let evidence = journal
+            .last()
+            .expect("release should append its own evidence");
+        assert_eq!(evidence["op"], "evidence_revalidated");
+        assert_eq!(evidence["reservation_id"], id);
+        assert_eq!(evidence["status"]["status"], "object_unknown");
+        assert_evidence_matches_snapshot(fixture.trunk(), id, retained);
+        evidence.clone()
+    }
+
+    #[track_caller]
+    fn latest_evidence<'events>(events: &'events [Value], id: &str) -> &'events Value {
+        events
+            .iter()
+            .rev()
+            .find(|event| event["op"] == "evidence_revalidated" && event["reservation_id"] == id)
+            .expect("reservation should have recorded evidence")
+    }
+
+    #[track_caller]
+    fn assert_evidence_matches_snapshot(root: &Path, id: &str, reservation: &Value) {
+        let journal = events(root);
+        let evidence = latest_evidence(&journal, id);
+        assert_eq!(
+            evidence["status"],
+            reservation["integration_evidence"]["status"]
+        );
+        assert_eq!(
+            evidence["edit_blocking_status"],
+            reservation["edit_blocking_status"]
+        );
+        let extent_position = journal
+            .iter()
+            .rposition(|event| {
+                event["op"] == "merge_extent_observed" && event["reservation_id"] == id
+            })
+            .expect("reservation should have an observed extent");
+        let evidence_position = journal
+            .iter()
+            .rposition(|event| event == evidence)
+            .expect("evidence should belong to the journal");
+        assert!(
+            extent_position < evidence_position,
+            "evidence must follow extent derivation"
+        );
     }
 
     #[track_caller]

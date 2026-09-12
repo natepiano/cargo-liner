@@ -74,7 +74,6 @@ use crate::output::OutputEnvelope;
 use crate::reservation;
 use crate::reservation::DeferredScopedPatchIntegrationStatus;
 use crate::reservation::DurableScopedPatchComparison;
-use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceObservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
@@ -1012,6 +1011,8 @@ fn prepare_reconciliation_transaction(
     .map_err(ReconciliationPlanningError::Reservation)?;
     reconciliation_plan.operations.extend(merge_operations);
     reconciliation_plan.action.merge_extent_git_cost = merge_extent_git_cost;
+    append_evidence_operations(&reservations, &mut reconciliation_plan)
+        .map_err(ReconciliationPlanningError::Reservation)?;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
         worktree_context.common_git_directory(),
         state.events(),
@@ -1408,6 +1409,8 @@ pub(crate) fn prepare_gate_reconciliation(
             reconciliation.operations.push(operation);
         }
     }
+    append_evidence_operations(&reservations, &mut reconciliation)
+        .map_err(GateReconciliationError::Reservation)?;
     let constraints = ordering_graph
         .integration_constraints(&reservations, &proposed_observation.snapshot, generation)
         .map_err(GateReconciliationError::MissingReadinessFact)?;
@@ -1955,19 +1958,7 @@ fn append_evidence_and_retention(
         ReservationEvidenceState::Active { .. }
         | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => return Ok(()),
     };
-    let edit_blocking_status = match reservation.lifecycle() {
-        ReservationLifecycle::Active => EditBlockingStatus::Blocking,
-        ReservationLifecycle::Outstanding { .. } => evidence.edit_blocking_status(),
-        ReservationLifecycle::Released { .. } => EditBlockingStatus::Clear,
-    };
     if materialized != *evidence {
-        changes
-            .operations
-            .push(JournalOperation::EvidenceRevalidated {
-                reservation_id: reservation.id(),
-                status: evidence.clone(),
-                edit_blocking_status,
-            });
         changes.evidence.push(ReconciledEvidence {
             reservation_id: reservation.id(),
             status:         evidence.clone(),
@@ -1978,6 +1969,56 @@ fn append_evidence_and_retention(
         &repository_evidence_observation.scoped_patch_comparison,
         &mut changes.operations,
     );
+    Ok(())
+}
+
+/// Construct evidence records only after the transaction has planned its merge extents.
+/// Reconciliation preserves lifecycle; checkpoint and release run in their own transactions.
+fn append_evidence_operations(
+    reservations: &RetainedReservationSet,
+    reconciliation: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
+    // Scheduling records follow the evidence they accompany, even though both wait
+    // for extent derivation. Keep their relative order for durable retry priorities.
+    let (scheduling_operations, mut operations): (Vec<_>, Vec<_>) =
+        reconciliation.operations.drain(..).partition(|operation| {
+            matches!(
+                operation,
+                JournalOperation::ScopedPatchEquivalenceChecked { .. }
+                    | JournalOperation::ScopedPatchComparisonAttempted { .. }
+                    | JournalOperation::SuccessorScopedPatchEquivalenceChecked { .. }
+                    | JournalOperation::SuccessorScopedPatchComparisonAttempted { .. }
+            )
+        });
+    for evidence in &reconciliation.action.evidence {
+        let reservation = reservations.reservation(evidence.reservation_id)?;
+        let planned_extent = operations
+            .iter()
+            .rev()
+            .find_map(|operation| match operation {
+                JournalOperation::MergeExtentObserved {
+                    reservation_id,
+                    extent,
+                    ..
+                } if *reservation_id == reservation.id() => Some(extent),
+                _ => None,
+            });
+        let edit_blocking_status = planned_extent.map_or_else(
+            || reservation.edit_blocking_status(),
+            |extent| {
+                reservation
+                    .with_merge_extent(extent.clone())
+                    .edit_blocking_status()
+            },
+        );
+        operations.push(JournalOperation::EvidenceRevalidated {
+            reservation_id: reservation.id(),
+            status: evidence.status.clone(),
+            edit_blocking_status,
+        });
+    }
+    operations.extend(scheduling_operations);
+    reconciliation.operations = operations;
     Ok(())
 }
 
