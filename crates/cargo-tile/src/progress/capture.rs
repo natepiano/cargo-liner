@@ -1,92 +1,42 @@
-//! How far a build has got, read out of the output the cargo shim
-//! captured for it.
-//!
-//! Cargo already counts the work: while it compiles it draws
-//! `Building [====>    ] 149/403: serde, regex` on stderr, and those two
-//! numbers are the unit graph's completed and total counts. Nothing here
-//! estimates anything -- the display shows cargo's own arithmetic.
-//!
-//! Reaching it takes a capture, because the invocations in the grid
-//! belong to other terminals: [`crate::processes`] finds them by
-//! scanning the process table, and a process's stdout is not readable
-//! from outside it. The shim installed at `~/.rustup/toolchains/*/bin/cargo`
-//! is what closes that gap. It runs each command under a pty, mirrors
-//! the output into `<root>/run-<generation>-<pid>.log`, and registers the
-//! run as `<root>/state/pids/<pid>.<generation>` for as long as it lives -- the pid
-//! in both being the shim's own, which is an ancestor of the cargo
-//! process the grid draws.
-//!
-//! A command that runs tests counts twice over. `cargo nextest run`
-//! compiles first, under cargo's own bar, and then works through the
-//! tests under a bar of its own -- `Running [ 00:00:03] ███▏ 22/24: 2
-//! running, 22 passed` -- which is the same `done/total` pair, with
-//! the drawn bar standing between the bracket and the counter rather
-//! than in front of it. Both are read, and which of them
-//! the reading came from is what the display names the phase by.
-//!
-//! A runner with nowhere to draw a bar still counts. Nextest draws one
-//! only on a terminal, so a run started by a script or an agent -- and
-//! that is most of the test runs on this machine -- has none, and the
-//! count goes inline into every line it prints instead: `PASS [
-//! 1.014s] (11/24) nxprobe t18`. That tally is the same reading in
-//! parentheses, and reading it is what keeps those runs from sitting
-//! at whatever the build last said for as long as the tests take.
-//!
-//! So a run reports progress when it was captured and reports none when
-//! it was not, and the cell is drawn either way.
-//!
-//! A log says one other thing worth reading. Cargo locks the build
-//! directory, so a second command against the same target waits instead
-//! of failing -- it prints `Blocking waiting for file lock on build
-//! directory` and then nothing, which from outside looks exactly like a
-//! build that has not reached its first unit.
+//! Identity-keyed capture assembly, selection, and ended-pair cleanup.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::io::Error;
-use std::io::ErrorKind;
-#[cfg(test)]
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use sysinfo::Users;
-
+use super::capture_diagnostic::CaptureDiagnostic;
+use super::capture_diagnostic::CaptureFailure;
+use super::capture_diagnostic::PathFailure;
+use super::capture_read::CaptureLookup;
+use super::capture_read::CaptureRead;
+use super::capture_roots::AccountCaptureDirectory;
+use super::capture_roots::CaptureCleanup;
+use super::capture_roots::CaptureParent;
+#[cfg(test)]
+use super::capture_roots::CaptureRoot;
+use super::capture_roots::CaptureRoots;
+use super::capture_roots::RootReadStatus;
+use super::registered_runs::RegisteredRun;
+use super::registered_runs::RegisteredRuns;
+use super::registered_runs::RegistrationName;
+use super::registered_runs::enumeration_diagnostic;
+use super::registered_runs::registered_runs;
+use super::registered_runs::registration_name;
 use crate::birth_stamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
-use crate::constants::BAR_GLYPH_FIRST;
-use crate::constants::BAR_GLYPH_LAST;
-use crate::constants::BUILD_FINISHED_MARKER;
-use crate::constants::CAPTURE_LIVE_RUNS_DIR;
-use crate::constants::LOCK_WAIT_MARKER;
-use crate::constants::PHASE_BUILDING;
-use crate::constants::PHASE_TESTING;
 use crate::constants::PID_SEPARATOR;
-use crate::constants::REGISTRATION_SEPARATOR;
-use crate::constants::REGISTRATION_TEMP_SUFFIX;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
-use crate::constants::SUPPORTED_REGISTRATION_VERSION;
-use crate::constants::TALLY_CLOSE;
-use crate::constants::TALLY_OPEN;
-use crate::constants::TEST_PHASE_MARKER;
-use crate::constants::UNIT_COUNTER_LEAD;
-use crate::constants::UNIT_COUNTER_SEPARATOR;
-use crate::constants::UNIT_COUNTER_TRAILER;
-use crate::processes::AccountCaptureDirectory;
-use crate::processes::AccountName;
-use crate::processes::CaptureDiagnostic;
 use crate::processes::DirectAssociation;
-use crate::processes::RootReadStatus;
-use crate::registration::ParseError;
+use crate::progress::capture_roots::AccountName;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
 use crate::registration::VerifiedRegistration;
 use crate::root_scan;
-use crate::root_scan::EffectiveUser;
 use crate::root_scan::Enumeration;
 use crate::root_scan::RootHistory;
 use crate::root_scan::RootIncarnation;
@@ -95,181 +45,6 @@ use crate::root_scan::RootScan;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::root_scan::SweepBudget;
 use crate::root_scan::SweepDisposition;
-
-/// Cargo's count of the work in front of it, as its progress bar reports
-/// it: units finished out of units planned.
-///
-/// A unit is one compilation of one crate target, which is what the
-/// build is actually made of -- not a package and not a source file. A
-/// unit already fresh counts as finished the moment cargo checks it, so
-/// an incremental build opens near its total rather than at zero.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Progress {
-    /// Units cargo has finished.
-    pub(crate) done:  usize,
-    /// Units in the build plan.
-    pub(crate) total: usize,
-}
-
-impl Progress {
-    /// How far along, rounded down, so only a finished build reads 100.
-    pub(crate) const fn percent(self) -> usize {
-        // `total` is never zero: `parse_counter` rejects a counter that
-        // would divide by it.
-        self.done.saturating_mul(100) / self.total
-    }
-
-    /// The same reading in tenths of a percent, rounded down the same
-    /// way, so only a finished build reaches 1000.
-    pub(crate) const fn percent_tenths(self) -> usize {
-        self.done.saturating_mul(1000) / self.total
-    }
-}
-
-/// Which counter a reading came from, which is the whole of what the
-/// numbers themselves say about what the run is doing.
-///
-/// A command that only ever compiles stays in one of these for its
-/// whole life; `cargo nextest run` passes through both, and the two
-/// counters are unrelated -- the second opens at nought over the tests
-/// collected the moment the first reaches its total.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Phase {
-    /// Cargo compiling the units of its build plan.
-    Building,
-    /// A test runner working through the tests it collected.
-    Testing,
-}
-
-impl Phase {
-    /// The word a working-directory header names this phase with.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Building => PHASE_BUILDING,
-            Self::Testing => PHASE_TESTING,
-        }
-    }
-}
-
-/// What a captured run was doing when its log was last read.
-///
-/// Cargo takes a lock on the build directory, so a second command in
-/// the same target waits rather than fails. It says so once and then
-/// prints nothing at all, which from outside is indistinguishable from
-/// a build that has not reached its first unit -- the same pid, the
-/// same climbing duration, and no reading either way. Reading the wait
-/// out of the log is what separates them.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RunState {
-    /// Getting somewhere, as far along as the counter of the phase it
-    /// is in says.
-    Working {
-        /// Which counter the reading came from.
-        phase:    Phase,
-        /// What that counter last said.
-        progress: Progress,
-    },
-    /// Waiting for another cargo to give up the build directory.
-    Blocked,
-}
-
-/// What a gauge can show, preserving the reason it has no counter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CounterState {
-    /// A phase owns the current numerator and denominator.
-    Working {
-        /// Counters from different phases must not be combined.
-        phase:    Phase,
-        /// The current progress in this phase.
-        progress: Progress,
-    },
-    /// The capture reports a build-directory wait.
-    Blocked,
-    /// Readable output currently supplies no counter, including after Finished.
-    NoCurrentProgress,
-    /// The selected capture could not be read.
-    Unavailable,
-    /// No registration supplies a counter for this invocation.
-    Unregistered,
-}
-
-impl RunState {
-    /// Expose counter availability without dropping the blocked state.
-    const fn working(self) -> CounterState {
-        match self {
-            Self::Working { phase, progress } => CounterState::Working { phase, progress },
-            Self::Blocked => CounterState::Blocked,
-        }
-    }
-}
-
-/// Whether this invocation has a capture, independently of the latest log contents.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureLookup {
-    /// No accepted registration was associated with this invocation in the scan.
-    Unregistered,
-    /// The registration exists, even when its log has no current progress.
-    Registered(CaptureRead),
-}
-
-impl CaptureLookup {
-    /// Keep every no-counter outcome named until the gauge chooses how to draw it.
-    pub(crate) const fn working(&self) -> CounterState {
-        match self {
-            Self::Registered(CaptureRead::Progress(state)) => state.working(),
-            Self::Registered(CaptureRead::NoCurrentProgress) => CounterState::NoCurrentProgress,
-            Self::Registered(CaptureRead::Unreadable(_)) => CounterState::Unavailable,
-            Self::Unregistered => CounterState::Unregistered,
-        }
-    }
-}
-
-/// Three distinct observations of the log associated with a registration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureRead {
-    /// The latest output describes work or a build-directory wait.
-    Progress(RunState),
-    /// The log was read but has no current counter, including after Finished.
-    NoCurrentProgress,
-    /// Keep the failure so settings can distinguish access trouble from silence.
-    Unreadable(CaptureFailure),
-}
-
-impl From<std::io::Result<String>> for CaptureRead {
-    fn from(read: std::io::Result<String>) -> Self {
-        match read {
-            Ok(tail) => parse_state(&tail).map_or(Self::NoCurrentProgress, Self::Progress),
-            Err(error) => Self::Unreadable(error.into()),
-        }
-    }
-}
-
-/// A cloneable scan observation retains the actual I/O kind and diagnostic.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureFailure {
-    /// Allows later rendering to distinguish denial, absence, and other failures.
-    pub(crate) kind:    ErrorKind,
-    /// The error is observed once, without reopening the path during rendering.
-    pub(crate) message: String,
-}
-
-impl From<Error> for CaptureFailure {
-    fn from(error: Error) -> Self {
-        Self {
-            kind:    error.kind(),
-            message: error.to_string(),
-        }
-    }
-}
-
-/// Retain the pathname at the failed operation, rather than only its root.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PathFailure {
-    /// Absolute artifact path, or a kernel interface name for boot observations.
-    pub(crate) path:    PathBuf,
-    /// Original kind and message survive transport to the display thread.
-    pub(crate) failure: CaptureFailure,
-}
 
 thread_local! {
     /// The process scanner constructs a fresh `Capture` each pass, so root
@@ -316,160 +91,6 @@ pub(crate) enum CaptureSelection {
     Ambiguous(Vec<CaptureKey>),
 }
 
-/// Which account is responsible for removing ended captures.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureCleanup {
-    /// This reader can prove and remove its own ended registrations.
-    Here,
-    /// Another account's next shim invocation removes its ended registrations.
-    AccountNextRun,
-}
-
-/// One account's directory below the shared parent.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureRoot {
-    /// Absolute pathname; the final component is checked without following links.
-    pub(crate) path:    PathBuf,
-    /// The numeric directory name must match its owner before it supplies captures.
-    pub(crate) uid:     u32,
-    /// Cleanup is permitted only in the reader's own uid directory.
-    pub(crate) cleanup: CaptureCleanup,
-}
-
-impl CaptureRoot {
-    fn account(path: PathBuf, uid: u32) -> Self {
-        Self {
-            path,
-            uid,
-            cleanup: if root_scan::effective_user() == EffectiveUser::Known(uid) {
-                CaptureCleanup::Here
-            } else {
-                CaptureCleanup::AccountNextRun
-            },
-        }
-    }
-
-    #[cfg(test)]
-    fn for_test(path: &Path) -> Self {
-        let uid = std::fs::metadata(path).map_or_else(
-            |_| match root_scan::effective_user() {
-                EffectiveUser::Known(uid) => uid,
-                EffectiveUser::Unavailable => u32::MAX,
-            },
-            |metadata| metadata.uid(),
-        );
-        Self::account(root_scan::canonical_capture_path(path), uid)
-    }
-}
-
-/// Shared machine discovery and isolated descriptor tests have distinct path semantics.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum CaptureParent {
-    /// Numeric account children are discovered beneath this canonical parent.
-    Shared(PathBuf),
-    /// Unit fixtures already name the account directories whose races they exercise.
-    #[cfg(test)]
-    IsolatedAccounts,
-}
-
-/// One shared parent, with stable account indices across subsequent scans.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureRoots {
-    parent:   CaptureParent,
-    accounts: RefCell<Vec<CaptureRoot>>,
-}
-
-impl CaptureRoots {
-    /// Tests supply their own parent; production always supplies `CAPTURE_ROOT`.
-    pub(crate) fn from_parent(parent: &Path) -> Self {
-        let _ = root_scan::prepare_shared_directory(parent);
-        Self {
-            parent:   CaptureParent::Shared(root_scan::canonical_capture_path(parent)),
-            accounts: RefCell::default(),
-        }
-    }
-
-    /// Refresh discovery every scan so an account's first run appears immediately.
-    fn discover(&self, users: &Users) -> Vec<AccountCaptureDirectory> {
-        let accounts = match &self.parent {
-            CaptureParent::Shared(parent) => self.discover_accounts(parent),
-            #[cfg(test)]
-            CaptureParent::IsolatedAccounts => self.accounts.borrow().clone(),
-        };
-        accounts
-            .into_iter()
-            .map(|root| AccountCaptureDirectory::inspect(root, users))
-            .collect()
-    }
-
-    fn discover_accounts(&self, parent: &Path) -> Vec<CaptureRoot> {
-        let mut accounts = self.accounts.borrow_mut();
-        // Final parent symlinks must not redirect the account inventory.
-        if !matches!(
-            SharedCaptureDirectory::inspect(parent).state,
-            crate::root_scan::SharedDirectoryState::Shared { .. }
-                | crate::root_scan::SharedDirectoryState::NotShared { .. }
-        ) {
-            return Vec::new();
-        }
-        if let Ok(entries) = std::fs::read_dir(parent) {
-            let mut discovered = entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let name = entry.file_name();
-                    let name = name.to_str()?;
-                    let uid: u32 = name.parse().ok()?;
-                    if name != uid.to_string() || !entry.file_type().ok()?.is_dir() {
-                        return None;
-                    }
-                    Some(CaptureRoot::account(parent.join(name), uid))
-                })
-                .collect::<Vec<_>>();
-            discovered.sort_by_key(|root| (root.cleanup != CaptureCleanup::Here, root.uid));
-            for root in discovered {
-                if !accounts.iter().any(|known| known.path == root.path) {
-                    accounts.push(root);
-                }
-            }
-        }
-        accounts.clone()
-    }
-
-    /// Isolated account scans exercise descriptor and process-identity races directly.
-    #[cfg(test)]
-    pub(crate) fn for_test(paths: &[&Path]) -> Self {
-        Self {
-            parent:   CaptureParent::IsolatedAccounts,
-            accounts: RefCell::new(
-                paths
-                    .iter()
-                    .map(|path| CaptureRoot::for_test(path))
-                    .collect(),
-            ),
-        }
-    }
-}
-
-/// Keep every readable generation and each independent read diagnostic.
-struct RegisteredRuns {
-    /// A pid can retain several ended, unknown, or confirmed generations.
-    generations: BTreeMap<u32, Vec<RegisteredRun>>,
-    /// Failed reads and records without proof remain visible independently of rows.
-    diagnostics: Vec<CaptureDiagnostic>,
-}
-
-/// The scan's original record is the comparison target for pending removal.
-struct RegisteredRun {
-    /// Never infer process identity from this candidate filename.
-    name:         PathBuf,
-    /// Retain parsed contents for exact log association and final rereading.
-    record:       Registration,
-    /// Only the Confirmed variant carries a verified registration.
-    verification: RegistrationVerification,
-    /// Taken from the descriptor that supplied the record bytes.
-    modified:     Result<SystemTime, CaptureFailure>,
-}
-
 /// A confirmed registration retains its descriptor-bound display timestamp.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ConfirmedCapture {
@@ -479,28 +100,6 @@ pub(crate) struct ConfirmedCapture {
     pub(crate) registration: VerifiedRegistration,
     /// Timestamp failure does not undo a successful process identity check.
     pub(crate) modified:     Result<SystemTime, CaptureFailure>,
-}
-
-/// Filename classification only; generation text never verifies process identity.
-enum RegistrationName<'name> {
-    /// Older shims publish only their pid.
-    Legacy(u32),
-    /// A published filename also supplies a candidate log generation.
-    Generated {
-        /// The shim pid preceding the first separator.
-        pid:        u32,
-        /// The nonempty suffix, accepted without claiming a birth stamp.
-        generation: &'name str,
-    },
-    /// An unpublished record supplies cleanup evidence without capture membership.
-    Staging {
-        /// The shim pid is still a candidate until its birth is verified.
-        pid:        u32,
-        /// Strip only the staging suffix when checking the record's generation.
-        generation: &'name str,
-    },
-    /// Unrelated or malformed names do not establish liveness.
-    Unrelated,
 }
 
 /// Capture observations from one scan; lookups never reopen a pathname.
@@ -853,7 +452,7 @@ fn legacy_read(
 ) -> CaptureRead {
     let log = scan
         .log_entries()
-        .filter(|entry| log_pid(entry.name()) == Some(pid))
+        .filter(|entry| log_pid(entry.name()) == LogWriter::Identified(pid))
         .max_by(|left, right| left.name().cmp(right.name()));
     log.map_or(CaptureRead::NoCurrentProgress, |entry| {
         read_named_log(scan, entry.name(), logs, diagnostics)
@@ -896,302 +495,30 @@ fn record_log_failure(
     }
 }
 
-/// Directory enumeration failure is separate from a record that failed after enumeration.
-fn enumeration_diagnostic(
-    outcome: &Enumeration,
-    path: PathBuf,
-    diagnostics: &mut Vec<CaptureDiagnostic>,
-) {
-    match outcome {
-        Enumeration::Complete => {},
-        Enumeration::Incomplete => diagnostics.push(CaptureDiagnostic::EnumerationIncomplete(path)),
-        Enumeration::Failed(error) => {
-            diagnostics.push(CaptureDiagnostic::EnumerationFailed(PathFailure {
-                path,
-                failure: std::io::Error::new(error.kind(), error.to_string()).into(),
-            }));
-        },
-    }
-}
-
-/// Parse each registration independently and retain every generation's identity result.
-fn registered_runs(scan: &RootScan, observe: &impl Fn(u32) -> KernelObservation) -> RegisteredRuns {
-    let mut diagnostics = Vec::new();
-    enumeration_diagnostic(
-        scan.registration_outcome(),
-        scan.registration_path(),
-        &mut diagnostics,
-    );
-    let mut generations: BTreeMap<u32, Vec<RegisteredRun>> = BTreeMap::new();
-    let mut entries: Vec<_> = scan.registration_entries().collect();
-    entries.sort_by(|left, right| left.name().cmp(right.name()));
-    for entry in entries {
-        let path = scan.path().join(CAPTURE_LIVE_RUNS_DIR).join(entry.name());
-        let pid = match registration_name(entry.name()) {
-            RegistrationName::Legacy(pid) | RegistrationName::Generated { pid, .. } => pid,
-            RegistrationName::Staging { pid, .. } => {
-                diagnostics.push(CaptureDiagnostic::Staging(path.clone()));
-                pid
-            },
-            RegistrationName::Unrelated => continue,
-        };
-        let observation = match entry.read_registration() {
-            Ok(observation) => observation,
-            Err(error) => {
-                diagnostics.push(CaptureDiagnostic::RegistrationUnreadable(PathFailure {
-                    path,
-                    failure: error.into(),
-                }));
-                continue;
-            },
-        };
-        let record = match Registration::parse(&observation.bytes) {
-            Ok(record) => record,
-            Err(ParseError::UnsupportedVersion { encountered }) => {
-                diagnostics.push(CaptureDiagnostic::UnsupportedRegistrationVersion {
-                    path,
-                    encountered,
-                    supported: SUPPORTED_REGISTRATION_VERSION,
-                });
-                continue;
-            },
-            Err(_) => {
-                diagnostics.push(CaptureDiagnostic::RegistrationInvalid(path));
-                continue;
-            },
-        };
-        let verification = match (&record, registration_name(entry.name())) {
-            (
-                Registration::Versioned(record),
-                RegistrationName::Generated { generation, .. }
-                | RegistrationName::Staging { generation, .. },
-            ) if record.generation() == generation => record.verify_observation(pid, &observe(pid)),
-            (Registration::Legacy(_), _) => RegistrationVerification::Unknown,
-            _ => {
-                diagnostics.push(CaptureDiagnostic::RegistrationInvalid(path));
-                continue;
-            },
-        };
-        if !matches!(
-            registration_name(entry.name()),
-            RegistrationName::Staging { .. }
-        ) && matches!(verification, RegistrationVerification::Unknown)
-        {
-            diagnostics.push(match &record {
-                Registration::Legacy(_) => CaptureDiagnostic::AnnotationOnly(path),
-                Registration::Versioned(record)
-                    if matches!(record.identity(), IdentityEvidence::Unavailable) =>
-                {
-                    CaptureDiagnostic::Unverifiable(path)
-                },
-                Registration::Versioned(_) => CaptureDiagnostic::IdentityUnknown(path),
-            });
-        }
-        generations.entry(pid).or_default().push(RegisteredRun {
-            name: entry.name().to_owned(),
-            record,
-            verification,
-            modified: observation
-                .metadata
-                .modified()
-                .map_err(CaptureFailure::from),
-        });
-    }
-    RegisteredRuns {
-        generations,
-        diagnostics,
-    }
-}
-
-/// Accept legacy pids and any nonempty generation suffix without interpreting
-/// the suffix as process identity. Staging names supply cleanup candidates only.
-fn registration_name(path: &Path) -> RegistrationName<'_> {
-    let Some(name) = path.to_str() else {
-        return RegistrationName::Unrelated;
-    };
-    let published = name.strip_suffix(REGISTRATION_TEMP_SUFFIX).unwrap_or(name);
-    let (pid, generation) = published
-        .split_once(REGISTRATION_SEPARATOR)
-        .unwrap_or((published, ""));
-    if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
-        return RegistrationName::Unrelated;
-    }
-    let Ok(pid) = pid.parse() else {
-        return RegistrationName::Unrelated;
-    };
-    if !generation.is_empty() {
-        if published == name {
-            RegistrationName::Generated { pid, generation }
-        } else {
-            RegistrationName::Staging { pid, generation }
-        }
-    } else if published != name || published.contains(REGISTRATION_SEPARATOR) {
-        RegistrationName::Unrelated
-    } else {
-        RegistrationName::Legacy(pid)
-    }
+/// Whether a log basename identifies its shim writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogWriter {
+    /// The expected log framing ends with a representable writer pid.
+    Identified(u32),
+    /// Missing, unrelated, non-Unicode, or malformed names identify no writer.
+    Unidentified,
 }
 
 /// The shim pid a log file is named for: `run-<generation>-<pid>.log`.
-fn log_pid(path: &Path) -> Option<u32> {
-    path.file_name()?
-        .to_str()?
-        .strip_prefix(RUN_LOG_PREFIX)?
-        .strip_suffix(RUN_LOG_SUFFIX)?
-        .rsplit(PID_SEPARATOR)
-        .next()?
-        .parse()
-        .ok()
-}
-
-/// What the end of a log says the run is doing now.
-///
-/// Neither marker means anything by itself: both are printed once and
-/// then stay in the log for as long as the run does. What settles each
-/// is what came after it.
-///
-/// The wait is proof the run waited, never that it still is -- a bar, a
-/// `Finished`, or the output of the binary a `cargo run` went on to
-/// start each say the lock came free. A run that is still waiting has
-/// written the line and then nothing, which is exactly what being
-/// blocked looks like from outside.
-///
-/// A counter is proof the run was building, never that it still is: the
-/// bar is left on screen where it stopped, so a build that finished at
-/// `1/2` goes on reading 50% for as long as the process lives -- which
-/// for a `cargo run` is the whole life of the app it started. Cargo's
-/// own `Finished` past the counter is what retires it, and a counter
-/// past *that* is a test runner's, which has every right to the column.
-fn parse_state(tail: &str) -> Option<RunState> {
-    if still_waiting(tail) {
-        return Some(RunState::Blocked);
-    }
-    let (at, state) = last_counter(tail)?;
-    tail.rfind(BUILD_FINISHED_MARKER)
-        .is_none_or(|over| at > over)
-        .then_some(state)
-}
-
-/// Whether the log ends on the wait line.
-///
-/// The line itself is the one line the trailing text is allowed to
-/// hold. Cargo redraws its bar over carriage returns rather than
-/// newlines, so a redraw that followed the wait counts as the second
-/// line here just as a `Finished` would.
-fn still_waiting(tail: &str) -> bool {
-    tail.rfind(LOCK_WAIT_MARKER)
-        .and_then(|at| tail.get(at..))
-        .is_some_and(|after| after.trim_end().lines().count() == 1)
-}
-
-/// The last counter in `tail` and where it sits, which is the most
-/// recent redraw of the bar.
-///
-/// Last rather than first because a run draws more than one bar: cargo
-/// counts downloads before it counts compilations, each nested cargo a
-/// command drives counts its own, and a test runner counts the tests
-/// once the compiling is over. The one at the end is the one happening
-/// now.
-///
-/// Where it sits is what says whether it still stands: a bar is left
-/// on screen where it stopped, so the last redraw of a finished build
-/// reads no differently from the last redraw of a running one.
-fn last_counter(tail: &str) -> Option<(usize, RunState)> {
-    tail.rmatch_indices(UNIT_COUNTER_LEAD)
-        .find_map(|(index, lead)| {
-            let after = index.saturating_add(lead.len());
-            let (counter, progress) = counter_at(tail.get(after..)?)?;
-            Some((
-                index,
-                RunState::Working {
-                    phase: counter.phase(tail, index),
-                    progress,
-                },
-            ))
-        })
-}
-
-/// Which of the two counters a reading came off, which is half of
-/// what says whose counter it is.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Counter {
-    /// Drawn in a bar and closed by a colon, `149/403:`. Cargo draws
-    /// one and so does a test runner, so the line it sits on is what
-    /// separates them.
-    Bar,
-    /// A test runner's per-test tally, `(11/24)`. Nothing else writes
-    /// one, so the parentheses alone settle it.
-    Tally,
-}
-
-impl Counter {
-    /// Which phase a counter of this kind at `index` belongs to.
-    ///
-    /// A tally answers for itself. A bar is read off the status word
-    /// opening the line it was drawn on -- cargo says `Building`, a
-    /// test runner says `Running` -- and only that line is searched: a
-    /// log holds the word many times over, cargo saying `Running` of
-    /// every test binary a plain `cargo test` starts, and none of those
-    /// lines carries a counter.
-    fn phase(self, tail: &str, index: usize) -> Phase {
-        let Self::Bar = self else {
-            return Phase::Testing;
-        };
-        let opens = tail
-            .get(..index)
-            .and_then(|ahead| ahead.rfind(['\n', '\r']))
-            .map_or(0, |at| at.saturating_add(1));
-        if tail
-            .get(opens..index)
-            .is_some_and(|line| line.contains(TEST_PHASE_MARKER))
-        {
-            Phase::Testing
-        } else {
-            Phase::Building
-        }
-    }
-}
-
-/// Read a counter off the front of `text`, past a drawn bar where one
-/// stands in the way.
-///
-/// Cargo puts its counter straight after the bracket that closes its
-/// bar. A test runner brackets its elapsed time instead and draws the
-/// bar after it, so the counter is reached across the blocks the bar is
-/// filled with and the blanks it is padded to width with -- and where
-/// it has no bar at all, it brackets each test's own duration and puts
-/// the count in parentheses beyond that.
-///
-/// How the two numbers are closed is what tells a counter from anything
-/// else that pairs numbers with a slash: a colon for a bar, a
-/// parenthesis for a tally, and a pair closed by neither is not a
-/// counter at all.
-fn counter_at(text: &str) -> Option<(Counter, Progress)> {
-    let text = text.trim_start_matches(bar_fill);
-    let (counter, text) = text
-        .strip_prefix(TALLY_OPEN)
-        .map_or((Counter::Bar, text), |inside| (Counter::Tally, inside));
-    let (done, text) = leading_number(text.trim_start_matches(bar_fill))?;
-    let (total, text) = leading_number(text.strip_prefix(UNIT_COUNTER_SEPARATOR)?)?;
-    let closed = match counter {
-        Counter::Bar => text.starts_with(UNIT_COUNTER_TRAILER),
-        Counter::Tally => text.starts_with(TALLY_CLOSE),
+fn log_pid(path: &Path) -> LogWriter {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return LogWriter::Unidentified;
     };
-    (total > 0 && closed).then_some((counter, Progress { done, total }))
-}
-
-/// Whether `character` is part of a drawn bar rather than of the
-/// counter beyond it.
-fn bar_fill(character: char) -> bool {
-    character == ' ' || (BAR_GLYPH_FIRST..=BAR_GLYPH_LAST).contains(&character)
-}
-
-/// The digits `text` opens with, and what follows them.
-fn leading_number(text: &str) -> Option<(usize, &str)> {
-    let end = text
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(text.len());
-    Some((text.get(..end)?.parse().ok()?, text.get(end..)?))
+    let Some(name) = name
+        .strip_prefix(RUN_LOG_PREFIX)
+        .and_then(|name| name.strip_suffix(RUN_LOG_SUFFIX))
+    else {
+        return LogWriter::Unidentified;
+    };
+    name.rsplit(PID_SEPARATOR)
+        .next()
+        .and_then(|pid| pid.parse().ok())
+        .map_or(LogWriter::Unidentified, LogWriter::Identified)
 }
 
 #[cfg(test)]
@@ -1215,8 +542,13 @@ mod tests {
     use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
-    use crate::processes::AccountName;
     use crate::processes::DirectAssociation;
+    use crate::progress::Progress;
+    use crate::progress::capture_read::Phase;
+    use crate::progress::capture_read::RunState;
+    use crate::progress::capture_roots::AccountName;
+    use crate::render::CounterState;
+    use crate::root_scan::EffectiveUser;
 
     #[test]
     fn row_source_requires_the_selected_proof_and_survives_timestamp_or_log_failure() {
@@ -1543,20 +875,24 @@ mod tests {
             reading,
             CaptureLookup::Registered(CaptureRead::NoCurrentProgress)
         );
-        assert_eq!(reading.working(), CounterState::NoCurrentProgress);
         assert_eq!(
-            CaptureLookup::Unregistered.working(),
+            CounterState::from(&reading),
+            CounterState::NoCurrentProgress
+        );
+        assert_eq!(
+            CounterState::from(&CaptureLookup::Unregistered),
             CounterState::Unregistered
         );
         assert_eq!(
-            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)).working(),
+            CounterState::from(&CaptureLookup::Registered(CaptureRead::Progress(
+                RunState::Blocked
+            ))),
             CounterState::Blocked
         );
         assert_eq!(
-            CaptureLookup::Registered(CaptureRead::Unreadable(
+            CounterState::from(&CaptureLookup::Registered(CaptureRead::Unreadable(
                 std::io::Error::from(std::io::ErrorKind::PermissionDenied).into()
-            ))
-            .working(),
+            ))),
             CounterState::Unavailable
         );
     }
@@ -1587,23 +923,11 @@ mod tests {
     const CAPTURED_REDRAW: &str = "\u{1b}[1m\u{1b}[92m    Building\u{1b}[0m \
          [========>                ] 149/403: globset, regex-automata\r";
 
-    /// A redraw of nextest's bar as the shim captures it: the elapsed
-    /// time bracketed, the drawn bar after it, and the counter past
-    /// that.
-    const CAPTURED_TEST_REDRAW: &str = "\u{1b}[32;1m     Running\u{1b}[0m \
-         [ 00:00:01] \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{258b}      \
-         12/24: \u{1b}[1m2\u{1b}[0m running, \u{1b}[1m12\u{1b}[0m passed\r\n";
-
     /// A tally as nextest writes it where it has no bar to put the
     /// count in, which is every run whose output is not a terminal.
     /// Left-padded to the width of the total, so a run of a thousand
     /// tests opens with three blanks inside the parenthesis.
     const CAPTURED_TALLY: &str = "        PASS [   1.014s] (11/24) nxprobe t18\n";
-
-    /// The line nextest prints under its bar for each test in flight,
-    /// which is what stands between the bar and the end of the log.
-    const CAPTURED_TEST_ROW: &str =
-        "             [ 00:00:00] \u{1b}[35;1mnxprobe\u{1b}[0m \u{1b}[34;1mt18\u{1b}[0m\r\n";
 
     impl Capture {
         /// Tests observe missing registrations through the same identity-keyed lookup.
@@ -1972,26 +1296,6 @@ mod tests {
         assert!(stale.0.exists());
         assert!(stale.1.exists());
         assert_eq!(first.confirmed()[0].key, second.confirmed()[0].key);
-    }
-
-    #[test]
-    fn shared_parent_ignores_nonnumeric_children_and_resolves_ancestor_aliases() {
-        let directory = tempdir().unwrap();
-        let parent = directory.path().join("parent");
-        fs::create_dir(&parent).unwrap();
-        let parent = parent.canonicalize().unwrap();
-        let alias = directory.path().join("alias");
-        symlink(&parent, &alias).unwrap();
-        let actual = parent.join("captures");
-        let roots = CaptureRoots::from_parent(&alias.join("captures"));
-        assert_eq!(roots.parent, CaptureParent::Shared(actual.clone()));
-        fs::create_dir_all(actual.join("123").join(CAPTURE_LIVE_RUNS_DIR)).unwrap();
-        fs::create_dir(actual.join("not-an-account")).unwrap();
-        fs::create_dir(actual.join("0123")).unwrap();
-        symlink(actual.join("123"), actual.join("456")).unwrap();
-        let accounts = roots.discover(&sysinfo::Users::new());
-        assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].root.uid, 123);
     }
 
     #[test]
@@ -2647,6 +1951,13 @@ mod tests {
             capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
+        let unreadable = root
+            .path()
+            .join(CAPTURE_LIVE_RUNS_DIR)
+            .join("12.unreadable");
+        assert!(capture.root_status[0].diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic, CaptureDiagnostic::RegistrationUnreadable(failure) if failure.path == unreadable
+        )));
         assert!(!stale.0.exists());
         assert!(!stale.1.exists());
     }
@@ -2670,198 +1981,19 @@ mod tests {
     }
 
     #[test]
-    fn a_captured_redraw_reports_cargos_own_counts() {
-        assert_eq!(parse_state(CAPTURED_REDRAW), Some(compiling(149, 403)));
-    }
-
-    #[test]
-    fn the_last_redraw_in_the_tail_is_the_one_reported() {
-        let tail = format!("{CAPTURED_REDRAW}Building [=>] 7/9: serde\r");
-        assert_eq!(parse_state(&tail), Some(compiling(7, 9)));
-    }
-
-    #[test]
-    fn a_download_counter_reports_the_phase_that_is_running() {
+    fn a_log_file_is_keyed_by_the_shim_pid_its_name_ends_with() {
         assert_eq!(
-            parse_state("Downloading [==>    ] 12/40: serde, regex\r"),
-            Some(compiling(12, 40))
-        );
-    }
-
-    #[test]
-    fn a_test_runners_tally_is_not_a_counter() {
-        assert_eq!(parse_state("PASS [   0.012s] 12/345 crate::suite"), None);
-    }
-
-    #[test]
-    fn a_test_runners_own_bar_reports_the_tests_it_has_got_through() {
-        assert_eq!(parse_state(CAPTURED_TEST_REDRAW), Some(testing(12, 24)));
-    }
-
-    /// The bar is redrawn above the tests in flight, so the counter is
-    /// never the last thing in the log while the run is going.
-    #[test]
-    fn the_rows_drawn_under_a_test_bar_do_not_hide_its_counter() {
-        let tail = format!("{CAPTURED_TEST_REDRAW}{CAPTURED_TEST_ROW}{CAPTURED_TEST_ROW}");
-
-        assert_eq!(parse_state(&tail), Some(testing(12, 24)));
-    }
-
-    /// What `cargo nextest run` does from end to end: cargo's units
-    /// first, then the tests. Each phase is reported while it is the
-    /// one running.
-    #[test]
-    fn a_test_run_reports_building_and_then_testing() {
-        assert_eq!(parse_state(CAPTURED_REDRAW), Some(compiling(149, 403)));
-
-        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_TEST_REDRAW}");
-
-        assert_eq!(parse_state(&tail), Some(testing(12, 24)));
-    }
-
-    /// A run with no terminal under it -- a script, an agent, a CI job
-    /// -- gets no bar from nextest at all, and the count it would have
-    /// drawn there goes into every line it prints instead.
-    #[test]
-    fn a_tally_reports_the_tests_where_there_was_no_bar_to_draw() {
-        assert_eq!(parse_state(CAPTURED_TALLY), Some(testing(11, 24)));
-    }
-
-    /// The first numbers of a run are padded out to the width of the
-    /// total, blanks inside the parenthesis rather than in front of it.
-    #[test]
-    fn a_padded_tally_is_read_the_same_as_a_full_one() {
-        assert_eq!(
-            parse_state("        PASS [   1.022s] (  1/240) nxprobe t1\n"),
-            Some(testing(1, 240))
-        );
-    }
-
-    /// The build is what a run without a terminal reports until the
-    /// tests start, cargo drawing the bar it is asked for either way.
-    #[test]
-    fn a_tally_after_a_build_bar_is_what_the_run_is_doing() {
-        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_TALLY}");
-
-        assert_eq!(parse_state(&tail), Some(testing(11, 24)));
-    }
-
-    #[test]
-    fn output_with_no_bar_in_it_reports_nothing() {
-        assert_eq!(parse_state("   Compiling serde v1.0.0\n"), None);
-    }
-
-    #[test]
-    fn a_counter_over_zero_units_is_rejected_rather_than_divided_by() {
-        assert_eq!(parse_state("Building [ ] 0/0: \r"), None);
-    }
-
-    #[test]
-    fn percent_rounds_down_so_only_a_finished_build_reads_full() {
-        assert_eq!(
-            Progress {
-                done:  402,
-                total: 403,
-            }
-            .percent(),
-            99
+            log_pid(Path::new("/tmp/cargo-tile/run-20260820-191029-33395.log")),
+            LogWriter::Identified(33395)
         );
         assert_eq!(
-            Progress {
-                done:  403,
-                total: 403,
-            }
-            .percent(),
-            100
+            log_pid(Path::new("/tmp/cargo-tile/pane-errors.log")),
+            LogWriter::Unidentified
         );
     }
-
-    #[test]
-    fn a_run_waiting_on_the_build_directory_reports_that_it_is_blocked() {
-        assert_eq!(parse_state(CAPTURED_WAIT), Some(RunState::Blocked));
-    }
-
-    /// Cargo counts its downloads before it reaches for the lock, so a
-    /// blocked run has usually drawn a bar already. The bar is stale and
-    /// the wait is not.
-    #[test]
-    fn a_wait_after_a_bar_is_what_the_run_is_doing() {
-        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_WAIT}");
-
-        assert_eq!(parse_state(&tail), Some(RunState::Blocked));
-    }
-
-    /// The wait line is printed once and stays in the log, so a run that
-    /// got its lock and started building must not still read as blocked.
-    #[test]
-    fn a_bar_after_a_wait_means_the_lock_came_free() {
-        let tail = format!("{CAPTURED_WAIT}{CAPTURED_REDRAW}");
-
-        assert_eq!(parse_state(&tail), Some(compiling(149, 403)));
-    }
-
-    /// A run with nothing to compile draws no bar at all, so there is no
-    /// counter to weigh the wait against -- and what follows it is the
-    /// output of the binary the run went on to start. That output is
-    /// proof enough the lock came free.
-    #[test]
-    fn output_after_a_wait_means_the_lock_came_free_even_with_no_bar() {
-        let tail = format!(
-            "{CAPTURED_WAIT}    Finished `dev` profile [unoptimized + debuginfo] target(s) in \
-             3.19s\n     Running `/rust/bevy_brp/target/debug/examples/extras_plugin`\nINFO \
-             bevy_winit::system: Creating new window\n"
-        );
-
-        assert_eq!(parse_state(&tail), None);
-    }
-
-    /// Cargo takes the package cache under the same wording as the build
-    /// directory and gives it straight back, so every command run beside
-    /// another says this. It is not a wait anyone can see.
-    #[test]
-    fn a_wait_on_the_package_cache_is_not_a_state_worth_showing() {
-        let tail = "    Blocking waiting for file lock on package cache\n";
-
-        assert_eq!(parse_state(tail), None);
-    }
-
     /// Cargo's closing line as the shim captures it, the profile in the
     /// hyperlink escape cargo wraps it in.
     const CAPTURED_FINISHED: &str = "\u{1b}[1m\u{1b}[92m    Finished\u{1b}[0m \
          \u{1b}]8;;https://doc.rust-lang.org/cargo/reference/profiles.html\u{1b}\\`dev` profile \
          [unoptimized + debuginfo]\u{1b}]8;;\u{1b}\\ target(s) in 1.49s\n";
-
-    /// The bar is left on screen where it stopped, so the last redraw of
-    /// a build that finished at `1/2` reads no differently from one still
-    /// working through its second unit. A `cargo run` then lives on as
-    /// the app it started, reporting 50% for hours.
-    #[test]
-    fn a_counter_a_finished_build_left_behind_is_not_a_reading() {
-        let tail = format!("{CAPTURED_REDRAW}\n{CAPTURED_FINISHED}");
-
-        assert_eq!(parse_state(&tail), None);
-    }
-
-    /// A test runner counts its own tests once the compiling is over, so
-    /// a counter past cargo's `Finished` is the run's own and stands.
-    #[test]
-    fn a_counter_after_a_finished_build_is_the_test_runners() {
-        let tail = format!("{CAPTURED_FINISHED}{CAPTURED_TEST_REDRAW}");
-
-        assert_eq!(parse_state(&tail), Some(testing(12, 24)));
-    }
-
-    #[test]
-    fn a_blocked_state_has_no_reading_to_draw() {
-        assert_eq!(RunState::Blocked.working(), CounterState::Blocked);
-    }
-
-    #[test]
-    fn a_log_file_is_keyed_by_the_shim_pid_its_name_ends_with() {
-        assert_eq!(
-            log_pid(Path::new("/tmp/cargo-tile/run-20260820-191029-33395.log")),
-            Some(33395)
-        );
-        assert_eq!(log_pid(Path::new("/tmp/cargo-tile/pane-errors.log")), None);
-    }
 }

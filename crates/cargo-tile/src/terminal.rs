@@ -71,13 +71,34 @@ use crate::probe;
 use crate::probe::Counted;
 use crate::probe::Phase;
 use crate::processes;
-use crate::processes::Scan;
+use crate::processes::CargoGroup;
+use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render;
+use crate::root_scan::SharedCaptureDirectory;
 use crate::sccache;
+use crate::sccache::SccacheServer;
 use crate::sccache::SccacheSummary;
 use crate::settings;
 use crate::settings::Step;
 use crate::theme;
+
+/// One scan's account of the machine: the cargo commands running, and
+/// whether an sccache server is up behind them.
+///
+/// The two travel together because they are read together. Phase one
+/// already names every process to find the compilers under each cargo,
+/// and a running server is one more name in that same pass -- which is
+/// what makes the answer free, and what keeps the summary's stats read
+/// from having to start a server to discover whether one is running.
+pub(crate) struct Scan {
+    /// The commands running, newest first.
+    pub(crate) groups:           Vec<CargoGroup>,
+    /// Whether a process named [`crate::constants::SCCACHE_BINARY`] was among them.
+    pub(crate) sccache:          SccacheServer,
+    /// Settings reads these observations without reopening any capture path.
+    pub(crate) root_status:      Vec<AccountCaptureDirectory>,
+    pub(crate) shared_directory: SharedCaptureDirectory,
+}
 
 /// The terminal backend, with everything written to it counted on the
 /// way out. See [`probe::Counted`].
@@ -126,7 +147,7 @@ pub(crate) fn run() -> ExitCode { run_with_capture_parent(std::path::PathBuf::fr
 pub(crate) fn run_with_capture_parent(parent: PathBuf) -> ExitCode {
     run_with_scanner(move |config| {
         processes::spawn_with_resolver(config, move || {
-            crate::progress::CaptureRoots::from_parent(&parent)
+            crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
         })
         .0
     })
@@ -712,9 +733,6 @@ mod tests {
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::favorites::FavoritesFileState;
-    use crate::processes::AccountName;
-    use crate::processes::AssociationSelection;
-    use crate::processes::CaptureAssociation;
     use crate::processes::CaptureMembership;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
@@ -728,14 +746,17 @@ mod tests {
     use crate::processes::RunStart;
     use crate::processes::SelectedProof;
     use crate::processes::VisibleParent;
-    use crate::progress::Capture;
-    use crate::progress::CaptureLookup;
-    use crate::progress::CaptureRead;
-    use crate::progress::CaptureRootIndex;
-    use crate::progress::CaptureRoots;
-    use crate::progress::RunState;
+    use crate::progress::capture::Capture;
+    use crate::progress::capture::CaptureRootIndex;
+    use crate::progress::capture_read::CaptureLookup;
+    use crate::progress::capture_read::CaptureRead;
+    use crate::progress::capture_read::RunState;
+    use crate::progress::capture_roots::AccountName;
+    use crate::progress::capture_roots::CaptureRoots;
     use crate::registration::WorkingDirectoryIdentity;
     use crate::sccache::SccacheServer;
+    use crate::settings::AssociationSelection;
+    use crate::settings::CaptureAssociation;
 
     const FAVORITE_ROW: &str = r#"
 [[favorite]]
@@ -890,7 +911,7 @@ fraying = "leading"
         ));
         assert!(matches!(
             app.root_status[0].state,
-            crate::processes::RootReadStatus::Unavailable(_)
+            crate::progress::capture_roots::RootReadStatus::Unavailable(_)
         ));
         fs::create_dir_all(path.join(CAPTURE_LIVE_RUNS_DIR)).expect("create account directory");
         assert!(deliver_capture(
@@ -899,7 +920,7 @@ fraying = "leading"
         ));
         assert_eq!(
             app.root_status[0].state,
-            crate::processes::RootReadStatus::Readable
+            crate::progress::capture_roots::RootReadStatus::Readable
         );
         assert!(app.roster.groups().is_empty());
         // Recovery conservatively disables one sweep; allow that observation to settle.
@@ -949,7 +970,7 @@ fraying = "leading"
             &mut app,
             Capture::take_from(root.path(), observe)
         ));
-        assert!(app.root_status[0].diagnostics.iter().any(|diagnostic| matches!(diagnostic, crate::processes::CaptureDiagnostic::LogUnreadable(failure) if failure.path == log)));
+        assert!(app.root_status[0].diagnostics.iter().any(|diagnostic| matches!(diagnostic, crate::progress::capture_diagnostic::CaptureDiagnostic::LogUnreadable(failure) if failure.path == log)));
         assert!(app.roster.groups().is_empty());
         fs::remove_file(&log).expect("remove refused target");
         fs::write(&log, "readable").expect("recover log");

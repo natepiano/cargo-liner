@@ -68,7 +68,7 @@ impl SweepAuthority<'_> {
     ) -> SweepCounts {
         let incomplete_inventories = std::iter::once(self.scan.registration_outcome())
             .chain(self.scan.sampled_log_outcome())
-            .filter(|outcome| enumeration_refusal(outcome).is_err())
+            .filter(|outcome| !matches!(outcome, Enumeration::Complete))
             .count();
         let mut counts = SweepCounts {
             incomplete_inventories,
@@ -145,7 +145,7 @@ pub(crate) enum RootOwner {
     Unavailable,
 }
 
-/// Why sweep admission or inventory completion could not be established.
+/// Why root ownership, access, or continuity could not admit a sweep.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SweepAdmissionRefusal {
     /// This directory belongs to a different account and is correctly read-only.
@@ -154,8 +154,6 @@ pub(super) enum SweepAdmissionRefusal {
     EffectiveUserUnavailable,
     /// Directory access or revalidation failed.
     AccessFailure,
-    /// A bounded directory enumeration could not establish a complete live set.
-    EnumerationIncomplete,
 }
 
 /// One allowance shared by every cleanup kind across all roots in a single scan.
@@ -315,15 +313,6 @@ impl SweepEligibleFile {
     }
 }
 
-/// Classify incomplete inventory portions without allocating diagnostic payloads.
-const fn enumeration_refusal(outcome: &Enumeration) -> Result<(), SweepAdmissionRefusal> {
-    match outcome {
-        Enumeration::Complete => Ok(()),
-        Enumeration::Incomplete => Err(SweepAdmissionRefusal::EnumerationIncomplete),
-        Enumeration::Failed(_) => Err(SweepAdmissionRefusal::AccessFailure),
-    }
-}
-
 /// A missing own-process uid disables cleanup instead of selecting a default uid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EffectiveUser {
@@ -402,6 +391,31 @@ pub(super) mod tests {
             assert_eq!(counts.unavailable_roots(), 0);
             assert!(!root.path().join("log").exists());
         }
+    }
+
+    #[test]
+    fn a_refused_root_counts_once_without_callbacks_or_budget_consumption() {
+        let root = capture_root();
+        write_pair(root.path());
+        let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
+        let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
+        fs::rename(&registrations, root.path().join("old-pids"))
+            .expect("replace registration directory");
+        fs::create_dir(&registrations).expect("new registration directory");
+        let calls = Cell::new(0);
+        let mut budget = SweepBudget::default();
+        let remaining = budget.remaining();
+        let counts = scan.sweep(&mut budget, |_| {
+            calls.set(calls.get() + 1);
+            SweepDisposition::Remove("log".into())
+        });
+        assert_eq!(counts.removed_files(), 0);
+        assert_eq!(counts.skipped_pair_attempts(), 0);
+        assert_eq!(counts.incomplete_inventories(), 0);
+        assert_eq!(counts.unavailable_roots(), 1);
+        assert_eq!(calls.get(), 0);
+        assert_eq!(budget.remaining(), remaining);
+        assert!(root.path().join("log").exists());
     }
 
     /// Attempt every artifact through the production capability dispatcher.

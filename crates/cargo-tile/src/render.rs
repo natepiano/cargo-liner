@@ -125,7 +125,6 @@ use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
 use crate::probe;
 use crate::processes;
-use crate::processes::AccountName;
 use crate::processes::Ancestor;
 use crate::processes::CargoProcess;
 use crate::processes::CompilerObservation;
@@ -133,14 +132,14 @@ use crate::processes::InvocationId;
 use crate::processes::Measurement;
 use crate::processes::RowProvenance;
 use crate::processes::RunStart;
-use crate::processes::SummaryDetail;
 use crate::processes::VisibleParent;
-use crate::progress::CaptureLookup;
-use crate::progress::CaptureRead;
-use crate::progress::CaptureRootIndex;
-use crate::progress::CounterState;
 use crate::progress::Progress;
-use crate::progress::RunState;
+use crate::progress::capture::CaptureRootIndex;
+use crate::progress::capture_read::CaptureLookup;
+use crate::progress::capture_read::CaptureRead;
+use crate::progress::capture_read::Phase;
+use crate::progress::capture_read::RunState;
+use crate::progress::capture_roots::AccountName;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::root_scan::RootIncarnation;
 use crate::roster::FamilyHead;
@@ -156,6 +155,78 @@ use crate::tiles::TileContent;
 use crate::tiles::TileDemand;
 use crate::tiles::TileDemands;
 use crate::wrap;
+
+/// The verified root owner and its independently resolved display label.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureAccount {
+    /// Ownership identity comes from the opened root, never its pathname.
+    pub(crate) uid:  u32,
+    /// Failure to resolve a label does not change grouping.
+    pub(crate) name: AccountName,
+}
+
+/// Root incarnation and owner qualify a captured working directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureContext {
+    /// Stable account position distinguishes capture directories.
+    pub(crate) root:        CaptureRootIndex,
+    /// Replacing a directory invalidates its retained grouping identity.
+    pub(crate) incarnation: RootIncarnation,
+    /// Numeric identity remains separate from its display name.
+    pub(crate) account:     CaptureAccount,
+}
+
+/// What a gauge can show, preserving the reason it has no counter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CounterState {
+    /// A phase owns the current numerator and denominator.
+    Working {
+        /// Counters from different phases must not be combined.
+        phase:    Phase,
+        /// The current progress in this phase.
+        progress: Progress,
+    },
+    /// The capture reports a build-directory wait.
+    Blocked,
+    /// Readable output currently supplies no counter, including after Finished.
+    NoCurrentProgress,
+    /// The selected capture could not be read.
+    Unavailable,
+    /// No registration supplies a counter for this invocation.
+    Unregistered,
+}
+
+impl From<&CaptureLookup> for CounterState {
+    fn from(lookup: &CaptureLookup) -> Self {
+        match lookup {
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Working {
+                phase,
+                progress,
+            })) => Self::Working {
+                phase:    *phase,
+                progress: *progress,
+            },
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)) => Self::Blocked,
+            CaptureLookup::Registered(CaptureRead::NoCurrentProgress) => Self::NoCurrentProgress,
+            CaptureLookup::Registered(CaptureRead::Unreadable(_)) => Self::Unavailable,
+            CaptureLookup::Unregistered => Self::Unregistered,
+        }
+    }
+}
+
+/// How much of an invocation's command line a cell prints.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SummaryDetail {
+    /// The whole line, the way a command's own cell shows it.
+    Full,
+    /// The manifest path and the summary's noise flags left out, the
+    /// way the summary shows it. Every row there already sits under the
+    /// working directory heading its group, and cargo is handed the
+    /// manifest as an absolute path -- long enough to push the
+    /// subcommand off the edge of a narrow cell to repeat what the
+    /// header just said.
+    Trimmed,
+}
 
 /// Draw one frame: panes fill the terminal above the status line, and an
 /// open overlay floats above both.
@@ -1985,7 +2056,7 @@ fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec
         group
             .rows
             .iter()
-            .find_map(|row| match row.process.state.working() {
+            .find_map(|row| match CounterState::from(&row.process.state) {
                 CounterState::Working { phase, progress } => Some((row, (phase, progress))),
                 CounterState::Blocked
                 | CounterState::NoCurrentProgress
@@ -2297,8 +2368,6 @@ mod tests {
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::UNRESOLVED_TIME;
     use crate::processes;
-    use crate::processes::CaptureAccount;
-    use crate::processes::CaptureContext;
     use crate::processes::CaptureMembership;
     use crate::processes::CargoGroup;
     use crate::processes::CargoProcess;
@@ -2308,7 +2377,7 @@ mod tests {
     use crate::processes::MeasurementAbsence;
     use crate::processes::RunId;
     use crate::processes::VisibleParent;
-    use crate::progress::Phase;
+    use crate::progress::capture_read::Phase;
 
     /// The state of a command compiling `done` of `total` units.
     fn compiling(done: usize, total: usize) -> RunState {
@@ -2387,7 +2456,7 @@ mod tests {
                 CounterState::Unavailable,
             ),
         ] {
-            assert_eq!(lookup.working(), counter);
+            assert_eq!(CounterState::from(&lookup), counter);
             assert!(capture_gauge_text(lookup, 60).is_empty(), "{counter:?}");
         }
         assert!(!gauge_text(compiling(1, 2), 60).is_empty());
@@ -4211,5 +4280,14 @@ mod tests {
             let line = buffer_line(&buffer, y);
             assert!(line.len() > left, "row {y} is empty: {line:?}");
         }
+    }
+    #[test]
+    fn a_blocked_state_has_no_reading_to_draw() {
+        assert_eq!(
+            CounterState::from(&CaptureLookup::Registered(CaptureRead::Progress(
+                RunState::Blocked
+            ))),
+            CounterState::Blocked
+        );
     }
 }

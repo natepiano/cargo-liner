@@ -19,7 +19,7 @@ use crate::processes::MeasurementAbsence;
 use crate::processes::RowProvenance;
 use crate::processes::RunStart;
 use crate::processes::VisibleParent;
-use crate::progress::CaptureLookup;
+use crate::progress::capture_read::CaptureLookup;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::render;
 use crate::roster::Roster;

@@ -516,7 +516,7 @@ mod tests {
     use crate::processes::ProcessIdentity;
     use crate::processes::RowProvenance;
     use crate::processes::RunStart;
-    use crate::progress::CaptureLookup;
+    use crate::progress::capture_read::CaptureLookup;
     use crate::registration::WorkingDirectoryIdentity;
 
     /// A process replacement starts its own row while the old row finishes fading.

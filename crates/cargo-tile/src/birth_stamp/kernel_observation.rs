@@ -15,7 +15,7 @@ use crate::constants::BIRTH_BOOT_EMPTY;
 use crate::constants::BIRTH_BOOT_ID_PATH;
 #[cfg(target_os = "macos")]
 use crate::constants::BIRTH_MACOS_BOOT_NAME;
-use crate::progress::PathFailure;
+use crate::progress::capture_diagnostic::PathFailure;
 
 /// An identity comparison input; only `KernelObservation` proves its kernel source.
 #[derive(Clone, Debug, Eq, PartialEq)]

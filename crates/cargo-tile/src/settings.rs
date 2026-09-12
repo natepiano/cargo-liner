@@ -62,20 +62,66 @@ use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;
-use crate::processes::AccountCaptureDirectory;
-use crate::processes::AccountName;
-use crate::processes::AssociationSelection;
-use crate::processes::CaptureDiagnostic;
-use crate::processes::RootReadStatus;
 use crate::processes::SelectedProof;
-use crate::processes::UnusedCaptureReason;
-use crate::progress::CaptureCleanup;
-use crate::progress::CaptureGeneration;
-use crate::progress::CaptureKey;
-use crate::progress::PathFailure;
+use crate::progress::capture::CaptureGeneration;
+use crate::progress::capture::CaptureKey;
+use crate::progress::capture_diagnostic::CaptureDiagnostic;
+use crate::progress::capture_diagnostic::PathFailure;
+use crate::progress::capture_roots::AccountCaptureDirectory;
+use crate::progress::capture_roots::AccountName;
+use crate::progress::capture_roots::CaptureCleanup;
+use crate::progress::capture_roots::RootReadStatus;
 use crate::root_scan::RootOwner;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::root_scan::SharedDirectoryState;
+
+/// Final selection reaches settings even when no process row can be built.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureAssociation {
+    /// The displayed process, or the shim when the selection sources no process row.
+    pub(crate) pid:       u32,
+    /// Retain both successful selection and unresolved competition.
+    pub(crate) selection: AssociationSelection,
+}
+
+/// Root precedence and verification determine which proof may supply fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AssociationSelection {
+    /// One key was selected; other proofs cannot supply metadata.
+    Selected {
+        /// The exact root, incarnation and generation selected.
+        key:    CaptureKey,
+        /// Unconfirmed selections permit only log annotation.
+        proof:  SelectedProof,
+        /// Every confirmed proof left unused has an explicit reason.
+        unused: Vec<UnusedCapture>,
+    },
+    /// Competing publications prevent metadata ownership and ancestor fallback.
+    Ambiguous {
+        /// Exact identities of the publications that competed in the preferred root.
+        candidates: Vec<CaptureKey>,
+    },
+}
+
+/// A retained proof that the selection forbids using.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UnusedCapture {
+    /// Preserve publication identity as well as its operator-facing path.
+    pub(crate) key:    CaptureKey,
+    /// Settings can name the root without reopening it.
+    pub(crate) root:   PathBuf,
+    /// Explain why this proof supplied neither another row nor borrowed fields.
+    pub(crate) reason: UnusedCaptureReason,
+}
+
+/// A preferred root remains authoritative whether or not its key was verified.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UnusedCaptureReason {
+    /// The selected confirmed publication wins account discovery order.
+    RootPrecedence,
+    /// The preferred reading is unconfirmed, so another root cannot repair it.
+    SelectedUnconfirmed,
+}
 
 /// Which setting a selected row edits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -704,7 +750,10 @@ mod tests {
     use tui_pane::SettingsRow;
     use tui_pane::SettingsRowIdentity;
 
+    use super::AssociationSelection;
+    use super::CaptureAssociation;
     use super::SettingId;
+    use super::UnusedCaptureReason;
     use super::rows;
     use crate::app::App;
     use crate::app::CaptureStartupNotice;
@@ -716,21 +765,18 @@ mod tests {
     use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
     use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
     use crate::constants::SUPPORTED_REGISTRATION_VERSION;
-    use crate::processes::AccountCaptureDirectory;
-    use crate::processes::AccountName;
-    use crate::processes::AssociationSelection;
-    use crate::processes::CaptureAssociation;
-    use crate::processes::CaptureDiagnostic;
-    use crate::processes::RootReadStatus;
     use crate::processes::SelectedProof;
-    use crate::processes::UnusedCaptureReason;
-    use crate::progress::CaptureCleanup;
-    use crate::progress::CaptureFailure;
-    use crate::progress::CaptureGeneration;
-    use crate::progress::CaptureKey;
-    use crate::progress::CaptureRoot;
-    use crate::progress::CaptureRootIndex;
-    use crate::progress::PathFailure;
+    use crate::progress::capture::CaptureGeneration;
+    use crate::progress::capture::CaptureKey;
+    use crate::progress::capture::CaptureRootIndex;
+    use crate::progress::capture_diagnostic::CaptureDiagnostic;
+    use crate::progress::capture_diagnostic::CaptureFailure;
+    use crate::progress::capture_diagnostic::PathFailure;
+    use crate::progress::capture_roots::AccountCaptureDirectory;
+    use crate::progress::capture_roots::AccountName;
+    use crate::progress::capture_roots::CaptureCleanup;
+    use crate::progress::capture_roots::CaptureRoot;
+    use crate::progress::capture_roots::RootReadStatus;
     use crate::root_scan::RootOwner;
 
     /// Construct retained evidence without resolving or accessing a fixture path.
@@ -1083,7 +1129,7 @@ mod tests {
             selection: AssociationSelection::Selected {
                 key:    association_key(40, 0, "selected"),
                 proof:  SelectedProof::Unconfirmed,
-                unused: vec![crate::processes::UnusedCapture {
+                unused: vec![crate::settings::UnusedCapture {
                     key:    association_key(40, 1, "unused"),
                     root:   "/retained/other".into(),
                     reason: UnusedCaptureReason::SelectedUnconfirmed,
@@ -1121,7 +1167,7 @@ mod tests {
                     selection: AssociationSelection::Selected {
                         key: association_key(40, 0, "selected"),
                         proof,
-                        unused: vec![crate::processes::UnusedCapture {
+                        unused: vec![crate::settings::UnusedCapture {
                             key: association_key(40, 1, "unused"),
                             root: "/retained/other".into(),
                             reason,

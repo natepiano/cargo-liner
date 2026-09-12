@@ -24,7 +24,6 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
-use std::io::ErrorKind;
 use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -52,7 +51,6 @@ use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
 use sysinfo::System;
 use sysinfo::UpdateKind;
-use sysinfo::Users;
 use tui_pane::kernel_parent;
 use uuid::Uuid;
 
@@ -116,24 +114,28 @@ use crate::constants::TRANSPARENT_PROCESS_NAMES;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::constants::UNRESOLVED_PATH;
 use crate::constants::UNRESOLVED_TIME;
-use crate::progress::Capture;
-use crate::progress::CaptureFailure;
-use crate::progress::CaptureKey;
-use crate::progress::CaptureLookup;
-use crate::progress::CaptureRoot;
-use crate::progress::CaptureRootIndex;
-use crate::progress::CaptureRoots;
-use crate::progress::CaptureSelection;
-use crate::progress::ConfirmedCapture;
-use crate::progress::PathFailure;
+use crate::progress::capture::Capture;
+use crate::progress::capture::CaptureKey;
+use crate::progress::capture::CaptureRootIndex;
+use crate::progress::capture::CaptureSelection;
+use crate::progress::capture::ConfirmedCapture;
+use crate::progress::capture_diagnostic::CaptureFailure;
+use crate::progress::capture_read::CaptureLookup;
+use crate::progress::capture_roots::CaptureRoots;
 use crate::registration::RegistrationCandidate;
 use crate::registration::VerifiedRegistration;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::registration::WriterHome;
+use crate::render::CaptureAccount;
+use crate::render::CaptureContext;
+use crate::render::SummaryDetail;
 use crate::root_scan::RootIncarnation;
-use crate::root_scan::RootOwner;
-use crate::root_scan::SharedCaptureDirectory;
 use crate::sccache::SccacheServer;
+use crate::settings::AssociationSelection;
+use crate::settings::CaptureAssociation;
+use crate::settings::UnusedCapture;
+use crate::settings::UnusedCaptureReason;
+use crate::terminal::Scan;
 
 /// Identity of an invocation, independent of its displayed process or row source.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -373,35 +375,6 @@ impl DirectoryComparison {
     }
 }
 
-/// Display resolution never changes the numeric account identity.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum AccountName {
-    /// The scanner resolved a nonempty account name for the root owner.
-    Resolved(String),
-    /// A missing passwd entry leaves the numeric owner visible.
-    Unavailable,
-}
-
-/// The verified root owner and its independently resolved display label.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureAccount {
-    /// Ownership identity comes from the opened root, never its pathname.
-    pub(crate) uid:  u32,
-    /// Failure to resolve a label does not change grouping.
-    pub(crate) name: AccountName,
-}
-
-/// Root incarnation and owner qualify a captured working directory.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureContext {
-    /// Stable account position distinguishes capture directories.
-    pub(crate) root:        CaptureRootIndex,
-    /// Replacing a directory invalidates its retained grouping identity.
-    pub(crate) incarnation: RootIncarnation,
-    /// Numeric identity remains separate from its display name.
-    pub(crate) account:     CaptureAccount,
-}
-
 /// A row's capture context states whether registration fields may describe it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RowProvenance {
@@ -436,22 +409,6 @@ impl RowProvenance {
             Self::Direct(context) => Self::Enclosing(context),
             provenance => provenance,
         }
-    }
-}
-
-impl AccountName {
-    /// Account lookup is a scan observation and never participates in identity comparison.
-    pub(crate) fn resolve(owner: RootOwner, users: &Users) -> Self {
-        let RootOwner::Uid(uid) = owner else {
-            return Self::Unavailable;
-        };
-        users
-            .iter()
-            .find(|user| **user.id() == uid)
-            .filter(|user| !user.name().is_empty())
-            .map_or(Self::Unavailable, |user| {
-                Self::Resolved(user.name().to_owned())
-            })
     }
 }
 
@@ -549,20 +506,6 @@ pub(crate) struct CommandText {
     /// than joined because a cell may leave one of them out;
     /// [`CommandText::line`] is what puts them back into a line.
     arguments:          Vec<String>,
-}
-
-/// How much of an invocation's command line a cell prints.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SummaryDetail {
-    /// The whole line, the way a command's own cell shows it.
-    Full,
-    /// The manifest path and the summary's noise flags left out, the
-    /// way the summary shows it. Every row there already sits under the
-    /// working directory heading its group, and cargo is handed the
-    /// manifest as an absolute path -- long enough to push the
-    /// subcommand off the edge of a narrow cell to repeat what the
-    /// header just said.
-    Trimmed,
 }
 
 impl CommandText {
@@ -742,158 +685,6 @@ impl CargoGroup {
     pub(crate) fn id(&self) -> InvocationId { self.lead.invocation_id.clone() }
 }
 
-/// One scan's account of the machine: the cargo commands running, and
-/// whether an sccache server is up behind them.
-///
-/// The two travel together because they are read together. Phase one
-/// already names every process to find the compilers under each cargo,
-/// and a running server is one more name in that same pass -- which is
-/// what makes the answer free, and what keeps the summary's stats read
-/// from having to start a server to discover whether one is running.
-pub(crate) struct Scan {
-    /// The commands running, newest first.
-    pub(crate) groups:           Vec<CargoGroup>,
-    /// Whether a process named [`SCCACHE_BINARY`] was among them.
-    pub(crate) sccache:          SccacheServer,
-    /// Settings reads these observations without reopening any capture path.
-    pub(crate) root_status:      Vec<AccountCaptureDirectory>,
-    pub(crate) shared_directory: SharedCaptureDirectory,
-}
-
-/// One effective root's access, identity and capture observations for this scan.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AccountCaptureDirectory {
-    /// The directory name claims an account; `state` records owner verification.
-    pub(crate) root:         CaptureRoot,
-    /// Nofollow metadata identifies rejected owners; accepted roots use their descriptor.
-    pub(crate) owner:        RootOwner,
-    /// Resolved on the scan worker; rendering performs no account lookup.
-    pub(crate) account:      AccountName,
-    /// Each scan reopens the directory and reports current access.
-    pub(crate) state:        RootReadStatus,
-    /// Published, verified registrations whose logs were readable in this scan.
-    pub(crate) confirmed:    usize,
-    /// Failures and retained artifacts remain visible without process-table rows.
-    pub(crate) diagnostics:  Vec<CaptureDiagnostic>,
-    /// Each association names its process and any competing proof left unused.
-    pub(crate) associations: Vec<CaptureAssociation>,
-}
-
-/// Access to an account directory is observed again on every scan.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RootReadStatus {
-    /// The root handle opened; diagnostics describe any incomplete contents.
-    Readable,
-    /// Reopening this absolute path failed in the current scan.
-    Unavailable(PathFailure),
-    /// A real directory owned by a different uid supplies no captures.
-    ForeignOwned { owner: AccountName },
-}
-
-impl AccountCaptureDirectory {
-    /// Inspect the final component without following links before reading captures.
-    pub(crate) fn inspect(root: CaptureRoot, users: &Users) -> Self {
-        let mut status = Self {
-            account: AccountName::resolve(RootOwner::Uid(root.uid), users),
-            root,
-            owner: RootOwner::Unavailable,
-            state: RootReadStatus::Readable,
-            confirmed: 0,
-            diagnostics: Vec::new(),
-            associations: Vec::new(),
-        };
-        let metadata = std::fs::symlink_metadata(&status.root.path).and_then(|metadata| {
-            if metadata.is_dir() {
-                Ok(metadata)
-            } else {
-                Err(ErrorKind::NotADirectory.into())
-            }
-        });
-        match metadata {
-            Ok(metadata) => {
-                status.owner = RootOwner::Uid(metadata.uid());
-                if metadata.uid() != status.root.uid {
-                    status.state = RootReadStatus::ForeignOwned {
-                        owner: AccountName::resolve(status.owner, users),
-                    };
-                }
-            },
-            Err(error) => {
-                let failure = PathFailure {
-                    path:    status.root.path.clone(),
-                    failure: error.into(),
-                };
-                status.state = RootReadStatus::Unavailable(failure);
-            },
-        }
-        status
-    }
-}
-
-/// Path-qualified observations supplement the count of verified, readable captures.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CaptureDiagnostic {
-    /// A short directory inventory can omit runs from this scan.
-    EnumerationIncomplete(PathBuf),
-    /// An inaccessible directory must never read as an empty inventory.
-    EnumerationFailed(PathFailure),
-    /// An individual registration failed to read; sibling evidence stays available.
-    RegistrationUnreadable(PathFailure),
-    /// Malformed bytes or mismatched generation cannot establish an association.
-    RegistrationInvalid(PathBuf),
-    /// A newer framing version stays outside identity verification and cleanup.
-    UnsupportedRegistrationVersion {
-        /// The retained registration that this reader cannot decode.
-        path:        PathBuf,
-        /// The framing version declared by the writer.
-        encountered: u64,
-        /// The newest framing version this reader understands.
-        supported:   u64,
-    },
-    /// A legacy record can annotate a process row but supplies no verifiable identity.
-    AnnotationOnly(PathBuf),
-    /// Missing identity fields cannot authorize cleanup, even after the pid ends.
-    Unverifiable(PathBuf),
-    /// The record supplies identity, but this scan could not observe the live process.
-    IdentityUnknown(PathBuf),
-    /// The cached boot failure prevents checking this record until a restart.
-    IdentityBlockedByBoot(PathBuf),
-    /// An unpublished artifact stays outside the active capture count.
-    Staging(PathBuf),
-    /// Retain the exact named log and its I/O failure even without a process row.
-    LogUnreadable(PathFailure),
-    /// The cached boot read disables verification until a restart retries it.
-    BootUnavailable(PathFailure),
-}
-
-/// Final selection reaches settings even when no process row can be built.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureAssociation {
-    /// The displayed process, or the shim when the selection sources no process row.
-    pub(crate) pid:       u32,
-    /// Retain both successful selection and unresolved competition.
-    pub(crate) selection: AssociationSelection,
-}
-
-/// Root precedence and verification determine which proof may supply fields.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum AssociationSelection {
-    /// One key was selected; other proofs cannot supply metadata.
-    Selected {
-        /// The exact root, incarnation and generation selected.
-        key:    CaptureKey,
-        /// Unconfirmed selections permit only log annotation.
-        proof:  SelectedProof,
-        /// Every confirmed proof left unused has an explicit reason.
-        unused: Vec<UnusedCapture>,
-    },
-    /// Competing publications prevent metadata ownership and ancestor fallback.
-    Ambiguous {
-        /// Exact identities of the publications that competed in the preferred root.
-        candidates: Vec<CaptureKey>,
-    },
-}
-
 /// Selection and verification are independent facts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SelectedProof {
@@ -901,26 +692,6 @@ pub(crate) enum SelectedProof {
     Confirmed,
     /// The selected reading has no proof and cannot source a row.
     Unconfirmed,
-}
-
-/// A retained proof that the selection forbids using.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UnusedCapture {
-    /// Preserve publication identity as well as its operator-facing path.
-    pub(crate) key:    CaptureKey,
-    /// Settings can name the root without reopening it.
-    pub(crate) root:   PathBuf,
-    /// Explain why this proof supplied neither another row nor borrowed fields.
-    pub(crate) reason: UnusedCaptureReason,
-}
-
-/// A preferred root remains authoritative whether or not its key was verified.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum UnusedCaptureReason {
-    /// The selected confirmed publication wins account discovery order.
-    RootPrecedence,
-    /// The preferred reading is unconfirmed, so another root cannot repair it.
-    SelectedUnconfirmed,
 }
 
 /// The nearest registered ancestor retains its root for every annotation lookup.
@@ -3815,6 +3586,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
+    use sysinfo::Users;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
@@ -3831,10 +3603,13 @@ mod tests {
     use crate::constants::RUN_LOG_SUFFIX;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::TABLE_CELL;
-    use crate::progress::CaptureRead;
-    use crate::progress::CaptureRootIndex;
-    use crate::progress::RunState;
+    use crate::progress::capture::CaptureRootIndex;
+    use crate::progress::capture_diagnostic::CaptureDiagnostic;
+    use crate::progress::capture_read::CaptureRead;
+    use crate::progress::capture_read::RunState;
+    use crate::progress::capture_roots::AccountName;
     use crate::registration::Registration;
+    use crate::root_scan::RootOwner;
     use crate::roster::FamilyHead;
     use crate::tiles::TileDemands;
 

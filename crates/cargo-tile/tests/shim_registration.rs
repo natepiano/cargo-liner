@@ -34,7 +34,7 @@ mod navigation;
 mod probe;
 #[path = "../src/processes.rs"]
 mod processes;
-#[path = "../src/progress.rs"]
+#[path = "../src/progress/mod.rs"]
 mod progress;
 #[path = "../src/random.rs"]
 mod random;
@@ -153,7 +153,7 @@ mod tests {
     use super::processes::InvocationId;
     use super::processes::Measurement;
     use super::processes::spawn_with_resolver;
-    use super::progress::CaptureRoots;
+    use super::progress::capture_roots::CaptureRoots;
     use super::registration::ParseError;
     use super::registration::Registration;
     use super::render;

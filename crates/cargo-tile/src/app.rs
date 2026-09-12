@@ -24,7 +24,7 @@ use crate::favorites_overlay::FavoritesOverlay;
 use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
-use crate::processes::AccountCaptureDirectory;
+use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;

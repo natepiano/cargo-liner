@@ -54,7 +54,7 @@ use crate::constants::CAPTURE_SHARED_MODE;
 use crate::constants::CAPTURE_STATE_DIR;
 use crate::constants::PERMISSION_BITS;
 use crate::constants::RUN_LOG_TAIL_BYTES;
-use crate::progress::CaptureFailure;
+use crate::progress::capture_diagnostic::CaptureFailure;
 use crate::registration::ParseError;
 use crate::registration::check_version;
 

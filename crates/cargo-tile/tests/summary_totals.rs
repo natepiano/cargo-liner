@@ -34,7 +34,7 @@ mod navigation;
 mod probe;
 #[path = "../src/processes.rs"]
 mod processes;
-#[path = "../src/progress.rs"]
+#[path = "../src/progress/mod.rs"]
 mod progress;
 #[path = "../src/random.rs"]
 mod random;
