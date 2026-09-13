@@ -16,6 +16,7 @@ use tui_pane::SettingsRow;
 
 use crate::app::App;
 use crate::app::CaptureStartupNotice;
+use crate::census::SelectedProof;
 use crate::config;
 use crate::constants::APPEARANCE_MODES;
 use crate::constants::CAPTURE_ASSOCIATION;
@@ -62,7 +63,6 @@ use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;
-use crate::processes::SelectedProof;
 use crate::progress::capture::CaptureGeneration;
 use crate::progress::capture::CaptureKey;
 use crate::progress::capture_diagnostic::CaptureDiagnostic;
@@ -758,6 +758,7 @@ mod tests {
     use crate::app::App;
     use crate::app::CaptureStartupNotice;
     use crate::birth_stamp::IdentityEvidence;
+    use crate::census::SelectedProof;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
     use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
     use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
@@ -765,7 +766,6 @@ mod tests {
     use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
     use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
     use crate::constants::SUPPORTED_REGISTRATION_VERSION;
-    use crate::processes::SelectedProof;
     use crate::progress::capture::CaptureGeneration;
     use crate::progress::capture::CaptureKey;
     use crate::progress::capture::CaptureRootIndex;

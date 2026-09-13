@@ -8,6 +8,8 @@ mod attract;
 mod birth_stamp;
 #[path = "../src/capture.rs"]
 mod capture;
+#[path = "../src/census/mod.rs"]
+mod census;
 #[path = "../src/cli.rs"]
 mod cli;
 #[path = "../src/config.rs"]
@@ -32,8 +34,6 @@ mod keymap;
 mod navigation;
 #[path = "../src/probe.rs"]
 mod probe;
-#[path = "../src/processes.rs"]
-mod processes;
 #[path = "../src/progress/mod.rs"]
 mod progress;
 #[path = "../src/random.rs"]
@@ -79,15 +79,15 @@ mod tests {
     use sysinfo::UpdateKind;
     use uuid::Uuid;
 
+    use super::census::CargoProcess;
+    use super::census::CompilerObservation;
+    use super::census::InvocationId;
+    use super::census::Measurement;
+    use super::census::invocation_cpu_accounting::MeasurementAbsence;
+    use super::census::process_identity::ProcessIdentity;
+    use super::census::scan::groups_with_cpu_for_test;
+    use super::census::scan::groups_with_registration_rows_for_test;
     use super::cli::Cli;
-    use super::processes::CargoProcess;
-    use super::processes::CompilerObservation;
-    use super::processes::InvocationId;
-    use super::processes::Measurement;
-    use super::processes::MeasurementAbsence;
-    use super::processes::ProcessIdentity;
-    use super::processes::groups_with_cpu_for_test;
-    use super::processes::groups_with_registration_rows_for_test;
     use super::render::summary_cpu_for_test;
     use super::roster::Roster;
     use super::roster::TrackedGroup;

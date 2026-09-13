@@ -52,6 +52,8 @@ use crate::app::App;
 use crate::app::AppPaneId;
 use crate::app::Updates;
 use crate::capture;
+use crate::census;
+use crate::census::CargoGroup;
 use crate::config;
 use crate::config::Config;
 use crate::constants::ATTRACT_FRAME_INTERVAL;
@@ -70,8 +72,6 @@ use crate::navigation::AppNavigation;
 use crate::probe;
 use crate::probe::Counted;
 use crate::probe::Phase;
-use crate::processes;
-use crate::processes::CargoGroup;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render;
 use crate::root_scan::SharedCaptureDirectory;
@@ -146,7 +146,7 @@ pub(crate) fn run() -> ExitCode { run_with_capture_parent(std::path::PathBuf::fr
 /// The executable supplies the fixed parent; PTY tests supply an isolated path.
 pub(crate) fn run_with_capture_parent(parent: PathBuf) -> ExitCode {
     run_with_scanner(move |config| {
-        processes::spawn_with_resolver(config, move || {
+        census::spawn_with_resolver(config, move || {
             crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
         })
         .0
@@ -729,23 +729,23 @@ mod tests {
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
     use crate::birth_stamp::ProcessLifetime;
+    use crate::census::CargoGroup;
+    use crate::census::CargoProcess;
+    use crate::census::CompilerObservation;
+    use crate::census::InvocationId;
+    use crate::census::Measurement;
+    use crate::census::RowProvenance;
+    use crate::census::RunStart;
+    use crate::census::SelectedProof;
+    use crate::census::VisibleParent;
+    use crate::census::command_text::CommandText;
+    use crate::census::invocation_cpu_accounting::MeasurementAbsence;
+    use crate::census::process_identity::CaptureMembership;
+    use crate::census::process_identity::ProcessIdentity;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::favorites::FavoritesFileState;
-    use crate::processes::CaptureMembership;
-    use crate::processes::CargoGroup;
-    use crate::processes::CargoProcess;
-    use crate::processes::CommandText;
-    use crate::processes::CompilerObservation;
-    use crate::processes::InvocationId;
-    use crate::processes::Measurement;
-    use crate::processes::MeasurementAbsence;
-    use crate::processes::ProcessIdentity;
-    use crate::processes::RowProvenance;
-    use crate::processes::RunStart;
-    use crate::processes::SelectedProof;
-    use crate::processes::VisibleParent;
     use crate::progress::capture::Capture;
     use crate::progress::capture::CaptureRootIndex;
     use crate::progress::capture_read::CaptureLookup;

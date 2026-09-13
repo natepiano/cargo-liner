@@ -60,6 +60,7 @@ use tui_pane::constraints_for_sizes;
 use tui_pane::frame_inner;
 use tui_pane::share_borders;
 
+use crate::census::InvocationId;
 use crate::constants::FOCUS_ANIMATION_MILLIS;
 use crate::constants::MAX_PENDING_STEPS;
 use crate::constants::MIN_INITIAL_ROWS;
@@ -71,7 +72,6 @@ use crate::constants::TABLE_CELL;
 use crate::constants::TILE_ANIMATION_MILLIS;
 use crate::constants::TILE_BORDER_ROWS;
 use crate::constants::TILE_DEMAND_STEP;
-use crate::processes::InvocationId;
 
 /// One group's claim on its column.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1615,9 +1615,9 @@ mod tests {
 
     use super::*;
     use crate::birth_stamp::ProcessLifetime;
+    use crate::census::process_identity::ProcessIdentity;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
-    use crate::processes::ProcessIdentity;
 
     /// A replacement cannot take the old invocation's cell or focus identity.
     #[test]

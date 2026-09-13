@@ -66,6 +66,15 @@ use crate::attract;
 use crate::attract::BackdropNotice;
 use crate::attract::Grid;
 use crate::attract::Work;
+use crate::census;
+use crate::census::Ancestor;
+use crate::census::CargoProcess;
+use crate::census::CompilerObservation;
+use crate::census::InvocationId;
+use crate::census::Measurement;
+use crate::census::RowProvenance;
+use crate::census::RunStart;
+use crate::census::VisibleParent;
 use crate::constants::ACCOUNT_HEADING_CLOSE;
 use crate::constants::ACCOUNT_HEADING_OPEN;
 use crate::constants::ANCESTRY_ELISION;
@@ -124,15 +133,6 @@ use crate::constants::TILE_ROWS_WIDTH_LABEL;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
 use crate::probe;
-use crate::processes;
-use crate::processes::Ancestor;
-use crate::processes::CargoProcess;
-use crate::processes::CompilerObservation;
-use crate::processes::InvocationId;
-use crate::processes::Measurement;
-use crate::processes::RowProvenance;
-use crate::processes::RunStart;
-use crate::processes::VisibleParent;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
 use crate::progress::capture_read::CaptureLookup;
@@ -1013,7 +1013,7 @@ fn drawn_ancestry(
 fn shortened(ancestor: &Ancestor) -> Ancestor {
     Ancestor {
         pid:            ancestor.pid,
-        command:        processes::command_name(&ancestor.command),
+        command:        census::command_name(&ancestor.command),
         passes_through: ancestor.passes_through,
     }
 }
@@ -2363,20 +2363,20 @@ mod tests {
 
     use super::*;
     use crate::birth_stamp::IdentityEvidence;
+    use crate::census;
+    use crate::census::CargoGroup;
+    use crate::census::CargoProcess;
+    use crate::census::InvocationId;
+    use crate::census::VisibleParent;
+    use crate::census::command_text::CommandText;
+    use crate::census::invocation_cpu_accounting::MeasurementAbsence;
+    use crate::census::process_identity::CaptureMembership;
+    use crate::census::process_identity::RunId;
+    use crate::census::scan::Compiler;
     use crate::constants::COMPILER_PROCESS_NAMES;
     use crate::constants::PHASE_TESTING;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::UNRESOLVED_TIME;
-    use crate::processes;
-    use crate::processes::CaptureMembership;
-    use crate::processes::CargoGroup;
-    use crate::processes::CargoProcess;
-    use crate::processes::CommandText;
-    use crate::processes::Compiler;
-    use crate::processes::InvocationId;
-    use crate::processes::MeasurementAbsence;
-    use crate::processes::RunId;
-    use crate::processes::VisibleParent;
     use crate::progress::capture_read::Phase;
 
     /// The state of a command compiling `done` of `total` units.
@@ -2581,8 +2581,8 @@ mod tests {
             let mut row = row(None);
             let pid = Pid::from_u32(row.process.pid);
             let shares = HashMap::from([(pid, Measurement::Unavailable(reason))]);
-            row.process.cpu =
-                processes::aggregate_cpu(&shares, std::iter::once(pid)).map(processes::cpu_label);
+            row.process.cpu = census::scan::aggregate_cpu(&shares, std::iter::once(pid))
+                .map(census::scan::cpu_label);
 
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
@@ -2603,8 +2603,8 @@ mod tests {
             let mut row = row(None);
             let pid = Pid::from_u32(row.process.pid);
             let shares = HashMap::from([(pid, Measurement::Reading(reading))]);
-            row.process.cpu =
-                processes::aggregate_cpu(&shares, std::iter::once(pid)).map(processes::cpu_label);
+            row.process.cpu = census::scan::aggregate_cpu(&shares, std::iter::once(pid))
+                .map(census::scan::cpu_label);
 
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
@@ -3101,12 +3101,13 @@ mod tests {
         ];
         let shares: HashMap<_, _> = members.into_iter().zip(samples).collect();
         let mut lead = invocation(4100, &["test"]);
-        lead.cpu = processes::aggregate_cpu(&shares, members.into_iter()).map(processes::cpu_label);
+        lead.cpu =
+            census::scan::aggregate_cpu(&shares, members.into_iter()).map(census::scan::cpu_label);
         let rest = members[1..]
             .iter()
             .map(|pid| {
                 let mut child = invocation(pid.as_u32(), &["build"]);
-                child.cpu = shares[pid].map(processes::cpu_label);
+                child.cpu = shares[pid].map(census::scan::cpu_label);
                 child
             })
             .collect();

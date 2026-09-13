@@ -15,13 +15,13 @@ use std::collections::HashSet;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::processes::Ancestor;
-use crate::processes::CargoGroup;
-use crate::processes::CargoProcess;
-use crate::processes::InvocationId;
-use crate::processes::Measurement;
-use crate::processes::RunStart;
-use crate::processes::VisibleParent;
+use crate::census::Ancestor;
+use crate::census::CargoGroup;
+use crate::census::CargoProcess;
+use crate::census::InvocationId;
+use crate::census::Measurement;
+use crate::census::RunStart;
+use crate::census::VisibleParent;
 use crate::theme;
 
 /// Whether a retained row still runs or is fading from its first missing scan.
@@ -504,18 +504,18 @@ mod tests {
     use super::*;
     use crate::birth_stamp::LifetimeEvidence;
     use crate::birth_stamp::ProcessLifetime;
+    use crate::census::CompilerObservation;
+    use crate::census::RowProvenance;
+    use crate::census::RunStart;
+    use crate::census::command_text::CommandText;
+    use crate::census::invocation_cpu_accounting::MeasurementAbsence;
+    use crate::census::process_identity::CaptureMembership;
+    use crate::census::process_identity::ProcessIdentities;
+    use crate::census::process_identity::ProcessIdentity;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
-    use crate::processes::CaptureMembership;
-    use crate::processes::CommandText;
-    use crate::processes::CompilerObservation;
-    use crate::processes::MeasurementAbsence;
-    use crate::processes::ProcessIdentities;
-    use crate::processes::ProcessIdentity;
-    use crate::processes::RowProvenance;
-    use crate::processes::RunStart;
     use crate::progress::capture_read::CaptureLookup;
     use crate::registration::WorkingDirectoryIdentity;
 

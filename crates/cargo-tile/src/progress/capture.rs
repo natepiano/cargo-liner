@@ -28,10 +28,10 @@ use super::registered_runs::registration_name;
 use crate::birth_stamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
+use crate::census::DirectAssociation;
 use crate::constants::PID_SEPARATOR;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
-use crate::processes::DirectAssociation;
 use crate::progress::capture_roots::AccountName;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
@@ -539,10 +539,10 @@ mod tests {
     use super::*;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::Observation;
+    use crate::census::DirectAssociation;
     use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
-    use crate::processes::DirectAssociation;
     use crate::progress::Progress;
     use crate::progress::capture_read::Phase;
     use crate::progress::capture_read::RunState;
@@ -568,12 +568,12 @@ mod tests {
         assert_eq!(unreadable.root_status[0].confirmed, 0);
         assert!(matches!(
             unreadable.row_source(10),
-            crate::processes::DirectAssociation::Direct(_)
+            crate::census::DirectAssociation::Direct(_)
         ));
         let unknown = Capture::take_with_observations(root.path(), |_| Observation::Unknown);
         assert!(matches!(
             unknown.row_source(10),
-            crate::processes::DirectAssociation::None
+            crate::census::DirectAssociation::None
         ));
         publish(root.path(), 10, "second", "100", CAPTURED_WAIT);
         fs::write(
@@ -584,14 +584,14 @@ mod tests {
         let ambiguous = Capture::take_with_observations(root.path(), |_| present("100"));
         assert!(matches!(
             ambiguous.row_source(10),
-            crate::processes::DirectAssociation::None
+            crate::census::DirectAssociation::None
         ));
         assert!(
             matches!(ambiguous.select(10), CaptureSelection::Ambiguous(keys) if keys.len() == 2 && keys.iter().all(|key| matches!(key.generation, CaptureGeneration::Published(_))))
         );
         assert!(matches!(
             ambiguous.row_source(11),
-            crate::processes::DirectAssociation::None
+            crate::census::DirectAssociation::None
         ));
     }
 
