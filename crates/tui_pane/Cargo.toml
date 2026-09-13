@@ -23,7 +23,6 @@ backdrop = [
   "dep:screencapturekit",
   "dep:serde_json",
   "dep:url",
-  "dep:zbus",
 ]
 clipboard = ["crossterm/osc52"]
 default = ["clipboard"]
@@ -44,8 +43,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 unicode-width      = { workspace = true }
 
 # Reconstructs Plasma's wallpaper at the selected KScreen output geometry. Window geometry and
-# wallpaper configuration come from KWin and Plasma over the session D-Bus.
+# wallpaper configuration come from KWin and Plasma over the session D-Bus. The appearance
+# subscription also uses the held-connection and stream dependencies without backdrop enabled.
 [target.'cfg(target_os = "linux")'.dependencies]
+futures-lite = { workspace = true }
 image = { workspace = true, optional = true, default-features = false, features = [
   "jpeg",
   "png",
@@ -53,7 +54,7 @@ image = { workspace = true, optional = true, default-features = false, features 
 ] }
 serde_json = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-zbus = { workspace = true, optional = true }
+zbus = { workspace = true }
 
 # Used for the IOKit GPU sampler and the P/E core cluster map. Every feature
 # but "CFData" is already in the tree via sysinfo.

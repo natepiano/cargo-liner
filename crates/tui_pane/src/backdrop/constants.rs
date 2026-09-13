@@ -380,6 +380,7 @@ pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
 /// the Linux image changes with Plasma's wallpaper. Neither needs
 /// frame-rate polling. The window moving does not go here: that is read
 /// every frame and costs a fraction of a millisecond.
+/// Linux output topology is held separately and refreshed by `KScreen` notifications.
 pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// How soon the worker is asked again after a capture that cannot be
 /// used -- one whose window has closed, moved to another display, or

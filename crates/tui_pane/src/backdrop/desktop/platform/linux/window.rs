@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use zbus::blocking::Proxy;
 use zbus::zvariant::OwnedValue;
 
+use super::SessionBus;
 use super::display;
 use super::display::Output;
 use super::session_connection;
@@ -122,7 +123,11 @@ pub(super) fn closest_size_match<'a>(
     metrics: Metrics,
 ) -> Option<&'a ListedWindow> {
     let score = |window: &ListedWindow| {
-        let scale = display::under(outputs, window.frame).map_or(1.0, |output| output.scale);
+        let scale = match display::under(outputs, window.frame) {
+            display::OutputSelection::Containing(output)
+            | display::OutputSelection::Nearest(output) => output.scale,
+            display::OutputSelection::NoActiveOutputs => 1.0,
+        };
         let text = (
             f64::from(metrics.text_area.0) / scale,
             f64::from(metrics.text_area.1) / scale,
@@ -240,13 +245,14 @@ fn registered_window(handle: u32) -> Option<ListedWindow> {
 
 /// Read `KWin`'s current facts for one UUID.
 fn query_window(uuid: &str) -> Option<WindowInfo> {
-    let proxy = Proxy::new(
-        session_connection()?,
-        KWIN_SERVICE,
-        KWIN_PATH,
-        KWIN_INTERFACE,
-    )
-    .ok()?;
+    let connection = match session_connection() {
+        SessionBus::Connected(connection) => connection,
+        SessionBus::Unavailable(failure) => {
+            tracing::debug!(%failure, "desktop query has no session bus");
+            return None;
+        },
+    };
+    let proxy = Proxy::new(&connection, KWIN_SERVICE, KWIN_PATH, KWIN_INTERFACE).ok()?;
     let properties: HashMap<String, OwnedValue> = proxy.call("getWindowInfo", &uuid).ok()?;
     if properties.is_empty() {
         return None;

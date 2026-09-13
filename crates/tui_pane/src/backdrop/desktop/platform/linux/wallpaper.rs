@@ -18,6 +18,7 @@ use zbus::blocking::Proxy;
 use zbus::zvariant::OwnedValue;
 use zbus::zvariant::Structure;
 
+use super::SessionBus;
 use super::constants::ASPECT_RATIO_DISTANCE_WEIGHT;
 use super::constants::DARK_PALETTE_THRESHOLD;
 use super::constants::DEFAULT_LOOK_AND_FEEL_PACKAGE;
@@ -181,13 +182,14 @@ impl TryFrom<i32> for FillMode {
 
 /// Read the wallpaper currently assigned to one Plasma screen.
 pub(super) fn snapshot(screen_index: u32, output: (u32, u32)) -> Option<WallpaperSnapshot> {
-    let proxy = Proxy::new(
-        session_connection()?,
-        PLASMA_SERVICE,
-        PLASMA_PATH,
-        PLASMA_INTERFACE,
-    )
-    .ok()?;
+    let connection = match session_connection() {
+        SessionBus::Connected(connection) => connection,
+        SessionBus::Unavailable(failure) => {
+            tracing::debug!(%failure, "desktop query has no session bus");
+            return None;
+        },
+    };
+    let proxy = Proxy::new(&connection, PLASMA_SERVICE, PLASMA_PATH, PLASMA_INTERFACE).ok()?;
     let settings: HashMap<String, OwnedValue> = proxy.call("wallpaper", &screen_index).ok()?;
     if setting_text(&settings, "wallpaperPlugin")? != IMAGE_PLUGIN {
         return None;

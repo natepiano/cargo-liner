@@ -50,6 +50,30 @@ pub(super) const COLOR_DISTANCE_SIDE_WEIGHT: u32 = 2 * COLOR_DISTANCE_SCALE;
 pub(super) const COLOR_DISTANCE_GREEN_WEIGHT: u32 = 4 * COLOR_DISTANCE_SCALE;
 
 // tui_pane src theme poller
+/// The portal namespace carrying the desktop appearance preference.
+#[cfg(target_os = "linux")]
+pub(super) const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
+/// Repeated connection failures retry slowly without losing eventual recovery.
 pub(super) const BACKOFF_INTERVAL: Duration = Duration::from_secs(30);
+/// Preserve the former detector's ten-failure threshold for slow retries.
 pub(super) const BACKOFF_THRESHOLD: u32 = 10;
+/// Portal color-scheme wire values: one requests dark and two requests light.
+#[cfg(target_os = "linux")]
+pub(super) const COLOR_SCHEME_DARK: u32 = 1;
+#[cfg(target_os = "linux")]
+pub(super) const COLOR_SCHEME_KEY: &str = "color-scheme";
+#[cfg(target_os = "linux")]
+pub(super) const COLOR_SCHEME_LIGHT: u32 = 2;
+/// Linux retries failed subscriptions at the former polling cadence; other
+/// platforms keep using this interval for detection.
 pub(super) const POLL_INTERVAL: Duration = Duration::from_millis(1500);
+#[cfg(target_os = "linux")]
+pub(super) const PORTAL_DESTINATION: &str = "org.freedesktop.portal.Desktop";
+#[cfg(target_os = "linux")]
+pub(super) const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+#[cfg(target_os = "linux")]
+pub(super) const SETTINGS_CHANGED: &str = "SettingChanged";
+#[cfg(target_os = "linux")]
+pub(super) const SETTINGS_INTERFACE: &str = "org.freedesktop.portal.Settings";
+#[cfg(target_os = "linux")]
+pub(super) const SETTINGS_READ: &str = "ReadOne";

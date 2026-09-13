@@ -4457,6 +4457,7 @@ dependencies = [
  "crossterm",
  "dark-light",
  "dirs",
+ "futures-lite",
  "image",
  "libc",
  "objc2-core-foundation",

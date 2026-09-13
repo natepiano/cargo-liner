@@ -1,5 +1,11 @@
 //! Constants for the KDE Wayland wallpaper backend.
 
+use std::time::Duration;
+
+// connection recovery
+/// Failed desktop services retry slowly without creating traffic on every capture tick.
+pub(super) const DESKTOP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
 // desktop configuration
 pub(super) const DEFAULT_LOOK_AND_FEEL_PACKAGE: &str = "org.kde.breeze.desktop";
 pub(super) const DEFAULT_WALLPAPER_PACKAGE: &str = "Next";
@@ -9,6 +15,20 @@ pub(super) const WALLPAPERS_PATH: &str = "wallpapers";
 pub(super) const XDG_CONFIG_DEFAULT: &str = ".config";
 pub(super) const XDG_DATA_DEFAULT: &str = ".local/share";
 pub(super) const XDG_DATA_DIRS_DEFAULT: &str = "/usr/local/share:/usr/share";
+
+// display topology
+pub(super) const DBUS_OWNER_CHANGED_SIGNAL: &str = "NameOwnerChanged";
+pub(super) const DBUS_SERVICE: &str = "org.freedesktop.DBus";
+pub(super) const KSCREEN_CHANGE_SIGNAL: &str = "configChanged";
+pub(super) const KSCREEN_COMMAND: &str = "kscreen-doctor";
+pub(super) const KSCREEN_INTERFACE: &str = "org.kde.kscreen.Backend";
+pub(super) const KSCREEN_JSON_ARGUMENT: &str = "-j";
+pub(super) const KSCREEN_LOADER_PATH: &str = "/";
+pub(super) const KSCREEN_PATH: &str = "/backend";
+pub(super) const KSCREEN_REQUEST_BACKEND: &str = "requestBackend";
+pub(super) const KSCREEN_SERVICE: &str = "org.kde.KScreen";
+/// Buffer layout and owner changes while a topology read is in progress.
+pub(super) const TOPOLOGY_SIGNAL_CAPACITY: usize = 64;
 
 // image selection
 pub(super) const ASPECT_RATIO_DISTANCE_WEIGHT: f64 = 25_000.0;
