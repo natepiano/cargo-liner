@@ -1513,6 +1513,8 @@ mod tests {
     use crate::scan;
     use crate::scan::BackgroundMsg;
     use crate::scan::CiFetchResult;
+    use crate::test_support::git_binary;
+    use crate::test_support::init_git_repo;
     use crate::tui::columns::COL_NAME;
     use crate::tui::columns::ProjectListWidths;
     use crate::tui::dismiss_target::DismissTarget;
@@ -15199,6 +15201,51 @@ mod tests {
             );
         }
 
+        fn lint_registration_app(
+            projects: &[RootItem],
+            include: &str,
+            on_discovery: DiscoveryLint,
+        ) -> TestApp {
+            let mut cargo_port_config = CargoPortConfig::default();
+            cargo_port_config.lint.enabled = LintIndicator::Enabled;
+            cargo_port_config.lint.include = vec![include.to_string()];
+            cargo_port_config.lint.on_discovery = on_discovery;
+            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
+                name:    "echo".to_string(),
+                command: "echo lint ok".to_string(),
+            }];
+            make_app_with_lint_runtime(projects, &cargo_port_config)
+        }
+
+        fn expect_registered_project_lints_after_edit(app: &mut App, project_dir: &Path) {
+            let trigger = lint::classify_event_path(
+                project_dir,
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+                &project_dir.join("src").join("lib.rs"),
+            )
+            .expect("lint trigger should classify test edit");
+            app.lint
+                .runtime()
+                .expect("lint runtime fixture should own runtime")
+                .lint_trigger(trigger);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let message = app
+                    .background
+                    .background_receiver()
+                    .recv_deadline(deadline)
+                    .expect("registered project should finish linting");
+                app.handle_bg_msg(message);
+                if matches!(
+                    crate::tui::state::Lint::status_for_path(&app.project_list, project_dir),
+                    LintStatus::Passed(_)
+                ) {
+                    break;
+                }
+            }
+        }
+
         #[test]
         fn handle_project_discovered_registers_new_root_with_lint_runtime() {
             let project_dir = tempfile::tempdir().expect("create test tempdir");
@@ -15213,49 +15260,14 @@ mod tests {
                 "pub fn demo() {}\n",
             )
             .expect("write test file");
-
-            let cache_dir = tempfile::tempdir().expect("create test tempdir");
-            let mut cargo_port_config = CargoPortConfig::default();
-            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
-            cargo_port_config.lint.enabled = LintIndicator::Enabled;
-            cargo_port_config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
-            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
-                name:    "echo".to_string(),
-                command: "echo lint ok".to_string(),
-            }];
-            let mut app = make_app_with_lint_runtime(&[], &cargo_port_config);
-
-            assert!(app.handle_project_discovered(item_from_project_dir(project_dir.path())));
-            let trigger = lint::classify_event_path(
-                project_dir.path(),
-                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-                &project_dir.path().join("src").join("lib.rs"),
-            )
-            .expect("lint trigger should classify test edit");
-            app.lint
-                .runtime()
-                .expect("lint runtime fixture should own runtime")
-                .lint_trigger(trigger);
-
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            let mut passed = false;
-            while std::time::Instant::now() < deadline {
-                app.poll_background();
-                if matches!(
-                    crate::tui::state::Lint::status_for_path(&app.project_list, project_dir.path()),
-                    LintStatus::Passed(_)
-                ) {
-                    passed = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            drop(app);
-            assert!(
-                passed,
-                "newly discovered project should have an active lint worker for later edits"
+            let mut app = lint_registration_app(
+                &[],
+                &project_dir.path().to_string_lossy(),
+                DiscoveryLint::Deferred,
             );
+            assert!(app.handle_project_discovered(item_from_project_dir(project_dir.path())));
+            expect_registered_project_lints_after_edit(&mut app, project_dir.path());
+            drop(app);
         }
 
         #[test]
@@ -15265,61 +15277,38 @@ mod tests {
             let linked_dir = tmp.path().join("test");
             init_git_project(&primary_dir, "bevy_hana", false);
             add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
-
-            let cache_dir = tempfile::tempdir().expect("create test tempdir");
-            let mut cargo_port_config = CargoPortConfig::default();
-            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
-            cargo_port_config.lint.enabled = LintIndicator::Enabled;
-            cargo_port_config.lint.include = vec!["bevy_hana".to_string()];
-            cargo_port_config.lint.on_discovery = DiscoveryLint::Immediate;
-            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
-                name:    "echo".to_string(),
-                command: "echo lint ok".to_string(),
-            }];
             let primary_item = item_from_project_dir(&primary_dir);
-            let mut app = make_app_with_lint_runtime(&[primary_item], &cargo_port_config);
+            let mut app =
+                lint_registration_app(&[primary_item], "bevy_hana", DiscoveryLint::Immediate);
 
             assert!(app.handle_project_discovered(item_from_project_dir(&linked_dir)));
-            let quiet_deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
-            while std::time::Instant::now() < quiet_deadline {
-                app.poll_background();
-                assert!(matches!(
-                    crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
-                    LintStatus::NoLog
-                ));
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            let trigger = lint::classify_event_path(
-                &linked_dir,
-                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-                &linked_dir.join("src").join("lib.rs"),
-            )
-            .expect("lint trigger should classify test edit");
             app.lint
                 .runtime()
                 .expect("lint runtime fixture should own runtime")
-                .lint_trigger(trigger);
-
+                .assert_idle_worker_for_test(&linked_dir);
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            let mut passed = false;
-            while std::time::Instant::now() < deadline {
-                app.poll_background();
-                if matches!(
-                    crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
-                    LintStatus::Passed(_)
-                ) {
-                    passed = true;
+            loop {
+                let message = app
+                    .background
+                    .background_receiver()
+                    .recv_deadline(deadline)
+                    .expect("linked worker should publish startup status");
+                assert!(
+                    !matches!(&message, BackgroundMsg::LintStatus { path, .. } if path.as_path() == linked_dir)
+                );
+                let registered = matches!(&message, BackgroundMsg::LintStartupStatus { path, .. } if path.as_path() == linked_dir);
+                app.handle_bg_msg(message);
+                if registered {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-
+            app.poll_background();
+            assert!(matches!(
+                crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
+                LintStatus::NoLog
+            ));
+            expect_registered_project_lints_after_edit(&mut app, &linked_dir);
             drop(app);
-            assert!(
-                passed,
-                "linked worktree should be eligible through the primary checkout lint filter"
-            );
         }
 
         #[test]
@@ -15329,18 +15318,9 @@ mod tests {
             let linked_dir = tmp.path().join("test");
             init_git_project(&primary_dir, "bevy_hana", false);
             add_git_worktree(&primary_dir, &linked_dir, "test/bevy_hana");
-
-            let cache_dir = tempfile::tempdir().expect("create test tempdir");
-            let mut cargo_port_config = CargoPortConfig::default();
-            cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
-            cargo_port_config.lint.enabled = LintIndicator::Enabled;
-            cargo_port_config.lint.include = vec!["bevy_hana".to_string()];
-            cargo_port_config.lint.commands = vec![crate::config::LintCommandConfig {
-                name:    "echo".to_string(),
-                command: "echo lint ok".to_string(),
-            }];
             let primary_item = item_from_project_dir(&primary_dir);
-            let mut app = make_app_with_lint_runtime(&[primary_item], &cargo_port_config);
+            let mut app =
+                lint_registration_app(&[primary_item], "bevy_hana", DiscoveryLint::Deferred);
 
             let linked_path = linked_dir.to_string_lossy().to_string();
             let stale_discovery = RootItem::Rust(RustProject::Package(make_package_raw(
@@ -15350,38 +15330,8 @@ mod tests {
             )));
             assert!(app.handle_project_discovered(stale_discovery));
             assert!(app.handle_project_refreshed(item_from_project_dir(&linked_dir)));
-
-            let trigger = lint::classify_event_path(
-                &linked_dir,
-                EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-                &linked_dir.join("src").join("lib.rs"),
-            )
-            .expect("lint trigger should classify test edit");
-
-            app.lint
-                .runtime()
-                .expect("lint runtime fixture should own runtime")
-                .lint_trigger(trigger);
-
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            let mut passed = false;
-            while std::time::Instant::now() < deadline {
-                app.poll_background();
-                if matches!(
-                    crate::tui::state::Lint::status_for_path(&app.project_list, &linked_dir),
-                    LintStatus::Passed(_)
-                ) {
-                    passed = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-
+            expect_registered_project_lints_after_edit(&mut app, &linked_dir);
             drop(app);
-            assert!(
-                passed,
-                "refreshed linked worktree should register a lint worker for later edits"
-            );
         }
 
         #[test]
@@ -16177,14 +16127,6 @@ mod tests {
         app.ensure_visible_rows_cached();
     }
 
-    fn git_binary() -> &'static str {
-        if Path::new("/usr/bin/git").is_file() {
-            "/usr/bin/git"
-        } else {
-            "git"
-        }
-    }
-
     fn manifest_contents(name: &str, workspace: bool) -> String {
         let workspace_section = if workspace { "\n[workspace]\n" } else { "" };
         format!(
@@ -16203,31 +16145,7 @@ mod tests {
             .expect("write test file");
         std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").expect("write test file");
 
-        Command::new(git_binary())
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["config", "user.name", "cargo-port-tests"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["config", "user.email", "cargo-port-tests@example.com"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["add", "."])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["commit", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
+        init_git_repo(dir);
     }
 
     fn init_workspace_git_project_with_member(dir: &Path, name: &str, member_name: &str) {
@@ -16249,31 +16167,7 @@ mod tests {
         std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
             .expect("write test file");
 
-        Command::new(git_binary())
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["config", "user.name", "cargo-port-tests"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["config", "user.email", "cargo-port-tests@example.com"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["add", "."])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
-        Command::new(git_binary())
-            .args(["commit", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .expect("run git command in test project");
+        init_git_repo(dir);
     }
 
     fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {

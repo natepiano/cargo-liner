@@ -71,15 +71,18 @@ use crate::ledger::BypassedAction;
 use crate::ledger::ClaimSource;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
+use crate::ledger::GATE_DEADLINE_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
 use crate::ledger::NonEmptyReservationPurpose;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::WorkPlanReference;
+use crate::ledger::shortened_by_environment;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
@@ -1504,15 +1507,31 @@ fn write_reference_transaction_diagnostic(arguments: Arguments<'_>) {
     let _ = writeln!(std::io::stderr().lock(), "{arguments}");
 }
 
+const TOTAL_GATE_DEADLINE: Duration = Duration::from_secs(10);
+
+fn gate_total_deadline_diagnostic() -> String {
+    format!(
+        "cargo-berth trunk gate exhausted its {}-second total deadline; no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately.",
+        TOTAL_GATE_DEADLINE.as_secs(),
+    )
+}
+
+fn gate_lock_deadline_diagnostic() -> String {
+    format!(
+        "cargo-berth trunk gate exhausted its {}-second lock deadline; the ledger was busy and no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately.",
+        MUTATING_VERB_CONTENTION_TOLERANCE.as_secs(),
+    )
+}
+
 fn run_reference_transaction(
     phase: ReferenceTransactionPhase,
     trunk_reference: FullRefName,
 ) -> ExitCode {
-    const TOTAL_GATE_DEADLINE: Duration = Duration::from_secs(10);
-
     if gate::permit::environment_bypass_requested() {
         return run_environment_bypassed_reference_transaction(phase, &trunk_reference);
     }
+    let total_gate_deadline =
+        shortened_by_environment(GATE_DEADLINE_ENVIRONMENT, TOTAL_GATE_DEADLINE);
     let started_at = std::time::Instant::now();
     let transaction = match read_reference_transaction(phase) {
         Ok(transaction) => transaction,
@@ -1541,7 +1560,7 @@ fn run_reference_transaction(
     };
     let issuing_directory =
         env::var_os(REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT).map(PathBuf::from);
-    let remaining = TOTAL_GATE_DEADLINE.saturating_sub(started_at.elapsed());
+    let remaining = total_gate_deadline.saturating_sub(started_at.elapsed());
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let gate_invocation_directory = invocation_directory.clone();
     let gate_worker = std::thread::spawn(move || {
@@ -1558,7 +1577,8 @@ fn run_reference_transaction(
         Ok(Err(error)) => return reference_transaction_error(&error),
         Err(RecvTimeoutError::Timeout) => {
             write_reference_transaction_diagnostic(format_args!(
-                "cargo-berth trunk gate exhausted its 10-second total deadline; no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+                "{}",
+                gate_total_deadline_diagnostic()
             ));
             return BerthExit::BlockedByContention.into();
         },
@@ -1900,7 +1920,8 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
         },
         GateError::Transaction(LedgerTransactionError::LockContention) => {
             write_reference_transaction_diagnostic(format_args!(
-                "cargo-berth trunk gate exhausted its 10-second lock deadline; the ledger was busy and no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately."
+                "{}",
+                gate_lock_deadline_diagnostic()
             ));
             BerthExit::BlockedByContention.into()
         },
@@ -2060,11 +2081,15 @@ mod tests {
     use super::CommandVerb;
     use super::HookCommand;
     use super::PostCommitHookRequest;
+    use super::TOTAL_GATE_DEADLINE;
     use super::command_response_rendering;
     use super::exit_for_parser_error;
+    use super::gate_lock_deadline_diagnostic;
+    use super::gate_total_deadline_diagnostic;
     use super::without_subcommand_name;
     use crate::coordination_identity::RecoveryCommandLine;
     use crate::exit::BerthExit;
+    use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
     use crate::output;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
@@ -2244,6 +2269,24 @@ mod tests {
         Unquoted,
         SingleQuoted,
         DoubleQuoted,
+    }
+
+    #[test]
+    fn gate_deadline_diagnostics_keep_production_budgets() {
+        assert_eq!(
+            gate_total_deadline_diagnostic(),
+            format!(
+                "cargo-berth trunk gate exhausted its {}-second total deadline; no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately.",
+                TOTAL_GATE_DEADLINE.as_secs(),
+            )
+        );
+        assert_eq!(
+            gate_lock_deadline_diagnostic(),
+            format!(
+                "cargo-berth trunk gate exhausted its {}-second lock deadline; the ledger was busy and no integration decision was made. Retry the git command, or set CARGO_BERTH_BYPASS=1 to proceed immediately.",
+                MUTATING_VERB_CONTENTION_TOLERANCE.as_secs(),
+            )
+        );
     }
 
     #[test]

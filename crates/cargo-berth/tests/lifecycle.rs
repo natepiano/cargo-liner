@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -36,6 +37,12 @@ use tempfile::tempdir;
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const FAILED_REFERENCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FAILED_REFERENCE";
+const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
+const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
+/// CI scheduling headroom, kept below the production ten-second deadline.
+const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
+const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_UNSPAWNABLE_DIAGNOSTIC: &str = "The reservation ledger could not be read: could not run git: No such file or directory (os error 2)";
 const GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -861,13 +868,14 @@ fn lock_contention_is_retryable_while_corrupt_journal_is_unreadable() {
         .expect("mutation lock should open");
     lock_file.lock().expect("mutation lock should lock");
 
-    let init_contention = run_berth(repository.path(), &["init", "--json"]);
+    let init_contention = run_contended_berth(repository.path(), &["init", "--json"]);
     let init_contention_json = json_output(&init_contention);
     assert_eq!(init_contention.status.code(), Some(6));
     assert_eq!(init_contention_json["exit_code"], 6);
     assert_eq!(init_contention_json["status"], "contention");
 
-    let contention = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    let contention =
+        run_contended_berth(repository.path(), &["release", &reservation_id, "--json"]);
     let contention_json = json_output(&contention);
     assert_eq!(contention.status.code(), Some(6));
     assert_eq!(contention_json["exit_code"], 6);
@@ -1210,6 +1218,41 @@ fn commit_file(repository_root: &Path, path: &str, contents: &str, message: &str
     fs::write(file_path, contents).expect("committed file should write");
     git(repository_root, &["add", path]);
     git(repository_root, &["commit", "--quiet", "-m", message]);
+}
+
+fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
+    let ready_directory = tempdir().expect("lock readiness directory should exist");
+    let ready_path = ready_directory.path().join("ready");
+    // Include startup: observing readiness happens after the child's deadline starts.
+    let started_at = Instant::now();
+    let mut child = Command::new(BERTH_EXECUTABLE)
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(
+            LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+        )
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("contending cargo-berth should start");
+    wait_for_path(&ready_path, &mut child);
+    let output = child
+        .wait_with_output()
+        .expect("contending cargo-berth should finish");
+    let elapsed = started_at.elapsed();
+    assert!(
+        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        "contention returned too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        "contention took too long: {elapsed:?}"
+    );
+    output
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {

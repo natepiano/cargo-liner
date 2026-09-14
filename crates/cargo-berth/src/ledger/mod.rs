@@ -20,8 +20,10 @@ mod worktree_context;
 
 pub(crate) use authorization::EditAuthorization;
 pub(crate) use authorization::ResolvedEditAuthorization;
+pub(crate) use constants::GATE_DEADLINE_ENVIRONMENT;
 pub(crate) use constants::HARNESS_SESSION_ENVIRONMENT;
 pub(crate) use constants::MUTATING_VERB_CONTENTION_TOLERANCE;
+pub(crate) use constants::shortened_by_environment;
 pub(crate) use coordination_run_marker::CoordinationRunMarkerRemoval;
 pub(crate) use error::LedgerCommittedActionError;
 pub(crate) use error::LedgerError;

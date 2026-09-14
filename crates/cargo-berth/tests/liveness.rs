@@ -34,6 +34,12 @@ use std::time::Instant;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
+const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
+/// CI scheduling headroom, kept below the production ten-second deadline.
+const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
+const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
@@ -952,9 +958,12 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
     );
     resolution.wait_until_paused();
 
-    let contender = run_berth(
-        repository.path(),
-        &["claim", "file:contender", "--run", SECOND_RUN, "--json"],
+    let contender = run_contended_berth(
+        Command::new(BERTH_EXECUTABLE)
+            .current_dir(repository.path())
+            .args(["claim", "file:contender", "--run", SECOND_RUN, "--json"])
+            .env_remove(RUN_ENVIRONMENT)
+            .env_remove(SESSION_ENVIRONMENT),
     );
 
     assert_eq!(contender.status.code(), Some(6));
@@ -1000,10 +1009,12 @@ fn identity_clear_session_reports_mutation_lock_contention() {
     );
     resolution.wait_until_paused();
 
-    let clear_session = run_berth_with_session(
-        repository.path(),
-        &["identity", "clear-session", "--json"],
-        session_id,
+    let clear_session = run_contended_berth(
+        Command::new(BERTH_EXECUTABLE)
+            .current_dir(repository.path())
+            .args(["identity", "clear-session", "--json"])
+            .env_remove(RUN_ENVIRONMENT)
+            .env(SESSION_ENVIRONMENT, session_id),
     );
 
     assert_eq!(clear_session.status.code(), Some(6));
@@ -1555,6 +1566,37 @@ fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
     } else {
         worktree_root.join(administrative_path)
     }
+}
+
+fn run_contended_berth(command: &mut Command) -> Output {
+    let ready_directory = tempdir().expect("lock readiness directory should exist");
+    let ready_path = ready_directory.path().join("ready");
+    // Include startup: observing readiness happens after the child's deadline starts.
+    let started_at = Instant::now();
+    let mut child = command
+        .env(
+            LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+        )
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("contending cargo-berth should start");
+    wait_for_path(&ready_path, &mut child);
+    let output = child
+        .wait_with_output()
+        .expect("contending cargo-berth should finish");
+    let elapsed = started_at.elapsed();
+    assert!(
+        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        "contention returned too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        "contention took too long: {elapsed:?}"
+    );
+    output
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {

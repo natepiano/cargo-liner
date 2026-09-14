@@ -38,6 +38,12 @@ use std::time::Instant;
 use serde_json::Value;
 use tempfile::TempDir;
 
+const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
+const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
+/// CI scheduling headroom, kept below the production ten-second deadline.
+const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
+const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const EVIDENCE_SESSION: &str = "evidence-session";
 const AMBIENT_SESSION: &str = "ambient-session";
@@ -327,8 +333,9 @@ fn a_contended_ledger_states_the_engine_message() -> TestResult {
     competing_lock
         .try_lock()
         .map_err(|_| failure("the competing mutation lock should start free"))?;
-    let output = run_pre_tool_use(
+    let output = run_contended_hook(
         repository.path(),
+        "pre-tool-use",
         &edit_payload(repository.path(), "contended.rs", Some("contended-session")),
     )?;
     drop(competing_lock);
@@ -2369,6 +2376,52 @@ fn run_post_tool_use_stdin(working_directory: &Path, stdin: &[u8]) -> TestResult
     )
 }
 
+fn run_contended_hook(repository_root: &Path, event: &str, payload: &Value) -> TestResult<Output> {
+    let ready_directory = TempDir::new()?;
+    let ready_path = ready_directory.path().join("ready");
+    let started_at = Instant::now();
+    let mut child = Command::new(BERTH_EXECUTABLE)
+        .args(["hook", event])
+        .current_dir(repository_root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env(
+            LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+        )
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("hook stdin should be piped"))?
+        .write_all(&serde_json::to_vec(payload)?)?;
+    while !ready_path.exists() && started_at.elapsed() < SCHEDULING_ALLOWANCE {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !ready_path.exists() {
+        child.kill()?;
+        child.wait()?;
+        return Err(failure(
+            "contending hook did not report mutation lock readiness",
+        ));
+    }
+    let output = child.wait_with_output()?;
+    let elapsed = started_at.elapsed();
+    assert!(
+        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        "contention returned too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        "contention took too long: {elapsed:?}"
+    );
+    Ok(output)
+}
+
 fn run_session_start(
     working_directory: &Path,
     payload: &Value,
@@ -3030,10 +3083,10 @@ fn session_start_states_the_ledger_contention_presentation() -> TestResult {
         .try_lock()
         .map_err(|_| failure("the competing mutation lock should start free"))?;
 
-    let output = run_session_start(
+    let output = run_contended_hook(
         repository.path(),
+        "session-start",
         &session_start_payload(repository.path(), Some(BOARD_SESSION)),
-        &AmbientHarnessSession::Absent,
     )?;
     drop(competing_lock);
 

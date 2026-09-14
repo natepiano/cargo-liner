@@ -65,6 +65,10 @@ pub(super) struct ProjectWorker {
 pub(super) struct PauseState {
     globally_paused: AtomicBool,
     paused_projects: Mutex<HashSet<AbsolutePath>>,
+    #[cfg(test)]
+    worker_starts:   Mutex<HashMap<AbsolutePath, WorkerStart>>,
+    #[cfg(test)]
+    worker_started:  std::sync::Condvar,
 }
 
 impl PauseState {
@@ -610,6 +614,18 @@ struct WorkerContext {
 impl WorkerContext {
     fn run(self) {
         let mut scheduled_run = self.start.initial_scheduled_run();
+        #[cfg(test)]
+        {
+            let start = if scheduled_run.is_some() {
+                WorkerStart::RunNow
+            } else {
+                WorkerStart::Idle
+            };
+            if let Ok(mut starts) = self.pause_state.worker_starts.lock() {
+                starts.insert(self.project_root.clone(), start);
+                self.pause_state.worker_started.notify_all();
+            }
+        }
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return;
@@ -819,6 +835,30 @@ mod tests {
     use crate::lint::trigger::LintEventKind::CreateOrModify;
     use crate::lint::trigger::LintTriggerKind::RustSource;
     use crate::lint::trigger::LintTriggerKind::Startup;
+
+    impl RuntimeHandle {
+        /// Wait for worker initialization and inspect its actual initial schedule.
+        pub(crate) fn assert_idle_worker_for_test(&self, project_root: &Path) {
+            let (starts, _) = self
+                .pause_state
+                .worker_started
+                .wait_timeout_while(
+                    self.pause_state
+                        .worker_starts
+                        .lock()
+                        .expect("worker starts lock"),
+                    Duration::from_secs(5),
+                    |starts| !starts.contains_key(project_root),
+                )
+                .expect("worker startup signal");
+            assert!(
+                matches!(starts.get(project_root), Some(WorkerStart::Idle)),
+                "worker should initialize without a scheduled lint: {}",
+                project_root.display()
+            );
+            drop(starts);
+        }
+    }
 
     fn request(path: &str, abs_path: &Path) -> RegisterProjectRequest {
         RegisterProjectRequest::new(path, AbsolutePath::from(abs_path))
@@ -1161,24 +1201,28 @@ mod tests {
         let runtime = spawn.handle.expect("runtime handle");
         runtime.sync_projects(vec![request("~/rust/demo", project_dir.path())]);
 
-        let deadline = Instant::now() + Duration::from_secs(1);
+        runtime.assert_idle_worker_for_test(project_dir.path());
+        drop(runtime);
+        spawn
+            .supervisor
+            .expect("supervisor handle")
+            .join()
+            .expect("supervisor exits");
         let mut saw_cached_passed = false;
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match background_rx.recv_timeout(remaining) {
-                Ok(BackgroundMsg::LintStartupStatus { path, status })
+        for message in background_rx.try_iter() {
+            match message {
+                BackgroundMsg::LintStartupStatus { path, status }
                     if path.as_path() == project_dir.path()
                         && matches!(status, CachedLintStatus::Passed(_)) =>
                 {
                     saw_cached_passed = true;
                 },
-                Ok(BackgroundMsg::LintStatus { path, status, .. })
+                BackgroundMsg::LintStatus { path, status, .. }
                     if path.as_path() == project_dir.path() =>
                 {
                     panic!("sync should not run lint command, got {status:?}");
                 },
-                Ok(_) => {},
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+                _ => {},
             }
         }
 
@@ -1212,28 +1256,28 @@ mod tests {
         let runtime = spawn.handle.expect("runtime handle");
         runtime.sync_projects(vec![request("~/rust/demo", project_dir.path())]);
 
-        // The supervisor no longer runs lints on sync — the app drives any
-        // startup lints after startup completes. Sync only hydrates the
-        // cached startup status (`NoLog` here). The `echo` command would
-        // resolve in well under this window if sync still ran it.
-        let deadline = Instant::now() + Duration::from_millis(500);
+        runtime.assert_idle_worker_for_test(project_dir.path());
+        drop(runtime);
+        spawn
+            .supervisor
+            .expect("supervisor handle")
+            .join()
+            .expect("supervisor exits");
         let mut saw_nolog = false;
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match background_rx.recv_timeout(remaining) {
-                Ok(BackgroundMsg::LintStartupStatus { path, status })
+        for message in background_rx.try_iter() {
+            match message {
+                BackgroundMsg::LintStartupStatus { path, status }
                     if path.as_path() == project_dir.path()
                         && matches!(status, CachedLintStatus::NoLog) =>
                 {
                     saw_nolog = true;
                 },
-                Ok(BackgroundMsg::LintStatus { path, status, .. })
+                BackgroundMsg::LintStatus { path, status, .. }
                     if path.as_path() == project_dir.path() =>
                 {
-                    panic!("sync must not run lint under deferred startup, got {status:?}");
+                    panic!("sync should not run lint command, got {status:?}");
                 },
-                Ok(_) => {},
-                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+                _ => {},
             }
         }
 

@@ -221,11 +221,11 @@ fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     watch_rx: Receiver<WatcherMsg>,
     notify_rx: StdReceiver<notify::Result<Event>>,
     mut watcher_guard: W,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let ctx = startup.register(&mut watcher_guard);
         watcher_loop(&ctx, &watch_rx, &notify_rx, watcher_guard);
-    });
+    })
 }
 
 /// Per-project tracking state.
@@ -565,6 +565,8 @@ mod tests {
     use crate::project::RustProject;
     use crate::scan;
     use crate::test_support;
+    use crate::test_support::git_binary;
+    use crate::test_support::init_git_repo;
     use crate::watcher::events;
     use crate::watcher::events::EventContext;
     use crate::watcher::events::WatcherDispatchContext;
@@ -1237,8 +1239,11 @@ mod tests {
         /// delegate the trait to the inner watcher and use Drop on
         /// the outer type to prove the guard outlives the thread.
         struct DropSignal {
-            flag:  Arc<AtomicBool>,
-            inner: NoopWatcher,
+            flag:              Arc<AtomicBool>,
+            inner:             NoopWatcher,
+            registration_path: AbsolutePath,
+            registration_tx:   mpsc::Sender<()>,
+            resume_rx:         StdReceiver<()>,
         }
 
         impl Drop for DropSignal {
@@ -1259,6 +1264,10 @@ mod tests {
             }
 
             fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+                if path == self.registration_path.as_path() {
+                    let _ = self.registration_tx.send(());
+                    let _ = self.resume_rx.recv();
+                }
                 self.inner.watch(path, mode)
             }
 
@@ -1277,9 +1286,15 @@ mod tests {
         }
 
         let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (registration_tx, registration_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let watch_root = tempfile::tempdir().expect("watch root");
         let watcher_guard = DropSignal {
-            flag:  std::sync::Arc::clone(&dropped),
+            flag: std::sync::Arc::clone(&dropped),
             inner: NoopWatcher,
+            registration_path: AbsolutePath::from(watch_root.path()),
+            registration_tx,
+            resume_rx,
         };
         let (watch_tx, watch_rx) = channel::unbounded();
         let (notify_tx, notify_rx) = mpsc::channel();
@@ -1287,8 +1302,15 @@ mod tests {
         let client =
             HttpClient::new(test_support::test_runtime().handle().clone()).expect("http client");
 
+        watch_tx
+            .send(WatcherMsg::Register(WatchRequest {
+                project_label: "watcher lifetime".to_string(),
+                abs_path:      AbsolutePath::from(watch_root.path()),
+                repo_root:     None,
+            }))
+            .expect("queue registration before watcher starts");
         let client_for_dispatch = client.clone();
-        spawn_watcher_thread(
+        let watcher_thread = spawn_watcher_thread(
             WatcherLoopStartup {
                 watch_roots: Vec::new(),
                 background_tx,
@@ -1304,7 +1326,8 @@ mod tests {
             watcher_guard,
         );
 
-        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
+        // The signal comes from dynamic registration inside watcher_loop.
+        wait_for_completion(&registration_rx);
         assert!(
             !dropped.load(std::sync::atomic::Ordering::SeqCst),
             "watcher guard dropped before watcher thread shutdown"
@@ -1312,7 +1335,8 @@ mod tests {
 
         drop(notify_tx);
         drop(watch_tx);
-        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
+        drop(resume_tx);
+        watcher_thread.join().expect("watcher thread exits");
         assert!(
             dropped.load(std::sync::atomic::Ordering::SeqCst),
             "watcher guard should drop after watcher thread exits"
@@ -2873,72 +2897,6 @@ mod tests {
             let dirs = scan::resolve_include_dirs(&include_dirs);
             assert_eq!(dirs, expected, "{name}");
         }
-    }
-
-    #[test]
-    fn register_watch_roots_reports_elapsed_for_representative_roots() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let rust_root = tmp.path().join("rust");
-        let claude_root = tmp.path().join(".claude");
-        std::fs::create_dir_all(&rust_root).expect("create rust root");
-        std::fs::create_dir_all(&claude_root).expect("create claude root");
-        let watch_dirs = vec![
-            AbsolutePath::from(rust_root),
-            AbsolutePath::from(claude_root),
-        ];
-        let (notify_tx, _notify_rx) = mpsc::channel();
-        let handler = move |res| {
-            let _ = notify_tx.send(res);
-        };
-        let mut watcher = notify::recommended_watcher(handler).expect("recommended watcher");
-        let started = Instant::now();
-
-        roots::register_watch_roots(&mut watcher, &watch_dirs);
-
-        eprintln!(
-            "register_watch_roots_elapsed_ms={}",
-            tui_pane::perf_log_ms(started.elapsed().as_millis())
-        );
-    }
-
-    // ── fire_disk_updates ───────────────────────────────────────────
-
-    /// Helper: create a git repo in `dir` with one commit so
-    /// `LocalGitInfo::get` returns `Some`.
-    fn git_binary() -> &'static str {
-        if Path::new("/usr/bin/git").is_file() {
-            "/usr/bin/git"
-        } else {
-            "git"
-        }
-    }
-
-    fn init_git_repo(dir: &Path) {
-        Command::new(git_binary())
-            .args(["init"])
-            .current_dir(dir)
-            .output()
-            .expect("git init");
-        Command::new(git_binary())
-            .args(["config", "user.name", "cargo-port-tests"])
-            .current_dir(dir)
-            .output()
-            .expect("git config user.name");
-        Command::new(git_binary())
-            .args(["config", "user.email", "cargo-port-tests@example.com"])
-            .current_dir(dir)
-            .output()
-            .expect("git config user.email");
-        Command::new(git_binary())
-            .args(["add", "."])
-            .current_dir(dir)
-            .output()
-            .expect("git add");
-        Command::new(git_binary())
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(dir)
-            .output()
-            .expect("git commit");
     }
 
     fn manifest_contents(name: &str, workspace: bool) -> String {

@@ -46,6 +46,7 @@ jobs:
               - 'rustfmt.toml'
               - 'taplo.toml'
               - '.cargo/**'
+              - '.config/**'
               - '.github/workflows/ci.yml'
             # Every crate except cargo-mend, matched by exclusion so a new crate
             # is covered the moment it lands. cargo-mend is split out because it
@@ -199,6 +200,14 @@ jobs:
           df -h
 
       # Build only test targets here. Example compilation belongs in Build Check.
+      - name: Build test targets
+        run: nix develop -c cargo nextest run --all-features --workspace --exclude cargo-mend --tests --no-run
+
+        env:
+          WGPU_BACKEND: "gl"
+          WINIT_UNIX_BACKEND: "x11"
+          RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+
       - name: Run test targets
         run: nix develop -c cargo nextest run --all-features --workspace --exclude cargo-mend --tests
 
@@ -255,6 +264,9 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
+
+      - name: Build test targets
+        run: cargo nextest run -p cargo-mend --all-features --tests --no-run
 
       - name: Run test targets
         run: cargo nextest run -p cargo-mend --all-features --tests
@@ -367,6 +379,9 @@ jobs:
 
       - name: Build cargo-tile
         run: cargo build -p cargo-tile --bins
+
+      - name: Build test targets
+        run: cargo nextest run --no-fail-fast -p cargo-tile --bins --tests --no-run
 
       - name: Test cargo-tile
         run: cargo nextest run --no-fail-fast -p cargo-tile --bins --tests

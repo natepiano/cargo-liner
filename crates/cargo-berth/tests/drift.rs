@@ -7,6 +7,7 @@
 
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -30,6 +31,7 @@ use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -37,6 +39,11 @@ use tempfile::tempdir;
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BERTH_BINARY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_BINARY";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
+const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
+const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
+/// CI scheduling headroom, kept below the production ten-second deadline.
+const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
+
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FOREIGN_ROOT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FOREIGN_ROOT";
 const GIT_BINARY: &str = "git";
@@ -3518,9 +3525,40 @@ fn post_commit_reports_corrupt_ledger_and_lock_deadline_without_removing_the_com
     let lock =
         File::open(locked_repository.path().join(LOCK_PATH)).expect("mutation lock should open");
     lock.lock().expect("test should hold mutation lock");
-    let locked_commit = git_output(
-        locked_repository.path(),
-        &["commit", "-m", "contended drift check"],
+    let ready_directory = tempdir().expect("lock readiness directory should exist");
+    let ready_path = ready_directory.path().join("ready");
+    let started_at = Instant::now();
+    let locked_commit = git_command(BERTH_EXECUTABLE)
+        .args([
+            "--no-optional-locks",
+            "commit",
+            "-m",
+            "contended drift check",
+        ])
+        .current_dir(locked_repository.path())
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env(
+            LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+            LOCK_CONTENTION_TOLERANCE.as_millis().to_string(),
+        )
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("contended commit should start");
+    wait_until_held_at_the_mutation_lock(&ready_path);
+    let locked_commit = locked_commit
+        .wait_with_output()
+        .expect("contended commit should finish");
+    let elapsed = started_at.elapsed();
+    assert!(
+        elapsed >= LOCK_CONTENTION_TOLERANCE,
+        "contention returned too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < LOCK_CONTENTION_TOLERANCE + SCHEDULING_ALLOWANCE,
+        "contention took too long: {elapsed:?}"
     );
     lock.unlock().expect("test should release mutation lock");
     assert!(locked_commit.status.success());

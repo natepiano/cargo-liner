@@ -31,6 +31,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -40,7 +41,15 @@ use tempfile::tempdir;
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BYPASSED_MERGE_IDENTITY_ENVIRONMENT: &str = "CARGO_BERTH_BYPASSED_MERGE_ID";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
+const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
+const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
+/// CI scheduling headroom, kept below the production ten-second deadline.
+const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
+const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+const GATE_DEADLINE: Duration = Duration::from_secs(1);
+const GATE_DEADLINE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GATE_DEADLINE_MS";
 const GIT_BINARY: &str = "git";
 const HOOK_PATH: &str = ".git/hooks/reference-transaction";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
@@ -2467,40 +2476,31 @@ fn hook_boundary_reports_missing_and_corrupt_ledgers_with_exit_four() {
 }
 
 #[test]
-fn hook_lock_contention_uses_one_ten_second_deadline() {
-    let repository = initialized_repository();
-    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let feature_root = add_worktree(repository.path(), worktrees.path(), "lock-deadline");
-    let feature_head = commit_work(
-        &feature_root,
-        "lock-deadline.txt",
-        "lock deadline\n",
-        "lock deadline work",
+fn hook_lock_contention_uses_one_shortened_lock_deadline() {
+    let blocked = run_gate_with_blocked_mutation_lock(
+        LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+        LOCK_CONTENTION_TOLERANCE,
     );
-    let lock_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(repository.path().join(LOCK_PATH))
-        .expect("mutation lock should open");
-    lock_file
-        .try_lock()
-        .expect("test should hold mutation lock");
-    let started_at = Instant::now();
-
-    let blocked = run_private_hook(
-        repository.path(),
-        "prepared",
-        &format!("{base} {feature_head} refs/heads/main\n"),
-    );
-    let elapsed = started_at.elapsed();
-    assert_eq!(blocked.status.code(), Some(6));
-    assert!(elapsed >= Duration::from_secs(9));
-    assert!(elapsed < Duration::from_secs(15));
     let diagnostic = String::from_utf8_lossy(&blocked.stderr);
+    assert!(
+        diagnostic.contains("lock deadline; the ledger was busy"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("total deadline"), "{diagnostic}");
     assert!(diagnostic.contains("10-second"));
     assert!(diagnostic.contains("CARGO_BERTH_BYPASS=1"));
-    std::mem::drop(lock_file);
+}
+
+#[test]
+fn hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock() {
+    let blocked = run_gate_with_blocked_mutation_lock(GATE_DEADLINE_ENVIRONMENT, GATE_DEADLINE);
+    let diagnostic = String::from_utf8_lossy(&blocked.stderr);
+    assert!(
+        diagnostic
+            .contains("exhausted its 10-second total deadline; no integration decision was made"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("CARGO_BERTH_BYPASS=1"));
 }
 
 #[test]
@@ -3309,6 +3309,81 @@ fn board_reservation_snapshot<'board>(
         .map(|entry| entry.get("reservation").unwrap_or(entry))
         .find(|row| row["reservation_id"] == reservation_id)
         .expect("reservation should have a board row")
+}
+
+fn run_gate_with_blocked_mutation_lock(deadline_environment: &str, deadline: Duration) -> Output {
+    let repository = initialized_repository();
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let feature_root = add_worktree(repository.path(), worktrees.path(), "lock-deadline");
+    let feature_head = commit_work(
+        &feature_root,
+        "lock-deadline.txt",
+        "lock deadline\n",
+        "lock deadline work",
+    );
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(LOCK_PATH))
+        .expect("mutation lock should open");
+    lock_file
+        .try_lock()
+        .expect("test should hold mutation lock");
+    let ready_directory = tempdir().expect("lock readiness directory should exist");
+    let ready_path = ready_directory.path().join("ready");
+    // Measure from launch; the worker starts its deadline before reporting readiness.
+    let started_at = Instant::now();
+    let mut child = berth_command()
+        .args(["__reference-transaction", "prepared", "refs/heads/main"])
+        .current_dir(repository.path())
+        .env(
+            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+            repository.path(),
+        )
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT)
+        .env_remove(GATE_DEADLINE_ENVIRONMENT)
+        .env(deadline_environment, deadline.as_millis().to_string())
+        .env(MUTATION_LOCK_READY_ENVIRONMENT, &ready_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("contended private gate should start");
+    child
+        .stdin
+        .take()
+        .expect("private gate stdin should exist")
+        .write_all(format!("{base} {feature_head} refs/heads/main\n").as_bytes())
+        .expect("private gate stdin should write");
+    while !ready_path.exists() && started_at.elapsed() < SCHEDULING_ALLOWANCE {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !ready_path.exists() {
+        child
+            .kill()
+            .expect("gate without a ready signal should stop");
+        child.wait().expect("stopped gate should be reaped");
+    }
+    assert!(
+        ready_path.exists(),
+        "gate worker should report mutation lock contention"
+    );
+    let blocked = child
+        .wait_with_output()
+        .expect("private gate should finish");
+    let elapsed = started_at.elapsed();
+    assert_eq!(blocked.status.code(), Some(6));
+    assert!(elapsed >= deadline, "gate returned too early: {elapsed:?}");
+    assert!(
+        elapsed < deadline + SCHEDULING_ALLOWANCE,
+        "gate took too long: {elapsed:?}"
+    );
+    drop(lock_file);
+    blocked
 }
 
 fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output {
