@@ -33,10 +33,10 @@ use rustix::fs::fchmod;
 use rustix::fs::fstat;
 use rustix::fs::openat;
 
+use super::sweep_authority;
 use super::sweep_authority::EffectiveUser;
 use super::sweep_authority::RootOwner;
 use super::sweep_authority::SweepEligibleFile;
-use super::sweep_authority::effective_user;
 #[cfg(target_os = "linux")]
 use crate::constants::CAPTURE_DIRECTORY_BUFFER_BYTES;
 #[cfg(test)]
@@ -55,8 +55,8 @@ use crate::constants::CAPTURE_STATE_DIR;
 use crate::constants::PERMISSION_BITS;
 use crate::constants::RUN_LOG_TAIL_BYTES;
 use crate::progress::capture_diagnostic::CaptureFailure;
+use crate::registration;
 use crate::registration::ParseError;
-use crate::registration::check_version;
 
 /// Device, inode, owner and permissions describe the inspected directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,7 +197,9 @@ pub(crate) fn prepare_shared_directory(parent: &Path) -> io::Result<()> {
             // opening it. Only its own real directory permits this recovery;
             // the sticky system parent prevents another account replacing it.
             let metadata = fs::symlink_metadata(&path)?;
-            if !metadata.is_dir() || effective_user() != EffectiveUser::Known(metadata.uid()) {
+            if !metadata.is_dir()
+                || sweep_authority::effective_user() != EffectiveUser::Known(metadata.uid())
+            {
                 return Err(error);
             }
             fs::set_permissions(&path, fs::Permissions::from_mode(CAPTURE_SHARED_MODE))?;
@@ -205,7 +207,7 @@ pub(crate) fn prepare_shared_directory(parent: &Path) -> io::Result<()> {
         },
         Err(error) => return Err(error),
     };
-    repair_shared_mode(&directory, effective_user())
+    repair_shared_mode(&directory, sweep_authority::effective_user())
 }
 
 /// Ownership authorizes repair; an already shared mode requires no authority.
@@ -443,7 +445,7 @@ fn read_registration_file(mut file: File) -> io::Result<RegistrationObservation>
     file.take(CAPTURE_REGISTRATION_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if matches!(
-        check_version(&bytes),
+        registration::check_version(&bytes),
         Err(ParseError::UnsupportedVersion { .. })
     ) {
         return Ok(RegistrationObservation { bytes, metadata });
@@ -505,11 +507,20 @@ pub(super) fn read_tail(mut file: File, length: u64) -> io::Result<String> {
 }
 
 #[cfg(test)]
+pub(super) use tests::capture_root;
+#[cfg(test)]
+pub(super) use tests::create_directories;
+#[cfg(test)]
+pub(super) use tests::log_entry;
+#[cfg(test)]
+pub(super) use tests::make_fifo;
+
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
-pub(super) mod tests {
+mod tests {
     use std::ffi::CString;
     use std::fs;
     use std::fs::File;
@@ -527,6 +538,10 @@ pub(super) mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::Enumeration;
+    use super::InspectedDirectory;
+    use super::Inventory;
+    use super::ScanEntry;
     use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_NOT_REGULAR;
@@ -544,11 +559,6 @@ pub(super) mod tests {
     use crate::root_scan::EffectiveUser;
     use crate::root_scan::RootHistory;
     use crate::root_scan::RootScan;
-    use crate::root_scan::inspected_directory::Enumeration;
-    use crate::root_scan::inspected_directory::InspectedDirectory;
-    use crate::root_scan::inspected_directory::Inventory;
-    use crate::root_scan::inspected_directory::ScanEntry;
-    use crate::root_scan::inspected_directory::read_tail;
 
     #[test]
     fn shared_parent_owner_repairs_modes_that_prevent_opening_the_directory() {
@@ -632,14 +642,14 @@ pub(super) mod tests {
     }
 
     /// Use one account and explicit directory modes independent of its umask.
-    pub(in super::super) fn capture_root() -> TempDir {
+    pub fn capture_root() -> TempDir {
         let root = tempdir().expect("temporary capture root");
         create_directories(root.path());
         root
     }
 
     /// Replacement fixtures use the same independently owned directory layout.
-    pub(in super::super) fn create_directories(root: &Path) {
+    pub fn create_directories(root: &Path) {
         fs::create_dir_all(root.join(CAPTURE_LIVE_RUNS_DIR)).expect("registration directories");
         for path in [
             root.to_owned(),
@@ -652,10 +662,7 @@ pub(super) mod tests {
     }
 
     /// Find a sampled entry without constructing a public read or remove target.
-    pub(in super::super) fn log_entry<'scan>(
-        scan: &'scan RootScan,
-        name: &str,
-    ) -> ScanEntry<'scan> {
+    pub fn log_entry<'scan>(scan: &'scan RootScan, name: &str) -> ScanEntry<'scan> {
         scan.log_entries()
             .find(|entry| entry.name() == Path::new(name))
             .expect("sampled log entry")
@@ -709,7 +716,7 @@ pub(super) mod tests {
         unsafe_code,
         reason = "creating a FIFO portably requires libc, which rustix does not wrap on Apple"
     )]
-    pub(in super::super) fn make_fifo(path: &Path) {
+    pub fn make_fifo(path: &Path) {
         let raw = CString::new(path.as_os_str().as_bytes()).expect("path without interior NUL");
         // SAFETY: raw is a live NUL-terminated C string that outlives the call, and
         // mkfifo retains no pointer past it. The mode argument is a permission bit
@@ -781,7 +788,9 @@ pub(super) mod tests {
             .write_all(&vec![b'x'; cap * 2])
             .expect("grow after metadata");
         assert_eq!(
-            read_tail(file, sampled_length).expect("bounded tail").len(),
+            super::read_tail(file, sampled_length)
+                .expect("bounded tail")
+                .len(),
             cap
         );
     }

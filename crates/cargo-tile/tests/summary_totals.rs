@@ -70,6 +70,8 @@ mod tests {
     use std::process::Child;
     use std::process::Command;
     use std::process::Stdio;
+    #[cfg(target_os = "linux")]
+    use std::time::Duration;
     use std::time::Instant;
 
     use sysinfo::Pid;
@@ -85,6 +87,8 @@ mod tests {
     use super::census::Measurement;
     use super::census::invocation_cpu_accounting::MeasurementAbsence;
     use super::census::process_identity::ProcessIdentity;
+    #[cfg(target_os = "linux")]
+    use super::census::scan::groups_with_cpu_counters_for_test;
     use super::census::scan::groups_with_cpu_for_test;
     use super::census::scan::groups_with_registration_rows_for_test;
     use super::cli::Cli;
@@ -164,6 +168,45 @@ mod tests {
             std::array::from_fn(|index| {
                 (self.children[index].id(), Measurement::Reading(cpu[index]))
             })
+        }
+
+        #[cfg(target_os = "linux")]
+        fn roster_with_idle_parent(&self, parent: Measurement<Duration>) -> Roster {
+            let [driver, first, nested, deep, second, sibling_nested] = self.pids();
+            let parents = [
+                (first, driver),
+                (nested, first),
+                (deep, nested),
+                (second, driver),
+                (sibling_nested, second),
+            ];
+            // Thirteen observations model a Cargo parent that accrues no CPU ticks of its own.
+            // Native cumulative counters include each busy nested Cargo once.
+            let samples: Vec<_> = (0..13u64)
+                .map(|scan| {
+                    self.pids().map(|pid| {
+                        let millis = if pid == nested {
+                            scan * 1000
+                        } else if pid == sibling_nested {
+                            scan * 500
+                        } else {
+                            0
+                        };
+                        let read = if pid == first {
+                            parent
+                        } else {
+                            Measurement::Reading(Duration::from_millis(millis))
+                        };
+                        (pid, millis, read)
+                    })
+                })
+                .collect();
+            let samples: Vec<_> = samples.iter().map(<[_; 6]>::as_slice).collect();
+            let groups = groups_with_cpu_counters_for_test(&self.system, &parents, &samples);
+            assert_eq!(groups.len(), 1);
+            let mut roster = Roster::new();
+            roster.observe(groups, Instant::now());
+            roster
         }
 
         fn roster_with_registration(
@@ -309,6 +352,50 @@ mod tests {
             Measurement::Reading("7%"),
             Measurement::Reading("48%"),
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric() {
+        let tree = SummaryTree::new();
+        let roster = tree.roster_with_idle_parent(Measurement::Reading(Duration::ZERO));
+        let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+        assert_cpu_rows(
+            command_cpu(&roster),
+            &[
+                (driver, Measurement::Reading("150%")),
+                (first, Measurement::Reading("0%")),
+                (nested, Measurement::Reading("100%")),
+                (deep, Measurement::Reading("0%")),
+                (second, Measurement::Reading("0%")),
+                (sibling_nested, Measurement::Reading("50%")),
+            ],
+        );
+        tree.assert_summary(
+            &roster,
+            Measurement::Reading("100%"),
+            Measurement::Reading("50%"),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unreadable_parent_counter_keeps_its_promoted_total_unavailable_despite_busy_leaf() {
+        let tree = SummaryTree::new();
+        let unavailable = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
+        let roster = tree.roster_with_idle_parent(unavailable);
+        tree.assert_summary(
+            &roster,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            Measurement::Reading("50%"),
+        );
+        let [_, first, nested, ..] = tree.pids();
+        let rows = command_cpu(&roster);
+        assert!(rows.contains(&(
+            first,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed)
+        )));
+        assert!(rows.contains(&(nested, Measurement::Reading("100%".to_owned()))));
     }
 
     #[test]

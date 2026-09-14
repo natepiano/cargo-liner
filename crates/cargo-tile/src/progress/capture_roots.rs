@@ -207,7 +207,7 @@ pub(crate) enum RootReadStatus {
 
 impl AccountCaptureDirectory {
     /// Inspect the final component without following links before reading captures.
-    pub(crate) fn inspect(root: CaptureRoot, users: &Users) -> Self {
+    fn inspect(root: CaptureRoot, users: &Users) -> Self {
         let mut status = Self {
             account: AccountName::resolve(RootOwner::Uid(root.uid), users),
             root,

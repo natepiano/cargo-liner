@@ -6,6 +6,14 @@ use std::time::Duration;
 /// Failed desktop services retry slowly without creating traffic on every capture tick.
 pub(super) const DESKTOP_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
+// desktop commands
+/// Check subprocess completion promptly without spinning while a backend is busy.
+pub(super) const DESKTOP_READ_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Bound each stdout read so continuous output returns to the deadline check.
+pub(super) const DESKTOP_STDOUT_CHUNK_BYTES: usize = 8192;
+/// Allow either desktop command five seconds to answer before terminating it.
+pub(super) const TOPOLOGY_READ_DEADLINE: Duration = Duration::from_secs(5);
+
 // desktop configuration
 pub(super) const DEFAULT_LOOK_AND_FEEL_PACKAGE: &str = "org.kde.breeze.desktop";
 pub(super) const DEFAULT_WALLPAPER_PACKAGE: &str = "Next";
@@ -46,3 +54,16 @@ pub(super) const IMAGE_PLUGIN: &str = "org.kde.image";
 pub(super) const PLASMA_INTERFACE: &str = "org.kde.PlasmaShell";
 pub(super) const PLASMA_PATH: &str = "/PlasmaShell";
 pub(super) const PLASMA_SERVICE: &str = "org.kde.plasmashell";
+
+// terminal windows
+/// The default getwindowid target is only the first match; the inventory needs every UUID.
+pub(super) const KDO_TOOL_ALL_MATCHES_ARGUMENT: &str = "%@";
+pub(super) const KDO_TOOL_ALL_WINDOWS_ARGUMENT: &str = "--name";
+/// Hold marker candidates even when TERM_PROGRAM is missing or does not match the terminal class.
+pub(super) const KDO_TOOL_ALL_WINDOWS_PATTERN: &str = ".*";
+pub(super) const KDO_TOOL_COMMAND: &str = "kdotool";
+pub(super) const KDO_TOOL_ID_ARGUMENT: &str = "getwindowid";
+pub(super) const KDO_TOOL_SEARCH_ARGUMENT: &str = "search";
+pub(super) const KWIN_INTERFACE: &str = "org.kde.KWin";
+pub(super) const KWIN_PATH: &str = "/KWin";
+pub(super) const KWIN_SERVICE: &str = "org.kde.KWin";

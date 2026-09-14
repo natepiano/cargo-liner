@@ -27,9 +27,12 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io;
+use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
@@ -283,8 +286,8 @@ impl ToolchainHookReport {
     }
 }
 
-impl fmt::Display for ToolchainHookReport {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ToolchainHookReport {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: ", self.toolchain)?;
         match &self.outcome {
             ToolchainHookOutcome::Install(HookOperationOutcome::DowngradeRefused {
@@ -373,8 +376,8 @@ impl AccountHookReport {
     }
 }
 
-impl fmt::Display for AccountHookReport {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for AccountHookReport {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "{}: {}: ",
@@ -563,7 +566,7 @@ pub(crate) enum HookDiscovery {
         /// Toolchain directory, or its parent when reading an entry failed.
         path:  PathBuf,
         /// Filesystem error retained for the account report.
-        error: io::Error,
+        error: Error,
     },
 }
 
@@ -657,7 +660,7 @@ impl Hook {
     pub(crate) fn name(&self) -> &str { &self.name }
 
     /// What is standing in front of cargo, retaining metadata and read failures.
-    pub(crate) fn state(&self) -> io::Result<HookState> {
+    fn state(&self) -> io::Result<HookState> {
         let cargo_exists = self.cargo.try_exists().map_err(|error| {
             io::Error::new(error.kind(), format!("{}: {error}", self.cargo.display()))
         })?;
@@ -738,7 +741,7 @@ impl Hook {
     ///
     /// [`HookOperationOutcome::AlreadyCurrent`] requires reading the shim, but no
     /// shim writes: repeated launches and CI job hooks leave it untouched.
-    pub(crate) fn ensure(&self) -> io::Result<HookOperationOutcome> { self.install() }
+    fn ensure(&self) -> io::Result<HookOperationOutcome> { self.install() }
 
     /// Write the shim as `cargo`, executable, without ever writing the
     /// file already there in place.
@@ -761,7 +764,7 @@ impl Hook {
     }
 
     /// Give the real cargo its name back.
-    pub(crate) fn remove(&self) -> io::Result<HookOperationOutcome> {
+    fn remove(&self) -> io::Result<HookOperationOutcome> {
         let _installation_lock =
             HookInstallationLock::acquire(self.cargo.with_file_name(SHIM_LOCK_NAME))?;
         match self.state()? {
@@ -1057,61 +1060,94 @@ fn run_account_hook(
         )
 }
 
-/// Refuse membership lists exceeding Darwin's runtime setgroups limit.
-/// Accepted lists retain every resolved group, including the primary gid.
-/// A failed or non-positive sysconf result leaves the resolved membership intact.
+/// Parent-resolved groups and the uid used for Darwin's dynamic membership lookup.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn bounded_account_groups(
-    primary_gid: u32,
-    groups: Vec<u32>,
-    limit: libc::c_long,
-) -> io::Result<Vec<u32>> {
-    let Ok(limit) = usize::try_from(limit) else {
-        return Ok(groups);
-    };
-    if limit == 0 || groups.len() <= limit {
-        return Ok(groups);
+pub(crate) struct DarwinGroupMembership {
+    /// Complete resolved membership, with the primary gid first.
+    pub(crate) groups: Vec<u32>,
+    /// Prefix retained in the kernel credential; other groups resolve through uid.
+    pub(crate) count:  libc::c_uint,
+    /// Directory-services identity passed to the kernel initgroups entry point.
+    pub(crate) uid:    libc::c_int,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl DarwinGroupMembership {
+    /// Prepare every allocation and conversion before the account child forks.
+    pub(crate) fn new(
+        uid: u32,
+        primary_gid: u32,
+        mut groups: Vec<u32>,
+        limit: libc::c_long,
+    ) -> io::Result<Self> {
+        let limit = usize::try_from(limit)
+            .ok()
+            .filter(|limit| *limit > 0)
+            .ok_or_else(|| io::Error::other("Darwin credential group limit is unavailable"))?;
+        let primary = groups
+            .iter()
+            .position(|group| *group == primary_gid)
+            .ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    "resolved groups omit the primary gid",
+                )
+            })?;
+        groups.swap(0, primary);
+        let count = libc::c_uint::try_from(groups.len().min(limit))
+            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+        let uid = libc::c_int::try_from(uid)
+            .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))?;
+        Ok(Self { groups, count, uid })
     }
-    Err(io::Error::new(
-        ErrorKind::InvalidInput,
-        format!(
-            "{} resolved groups including primary gid {primary_gid} exceed Darwin's runtime setgroups limit of {limit}; refusing to truncate account memberships and lose group access",
-            groups.len()
-        ),
-    ))
 }
 
 /// Apply root's resolved credentials together, before exec, without std clearing groups.
 /// `CommandExt::groups` is unstable, so the callback also owns the uid/gid transition.
 #[allow(
     unsafe_code,
-    reason = "stable Command lacks explicit groups; the child must setgroups before setgid and setuid using only libc credential syscalls"
+    reason = "stable Command lacks explicit groups; the child must apply kernel group credentials before setgid and setuid using only libc credential syscalls"
 )]
 fn account_credentials(command: &mut Command, account: &HookAccount) -> io::Result<()> {
     let groups = account_groups(&account.name, account.gid)?;
     #[cfg(target_os = "macos")]
-    let groups = {
+    let membership = {
         // SAFETY: sysconf takes the platform selector and has no pointer arguments.
         let limit = unsafe { libc::sysconf(libc::_SC_NGROUPS_MAX) };
-        bounded_account_groups(account.gid, groups, limit)?
+        DarwinGroupMembership::new(account.uid, account.gid, groups, limit)?
     };
     #[cfg(target_os = "macos")]
-    let count = libc::c_int::try_from(groups.len())
-        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+    unsafe extern "C" {
+        // Apple's Libinfo lookup.subproj/libinfo.c initgroups calls this raw
+        // libsyscall entry after resolving groups in userspace. XNU's
+        // bsd/kern/syscalls.master and kern_prot.c initgroups/setgroups1 pass
+        // gmuid to the external group resolver; setgroups opts out instead.
+        // Source: github.com/apple-oss-distributions/Libinfo/blob/
+        // 39b70c515baee5b609e7e91693edbd934b6845a1/lookup.subproj/libinfo.c
+        fn __initgroups(
+            count: libc::c_uint,
+            groups: *const libc::gid_t,
+            membership_uid: libc::c_int,
+        ) -> libc::c_int;
+    }
     #[cfg(target_os = "linux")]
     let count = groups.len();
     let uid = account.uid;
     let gid = account.gid;
     // SAFETY: the parent resolves and allocates groups before fork. The callback
     // uses only credential syscalls and last_os_error, with no allocation or
-    // locks; groups owns count gid_t entries for the callback's entire lifetime.
+    // locks; groups owns at least count gid_t entries for its entire lifetime.
+    // Darwin registers the account uid for groups beyond the credential prefix;
+    // the first group is the primary gid, so setgid does not displace a group
+    // and disable dynamic membership. No directory lookup runs in the child.
     // No std uid/gid setters precede it, and any failed syscall prevents exec.
     unsafe {
         command.pre_exec(move || {
-            if libc::setgroups(count, groups.as_ptr()) == -1
-                || libc::setgid(gid) == -1
-                || libc::setuid(uid) == -1
-            {
+            #[cfg(target_os = "macos")]
+            let result = __initgroups(membership.count, membership.groups.as_ptr(), membership.uid);
+            #[cfg(target_os = "linux")]
+            let result = libc::setgroups(count, groups.as_ptr());
+            if result == -1 || libc::setgid(gid) == -1 || libc::setuid(uid) == -1 {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
@@ -1353,48 +1389,32 @@ mod tests {
     }
 
     #[test]
-    fn credential_groups_at_or_below_the_limit_are_unchanged() {
+    fn darwin_membership_keeps_resolved_groups_beyond_the_credential_prefix() {
         let groups = vec![7, 11, 19];
-        for limit in [groups.len(), groups.len() + 1] {
-            let bounded =
-                bounded_account_groups(19, groups.clone(), libc::c_long::try_from(limit).unwrap())
-                    .unwrap();
-            assert_eq!(bounded, groups);
-            assert!(bounded.contains(&19));
+        for limit in 1..=groups.len() + 1 {
+            let membership = DarwinGroupMembership::new(
+                501,
+                19,
+                groups.clone(),
+                libc::c_long::try_from(limit).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(membership.uid, 501);
+            assert_eq!(
+                membership.count,
+                u32::try_from(limit.min(groups.len())).unwrap()
+            );
+            assert_eq!(membership.groups, [19, 11, 7]);
         }
     }
 
     #[test]
-    fn over_limit_credential_groups_are_refused_with_both_counts() {
-        let groups = vec![7, 11, 19];
-        for primary_gid in &groups {
-            for limit in 1..groups.len() {
-                let error = bounded_account_groups(
-                    *primary_gid,
-                    groups.clone(),
-                    libc::c_long::try_from(limit).unwrap(),
-                )
-                .unwrap_err();
-                assert_eq!(error.kind(), ErrorKind::InvalidInput);
-                let reason = error.to_string();
-                assert_eq!(
-                    reason,
-                    format!(
-                        "{} resolved groups including primary gid {primary_gid} exceed Darwin's runtime setgroups limit of {limit}; refusing to truncate account memberships and lose group access",
-                        groups.len()
-                    )
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn failed_or_non_positive_group_limits_leave_membership_intact() {
-        let groups = vec![7, 11, 19];
+    fn darwin_membership_requires_a_positive_group_limit_and_primary_gid() {
         for limit in [libc::c_long::MIN, -1, 0] {
-            let bounded = bounded_account_groups(19, groups.clone(), limit).unwrap();
-            assert_eq!(bounded, groups);
+            assert!(DarwinGroupMembership::new(501, 19, vec![19], limit).is_err());
         }
+        assert!(DarwinGroupMembership::new(501, 19, vec![7, 11], 16).is_err());
+        assert!(DarwinGroupMembership::new(u32::MAX, 19, vec![19], 16).is_err());
     }
 
     #[test]

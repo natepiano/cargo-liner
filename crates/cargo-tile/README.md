@@ -519,14 +519,16 @@ to establish an account's credentials is reported against that account as
 incomplete, even though no toolchains could be inspected.
 
 On macOS, an account whose resolved group membership exceeds the kernel's
-runtime supplementary-group limit is refused by name before its child starts,
-and reported against that account as incomplete with the resolved count, its
-primary group, and the limit. Later accounts are still processed. The list is
-never shortened to fit: once a process applies a supplementary-group list, the
-kernel treats that list as the whole membership rather than a cache, so a
-shortened list would silently cost the account every access it holds through a
-dropped group. Bring the account's membership under the limit to let it be
-managed here.
+runtime supplementary-group limit is managed like any other account. The parent
+resolves the whole membership before the child starts and puts the primary
+group first. The child passes the groups that fit in the credential, together
+with the account's uid, to the kernel call `initgroups(3)` itself makes, then
+sets the gid and uid. The kernel resolves membership in the remaining groups
+through directory services when an access check needs it, so the list is never
+shortened into the account's whole membership. This is confirmed on a real
+administrator-created account with 21 resolved groups: the switched child reads
+a file readable only through a group beyond the first 16, while a child given
+the same 16 groups through `setgroups(2)` is refused.
 
 ### keys
 

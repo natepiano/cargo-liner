@@ -378,8 +378,7 @@ pub(super) const CAPTURE_ATTEMPT_DEADLINE: Duration = Duration::from_secs(5);
 ///
 /// The macOS image changes with the windows under the terminal, while
 /// the Linux image changes with Plasma's wallpaper. Neither needs
-/// frame-rate polling. The window moving does not go here: that is read
-/// every frame and costs a fraction of a millisecond.
+/// frame-rate polling. Window movement is read separately by the position worker.
 /// Linux output topology is held separately and refreshed by `KScreen` notifications.
 pub(super) const CAPTURE_REFRESH: Duration = Duration::from_millis(1000);
 /// How soon the worker is asked again after a capture that cannot be
@@ -408,6 +407,12 @@ pub(super) const MAX_CAPTURE_WORKER_REPLACEMENTS: usize = 3;
 /// At the [`CAPTURE_RETRY`] cadence, 64 diagnostics span about ten seconds, far longer than a
 /// rendered-frame interval, while bounding storage for callers that never drain the queue.
 pub(super) const MAX_RETAINED_CAPTURE_ATTEMPT_DIAGNOSTICS: usize = 64;
+/// Read a settled or unanswered window four times a second while frames keep requesting it.
+/// This bounds window-server traffic while detecting movement within one idle interval.
+pub(super) const POSITION_IDLE_INTERVAL: Duration = Duration::from_millis(250);
+/// Keep reading every request until the frame has remained unchanged for half a second.
+/// Brief pauses during a drag therefore retain per-frame position updates.
+pub(super) const POSITION_SETTLE_DURATION: Duration = Duration::from_millis(500);
 /// How many passes are made before the window is given up on and the
 /// size heuristic carries the run.
 ///

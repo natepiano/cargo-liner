@@ -74,7 +74,7 @@ pub(crate) fn lifetime(pid: u32) -> LifetimeEvidence {
 mod tests {
     use std::time::Duration;
 
-    use super::super::BirthStamp;
+    use crate::birth_stamp::BirthStamp;
 
     #[test]
     fn macos_births_inside_one_second_share_comparison_but_not_process_lifetime() {

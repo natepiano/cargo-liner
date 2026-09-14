@@ -19,10 +19,10 @@ use rustix::fs::unlinkat;
 use rustix::process::geteuid;
 
 use super::RootScan;
+use super::inspected_directory;
 use super::inspected_directory::Enumeration;
 use super::inspected_directory::RegistrationReadPurpose;
 use super::inspected_directory::ScanEntry;
-use super::inspected_directory::named_entry;
 use crate::constants::CAPTURE_SWEEP_LIMIT;
 
 /// Permission to sweep one root: the effective uid owns the root, the tree
@@ -107,7 +107,7 @@ impl SweepAuthority<'_> {
         let SweepDisposition::Remove(log) = registrations(entry) else {
             return Err(ErrorKind::PermissionDenied.into());
         };
-        let log_entry = named_entry(&self.scan.root, &log)?;
+        let log_entry = inspected_directory::named_entry(&self.scan.root, &log)?;
         let log_proof = self.prove_file(log_entry);
         match &log_proof {
             SweepFileInspection::Eligible(_) => {},
@@ -220,16 +220,16 @@ impl SweepCounts {
 #[cfg(test)]
 impl SweepCounts {
     /// Successful unlinks observed by the sweep.
-    pub(crate) const fn removed_files(&self) -> usize { self.removed_files }
+    pub const fn removed_files(&self) -> usize { self.removed_files }
 
     /// Candidate pairs retained after an unsuccessful sweep attempt.
-    pub(crate) const fn skipped_pair_attempts(&self) -> usize { self.skipped_pair_attempts }
+    pub const fn skipped_pair_attempts(&self) -> usize { self.skipped_pair_attempts }
 
     /// Inventories whose enumeration did not finish successfully.
-    pub(crate) const fn incomplete_inventories(&self) -> usize { self.incomplete_inventories }
+    pub const fn incomplete_inventories(&self) -> usize { self.incomplete_inventories }
 
     /// Roots refused before any pair could be attempted.
-    pub(crate) const fn unavailable_roots(&self) -> usize { self.unavailable_roots }
+    pub const fn unavailable_roots(&self) -> usize { self.unavailable_roots }
 }
 
 /// Descriptor inspection separates refusal from an unsuccessful filesystem query.
@@ -340,11 +340,16 @@ pub(crate) fn effective_user() -> EffectiveUser {
 fn read_effective_user() -> EffectiveUser { EffectiveUser::Known(geteuid().as_raw()) }
 
 #[cfg(test)]
+pub(super) use tests::sweep_everything;
+#[cfg(test)]
+pub(super) use tests::write_pair;
+
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
-pub(super) mod tests {
+mod tests {
     use std::cell::Cell;
     use std::fs;
     use std::io;
@@ -360,16 +365,14 @@ pub(super) mod tests {
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_STATE_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
+    use crate::root_scan;
     use crate::root_scan::EffectiveUser;
     use crate::root_scan::RootHistory;
     use crate::root_scan::RootScan;
     use crate::root_scan::SweepBudget;
     use crate::root_scan::SweepDisposition;
-    use crate::root_scan::effective_user;
+    use crate::root_scan::inspected_directory;
     use crate::root_scan::inspected_directory::Enumeration;
-    use crate::root_scan::inspected_directory::tests::capture_root;
-    use crate::root_scan::inspected_directory::tests::log_entry;
-    use crate::root_scan::inspected_directory::tests::make_fifo;
 
     #[test]
     fn partial_enumeration_sweeps_established_pairs_and_counts_the_remainder() {
@@ -377,7 +380,7 @@ pub(super) mod tests {
             Enumeration::Incomplete,
             Enumeration::Failed(io::Error::from(ErrorKind::PermissionDenied)),
         ] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             let mut scan =
                 RootScan::open(root.path(), &mut RootHistory::default()).expect("open root");
@@ -395,7 +398,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_refused_root_counts_once_without_callbacks_or_budget_consumption() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         write_pair(root.path());
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
         let registrations = root.path().join(CAPTURE_LIVE_RUNS_DIR);
@@ -419,7 +422,7 @@ pub(super) mod tests {
     }
 
     /// Attempt every artifact through the production capability dispatcher.
-    pub(in super::super) fn sweep_everything(scan: &RootScan) -> usize {
+    pub fn sweep_everything(scan: &RootScan) -> usize {
         let mut budget = SweepBudget::default();
         scan.sweep(&mut budget, |_| {
             SweepDisposition::Remove(Path::new("log").to_owned())
@@ -429,7 +432,7 @@ pub(super) mod tests {
 
     #[test]
     fn a_pair_that_does_not_fit_the_remaining_allowance_stays_whole() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         let registration = root
             .path()
             .join(CAPTURE_LIVE_RUNS_DIR)
@@ -457,7 +460,7 @@ pub(super) mod tests {
     /// Log enumeration bounds do not block directly named registration pairs.
     #[test]
     fn incomplete_log_inventory_still_sweeps_directly_named_pairs() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         for number in 0..CAPTURE_INVENTORY_LIMIT {
             fs::write(root.path().join(format!("unrelated-{number}")), "")
                 .expect("unrelated entry");
@@ -475,7 +478,7 @@ pub(super) mod tests {
     fn a_known_effective_user_is_read_only_once() {
         let cache = OnceLock::new();
         let reads = Cell::new(0);
-        let first = effective_user();
+        let first = root_scan::effective_user();
         assert!(matches!(first, EffectiveUser::Known(_)));
         for result in [first, EffectiveUser::Unavailable] {
             assert_eq!(
@@ -494,7 +497,7 @@ pub(super) mod tests {
     fn an_unavailable_effective_user_is_never_retried() {
         let cache = OnceLock::new();
         let reads = Cell::new(0);
-        let known = effective_user();
+        let known = root_scan::effective_user();
         assert!(matches!(known, EffectiveUser::Known(_)));
         for result in [EffectiveUser::Unavailable, known] {
             assert_eq!(
@@ -513,7 +516,7 @@ pub(super) mod tests {
     fn directories_permitting_other_writers_are_swept_of_owned_leftovers() {
         for ancestor in ["", CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR] {
             for mode in [0o720, 0o702] {
-                let root = capture_root();
+                let root = inspected_directory::capture_root();
                 write_pair(root.path());
                 fs::set_permissions(root.path().join(ancestor), fs::Permissions::from_mode(mode))
                     .expect("shared directory");
@@ -533,7 +536,7 @@ pub(super) mod tests {
     }
 
     /// Fixtures own regular files independently of the test runner's umask.
-    pub(in super::super) fn write_pair(root: &Path) {
+    pub fn write_pair(root: &Path) {
         for path in [
             root.join("log"),
             root.join(CAPTURE_LIVE_RUNS_DIR).join("record"),
@@ -546,7 +549,7 @@ pub(super) mod tests {
     #[test]
     fn symlink_candidates_are_retained_and_counted() {
         for name in ["log", "state/pids/record"] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             let candidate = root.path().join(name);
             fs::rename(&candidate, root.path().join("target")).expect("move target");
@@ -561,7 +564,7 @@ pub(super) mod tests {
     fn group_or_other_writable_candidates_are_retained_and_counted() {
         for name in ["log", "state/pids/record"] {
             for mode in [0o620, 0o602] {
-                let root = capture_root();
+                let root = inspected_directory::capture_root();
                 write_pair(root.path());
                 fs::set_permissions(root.path().join(name), fs::Permissions::from_mode(mode))
                     .expect("writable candidate");
@@ -573,7 +576,7 @@ pub(super) mod tests {
     #[test]
     fn candidates_with_a_second_hard_link_are_retained_and_counted() {
         for name in ["log", "state/pids/record"] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             fs::hard_link(root.path().join(name), root.path().join("alias")).expect("second link");
             assert_retained_pair(&root);
@@ -584,7 +587,7 @@ pub(super) mod tests {
     #[test]
     fn foreign_file_ownership_is_refused_with_one_fixture_account() {
         for name in ["log", "state/pids/record"] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             let mut scan =
                 RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
@@ -623,14 +626,14 @@ pub(super) mod tests {
     #[test]
     fn nonregular_candidates_are_retained_and_counted() {
         for name in ["log", "state/pids/record"] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             let candidate = root.path().join(name);
             fs::remove_file(&candidate).expect("remove regular file");
             fs::create_dir(&candidate).expect("directory candidate");
             assert_retained_pair(&root);
             fs::remove_dir(&candidate).expect("remove directory candidate");
-            make_fifo(&candidate);
+            inspected_directory::make_fifo(&candidate);
             assert_retained_pair(&root);
         }
     }
@@ -638,7 +641,7 @@ pub(super) mod tests {
     #[test]
     fn file_permissions_changed_after_proof_are_rechecked_before_unlink() {
         for name in ["log", "state/pids/record"] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             let candidate = root.path().join(name);
             let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
@@ -661,7 +664,7 @@ pub(super) mod tests {
 
     #[test]
     fn sweep_callbacks_read_the_proved_registration_after_basename_replacement() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         write_pair(root.path());
         let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("record");
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
@@ -691,7 +694,7 @@ pub(super) mod tests {
 
     #[test]
     fn registration_swapped_after_log_unlink_survives_the_final_identity_check() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         write_pair(root.path());
         let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("record");
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
@@ -716,7 +719,7 @@ pub(super) mod tests {
     #[test]
     fn identity_recheck_before_unlink_refuses_a_swapped_entry() {
         for name in ["log", "state/pids/record"] {
-            let root = capture_root();
+            let root = inspected_directory::capture_root();
             write_pair(root.path());
             let candidate = root.path().join(name);
             let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
@@ -744,14 +747,16 @@ pub(super) mod tests {
     /// Linux and macOS use the same effective-owner and directory-mode policy.
     #[test]
     fn owned_cleanup_follows_the_explicit_platform_permission_policy() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         let path = root.path().join("log");
         fs::write(&path, "bounded read").expect("root log");
         let registration = root.path().join(CAPTURE_LIVE_RUNS_DIR).join("123");
         fs::write(&registration, "stale registration").expect("registration");
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("scan root");
         assert_eq!(
-            log_entry(&scan, "log").read_log().expect("read owned log"),
+            inspected_directory::log_entry(&scan, "log")
+                .read_log()
+                .expect("read owned log"),
             "bounded read"
         );
         let attempts = sweep_everything(&scan);
@@ -764,7 +769,7 @@ pub(super) mod tests {
     /// A new directory writer cannot revoke the descriptor proof of an owned file.
     #[test]
     fn changing_directory_permissions_after_sampling_allows_owned_cleanup() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         write_pair(root.path());
         let mut history = RootHistory::default();
         let scan = RootScan::open(root.path(), &mut history).expect("initial scan");

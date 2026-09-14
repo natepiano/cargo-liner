@@ -13,18 +13,17 @@ use super::capture_diagnostic::PathFailure;
 use super::capture_read::CaptureLookup;
 use super::capture_read::CaptureRead;
 use super::capture_roots::AccountCaptureDirectory;
+use super::capture_roots::AccountName;
 use super::capture_roots::CaptureCleanup;
 use super::capture_roots::CaptureParent;
 #[cfg(test)]
 use super::capture_roots::CaptureRoot;
 use super::capture_roots::CaptureRoots;
 use super::capture_roots::RootReadStatus;
+use super::registered_runs;
 use super::registered_runs::RegisteredRun;
 use super::registered_runs::RegisteredRuns;
 use super::registered_runs::RegistrationName;
-use super::registered_runs::enumeration_diagnostic;
-use super::registered_runs::registered_runs;
-use super::registered_runs::registration_name;
 use crate::birth_stamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
@@ -32,7 +31,6 @@ use crate::census::DirectAssociation;
 use crate::constants::PID_SEPARATOR;
 use crate::constants::RUN_LOG_PREFIX;
 use crate::constants::RUN_LOG_SUFFIX;
-use crate::progress::capture_roots::AccountName;
 use crate::registration::Registration;
 use crate::registration::RegistrationVerification;
 use crate::registration::VerifiedRegistration;
@@ -225,13 +223,13 @@ impl Capture {
         let RegisteredRuns {
             generations,
             diagnostics,
-        } = registered_runs(scan, observe);
+        } = registered_runs::registered_runs(scan, observe);
         status.diagnostics = diagnostics;
         let mut logs = BTreeMap::new();
         for (&pid, runs) in &generations {
             for run in runs {
                 if matches!(
-                    registration_name(&run.name),
+                    registered_runs::registration_name(&run.name),
                     RegistrationName::Staging { .. }
                 ) {
                     continue;
@@ -289,7 +287,11 @@ impl Capture {
             }
         }
         for outcome in scan.sampled_log_outcome() {
-            enumeration_diagnostic(outcome, scan.path().to_owned(), &mut status.diagnostics);
+            registered_runs::enumeration_diagnostic(
+                outcome,
+                scan.path().to_owned(),
+                &mut status.diagnostics,
+            );
         }
         if status.root.cleanup == CaptureCleanup::Here {
             sweep_ended(scan, &generations, observe, budget);
@@ -410,7 +412,7 @@ fn sweep_ended(
 ) {
     scan.sweep(budget, |entry| {
         let (RegistrationName::Generated { pid, .. } | RegistrationName::Staging { pid, .. }) =
-            registration_name(entry.name())
+            registered_runs::registration_name(entry.name())
         else {
             return SweepDisposition::Preserve;
         };
@@ -1953,11 +1955,14 @@ mod tests {
         );
         let unreadable = root
             .path()
+            .canonicalize()
+            .unwrap()
             .join(CAPTURE_LIVE_RUNS_DIR)
             .join("12.unreadable");
         assert!(capture.root_status[0].diagnostics.iter().any(|diagnostic| matches!(
             diagnostic, CaptureDiagnostic::RegistrationUnreadable(failure) if failure.path == unreadable
         )));
+        assert!(unreadable.is_symlink());
         assert!(!stale.0.exists());
         assert!(!stale.1.exists());
     }

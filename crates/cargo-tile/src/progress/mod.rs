@@ -4,7 +4,7 @@ pub(crate) mod capture;
 pub(crate) mod capture_diagnostic;
 pub(crate) mod capture_read;
 pub(crate) mod capture_roots;
-pub(crate) mod registered_runs;
+mod registered_runs;
 
 /// Cargo's count of the work in front of it, as its progress bar reports
 /// it: units finished out of units planned.

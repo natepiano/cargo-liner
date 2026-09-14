@@ -137,7 +137,7 @@ impl RootScan {
 
     /// Exercise foreign-file refusal with one real uid and real descriptor checks.
     #[cfg(test)]
-    pub(crate) fn mark_file_foreign_for_test(&mut self, path: &Path) -> io::Result<()> {
+    pub fn mark_file_foreign_for_test(&mut self, path: &Path) -> io::Result<()> {
         let parent = path.parent().ok_or(ErrorKind::InvalidInput)?;
         if parent != self.path && parent != self.registration_path() {
             return Err(ErrorKind::InvalidInput.into());
@@ -303,23 +303,19 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use super::EffectiveUser;
+    use super::RootHistory;
+    use super::RootOwner;
+    use super::RootScan;
+    use super::inspected_directory;
+    use super::inspected_directory::Enumeration;
+    use super::sweep_authority;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_STATE_DIR;
-    use crate::root_scan::EffectiveUser;
-    use crate::root_scan::RootHistory;
-    use crate::root_scan::RootOwner;
-    use crate::root_scan::RootScan;
-    use crate::root_scan::effective_user;
-    use crate::root_scan::inspected_directory::Enumeration;
-    use crate::root_scan::inspected_directory::tests::capture_root;
-    use crate::root_scan::inspected_directory::tests::create_directories;
-    use crate::root_scan::inspected_directory::tests::log_entry;
-    use crate::root_scan::sweep_authority::tests::sweep_everything;
-    use crate::root_scan::sweep_authority::tests::write_pair;
 
     #[test]
     fn directory_write_bits_do_not_change_owner_or_sweep_admission() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o720)).expect("shared mode");
         let scan = RootScan::open(root.path(), &mut RootHistory::default()).expect("read root");
         let owner = scan.root.identity.owner;
@@ -337,7 +333,7 @@ mod tests {
 
     #[test]
     fn failed_traversal_names_the_exact_directory() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         let pids = root.path().join(CAPTURE_LIVE_RUNS_DIR);
         fs::remove_dir(&pids).expect("remove empty pids");
         fs::write(&pids, "not a directory").expect("replace pids with regular file");
@@ -345,7 +341,7 @@ mod tests {
             .expect("root remains readable");
         assert_eq!(scan.registration_path(), pids);
         assert!(matches!(
-            scan.access(effective_user()),
+            scan.access(super::effective_user()),
             Err(super::SweepAdmissionRefusal::AccessFailure)
         ));
         fs::remove_file(&pids).expect("remove pids replacement");
@@ -358,7 +354,7 @@ mod tests {
 
     #[test]
     fn named_log_reads_do_not_require_or_populate_the_inventory() {
-        let root = capture_root();
+        let root = inspected_directory::capture_root();
         let scan = RootScan::open(root.path(), &mut RootHistory::default())
             .expect("open before log publication");
         assert!(scan.logs.get().is_none());
@@ -391,15 +387,15 @@ mod tests {
     fn root_symlinks_are_rejected_but_ancestor_symlinks_are_supported() {
         let parent = tempdir().expect("temporary parent");
         let actual = parent.path().join("actual");
-        create_directories(&actual.join("capture"));
+        inspected_directory::create_directories(&actual.join("capture"));
         let alias = parent.path().join("alias");
         symlink(&actual, &alias).expect("ancestor symlink");
         let mut history = RootHistory::default();
         let log = actual.join("capture/log");
         fs::write(&log, "cleanup through a trusted ancestor").expect("root log");
         let scan = RootScan::open(&alias.join("capture"), &mut history).expect("ancestor alias");
-        assert!(scan.access(effective_user()).is_ok());
-        assert_eq!(sweep_everything(&scan), 0);
+        assert!(scan.access(super::effective_user()).is_ok());
+        assert_eq!(sweep_authority::sweep_everything(&scan), 0);
         assert!(log.exists());
         let root_link = parent.path().join("capture-link");
         symlink(actual.join("capture"), &root_link).expect("root symlink");
@@ -412,8 +408,8 @@ mod tests {
     #[test]
     fn registration_ancestor_symlinks_cannot_redirect_reads_or_cleanup() {
         for ancestor in [CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR] {
-            let root = capture_root();
-            let other = capture_root();
+            let root = inspected_directory::capture_root();
+            let other = inspected_directory::capture_root();
             let path = root.path().join(ancestor);
             fs::remove_dir_all(&path).expect("remove original ancestor");
             symlink(other.path().join(ancestor), &path).expect("redirected ancestor");
@@ -424,7 +420,7 @@ mod tests {
                 scan.registration_outcome(),
                 Enumeration::Failed(_)
             ));
-            assert_eq!(sweep_everything(&scan), 0);
+            assert_eq!(sweep_authority::sweep_everything(&scan), 0);
             assert!(root.path().join("log").exists());
         }
     }
@@ -434,21 +430,21 @@ mod tests {
     fn root_replacement_after_sampling_preserves_both_directory_trees() {
         let parent = tempdir().expect("parent");
         let root = parent.path().join("capture");
-        create_directories(&root);
-        write_pair(&root);
+        inspected_directory::create_directories(&root);
+        sweep_authority::write_pair(&root);
         fs::write(root.join("log"), "old").expect("old log");
         let scan = RootScan::open(&root, &mut RootHistory::default()).expect("sample old root");
         let moved = parent.path().join("moved");
         fs::rename(&root, &moved).expect("move old root");
-        create_directories(&root);
+        inspected_directory::create_directories(&root);
         fs::write(root.join("log"), "new").expect("replacement log");
         assert_eq!(
-            log_entry(&scan, "log")
+            inspected_directory::log_entry(&scan, "log")
                 .read_log()
                 .expect("held directory read"),
             "old"
         );
-        assert_eq!(sweep_everything(&scan), 0);
+        assert_eq!(sweep_authority::sweep_everything(&scan), 0);
         assert_eq!(
             fs::read_to_string(root.join("log")).expect("new log survives"),
             "new"
@@ -460,8 +456,8 @@ mod tests {
     #[test]
     fn replacing_registration_ancestors_after_sampling_disables_cleanup() {
         for ancestor in [CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR] {
-            let root = capture_root();
-            write_pair(root.path());
+            let root = inspected_directory::capture_root();
+            sweep_authority::write_pair(root.path());
             fs::write(root.path().join("log"), "keep").expect("log");
             let scan =
                 RootScan::open(root.path(), &mut RootHistory::default()).expect("initial scan");
@@ -470,8 +466,8 @@ mod tests {
                 root.path().join("old-directory"),
             )
             .expect("move sampled ancestor");
-            create_directories(root.path());
-            assert_eq!(sweep_everything(&scan), 0);
+            inspected_directory::create_directories(root.path());
+            assert_eq!(sweep_authority::sweep_everything(&scan), 0);
             assert!(root.path().join("log").exists());
         }
     }

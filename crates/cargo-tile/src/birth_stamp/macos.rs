@@ -25,7 +25,7 @@ use uuid::Uuid;
 use super::BirthStamp;
 use super::LifetimeEvidence;
 use super::Observation;
-use super::kernel_observation::cached_boot;
+use super::kernel_observation;
 use crate::constants::BIRTH_MACOS_BOOT_NAME;
 use crate::constants::BIRTH_MICROSECONDS_PER_SECOND;
 use crate::constants::BIRTH_SYSCTL_INCOMPLETE;
@@ -35,7 +35,9 @@ use crate::constants::BIRTH_SYSCTL_MAX_BYTES;
 static BOOT: OnceLock<io::Result<String>> = OnceLock::new();
 
 /// The verifier and its session diagnostic share exactly one cached sysctl result.
-pub(super) fn boot() -> &'static io::Result<String> { cached_boot(&BOOT, read_boot) }
+pub(super) fn boot() -> &'static io::Result<String> {
+    kernel_observation::cached_boot(&BOOT, read_boot)
+}
 
 /// Darwin exposes process records by numeric MIB and the boot UUID only by name.
 enum KernelQuery<'query> {

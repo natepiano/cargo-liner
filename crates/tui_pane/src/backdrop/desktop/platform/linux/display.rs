@@ -1,19 +1,12 @@
 //! Reading KDE's active output layout.
 
 use std::collections::HashMap;
-use std::io;
-use std::io::Read;
 use std::ops::ControlFlow;
-use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
-use std::process::Child;
 use std::process::Command;
-use std::process::Stdio;
 use std::sync::Mutex;
 use std::sync::Once;
 use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 
 use futures_lite::StreamExt;
 use serde::Deserialize;
@@ -36,15 +29,9 @@ use super::constants::KSCREEN_PATH;
 use super::constants::KSCREEN_REQUEST_BACKEND;
 use super::constants::KSCREEN_SERVICE;
 use super::constants::TOPOLOGY_SIGNAL_CAPACITY;
+use super::read_desktop_command;
 use super::session_connection;
 use crate::backdrop::desktop::Frame;
-
-/// Allow a busy desktop five seconds to answer before the topology worker retries.
-const TOPOLOGY_READ_DEADLINE: Duration = Duration::from_secs(5);
-/// Check subprocess completion promptly without spinning while the backend is busy.
-const TOPOLOGY_READ_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Bound each stdout read so even continuous output returns to the deadline check.
-const TOPOLOGY_STDOUT_CHUNK_BYTES: usize = 8192;
 
 /// One enabled `KScreen` output.
 #[derive(Clone, Debug)]
@@ -324,111 +311,8 @@ fn refresh_topology(
 
 /// Read a layout once; failures are distinct from a successfully decoded empty layout.
 fn read_outputs() -> TopologyRead {
-    let deadline = Instant::now() + TOPOLOGY_READ_DEADLINE;
-    let Ok(mut process) = TopologySubprocess::spawn() else {
-        return TopologyRead::Unreadable;
-    };
-    read_outputs_with(&mut process, |delay| wait_for_topology(deadline, delay))
-}
-
-/// Poll without holding the topology lock, terminating failed or expired reads before retry.
-fn read_outputs_with(
-    process: &mut impl TopologyProcess,
-    mut wait: impl FnMut(Duration) -> ControlFlow<()>,
-) -> TopologyRead {
-    loop {
-        match process.try_read() {
-            Ok(ControlFlow::Break(read)) => return read,
-            Ok(ControlFlow::Continue(())) => {},
-            Err(_) => break,
-        }
-        if wait(TOPOLOGY_READ_POLL_INTERVAL).is_break() {
-            break;
-        }
-    }
-    let _ = process.kill();
-    let _ = process.reap();
-    TopologyRead::Unreadable
-}
-
-/// Stop at the deadline, including when the final polling sleep consumes its remaining time.
-fn wait_for_topology(deadline: Instant, delay: Duration) -> ControlFlow<()> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if !remaining.is_zero() {
-        thread::sleep(delay.min(remaining));
-    }
-    if Instant::now() >= deadline {
-        ControlFlow::Break(())
-    } else {
-        ControlFlow::Continue(())
-    }
-}
-
-/// Subprocess operations used by a topology read and its deterministic expiry tests.
-trait TopologyProcess {
-    /// Read available stdout and report a completed layout only after the child has exited.
-    fn try_read(&mut self) -> io::Result<ControlFlow<TopologyRead>>;
-
-    /// Stop a child whose read cannot complete.
-    fn kill(&mut self) -> io::Result<()>;
-
-    /// Collect the child status after stopping it, even if killing it failed.
-    fn reap(&mut self) -> io::Result<()>;
-}
-
-/// One topology child and its stdout, drained without blocking the deadline check.
-struct TopologySubprocess {
-    /// The child is reaped by completion polling or by termination on failure.
-    child:  Child,
-    /// A socket permits safe nonblocking reads without adding a platform dependency.
-    stdout: UnixStream,
-    /// JSON accumulated before the child finishes and stdout is drained.
-    bytes:  Vec<u8>,
-}
-
-impl TopologySubprocess {
-    /// Connect stdout before spawning so every setup failure leaves no child running.
-    fn spawn() -> io::Result<Self> {
-        let (stdout, writer) = UnixStream::pair()?;
-        stdout.set_nonblocking(true)?;
-        let child = Command::new(KSCREEN_COMMAND)
-            .arg(KSCREEN_JSON_ARGUMENT)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(OwnedFd::from(writer)))
-            .stderr(Stdio::null())
-            .spawn()?;
-        Ok(Self {
-            child,
-            stdout,
-            bytes: Vec::new(),
-        })
-    }
-}
-
-impl TopologyProcess for TopologySubprocess {
-    fn try_read(&mut self) -> io::Result<ControlFlow<TopologyRead>> {
-        // Observe exit first so a final write between polling and reading cannot be missed.
-        let status = self.child.try_wait()?;
-        let mut buffer = [0; TOPOLOGY_STDOUT_CHUNK_BYTES];
-        let count = match self.stdout.read(&mut buffer) {
-            Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => 0,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                return Ok(ControlFlow::Continue(()));
-            },
-            Err(error) => return Err(error),
-        };
-        self.bytes.extend_from_slice(&buffer[..count]);
-        match status {
-            Some(status) if !status.success() => Ok(ControlFlow::Break(TopologyRead::Unreadable)),
-            Some(_) if count == 0 => Ok(ControlFlow::Break(parse_outputs(&self.bytes))),
-            Some(_) | None => Ok(ControlFlow::Continue(())),
-        }
-    }
-
-    fn kill(&mut self) -> io::Result<()> { self.child.kill() }
-
-    fn reap(&mut self) -> io::Result<()> { self.child.wait().map(|_| ()) }
+    read_desktop_command(Command::new(KSCREEN_COMMAND).arg(KSCREEN_JSON_ARGUMENT))
+        .map_or(TopologyRead::Unreadable, |bytes| parse_outputs(&bytes))
 }
 
 /// Decode active output geometry at the external JSON boundary.
@@ -520,93 +404,6 @@ mod tests {
         size:         (3840, 2160),
         scale:        2.0,
     };
-
-    /// A subprocess that either remains pending or finishes with a scripted layout.
-    struct ScriptedTopologyProcess {
-        /// The result supplied to the production read loop on each poll.
-        completion: ControlFlow<TopologyRead>,
-        /// Ordered subprocess operations, including expiry cleanup.
-        calls:      Vec<&'static str>,
-    }
-
-    impl TopologyProcess for ScriptedTopologyProcess {
-        fn try_read(&mut self) -> io::Result<ControlFlow<TopologyRead>> {
-            self.calls.push("poll");
-            Ok(self.completion.clone())
-        }
-
-        fn kill(&mut self) -> io::Result<()> {
-            self.calls.push("kill");
-            Ok(())
-        }
-
-        fn reap(&mut self) -> io::Result<()> {
-            self.calls.push("reap");
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn expired_topology_read_is_unreadable_and_worker_retries() -> Result<(), String> {
-        let topology = Mutex::new(DisplayTopology::Unread);
-        let reads = Cell::new(0);
-        let subprocess_calls = RefCell::new(Vec::new());
-        let retry_delays = RefCell::new(Vec::new());
-        let expired_deadline = Instant::now();
-        retry_topology_watch(
-            &topology,
-            || {
-                let result = follow_topology(&topology, [], || {
-                    reads.set(reads.get() + 1);
-                    let mut process = ScriptedTopologyProcess {
-                        completion: if reads.get() == 1 {
-                            ControlFlow::Continue(())
-                        } else {
-                            ControlFlow::Break(TopologyRead::Read(vec![OUTPUT]))
-                        },
-                        calls:      Vec::new(),
-                    };
-                    let read = read_outputs_with(&mut process, |delay| {
-                        assert!(topology.try_lock().is_ok());
-                        assert_eq!(delay, TOPOLOGY_READ_POLL_INTERVAL);
-                        wait_for_topology(expired_deadline, delay)
-                    });
-                    if reads.get() == 1 {
-                        assert!(matches!(read, TopologyRead::Unreadable));
-                    }
-                    subprocess_calls.borrow_mut().push(process.calls);
-                    read
-                });
-                assert_eq!(result.is_err(), reads.get() == 1);
-                result
-            },
-            |delay| {
-                retry_delays.borrow_mut().push(delay);
-                if reads.get() == 1 {
-                    assert!(matches!(
-                        topology.try_lock().as_deref(),
-                        Ok(DisplayTopology::Recovering(TopologyRead::Unreadable))
-                    ));
-                    ControlFlow::Continue(())
-                } else {
-                    ControlFlow::Break(())
-                }
-            },
-        );
-        assert_eq!(reads.get(), 2);
-        assert_eq!(
-            *subprocess_calls.borrow(),
-            vec![vec!["poll", "kill", "reap"], vec!["poll"]]
-        );
-        assert_eq!(*retry_delays.borrow(), vec![DESKTOP_RETRY_INTERVAL; 2]);
-        let snapshot = topology
-            .lock()
-            .map_err(|error| error.to_string())?
-            .snapshot();
-        assert!(matches!(snapshot, TopologyRead::Read(outputs)
-            if matches!(outputs.as_slice(), [output] if output.size == OUTPUT.size)));
-        Ok(())
-    }
 
     #[test]
     fn output_containment_uses_logical_dimensions() {

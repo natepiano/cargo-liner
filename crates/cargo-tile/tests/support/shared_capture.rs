@@ -18,13 +18,13 @@ use crate::constants::SHIM_VERSION_PREFIX;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::hook::AccountHookOutcome;
 use crate::hook::AccountHookReport;
+use crate::hook::DarwinGroupMembership;
 use crate::hook::HookAccount;
 use crate::hook::HookOperation;
 use crate::hook::HookOperationOutcome;
 use crate::hook::HookState;
 use crate::hook::ToolchainHookOutcome;
 use crate::hook::account_groups;
-use crate::hook::bounded_account_groups;
 use crate::hook::run_account_hooks;
 use crate::hook::run_account_hooks_with;
 use crate::hook::stage_executable;
@@ -1775,103 +1775,80 @@ fn credential_failure_is_incomplete_preserves_reason_and_continues_accounts() {
     );
 }
 
-/// Refusal uses the production limit decision and prevents the named account's child from starting.
+/// Parent preparation retains every membership and permits both account children.
+/// The native administrator probe separately establishes kernel access after the switch.
 #[test]
-fn over_limit_account_is_refused_by_name_and_reason_before_spawn_and_later_accounts_continue() {
-    let directory = tempfile::tempdir().expect("over-limit account fixture");
+fn darwin_membership_beyond_the_credential_limit_keeps_account_children_running() {
+    let directory = tempfile::tempdir().expect("full-membership account fixture");
     let accounts = [
         account_at(
-            &directory.path().join("over-limit"),
+            &directory.path().join("many-groups"),
             "runner-with-many-groups",
         ),
         account_at(&directory.path().join("later"), "later"),
     ];
-    let refused = installed_cargo(&accounts[0], "stable");
-    original_cargo(&accounts[1], "stable");
+    for account in &accounts {
+        original_cargo(account, "stable");
+    }
     let observer = observe_account_child(directory.path());
-    let groups: Vec<_> = (1..=28)
-        .map(|offset| {
-            accounts[0]
-                .gid
-                .checked_add(offset)
-                .expect("fixture group id")
-        })
+    let groups: Vec<_> = (1..=16)
+        .map(|offset| accounts[0].gid.checked_add(offset).expect("fixture gid"))
         .chain(std::iter::once(accounts[0].gid))
         .collect();
-    let limit = 7;
-    let reason = bounded_account_groups(accounts[0].gid, groups.clone(), limit)
-        .expect_err("over-limit memberships must be refused")
-        .to_string();
-    assert!(reason.contains("29") && reason.contains('7'), "{reason}");
-    assert!(
-        reason.contains("setgroups") && reason.contains("access"),
-        "{reason}"
-    );
     for operation in [
         HookOperation::Install,
         HookOperation::Status,
         HookOperation::Uninstall,
     ] {
-        let mut visited = Vec::new();
+        let mut prepared = Vec::new();
         let reports = run_account_hooks_with(&accounts, &observer, operation, |_, account| {
-            visited.push(account.name.clone());
-            if account.name == accounts[0].name {
-                bounded_account_groups(account.gid, groups.clone(), limit).map(|_| ())
+            let resolved = if account.name == accounts[0].name {
+                groups.clone()
             } else {
-                Ok(())
+                vec![account.gid]
+            };
+            let membership = DarwinGroupMembership::new(account.uid, account.gid, resolved, 16)?;
+            assert_eq!(membership.groups[0], account.gid);
+            assert_eq!(
+                u32::try_from(membership.uid).expect("membership uid"),
+                account.uid
+            );
+            if account.name == accounts[0].name {
+                assert_eq!(membership.count, 16);
+                assert_eq!(membership.groups.len(), 17);
+                let mut retained = membership.groups.clone();
+                retained.sort_unstable();
+                let mut expected = groups.clone();
+                expected.sort_unstable();
+                assert_eq!(
+                    retained, expected,
+                    "the complete resolved list survives preparation"
+                );
+                assert!(!membership.groups[..16].contains(&membership.groups[16]));
+            } else {
+                assert_eq!(membership.count, 1);
+                assert_eq!(membership.groups, [account.gid]);
             }
+            prepared.push(account.name.clone());
+            Ok(())
         });
-        assert_eq!(visited, ["runner-with-many-groups", "later"]);
-        assert_eq!(reports.len(), 2);
-        let report = &reports[0];
-        assert_eq!(report.account, accounts[0].name);
-        assert_eq!(report.operation, operation);
-        assert_eq!(
-            report.outcome,
-            AccountHookOutcome::Incomplete(format!(
-                "could not resolve {}'s groups: {reason}",
-                accounts[0].name
-            ))
-        );
-        assert!(report.toolchains.is_empty(), "{report:?}");
-        let rendered = report.to_string();
-        assert!(
-            rendered.starts_with(&format!(
-                "{}: {}: incomplete:",
-                accounts[0].name,
-                operation.subcommand()
-            )),
-            "{rendered}"
-        );
-        assert!(rendered.contains(&reason), "{rendered}");
-        assert!(!rendered.contains("no toolchains"), "{rendered}");
-        assert!(
-            !accounts[0].home.join("child-arguments").exists(),
-            "refused account never starts a child"
-        );
-        assert_eq!(
-            fs::read(refused.join("cargo")).expect("refused shim unchanged"),
-            include_bytes!("../../src/cargo-capture-shim.sh")
-        );
-        assert_eq!(
-            fs::read(refused.join("cargo-tile-real")).expect("refused saved cargo unchanged"),
-            b"#!/bin/sh\nexit 37\n"
-        );
-        assert_eq!(reports[1].outcome, AccountHookOutcome::Completed);
-        assert_account_child_environment(&accounts[1]);
-        assert_rendered_toolchain(
-            &reports[1],
-            "stable",
-            match operation {
-                HookOperation::Install | HookOperation::Status => "installed",
-                HookOperation::Uninstall => "removed",
-            },
-        );
-        assert_eq!(
-            operation.completion(&reports).is_err(),
-            operation != HookOperation::Install,
-            "refusal fails status and uninstall while preserving best-effort install"
-        );
+        assert_eq!(prepared, ["runner-with-many-groups", "later"]);
+        assert_eq!(reports.len(), accounts.len());
+        for (account, report) in accounts.iter().zip(&reports) {
+            assert_eq!(report.account, account.name);
+            assert_eq!(report.operation, operation);
+            assert_eq!(report.outcome, AccountHookOutcome::Completed);
+            assert_account_child_environment(account);
+            assert_rendered_toolchain(
+                report,
+                "stable",
+                match operation {
+                    HookOperation::Install | HookOperation::Status => "installed",
+                    HookOperation::Uninstall => "removed",
+                },
+            );
+        }
+        assert!(operation.completion(&reports).is_ok());
     }
 }
 

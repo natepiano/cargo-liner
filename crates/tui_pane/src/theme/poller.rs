@@ -5,6 +5,12 @@
 //! backoff. Other platforms retain their existing detection cadence.
 
 #[cfg(target_os = "linux")]
+use std::fmt;
+#[cfg(target_os = "linux")]
+use std::fmt::Display;
+#[cfg(target_os = "linux")]
+use std::fmt::Formatter;
+#[cfg(target_os = "linux")]
 use std::future::Future;
 #[cfg(target_os = "linux")]
 use std::pin::Pin;
@@ -154,8 +160,8 @@ enum SubscriptionEnd {
 }
 
 #[cfg(target_os = "linux")]
-impl std::fmt::Display for SubscriptionEnd {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for SubscriptionEnd {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disconnected => formatter.write_str("appearance subscription ended"),
             Self::OwnerChanged => formatter.write_str("appearance portal owner changed"),

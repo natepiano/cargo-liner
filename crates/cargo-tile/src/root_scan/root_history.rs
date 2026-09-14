@@ -140,12 +140,11 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use super::RootContinuity;
     use crate::root_scan::RootHistory;
     use crate::root_scan::RootScan;
-    use crate::root_scan::inspected_directory::tests::create_directories;
-    use crate::root_scan::root_history::RootContinuity;
-    use crate::root_scan::sweep_authority::tests::sweep_everything;
-    use crate::root_scan::sweep_authority::tests::write_pair;
+    use crate::root_scan::inspected_directory;
+    use crate::root_scan::sweep_authority;
 
     /// A replaced or newly accessible pathname must first establish a new history.
     #[test]
@@ -154,21 +153,21 @@ mod tests {
         let root = parent.path().join("capture");
         let mut history = RootHistory::default();
         assert!(RootScan::open(&root, &mut history).is_err());
-        create_directories(&root);
-        write_pair(&root);
+        inspected_directory::create_directories(&root);
+        sweep_authority::write_pair(&root);
         fs::write(root.join("log"), "first").expect("first log");
         let recovered = RootScan::open(&root, &mut history).expect("recovered root");
         assert_eq!(recovered.continuity, RootContinuity::Changed);
-        assert_eq!(sweep_everything(&recovered), 0);
+        assert_eq!(sweep_authority::sweep_everything(&recovered), 0);
         let established = RootScan::open(&root, &mut history).expect("stable root");
         assert_eq!(established.continuity, RootContinuity::Established);
         fs::rename(&root, parent.path().join("old")).expect("replace root");
-        create_directories(&root);
-        write_pair(&root);
+        inspected_directory::create_directories(&root);
+        sweep_authority::write_pair(&root);
         fs::write(root.join("log"), "new").expect("new log");
         let replaced = RootScan::open(&root, &mut history).expect("replacement root");
         assert_eq!(replaced.continuity, RootContinuity::Changed);
-        assert_eq!(sweep_everything(&replaced), 0);
+        assert_eq!(sweep_authority::sweep_everything(&replaced), 0);
         assert!(root.join("log").exists());
     }
 }

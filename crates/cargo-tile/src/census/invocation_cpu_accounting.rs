@@ -21,14 +21,14 @@ use std::time::Instant;
 use sysinfo::Pid;
 use sysinfo::Process;
 
-use super::command_text::cargo_split;
+use super::command_text;
 use super::process_identity::InvocationId;
 use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
+#[cfg(test)]
+use super::scan;
 use super::scan::Census;
 use super::scan::CompilerObservation;
-#[cfg(test)]
-use super::scan::cpu_label;
 use crate::birth_stamp;
 #[cfg(target_os = "linux")]
 use crate::birth_stamp::BirthStamp;
@@ -422,7 +422,8 @@ pub(super) fn process_argument_path(
 /// Explicit target paths win over the environment. Defaults and Cargo configuration
 /// are learned from observed compiler clients, whose output paths reflect both.
 pub(super) fn cargo_target_directory(process: &Process) -> Result<PathBuf, CompilePathAbsence> {
-    let arguments = cargo_split(process.cmd()).map_err(|_| CompilePathAbsence::Unavailable)?;
+    let arguments =
+        command_text::cargo_split(process.cmd()).map_err(|_| CompilePathAbsence::Unavailable)?;
     let argv = &process.cmd()[arguments.start..];
     match argument_path(argv, CARGO_TARGET_DIR_FLAG) {
         Ok(path) => return process_path(process, &path),
@@ -475,9 +476,9 @@ fn linux_clock_ticks() -> Result<u32, MeasurementAbsence> {
 #[derive(Debug, Eq, PartialEq)]
 struct LinuxCpuSample {
     /// Field 22 binds the accumulated ticks to this process lifetime.
-    pub(super) start_ticks:       u64,
+    start_ticks:       u64,
     /// Fields 14 through 17 include both own and reaped-child processor time.
-    pub(super) accumulated_ticks: u64,
+    accumulated_ticks: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -673,12 +674,19 @@ fn smoothing_alpha() -> f32 {
 }
 
 #[cfg(test)]
+pub(super) use tests::cpu_process_identity;
+#[cfg(test)]
+pub(super) use tests::cpu_work;
+#[cfg(test)]
+pub(super) use tests::poll;
+
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
-pub(super) mod tests {
+mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
     use crate::birth_stamp::IdentityEvidence;
@@ -710,7 +718,7 @@ pub(super) mod tests {
         );
     }
 
-    pub(in crate::census) fn cpu_work(counters: &[(u32, u64)]) -> InvocationCpuContributions {
+    pub fn cpu_work(counters: &[(u32, u64)]) -> InvocationCpuContributions {
         InvocationCpuContributions {
             tree: counters
                 .iter()
@@ -720,7 +728,7 @@ pub(super) mod tests {
         }
     }
 
-    pub(in crate::census) fn cpu_process_identity(pid: u32) -> ProcessIdentity {
+    pub fn cpu_process_identity(pid: u32) -> ProcessIdentity {
         ProcessIdentity::Known {
             pid,
             lifetime: ProcessLifetime::for_test(u64::from(pid)),
@@ -972,7 +980,7 @@ pub(super) mod tests {
     fn start() -> Instant { Instant::now() }
 
     /// One scan's worth of the poll interval.
-    pub(in crate::census) fn poll() -> Duration { Duration::from_millis(PROCESS_POLL_MILLIS) }
+    pub fn poll() -> Duration { Duration::from_millis(PROCESS_POLL_MILLIS) }
 
     /// One invocation's reading once `sampled` has been folded in at
     /// `now`.
@@ -1052,7 +1060,7 @@ pub(super) mod tests {
         let over = Duration::from_secs_f32(CPU_SMOOTHING_SECONDS * 4.0);
 
         assert_eq!(
-            cpu_label(settle_over(&mut smoothing, 100.0, now, over)),
+            scan::cpu_label(settle_over(&mut smoothing, 100.0, now, over)),
             "98%"
         );
     }

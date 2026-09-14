@@ -15,8 +15,8 @@ version              = "0.2.78-dev"
 workspace = true
 
 [dependencies]
-chrono        = { workspace = true }
-clap          = { workspace = true }
+chrono = { workspace = true }
+clap   = { workspace = true }
 # Level-triggered polling preserves keyboard readiness beside SIGWINCH.
 crossterm     = { workspace = true, features = ["use-dev-tty"] }
 dirs          = { workspace = true }

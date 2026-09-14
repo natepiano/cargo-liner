@@ -31,20 +31,15 @@ use sysinfo::System;
 use sysinfo::UpdateKind;
 use tui_pane::kernel_parent;
 
+use super::command_text;
 use super::command_text::CommandText;
 use super::command_text::RowAbsence;
 use super::command_text::ScannerHome;
-use super::command_text::cargo_split;
-use super::command_text::command_text;
-use super::command_text::home_relative;
-use super::command_text::is_cargo_name;
-use super::command_text::names_cargo;
-use super::command_text::select_cargo;
-use super::command_text::subcommand;
 use super::direct_capture::DirectAssociation;
 use super::direct_capture::DirectCapture;
 use super::direct_capture::NearestRegistration;
 use super::direct_capture::SelectedProof;
+use super::invocation_cpu_accounting;
 use super::invocation_cpu_accounting::CompileOwner;
 use super::invocation_cpu_accounting::CompilerCreditRetention;
 use super::invocation_cpu_accounting::CpuAssignment;
@@ -54,11 +49,6 @@ use super::invocation_cpu_accounting::InvocationCpuContributions;
 use super::invocation_cpu_accounting::InvocationMeasurements;
 use super::invocation_cpu_accounting::Measurement;
 use super::invocation_cpu_accounting::MeasurementAbsence;
-use super::invocation_cpu_accounting::cargo_target_directory;
-use super::invocation_cpu_accounting::compile_owner;
-#[cfg(target_os = "linux")]
-use super::invocation_cpu_accounting::linux_cpu_time;
-use super::invocation_cpu_accounting::process_argument_path;
 use super::process_identity::CaptureMembership;
 use super::process_identity::InvocationId;
 #[cfg(test)]
@@ -66,6 +56,7 @@ use super::process_identity::ProcessIdentities;
 use super::process_identity::ProcessIdentity;
 use super::process_identity::RunId;
 use super::process_identity::VisibleParent;
+#[cfg(any(target_os = "linux", test))]
 use crate::birth_stamp;
 use crate::birth_stamp::LifetimeEvidence;
 #[cfg(test)]
@@ -412,7 +403,7 @@ fn scan(
     // area, which is what makes it cheap enough to poll continuously.
     // Read CPU counters on the full-system pass so short-lived descendants
     // can contribute without requiring detailed command metadata. The invocation's
-    // own sysinfo rate still validates its counter before accumulated work is published.
+    // own counter must be readable before accumulated work is published.
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
@@ -563,7 +554,7 @@ impl Census {
                 Self::measure_cpu(pid, process.cpu_usage(), &baseline, previous),
             );
             let name = process.name();
-            if is_cargo_name(name) {
+            if command_text::is_cargo_name(name) {
                 census.cargo.push(pid);
             } else if let Some(driver) = COMPILER_PROCESS_NAMES
                 .iter()
@@ -860,14 +851,16 @@ impl Census {
                 },
             };
             if pid == owner
-                && evidence.get(&owner)
-                    == Some(&Measurement::Unavailable(
-                        MeasurementAbsence::FirstObservation,
-                    ))
-                && (cfg!(target_os = "linux") || !elapsed.is_zero())
+                && (cfg!(target_os = "linux")
+                    || (evidence.get(&owner)
+                        == Some(&Measurement::Unavailable(
+                            MeasurementAbsence::FirstObservation,
+                        ))
+                        && !elapsed.is_zero()))
             {
-                // A validated own counter can begin the cumulative baseline before
-                // sysinfo has a rate. Darwin's zero may be a failed task-info read.
+                // Linux's lifetime-checked stat read proves even an idle owner's
+                // zero counter independently of sysinfo's unavailable rate.
+                // Darwin's zero may still be a failed task-info read.
                 // InvocationCpuHistory still reports FirstObservation for the first sample.
                 evidence.insert(owner, Measurement::Reading(0.0));
             }
@@ -973,7 +966,7 @@ impl Census {
     fn process_cpu_time(&self, pid: Pid) -> Measurement<Duration> {
         #[cfg(target_os = "linux")]
         {
-            let result = linux_cpu_time(pid).and_then(|elapsed| {
+            let result = invocation_cpu_accounting::linux_cpu_time(pid).and_then(|elapsed| {
                 if self.lifetimes.get(&pid) == Some(&birth_stamp::lifetime(pid.as_u32())) {
                     Ok(elapsed)
                 } else {
@@ -1017,7 +1010,7 @@ impl Census {
             .collect();
         for pid in self.live_cargo() {
             if let Some(process) = system.process(pid)
-                && let Ok(directory) = cargo_target_directory(process)
+                && let Ok(directory) = invocation_cpu_accounting::cargo_target_directory(process)
             {
                 targets.entry(pid).or_default().insert(directory);
             }
@@ -1025,7 +1018,8 @@ impl Census {
         for &(pid, _) in &self.compilers {
             if let Some(owner) = self.cpu_owners(pid).next()
                 && let Some(process) = system.process(pid)
-                && let Ok(directory) = process_argument_path(process, RUSTC_OUT_DIR_FLAG)
+                && let Ok(directory) =
+                    invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG)
             {
                 targets.entry(owner).or_default().insert(directory);
             }
@@ -1059,7 +1053,9 @@ impl Census {
                     return None;
                 }
                 let process = system.process(pid)?;
-                let directory = process_argument_path(process, RUSTC_OUT_DIR_FLAG).ok()?;
+                let directory =
+                    invocation_cpu_accounting::process_argument_path(process, RUSTC_OUT_DIR_FLAG)
+                        .ok()?;
                 let owners = self.live_cargo().filter(|owner| {
                     let Some(cargo) = system.process(*owner) else {
                         return false;
@@ -1072,7 +1068,7 @@ impl Census {
                         targets.iter().any(|target| directory.starts_with(target))
                     })
                 });
-                match compile_owner(owners) {
+                match invocation_cpu_accounting::compile_owner(owners) {
                     CompileOwner::Unique(owner) => Some((pid, owner)),
                     CompileOwner::Unknown | CompileOwner::Ambiguous => None,
                 }
@@ -1285,7 +1281,7 @@ impl Census {
         self.ancestor_pids(pid)
             .into_iter()
             .filter_map(|pid| system.process(pid))
-            .filter(|process| !names_cargo(process.cmd()))
+            .filter(|process| !command_text::names_cargo(process.cmd()))
             .map(|process| Ancestor {
                 pid:            process.pid().as_u32(),
                 command:        describe(process, home),
@@ -1394,7 +1390,7 @@ impl Census {
         for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
             if system
                 .process(pid)
-                .is_some_and(|process| names_cargo(process.cmd()))
+                .is_some_and(|process| command_text::names_cargo(process.cmd()))
                 && !self.cargo.contains(&pid)
             {
                 self.cargo.push(pid);
@@ -1519,7 +1515,7 @@ impl Census {
                     .collect::<Vec<_>>();
                 (
                     RunId::verified(&confirmed.key, &confirmed.registration),
-                    select_cargo(&argv, excluded).map(|_| ()),
+                    command_text::select_cargo(&argv, excluded).map(|_| ()),
                 )
             })
             .collect();
@@ -1527,7 +1523,7 @@ impl Census {
             let process = system
                 .process(pid)
                 .map_or(Err(RowAbsence::ArgvUnavailable), |process| {
-                    select_cargo(process.cmd(), excluded).map(|_| ())
+                    command_text::select_cargo(process.cmd(), excluded).map(|_| ())
                 });
             let eligibility = match self.direct_capture(capture, pid) {
                 DirectAssociation::Direct(direct) => {
@@ -1549,9 +1545,9 @@ impl Census {
             .copied()
             .filter(|pid| !matches!(self.eligibility.get(pid), Some(Ok(()))))
             .filter(|pid| {
-                system
-                    .process(*pid)
-                    .is_none_or(|process| process.cmd().is_empty() || names_cargo(process.cmd()))
+                system.process(*pid).is_none_or(|process| {
+                    process.cmd().is_empty() || command_text::names_cargo(process.cmd())
+                })
             })
             .collect();
         self.cargo
@@ -1910,7 +1906,7 @@ fn newest_first(left: &CargoProcess, right: &CargoProcess) -> std::cmp::Ordering
 /// Recognize both argv forwarding and the shim's single-quoted POSIX command string.
 /// PTY helpers and their shells carry this command; an application launched by cargo does not.
 fn forwards_capture_command(argv: &[OsString], record: &RegistrationCandidate) -> bool {
-    if let Ok(arguments) = cargo_split(argv)
+    if let Ok(arguments) = command_text::cargo_split(argv)
         && (argv[arguments.start..] == *record.arguments()
             || forwards_json_capture_arguments(&argv[arguments.start..], record.arguments()))
     {
@@ -1994,7 +1990,7 @@ fn observed_shim_match(
     inner: &[OsString],
     inner_cwd: WorkingDirectoryObservation<'_>,
 ) -> bool {
-    matches!((subcommand(outer), subcommand(inner), outer_cwd, inner_cwd),
+    matches!((command_text::subcommand(outer), command_text::subcommand(inner), outer_cwd, inner_cwd),
         (Ok(outer), Ok(inner), WorkingDirectoryObservation::Observed(outer_cwd), WorkingDirectoryObservation::Observed(inner_cwd))
         if outer == inner && DirectoryComparison::between(outer_cwd, inner_cwd) == DirectoryComparison::Same)
 }
@@ -2169,12 +2165,12 @@ fn row_fields(
     direct: &DirectAssociation,
     home: ScannerHome<'_>,
 ) -> Result<(WorkingDirectoryIdentity, String, CommandText), RowAbsence> {
-    let command = match (command_text(argv, home), direct) {
+    let command = match (command_text::command_text(argv, home), direct) {
         (Err(RowAbsence::ArgvUnavailable), DirectAssociation::Direct(direct)) => {
-            command_text(&registration_argv(direct.registration().record()), home)?
+            command_text::command_text(&registration_argv(direct.registration().record()), home)?
         },
         (Ok(_), DirectAssociation::Direct(direct))
-            if cargo_split(argv).is_ok_and(|arguments| {
+            if command_text::cargo_split(argv).is_ok_and(|arguments| {
                 forwards_json_capture_arguments(
                     &argv[arguments.start..],
                     direct.registration().record().arguments(),
@@ -2182,7 +2178,7 @@ fn row_fields(
             }) =>
         {
             // The shim's quiet rewrite changes execution, not the user's command heading.
-            command_text(&registration_argv(direct.registration().record()), home)?
+            command_text::command_text(&registration_argv(direct.registration().record()), home)?
         },
         (command, _) => command?,
     };
@@ -2204,7 +2200,7 @@ fn row_fields(
             )
         },
         (WorkingDirectoryObservation::Observed(path), _) => {
-            (path.into(), home_relative(path, home))
+            (path.into(), command_text::home_relative(path, home))
         },
         (WorkingDirectoryObservation::Unavailable, _) => (
             WorkingDirectoryIdentity::Unavailable,
@@ -2274,7 +2270,7 @@ fn registration_row(
         state: capture.read(&direct.key),
         managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
         nested: false,
-        command: command_text(&registration_argv(record), home)?,
+        command: command_text::command_text(&registration_argv(record), home)?,
     })
 }
 
@@ -2307,14 +2303,14 @@ fn describe(process: &Process, home: ScannerHome<'_>) -> String {
     let line: Vec<String> = process
         .cmd()
         .iter()
-        .map(|word| home_relative(Path::new(word), home))
+        .map(|word| command_text::home_relative(Path::new(word), home))
         .collect();
     if !line.is_empty() {
         return line.join(" ");
     }
     process.exe().map_or_else(
         || process.name().to_string_lossy().into_owned(),
-        |exe| home_relative(exe, home),
+        |exe| command_text::home_relative(exe, home),
     )
 }
 
@@ -2324,7 +2320,7 @@ fn registration_directory(record: &RegistrationCandidate, scanner_home: ScannerH
         WriterHome::Known(writer_home)
             if scanner_home == ScannerHome::Known(writer_home.as_path()) =>
         {
-            home_relative(record.directory(), scanner_home)
+            command_text::home_relative(record.directory(), scanner_home)
         },
         WriterHome::Known(_) | WriterHome::Unavailable => record.directory().display().to_string(),
     }
@@ -2388,6 +2384,68 @@ pub(crate) fn groups_with_cpu_for_test(
     groups_with_registration_rows_for_test(system, parents, shares, &[], &[])
 }
 
+/// Run own-counter validation and native invocation accounting before group assembly.
+/// Each sample supplies a pid, sysinfo own milliseconds, and its native cumulative read.
+/// Samples are one second apart, with process lifetimes taken from the live fixture.
+#[cfg(test)]
+pub(crate) fn groups_with_cpu_counters_for_test(
+    system: &System,
+    parents: &[(u32, u32)],
+    samples: &[&[(u32, u64, Measurement<Duration>)]],
+) -> Vec<CargoGroup> {
+    let mut census = Census::take(system, &HashMap::new());
+    census.parents = parents
+        .iter()
+        .map(|&(child, parent)| (Pid::from_u32(child), Pid::from_u32(parent)))
+        .collect();
+    census.cargo = system
+        .processes()
+        .iter()
+        .filter(|(_, process)| command_text::names_cargo(process.cmd()))
+        .map(|(&pid, _)| pid)
+        .collect();
+    census.identities = ProcessIdentities::default().observe(&census.lifetimes);
+    let mut previous = HashMap::new();
+    let mut smoothing = InvocationCpuAccounting::default();
+    let mut shares = HashMap::new();
+    let mut now = Instant::now();
+    for sample in samples {
+        for &(pid, accumulated, _) in *sample {
+            let pid = Pid::from_u32(pid);
+            let baseline = CpuBaseline {
+                lifetime: census
+                    .lifetimes
+                    .get(&pid)
+                    .cloned()
+                    .unwrap_or(LifetimeEvidence::Unavailable),
+                accumulated,
+            };
+            census
+                .cpu
+                .insert(pid, Census::measure_cpu(pid, 0.0, &baseline, &previous));
+            census
+                .accumulated
+                .insert(pid, Duration::from_millis(accumulated));
+            previous.insert(pid, baseline);
+        }
+        shares = census.attribute_cpu_with(system, &mut smoothing, now, |pid| {
+            sample
+                .iter()
+                .find(|(sample_pid, _, _)| *sample_pid == pid.as_u32())
+                .map_or(
+                    Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                    |(_, _, read)| *read,
+                )
+        });
+        now += Duration::from_secs(1);
+    }
+    let shares: Vec<_> = shares
+        .into_iter()
+        .map(|(pid, cpu)| (pid.as_u32(), cpu))
+        .collect();
+    groups_with_cpu_for_test(system, parents, &shares)
+}
+
 /// Assemble supplied registration rows outside the process-row measurement set.
 #[cfg(test)]
 pub(crate) fn groups_with_registration_rows_for_test(
@@ -2406,7 +2464,8 @@ pub(crate) fn groups_with_registration_rows_for_test(
         .processes()
         .iter()
         .filter(|(pid, process)| {
-            names_cargo(process.cmd()) && !omitted_process_pids.contains(&pid.as_u32())
+            command_text::names_cargo(process.cmd())
+                && !omitted_process_pids.contains(&pid.as_u32())
         })
         .map(|(&pid, _)| pid)
         .collect();
@@ -2440,6 +2499,8 @@ mod tests {
     use std::os::unix::fs::symlink;
     use std::os::unix::process::CommandExt;
     use std::process::Child;
+    #[cfg(target_os = "macos")]
+    use std::process::Command;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -2448,9 +2509,6 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
-    use super::super::invocation_cpu_accounting::tests::cpu_process_identity;
-    use super::super::invocation_cpu_accounting::tests::cpu_work;
-    use super::super::invocation_cpu_accounting::tests::poll;
     use super::*;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
@@ -2744,7 +2802,7 @@ mod tests {
             panic!("ready fixture pid {pid} is absent from the detailed process snapshot");
         });
         assert_eq!(
-            subcommand(process.cmd()).as_deref(),
+            command_text::subcommand(process.cmd()).as_deref(),
             Ok("build"),
             "fixture pid {pid}: argv={:?}, cwd={:?}",
             process.cmd(),
@@ -2795,7 +2853,7 @@ mod tests {
         let now = Instant::now();
         roster.observe(first, now);
         let ids = roster.tiled_ids(&[]);
-        roster.observe(second, now + poll());
+        roster.observe(second, now + invocation_cpu_accounting::poll());
         assert_eq!(roster.tiled_ids(&[]), ids);
         assert_eq!(roster.groups().len(), 1);
         for mut census in [census_of(&[]), census_of(&[(pid.as_u32(), 10)])] {
@@ -3199,6 +3257,8 @@ mod tests {
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
         assert_eq!(groups[0].lead.subtree_cpu, groups[0].lead.cpu);
+        let unobserved = groups_with_cpu_counters_for_test(&system, &[], &[]);
+        assert_eq!(unobserved[0].lead.cpu, groups[0].lead.cpu);
         let mut census = census_of(&[]);
         let children = HashMap::new();
         let capture = Capture::default();
@@ -3297,7 +3357,7 @@ mod tests {
                 Instant::now() < deadline,
                 "fixture must exec with new metadata"
             );
-            thread::sleep(poll());
+            thread::sleep(invocation_cpu_accounting::poll());
         }
         cached.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
@@ -3517,7 +3577,7 @@ mod tests {
                 Measurement::Unavailable(MeasurementAbsence::FirstObservation),
             )]),
             &identities[1..],
-            now + poll(),
+            now + invocation_cpu_accounting::poll(),
         );
         assert_eq!(
             reported[&identities[1]],
@@ -3527,7 +3587,7 @@ mod tests {
         assert!(!smoothing.reported.contains_key(&identities[0]));
 
         let pid = Pid::from_u32(10);
-        let compiler = cpu_process_identity(30);
+        let compiler = invocation_cpu_accounting::cpu_process_identity(30);
         let mut census = census_of(&[]);
         census.cargo.push(pid);
         census.lifetimes.insert(
@@ -3558,7 +3618,7 @@ mod tests {
             .detached
             .entry(compiler.clone())
             .or_default()
-            .update(&cpu_work(&[(30, 400)]).tree);
+            .update(&invocation_cpu_accounting::cpu_work(&[(30, 400)]).tree);
         census.identities.insert(pid, identities[1].clone());
         let replaced = census.attribute_cpu_with(
             &System::new(),
@@ -4797,12 +4857,46 @@ mod tests {
         assert_eq!(smoothing.invocations.len(), 1);
     }
 
+    fn copy_named_metadata_shells(root: &Path) {
+        // Darwin's sh wrapper execs bash, losing the fixture's kernel name.
+        // Copy the interpreter directly, then sign each owned copy for execution.
+        #[cfg(target_os = "macos")]
+        let shell = Path::new("/bin/bash").to_owned();
+        #[cfg(not(target_os = "macos"))]
+        let shell = {
+            let path = std::env::var_os("PATH").expect("metadata shell search path");
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("sh"))
+                .find(|path| {
+                    fs::metadata(path)
+                        .is_ok_and(|metadata| metadata.is_file() && metadata.mode() & 0o111 != 0)
+                })
+                .expect("executable metadata shell on PATH")
+        };
+        for name in [CARGO_DISPLAY_NAME, SCCACHE_BINARY, RUSTC_BINARY] {
+            let copied = root.join(name);
+            fs::copy(&shell, &copied).expect("copy named metadata executable");
+            #[cfg(target_os = "macos")]
+            {
+                let signed = Command::new("/usr/bin/codesign")
+                    .args(["--force", "--sign", "-"])
+                    .arg(&copied)
+                    .output()
+                    .expect("sign named metadata executable");
+                assert!(
+                    signed.status.success(),
+                    "signing {copied:?} failed: stdout={} stderr={}",
+                    String::from_utf8_lossy(&signed.stdout),
+                    String::from_utf8_lossy(&signed.stderr)
+                );
+            }
+        }
+    }
+
     #[test]
     fn non_cargo_argv_does_not_hide_a_detached_compiler_beneath_a_cargo_name() {
         let root = tempdir().expect("compiler metadata fixture");
-        for name in [CARGO_DISPLAY_NAME, SCCACHE_BINARY, RUSTC_BINARY] {
-            fs::copy("/bin/sh", root.path().join(name)).expect("copy named metadata executable");
-        }
+        copy_named_metadata_shells(root.path());
         let cargo = root.path().join(CARGO_DISPLAY_NAME);
         let requester = metadata_process(
             &cargo,
@@ -4844,7 +4938,7 @@ mod tests {
         );
         let process = system.process(worker).expect("worker metadata");
         assert_eq!(
-            select_cargo(process.cmd(), &[]),
+            command_text::select_cargo(process.cmd(), &[]),
             Err(RowAbsence::ProgramRejected)
         );
         census.identities = ProcessIdentities::default().observe(&census.lifetimes);

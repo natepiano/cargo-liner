@@ -188,6 +188,9 @@ registration_limit = int(registration_limit)
 shim_header_limit = int(shim_header_limit)
 poll_seconds = int(poll_millis) / 1000
 cpu_scans = int(cpu_scans)
+# Two CPU seconds within wait_for's ten-second limit preserve the original
+# twenty-percent workload margin above the refusal rows' ten-percent ceiling.
+refusal_cpu_seconds = 2
 # Ratatui completes every cursorless draw with Crossterm's Hide command.
 frame_end = b'\x1b[?25l'
 # Parallel reader tests share the host census; leave room for every fixture's rows.
@@ -204,6 +207,17 @@ bin_directory = root / 'bin'
 for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
                   home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
     directory.mkdir(parents=True)
+
+def copy_named_shell(path):
+    # Darwin's /bin/sh re-execs another shell, losing the fixture process name.
+    shutil.copyfile('/bin/bash' if sys.platform == 'darwin' else shutil.which('sh'), path)
+    path.chmod(0o755)
+    if sys.platform == 'darwin':
+        # A relocated platform shell is killed before exec completes. Sign only
+        # the owned fixture copy so it can run under its cargo/compiler name.
+        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)],
+                       check=True, capture_output=True, text=True)
+
 if scenario.startswith('settings-scroll'):
     account_directories = [capture_parent / str(other_uid - index) for index in range(24)]
     for directory in account_directories:
@@ -232,8 +246,7 @@ shim_source = Path(source).read_text()
 assignment = 'capture_parent=/tmp/cargo-tile'
 assert shim_source.splitlines().count(assignment) == 1
 (bin_directory / 'cargo').write_text(shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
-shutil.copyfile(shutil.which('sh'), bin_directory / 'cargo-tile-real')
-(bin_directory / 'cargo-tile-real').chmod(0o755)
+copy_named_shell(bin_directory / 'cargo-tile-real')
 if scenario.startswith('startup-'):
     version_header = re.search(r'^# cargo-tile-shim-version: (\d+)$', shim_source, re.MULTILINE)
     assert version_header is not None, 'embedded shim must declare its install version'
@@ -286,7 +299,7 @@ if [ -n "${NESTED_WORK-}" ]; then
     for command in check test; do
         (
             cd "$NESTED_WORK" || exit 93
-            OBSERVED="$OBSERVED/$command" NESTED_WORK= sh "$CARGO" "$command" "$NESTED_MARKER-$command"
+            OBSERVED="$OBSERVED/$command" NESTED_WORK= exec sh "$CARGO" "$command" "$NESTED_MARKER-$command"
         ) &
     done
 fi
@@ -326,6 +339,7 @@ for key in ('CARGOTILE_NESTED', 'CARGO_TILE_FRAME_LOG', 'CARGO_TERM_PROGRESS_WHE
 environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'),
                    RUSTUP_HOME=str(root / 'rustup'),
+                   PYTHONUTF8='1',
                    LC_ALL=writer_locale, LANG=writer_locale,
                    TZ='EST5EDT,M3.2.0,M11.1.0', TERM='xterm-256color')
 writers = []
@@ -581,8 +595,7 @@ if busy:
     environment['CPU_TARGET'] = str(work / 'target')
     (work / 'target/debug/deps').mkdir(parents=True)
     for name in ('sccache', 'rustc'):
-        shutil.copyfile(shutil.which('sh'), bin_directory / name)
-        (bin_directory / name).chmod(0o755)
+        copy_named_shell(bin_directory / name)
     environment['RUSTC_WRAPPER'] = str(bin_directory / 'sccache')
     compiler = server / 'compile.sh'
     compiler.write_text('''printf '%s' "$$" > "$CPU_SERVER/compiler-pid"
@@ -604,22 +617,73 @@ while [ ! -f "$OBSERVED/release" ]; do sleep 0.2; done
                               CPU_COMPILE=str(compiler))
     # Reparent the server before cargo starts. A process supervisor can adopt
     # orphans instead of init, so ancestry is checked against the invocation below.
-    launcher = subprocess.Popen([sys.executable, '-c', '''import os, sys
+    with (server / 'output').open('wb') as output:
+        launcher = subprocess.Popen([sys.executable, '-c', '''import os, sys
 if os.fork():
     os._exit(0)
 os.setsid()
 os.execve(sys.argv[1], sys.argv[1:], dict(os.environ))
 ''', str(bin_directory / 'sccache'), str(service)], env=server_environment,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    assert launcher.wait(timeout=5) == 0
+            stdin=subprocess.DEVNULL, stdout=output, stderr=output)
+    launcher_status = launcher.wait(timeout=5)
+    assert launcher_status == 0, (launcher_status, (server / 'output').read_text())
     wait_for(lambda: (server / 'server-pid').exists()
              and (server / 'server-pid').read_text(), 'cache server does not start')
     cache_server = int((server / 'server-pid').read_text())
-    wait_for(lambda: process_parent(cache_server) != launcher.pid, 'cache server is not reparented')
+    wait_for_cache_server_parent(cache_server, launcher.pid, server)
 
 def process_parent(pid):
     return int(subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='], check=True,
                               capture_output=True, text=True).stdout.strip())
+
+def wait_for_cache_server_parent(pid, launcher_pid, server):
+    observations = []
+    def reparented():
+        result = subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='],
+                                capture_output=True, text=True)
+        observations[:] = [(result.returncode, result.stdout, result.stderr)]
+        if result.returncode == 1:
+            return False
+        result.check_returncode()
+        parent = result.stdout.strip()
+        return bool(parent) and int(parent) > 0 and int(parent) != launcher_pid
+    wait_for(reparented, 'cache server is not reparented',
+             lambda: '\nlast ps observation: ' + repr(observations)
+             + '\nserver output: ' + (server / 'output').read_text())
+
+def assert_cache_server_readiness():
+    original = subprocess.run, time.monotonic, time.sleep
+    elapsed = [0.0]
+    calls = []
+    server = root / 'cache-readiness'
+    server.mkdir()
+    (server / 'output').write_text('retained server diagnostic')
+    delayed = scenario == 'cache-readiness-delayed'
+    results = [(1, ''), (0, ''), (0, '41\n'), (0, '1\n')]
+    def observe(args, **kwargs):
+        calls.append(args)
+        code, output = results[min(len(calls) - 1, len(results) - 1)] if delayed else (1, '')
+        return subprocess.CompletedProcess(args, code, output, 'probe observation')
+    def advance(seconds):
+        elapsed[0] += seconds
+    try:
+        subprocess.run = observe
+        time.monotonic = lambda: elapsed[0]
+        time.sleep = advance
+        if delayed:
+            wait_for_cache_server_parent(42, 41, server)
+            assert len(calls) == 4, calls
+        else:
+            try:
+                wait_for_cache_server_parent(42, 41, server)
+            except AssertionError as error:
+                assert elapsed[0] >= 10 and len(calls) > 1, (elapsed, calls)
+                assert 'last ps observation' in str(error), error
+                assert 'retained server diagnostic' in str(error), error
+            else:
+                raise AssertionError('permanently missing cache server passes readiness')
+    finally:
+        subprocess.run, time.monotonic, time.sleep = original
 
 def process_ancestry(pid):
     ancestry = []
@@ -629,12 +693,26 @@ def process_ancestry(pid):
         pid = process_parent(pid)
     return ancestry
 
+def compiler_cpu_seconds(pid):
+    if sys.platform == 'linux':
+        fields = Path('/proc/' + str(pid) + '/stat').read_text().rsplit(') ', 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+    elapsed = subprocess.run(['ps', '-p', str(pid), '-o', 'time='], check=True,
+                             capture_output=True, text=True).stdout.strip()
+    seconds = 0
+    for component in elapsed.split(':'):
+        seconds = seconds * 60 + float(component)
+    return seconds
+
 def rendered_cpu(rendered, writer, markers):
     commands = fixture_pane(rendered, markers)
     pid = (writer[1] / 'cargo-pid').read_text()
     rows = [line for line in commands if writer[1].name in line
             and re.match(r'^\s*│\s*' + pid + r'\s', line)]
-    assert len(rows) == 1, 'CPU fixture loses or duplicates its command row\n' + rendered
+    assert len(rows) == 1, ('CPU fixture loses or duplicates its command row; expected pid=' + pid
+                           + '\n' + subprocess.run(['ps', '-p', pid, '-o', 'pid=,ppid=,comm=,args='],
+                                                  capture_output=True, text=True).stdout
+                           + '\n' + rendered)
     # Header and row redraws can be observed separately; read CPU from this row.
     prefix, command, _ = rows[0].partition('cargo ')
     assert command, 'CPU fixture row has no cargo command\n' + rows[0]
@@ -650,26 +728,38 @@ def assert_cpu_workload(writer, unrelated=None):
     rendered = wait_for_fixture_pane(markers)
     readings = []
     other_readings = []
+    refusal = scenario in ('cpu-cache-ambiguous', 'cpu-cache-excluded')
+    if refusal:
+        compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
+        compiler_started = compiler_cpu_seconds(compiler_pid)
+        compiler_consumed = 0
     # Inspect throughout several reporting windows, including child replacements.
     started = time.monotonic()
     deadline = started + 4
-    while time.monotonic() < deadline:
+    def observe_cpu():
+        nonlocal rendered, compiler_consumed
+        if refusal:
+            compiler_consumed = compiler_cpu_seconds(compiler_pid) - compiler_started
         readings.append((time.monotonic() - started, rendered_cpu(rendered, writer, markers)))
         if visible_other:
             other_readings.append(rendered_cpu(rendered, unrelated, markers))
         if scenario == 'cpu-cache-excluded':
             assert unrelated[1].name not in rendered, 'excluded owner still displays a row\n' + rendered
         rendered = wait_for_fixture_pane(markers)
+        return time.monotonic() >= deadline and (
+            not refusal or compiler_consumed >= refusal_cpu_seconds)
+    wait_for(observe_cpu, 'compiler does not complete the observed CPU workload',
+             lambda: repr((readings, compiler_consumed if refusal else 'not a refusal')))
     if scenario in ('cpu-cache-ambiguous', 'cpu-cache-excluded'):
         assert max(cpu for elapsed, cpu in readings) < 10, ('first candidate borrows server CPU', readings)
         if visible_other:
             assert max(other_readings) < 10, ('second candidate borrows server CPU', other_readings)
         else:
             assert unrelated[2].exists() and unrelated[4].exists(), 'excluded owner loses capture artifacts'
-        compiler_pid = (root / 'cpu-server/compiler-pid').read_text()
-        compiler_cpu = float(subprocess.run(['ps', '-p', compiler_pid, '-o', '%cpu='], check=True,
-                                            capture_output=True, text=True).stdout.strip())
-        assert compiler_cpu >= 20, ('external compiler must remain busy during refusal', compiler_cpu)
+        # Startup CPU is excluded. Keep observing rows while a loaded compiler
+        # accumulates the required work, bounded by the existing wait_for limit.
+        assert compiler_consumed >= refusal_cpu_seconds, (
+            'external compiler must consume CPU during refusal', compiler_consumed, refusal_cpu_seconds)
     else:
         sustained = [cpu for elapsed, cpu in readings if elapsed >= 2]
         assert len(sustained) >= 3 and min(sustained) >= 10, (
@@ -890,8 +980,20 @@ def unavailable_measurements(row):
     return row.replace('│', ' ').split().count('--')
 
 def carrier_source_is_rendered(writer, source):
+    global terminal_rows
     read_terminal(0.1)
-    rows = [line for pane in command_panes(screen()) for line in pane if writer[1].name in line]
+    rendered = screen()
+    rows = [line for pane in command_panes(rendered) for line in pane if writer[1].name in line]
+    if not rows and scenario == 'child-source-switch' and terminal_rows < 2400:
+        # Concurrent host rows can compress the parent's pane below its child.
+        # Resize only an observed clipped pane, not the reader's startup frame.
+        panes = fixture_panes(rendered, (first[1].name,))
+        if len(panes) == 1:
+            sizes = [re.search(r'content rows: (\d+) r/c: (\d+)/', line) for line in panes[0]]
+            if any(size and int(size[1]) > int(size[2]) for size in sizes):
+                terminal_rows *= 2
+                fcntl.ioctl(terminal, termios.TIOCSWINSZ,
+                            struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
     if len(rows) != 1:
         return False
     # A sleeping process may never earn a CPU baseline. Its observed compiler
@@ -1170,6 +1272,10 @@ if scenario == 'terminal-frame-completion':
 
 if scenario in ('pane-readiness-delayed', 'pane-readiness-never'):
     assert_fixture_pane_readiness()
+    sys.exit(0)
+
+if scenario in ('cache-readiness-delayed', 'cache-readiness-never'):
+    assert_cache_server_readiness()
     sys.exit(0)
 
 try:
@@ -1799,6 +1905,14 @@ try:
         assert first[0].poll() is None and first[2].exists() and first[4].exists()
         rendered = screen()
     print(rendered)
+except Exception:
+    if scenario.startswith('cpu-cache-'):
+        try:
+            output = (root / 'cpu-server/output').read_text(errors='replace')
+        except OSError as error:
+            output = 'cannot read retained server output: ' + str(error)
+        print('cache server output before cleanup:\n' + output, file=sys.stderr)
+    raise
 finally:
     try:
         if reader is not None and reader != 0:
@@ -1859,7 +1973,12 @@ finally:
             let source = include_str!("../src/cargo-capture-shim.sh");
             let assignment = "capture_parent=/tmp/cargo-tile";
             assert_eq!(source.lines().filter(|line| *line == assignment).count(), 1);
-            let parent = fixture.directory.path().join("capture");
+            let parent = fixture
+                .directory
+                .path()
+                .canonicalize()
+                .expect("physical fixture root")
+                .join("capture");
             let parent = parent
                 .to_str()
                 .expect("UTF-8 parent")
@@ -2425,6 +2544,18 @@ exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
     #[test]
     fn reader_groups_one_directory_across_different_writer_homes() {
         reader_regression("grouping");
+    }
+
+    /// An unavailable parent sample stays inside the cache server's readiness deadline.
+    #[test]
+    fn cache_server_readiness_retries_unavailable_parent_observations() {
+        reader_regression("cache-readiness-delayed");
+    }
+
+    /// A missing cache server fails at the deadline with its retained diagnostics.
+    #[test]
+    fn cache_server_readiness_rejects_permanent_parent_absence() {
+        reader_regression("cache-readiness-never");
     }
 
     /// Navigation draws every account in a short popup and reaches the settings below them.
