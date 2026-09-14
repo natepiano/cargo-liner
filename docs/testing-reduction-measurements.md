@@ -73,3 +73,42 @@ Both inventories used `cargo nextest list -p <package> --message-format json`, w
 | cargo-port | 1171 | 1170 | Removed only `watcher::runtime::tests::register_watch_roots_reports_elapsed_for_representative_roots`; no additions or renames |
 
 All seven rewritten berth integration tests remain, with the one documented rename. The release-only resolver cases are correctly absent from these debug inventories and passed in the separate release command.
+
+## Phase 2
+
+Machine state: `envfs: on` (`findmnt /bin`: `/bin envfs fuse`); `rustc 1.98.1 (48a229cea 2026-09-01)`. Profile: `dev`, warm cache. This matches the recorded phase 1 machine state.
+
+| Phase | envfs | Build wall / CPU | Execution wall median (range) | Execution CPU median (range) | Full-workspace summaries | Comparison |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2 | on | Pending orchestrator protocol run | Pending | Pending | Three consecutive green full-workspace runs pending | Phase 1 protocol is also pending; no measured performance comparison is available |
+
+The final Verification section permits scoped `verify.sh` package gates, before/after `cargo nextest list`, and the specified macOS commands, and forbids other raw Cargo invocations. Consequently the protocol's separate workspace build, three workspace executions and four timed package executions require the orchestrator. Scoped nextest elapsed summaries below do not supply wall/CPU protocol measurements. No summed per-test duration is used as a cost measure.
+
+Scoped berth verification exited 0 for both required commands: nextest reported `633 tests run: 633 passed, 0 skipped` in 72.243 s; nightly formatting and clippy both ran and passed. Before/after inventories contain 633 tests each, with `output_contract` disappearing and exactly its one selector regression appearing at `output_contract::tests::generated_contract_retains_every_closed_selector_branch` in the bin test target. These checks followed the final berth source edits.
+
+Final berth verification after its source ownership posted done also exited 0: `633 tests run: 633 passed, 0 skipped`, nextest elapsed 72.001 s. Final lint executed nightly formatting and clippy and exited 0, with no skipped checks.
+
+The Linux inventories were captured before any owned relocation and after all source moves. The saved pre-edit tile baseline is `impl_nextest_before.txt`, and its after inventory is `impl_nextest_after.txt`; their complete test entries match the independently captured `tile-before-test.txt` and `tile-after-test.txt` exactly. Berth inventories are `berth-before-test.txt` and `berth-after-test.txt` in `/tmp/claude/delegate/bdae0478-6973-42af-b7a9-bf5e7a580551/`. Every before test name was mapped to its destination and compared with the complete after inventory; there are no lost assertions or unexpected test-name changes.
+
+| Package / target | Before | After | Reconciliation |
+| --- | ---: | ---: | --- |
+| cargo-tile bin | 732 | 868 | Gains 13 summary/CLI and 123 shim tests |
+| cargo-tile summary_totals | 745 | Absent | 13 unique tests moved; 732 duplicate unit-test copies removed |
+| cargo-tile shim_registration | 855 | Absent | 123 unique tests moved; 732 duplicate unit-test copies removed |
+| cargo-tile capture_root_acl | No Linux tests | Absent | 20 macOS-only tests moved; two summary tests remain Linux-only |
+| cargo-tile cli_lifecycle | 8 | 8 | Unchanged |
+| cargo-tile shim_modes | 20 | 20 | Unchanged |
+| cargo-tile total entries | 2360 | 896 | Distinct count remains 896 after exact path mapping |
+| cargo-berth bin | 224 | 225 | Gains the output-contract selector test |
+| cargo-berth output_contract | 1 | Absent | Exactly one test relocated |
+| cargo-berth total | 633 | 633 | All other targets unchanged |
+
+Actual source counts differ from the work-order estimates: summary has 13 tests including CLI, ACL has 20, and wire has 24. The wire option retains the one-second sleep only in `versioned_fields_preserve_original_argument_bytes`, `birth_stamp_belongs_to_the_pid_in_the_registration_filename`, and `same_pid_and_calendar_second_receive_different_generations`, on both Linux and macOS. The 21 other wire tests keep their original assertions without that sleep. The shared-capture executable helper now resolves the profile's cargo-tile binary from the test executable path because Cargo does not provide the integration-only compile-time executable variable inside bin unit tests.
+
+After every source-owning slot posted done, final Linux tile verification exited 0: `896 tests run: 896 passed, 0 skipped`, nextest elapsed 18.347 s. Final tile lint exited 0; nightly formatting and clippy both ran with no skipped checks. The exclusive reader regression and all 24 wire tests passed. This is a scoped package result, not one of the required three full-workspace repetitions.
+
+Native macOS verification ran after all three source-owning slots posted done. The prescribed `rsync -a --delete --exclude target/ ./ mac:~/tmp/cargo-liner-phase-verify/` exited 0. The prescribed SSH nextest-plus-clippy command exited 0: `908 tests run: 908 passed, 0 skipped`, nextest elapsed 37.878 s, across three targets (880 bin tests, 8 cli_lifecycle, 20 shim_modes). All 20 tests under `root_scan::sweep_authority::acl_tests` passed. Test compilation reported 43.40 s; clippy reported 7.51 s and no warnings. These Cargo-reported durations are not wall/CPU protocol measurements. Native before counts were not separately collected; the Linux before/after inventories and source assertion audit provide the relocation reconciliation. Raw remote output is retained as `mac-verification-test.log` beside the local gate logs.
+
+No source fixes were needed after macOS verification. Required scoped package tests and lint are green, with no skipped checks. Phase acceptance still requires the orchestrator's three consecutive green full-workspace runs and the complete phase measurement protocol; neither was executed under this delegate's restricted command list. CI was not pushed or triggered.
+
+Standalone taplo, workspace cargo-mend, stable-without-bootstrap, and all-features/required CI job checks were not run under this delegate command list; these remain for the orchestrator and final CI gate.

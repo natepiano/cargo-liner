@@ -167,7 +167,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 
 `CargoProcess.subtree_cpu` carries the result. `render::summary_rows` draws it for a promoted summary row. Command rows keep `aggregate_cpu`, which charges a pid shared by two rows once.
 
-**Test adapters.** `groups_with_registration_rows_for_test` and `groups_with_cpu_for_test` are `cfg(test)`. `tests/summary_totals.rs` drives them.
+**Test adapters.** `groups_with_registration_rows_for_test` and `groups_with_cpu_for_test` are `cfg(test)`. `census/summary_totals_tests.rs` (a `cfg(test)` module) drives them.
 
 ### Account hooks and credentials (`crates/cargo-tile/src/hook.rs`, `cli.rs`)
 
@@ -319,7 +319,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 
 ### What the tests prove
 
-`crates/cargo-tile/tests/shim_registration.rs` reaches the sources through `#[path]` modules and drives the built binary under a PTY. `crates/cargo-tile/tests/support/shared_capture.rs` holds the cross-account scenarios. Fixtures write records with Python under the test's own uid; no test needs a second account.
+`crates/cargo-tile/src/shim_registration/` is a `cfg(test)` module tree inside the binary (`mod.rs` reader scenarios, `wire.rs` shim wire tests, `shared_capture.rs` cross-account scenarios, `rows_readout.rs`); it drives the built binary under a PTY. Fixtures write records with Python under the test's own uid; no test needs a second account.
 
 - Injected accounts install through the built binary. The staged installer copies the executable and removes its directory on drop. An installer that cannot start is reported per account, not as a crash. Group resolution matches the account database. Unit tests cover the Darwin primary-first list, credential prefix and uid, and continuation past a credential failure.
 - The reader reports a foreign-owned uid directory as ignored, skips symlinked and non-numeric entries, and shows a new account directory on the next scan.
@@ -327,8 +327,8 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 - A live capture under the real path, scanned through the `/private/tmp` alias, survives the sweep. A record carrying a legacy `{ sec = ` boot is reported `IdentityUnknown` and never unlinked.
 - The reader reaps its own ended capture and leaves a foreign-owned directory untouched. The obsolete `roots` key is ignored.
 - `reader_regression` covers nested shims, a quiet JSON caller, recovery from ambiguity, locale and timezone variation, legacy registration survival, and removal of an ended staging file.
-- `tests/summary_totals.rs` covers promoted-summary CPU totals, including zero-own-tick parents and unreadable counters.
-- `tests/capture_root_acl.rs` (`#![cfg(target_os = "macos")]`, 20 tests) exercises real ACLs through `/bin/chmod +a` with `CAPTURE_ACL_TEST_*` fixture constants.
+- `census/summary_totals_tests.rs` covers promoted-summary CPU totals, including zero-own-tick parents and unreadable counters.
+- `root_scan/sweep_authority.rs` (`acl_tests`, `cfg(all(test, target_os = "macos"))`, 20 tests) exercises real ACLs through `/bin/chmod +a` with `CAPTURE_ACL_TEST_*` fixture constants.
 - cargo-berth `tests/reader_compat.rs` checks a chosen reader against the frozen `merge_extent_observed` ledger.
 
 ## Invariants
@@ -361,7 +361,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 - Every cargo-berth reader that can reconcile or release includes the extent and evidence handling before a newer binary touches a shared ledger.
 - `unsafe_code` is denied workspace-wide. In cargo-tile the exceptions are `birth_stamp/macos.rs` (sysctl), the account-database and credential calls in `hook.rs`, and the test FIFO fixture in `root_scan/inspected_directory.rs`, each under a per-item `allow(reason)` with a `// SAFETY:` comment.
 - Every constant lives in `crates/cargo-tile/src/constants.rs` with a rationale.
-- The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules. Each integration harness that reaches the sources (`shim_registration.rs`, `summary_totals.rs`, `capture_root_acl.rs`) has its own full `#[path = "../src/…"]` block; moving a file means updating every block.
+- The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules, including the shim, summary-total and ACL suites, so the crate's sources compile once for the whole test binary. The only integration targets left (`tests/cli_lifecycle.rs`, `tests/shim_modes.rs`) spawn the built binary and include no sources.
 - Two uids are never required by a test.
 
 ## Calibration and gotchas
@@ -425,7 +425,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 - Darwin fixtures canonicalize the `/var` alias and set `PYTHONUTF8=1`.
 - On Linux, the cache-readiness check retries an unavailable `ps` within its deadline.
 - Fixture writers live about 20 s. The two 10 s `wait_for` deadlines plus the 1 s settle already use about 21 s, so a new wait replaces an existing one. `wait_for_fixture_pane(markers)` is the readiness predicate.
-- `capture_root_acl.rs` compiles only on macOS. A green Linux gate says nothing about it.
+- The `acl_tests` module in `root_scan/sweep_authority.rs` compiles only on macOS. A green Linux gate says nothing about it.
 - An empty ACL (a live allocation with zero entries, from `chmod -a# 0`) differs from an absent one (`-N`).
 - `reader_keeps_application_spawned_cargo_when_run_is_excluded` is timing-sensitive: about one flake in three package runs, green on rerun.
 

@@ -3,5 +3,5 @@
 # same run open enough families to crowd that pane off the tile grid, so the
 # test takes every slot and runs with nothing else beside it.
 [[profile.default.overrides]]
-filter           = 'package(cargo-tile) & binary(shim_registration) & test(=tests::reader_keeps_parent_family_across_its_only_childs_source_switch)'
+filter           = 'package(cargo-tile) & kind(bin) & test(=shim_registration::tests::reader_keeps_parent_family_across_its_only_childs_source_switch)'
 threads-required = "num-cpus"

@@ -5,7 +5,10 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::LazyLock;
+use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use crate::config::Config;
@@ -49,7 +52,61 @@ fn account_at(home: &Path, name: &str) -> HookAccount {
     }
 }
 
-fn cargo_tile() -> &'static Path { Path::new(env!("CARGO_BIN_EXE_cargo-tile")) }
+/// Bin unit tests receive no `CARGO_BIN_EXE_*`, and the binary is not a build dependency
+/// of its own test harness, so build it here when it is missing or older than the harness.
+fn cargo_tile() -> &'static Path {
+    static BINARY: LazyLock<PathBuf> = LazyLock::new(|| {
+        let harness = std::env::current_exe().expect("bin test executable");
+        let binary = harness
+            .parent()
+            .expect("test dependencies directory")
+            .parent()
+            .expect("profile output directory")
+            .join("cargo-tile");
+        let harness_modified: SystemTime = fs::metadata(&harness)
+            .expect("bin test executable metadata")
+            .modified()
+            .expect("bin test executable modification time");
+        if !binary.exists()
+            || fs::metadata(&binary)
+                .expect("cargo-tile executable metadata")
+                .modified()
+                .expect("cargo-tile executable modification time")
+                < harness_modified
+        {
+            let mut command =
+                Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+            command.args(["build", "-p", "cargo-tile", "--bin", "cargo-tile"]);
+            let profile = binary
+                .parent()
+                .expect("profile output directory")
+                .file_name()
+                .expect("profile directory name")
+                .to_str()
+                .expect("Cargo profile name is UTF-8");
+            match profile {
+                "debug" => {},
+                "release" => {
+                    command.arg("--release");
+                },
+                profile => {
+                    command.args(["--profile", profile]);
+                },
+            }
+            let status = command
+                .status()
+                .expect("build cargo-tile for bin unit tests");
+            assert!(status.success(), "cargo-tile build failed: {status}");
+            assert!(
+                binary.exists(),
+                "cargo-tile build succeeded but {} is missing",
+                binary.display()
+            );
+        }
+        binary
+    });
+    BINARY.as_path()
+}
 
 fn original_cargo(account: &HookAccount, toolchain: &str) -> std::path::PathBuf {
     let bin = account
@@ -89,7 +146,7 @@ fn injected_accounts_install_each_toolchain_through_the_built_binary() {
                 .join(format!(".rustup/toolchains/{toolchain}/bin"));
             assert_eq!(
                 fs::read(bin.join("cargo")).expect("installed shim"),
-                include_bytes!("../../src/cargo-capture-shim.sh")
+                include_bytes!("../cargo-capture-shim.sh")
             );
             let shim = fs::metadata(bin.join("cargo")).expect("shim metadata");
             assert_eq!((shim.uid(), shim.gid()), (account.uid, account.gid));
@@ -158,7 +215,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
             .join(format!(".rustup/toolchains/{toolchain}/bin"));
         assert_eq!(
             fs::read(bin.join("cargo")).expect("staged installer writes shim"),
-            include_bytes!("../../src/cargo-capture-shim.sh")
+            include_bytes!("../cargo-capture-shim.sh")
         );
         assert_eq!(
             fs::read(bin.join("cargo-tile-real")).expect("staged installer preserves cargo"),
@@ -343,7 +400,7 @@ fn injected_account_repairs_interrupted_and_refreshes_outdated_installs() {
         assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
         assert_eq!(
             fs::read(bin.join("cargo")).expect("repaired shim"),
-            include_bytes!("../../src/cargo-capture-shim.sh")
+            include_bytes!("../cargo-capture-shim.sh")
         );
         assert_eq!(
             fs::read(bin.join("cargo-tile-real")).expect("saved cargo survives"),
@@ -375,7 +432,7 @@ fn injected_account_reports_child_errors_and_continues_other_toolchains() {
     );
     assert_eq!(
         fs::read(good.join("cargo")).expect("later toolchain installs"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert_eq!(
         fs::read(broken.join("cargo")).expect("failed toolchain untouched"),
@@ -400,7 +457,7 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     let orphan = original_cargo(&account, orphan_name);
     fs::write(
         orphan.join("cargo"),
-        include_bytes!("../../src/cargo-capture-shim.sh"),
+        include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("orphan shim without saved cargo");
     let working = original_cargo(&account, installed_name);
@@ -436,7 +493,7 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     }
     assert_eq!(
         fs::read(working.join("cargo")).expect("successful install"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert_eq!(
         fs::read(working.join("cargo-tile-real")).expect("saved original cargo"),
@@ -444,7 +501,7 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     );
     assert_eq!(
         fs::read(orphan.join("cargo")).expect("orphan survives install"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert!(!orphan.join("cargo-tile-real").exists());
 }
@@ -536,7 +593,7 @@ fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str
     );
     assert_eq!(
         fs::read(working.join("cargo")).expect("successful sibling install"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert_eq!(
         fs::read(newer.join("cargo")).expect("newer shim is kept"),
@@ -688,7 +745,7 @@ fn injected_account_reports_every_orphan_beside_a_successful_install() {
         let bin = original_cargo(&account, name);
         fs::write(
             bin.join("cargo"),
-            include_bytes!("../../src/cargo-capture-shim.sh"),
+            include_bytes!("../cargo-capture-shim.sh"),
         )
         .expect("orphan shim without saved cargo");
     }
@@ -737,7 +794,7 @@ fn injected_account_reports_an_orphan_and_install_after_a_child_error() {
     let orphan = original_cargo(&account, "m-orphan");
     fs::write(
         orphan.join("cargo"),
-        include_bytes!("../../src/cargo-capture-shim.sh"),
+        include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("orphan shim without saved cargo");
     let working = original_cargo(&account, "z-working");
@@ -776,12 +833,12 @@ fn injected_account_reports_an_orphan_and_install_after_a_child_error() {
     );
     assert_eq!(
         fs::read(orphan.join("cargo")).expect("orphan untouched"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert!(!orphan.join("cargo-tile-real").exists());
     assert_eq!(
         fs::read(working.join("cargo")).expect("later toolchain installs"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert_eq!(
         fs::read(working.join("cargo-tile-real")).expect("saved original cargo"),
@@ -834,7 +891,7 @@ fn uninstall_reports_an_orphan_and_restores_later_toolchains_before_failing() {
     let directory = tempfile::tempdir().expect("uninstall fixture");
     let account = account_at(directory.path(), "runner");
     let orphan = original_cargo(&account, "a-orphan");
-    let shim = include_bytes!("../../src/cargo-capture-shim.sh");
+    let shim = include_bytes!("../cargo-capture-shim.sh");
     fs::write(orphan.join("cargo"), shim).expect("orphan shim without saved cargo");
     let orphan_before = fs::metadata(orphan.join("cargo")).expect("orphan metadata");
     let working = original_cargo(&account, "z-working");
@@ -1067,7 +1124,7 @@ fn account_status_child_reports_all_states_without_changing_toolchains() {
     let orphaned = original_cargo(&account, "d-orphaned");
     fs::write(
         orphaned.join("cargo"),
-        include_bytes!("../../src/cargo-capture-shim.sh"),
+        include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("orphan shim");
     let unreadable = original_cargo(&account, "e-unreadable");
@@ -1181,7 +1238,7 @@ fn account_status_distinguishes_no_toolchains_from_failed_discovery_and_continue
     let orphaned = original_cargo(&accounts[2], "orphaned");
     fs::write(
         orphaned.join("cargo"),
-        include_bytes!("../../src/cargo-capture-shim.sh"),
+        include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("orphan shim");
     let reports = run_account_hooks(&accounts, cargo_tile(), HookOperation::Status);
@@ -1223,7 +1280,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
     let orphan = original_cargo(&account, "a-orphaned");
     fs::write(
         orphan.join("cargo"),
-        include_bytes!("../../src/cargo-capture-shim.sh"),
+        include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("orphan shim");
     let broken = installed_cargo(&account, "b-failed");
@@ -1290,7 +1347,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
     for bin in [&orphan, &broken] {
         assert_eq!(
             fs::read(bin.join("cargo")).expect("refused shim survives"),
-            include_bytes!("../../src/cargo-capture-shim.sh")
+            include_bytes!("../cargo-capture-shim.sh")
         );
     }
     assert!(!absent.join("cargo-tile-real").exists());
@@ -1302,7 +1359,7 @@ fn installed_cargo(account: &HookAccount, toolchain: &str) -> std::path::PathBuf
     fs::rename(bin.join("cargo"), bin.join("cargo-tile-real")).expect("save original cargo");
     fs::write(
         bin.join("cargo"),
-        include_bytes!("../../src/cargo-capture-shim.sh"),
+        include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("installed shim");
     set_mode(&bin.join("cargo"), 0o751);
@@ -1457,7 +1514,7 @@ fn assert_finished_account_toolchain(bin: &Path, operation: HookOperation) {
     if operation == HookOperation::Install {
         assert_eq!(
             fs::read(&cargo).expect("completed shim"),
-            include_bytes!("../../src/cargo-capture-shim.sh")
+            include_bytes!("../cargo-capture-shim.sh")
         );
         assert_eq!(
             fs::read(real).expect("completed saved cargo"),
@@ -1598,7 +1655,7 @@ fn assert_child_report_retention(operation: HookOperation, failure: ChildReportF
     match operation {
         HookOperation::Install => assert_eq!(
             fs::read(later_bin.join("cargo")).expect("later shim"),
-            include_bytes!("../../src/cargo-capture-shim.sh")
+            include_bytes!("../cargo-capture-shim.sh")
         ),
         HookOperation::Uninstall | HookOperation::Status => assert_eq!(
             fs::read(later_bin.join("cargo")).expect("later original cargo"),
@@ -1758,7 +1815,7 @@ fn credential_failure_is_incomplete_preserves_reason_and_continues_accounts() {
     );
     assert_eq!(
         fs::read(first.join("cargo")).expect("first shim unchanged"),
-        include_bytes!("../../src/cargo-capture-shim.sh")
+        include_bytes!("../cargo-capture-shim.sh")
     );
     assert!(first.join("cargo-tile-real").exists());
     assert_eq!(reports[1].outcome, AccountHookOutcome::Completed);

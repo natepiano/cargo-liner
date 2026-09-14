@@ -322,6 +322,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process;
+    use std::process::Command;
     use std::process::Output;
 
     use tempfile::tempdir;
@@ -479,5 +480,30 @@ mod tests {
             .env(RUSTUP_HOME_ENV, rustup_home)
             .output()
             .expect("install child process")
+    }
+
+    /// Reject libtest flags through the real command-line parser.
+    #[test]
+    fn cli_rejects_unknown_process_arguments() -> std::io::Result<()> {
+        if std::env::var_os("CARGO_TILE_SUMMARY_TEST_ARGUMENTS").is_some() {
+            // Libtest accepts --exact; cargo-tile must reject it before doing any setup.
+            assert_eq!(
+                Cli::parse_arguments().run(),
+                std::process::ExitCode::FAILURE
+            );
+            return Ok(());
+        }
+        let output = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "cli::tests::cli_rejects_unknown_process_arguments",
+                "--nocapture",
+            ])
+            .env("CARGO_TILE_SUMMARY_TEST_ARGUMENTS", "1")
+            .output()?;
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("unexpected argument '--exact'"), "{error}");
+        Ok(())
     }
 }

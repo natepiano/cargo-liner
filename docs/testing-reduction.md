@@ -213,7 +213,7 @@ none.
 - No `thread::sleep` remains in the changed cargo-port tests.
 - Measurements doc holds the baseline and this phase's protocol row; ledger rows present.
 
-### Phase 2 — Compile each test once  · status: todo
+### Phase 2 — Compile each test once  · status: done
 
 #### Work Order
 

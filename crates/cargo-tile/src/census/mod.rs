@@ -5,6 +5,12 @@ pub(crate) mod direct_capture;
 pub(crate) mod invocation_cpu_accounting;
 pub(crate) mod process_identity;
 pub(crate) mod scan;
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod summary_totals_tests;
 
 pub(crate) use command_text::command_name;
 pub(crate) use direct_capture::DirectAssociation;

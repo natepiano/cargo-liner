@@ -26,6 +26,8 @@ mod root_scan;
 mod roster;
 mod sccache;
 mod settings;
+#[cfg(test)]
+mod shim_registration;
 mod terminal;
 mod theme;
 mod tiles;
