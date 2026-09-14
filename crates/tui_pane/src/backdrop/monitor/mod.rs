@@ -746,10 +746,9 @@ impl PositionReadState {
         };
         let frame = read_frame(window);
         let read_at = clock();
-        let position = match frame {
-            Some(frame) => previous.observe(frame, read_at),
-            None => WindowPosition::Unavailable,
-        };
+        let position = frame.map_or(WindowPosition::Unavailable, |frame| {
+            previous.observe(frame, read_at)
+        });
         *self = Self::Holding {
             window,
             position,
@@ -863,7 +862,7 @@ mod tests {
             WindowPosition::Settled(STILL_FRAME)
         );
         frame.set(MOVED_FRAME);
-        now.set(start + POSITION_IDLE_INTERVAL - step);
+        now.set(start + step * (REQUESTS_PER_IDLE_INTERVAL - 1));
         assert_eq!(
             position_read_state.read(WATCHED_WINDOW, &mut clock, &mut read_frame),
             WindowPosition::Settled(STILL_FRAME)
@@ -919,7 +918,7 @@ mod tests {
             WindowPosition::Settled(frame.get())
         );
         assert_eq!(reads.get(), before_settle + 1);
-        now.set(now.get() + POSITION_IDLE_INTERVAL - step);
+        now.set(now.get() + step * (REQUESTS_PER_IDLE_INTERVAL - 1));
         assert_eq!(
             position_read_state.read(WATCHED_WINDOW, &mut clock, &mut read_frame),
             WindowPosition::Settled(frame.get())
@@ -998,7 +997,7 @@ mod tests {
         assert_eq!(
             position_read_state.read(
                 WATCHED_WINDOW,
-                &mut || unavailable + POSITION_IDLE_INTERVAL - step,
+                &mut || unavailable + step * (REQUESTS_PER_IDLE_INTERVAL - 1),
                 &mut read_frame
             ),
             WindowPosition::Unavailable

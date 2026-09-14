@@ -59,7 +59,7 @@ pub(super) const PLASMA_SERVICE: &str = "org.kde.plasmashell";
 /// The default getwindowid target is only the first match; the inventory needs every UUID.
 pub(super) const KDO_TOOL_ALL_MATCHES_ARGUMENT: &str = "%@";
 pub(super) const KDO_TOOL_ALL_WINDOWS_ARGUMENT: &str = "--name";
-/// Hold marker candidates even when TERM_PROGRAM is missing or does not match the terminal class.
+/// Hold marker candidates even when `TERM_PROGRAM` is missing or does not match the terminal class.
 pub(super) const KDO_TOOL_ALL_WINDOWS_PATTERN: &str = ".*";
 pub(super) const KDO_TOOL_COMMAND: &str = "kdotool";
 pub(super) const KDO_TOOL_ID_ARGUMENT: &str = "getwindowid";

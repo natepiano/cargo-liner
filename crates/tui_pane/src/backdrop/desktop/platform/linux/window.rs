@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::env::VarError;
 use std::process::Command;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -393,11 +394,11 @@ fn mismatch(frame: f64, text: f64) -> f64 {
 
 /// Current frame for a previously registered window handle.
 pub(super) fn frame(handle: u32) -> Option<Frame> {
-    match TERMINAL_WINDOWS
+    let query = TERMINAL_WINDOWS
         .lock()
         .ok()?
-        .registered_window(handle, &mut KWin)
-    {
+        .registered_window(handle, &mut KWin);
+    match query {
         WindowQuery::Answered(window) => Some(window.frame),
         WindowQuery::Unavailable => None,
     }
@@ -516,7 +517,7 @@ fn query_window(uuid: &str) -> Option<WindowInfo> {
 }
 
 /// Interpret the terminal program name at the environment and D-Bus property boundaries.
-fn terminal_class(program: Result<&str, &env::VarError>, class: Option<&str>) -> TerminalClass {
+fn terminal_class(program: Result<&str, &VarError>, class: Option<&str>) -> TerminalClass {
     match (program, class) {
         (Ok(program), Some(class))
             if !program.is_empty()
@@ -548,10 +549,11 @@ fn property_f64(properties: &HashMap<String, OwnedValue>, key: &str) -> Option<f
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::env::VarError;
     use std::time::Duration;
 
-    use super::super::constants::TOPOLOGY_READ_DEADLINE;
     use super::*;
+    use crate::backdrop::desktop::platform::linux::constants::TOPOLOGY_READ_DEADLINE;
 
     /// A terminal server with countable searches and independently changing live windows.
     struct ScriptedTerminalWindows {
@@ -876,7 +878,7 @@ mod tests {
     #[test]
     fn held_marker_candidates_identify_and_pin_without_a_matching_terminal_program() {
         let now = Instant::now();
-        let missing = env::VarError::NotPresent;
+        let missing = VarError::NotPresent;
         for program in [Err(&missing), Ok(""), Ok("unrelated-terminal")] {
             let mut inventory = TerminalWindowInventory::default();
             let mut source = ScriptedTerminalWindows {
