@@ -13,6 +13,10 @@ mod capture;
 #[path = "../src/census/mod.rs"]
 mod census;
 #[path = "../src/cli.rs"]
+#[expect(
+    dead_code,
+    reason = "this binary exercises capture root ownership, never the command line entry point"
+)]
 mod cli;
 #[path = "../src/config.rs"]
 mod config;
@@ -79,10 +83,6 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
-    use crate::constants::CAPTURE_ACL_TEST_DIRECTORIES;
-    use crate::constants::CAPTURE_ACL_TEST_DIRECTORY_MODE;
-    use crate::constants::CAPTURE_ACL_TEST_FILE_MODE;
-    use crate::constants::CAPTURE_ACL_TEST_WRITE_PERMISSIONS;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::CAPTURE_STATE_DIR;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
@@ -92,6 +92,25 @@ mod tests {
     use crate::root_scan::RootScan;
     use crate::root_scan::SweepBudget;
     use crate::root_scan::SweepDisposition;
+
+    /// Exercise the account root and both registration ancestors independently.
+    const CAPTURE_ACL_TEST_DIRECTORIES: [&str; 3] = ["", CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR];
+    /// Establish directory ownership independently of the invoking account's umask.
+    const CAPTURE_ACL_TEST_DIRECTORY_MODE: u32 = 0o700;
+    /// Candidate file fixtures must satisfy the per-file mode prerequisite initially.
+    const CAPTURE_ACL_TEST_FILE_MODE: u32 = 0o600;
+    /// Native chmod spellings independently exercise every write-class permission;
+    /// deriving this list from the production bit mask would hide missing mask bits.
+    const CAPTURE_ACL_TEST_WRITE_PERMISSIONS: [&str; 8] = [
+        "add_file",
+        "add_subdirectory",
+        "delete",
+        "delete_child",
+        "writeattr",
+        "writeextattr",
+        "writesecurity",
+        "chown",
+    ];
 
     /// One owner, one removable pair, and three directories with known permissions.
     struct CaptureRoot {

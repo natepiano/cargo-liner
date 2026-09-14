@@ -22,7 +22,15 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-        devShells.default = import ./nix/bevy-shell.nix { inherit pkgs; };
+        # cargo-tile's shim and reader tests run `ps`. On a non-NixOS host the
+        # shell's LD_LIBRARY_PATH hands the host's procps nix's libsystemd,
+        # whose RUNPATH loads nix glibc beside the host libc and `ps` dies on
+        # a missing symbol version. procps from nixpkgs shares that glibc. It
+        # is added here so the vendored bevy-shell.nix stays byte-identical.
+        devShells.default = (import ./nix/bevy-shell.nix { inherit pkgs; }).overrideAttrs (shell: {
+          nativeBuildInputs =
+            shell.nativeBuildInputs ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.procps ];
+        });
       }
     );
 }

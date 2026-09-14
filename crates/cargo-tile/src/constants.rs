@@ -685,30 +685,6 @@ pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 
-// capture root acl
-/// Exercise the account root and both registration ancestors independently.
-#[cfg(all(test, target_os = "macos"))]
-pub(crate) const CAPTURE_ACL_TEST_DIRECTORIES: [&str; 3] =
-    ["", CAPTURE_STATE_DIR, CAPTURE_LIVE_RUNS_DIR];
-/// Establish directory ownership independently of the invoking account's umask.
-#[cfg(all(test, target_os = "macos"))]
-pub(crate) const CAPTURE_ACL_TEST_DIRECTORY_MODE: u32 = 0o700;
-/// Candidate file fixtures must satisfy the per-file mode prerequisite initially.
-#[cfg(all(test, target_os = "macos"))]
-pub(crate) const CAPTURE_ACL_TEST_FILE_MODE: u32 = 0o600;
-/// Native chmod spellings independently exercise every write-class permission;
-/// deriving this list from the production bit mask would hide missing mask bits.
-#[cfg(all(test, target_os = "macos"))]
-pub(crate) const CAPTURE_ACL_TEST_WRITE_PERMISSIONS: [&str; 8] = [
-    "add_file",
-    "add_subdirectory",
-    "delete",
-    "delete_child",
-    "writeattr",
-    "writeextattr",
-    "writesecurity",
-    "chown",
-];
 // capture root status
 /// Each process association names the root that supplied all capture fields.
 pub(crate) const CAPTURE_ASSOCIATION: &str = "capture association";

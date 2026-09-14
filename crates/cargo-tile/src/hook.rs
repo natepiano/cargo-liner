@@ -556,7 +556,7 @@ pub(crate) enum HookOperationOutcome {
 }
 
 /// Discovery distinguishes a missing cargo from a path that could not be inspected.
-pub(crate) enum HookDiscovery {
+enum HookDiscovery {
     /// A toolchain has a cargo or a saved original to operate on.
     Discovered(Hook),
     /// Neither cargo nor the saved original exists in this directory.
@@ -601,7 +601,7 @@ impl Hook {
     /// its own name or the saved real binary's name.
     ///
     /// Sorted by name so a report reads the same twice running.
-    pub(crate) fn all() -> io::Result<Vec<HookDiscovery>> { Self::in_rustup_home(&rustup_home()?) }
+    fn all() -> io::Result<Vec<HookDiscovery>> { Self::in_rustup_home(&rustup_home()?) }
 
     /// Retain directory-entry and cargo inspection failures beside discovered toolchains.
     fn in_rustup_home(home: &Path) -> io::Result<Vec<HookDiscovery>> {
@@ -1109,13 +1109,6 @@ impl DarwinGroupMembership {
     reason = "stable Command lacks explicit groups; the child must apply kernel group credentials before setgid and setuid using only libc credential syscalls"
 )]
 fn account_credentials(command: &mut Command, account: &HookAccount) -> io::Result<()> {
-    let groups = account_groups(&account.name, account.gid)?;
-    #[cfg(target_os = "macos")]
-    let membership = {
-        // SAFETY: sysconf takes the platform selector and has no pointer arguments.
-        let limit = unsafe { libc::sysconf(libc::_SC_NGROUPS_MAX) };
-        DarwinGroupMembership::new(account.uid, account.gid, groups, limit)?
-    };
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
         // Apple's Libinfo lookup.subproj/libinfo.c initgroups calls this raw
@@ -1130,6 +1123,13 @@ fn account_credentials(command: &mut Command, account: &HookAccount) -> io::Resu
             membership_uid: libc::c_int,
         ) -> libc::c_int;
     }
+    let groups = account_groups(&account.name, account.gid)?;
+    #[cfg(target_os = "macos")]
+    let membership = {
+        // SAFETY: sysconf takes the platform selector and has no pointer arguments.
+        let limit = unsafe { libc::sysconf(libc::_SC_NGROUPS_MAX) };
+        DarwinGroupMembership::new(account.uid, account.gid, groups, limit)?
+    };
     #[cfg(target_os = "linux")]
     let count = groups.len();
     let uid = account.uid;
