@@ -2435,9 +2435,46 @@ fn board_git_cost_separates_each_scaling_dimension() {
 }
 
 #[test]
-fn retained_scoped_patch_verdicts_reuse_positive_results_after_process_restart() {
-    let positive =
+fn retained_scoped_patch_verdicts_reuse_both_results_after_process_restart() {
+    let mut fixture =
         rewritten_reservation_fixture(TargetRewrite::Equivalent, ReservationCompletion::Released);
+    let baseline_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
+        .expect("baseline journal should read");
+    assert_retained_positive_verdict(&fixture);
+
+    git(
+        fixture.repository.path(),
+        &["reset", "--hard", &fixture.protected_tip],
+    );
+    fs::write(
+        fixture.repository.path().join("src/lib.rs"),
+        "pub fn replacement() {}\n",
+    )
+    .expect("different target should write");
+    git(fixture.repository.path(), &["add", "src/lib.rs"]);
+    git(
+        fixture.repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "rewritten target",
+        ],
+    );
+    fixture.target = git_stdout(fixture.repository.path(), &["rev-parse", "HEAD"]);
+    fs::write(
+        fixture.repository.path().join(JOURNAL_PATH),
+        baseline_journal,
+    )
+    .expect("baseline journal should restore");
+    invalidate_projection(fixture.repository.path());
+    assert_retained_negative_verdict(&fixture);
+}
+
+fn assert_retained_positive_verdict(positive: &RewrittenReservationFixture) {
     let first_positive = run_board_with_git_trace(positive.repository.path());
     assert!(first_positive.output.status.success());
     assert_eq!(
@@ -2463,7 +2500,7 @@ fn retained_scoped_patch_verdicts_reuse_positive_results_after_process_restart()
         1
     );
 
-    for _ in 0..20 {
+    for _ in 0..2 {
         let restarted_positive = run_board_with_git_trace(positive.repository.path());
         assert!(restarted_positive.output.status.success());
         assert_eq!(
@@ -2508,10 +2545,8 @@ fn retained_scoped_patch_verdicts_reuse_positive_results_after_process_restart()
     );
 }
 
-#[test]
-fn retained_scoped_patch_verdicts_reuse_negative_results_after_process_restart() {
-    let negative =
-        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Released);
+fn assert_retained_negative_verdict(negative: &RewrittenReservationFixture) {
+    let before = journal_record_count(negative.repository.path());
     let first_negative = run_board_with_git_trace(negative.repository.path());
     assert!(first_negative.output.status.success());
     assert_eq!(
@@ -2535,6 +2570,30 @@ fn retained_scoped_patch_verdicts_reuse_negative_results_after_process_restart()
         ),
         1
     );
+
+    let appended_operations = fs::read_to_string(negative.repository.path().join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .skip(before)
+        .map(|record| {
+            serde_json::from_str::<serde_json::Value>(record).expect("journal record should parse")
+        })
+        .map(|record| {
+            record["op"]
+                .as_str()
+                .expect("operation should be named")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let evidence_index = appended_operations
+        .iter()
+        .position(|operation| operation == "evidence_revalidated")
+        .expect("changed evidence should be journaled");
+    let scheduling_index = appended_operations
+        .iter()
+        .position(|operation| operation == "scoped_patch_equivalence_checked")
+        .expect("scoped verdict should be journaled");
+    assert!(evidence_index < scheduling_index);
 
     let restarted_negative = run_board_with_git_trace(negative.repository.path());
     assert!(restarted_negative.output.status.success());
@@ -2590,38 +2649,6 @@ fn retained_scoped_patch_verdicts_reuse_negative_results_after_process_restart()
 }
 
 #[test]
-fn scoped_patch_scheduling_record_follows_its_materialized_evidence() {
-    let fixture =
-        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Released);
-    let before = journal_record_count(fixture.repository.path());
-    let reconciled = run_board_with_git_trace(fixture.repository.path());
-    assert!(reconciled.output.status.success());
-    let appended_operations = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
-        .expect("journal should read")
-        .lines()
-        .skip(before)
-        .map(|record| {
-            serde_json::from_str::<serde_json::Value>(record).expect("journal record should parse")
-        })
-        .map(|record| {
-            record["op"]
-                .as_str()
-                .expect("operation should be named")
-                .to_owned()
-        })
-        .collect::<Vec<_>>();
-    let evidence_index = appended_operations
-        .iter()
-        .position(|operation| operation == "evidence_revalidated")
-        .expect("changed evidence should be journaled");
-    let scheduling_index = appended_operations
-        .iter()
-        .position(|operation| operation == "scoped_patch_equivalence_checked")
-        .expect("scoped verdict should be journaled");
-    assert!(evidence_index < scheduling_index);
-}
-
-#[test]
 fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects() {
     let fixture = persistent_unavailable_comparison_fixture();
     let first = run_board_with_git_trace(fixture.repository.path());
@@ -2654,7 +2681,7 @@ fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects
             "object_unknown"
         );
     }
-    for _ in 0..8 {
+    for _ in 0..2 {
         let traced = run_board_with_git_trace(fixture.repository.path());
         assert!(traced.output.status.success());
         assert_eq!(merge_base_ancestor_invocations(&traced), 0);
@@ -2696,12 +2723,35 @@ fn persistent_object_unknown_records_one_attempt_without_starving_other_subjects
 #[test]
 fn proof_subject_changes_force_rechecks_at_an_unchanged_target() {
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
+        let fixture =
+            rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Outstanding);
+        let baseline_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
+            .expect("baseline journal should read");
         for proof_subject_change in [
             ProofSubjectChange::Widen,
             ProofSubjectChange::Resnapshot,
             ProofSubjectChange::ReleaseDispositionReplacement,
         ] {
-            assert_proof_subject_change_rechecks(target_rewrite, proof_subject_change);
+            fs::write(
+                fixture.repository.path().join(JOURNAL_PATH),
+                &baseline_journal,
+            )
+            .expect("baseline journal should restore before each independent subject mutation");
+            invalidate_projection(fixture.repository.path());
+            if matches!(
+                proof_subject_change,
+                ProofSubjectChange::ReleaseDispositionReplacement
+            ) {
+                append_journal_operation(
+                    fixture.repository.path(),
+                    &serde_json::json!({
+                        "op": "release",
+                        "reservation_id": fixture.reservation_id,
+                        "disposition": {"kind": "integrated"},
+                    }),
+                );
+            }
+            assert_proof_subject_change_rechecks(&fixture, target_rewrite, proof_subject_change);
         }
     }
 }
@@ -3084,7 +3134,7 @@ fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject(
         fixture.reservation_ids.len()
     );
     let stable_journal_size = journal_record_count(fixture.repository.path());
-    for _ in 0..20 {
+    for _ in 0..2 {
         let traced = run_board_with_git_trace(fixture.repository.path());
         assert!(traced.output.status.success());
         assert_eq!(
@@ -3099,7 +3149,7 @@ fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject(
 }
 
 #[test]
-fn distinct_cold_proof_subjects_are_bounded_to_one_git_evaluation_per_target() {
+fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations() {
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
         let one = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
         let one_trace = run_board_with_git_trace(one.repository.path());
@@ -3111,91 +3161,55 @@ fn distinct_cold_proof_subjects_are_bounded_to_one_git_evaluation_per_target() {
             &one.target,
         );
 
-        let twenty = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
-        let additional_reservation_ids =
-            append_released_reservations(&twenty, 19, ProofSubjectSimilarity::Distinct);
-        let twenty_trace = run_board_with_git_trace(twenty.repository.path());
-        assert!(twenty_trace.output.status.success());
-        let twenty_argv = scoped_patch_git_argv(
-            &twenty_trace,
-            &twenty.phase_start_head,
-            &twenty.protected_tip,
-            &twenty.target,
-        );
+        for similarity in [
+            ProofSubjectSimilarity::Distinct,
+            ProofSubjectSimilarity::Duplicate,
+        ] {
+            let two =
+                rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
+            let additional_reservation_ids = append_released_reservations(&two, 1, similarity);
+            let two_trace = run_board_with_git_trace(two.repository.path());
+            assert!(two_trace.output.status.success());
+            let two_argv = scoped_patch_git_argv(
+                &two_trace,
+                &two.phase_start_head,
+                &two.protected_tip,
+                &two.target,
+            );
 
-        let expected_argv_total = match target_rewrite {
-            TargetRewrite::Equivalent => 6,
-            TargetRewrite::Different => 5,
-        };
-        assert!(!one_argv.is_empty());
-        assert_eq!(one_argv.len(), expected_argv_total, "{one_argv:#?}");
-        assert_eq!(twenty_argv.len(), expected_argv_total, "{twenty_argv:#?}");
-        assert_eq!(twenty_argv.len(), one_argv.len());
-        assert_eq!(merge_base_ancestor_invocations(&one_trace), 0);
-        assert_eq!(
-            merge_base_ancestor_invocations(&twenty_trace),
-            merge_base_ancestor_invocations(&one_trace)
-        );
-        assert_eq!(
-            canonical_git_command_sequence(&twenty_argv),
-            canonical_git_command_sequence(&one_argv)
-        );
-        let twenty_data = &json_output(&twenty_trace.output)["payload"]["data"];
-        let expected_first_status = match target_rewrite {
-            TargetRewrite::Equivalent => "integrated",
-            TargetRewrite::Different => "trunk_rewritten",
-        };
-        assert_integration_statuses(
-            twenty_data,
-            std::slice::from_ref(&twenty.reservation_id),
-            expected_first_status,
-        );
-        assert_integration_statuses(twenty_data, &additional_reservation_ids, "not_integrated");
-    }
-}
-
-#[test]
-fn duplicate_cold_proof_subjects_share_one_git_evaluation() {
-    for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
-        let one = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
-        let one_trace = run_board_with_git_trace(one.repository.path());
-        assert!(one_trace.output.status.success());
-        let one_argv = scoped_patch_git_argv(
-            &one_trace,
-            &one.phase_start_head,
-            &one.protected_tip,
-            &one.target,
-        );
-
-        let twenty = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
-        let additional_reservation_ids =
-            append_released_reservations(&twenty, 19, ProofSubjectSimilarity::Duplicate);
-        let twenty_trace = run_board_with_git_trace(twenty.repository.path());
-        assert!(twenty_trace.output.status.success());
-        let twenty_argv = scoped_patch_git_argv(
-            &twenty_trace,
-            &twenty.phase_start_head,
-            &twenty.protected_tip,
-            &twenty.target,
-        );
-
-        assert!(!one_argv.is_empty());
-        assert_eq!(twenty_argv.len(), one_argv.len());
-        assert_eq!(
-            canonical_git_command_sequence(&twenty_argv),
-            canonical_git_command_sequence(&one_argv)
-        );
-        let expected_status = match target_rewrite {
-            TargetRewrite::Equivalent => "integrated",
-            TargetRewrite::Different => "trunk_rewritten",
-        };
-        let twenty_data = &json_output(&twenty_trace.output)["payload"]["data"];
-        assert_integration_statuses(
-            twenty_data,
-            std::slice::from_ref(&twenty.reservation_id),
-            expected_status,
-        );
-        assert_integration_statuses(twenty_data, &additional_reservation_ids, expected_status);
+            let expected_argv_total = match target_rewrite {
+                TargetRewrite::Equivalent => 6,
+                TargetRewrite::Different => 5,
+            };
+            assert!(!one_argv.is_empty());
+            assert_eq!(one_argv.len(), expected_argv_total, "{one_argv:#?}");
+            assert_eq!(two_argv.len(), expected_argv_total, "{two_argv:#?}");
+            assert_eq!(two_argv.len(), one_argv.len());
+            assert_eq!(merge_base_ancestor_invocations(&one_trace), 0);
+            assert_eq!(
+                merge_base_ancestor_invocations(&two_trace),
+                merge_base_ancestor_invocations(&one_trace)
+            );
+            assert_eq!(
+                canonical_git_command_sequence(&two_argv),
+                canonical_git_command_sequence(&one_argv)
+            );
+            let two_data = &json_output(&two_trace.output)["payload"]["data"];
+            let expected_first_status = match target_rewrite {
+                TargetRewrite::Equivalent => "integrated",
+                TargetRewrite::Different => "trunk_rewritten",
+            };
+            assert_integration_statuses(
+                two_data,
+                std::slice::from_ref(&two.reservation_id),
+                expected_first_status,
+            );
+            let additional_status = match similarity {
+                ProofSubjectSimilarity::Distinct => "not_integrated",
+                ProofSubjectSimilarity::Duplicate => expected_first_status,
+            };
+            assert_integration_statuses(two_data, &additional_reservation_ids, additional_status);
+        }
     }
 }
 
@@ -3710,16 +3724,10 @@ fn assert_available_subjects_compared(fixture: &PersistentUnavailableComparisonF
 }
 
 fn assert_proof_subject_change_rechecks(
+    fixture: &RewrittenReservationFixture,
     target_rewrite: TargetRewrite,
     proof_subject_change: ProofSubjectChange,
 ) {
-    let reservation_completion = match proof_subject_change {
-        ProofSubjectChange::Widen | ProofSubjectChange::Resnapshot => {
-            ReservationCompletion::Outstanding
-        },
-        ProofSubjectChange::ReleaseDispositionReplacement => ReservationCompletion::Released,
-    };
-    let fixture = rewritten_reservation_fixture(target_rewrite, reservation_completion);
     let warm = run_board_with_git_trace(fixture.repository.path());
     assert!(warm.output.status.success());
     assert_eq!(

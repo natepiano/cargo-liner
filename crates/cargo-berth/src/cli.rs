@@ -2475,6 +2475,48 @@ mod tests {
     }
 
     #[test]
+    fn retire_orphan_requires_a_reason_and_excludes_other_dispositions() -> Result<(), String> {
+        for (arguments, required_diagnostics) in [
+            (
+                vec![
+                    BINARY_NAME,
+                    "resolve",
+                    RESERVATION_ID,
+                    "--retire-orphan",
+                    "--json",
+                ],
+                vec!["--why"],
+            ),
+            (
+                vec![
+                    BINARY_NAME,
+                    "resolve",
+                    RESERVATION_ID,
+                    "--retire-orphan",
+                    "--why",
+                    "confirmed",
+                    "--recovered",
+                    "--json",
+                ],
+                vec!["--retire-orphan", "--recovered", "cannot be used with"],
+            ),
+        ] {
+            let error = parsed_verb(&arguments)
+                .err()
+                .ok_or("an incomplete or conflicting retirement must fail")?;
+            assert_eq!(exit_for_parser_error(&error), BerthExit::UsageError);
+            let diagnostic = error.to_string();
+            for required in required_diagnostics {
+                assert!(
+                    diagnostic.contains(required),
+                    "missing {required}: {diagnostic}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn recovery_help_explains_every_disposition_and_cost() {
         let resolve_help = help_for("resolve");
         let renew_help = help_for("renew");
@@ -2605,6 +2647,31 @@ mod tests {
         assert!(
             parsed_verb(&[BINARY_NAME, "claim", "src", "--proposal", "not-a-proposal",]).is_err()
         );
+    }
+
+    #[test]
+    fn a_valid_proposal_token_without_an_answer_is_refused() -> Result<(), String> {
+        let error = parsed_verb(&[
+            BINARY_NAME,
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            RESERVATION_ID,
+            "--proposal",
+            "01991f4d-77d8-7f5f-9a1f-000000000001",
+            "--json",
+        ])
+        .err()
+        .ok_or("a proposal requires its overlap answer")?;
+        assert_eq!(exit_for_parser_error(&error), BerthExit::UsageError);
+        let refusal = error.to_string();
+        for named in ["--proposal", "--before", "--after", "--defer", "--override"] {
+            assert!(
+                refusal.contains(named),
+                "the refusal should name {named}: {refusal}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

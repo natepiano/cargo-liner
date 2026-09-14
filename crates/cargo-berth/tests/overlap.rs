@@ -49,7 +49,7 @@ const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 #[test]
 fn blocked_claim_names_holder_provenance_and_appends_nothing() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let first_claim = run_berth(
         repository.path(),
         &[
@@ -119,70 +119,8 @@ fn blocked_claim_names_holder_provenance_and_appends_nothing() {
 }
 
 #[test]
-fn file_and_tree_scopes_differ_for_descendants() {
-    let file_repository = initialized_repository(PathCaseSetting::Sensitive);
-    assert!(
-        run_berth(
-            file_repository.path(),
-            &["claim", "file:generated", "--run", FIRST_RUN, "--json"]
-        )
-        .status
-        .success()
-    );
-    let (_file_second_directory, file_second_root) = foreign_worktree(&file_repository, "second");
-    assert!(
-        run_berth(
-            &file_second_root,
-            &["claim", "file:generated/child.rs", "--json"]
-        )
-        .status
-        .success()
-    );
-
-    let tree_repository = initialized_repository(PathCaseSetting::Sensitive);
-    assert!(
-        run_berth(
-            tree_repository.path(),
-            &["claim", "tree:generated", "--run", FIRST_RUN, "--json"]
-        )
-        .status
-        .success()
-    );
-    let (_tree_second_directory, tree_second_root) = foreign_worktree(&tree_repository, "second");
-    make_dirty(tree_repository.path(), "generated/child.rs");
-    let blocked = run_berth(
-        &tree_second_root,
-        &["claim", "file:generated/child.rs", "--json"],
-    );
-    assert_eq!(blocked.status.code(), Some(1));
-}
-
-#[test]
-fn ignore_case_blocks_component_case_variants() {
-    let repository = initialized_repository(PathCaseSetting::Insensitive);
-    assert!(
-        run_berth(
-            repository.path(),
-            &["claim", "tree:Crates/Hana", "--run", FIRST_RUN, "--json"]
-        )
-        .status
-        .success()
-    );
-
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    make_dirty(repository.path(), "Crates/Hana/src/lib.rs");
-    reconcile_fixture(repository.path());
-    let blocked = run_berth(
-        &second_root,
-        &["claim", "file:crates/hana/src/lib.rs", "--json"],
-    );
-
-    assert_eq!(blocked.status.code(), Some(1));
-}
-
-#[test]
 fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let claim = run_berth(
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
@@ -243,7 +181,7 @@ fn check_reuses_its_runs_reservation_without_git_or_a_duplicate_append() {
 
 #[test]
 fn clear_check_creates_then_widens_one_exact_file_reservation() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
 
     let first = run_berth(
         repository.path(),
@@ -352,7 +290,7 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
 
 #[test]
 fn session_mapped_reservation_survives_first_touch_and_receives_widen() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let session_id = "overlapping-claim-session";
     let reservations = claim_overlapping_reservations(repository.path(), session_id);
     reconcile_fixture(repository.path());
@@ -418,7 +356,7 @@ fn session_mapped_reservation_survives_first_touch_and_receives_widen() {
 
 #[test]
 fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_mutation() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let session_id = "ambiguous-overlapping-claim-session";
     let reservations = claim_overlapping_reservations(repository.path(), session_id);
     assert_session_mapping(
@@ -476,7 +414,7 @@ fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_muta
 
 #[test]
 fn explicit_check_selection_republishes_mapping_for_subsequent_checks() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let session_id = "explicit-overlapping-selection-session";
     let reservations = claim_overlapping_reservations(repository.path(), session_id);
     fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
@@ -547,7 +485,7 @@ fn explicit_check_selection_republishes_mapping_for_subsequent_checks() {
 
 #[test]
 fn the_rendered_recovery_command_resolves_the_ambiguity_that_printed_it() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let session_id = "recovery command's session";
     let reservations = claim_overlapping_reservations(repository.path(), session_id);
     fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
@@ -621,7 +559,7 @@ fn the_rendered_recovery_command_resolves_the_ambiguity_that_printed_it() {
 
 #[test]
 fn explicit_check_without_harness_session_reports_invocation_only_selection() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let reservations =
         claim_overlapping_reservations(repository.path(), "explicit-selection-setup-session");
     fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))
@@ -690,7 +628,7 @@ fn explicit_check_without_harness_session_reports_invocation_only_selection() {
 
 #[test]
 fn explicit_check_selection_rejects_a_foreign_reservation_without_mutation() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let session_id = "explicit-foreign-selection-session";
     let own_claim = run_berth_with_session(
         repository.path(),
@@ -750,7 +688,7 @@ fn explicit_check_selection_rejects_a_foreign_reservation_without_mutation() {
 
 #[test]
 fn engine_envelope_carries_output_contract_version() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let check = run_berth(
         repository.path(),
         &["check", "file:engine-version.rs", "--json"],
@@ -829,7 +767,7 @@ fn assert_board_contains_every_claim_source(repository_root: &Path) {
 
 #[test]
 fn blocked_check_returns_holder_decision_facts_without_appending() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let holder = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:shared.rs", "--json"])
         .current_dir(repository.path())
@@ -873,7 +811,7 @@ fn blocked_check_returns_holder_decision_facts_without_appending() {
 
 #[test]
 fn concurrent_first_touch_checks_admit_both_clean_worktrees_under_the_mutation_lock() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let mutation_lock =
         File::open(repository.path().join(LOCK_PATH)).expect("mutation lock should open");
     mutation_lock
@@ -939,7 +877,7 @@ fn concurrent_first_touch_checks_admit_both_clean_worktrees_under_the_mutation_l
 
 #[test]
 fn check_reports_unconfigured_when_an_initialized_repository_loses_its_configuration() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let expected_configuration_path = repository.path().join(CONFIGURATION_PATH);
     fs::remove_file(&expected_configuration_path).expect("configuration should be removed");
 
@@ -963,7 +901,7 @@ fn check_reports_unconfigured_when_an_initialized_repository_loses_its_configura
 /// worktree's file instead, so it coordinates from its first edit.
 #[test]
 fn check_in_a_linked_worktree_without_its_own_configuration_reads_the_main_worktree() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let claim = run_berth(
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
@@ -989,7 +927,7 @@ fn check_in_a_linked_worktree_without_its_own_configuration_reads_the_main_workt
 /// says so, and names the main worktree's file as the one `init` should create.
 #[test]
 fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let claim = run_berth(
         repository.path(),
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
@@ -1019,7 +957,7 @@ fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
 
 #[test]
 fn check_reports_malformed_present_configuration_as_ledger_unreadable() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     fs::write(
         repository.path().join(CONFIGURATION_PATH),
         "porthole = true\n",
@@ -1044,7 +982,7 @@ fn check_reports_malformed_present_configuration_as_ledger_unreadable() {
 
 #[test]
 fn claims_without_run_continue_the_worktree_coordination_run() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let first_claim = run_berth(repository.path(), &["claim", "tree:crates/a", "--json"]);
     assert!(first_claim.status.success());
     let first_reservation_id = json_output(&first_claim)["payload"]["data"]["reservation_id"]
@@ -1083,7 +1021,7 @@ fn claims_without_run_continue_the_worktree_coordination_run() {
 
 #[test]
 fn reconciliation_removes_a_malformed_marker_directory_before_claim() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     fs::create_dir(repository.path().join(MARKER_PATH))
         .expect("marker destination directory should exist");
 
@@ -1114,7 +1052,7 @@ fn reconciliation_removes_a_malformed_marker_directory_before_claim() {
 
 #[test]
 fn blocked_message_names_every_holder() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "other-holder");
     for (root, scope) in [
         (repository.path(), "tree:src"),
@@ -1153,7 +1091,7 @@ fn blocked_message_names_every_holder() {
 
 #[test]
 fn a_first_touch_holder_block_names_the_verbs_that_clear_it() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let first_touch = run_berth(repository.path(), &["check", "file:touched.rs", "--json"]);
     assert!(first_touch.status.success());
     let reservation_id =
@@ -1187,7 +1125,7 @@ fn a_first_touch_holder_block_names_the_verbs_that_clear_it() {
 
 #[test]
 fn future_paths_succeed_invalid_paths_do_not_append_and_missing_why_is_typed() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     let future_claim = run_berth(
         repository.path(),
         &[
@@ -1227,7 +1165,7 @@ fn future_paths_succeed_invalid_paths_do_not_append_and_missing_why_is_typed() {
 
 #[test]
 fn unpaired_plan_flags_are_usage_errors_and_rejection_sweeps_stale_marker() {
-    let repository = initialized_repository(PathCaseSetting::Sensitive);
+    let repository = initialized_repository();
     for arguments in [
         vec!["claim", "file:a", "--plan", "docs/plan.md"],
         vec!["claim", "file:a", "--phase", "phase-a"],
@@ -1312,22 +1250,7 @@ fn claim_overlapping_reservations(
     OverlappingReservationIds { newer, older }
 }
 
-#[derive(Clone, Copy)]
-enum PathCaseSetting {
-    Sensitive,
-    Insensitive,
-}
-
-impl PathCaseSetting {
-    const fn git_value(self) -> &'static str {
-        match self {
-            Self::Sensitive => "false",
-            Self::Insensitive => "true",
-        }
-    }
-}
-
-fn initialized_repository(path_case_setting: PathCaseSetting) -> TempDir {
+fn initialized_repository() -> TempDir {
     let repository = tempdir().expect("temporary repository should exist");
     git(
         repository.path(),
@@ -1338,10 +1261,7 @@ fn initialized_repository(path_case_setting: PathCaseSetting) -> TempDir {
         repository.path(),
         &["config", "user.email", "berth@example.invalid"],
     );
-    git(
-        repository.path(),
-        &["config", "core.ignoreCase", path_case_setting.git_value()],
-    );
+    git(repository.path(), &["config", "core.ignoreCase", "false"]);
     fs::write(repository.path().join("README.md"), "scratch repository\n")
         .expect("scratch file should write");
     git(repository.path(), &["add", "README.md"]);

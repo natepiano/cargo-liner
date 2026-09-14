@@ -497,6 +497,7 @@ fn every_permissive_answer_requires_a_reason_and_a_proposal() {
             ],
         );
         assert_eq!(missing_reason.status.code(), Some(5));
+        assert!(missing_reason.stdout.is_empty());
 
         let proposed = propose_answer(
             &second_root,
@@ -1114,9 +1115,15 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
 }
 
 #[test]
-fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
+fn claim_rejects_invalid_coordination_identities() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    assert_authorization_marker_revalidation(&repository, &second_root);
+    assert_stale_claim_session_rejection(&repository, &second_root);
+    assert_foreign_claim_session_rejection(&repository, &second_root);
+}
+
+fn assert_authorization_marker_revalidation(repository: &TempDir, second_root: &Path) {
     dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
@@ -1128,7 +1135,7 @@ fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
     );
     let holder_id = reservation_id(&holder);
     let marker_seed = claim(
-        &second_root,
+        second_root,
         "file:seed.txt",
         SECOND_RUN,
         "docs/requester.md",
@@ -1137,7 +1144,7 @@ fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
     );
     let marker_seed_id = reservation_id(&marker_seed);
     let proposed = propose_answer_without_run(
-        &second_root,
+        second_root,
         "file:src/lib.rs",
         "--override",
         &holder_id,
@@ -1163,10 +1170,10 @@ fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
         token.as_str(),
         "--json",
     ];
-    let mut applying_claim = PausedBerthProcess::spawn(&second_root, &arguments);
+    let mut applying_claim = PausedBerthProcess::spawn(second_root, &arguments);
     applying_claim.wait_until_paused();
     assert!(
-        run_berth(&second_root, ["release", &marker_seed_id, "--json"])
+        run_berth(second_root, ["release", &marker_seed_id, "--json"])
             .status
             .success()
     );
@@ -1189,17 +1196,15 @@ fn authorization_claim_refuses_marker_identity_that_becomes_stale() {
     );
 }
 
-#[test]
-fn claim_rejects_a_stale_session_mapping_with_a_clear_command() {
-    let repository = initialized_repository();
+fn assert_stale_claim_session_rejection(repository: &TempDir, second_root: &Path) {
     let session_id = "stale-claim-session";
     let mapped_claim = run_berth_with_session(
-        repository.path(),
+        second_root,
         &[
             "claim",
             "file:mapped.txt",
             "--run",
-            FIRST_RUN,
+            THIRD_RUN,
             "--why",
             "establish a session mapping",
             "--json",
@@ -1211,17 +1216,14 @@ fn claim_rejects_a_stale_session_mapping_with_a_clear_command() {
     let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
     let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
     assert!(
-        run_berth(
-            repository.path(),
-            ["release", &mapped_reservation_id, "--json"],
-        )
-        .status
-        .success()
+        run_berth(second_root, ["release", &mapped_reservation_id, "--json"],)
+            .status
+            .success()
     );
     fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
 
     let rejected = run_berth_with_session(
-        repository.path(),
+        second_root,
         &[
             "claim",
             "file:new.txt",
@@ -1245,10 +1247,7 @@ fn claim_rejects_a_stale_session_mapping_with_a_clear_command() {
     );
 }
 
-#[test]
-fn claim_rejects_a_session_mapping_owned_by_another_worktree() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+fn assert_foreign_claim_session_rejection(repository: &TempDir, second_root: &Path) {
     let session_id = "foreign-claim-session";
     let mapped_claim = run_berth_with_session(
         repository.path(),
@@ -1266,7 +1265,7 @@ fn claim_rejects_a_session_mapping_owned_by_another_worktree() {
     assert!(mapped_claim.status.success());
 
     let rejected = run_berth_with_session(
-        &second_root,
+        second_root,
         &[
             "claim",
             "file:separate.txt",
@@ -1546,43 +1545,6 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     fs::copy(repository.path().join(CONFIGURATION_PATH), configuration)
         .expect("foreign worktree should share the repository configuration");
     (directory, root)
-}
-
-/// A proposal token is only meaningful alongside the answer it was issued for.
-///
-/// The token authorizes one exact overlap resolution, so forwarding it with no answer asks
-/// the engine to spend an approval against nothing. This refusal used to be stated by the
-/// retired coordinator; the engine's own parser states it now, and this records the engine's
-/// wording and exit status rather than the front end's, because the engine is the only voice
-/// left to disagree with.
-#[test]
-fn a_proposal_token_with_no_answer_is_refused_by_the_parser() {
-    const PROPOSAL_TOKEN: &str = "01991f4d-77d8-7f5f-9a1f-000000000001";
-
-    let repository = initialized_repository();
-
-    let refused = run_berth(
-        repository.path(),
-        [
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            FIRST_RUN,
-            "--proposal",
-            PROPOSAL_TOKEN,
-            "--json",
-        ],
-    );
-
-    assert_eq!(refused.status.code(), Some(5));
-    assert!(refused.stdout.is_empty());
-    let refusal = String::from_utf8_lossy(&refused.stderr);
-    for named in ["--proposal", "--before", "--after", "--defer", "--override"] {
-        assert!(
-            refusal.contains(named),
-            "the refusal should name {named}: {refusal}"
-        );
-    }
 }
 
 /// A foreign refusal requires work the holder would bring to a merge.

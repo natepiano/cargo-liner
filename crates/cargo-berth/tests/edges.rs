@@ -79,6 +79,346 @@ fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
+#[derive(Clone, Copy)]
+enum AbandonedEndpoint {
+    Predecessor,
+    Successor,
+}
+
+struct EdgeReadinessFixture {
+    repository:       TempDir,
+    worktrees:        TempDir,
+    base_head:        String,
+    baseline_journal: Vec<u8>,
+}
+
+impl EdgeReadinessFixture {
+    fn new() -> Self {
+        let repository = initialized_repository();
+        commit_configuration(repository.path());
+        let base_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+        let baseline_journal =
+            fs::read(repository.path().join(JOURNAL_PATH)).expect("initial journal should read");
+        Self {
+            repository,
+            worktrees: tempdir().expect("worktree parent should exist"),
+            base_head,
+            baseline_journal,
+        }
+    }
+
+    fn start_case(&self, case_index: usize) -> (PathBuf, PathBuf) {
+        git(
+            self.repository.path(),
+            &["reset", "--hard", &self.base_head],
+        );
+        fs::write(
+            self.repository.path().join(JOURNAL_PATH),
+            &self.baseline_journal,
+        )
+        .expect("journal should restore before independent readiness case");
+        let projection = self
+            .repository
+            .path()
+            .join(".git/cargo-berth/reservations.json");
+        if projection.exists() {
+            fs::remove_file(projection).expect("prior projection should remove");
+        }
+        let predecessor_root = add_worktree(
+            self.repository.path(),
+            self.worktrees.path(),
+            &format!("predecessor-{case_index}"),
+        );
+        let successor_root = add_worktree(
+            self.repository.path(),
+            self.worktrees.path(),
+            &format!("successor-{case_index}"),
+        );
+        (predecessor_root, successor_root)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CheckpointReadiness {
+    NotIntegrated,
+    Incorporated,
+    MissingObject,
+}
+
+struct CheckpointedPair {
+    predecessor_root: PathBuf,
+    successor_root:   PathBuf,
+    predecessor_id:   String,
+    successor_id:     String,
+    journal:          Vec<u8>,
+}
+
+impl CheckpointedPair {
+    fn new(fixture: &EdgeReadinessFixture) -> Self {
+        let (predecessor_root, successor_root) = fixture.start_case(0);
+        fs::write(
+            predecessor_root.join("src/lib.rs"),
+            "pub fn predecessor() {}\n",
+        )
+        .expect("predecessor source should write");
+        git(&predecessor_root, &["add", "."]);
+        git(
+            &predecessor_root,
+            &["commit", "--quiet", "-m", "predecessor work"],
+        );
+        let predecessor_id = reservation_id(&claim(&predecessor_root, "tree:src", FIRST_RUN));
+        let successor_id = reservation_id(&defer_claim(
+            &successor_root,
+            "file:src/lib.rs",
+            SECOND_RUN,
+            &predecessor_id,
+        ));
+        assert!(
+            run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
+                .status
+                .success()
+        );
+        let journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
+            .expect("checkpoint journal should read");
+        Self {
+            predecessor_root,
+            successor_root,
+            predecessor_id,
+            successor_id,
+            journal,
+        }
+    }
+}
+
+#[test]
+fn checkpoint_readiness_covers_incorporation_and_missing_objects() {
+    let fixture = EdgeReadinessFixture::new();
+    let pair = CheckpointedPair::new(&fixture);
+    for readiness in [
+        CheckpointReadiness::NotIntegrated,
+        CheckpointReadiness::Incorporated,
+        CheckpointReadiness::MissingObject,
+    ] {
+        assert_checkpoint_transition(&fixture, &pair, readiness);
+    }
+}
+
+fn assert_checkpoint_transition(
+    fixture: &EdgeReadinessFixture,
+    pair: &CheckpointedPair,
+    readiness: CheckpointReadiness,
+) {
+    let expected = match readiness {
+        CheckpointReadiness::NotIntegrated => {
+            serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}})
+        },
+        CheckpointReadiness::Incorporated => {
+            git(
+                fixture.repository.path(),
+                &["merge", "--quiet", "predecessor-0"],
+            );
+            git(&pair.successor_root, &["merge", "--quiet", "main"]);
+            serde_json::json!({"state": "fulfilled"})
+        },
+        CheckpointReadiness::MissingObject => {
+            let protected_tip =
+                git_stdout(fixture.repository.path(), &["rev-parse", "predecessor-0"]);
+            git(
+                fixture.repository.path(),
+                &["reset", "--hard", &fixture.base_head],
+            );
+            git(
+                &pair.successor_root,
+                &["reset", "--hard", &fixture.base_head],
+            );
+            git(
+                fixture.repository.path(),
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    pair.predecessor_root
+                        .to_str()
+                        .expect("worktree path should be UTF-8"),
+                ],
+            );
+            git(
+                fixture.repository.path(),
+                &["branch", "-D", "predecessor-0"],
+            );
+            git(
+                fixture.repository.path(),
+                &["update-ref", "-d", &reservation_ref(&pair.predecessor_id)],
+            );
+            git(
+                fixture.repository.path(),
+                &["update-ref", "-d", &reservation_ref(&pair.successor_id)],
+            );
+            git(
+                fixture.repository.path(),
+                &["update-ref", "-d", "ORIG_HEAD"],
+            );
+            git(&pair.successor_root, &["update-ref", "-d", "ORIG_HEAD"]);
+            git(
+                fixture.repository.path(),
+                &["reflog", "expire", "--expire=now", "--all"],
+            );
+            git(fixture.repository.path(), &["gc", "--prune=now"]);
+            assert!(
+                !git_status(
+                    fixture.repository.path(),
+                    &["cat-file", "-e", &protected_tip]
+                ),
+                "predecessor object must be absent after pruning"
+            );
+            serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "object_unknown"}})
+        },
+    };
+    fs::write(fixture.repository.path().join(JOURNAL_PATH), &pair.journal)
+        .expect("checkpoint journal should restore before each readiness observation");
+    let projection = fixture
+        .repository
+        .path()
+        .join(".git/cargo-berth/reservations.json");
+    if projection.exists() {
+        fs::remove_file(projection).expect("prior readiness projection should remove");
+    }
+    let sequence = sequence(
+        fixture.repository.path(),
+        &pair.predecessor_id,
+        &pair.successor_id,
+        "observe checkpoint readiness",
+    );
+    assert!(sequence.status.success());
+    assert_eq!(
+        json_output(&sequence)["payload"]["data"]["readiness"],
+        expected
+    );
+}
+
+#[test]
+fn confirmed_abandonment_of_either_endpoint_cancels_the_edge() {
+    let fixture = EdgeReadinessFixture::new();
+    for (case_index, case) in [AbandonedEndpoint::Predecessor, AbandonedEndpoint::Successor]
+        .into_iter()
+        .enumerate()
+    {
+        assert_abandoned_endpoint(&fixture, case, case_index);
+    }
+}
+
+fn assert_abandoned_endpoint(
+    fixture: &EdgeReadinessFixture,
+    case: AbandonedEndpoint,
+    case_index: usize,
+) {
+    let (predecessor_root, successor_root) = fixture.start_case(case_index);
+    match case {
+        AbandonedEndpoint::Predecessor => {
+            assert_predecessor_abandonment(fixture, &predecessor_root, &successor_root);
+        },
+        AbandonedEndpoint::Successor => {
+            assert_successor_abandonment(fixture, &predecessor_root, &successor_root);
+        },
+    }
+}
+
+fn assert_predecessor_abandonment(
+    fixture: &EdgeReadinessFixture,
+    predecessor_root: &Path,
+    successor_root: &Path,
+) {
+    dirty_source(predecessor_root, "src/lib.rs");
+    let predecessor = claim(predecessor_root, "tree:src", FIRST_RUN);
+    let predecessor_id = reservation_id(&predecessor);
+    let successor = defer_claim(
+        successor_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        &predecessor_id,
+    );
+    let successor_id = reservation_id(&successor);
+    fs::remove_dir_all(predecessor_root).expect("predecessor worktree should be removable");
+    git(
+        fixture.repository.path(),
+        &["worktree", "prune", "--expire", "now"],
+    );
+    let abandoned = run_berth(
+        fixture.repository.path(),
+        &[
+            "resolve",
+            &predecessor_id,
+            "--abandon",
+            "--why",
+            "confirmed predecessor abandonment",
+            "--json",
+        ],
+    );
+    assert!(abandoned.status.success());
+
+    let sequence = sequence(
+        fixture.repository.path(),
+        &predecessor_id,
+        &successor_id,
+        "record the resolved order",
+    );
+
+    assert!(sequence.status.success());
+    assert_eq!(
+        json_output(&sequence)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "cancelled"})
+    );
+}
+
+fn assert_successor_abandonment(
+    fixture: &EdgeReadinessFixture,
+    predecessor_root: &Path,
+    successor_root: &Path,
+) {
+    dirty_source(predecessor_root, "src/lib.rs");
+    let predecessor = claim(predecessor_root, "tree:src", FIRST_RUN);
+    let predecessor_id = reservation_id(&predecessor);
+    let successor = defer_claim(
+        successor_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        &predecessor_id,
+    );
+    let successor_id = reservation_id(&successor);
+    fs::remove_dir_all(successor_root).expect("successor worktree should be removable");
+    git(
+        fixture.repository.path(),
+        &["worktree", "prune", "--expire", "now"],
+    );
+    let abandoned = run_berth(
+        fixture.repository.path(),
+        &[
+            "resolve",
+            &successor_id,
+            "--abandon",
+            "--why",
+            "confirmed successor abandonment",
+            "--json",
+        ],
+    );
+    assert!(abandoned.status.success());
+
+    let sequence = sequence(
+        fixture.repository.path(),
+        &predecessor_id,
+        &successor_id,
+        "record the terminal successor edge",
+    );
+    let sequence_json = json_output(&sequence);
+
+    assert!(sequence.status.success());
+    assert_eq!(
+        sequence_json["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "cancelled"})
+    );
+    assert_eq!(sequence_json["blocked_by"], serde_json::json!([]));
+}
+
 struct RewrittenSuccessorFixture {
     repository:       TempDir,
     _worktrees:       TempDir,
@@ -190,7 +530,7 @@ fn deferred_ordering_is_replayable_and_duplicate_or_reverse_resolution_is_reject
 }
 
 #[test]
-fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
+fn sequence_rejects_each_invalid_identity_and_carries_alerts() {
     let repository = initialized_repository();
     commit_configuration(repository.path());
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
@@ -200,7 +540,7 @@ fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
     fs::write(orphan_root.join("orphan.txt"), "orphan work\n").expect("orphan source should write");
     git(&orphan_root, &["add", "."]);
     git(&orphan_root, &["commit", "--quiet", "-m", "orphan work"]);
-    let orphan = claim(&orphan_root, "file:orphan.txt", THIRD_RUN);
+    let orphan = claim(&orphan_root, "file:orphan.txt", FIFTH_RUN);
     let orphan_id = reservation_id(&orphan);
     assert!(
         run_berth(&orphan_root, &["release", &orphan_id, "--json"])
@@ -210,108 +550,7 @@ fn sequence_rejects_a_stale_post_reconciliation_marker_and_carries_alerts() {
     fs::remove_dir_all(&orphan_root).expect("orphan worktree should be removable");
     git(repository.path(), &["worktree", "prune", "--expire", "now"]);
 
-    let rejected = run_berth_with_stale_marker(
-        repository.path(),
-        "refs/heads/orphan-alert",
-        &[
-            "sequence",
-            &holder_id,
-            &requester_id,
-            "--why",
-            "the holder must land first",
-            "--json",
-        ],
-    );
-    let rejected_json = json_output(&rejected);
-
-    assert_eq!(rejected.status.code(), Some(5));
-    assert_eq!(rejected_json["exit_code"], 5);
-    assert_eq!(rejected_json["status"], "invalid_input");
-    assert_coordination_identity_rejection(
-        &rejected_json,
-        "stale_marker_run",
-        &["reconcile_and_sweep_marker"],
-    );
-    assert_eq!(
-        rejected_json["payload"]["data"]["coordination_run_id"],
-        FOURTH_RUN
-    );
-    assert_eq!(rejected_json["blocked_by"], serde_json::json!([]));
-    let orphan_alert = rejected_json["payload"]["alerts"]
-        .as_array()
-        .expect("rejection should carry alerts")
-        .iter()
-        .find(|alert| alert["kind"] == "orphaned_outstanding")
-        .expect("rejection should retain the orphan alert alongside derivation failure");
-    assert_eq!(orphan_alert["data"]["reservation_id"], orphan_id);
-    assert_eq!(resolve_defer_count(repository.path()), 0);
-}
-
-#[test]
-fn sequence_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
-    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
-    let session_id = "stale-sequence-session";
-    let mapped_claim = run_berth_with_session(
-        &third_root,
-        &[
-            "claim",
-            "file:session-sequence",
-            "--run",
-            THIRD_RUN,
-            "--why",
-            "establish sequence session mapping",
-            "--json",
-        ],
-        session_id,
-    );
-    assert!(mapped_claim.status.success());
-    let mapped_reservation_id = reservation_id(&mapped_claim);
-    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
-    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
-    assert!(
-        run_berth(&third_root, &["release", &mapped_reservation_id, "--json"])
-            .status
-            .success()
-    );
-    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
-
-    let rejected = run_berth_with_session(
-        repository.path(),
-        &[
-            "sequence",
-            &holder_id,
-            &requester_id,
-            "--why",
-            "the holder must land first",
-            "--json",
-        ],
-        session_id,
-    );
-    let rejected_json = json_output(&rejected);
-    let diagnostic = rejected_json["message"]
-        .as_str()
-        .expect("sequence rejection should have a message");
-
-    assert_eq!(rejected.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &rejected_json,
-        "stale_session_mapping",
-        &["clear_session_mapping"],
-    );
-    assert!(diagnostic.contains("Harness session mapping"));
-    assert!(!diagnostic.contains("coordination-run marker"));
-    assert_eq!(resolve_defer_count(repository.path()), 0);
-}
-
-#[test]
-fn sequence_rejects_a_session_mapping_owned_by_another_worktree() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
-    let (holder_id, requester_id) = deferred_pair(repository.path(), &second_root);
     let session_id = "foreign-sequence-session";
     let mapped_claim = run_berth_with_session(
         &third_root,
@@ -349,6 +588,91 @@ fn sequence_rejects_a_session_mapping_owned_by_another_worktree() {
         &["rerun_from_holding_worktree", "claim_separately_here"],
     );
     assert_eq!(resolve_defer_count(repository.path()), 0);
+    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
+    let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
+    assert!(
+        run_berth(&third_root, &["release", &mapped_reservation_id, "--json"])
+            .status
+            .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
+
+    let rejected = run_berth_with_session(
+        repository.path(),
+        &[
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the holder must land first",
+            "--json",
+        ],
+        session_id,
+    );
+    let rejected_json = json_output(&rejected);
+    let diagnostic = rejected_json["message"]
+        .as_str()
+        .expect("sequence rejection should have a message");
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "stale_session_mapping",
+        &["clear_session_mapping"],
+    );
+    assert!(diagnostic.contains("Harness session mapping"));
+    assert!(!diagnostic.contains("coordination-run marker"));
+    assert_eq!(resolve_defer_count(repository.path()), 0);
+    assert_sequence_stale_marker_rejection(
+        repository.path(),
+        &holder_id,
+        &requester_id,
+        &orphan_id,
+    );
+}
+
+fn assert_sequence_stale_marker_rejection(
+    repository_root: &Path,
+    holder_id: &str,
+    requester_id: &str,
+    orphan_id: &str,
+) {
+    let rejected = run_berth_with_stale_marker(
+        repository_root,
+        "refs/heads/orphan-alert",
+        &[
+            "sequence",
+            holder_id,
+            requester_id,
+            "--why",
+            "the holder must land first",
+            "--json",
+        ],
+    );
+    let rejected_json = json_output(&rejected);
+
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_eq!(rejected_json["exit_code"], 5);
+    assert_eq!(rejected_json["status"], "invalid_input");
+    assert_coordination_identity_rejection(
+        &rejected_json,
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
+    );
+    assert_eq!(
+        rejected_json["payload"]["data"]["coordination_run_id"],
+        FOURTH_RUN
+    );
+    assert_eq!(rejected_json["blocked_by"], serde_json::json!([]));
+    let orphan_alert = rejected_json["payload"]["alerts"]
+        .as_array()
+        .expect("rejection should carry alerts")
+        .iter()
+        .find(|alert| alert["kind"] == "orphaned_outstanding")
+        .expect("rejection should retain the orphan alert alongside derivation failure");
+    assert_eq!(orphan_alert["data"]["reservation_id"], orphan_id);
+    assert_eq!(resolve_defer_count(repository_root), 0);
 }
 
 #[test]
@@ -519,103 +843,6 @@ fn successor_head_and_current_trunk_both_control_readiness() {
 }
 
 #[test]
-fn predecessor_checkpoint_not_on_trunk_reports_not_integrated() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    fs::write(
-        predecessor_root.join("src/lib.rs"),
-        "pub fn predecessor() {}\n",
-    )
-    .expect("predecessor source should write");
-    git(&predecessor_root, &["add", "."]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "predecessor work"],
-    );
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-    let checkpoint = run_berth(&predecessor_root, &["release", &predecessor_id, "--json"]);
-    assert!(checkpoint.status.success());
-
-    let sequence = sequence(
-        repository.path(),
-        &predecessor_id,
-        &successor_id,
-        "predecessor checkpoint has not landed",
-    );
-
-    assert!(sequence.status.success());
-    assert_eq!(
-        json_output(&sequence)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {
-                "reason": "predecessor_not_on_trunk",
-                "evidence": "not_integrated"
-            }
-        })
-    );
-}
-
-#[test]
-fn successor_incorporation_fulfills_an_integrated_edge() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    fs::write(
-        predecessor_root.join("src/lib.rs"),
-        "pub fn predecessor() {}\n",
-    )
-    .expect("predecessor source should write");
-    git(&predecessor_root, &["add", "."]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "predecessor work"],
-    );
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-    assert!(
-        run_berth(&predecessor_root, &["release", &predecessor_id, "--json"])
-            .status
-            .success()
-    );
-    git(repository.path(), &["merge", "--quiet", "predecessor"]);
-    git(&successor_root, &["merge", "--quiet", "main"]);
-
-    let sequence = sequence(
-        repository.path(),
-        &predecessor_id,
-        &successor_id,
-        "successor already contains predecessor",
-    );
-
-    assert!(sequence.status.success());
-    assert_eq!(
-        json_output(&sequence)["payload"]["data"]["readiness"],
-        serde_json::json!({"state": "fulfilled"})
-    );
-}
-
-#[test]
 fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
     for successor_is_equivalent in [true, false] {
         let fixture = rewritten_successor_fixture(successor_is_equivalent);
@@ -671,7 +898,7 @@ fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
         );
         let stable_journal_records = journal_record_count(fixture.repository.path());
 
-        for _ in 0..20 {
+        for _ in 0..2 {
             let replayed =
                 run_berth_with_git_trace(fixture.repository.path(), &["board", "--json"], "");
             assert!(replayed.output.status.success());
@@ -750,36 +977,36 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
     assert!(one_cold.output.status.success());
     let one_argv = git_trace(&one_cold);
 
-    let twenty = successor_scale_fixture(20);
-    let twenty_cold = run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "*");
-    assert!(twenty_cold.output.status.success());
-    let twenty_argv = git_trace(&twenty_cold);
+    let four = successor_scale_fixture(4);
+    let four_cold = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
+    assert!(four_cold.output.status.success());
+    let four_argv = git_trace(&four_cold);
     assert!(!one_argv.is_empty());
     assert_merge_observation_budget(&one_argv, 2);
-    assert_merge_observation_budget(&twenty_argv, 21);
+    assert_merge_observation_budget(&four_argv, 5);
     assert_eq!(
-        canonical_git_command_sequence(&twenty_argv).len(),
+        canonical_git_command_sequence(&four_argv).len(),
         canonical_git_command_sequence(&one_argv).len(),
-        "one successor argv: {one_argv:?}; twenty successor argv: {twenty_argv:?}"
+        "one successor argv: {one_argv:?}; four successor argv: {four_argv:?}"
     );
     assert_eq!(
-        canonical_git_command_sequence(&twenty_argv),
+        canonical_git_command_sequence(&four_argv),
         canonical_git_command_sequence(&one_argv)
     );
 
-    let mut latest_unavailable = twenty_cold;
-    for _ in 1..twenty.successor_heads.len() {
+    let mut latest_unavailable = four_cold;
+    for _ in 1..four.successor_heads.len() {
         latest_unavailable =
-            run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "*");
+            run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
         assert!(latest_unavailable.output.status.success());
     }
     let attempted_heads = journal_operation_field_values(
-        twenty.repository.path(),
+        four.repository.path(),
         "successor_scoped_patch_comparison_attempted",
         "successor_head",
     );
-    assert_eq!(attempted_heads.len(), twenty.successor_heads.len());
-    for successor_head in &twenty.successor_heads {
+    assert_eq!(attempted_heads.len(), four.successor_heads.len());
+    for successor_head in &four.successor_heads {
         assert!(attempted_heads.contains(successor_head));
     }
     let unavailable_board =
@@ -787,38 +1014,37 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
     assert!(unavailable_board.contains("successor_must_incorporate_predecessor"));
     assert!(!unavailable_board.contains("\"state\":\"fulfilled\""));
 
-    let available_comparison_count = twenty.successor_heads.len() / 2;
+    let available_comparison_count = four.successor_heads.len() / 2;
     let mut partially_checked =
-        run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "");
+        run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
     assert!(partially_checked.output.status.success());
     for _ in 1..available_comparison_count {
         partially_checked =
-            run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "");
+            run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
         assert!(partially_checked.output.status.success());
     }
     assert_successor_round_robin_progress(
         &partially_checked.output,
-        twenty.successor_heads.len(),
+        four.successor_heads.len(),
         available_comparison_count,
     );
 
-    for _ in available_comparison_count..twenty.successor_heads.len() {
-        let remaining =
-            run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "");
+    for _ in available_comparison_count..four.successor_heads.len() {
+        let remaining = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
         assert!(remaining.output.status.success());
     }
     let checked_heads = journal_operation_field_values(
-        twenty.repository.path(),
+        four.repository.path(),
         "successor_scoped_patch_equivalence_checked",
         "successor_head",
     );
-    assert_eq!(checked_heads.len(), twenty.successor_heads.len());
-    for successor_head in &twenty.successor_heads {
+    assert_eq!(checked_heads.len(), four.successor_heads.len());
+    for successor_head in &four.successor_heads {
         assert!(checked_heads.contains(successor_head));
     }
-    let stable_journal_records = journal_record_count(twenty.repository.path());
-    for _ in 0..20 {
-        let cached = run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "");
+    let stable_journal_records = journal_record_count(four.repository.path());
+    for _ in 0..2 {
+        let cached = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
         assert!(cached.output.status.success());
         assert_eq!(
             scoped_patch_comparison_count(&cached),
@@ -827,33 +1053,33 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
         );
     }
     assert_eq!(
-        journal_record_count(twenty.repository.path()),
+        journal_record_count(four.repository.path()),
         stable_journal_records
     );
 }
 
 #[test]
 fn predecessor_graph_has_fixed_cold_cost() {
-    let one = predecessor_scale_fixture(1);
-    let one_cold = run_berth_with_git_trace(one.repository.path(), &["board", "--json"], "*");
-    assert!(one_cold.output.status.success());
-    let one_argv = git_trace(&one_cold);
+    let two = predecessor_scale_fixture(2);
+    let two_cold = run_berth_with_git_trace(two.repository.path(), &["board", "--json"], "*");
+    assert!(two_cold.output.status.success());
+    let two_argv = git_trace(&two_cold);
 
-    let twenty = predecessor_scale_fixture(20);
-    let twenty_cold = run_berth_with_git_trace(twenty.repository.path(), &["board", "--json"], "*");
-    assert!(twenty_cold.output.status.success());
-    let twenty_argv = git_trace(&twenty_cold);
-    assert!(!one_argv.is_empty());
-    assert_merge_observation_budget(&one_argv, 2);
-    assert_merge_observation_budget(&twenty_argv, 21);
+    let four = predecessor_scale_fixture(4);
+    let four_cold = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
+    assert!(four_cold.output.status.success());
+    let four_argv = git_trace(&four_cold);
+    assert!(!two_argv.is_empty());
+    assert_merge_observation_budget(&two_argv, 3);
+    assert_merge_observation_budget(&four_argv, 5);
     assert_eq!(
-        canonical_git_command_sequence(&twenty_argv).len(),
-        canonical_git_command_sequence(&one_argv).len(),
-        "one predecessor argv: {one_argv:?}; twenty predecessor argv: {twenty_argv:?}"
+        canonical_git_command_sequence(&four_argv).len(),
+        canonical_git_command_sequence(&two_argv).len(),
+        "two predecessor argv: {two_argv:?}; four predecessor argv: {four_argv:?}"
     );
     assert_eq!(
-        canonical_git_command_sequence(&twenty_argv),
-        canonical_git_command_sequence(&one_argv)
+        canonical_git_command_sequence(&four_argv),
+        canonical_git_command_sequence(&two_argv)
     );
 }
 
@@ -910,100 +1136,6 @@ fn assert_successor_round_robin_progress(
             .iter()
             .all(|entry| { entry["settlement"] == "fulfilled_successor_contains_predecessor" })
     );
-}
-
-#[test]
-fn confirmed_abandonment_cancels_an_edge() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    dirty_source(&predecessor_root, "src/lib.rs");
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-    fs::remove_dir_all(&predecessor_root).expect("predecessor worktree should be removable");
-    git(repository.path(), &["worktree", "prune", "--expire", "now"]);
-    let abandoned = run_berth(
-        repository.path(),
-        &[
-            "resolve",
-            &predecessor_id,
-            "--abandon",
-            "--why",
-            "confirmed predecessor abandonment",
-            "--json",
-        ],
-    );
-    assert!(abandoned.status.success());
-
-    let sequence = sequence(
-        repository.path(),
-        &predecessor_id,
-        &successor_id,
-        "record the resolved order",
-    );
-
-    assert!(sequence.status.success());
-    assert_eq!(
-        json_output(&sequence)["payload"]["data"]["readiness"],
-        serde_json::json!({"state": "cancelled"})
-    );
-}
-
-#[test]
-fn confirmed_successor_abandonment_cancels_and_releases_the_edge() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    dirty_source(&predecessor_root, "src/lib.rs");
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-    fs::remove_dir_all(&successor_root).expect("successor worktree should be removable");
-    git(repository.path(), &["worktree", "prune", "--expire", "now"]);
-    let abandoned = run_berth(
-        repository.path(),
-        &[
-            "resolve",
-            &successor_id,
-            "--abandon",
-            "--why",
-            "confirmed successor abandonment",
-            "--json",
-        ],
-    );
-    assert!(abandoned.status.success());
-
-    let sequence = sequence(
-        repository.path(),
-        &predecessor_id,
-        &successor_id,
-        "record the terminal successor edge",
-    );
-    let sequence_json = json_output(&sequence);
-
-    assert!(sequence.status.success());
-    assert_eq!(
-        sequence_json["payload"]["data"]["readiness"],
-        serde_json::json!({"state": "cancelled"})
-    );
-    assert_eq!(sequence_json["blocked_by"], serde_json::json!([]));
 }
 
 #[test]
@@ -1200,83 +1332,72 @@ fn orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge() {
 
 #[test]
 fn predecessor_liveness_observations_have_live_edge_readiness_parity() {
-    let live = readiness_for_predecessor_liveness(ObservedPredecessorLiveness::Live);
-    for worktree_liveness in [
-        ObservedPredecessorLiveness::Unavailable,
-        ObservedPredecessorLiveness::OrphanCandidate,
-        ObservedPredecessorLiveness::Unknown,
-    ] {
-        assert_eq!(readiness_for_predecessor_liveness(worktree_liveness), live);
-    }
-}
-
-#[test]
-fn unavailable_predecessor_object_holds_instead_of_satisfying_the_edge() {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    fs::write(
-        predecessor_root.join("src/lib.rs"),
-        "pub fn predecessor() {}\n",
-    )
-    .expect("predecessor source should write");
-    git(&predecessor_root, &["add", "."]);
-    git(
-        &predecessor_root,
-        &["commit", "--quiet", "-m", "unreachable predecessor"],
-    );
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
+    let fixture = EdgeReadinessFixture::new();
+    let (predecessor_root, successor_root) = fixture.start_case(0);
+    dirty_source(&predecessor_root, "src/lib.rs");
+    let predecessor_id = reservation_id(&claim(&predecessor_root, "tree:src", FIRST_RUN));
+    let successor_id = reservation_id(&defer_claim(
         &successor_root,
         "file:src/lib.rs",
         SECOND_RUN,
         &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-    let checkpoint = run_berth(&predecessor_root, &["release", &predecessor_id, "--json"]);
-    assert!(checkpoint.status.success());
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            predecessor_root
-                .to_str()
-                .expect("worktree path should be UTF-8"),
-        ],
-    );
-    git(repository.path(), &["branch", "-D", "predecessor"]);
-    git(
-        repository.path(),
-        &["update-ref", "-d", &reservation_ref(&predecessor_id)],
-    );
-    git(
-        repository.path(),
-        &["reflog", "expire", "--expire=now", "--all"],
-    );
-    git(repository.path(), &["gc", "--prune=now"]);
-
-    let sequence = sequence(
-        repository.path(),
+    ));
+    let identity_path =
+        linked_worktree_administrative_directory(&predecessor_root).join("cargo-berth-worktree-id");
+    let baseline_journal =
+        fs::read(fixture.repository.path().join(JOURNAL_PATH)).expect("pair journal should read");
+    let identity = fs::read(&identity_path).expect("worktree identity should read");
+    let live = readiness_for_predecessor_liveness(
+        &fixture,
+        &predecessor_root,
         &predecessor_id,
         &successor_id,
-        "missing evidence must keep holding",
+        ObservedPredecessorLiveness::Live,
     );
-    assert!(sequence.status.success());
-    assert_eq!(
-        json_output(&sequence)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding",
-            "hold": {
-                "reason": "predecessor_not_on_trunk",
-                "evidence": "object_unknown"
-            }
-        })
-    );
+    for worktree_liveness in [
+        ObservedPredecessorLiveness::Unavailable,
+        ObservedPredecessorLiveness::Unknown,
+        ObservedPredecessorLiveness::OrphanCandidate,
+    ] {
+        fs::write(
+            fixture.repository.path().join(JOURNAL_PATH),
+            &baseline_journal,
+        )
+        .expect("pair journal should restore before each liveness observation");
+        fs::remove_file(
+            fixture
+                .repository
+                .path()
+                .join(".git/cargo-berth/reservations.json"),
+        )
+        .expect("sequence projection should remove");
+        assert_eq!(
+            readiness_for_predecessor_liveness(
+                &fixture,
+                &predecessor_root,
+                &predecessor_id,
+                &successor_id,
+                worktree_liveness
+            ),
+            live
+        );
+        match worktree_liveness {
+            ObservedPredecessorLiveness::Unavailable => git(
+                fixture.repository.path(),
+                &[
+                    "worktree",
+                    "unlock",
+                    predecessor_root
+                        .to_str()
+                        .expect("worktree path should be UTF-8"),
+                ],
+            ),
+            ObservedPredecessorLiveness::Unknown => {
+                fs::write(&identity_path, &identity).expect("worktree identity should restore");
+            },
+            ObservedPredecessorLiveness::Live | ObservedPredecessorLiveness::OrphanCandidate => {},
+        }
+    }
 }
 
 fn assert_claim_time_direction(flag: &str, direction: &str) {
@@ -1781,28 +1902,16 @@ fn linked_worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
 }
 
 fn readiness_for_predecessor_liveness(
+    fixture: &EdgeReadinessFixture,
+    predecessor_root: &Path,
+    predecessor_id: &str,
+    successor_id: &str,
     worktree_liveness: ObservedPredecessorLiveness,
 ) -> serde_json::Value {
-    let repository = initialized_repository();
-    commit_configuration(repository.path());
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
-    let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
-    dirty_source(&predecessor_root, "src/lib.rs");
-    let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        &successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
-
     match worktree_liveness {
         ObservedPredecessorLiveness::Live => {},
         ObservedPredecessorLiveness::Unavailable => git(
-            repository.path(),
+            fixture.repository.path(),
             &[
                 "worktree",
                 "lock",
@@ -1812,12 +1921,11 @@ fn readiness_for_predecessor_liveness(
             ],
         ),
         ObservedPredecessorLiveness::OrphanCandidate => {
-            fs::remove_dir_all(&predecessor_root)
-                .expect("predecessor worktree should be removable");
+            fs::remove_dir_all(predecessor_root).expect("predecessor worktree should be removable");
         },
         ObservedPredecessorLiveness::Unknown => {
             fs::remove_file(
-                linked_worktree_administrative_directory(&predecessor_root)
+                linked_worktree_administrative_directory(predecessor_root)
                     .join("cargo-berth-worktree-id"),
             )
             .expect("predecessor identity should be removable");
@@ -1825,9 +1933,9 @@ fn readiness_for_predecessor_liveness(
     }
 
     let sequence = sequence(
-        repository.path(),
-        &predecessor_id,
-        &successor_id,
+        fixture.repository.path(),
+        predecessor_id,
+        successor_id,
         "compare predecessor liveness",
     );
     let sequence_json = json_output(&sequence);

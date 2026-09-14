@@ -786,17 +786,57 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
 }
 
 #[test]
-fn stale_markers_cannot_authorize_checks_or_seed_new_claims() {
+fn check_rejects_invalid_coordination_identities_and_claim_renews_stale_markers() {
     let repository = initialized_repository();
+    assert_marker_claim_revalidation(&repository);
+    assert_stale_marker_check_and_new_claim(&repository);
+    assert_check_session_rejections(&repository);
+}
+
+fn assert_marker_claim_revalidation(repository: &TempDir) {
+    let first_claim = run_berth(
+        repository.path(),
+        &["claim", "file:first", "--run", FIRST_RUN, "--json"],
+    );
+    let raced_reservation_id = reservation_id(&first_claim);
+    let mut pending_claim = PausedBerthProcess::spawn(
+        repository.path(),
+        &["claim", "file:second", "--json"],
+        PAUSE_MODE_HEAD,
+    );
+    pending_claim.wait_until_paused();
+    assert!(
+        run_berth(
+            repository.path(),
+            &["release", &raced_reservation_id, "--json"]
+        )
+        .status
+        .success()
+    );
+
+    let rejected_claim = pending_claim.continue_and_wait();
+
+    assert_eq!(rejected_claim.status.code(), Some(5));
+    assert_coordination_identity_rejection(
+        &json_output(&rejected_claim),
+        "stale_marker_run",
+        &["reconcile_and_sweep_marker"],
+    );
+    let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
+        .expect("journal should read after rejected claim");
+    assert_eq!(journal.matches("\"op\":\"claim\"").count(), 1);
+}
+
+fn assert_stale_marker_check_and_new_claim(repository: &TempDir) {
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
     commit_file(repository.path(), "a", "phase\n", "phase work");
     let first_claim = run_berth(
         repository.path(),
         &["claim", "file:a", "--run", FIRST_RUN, "--json"],
     );
-    let reservation_id = reservation_id(&first_claim);
+    let first_reservation_id = reservation_id(&first_claim);
     assert!(
-        run_berth(repository.path(), &["release", &reservation_id])
+        run_berth(repository.path(), &["release", &first_reservation_id])
             .status
             .success()
     );
@@ -825,24 +865,30 @@ fn stale_markers_cannot_authorize_checks_or_seed_new_claims() {
         json_output(&second_claim)["payload"]["data"]["coordination_run_id"],
         FIRST_RUN
     );
+    assert!(
+        run_berth(
+            repository.path(),
+            &["release", &reservation_id(&second_claim), "--json"]
+        )
+        .status
+        .success()
+    );
 }
 
-#[test]
-fn check_rejects_stale_and_foreign_session_mappings() {
-    let stale_repository = initialized_repository();
+fn assert_check_session_rejections(repository: &TempDir) {
     let stale_session = "stale-check-session";
     let mapped_claim = run_berth_with_session(
-        stale_repository.path(),
+        repository.path(),
         &["claim", "file:stale-mapped", "--run", FIRST_RUN, "--json"],
         stale_session,
     );
     assert!(mapped_claim.status.success());
     let mapped_reservation_id = reservation_id(&mapped_claim);
-    let mapping_path = stale_repository.path().join(SESSION_MAPPING_PATH);
+    let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
     let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
     assert!(
         run_berth(
-            stale_repository.path(),
+            repository.path(),
             &["release", &mapped_reservation_id, "--json"],
         )
         .status
@@ -850,7 +896,7 @@ fn check_rejects_stale_and_foreign_session_mappings() {
     );
     fs::write(&mapping_path, stale_mapping).expect("stale mapping should write");
     let stale_rejection = run_berth_with_session(
-        stale_repository.path(),
+        repository.path(),
         &["check", "file:stale-mapped", "--json"],
         stale_session,
     );
@@ -861,11 +907,10 @@ fn check_rejects_stale_and_foreign_session_mappings() {
         &["clear_session_mapping"],
     );
 
-    let mismatch_repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let second_root = worktree_parent.path().join("check-second");
     git(
-        mismatch_repository.path(),
+        repository.path(),
         &[
             "worktree",
             "add",
@@ -879,7 +924,7 @@ fn check_rejects_stale_and_foreign_session_mappings() {
     );
     let mismatch_session = "foreign-check-session";
     let live_claim = run_berth_with_session(
-        mismatch_repository.path(),
+        repository.path(),
         &["claim", "file:live-mapped", "--run", SECOND_RUN, "--json"],
         mismatch_session,
     );
@@ -895,39 +940,6 @@ fn check_rejects_stale_and_foreign_session_mappings() {
         "session_worktree_mismatch",
         &["rerun_from_holding_worktree", "claim_separately_here"],
     );
-}
-
-#[test]
-fn marker_derived_claim_revalidates_its_run_after_reconciliation() {
-    let repository = initialized_repository();
-    let first_claim = run_berth(
-        repository.path(),
-        &["claim", "file:first", "--run", FIRST_RUN, "--json"],
-    );
-    let reservation_id = reservation_id(&first_claim);
-    let mut pending_claim = PausedBerthProcess::spawn(
-        repository.path(),
-        &["claim", "file:second", "--json"],
-        PAUSE_MODE_HEAD,
-    );
-    pending_claim.wait_until_paused();
-    assert!(
-        run_berth(repository.path(), &["release", &reservation_id, "--json"])
-            .status
-            .success()
-    );
-
-    let rejected_claim = pending_claim.continue_and_wait();
-
-    assert_eq!(rejected_claim.status.code(), Some(5));
-    assert_coordination_identity_rejection(
-        &json_output(&rejected_claim),
-        "stale_marker_run",
-        &["reconcile_and_sweep_marker"],
-    );
-    let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))
-        .expect("journal should read after rejected claim");
-    assert_eq!(journal.matches("\"op\":\"claim\"").count(), 1);
 }
 
 #[test]
@@ -1083,32 +1095,18 @@ fn explicit_projection_repair_recovers_ahead_caches_without_changing_the_journal
 }
 
 #[test]
-fn retire_orphan_requires_a_reason_and_excludes_other_dispositions() {
+fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() {
     let repository = initialized_repository();
-    let reservation_id = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
-    let missing_reason = run_berth(
-        repository.path(),
-        &["resolve", reservation_id, "--retire-orphan", "--json"],
-    );
-    let combined = run_berth(
+    let incomplete = run_berth(
         repository.path(),
         &[
             "resolve",
-            reservation_id,
+            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d",
             "--retire-orphan",
-            "--why",
-            "confirmed",
-            "--recovered",
             "--json",
         ],
     );
-    assert_eq!(missing_reason.status.code(), Some(5));
-    assert_eq!(combined.status.code(), Some(5));
-}
-
-#[test]
-fn active_orphans_accept_confirmed_terminal_dispositions_without_a_checkpoint() {
-    let repository = initialized_repository();
+    assert_eq!(incomplete.status.code(), Some(5));
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let abandoned_id = create_active_orphan(
         repository.path(),

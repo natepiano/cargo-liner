@@ -675,6 +675,7 @@ fn reftable_references_are_resolved_through_git() {
         "reftable claim failed: {}",
         String::from_utf8_lossy(&traced.output.stdout)
     );
+    assert_eq!(json_output(&traced.output)["status"], "claimed");
     assert_eq!(last_claim_event(repository.path())["trunk_at_claim"], head);
     assert!(rev_parse_query_count(&traced.commands, reference) > 0);
 }

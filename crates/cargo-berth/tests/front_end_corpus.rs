@@ -38,10 +38,10 @@ const THIS_SUITE_TEXT_COMPARED_ENTRIES: [(&str, &str); 1] = [(
 )];
 /// Corpus entries whose frozen text `tests/hooks.rs` compares against the real
 /// binary, each named beside the test that drives it.
-const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 22] = [
+const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 23] = [
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message",
-        "session_identity_recoveries_preserve_the_frozen_corpus_text",
+        "coordination_identity_rejection_emits_its_recovery",
     ),
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message#2",
@@ -49,11 +49,15 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 22] = [
     ),
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message#3",
-        "stale_marker_recovery_preserves_the_frozen_corpus_text",
+        "coordination_identity_rejection_emits_its_recovery",
+    ),
+    (
+        "test_hooks_render_coordination_identity_recovery_actions_without_message#4",
+        "post_tool_use_states_its_coordination_identity_recovery",
     ),
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message#5",
-        "session_identity_recoveries_preserve_the_frozen_corpus_text",
+        "coordination_identity_rejection_emits_its_recovery",
     ),
     (
         "test_typed_replay_failure_routes_without_message_in_every_consumer",
@@ -93,11 +97,11 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 22] = [
     ),
     (
         "test_recorded_incursion_emits_no_stop_text",
-        "post_tool_use_stops_repeating_an_answered_incursion",
+        "post_tool_use_reports_only_new_widening_after_an_incursion_is_answered",
     ),
     (
         "test_recorded_incursion_preserves_concurrent_widening_feedback",
-        "post_tool_use_states_a_widening_after_the_incursion_was_answered",
+        "post_tool_use_reports_only_new_widening_after_an_incursion_is_answered",
     ),
     (
         "test_recorded_incursion_preserves_lost_evidence_feedback",
@@ -105,19 +109,19 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 22] = [
     ),
     (
         "test_hooks_render_both_lost_evidence_recoveries",
-        "post_tool_use_states_the_rewritten_trunk_evidence_recovery",
+        "hooks_state_the_rewritten_trunk_evidence_recovery",
     ),
     (
         "test_hooks_render_both_lost_evidence_recoveries#2",
-        "session_start_states_the_rewritten_trunk_evidence_recovery",
+        "hooks_state_the_rewritten_trunk_evidence_recovery",
     ),
     (
         "test_hooks_render_both_lost_evidence_recoveries#3",
-        "post_tool_use_states_the_unresolvable_trunk_evidence_recovery",
+        "hooks_state_the_unresolvable_trunk_evidence_recovery",
     ),
     (
         "test_hooks_render_both_lost_evidence_recoveries#4",
-        "session_start_states_the_unresolvable_trunk_evidence_recovery",
+        "hooks_state_the_unresolvable_trunk_evidence_recovery",
     ),
     (
         "test_session_start_renders_real_orphan_recovery_actions#2",
@@ -138,14 +142,7 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 22] = [
 /// decided list rather than a residue. `every_corpus_entry_is_text_compared_or_named_unproven`
 /// holds the list to the corpus: a row for an entry a test now drives fails, a row for an
 /// entry the fixture does not carry fails, and an entry this list forgets fails too.
-const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 27] = [
-    UnprovenCorpusEntry::UnproducibleByThisEngine {
-        name:    "test_hooks_render_coordination_identity_recovery_actions_without_message#4",
-        because: "drift sweeps this worktree's coordination run marker before validating it, on \
-                  the same predicate the marker validation rejects on, so a post-Bash process \
-                  never presents a stale marker; the pre-edit route reaches it because check \
-                  runs no such preflight",
-    },
+const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 26] = [
     UnprovenCorpusEntry::UnproducibleByThisEngine {
         name:    "test_a_nested_tag_no_table_names_still_reaches_the_advisory_route",
         because: "the frozen heading is the retired shell's fallback for a status absent from its \
@@ -735,21 +732,20 @@ fn failure(message: impl Into<String>) -> Box<dyn Error> {
 /// The coverage tables pair a corpus entry with the test that drives it, but the entry half
 /// is the only half the partition checks: a test could be deleted and its row left behind,
 /// and the partition would still balance while the entry was covered by nothing. This reads
-/// the cited suites and requires each name to be defined in one of them, so a deleted test
-/// fails the gate instead of leaving a coverage claim standing on its own.
+/// the cited suites and requires each name to carry `#[test]` in one of them, so deleting
+/// a test or turning it into a helper fails the gate.
 #[test]
 fn every_cited_acceptance_test_exists_in_the_suite() -> ShellOracleResult<()> {
     for (entry_name, test_name) in ACCEPTANCE_TEXT_COMPARED_ENTRIES
         .iter()
         .chain(THIS_SUITE_TEXT_COMPARED_ENTRIES.iter())
     {
-        let definition = format!("fn {test_name}(");
         if !CITED_SUITES
             .iter()
-            .any(|(_, suite)| suite.contains(definition.as_str()))
+            .any(|(_, suite)| suite_registers_test(suite, test_name))
         {
             return Err(failure(format!(
-                "{entry_name} is booked as text-compared by {test_name}, which none of {} defines",
+                "{entry_name} is booked as text-compared by {test_name}, which none of {} registers as a test",
                 CITED_SUITES
                     .iter()
                     .map(|(path, _)| *path)
@@ -759,4 +755,35 @@ fn every_cited_acceptance_test_exists_in_the_suite() -> ShellOracleResult<()> {
         }
     }
     Ok(())
+}
+
+fn suite_registers_test(suite: &str, test_name: &str) -> bool {
+    let definition = format!("fn {test_name}(");
+    suite.split("#[test]").skip(1).any(|after_test| {
+        let mut declaration = after_test.trim_start();
+        while let Some(attribute) = declaration.strip_prefix("#[") {
+            let Some((_, remainder)) = attribute.split_once(']') else {
+                return false;
+            };
+            declaration = remainder.trim_start();
+        }
+        declaration.starts_with(&definition)
+    })
+}
+
+#[test]
+fn cited_test_detection_rejects_helpers_and_accepts_following_attributes() {
+    let hooks = include_str!("hooks.rs");
+    assert!(!suite_registers_test(
+        hooks,
+        "session_identity_recoveries_preserve_the_frozen_corpus_text",
+    ));
+    assert!(suite_registers_test(
+        hooks,
+        "coordination_identity_rejection_emits_its_recovery",
+    ));
+    assert!(suite_registers_test(
+        "#[test]\n#[ignore = \"fixture\"]\n#[cfg(\n    unix\n)]\nfn covered() {}",
+        "covered",
+    ));
 }

@@ -302,7 +302,7 @@ none.
 - macOS nextest and clippy green, or recorded unreachable.
 - Measurements row and ledger rows present.
 
-### Phase 3 — cargo-berth: fewer, smaller scenarios  · status: todo
+### Phase 3 — cargo-berth: fewer, smaller scenarios  · status: done
 
 #### Work Order
 

@@ -488,67 +488,61 @@ fn mapping_publication_failures_are_reported_by_claim_and_checkpoint() {
 }
 
 #[test]
-fn integrate_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
+fn integrate_rejects_every_invalid_coordination_identity() {
     let repository = initialized_repository();
     let worktrees = tempdir().expect("worktree parent should exist");
-    let integration_root = add_worktree(
-        repository.path(),
-        worktrees.path(),
-        "inactive-session-integration",
-    );
-    let session_id = "stale-integration-session";
+    let integration_root =
+        add_worktree(repository.path(), worktrees.path(), "identity-integration");
+    let session_id = "integration-session";
     let mapped_claim = run_berth_with_session(
-        &integration_root,
-        &[
-            "claim",
-            "file:mapped-session",
-            "--run",
-            FIRST_RUN,
-            "--why",
-            "establish integration session mapping",
-            "--json",
-        ],
+        repository.path(),
+        &["claim", "file:mapped-holder", "--run", FIRST_RUN, "--json"],
         session_id,
     );
     assert!(mapped_claim.status.success());
-    let mapped_reservation_id = reservation_id(&mapped_claim);
+    let mapped_id = reservation_id(&mapped_claim);
     let mapping_path = repository.path().join(SESSION_MAPPING_PATH);
     let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
-    assert!(
-        run_berth(
-            &integration_root,
-            &["release", &mapped_reservation_id, "--json"],
-        )
-        .status
-        .success()
-    );
     let integrating_claim = claim(
         &integration_root,
-        "file:integrating-session",
+        "file:integrating",
         SECOND_RUN,
-        "docs/integrating-session.md",
+        "docs/integrating.md",
         "integration",
     );
     assert!(integrating_claim.status.success());
-    let integrating_reservation_id = reservation_id(&integrating_claim);
+    let integrating_id = reservation_id(&integrating_claim);
     commit_work(
         &integration_root,
-        "integrating-session",
+        "integrating",
         "integration work\n",
         "integration work",
     );
-    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
 
     let rejected = run_berth_with_session(
         &integration_root,
-        &["integrate", &integrating_reservation_id, "--json"],
+        &["integrate", &integrating_id, "--json"],
+        session_id,
+    );
+    assert_eq!(rejected.status.code(), Some(5));
+    assert_integration_identity_rejection(
+        &json_output(&rejected),
+        "session_worktree_mismatch",
+        &["rerun_from_holding_worktree", "claim_separately_here"],
+    );
+
+    assert!(
+        run_berth(repository.path(), &["release", &mapped_id, "--json"])
+            .status
+            .success()
+    );
+    fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
+    let rejected = run_berth_with_session(
+        &integration_root,
+        &["integrate", &integrating_id, "--json"],
         session_id,
     );
     let rejected_json = json_output(&rejected);
-    let diagnostic = rejected_json["message"]
-        .as_str()
-        .expect("integration rejection should have a message");
-
     assert_eq!(rejected.status.code(), Some(5));
     assert_eq!(rejected_json["status"], "invalid_input");
     assert_integration_identity_rejection(
@@ -556,119 +550,35 @@ fn integrate_reports_an_inactive_session_mapping_without_a_marker_diagnostic() {
         "stale_session_mapping",
         &["clear_session_mapping"],
     );
+    let diagnostic = rejected_json["message"]
+        .as_str()
+        .expect("rejection should have a message");
     assert!(diagnostic.contains("Harness session mapping"));
     assert!(!diagnostic.contains("coordination-run marker"));
-}
 
-#[test]
-fn integrate_rejects_a_stale_marker_with_a_reconciliation_command() {
-    let repository = initialized_repository();
-    let marker_seed = claim(
-        repository.path(),
-        "file:marker-seed",
-        FIRST_RUN,
-        "docs/marker-seed.md",
-        "marker-seed",
-    );
-    assert!(marker_seed.status.success());
-    let marker_seed_id = reservation_id(&marker_seed);
-    assert!(
-        run_berth(repository.path(), &["release", &marker_seed_id, "--json"],)
-            .status
-            .success()
-    );
-    let integrating_claim = claim(
-        repository.path(),
-        "file:integrating-marker",
-        SECOND_RUN,
-        "docs/integrating-marker.md",
-        "integration",
-    );
-    assert!(integrating_claim.status.success());
-    let integrating_reservation_id = reservation_id(&integrating_claim);
-    commit_work(
-        repository.path(),
-        "integrating-marker",
-        "integration work\n",
-        "integration work",
-    );
+    let administrative_root = git_stdout(&integration_root, &["rev-parse", "--absolute-git-dir"]);
     fs::write(
-        repository.path().join(MARKER_PATH),
+        Path::new(&administrative_root).join("cargo-berth-run-id"),
         format!("{FIRST_RUN}\n"),
     )
     .expect("stale marker should write");
-
-    let rejected = run_berth(
-        repository.path(),
-        &["integrate", &integrating_reservation_id, "--json"],
-    );
-    let rejected_json = json_output(&rejected);
-
+    let rejected = run_berth(&integration_root, &["integrate", &integrating_id, "--json"]);
     assert_eq!(rejected.status.code(), Some(5));
     assert_integration_identity_rejection(
-        &rejected_json,
+        &json_output(&rejected),
         "stale_marker_run",
         &["reconcile_and_sweep_marker"],
     );
 }
 
 #[test]
-fn integrate_rejects_a_session_mapping_owned_by_another_worktree() {
-    let repository = initialized_repository();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let integration_root =
-        add_worktree(repository.path(), worktrees.path(), "mismatch-integration");
-    let session_id = "foreign-integration-session";
-    let mapped_claim = run_berth_with_session(
-        repository.path(),
-        &[
-            "claim",
-            "file:mapped-holder",
-            "--run",
-            FIRST_RUN,
-            "--why",
-            "hold the session reservation in main",
-            "--json",
-        ],
-        session_id,
-    );
-    assert!(mapped_claim.status.success());
-    let integrating_claim = claim(
-        &integration_root,
-        "file:integrating-mismatch",
-        SECOND_RUN,
-        "docs/integrating-mismatch.md",
-        "integration",
-    );
-    assert!(integrating_claim.status.success());
-    let integrating_reservation_id = reservation_id(&integrating_claim);
-    commit_work(
-        &integration_root,
-        "integrating-mismatch",
-        "integration work\n",
-        "integration work",
-    );
-
-    let rejected = run_berth_with_session(
-        &integration_root,
-        &["integrate", &integrating_reservation_id, "--json"],
-        session_id,
-    );
-    let rejected_json = json_output(&rejected);
-
-    assert_eq!(rejected.status.code(), Some(5));
-    assert_integration_identity_rejection(
-        &rejected_json,
-        "session_worktree_mismatch",
-        &["rerun_from_holding_worktree", "claim_separately_here"],
-    );
-}
-
-#[test]
 fn reference_transaction_gate_rejects_every_invalid_coordination_identity() {
-    assert_reference_transaction_rejects_stale_marker();
-    assert_reference_transaction_rejects_stale_session_mapping();
-    assert_reference_transaction_rejects_session_worktree_mismatch();
+    let repository = initialized_repository();
+    assert_reference_transaction_rejects_stale_marker(&repository);
+    fs::remove_file(repository.path().join(MARKER_PATH)).expect("stale marker should remove");
+    assert_reference_transaction_rejects_stale_session_mapping(&repository);
+    assert!(!repository.path().join(MARKER_PATH).exists());
+    assert_reference_transaction_rejects_session_worktree_mismatch(&repository);
 }
 
 #[test]
@@ -768,8 +678,7 @@ fn a_managed_hook_that_does_not_report_its_issuing_directory_requires_reinitiali
     assert!(!diagnostic.contains("but this command ran in"));
 }
 
-fn assert_reference_transaction_rejects_stale_marker() {
-    let marker_repository = initialized_repository();
+fn assert_reference_transaction_rejects_stale_marker(marker_repository: &TempDir) {
     let marker_previous = git_stdout(marker_repository.path(), &["rev-parse", "HEAD"]);
     let marker_proposed = commit_work(
         marker_repository.path(),
@@ -807,8 +716,7 @@ fn assert_reference_transaction_rejects_stale_marker() {
     assert!(!marker_diagnostic.contains("__reference-transaction"));
 }
 
-fn assert_reference_transaction_rejects_stale_session_mapping() {
-    let session_repository = initialized_repository();
+fn assert_reference_transaction_rejects_stale_session_mapping(session_repository: &TempDir) {
     let session_previous = git_stdout(session_repository.path(), &["rev-parse", "HEAD"]);
     let session_proposed = commit_work(
         session_repository.path(),
@@ -848,8 +756,7 @@ fn assert_reference_transaction_rejects_stale_session_mapping() {
     assert!(!session_diagnostic.contains("__reference-transaction"));
 }
 
-fn assert_reference_transaction_rejects_session_worktree_mismatch() {
-    let mismatch_repository = initialized_repository();
+fn assert_reference_transaction_rejects_session_worktree_mismatch(mismatch_repository: &TempDir) {
     let mismatch_previous = git_stdout(mismatch_repository.path(), &["rev-parse", "HEAD"]);
     let mismatch_proposed = commit_work(
         mismatch_repository.path(),
@@ -1085,18 +992,13 @@ fn retention_ref_writes_and_deletions_suppress_the_repository_root_hook() {
 #[test]
 fn retention_ref_transactions_have_constant_git_invocations_across_cardinalities() {
     let one_repair = trace_retention_ref_reconciliation(1, RetentionRefPass::RepairOnly);
-    let twenty_repairs = trace_retention_ref_reconciliation(20, RetentionRefPass::RepairOnly);
+    let three_repairs = trace_retention_ref_reconciliation(3, RetentionRefPass::RepairOnly);
     let one_deletion = trace_retention_ref_reconciliation(1, RetentionRefPass::DeletionOnly);
-    let twenty_deletions = trace_retention_ref_reconciliation(20, RetentionRefPass::DeletionOnly);
+    let three_deletions = trace_retention_ref_reconciliation(3, RetentionRefPass::DeletionOnly);
 
-    assert_same_git_invocation_sequence(&one_repair, &twenty_repairs);
-    assert_same_git_invocation_sequence(&one_deletion, &twenty_deletions);
-    for trace in [
-        &one_repair,
-        &twenty_repairs,
-        &one_deletion,
-        &twenty_deletions,
-    ] {
+    assert_same_git_invocation_sequence(&one_repair, &three_repairs);
+    assert_same_git_invocation_sequence(&one_deletion, &three_deletions);
+    for trace in [&one_repair, &three_repairs, &one_deletion, &three_deletions] {
         assert_one_suppressed_ref_transaction(trace);
     }
 }
@@ -1454,9 +1356,7 @@ fn stale_trunk_reference_invokes_for_a_prepared_local_update() {
 }
 
 #[test]
-fn filtered_three_commit_rebases_report_median_and_maximum_wall_time() {
-    const SAMPLE_COUNT: usize = 10;
-
+fn filtered_three_commit_rebases_succeed_with_live_and_bypassed_hooks() {
     let repository = initialized_repository();
     git(
         repository.path(),
@@ -1512,37 +1412,8 @@ fn filtered_three_commit_rebases_report_median_and_maximum_wall_time() {
         ],
     );
 
-    let mut no_hook_samples = Vec::with_capacity(SAMPLE_COUNT);
-    let mut filtered_bypass_samples = Vec::with_capacity(SAMPLE_COUNT);
-    let mut filtered_live_samples = Vec::with_capacity(SAMPLE_COUNT);
-    for _ in 0..SAMPLE_COUNT {
-        no_hook_samples.push(run_three_commit_rebase_sample(
-            repository.path(),
-            &source_tip,
-            RebaseHookMode::Disabled,
-        ));
-        filtered_bypass_samples.push(run_three_commit_rebase_sample(
-            repository.path(),
-            &source_tip,
-            RebaseHookMode::FilteredBypass,
-        ));
-        filtered_live_samples.push(run_three_commit_rebase_sample(
-            repository.path(),
-            &source_tip,
-            RebaseHookMode::FilteredLive,
-        ));
-    }
-
-    for (label, samples) in [
-        ("no-hook", no_hook_samples),
-        ("filtered-bypass", filtered_bypass_samples),
-        ("filtered-live", filtered_live_samples),
-    ] {
-        let summary = RebaseTimingSummary::from_samples(samples);
-        eprintln!(
-            "three-commit rebase {label}: median={:?}, maximum={:?}",
-            summary.median, summary.maximum
-        );
+    for hook_mode in [RebaseHookMode::FilteredBypass, RebaseHookMode::FilteredLive] {
+        run_three_commit_rebase_sample(repository.path(), &source_tip, hook_mode);
     }
 }
 
@@ -1661,20 +1532,6 @@ fn pending_markers_import_the_action_they_name_and_default_to_integration() {
 }
 
 #[test]
-fn bypassed_non_trunk_transactions_leave_no_audit_fact() {
-    let repository = initialized_repository();
-    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base} {base} ORIG_HEAD\n{base} {base} refs/heads/topic\n");
-
-    let bypassed = run_hook_script(repository.path(), "prepared", &input, ReleaseValve::Set);
-
-    assert!(bypassed.status.success());
-    assert_eq!(environment_bypass_record_count(repository.path()), 0);
-    assert_eq!(pending_bypass_count(repository.path()), 0);
-    assert!(bypassed.stderr.is_empty());
-}
-
-#[test]
 fn one_trunk_transaction_among_merge_hook_invocations_records_one_audit_fact() {
     let repository = initialized_repository();
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
@@ -1689,7 +1546,9 @@ fn one_trunk_transaction_among_merge_hook_invocations_records_one_audit_fact() {
 
     assert!(trunk.status.success());
     assert_eq!(environment_bypass_record_count(repository.path()), 1);
-    let non_trunk_input = format!("{base} {base} ORIG_HEAD\n{base} {base} AUTO_MERGE\n");
+    let non_trunk_input = format!(
+        "{base} {base} ORIG_HEAD\n{base} {base} AUTO_MERGE\n{base} {base} refs/heads/topic\n"
+    );
 
     let non_trunk = run_hook_script(
         repository.path(),
@@ -2022,9 +1881,9 @@ fn observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints() {
 }
 
 #[test]
-fn an_observed_violation_with_closed_stderr_still_permits_the_ref_update() {
-    let repository = initialized_repository();
-    let deferred_pair = deferred_pair(repository.path());
+fn deferred_gate_observes_closed_stderr_then_enforces_every_entering_reservation() {
+    let deferred_pair = deferred_pair(initialized_repository());
+    let repository = &deferred_pair.repository;
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let blocked_head = commit_work(
         &deferred_pair.blocked_root,
@@ -2032,35 +1891,87 @@ fn an_observed_violation_with_closed_stderr_still_permits_the_ref_update() {
         "pub fn blocked_work() {}\n",
         "blocked work",
     );
-    let executable = Path::new(env!("CARGO_BIN_EXE_cargo-berth"));
-    let command = format!(
-        "exec {} __reference-transaction prepared refs/heads/main 2>&-",
-        shell_single_quoted(executable),
-    );
-    let mut child = Command::new("sh")
-        .args(["-c", &command])
-        .current_dir(repository.path())
-        .env(
-            REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
-            repository.path(),
-        )
-        .env_remove(BYPASS_ENVIRONMENT)
-        .env_remove(RUN_ENVIRONMENT)
-        .env_remove(SESSION_ENVIRONMENT)
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("private gate should start with closed stderr");
-    child
-        .stdin
-        .take()
-        .expect("private gate stdin should be piped")
-        .write_all(format!("{base} {blocked_head} refs/heads/main\n").as_bytes())
-        .expect("reference transaction should write");
+    for case in [
+        DeferredGateCase::ObserveClosedStderr,
+        DeferredGateCase::EnforceEnteringReservations,
+    ] {
+        match case {
+            DeferredGateCase::ObserveClosedStderr => {
+                let executable = Path::new(env!("CARGO_BIN_EXE_cargo-berth"));
+                let command = format!(
+                    "exec {} __reference-transaction prepared refs/heads/main 2>&-",
+                    shell_single_quoted(executable),
+                );
+                let mut child = Command::new("sh")
+                    .args(["-c", &command])
+                    .current_dir(repository.path())
+                    .env(
+                        REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
+                        repository.path(),
+                    )
+                    .env_remove(BYPASS_ENVIRONMENT)
+                    .env_remove(RUN_ENVIRONMENT)
+                    .env_remove(SESSION_ENVIRONMENT)
+                    .stdin(Stdio::piped())
+                    .spawn()
+                    .expect("private gate should start with closed stderr");
+                child
+                    .stdin
+                    .take()
+                    .expect("private gate stdin should be piped")
+                    .write_all(format!("{base} {blocked_head} refs/heads/main\n").as_bytes())
+                    .expect("reference transaction should write");
 
-    let status = child.wait().expect("private gate should exit");
+                let status = child.wait().expect("private gate should exit");
 
-    assert!(status.success());
-    assert_eq!(status.code(), Some(0), "private gate must not abort");
+                assert!(status.success());
+                assert_eq!(status.code(), Some(0), "private gate must not abort");
+            },
+            DeferredGateCase::EnforceEnteringReservations => {
+                let clear_root = add_worktree(
+                    repository.path(),
+                    deferred_pair.worktrees.path(),
+                    "clear-request",
+                );
+                let clear = claim(
+                    &clear_root,
+                    "tree:tests",
+                    THIRD_RUN,
+                    "docs/clear.md",
+                    "clear",
+                );
+                let clear_id = reservation_id(&clear);
+                commit_work(
+                    &clear_root,
+                    "tests/clear.rs",
+                    "// clear reservation\n",
+                    "clear work",
+                );
+                git(
+                    &clear_root,
+                    &["merge", "--no-ff", "--no-edit", &blocked_head],
+                );
+                let previous = git_stdout(repository.path(), &["rev-parse", "main"]);
+                set_gate_mode(repository.path(), "enforce");
+                set_gate_mode(&clear_root, "enforce");
+
+                let integration = run_berth(&clear_root, &["integrate", &clear_id, "--json"]);
+                assert_eq!(integration.status.code(), Some(2));
+                let denial = String::from_utf8_lossy(&integration.stdout);
+                assert!(denial.contains(&deferred_pair.blocked_id));
+                assert!(denial.contains(&deferred_pair.holder_id));
+                assert_eq!(
+                    git_stdout(repository.path(), &["rev-parse", "main"]),
+                    previous
+                );
+            },
+        }
+    }
+}
+
+enum DeferredGateCase {
+    ObserveClosedStderr,
+    EnforceEnteringReservations,
 }
 
 #[test]
@@ -2096,57 +2007,9 @@ fn integrate_rejects_a_stale_worktree_non_fast_forward() {
 }
 
 #[test]
-fn integrate_enforces_holds_for_every_entering_reservation() {
-    let repository = initialized_repository();
-    let deferred_pair = deferred_pair(repository.path());
-    let blocked_head = commit_work(
-        &deferred_pair.blocked_root,
-        "src/lib.rs",
-        "pub fn blocked_work() {}\n",
-        "blocked work",
-    );
-    let clear_root = add_worktree(
-        repository.path(),
-        deferred_pair.worktrees.path(),
-        "clear-request",
-    );
-    let clear = claim(
-        &clear_root,
-        "tree:tests",
-        THIRD_RUN,
-        "docs/clear.md",
-        "clear",
-    );
-    let clear_id = reservation_id(&clear);
-    commit_work(
-        &clear_root,
-        "tests/clear.rs",
-        "// clear reservation\n",
-        "clear work",
-    );
-    git(
-        &clear_root,
-        &["merge", "--no-ff", "--no-edit", &blocked_head],
-    );
-    let previous = git_stdout(repository.path(), &["rev-parse", "main"]);
-    set_gate_mode(repository.path(), "enforce");
-    set_gate_mode(&clear_root, "enforce");
-
-    let integration = run_berth(&clear_root, &["integrate", &clear_id, "--json"]);
-    assert_eq!(integration.status.code(), Some(2));
-    let denial = String::from_utf8_lossy(&integration.stdout);
-    assert!(denial.contains(&deferred_pair.blocked_id));
-    assert!(denial.contains(&deferred_pair.holder_id));
-    assert_eq!(
-        git_stdout(repository.path(), &["rev-parse", "main"]),
-        previous
-    );
-}
-
-#[test]
 fn unavailable_worktree_heads_surface_as_enforced_violations() {
-    let repository = initialized_repository();
-    let deferred_pair = deferred_pair(repository.path());
+    let deferred_pair = deferred_pair(initialized_repository());
+    let repository = &deferred_pair.repository;
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let blocked_head = commit_work(
         &deferred_pair.blocked_root,
@@ -2180,8 +2043,8 @@ fn unavailable_worktree_heads_surface_as_enforced_violations() {
 fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
     const ABORT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_ABORT_REFERENCE_TRANSACTION";
 
-    let repository = initialized_repository();
-    let deferred_pair = deferred_pair(repository.path());
+    let deferred_pair = deferred_pair(initialized_repository());
+    let repository = &deferred_pair.repository;
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let blocked_head = commit_work(
         &deferred_pair.blocked_root,
@@ -2504,18 +2367,18 @@ fn hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock() {
 }
 
 #[test]
-fn post_tool_use_git_subprocess_count_is_cardinality_invariant() {
+fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
     // This invokes berth's installed git post-commit hook. The external Claude
     // PostToolUse shim is outside this repository and is not exercised here.
     let one_reservation = post_commit_reservation_cardinality_trace(1);
-    let twenty_reservations = post_commit_reservation_cardinality_trace(20);
+    let three_reservations = post_commit_reservation_cardinality_trace(3);
 
-    assert_same_git_process_multiset(&one_reservation, &twenty_reservations);
+    assert_same_git_process_multiset(&one_reservation, &three_reservations);
     assert_eq!(
         one_reservation.len(),
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
     );
-    assert!(twenty_reservations.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
+    assert!(three_reservations.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
     assert_eq!(
         one_reservation
             .iter()
@@ -2524,28 +2387,29 @@ fn post_tool_use_git_subprocess_count_is_cardinality_invariant() {
         1
     );
     assert_eq!(
-        twenty_reservations
+        three_reservations
             .iter()
             .filter(|invocation| raw_git_command(invocation) == Some("log"))
             .count(),
         1
     );
-}
 
-#[test]
-fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
     let attributed_baseline = post_commit_path_commit_cardinality_trace(1, 1);
     assert_eq!(
         attributed_baseline.len(),
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
     );
     assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
-    for path_count in [1, 4, 33] {
-        for commit_count in [1, 14, 100] {
+    for path_count in [0, 1, 2] {
+        for commit_count in [0, 1, 2] {
             let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
             assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
-            assert_same_git_process_multiset(&attributed_baseline, &observed);
-            assert_eq!(git_command_count(&observed, "log"), 1);
+            if path_count > 0 && commit_count > 0 {
+                assert_same_git_process_multiset(&attributed_baseline, &observed);
+                assert_eq!(git_command_count(&observed, "log"), 1);
+            } else {
+                assert_eq!(git_command_count(&observed, "log"), 0);
+            }
         }
     }
 
@@ -2811,27 +2675,12 @@ struct ManagedHookSpy {
 
 #[derive(Clone, Copy)]
 enum RebaseHookMode {
-    Disabled,
     FilteredBypass,
     FilteredLive,
 }
 
-struct RebaseTimingSummary {
-    median:  Duration,
-    maximum: Duration,
-}
-
-impl RebaseTimingSummary {
-    fn from_samples(mut samples: Vec<Duration>) -> Self {
-        samples.sort_unstable();
-        Self {
-            median:  samples[samples.len() / 2],
-            maximum: samples[samples.len() - 1],
-        }
-    }
-}
-
 struct DeferredPair {
+    repository:   TempDir,
     worktrees:    TempDir,
     blocked_root: PathBuf,
     blocked_id:   String,
@@ -2967,7 +2816,8 @@ fn assert_target_compared_each_reservation(
     );
 }
 
-fn deferred_pair(repository_root: &Path) -> DeferredPair {
+fn deferred_pair(repository: TempDir) -> DeferredPair {
+    let repository_root = repository.path();
     let worktrees = tempdir().expect("worktree parent should exist");
     let holder_root = add_worktree(repository_root, worktrees.path(), "pair-holder");
     let blocked_root = add_worktree(repository_root, worktrees.path(), "pair-blocked");
@@ -2989,6 +2839,7 @@ fn deferred_pair(repository_root: &Path) -> DeferredPair {
         &holder_id,
     );
     DeferredPair {
+        repository,
         worktrees,
         blocked_root,
         blocked_id: reservation_id(&blocked),
@@ -4087,8 +3938,8 @@ fn committed_feature_rebase_hook_phases() -> Vec<String> {
 }
 
 fn committed_forced_trunk_integration_hook_phases() -> Vec<String> {
-    let repository = initialized_repository();
-    let deferred_pair = deferred_pair(repository.path());
+    let deferred_pair = deferred_pair(initialized_repository());
+    let repository = &deferred_pair.repository;
     commit_work(
         &deferred_pair.blocked_root,
         "src/lib.rs",
@@ -4421,7 +4272,7 @@ fn run_three_commit_rebase_sample(
     repository_root: &Path,
     source_tip: &str,
     hook_mode: RebaseHookMode,
-) -> Duration {
+) {
     git(
         repository_root,
         &[
@@ -4443,12 +4294,8 @@ fn run_three_commit_rebase_sample(
             "rebase-trial",
         ],
     );
-    let started_at = Instant::now();
     let mut command = git_command(BERTH_EXECUTABLE);
     command.arg("--no-optional-locks");
-    if matches!(hook_mode, RebaseHookMode::Disabled) {
-        command.args(["-c", "core.hooksPath=/dev/null"]);
-    }
     command
         .args(["rebase", "main"])
         .current_dir(repository_root)
@@ -4456,11 +4303,10 @@ fn run_three_commit_rebase_sample(
     if matches!(hook_mode, RebaseHookMode::FilteredBypass) {
         command.env(BYPASS_ENVIRONMENT, "1");
     }
-    let rebased = command.output().expect("timed rebase should run");
-    let elapsed = started_at.elapsed();
+    let rebased = command.output().expect("three-commit rebase should run");
     assert!(
         rebased.status.success(),
-        "timed rebase failed: {}",
+        "three-commit rebase failed: {}",
         String::from_utf8_lossy(&rebased.stderr)
     );
     git(
@@ -4473,7 +4319,6 @@ fn run_three_commit_rebase_sample(
             "main",
         ],
     );
-    elapsed
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {

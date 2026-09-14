@@ -991,6 +991,180 @@ mod tests {
     use crate::ledger::CanonicalWorktreeRoot;
     use crate::ledger::EditAuthorization;
 
+    #[test]
+    fn identity_rejection_kinds_and_precedence_follow_the_resolved_authorization() {
+        let directory = tempfile::tempdir().expect("identity context directory should exist");
+        std::fs::create_dir(directory.path().join(".git")).expect("git metadata should exist");
+        let worktree_context = crate::ledger::WorktreeContext::discover(directory.path())
+            .expect("filesystem-only context should resolve");
+        let holding_worktree = WorktreeId::new();
+        let foreign_worktree = WorktreeId::new();
+        let run = CoordinationRunId::new();
+        let other_run = CoordinationRunId::new();
+        let reservation_id = ReservationId::new();
+        let (active, inactive) =
+            identity_validation_reservations(&directory, holding_worktree, run, reservation_id);
+        let session =
+            |coordination_run_id, reservation_id, worktree_id| EditAuthorization::Session {
+                coordination_run_id,
+                reservation_id,
+                worktree_id,
+            };
+        let marker = |coordination_run_id, worktree_id| EditAuthorization::Marker {
+            coordination_run_id,
+            worktree_id,
+        };
+        let command = RecoveryCommandLine::try_from(vec![
+            OsString::from("cargo-berth"),
+            OsString::from("drift"),
+        ])
+        .expect("recovery command should construct");
+        for (reservations, authorization, expected) in [
+            (
+                &active,
+                session(run, ReservationId::new(), holding_worktree),
+                "stale_session_mapping",
+            ),
+            (
+                &inactive,
+                session(run, reservation_id, holding_worktree),
+                "stale_session_mapping",
+            ),
+            (
+                &inactive,
+                session(run, reservation_id, foreign_worktree),
+                "stale_session_mapping",
+            ),
+            (
+                &active,
+                session(other_run, reservation_id, foreign_worktree),
+                "stale_session_mapping",
+            ),
+            (
+                &active,
+                session(run, reservation_id, foreign_worktree),
+                "session_worktree_mismatch",
+            ),
+            (
+                &active,
+                session(run, reservation_id, holding_worktree),
+                "accepted",
+            ),
+            (
+                &active,
+                marker(other_run, holding_worktree),
+                "stale_marker_run",
+            ),
+            (&inactive, marker(run, holding_worktree), "stale_marker_run"),
+            (&active, marker(run, foreign_worktree), "stale_marker_run"),
+            (&active, marker(run, holding_worktree), "accepted"),
+            (
+                &inactive,
+                EditAuthorization::Environment {
+                    coordination_run_id: other_run,
+                    worktree_id:         holding_worktree,
+                },
+                "accepted",
+            ),
+            (&inactive, EditAuthorization::Unidentified, "accepted"),
+        ] {
+            assert_identity_validation(
+                reservations,
+                authorization,
+                expected,
+                &worktree_context,
+                &command,
+            );
+        }
+    }
+
+    fn assert_identity_validation(
+        reservations: &crate::reservation::RetainedReservationSet,
+        authorization: EditAuthorization,
+        expected: &str,
+        worktree_context: &crate::ledger::WorktreeContext,
+        command: &RecoveryCommandLine,
+    ) {
+        let worktree_id = match authorization {
+            EditAuthorization::Session { worktree_id, .. }
+            | EditAuthorization::Marker { worktree_id, .. }
+            | EditAuthorization::Environment { worktree_id, .. } => worktree_id,
+            EditAuthorization::Unidentified => WorktreeId::new(),
+        };
+        let resolved = crate::ledger::ResolvedEditAuthorization::for_edit_authorization(
+            worktree_id,
+            authorization,
+        );
+        let context = super::CoordinationIdentityValidationContext::for_user_command(
+            resolved,
+            worktree_context,
+            command,
+        );
+        let result = super::validate_coordination_identity(reservations, &context);
+        let kind = match result {
+            Ok(()) => "accepted".to_owned(),
+            Err(super::CoordinationIdentityValidationError::Rejected(rejection)) => {
+                serde_json::to_value(rejection).expect("rejection should serialize")["kind"]
+                    .as_str()
+                    .expect("rejection should name its kind")
+                    .to_owned()
+            },
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(kind, expected, "{authorization:?}");
+    }
+
+    fn identity_validation_reservations(
+        directory: &tempfile::TempDir,
+        holding_worktree: WorktreeId,
+        run: CoordinationRunId,
+        reservation_id: ReservationId,
+    ) -> (
+        crate::reservation::RetainedReservationSet,
+        crate::reservation::RetainedReservationSet,
+    ) {
+        let claim: crate::ledger::JournalEvent = serde_json::from_value(serde_json::json!({
+            "schema_version": 2,
+            "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
+            "actor": {
+                "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
+                "worktree": holding_worktree,
+                "run": run
+            },
+            "at": "2026-08-23T17:34:54.123Z",
+            "projection_generation": 1,
+            "op": "claim",
+            "reservation_id": reservation_id,
+            "scopes": [{"path": "src", "kind": "tree"}],
+            "source": {"kind": "explicit"},
+            "purpose": {"kind": "not_provided_by_caller"},
+            "trunk_at_claim": "1111111111111111111111111111111111111111",
+            "head_snapshot": {
+                "kind": "branch", "full_ref": "refs/heads/phase",
+                "head": "2222222222222222222222222222222222222222"
+            },
+            "phase_start_head": "1111111111111111111111111111111111111111",
+            "worktree_root": directory.path().canonicalize().expect("root should canonicalize"),
+            "worktree_administrative_locator": ".",
+            "authorization": {"kind": "no_conflict"},
+            "coordination_identity_provenance": "presented"
+        }))
+        .expect("claim should decode");
+        let active =
+            crate::reservation::RetainedReservationSet::replay(std::slice::from_ref(&claim))
+                .expect("active claim should replay");
+        let mut checkpoint = serde_json::to_value(&claim).expect("claim should serialize");
+        checkpoint["op"] = serde_json::json!("checkpoint");
+        checkpoint["projection_generation"] = serde_json::json!(2);
+        checkpoint["protected_tip"] = serde_json::json!("2222222222222222222222222222222222222222");
+        checkpoint["trunk_snapshot"] =
+            serde_json::json!("1111111111111111111111111111111111111111");
+        let checkpoint = serde_json::from_value(checkpoint).expect("checkpoint should decode");
+        let inactive = crate::reservation::RetainedReservationSet::replay(&[claim, checkpoint])
+            .expect("checkpointed claim should replay");
+        (active, inactive)
+    }
+
     /// Only `CARGO_BERTH_RUN` presents a run to the occupancy rule's acting side.
     ///
     /// The other three authorization sources are not merely uninteresting here --- each is a

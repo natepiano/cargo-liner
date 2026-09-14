@@ -342,18 +342,6 @@ fn release_resolve_and_renew_presentations_are_engine_considered() -> TestResult
 }
 
 #[test]
-fn nothing_to_show_wire_object_has_exact_binary_bytes() -> TestResult {
-    let repository = initialized_repository()?;
-    let renewable = claim(repository.path(), "file:renewable.rs", FIRST_RUN)?;
-    let renewable_envelope = json_output(&renewable)?;
-    let renewable_id = required_string(&renewable_envelope, "/payload/data/reservation_id")?;
-    let renewed = run_berth(repository.path(), &["renew", renewable_id, "--json"])?;
-    require_success(&renewed, "renew for NothingToShow wire bytes")?;
-
-    assert_nothing_to_show_wire_bytes(&renewed)
-}
-
-#[test]
 fn empty_board_report_uses_nothing_to_show_wire_state() -> TestResult {
     let repository = initialized_repository()?;
     let board = run_berth(repository.path(), &["board", "--json"])?;

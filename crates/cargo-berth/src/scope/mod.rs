@@ -299,6 +299,22 @@ mod tests {
     }
 
     #[test]
+    fn file_and_tree_scopes_differ_for_descendants() {
+        let descendant = reservation_scope("generated/child.rs", ScopeKind::File);
+        for (kind, expected_overlap) in [(ScopeKind::File, false), (ScopeKind::Tree, true)] {
+            let parent = reservation_scope("generated", kind);
+            assert_eq!(
+                parent.overlaps(&descendant, PathCase::Sensitive),
+                expected_overlap
+            );
+            assert_eq!(
+                descendant.overlaps(&parent, PathCase::Sensitive),
+                expected_overlap
+            );
+        }
+    }
+
+    #[test]
     fn case_insensitive_comparison_blocks_component_case_variants() {
         let left = reservation_scope("Crates/Hana", ScopeKind::Tree);
         let right = reservation_scope("crates/hana/src/lib.rs", ScopeKind::File);

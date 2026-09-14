@@ -71,6 +71,8 @@ const POST_TOOL_USE_SILENT_CLEAR_ENTRY: &str =
     "test_a_named_widening_with_nothing_to_report_still_says_nothing";
 const POST_TOOL_USE_SILENT_INCURSION_FREE_ENTRY: &str =
     "test_incursion_board_read_cost_is_constant#3";
+const POST_TOOL_USE_STALE_MARKER_ENTRY: &str =
+    "test_hooks_render_coordination_identity_recovery_actions_without_message#4";
 const POST_TOOL_USE_STALE_SESSION_ENTRY: &str =
     "test_hooks_render_coordination_identity_recovery_actions_without_message#2";
 const POST_TOOL_USE_WIDENED_ENTRY: &str = "test_incursion_board_read_cost_is_constant#4";
@@ -405,171 +407,142 @@ fn a_payload_without_session_identity_ignores_the_ambient_variable() -> TestResu
     Ok(())
 }
 
-#[test]
-fn an_edit_through_a_symlinked_directory_is_still_checked() -> TestResult {
-    let repository = initialized_repository()?;
-    fs::create_dir(repository.path().join("real"))?;
-    let holder = run_berth(
-        repository.path(),
-        &["claim", "file:real/held.rs", "--run", FIRST_RUN, "--json"],
-    )?;
-    require_success(&holder, "symlinked directory holder")?;
-    dirty_source(repository.path(), "real/held.rs")?;
-    let (_requester_directory, requester_root) = add_worktree(&repository, "symlink-requester")?;
-    fs::create_dir(requester_root.join("real"))?;
-    std::os::unix::fs::symlink("real", requester_root.join("alias"))?;
-
-    let output = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(&requester_root, "alias/held.rs", Some("symlink-session")),
-    )?;
-
-    assert_refused_for_scope(&output, "file:real/held.rs", "a symlinked directory edit")
+enum NormalizedEdit {
+    Held(&'static str),
+    Outside,
+    Unresolvable,
 }
 
-#[test]
-fn an_edit_through_a_symlink_leaving_the_worktree_keeps_its_worktree_name() -> TestResult {
-    let repository = initialized_repository()?;
-    let holder = run_berth(
-        repository.path(),
-        &["claim", "file:linked/held.rs", "--run", FIRST_RUN, "--json"],
-    )?;
-    require_success(&holder, "escaping symlink holder")?;
-    dirty_source(repository.path(), "linked/held.rs")?;
-    let (_requester_directory, requester_root) = add_worktree(&repository, "escape-requester")?;
-    let escape_directory = TempDir::new_in(SCRATCH_ROOT)?;
-    std::os::unix::fs::symlink(escape_directory.path(), requester_root.join("linked"))?;
-
-    let output = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(&requester_root, "linked/held.rs", Some("escape-session")),
-    )?;
-
-    assert_refused_for_scope(
-        &output,
-        "file:linked/held.rs",
-        "an edit through a symlink leaving the worktree",
-    )
-}
-
-#[test]
-fn a_parent_component_resolves_against_the_filesystem_not_the_path_string() -> TestResult {
-    let repository = initialized_repository()?;
-    let holder = run_berth(
-        repository.path(),
-        &["claim", "file:held.rs", "--run", FIRST_RUN, "--json"],
-    )?;
-    require_success(&holder, "parent component holder")?;
-    dirty_source(repository.path(), "held.rs")?;
-    let (_requester_directory, requester_root) = add_worktree(&repository, "parent-requester")?;
-    fs::create_dir(requester_root.join("real"))?;
-    let escape_directory = TempDir::new_in(SCRATCH_ROOT)?;
-    let escaped_child = escape_directory.path().join("nested");
-    fs::create_dir(&escaped_child)?;
-    std::os::unix::fs::symlink(&escaped_child, requester_root.join("alias"))?;
-
-    let behind_a_real_directory = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(
-            &requester_root,
-            "real/../held.rs",
-            Some("real-parent-session"),
-        ),
-    )?;
-    assert_refused_for_scope(
-        &behind_a_real_directory,
-        "file:held.rs",
-        "a parent component behind a real directory",
-    )?;
-    assert_no_parent_component_was_claimed(&behind_a_real_directory)?;
-
-    let behind_an_escaping_symlink = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(
-            &requester_root,
-            "alias/../held.rs",
-            Some("escaping-parent-session"),
-        ),
-    )?;
-    assert_no_parent_component_was_claimed(&behind_an_escaping_symlink)?;
-    assert_no_scope_was_claimed(
-        &behind_an_escaping_symlink,
-        "file:held.rs",
-        "a parent component behind a symlink leaving the worktree",
-    )?;
-    assert_hook_output(&behind_an_escaping_symlink, 0, b"", b"")?;
-
-    let behind_an_absent_directory = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(
-            &requester_root,
-            "absent/../held.rs",
-            Some("absent-parent-session"),
-        ),
-    )?;
-    assert_refusal_states(
-        &behind_an_absent_directory,
-        "no existing ancestor of the edit target could be resolved",
-        "a parent component behind a directory that does not exist",
-    )?;
-    assert_no_parent_component_was_claimed(&behind_an_absent_directory)
-}
+const NORMALIZED_EDITS: [(&str, &str, &str, NormalizedEdit); 10] = [
+    (
+        "",
+        "real-alias/held.rs",
+        "symlink-session",
+        NormalizedEdit::Held("file:real/held.rs"),
+    ),
+    (
+        "",
+        "linked/held.rs",
+        "escape-session",
+        NormalizedEdit::Held("file:linked/held.rs"),
+    ),
+    (
+        "",
+        "real/../held.rs",
+        "real-parent-session",
+        NormalizedEdit::Held("file:held.rs"),
+    ),
+    (
+        "",
+        "alias/../held.rs",
+        "escaping-parent-session",
+        NormalizedEdit::Outside,
+    ),
+    (
+        "",
+        "absent/../held.rs",
+        "absent-parent-session",
+        NormalizedEdit::Unresolvable,
+    ),
+    (
+        "sub",
+        "held.rs",
+        "nested-plain-session",
+        NormalizedEdit::Held("file:sub/held.rs"),
+    ),
+    (
+        "sub",
+        "alias/held.rs",
+        "nested-symlink-session",
+        NormalizedEdit::Held("file:sub/alias/held.rs"),
+    ),
+    (
+        "sub",
+        "alias/../held.rs",
+        "nested-parent-session",
+        NormalizedEdit::Outside,
+    ),
+    (
+        "",
+        "src/./../src/held.rs",
+        "traversed-session",
+        NormalizedEdit::Held("file:src/held.rs"),
+    ),
+    (
+        "",
+        "absent/deep/held.rs",
+        "partly-existing-session",
+        NormalizedEdit::Held("file:absent/deep/held.rs"),
+    ),
+];
 
 #[test]
-fn an_edit_named_from_a_nested_working_directory_keeps_its_repository_relative_name() -> TestResult
-{
+fn path_normalization_preserves_scope_and_filesystem_parent_semantics() -> TestResult {
     let repository = initialized_repository()?;
-    for scope in ["file:sub/held.rs", "file:sub/alias/held.rs"] {
+    for path in [
+        "real/held.rs",
+        "linked/held.rs",
+        "held.rs",
+        "sub/held.rs",
+        "sub/alias/held.rs",
+        "src/held.rs",
+        "absent/deep/held.rs",
+    ] {
         let holder = run_berth(
             repository.path(),
-            &["claim", scope, "--run", FIRST_RUN, "--json"],
+            &[
+                "claim",
+                &format!("file:{path}"),
+                "--run",
+                FIRST_RUN,
+                "--json",
+            ],
         )?;
-        require_success(&holder, "nested working directory holder")?;
+        require_success(&holder, "path normalization holder")?;
+        dirty_source(repository.path(), path)?;
     }
-    dirty_source(repository.path(), "sub/held.rs")?;
-    dirty_source(repository.path(), "sub/alias/held.rs")?;
-    let (_requester_directory, requester_root) = add_worktree(&repository, "nested-requester")?;
-    let nested_directory = requester_root.join("sub");
-    fs::create_dir(&nested_directory)?;
-    let escape_directory = TempDir::new_in(SCRATCH_ROOT)?;
-    let escaped_child = escape_directory.path().join("nested");
+    let (_requester_directory, requester_root) =
+        add_worktree(&repository, "normalization-requester")?;
+    for directory in ["real", "sub", "src"] {
+        fs::create_dir(requester_root.join(directory))?;
+    }
+    let outside = TempDir::new_in(SCRATCH_ROOT)?;
+    let escaped_child = outside.path().join("nested");
     fs::create_dir(&escaped_child)?;
-    std::os::unix::fs::symlink(&escaped_child, nested_directory.join("alias"))?;
+    std::os::unix::fs::symlink("real", requester_root.join("real-alias"))?;
+    std::os::unix::fs::symlink(outside.path(), requester_root.join("linked"))?;
+    std::os::unix::fs::symlink(&escaped_child, requester_root.join("alias"))?;
+    std::os::unix::fs::symlink(&escaped_child, requester_root.join("sub/alias"))?;
 
-    let plain = run_pre_tool_use(
-        &nested_directory,
-        &edit_payload(&nested_directory, "held.rs", Some("nested-plain-session")),
+    for (directory, path, session, outcome) in NORMALIZED_EDITS {
+        let working_directory = requester_root.join(directory);
+        let output = run_pre_tool_use(
+            &working_directory,
+            &edit_payload(&working_directory, path, Some(session)),
+        )?;
+        assert_no_parent_component_was_claimed(&output)?;
+        match outcome {
+            NormalizedEdit::Held(scope) => assert_refused_for_scope(&output, scope, session)?,
+            NormalizedEdit::Outside => {
+                assert_no_scope_was_claimed(&output, "file:held.rs", session)?;
+                assert_hook_output(&output, 0, b"", b"")?;
+            },
+            NormalizedEdit::Unresolvable => assert_refusal_states(
+                &output,
+                "no existing ancestor of the edit target could be resolved",
+                session,
+            )?,
+        }
+    }
+    let outside_edit = run_pre_tool_use(
+        &requester_root,
+        &serde_json::json!({
+            "tool_name": "Edit", "cwd": requester_root,
+            "tool_input": {"file_path": outside.path().join("outside.rs")},
+            "session_id": "outside-session",
+        }),
     )?;
-    assert_refused_for_scope(
-        &plain,
-        "file:sub/held.rs",
-        "an edit named from a nested directory",
-    )?;
-
-    let through_escaping_symlink = run_pre_tool_use(
-        &nested_directory,
-        &edit_payload(
-            &nested_directory,
-            "alias/held.rs",
-            Some("nested-symlink-session"),
-        ),
-    )?;
-    assert_refused_for_scope(
-        &through_escaping_symlink,
-        "file:sub/alias/held.rs",
-        "a nested edit through a symlink leaving the worktree",
-    )?;
-
-    let behind_an_escaping_parent = run_pre_tool_use(
-        &nested_directory,
-        &edit_payload(
-            &nested_directory,
-            "alias/../held.rs",
-            Some("nested-parent-session"),
-        ),
-    )?;
-    assert_no_parent_component_was_claimed(&behind_an_escaping_parent)?;
-    assert_hook_output(&behind_an_escaping_parent, 0, b"", b"")
+    assert_hook_output(&outside_edit, 0, b"", b"")
 }
 
 #[test]
@@ -590,60 +563,6 @@ fn a_relative_edit_target_is_refused_for_not_being_absolute() -> TestResult {
         "the edit target must be an absolute path",
         "a relative edit target",
     )
-}
-
-#[test]
-fn path_normalization_answers_the_same_after_its_move() -> TestResult {
-    let repository = initialized_repository()?;
-    fs::create_dir(repository.path().join("src"))?;
-    for scope in ["file:src/held.rs", "file:absent/deep/held.rs"] {
-        let holder = run_berth(
-            repository.path(),
-            &["claim", scope, "--run", FIRST_RUN, "--json"],
-        )?;
-        require_success(&holder, "path normalization holder")?;
-    }
-    dirty_source(repository.path(), "src/held.rs")?;
-    dirty_source(repository.path(), "absent/deep/held.rs")?;
-    let (_requester_directory, requester_root) =
-        add_worktree(&repository, "normalization-requester")?;
-    fs::create_dir(requester_root.join("src"))?;
-
-    let traversed = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(
-            &requester_root,
-            "src/./../src/held.rs",
-            Some("traversed-session"),
-        ),
-    )?;
-    assert_refused_for_scope(&traversed, "file:src/held.rs", "a traversed edit path")?;
-
-    let partly_existing = run_pre_tool_use(
-        &requester_root,
-        &edit_payload(
-            &requester_root,
-            "absent/deep/held.rs",
-            Some("partly-existing-session"),
-        ),
-    )?;
-    assert_refused_for_scope(
-        &partly_existing,
-        "file:absent/deep/held.rs",
-        "an edit under directories that do not exist yet",
-    )?;
-
-    let outside = TempDir::new_in(SCRATCH_ROOT)?;
-    let outside_edit = run_pre_tool_use(
-        &requester_root,
-        &serde_json::json!({
-            "tool_name": "Edit",
-            "cwd": requester_root,
-            "tool_input": {"file_path": outside.path().join("outside.rs")},
-            "session_id": "outside-session",
-        }),
-    )?;
-    assert_hook_output(&outside_edit, 0, b"", b"")
 }
 
 #[test]
@@ -677,8 +596,47 @@ fn replay_failure_emits_a_fail_open_object() -> TestResult {
 #[test]
 fn coordination_identity_rejection_emits_its_recovery() -> TestResult {
     let repository = initialized_repository()?;
+    stale_marker_recovery_preserves_the_frozen_corpus_text(&repository)?;
+    session_identity_recoveries_preserve_the_frozen_corpus_text(&repository)
+}
+
+fn stale_marker_recovery_preserves_the_frozen_corpus_text(repository: &TempDir) -> TestResult {
+    let marker_seed = run_berth(
+        repository.path(),
+        &["claim", "file:marker-seed.rs", "--run", FIRST_RUN, "--json"],
+    )?;
+    require_success(&marker_seed, "marker seed claim")?;
+    let marker_seed_envelope = json_output(&marker_seed)?;
+    let marker_seed_id = required_string(
+        &marker_seed_envelope,
+        "/payload/data/reservation_id",
+        "marker seed claim",
+    )?;
+    let payload = corpus_edit_payload(
+        STALE_MARKER_RECOVERY_ENTRY,
+        repository.path(),
+        "marker-race.rs",
+        None,
+    )?;
+    let mut paused =
+        PausedHookCall::spawn(repository.path(), &payload, "pre-tool-use", "rev-parse")?;
+    paused.wait_until_paused()?;
+    let released = run_berth(repository.path(), &["release", marker_seed_id, "--json"])?;
+    require_success(&released, "marker seed release")?;
+    let output = paused.continue_and_wait()?;
+
+    let repository_root = fs::canonicalize(repository.path())?;
+    assert_pre_edit_corpus_recovery(
+        &output,
+        STALE_MARKER_RECOVERY_ENTRY,
+        &[(REPOSITORY_FIXTURE_ROOT, &repository_root)],
+    )?;
+    Ok(())
+}
+
+fn session_identity_recoveries_preserve_the_frozen_corpus_text(repository: &TempDir) -> TestResult {
     let session_id = "stale-hook-session";
-    create_stale_session_mapping(&repository, session_id)?;
+    create_stale_session_mapping(repository, session_id)?;
     let output = run_pre_tool_use(
         repository.path(),
         &edit_payload(repository.path(), "new.rs", Some(session_id)),
@@ -686,7 +644,7 @@ fn coordination_identity_rejection_emits_its_recovery() -> TestResult {
 
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    let refusal = String::from_utf8(output.stderr)?;
+    let refusal = String::from_utf8(output.stderr.clone())?;
     assert!(refusal.contains(STALE_SESSION_REJECTION_KIND));
     assert!(refusal.contains("identity"));
     assert!(refusal.contains("clear-session"));
@@ -698,7 +656,51 @@ fn coordination_identity_rejection_emits_its_recovery() -> TestResult {
         !refusal.contains("drift"),
         "a refused edit should not reach the user as a drift rejection: {refusal}"
     );
-    Ok(())
+    let repository_root = fs::canonicalize(repository.path())?;
+    assert_pre_edit_corpus_recovery(
+        &output,
+        STALE_SESSION_RECOVERY_ENTRY,
+        &[(REPOSITORY_FIXTURE_ROOT, &repository_root)],
+    )?;
+    let cleared = run_berth_with_session(
+        repository.path(),
+        &["identity", "clear-session", "--json"],
+        session_id,
+    )?;
+    require_success(&cleared, "clear stale session before marker case")?;
+    let session_id = "covered-mismatch-session";
+    let holder = run_berth_with_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:source file.rs",
+            "--run",
+            SECOND_RUN,
+            "--json",
+        ],
+        session_id,
+    )?;
+    require_success(&holder, "session mismatch holder")?;
+    let (_issuing_directory, issuing_root) = add_worktree(repository, "issuing")?;
+    let output = run_pre_tool_use(
+        &issuing_root,
+        &corpus_edit_payload(
+            TWO_ACTION_RECOVERY_ENTRY,
+            &issuing_root,
+            "source file.rs",
+            Some(session_id),
+        )?,
+    )?;
+    let holding_root = fs::canonicalize(repository.path())?;
+    let issuing_root = fs::canonicalize(&issuing_root)?;
+    assert_pre_edit_corpus_recovery(
+        &output,
+        TWO_ACTION_RECOVERY_ENTRY,
+        &[
+            (HOLDING_WORKTREE_FIXTURE_ROOT, &holding_root),
+            (REPOSITORY_FIXTURE_ROOT, &issuing_root),
+        ],
+    )
 }
 
 /// A worktree added after `init` carries no configuration file, and used to answer exit 0
@@ -851,81 +853,20 @@ fn ambiguity_and_replay_preserve_the_frozen_corpus_text() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn session_identity_recoveries_preserve_the_frozen_corpus_text() -> TestResult {
-    let stale_repository = initialized_repository()?;
-    let stale_session = "corpus-stale-session";
-    create_stale_session_mapping(&stale_repository, stale_session)?;
-    let stale = run_pre_tool_use(
-        stale_repository.path(),
-        &corpus_edit_payload(
-            STALE_SESSION_RECOVERY_ENTRY,
-            stale_repository.path(),
-            "new.rs",
-            Some(stale_session),
-        )?,
-    )?;
-    let stale_root = fs::canonicalize(stale_repository.path())?;
-    assert_pre_edit_corpus_recovery(
-        &stale,
-        STALE_SESSION_RECOVERY_ENTRY,
-        &[(REPOSITORY_FIXTURE_ROOT, &stale_root)],
-    )?;
-
-    let (two_actions, holding_root, issuing_root) = session_worktree_mismatch()?;
-    assert_pre_edit_corpus_recovery(
-        &two_actions,
-        TWO_ACTION_RECOVERY_ENTRY,
-        &[
-            (HOLDING_WORKTREE_FIXTURE_ROOT, &holding_root),
-            (REPOSITORY_FIXTURE_ROOT, &issuing_root),
-        ],
-    )
-}
-
-#[test]
-fn stale_marker_recovery_preserves_the_frozen_corpus_text() -> TestResult {
-    let repository = initialized_repository()?;
-    let marker_seed = run_berth(
-        repository.path(),
-        &["claim", "file:marker-seed.rs", "--run", FIRST_RUN, "--json"],
-    )?;
-    require_success(&marker_seed, "marker seed claim")?;
-    let marker_seed_envelope = json_output(&marker_seed)?;
-    let marker_seed_id = required_string(
-        &marker_seed_envelope,
-        "/payload/data/reservation_id",
-        "marker seed claim",
-    )?;
-    let payload = corpus_edit_payload(
-        STALE_MARKER_RECOVERY_ENTRY,
-        repository.path(),
-        "marker-race.rs",
-        None,
-    )?;
-    let mut paused = PausedPreToolUse::spawn(repository.path(), &payload)?;
-    paused.wait_until_paused()?;
-    let released = run_berth(repository.path(), &["release", marker_seed_id, "--json"])?;
-    require_success(&released, "marker seed release")?;
-    let output = paused.continue_and_wait()?;
-
-    let repository_root = fs::canonicalize(repository.path())?;
-    assert_pre_edit_corpus_recovery(
-        &output,
-        STALE_MARKER_RECOVERY_ENTRY,
-        &[(REPOSITORY_FIXTURE_ROOT, &repository_root)],
-    )
-}
-
-struct PausedPreToolUse {
+struct PausedHookCall {
     child:             Child,
     continue_path:     PathBuf,
     ready_path:        PathBuf,
     wrapper_directory: TempDir,
 }
 
-impl PausedPreToolUse {
-    fn spawn(repository_root: &Path, payload: &Value) -> TestResult<Self> {
+impl PausedHookCall {
+    fn spawn(
+        repository_root: &Path,
+        payload: &Value,
+        event: &str,
+        observation: &str,
+    ) -> TestResult<Self> {
         let wrapper_directory = TempDir::new_in(SCRATCH_ROOT)?;
         let wrapper_path = wrapper_directory.path().join(GIT_BINARY);
         fs::write(&wrapper_path, paused_git_wrapper())?;
@@ -941,10 +882,11 @@ impl PausedPreToolUse {
                 .chain(std::env::split_paths(&original_path)),
         )?;
         let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
-            .args(["hook", "pre-tool-use"])
+            .args(["hook", event])
             .current_dir(repository_root)
             .env("PATH", wrapped_path)
             .env("CARGO_BERTH_TEST_GIT_READY", &ready_path)
+            .env("CARGO_BERTH_TEST_GIT_OBSERVATION", observation)
             .env("CARGO_BERTH_TEST_GIT_CONTINUE", &continue_path)
             .env("CARGO_BERTH_TEST_REAL_GIT", git_binary()?)
             .env_remove("CARGO_BERTH_RUN")
@@ -956,7 +898,7 @@ impl PausedPreToolUse {
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| failure("paused pre-tool-use stdin should be piped"))?;
+            .ok_or_else(|| failure("paused hook stdin should be piped"))?;
         serde_json::to_writer(&mut stdin, payload)?;
         drop(stdin);
         Ok(Self {
@@ -972,7 +914,7 @@ impl PausedPreToolUse {
         while !self.ready_path.exists() && Instant::now() < deadline {
             if let Some(status) = self.child.try_wait()? {
                 return Err(failure(format!(
-                    "pre-tool-use exited with {status} before the git pause"
+                    "hook exited with {status} before the git pause"
                 )));
             }
             thread::sleep(Duration::from_millis(10));
@@ -982,7 +924,7 @@ impl PausedPreToolUse {
         }
         self.child.kill()?;
         self.child.wait()?;
-        Err(failure("pre-tool-use did not reach the git pause"))
+        Err(failure("hook did not reach the git pause"))
     }
 
     fn continue_and_wait(self) -> TestResult<Output> {
@@ -1001,7 +943,8 @@ impl PausedPreToolUse {
 
 const fn paused_git_wrapper() -> &'static str {
     r#"#!/bin/sh
-if [ "$1" = "--no-optional-locks" ] && [ "$2" = "rev-parse" ] && [ "$3" = "HEAD" ]; then
+if [ "$1" = "--no-optional-locks" ] && [ "$2" = "$CARGO_BERTH_TEST_GIT_OBSERVATION" ] \
+    && { [ "$2" = "diff-tree" ] || [ "$3" = "HEAD" ]; }; then
     : > "$CARGO_BERTH_TEST_GIT_READY"
     while [ ! -e "$CARGO_BERTH_TEST_GIT_CONTINUE" ]; do
         sleep 0.01
@@ -1077,31 +1020,6 @@ fn ambiguous_first_touch_hook() -> TestResult<AmbiguityHookOutput> {
         actual_reservation_ids,
         corpus_reservation_ids,
     })
-}
-
-/// Drive one session/worktree mismatch, keeping both roots readable after the run.
-fn session_worktree_mismatch() -> TestResult<(Output, PathBuf, PathBuf)> {
-    let repository = initialized_repository()?;
-    let session_id = "covered-mismatch-session";
-    let holder = run_berth_with_session(
-        repository.path(),
-        &["claim", "file:source file.rs", "--run", FIRST_RUN, "--json"],
-        session_id,
-    )?;
-    require_success(&holder, "session mismatch holder")?;
-    let (_issuing_directory, issuing_root) = add_worktree(&repository, "issuing")?;
-    let output = run_pre_tool_use(
-        &issuing_root,
-        &corpus_edit_payload(
-            TWO_ACTION_RECOVERY_ENTRY,
-            &issuing_root,
-            "source file.rs",
-            Some(session_id),
-        )?,
-    )?;
-    let holding_root = fs::canonicalize(repository.path())?;
-    let issuing_root = fs::canonicalize(issuing_root)?;
-    Ok((output, holding_root, issuing_root))
 }
 
 fn create_stale_session_mapping(repository: &TempDir, session_id: &str) -> TestResult {
@@ -2744,6 +2662,18 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
 #[test]
 fn post_tool_use_states_the_incursion_resolve_instruction() -> TestResult {
     let incursion = incursion_after_bash(1)?;
+    let feedback = hook_feedback(
+        &incursion.output,
+        HookResponseEvent::PostToolUse,
+        "raw post-tool-use payload",
+    )?;
+    assert!(
+        feedback.additional_context.contains(&format!(
+            "`cargo-berth resolve {} --incursion {}`",
+            incursion.straying_reservation_id, incursion.incidents[0].incident_id
+        )),
+        "an incursion should tell the reader the resolve command to run: {feedback:?}"
+    );
 
     assert_post_tool_use_feedback_matches_corpus(
         &incursion.output,
@@ -2783,7 +2713,13 @@ fn post_tool_use_states_the_replay_failure_route() -> TestResult {
 #[test]
 fn post_tool_use_states_its_coordination_identity_recovery() -> TestResult {
     let repository = committed_configuration_repository()?;
-    create_stale_session_mapping(&repository, STALE_DRIFT_SESSION)?;
+    assert_post_tool_use_stale_session_recovery(&repository)?;
+    assert_post_tool_use_marker_revalidation(&repository)?;
+    assert_post_tool_use_foreign_session_recovery(&repository)
+}
+
+fn assert_post_tool_use_stale_session_recovery(repository: &TempDir) -> TestResult {
+    create_stale_session_mapping(repository, STALE_DRIFT_SESSION)?;
 
     let output = run_post_tool_use(
         repository.path(),
@@ -2795,7 +2731,89 @@ fn post_tool_use_states_its_coordination_identity_recovery() -> TestResult {
         &output,
         POST_TOOL_USE_STALE_SESSION_ENTRY,
         &[(REPOSITORY_FIXTURE_ROOT, &repository_root)],
+    )?;
+    Ok(())
+}
+
+fn assert_post_tool_use_marker_revalidation(repository: &TempDir) -> TestResult {
+    let repository_root = fs::canonicalize(repository.path())?;
+    let marker_seed = run_berth(
+        repository.path(),
+        &["claim", "file:marker.rs", "--run", SECOND_RUN, "--json"],
+    )?;
+    require_success(&marker_seed, "post-tool-use marker seed")?;
+    dirty_source(repository.path(), "marker.rs")?;
+    run_git(repository.path(), &["add", "marker.rs"])?;
+    run_git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "marker observation",
+        ],
+    )?;
+    let mut pending = PausedHookCall::spawn(
+        repository.path(),
+        &bash_payload(repository.path(), "unmapped-marker-session"),
+        "post-tool-use",
+        "diff-tree",
+    )?;
+    pending.wait_until_paused()?;
+    let released = run_berth(
+        repository.path(),
+        &["release", &claimed_reservation_id(&marker_seed)?, "--json"],
+    )?;
+    require_success(&released, "release during post-tool-use observation")?;
+    let marker = pending.continue_and_wait()?;
+    assert_post_tool_use_corpus_recovery(
+        &marker,
+        POST_TOOL_USE_STALE_MARKER_ENTRY,
+        &[(REPOSITORY_FIXTURE_ROOT, &repository_root)],
     )
+}
+
+fn assert_post_tool_use_foreign_session_recovery(repository: &TempDir) -> TestResult {
+    let repository_root = fs::canonicalize(repository.path())?;
+    let session = "foreign-post-tool-use-session";
+    let holder = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:source file.rs", "--run", FIRST_RUN, "--json"],
+        session,
+    )?;
+    require_success(&holder, "post-tool-use identity holder")?;
+    let (_issuing_directory, issuing_root) = add_worktree(repository, "post-tool-use-issuing")?;
+    let mismatch = run_post_tool_use(&issuing_root, &bash_payload(&issuing_root, session))?;
+    let feedback = hook_feedback(
+        &mismatch,
+        HookResponseEvent::PostToolUse,
+        "foreign session identity",
+    )?;
+    assert!(
+        feedback
+            .additional_context
+            .contains("session_worktree_mismatch"),
+        "{feedback:?}"
+    );
+    let issuing_root = fs::canonicalize(&issuing_root)?;
+    for action in [
+        format!(
+            "cd {} && cargo-berth drift --json",
+            shell_quote(&repository_root.to_string_lossy())
+        ),
+        format!(
+            "cd {} && cargo-berth identity clear-session --json",
+            shell_quote(&issuing_root.to_string_lossy())
+        ),
+    ] {
+        assert!(
+            feedback.additional_context.contains(&format!("`{action}`")),
+            "{feedback:?}"
+        );
+    }
+    Ok(())
 }
 
 /// Where the fail-closed identity binding is pinned, because this is where it has a consumer.
@@ -2899,110 +2917,96 @@ fn post_tool_use_on_an_unconfigured_repository_says_nothing() -> TestResult {
 fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
     let repository = committed_configuration_repository()?;
 
-    let malformed =
-        run_post_tool_use_stdin(repository.path(), b"this is not a PostToolUse payload")?;
-    let malformed_feedback = hook_feedback(
-        &malformed,
-        HookResponseEvent::PostToolUse,
-        "malformed payload",
-    )?;
-    assert_eq!(
-        malformed_feedback.system_message, POST_TOOL_USE_INVALID_PAYLOAD_SUMMARY,
-        "a payload cargo-berth cannot read should state the invalid-payload summary"
-    );
-    assert_eq!(
-        malformed_feedback.additional_context, POST_TOOL_USE_INVALID_PAYLOAD_DETAIL,
-        "a payload cargo-berth cannot read should state the invalid-payload detail, which \
+    for payload in [
+        b"this is not a PostToolUse payload".as_slice(),
+        b"{\"tool_name\": \"Bash\"".as_slice(),
+    ] {
+        let malformed = run_post_tool_use_stdin(repository.path(), payload)?;
+        let malformed_feedback = hook_feedback(
+            &malformed,
+            HookResponseEvent::PostToolUse,
+            "malformed payload",
+        )?;
+        assert_eq!(
+            malformed_feedback.system_message, POST_TOOL_USE_INVALID_PAYLOAD_SUMMARY,
+            "a payload cargo-berth cannot read should state the invalid-payload summary"
+        );
+        assert_eq!(
+            malformed_feedback.additional_context, POST_TOOL_USE_INVALID_PAYLOAD_DETAIL,
+            "a payload cargo-berth cannot read should state the invalid-payload detail, which \
          stops the reader and names the drift command to run by hand"
-    );
+        );
 
-    let absent_working_directory = run_post_tool_use(
-        repository.path(),
-        &serde_json::json!({
-            "tool_name": "Bash",
-            "cwd": repository.path().join("no-such-working-directory"),
-            "tool_input": {"command": "true"},
-            "session_id": UNREADABLE_DRIFT_SESSION,
-        }),
-    )?;
-    let absent_feedback = hook_feedback(
-        &absent_working_directory,
-        HookResponseEvent::PostToolUse,
-        "absent working directory",
-    )?;
-    assert_eq!(
-        absent_feedback.system_message, POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_SUMMARY,
-        "a working directory the hook cannot enter should state the unavailable-directory \
+        let absent_working_directory = run_post_tool_use(
+            repository.path(),
+            &serde_json::json!({
+                "tool_name": "Bash",
+                "cwd": repository.path().join("no-such-working-directory"),
+                "tool_input": {"command": "true"},
+                "session_id": UNREADABLE_DRIFT_SESSION,
+            }),
+        )?;
+        let absent_feedback = hook_feedback(
+            &absent_working_directory,
+            HookResponseEvent::PostToolUse,
+            "absent working directory",
+        )?;
+        assert_eq!(
+            absent_feedback.system_message, POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_SUMMARY,
+            "a working directory the hook cannot enter should state the unavailable-directory \
          summary"
-    );
-    assert_eq!(
-        absent_feedback.additional_context, POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_DETAIL,
-        "a working directory the hook cannot enter should state the unavailable-directory \
+        );
+        assert_eq!(
+            absent_feedback.additional_context, POST_TOOL_USE_UNAVAILABLE_WORKING_DIRECTORY_DETAIL,
+            "a working directory the hook cannot enter should state the unavailable-directory \
          detail, which stops the reader and names the working directory"
-    );
+        );
 
-    assert_ne!(
-        malformed_feedback.system_message, absent_feedback.system_message,
-        "a payload the verb cannot read and a working directory it cannot enter are different \
+        assert_ne!(
+            malformed_feedback.system_message, absent_feedback.system_message,
+            "a payload the verb cannot read and a working directory it cannot enter are different \
          conditions and must not share one summary"
-    );
-    assert_ne!(
-        malformed_feedback.additional_context, absent_feedback.additional_context,
-        "a payload the verb cannot read and a working directory it cannot enter are different \
+        );
+        assert_ne!(
+            malformed_feedback.additional_context, absent_feedback.additional_context,
+            "a payload the verb cannot read and a working directory it cannot enter are different \
          conditions and must not share one detail"
-    );
-    Ok(())
-}
-
-/// The user-actionable acceptance test: a raw payload, and the commands it prints.
-#[test]
-fn a_raw_post_tool_use_payload_states_its_drift_and_resolve_instructions() -> TestResult {
-    let incursion = incursion_after_bash(1)?;
-    let feedback = hook_feedback(
-        &incursion.output,
-        HookResponseEvent::PostToolUse,
-        "raw post-tool-use payload",
-    )?;
-    assert!(
-        feedback.additional_context.contains(&format!(
-            "`cargo-berth resolve {} --incursion {}`",
-            incursion.straying_reservation_id, incursion.incidents[0].incident_id
-        )),
-        "an incursion should tell the reader the resolve command to run: {feedback:?}"
-    );
-
-    let repository = committed_configuration_repository()?;
-    let unreadable = run_post_tool_use_stdin(repository.path(), b"{\"tool_name\": \"Bash\"")?;
-    let unreadable_feedback = hook_feedback(
-        &unreadable,
-        HookResponseEvent::PostToolUse,
-        "raw unreadable post-tool-use payload",
-    )?;
-    assert!(
-        unreadable_feedback
-            .additional_context
-            .contains("`cargo-berth drift --reservation <id> --json`"),
-        "a payload the verb cannot read should tell the reader the drift command to run by hand: \
-         {unreadable_feedback:?}"
-    );
+        );
+    }
     Ok(())
 }
 
 #[test]
 fn session_start_publishes_the_engine_board_report() -> TestResult {
     let orphans = orphaned_reservations(2)?;
-
-    let output = run_session_start(
-        orphans.repository.path(),
-        &session_start_payload(orphans.repository.path(), Some(BOARD_SESSION)),
-        &AmbientHarnessSession::Absent,
-    )?;
-
-    assert_session_start_feedback_matches_corpus(
-        &output,
-        ORPHAN_SESSION_START_ENTRY,
-        &orphans.corpus_identifiers()?,
-    )
+    let elsewhere = TempDir::new_in(SCRATCH_ROOT)?;
+    for working_directory in [orphans.repository.path(), elsewhere.path()] {
+        let output = run_session_start(
+            working_directory,
+            &session_start_payload(orphans.repository.path(), Some(BOARD_SESSION)),
+            &AmbientHarnessSession::Absent,
+        )?;
+        assert_session_start_feedback_matches_corpus(
+            &output,
+            ORPHAN_SESSION_START_ENTRY,
+            &orphans.corpus_identifiers()?,
+        )?;
+        let feedback = hook_feedback(
+            &output,
+            HookResponseEvent::SessionStart,
+            "raw session-start payload",
+        )?;
+        for orphan in &orphans.orphans {
+            assert!(
+                feedback.additional_context.contains(&format!(
+                    "`cargo-berth resolve {} --recovered`",
+                    orphan.reservation_id
+                )),
+                "an orphaned reservation should name its resolve command: {feedback:?}"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -3119,24 +3123,6 @@ fn session_start_on_an_unconfigured_repository_says_nothing() -> TestResult {
 }
 
 #[test]
-fn session_start_reads_the_working_directory_its_payload_names() -> TestResult {
-    let orphans = orphaned_reservations(2)?;
-    let elsewhere = TempDir::new_in(SCRATCH_ROOT)?;
-
-    let output = run_session_start(
-        elsewhere.path(),
-        &session_start_payload(orphans.repository.path(), Some(BOARD_SESSION)),
-        &AmbientHarnessSession::Absent,
-    )?;
-
-    assert_session_start_feedback_matches_corpus(
-        &output,
-        ORPHAN_SESSION_START_ENTRY,
-        &orphans.corpus_identifiers()?,
-    )
-}
-
-#[test]
 fn session_start_rejects_a_payload_it_cannot_read() -> TestResult {
     let repository = committed_configuration_repository()?;
 
@@ -3244,34 +3230,6 @@ fn session_start_answers_the_same_with_and_without_an_ambient_session_identity()
     Ok(())
 }
 
-/// The user-actionable acceptance test: a raw payload, and the commands it prints.
-#[test]
-fn a_raw_session_start_payload_states_its_resolve_instructions() -> TestResult {
-    let orphans = orphaned_reservations(2)?;
-
-    let output = run_session_start(
-        orphans.repository.path(),
-        &session_start_payload(orphans.repository.path(), Some(BOARD_SESSION)),
-        &AmbientHarnessSession::Absent,
-    )?;
-
-    let feedback = hook_feedback(
-        &output,
-        HookResponseEvent::SessionStart,
-        "raw session-start payload",
-    )?;
-    for orphan in &orphans.orphans {
-        assert!(
-            feedback.additional_context.contains(&format!(
-                "`cargo-berth resolve {} --recovered`",
-                orphan.reservation_id
-            )),
-            "an orphaned reservation should tell the reader the resolve command to run: {feedback:?}"
-        );
-    }
-    Ok(())
-}
-
 /// A populated board with nothing actionable keeps the report block's own summary.
 ///
 /// `berth_session_start.sh` counted rendered blocks, so a board carrying only its complete
@@ -3321,20 +3279,26 @@ fn session_start_never_counts_the_board_report_as_an_actionable_notice() -> Test
 /// the incident stays on the board under its recorded answers. What must not survive the answer
 /// is the stop instruction, so the next Bash call from the same worktree prints nothing at all.
 #[test]
-fn post_tool_use_stops_repeating_an_answered_incursion() -> TestResult {
+fn post_tool_use_reports_only_new_widening_after_an_incursion_is_answered() -> TestResult {
     let incursion = incursion_after_bash(1)?;
+    post_tool_use_stops_repeating_an_answered_incursion(&incursion)?;
+    post_tool_use_states_a_widening_after_the_incursion_was_answered(&incursion)
+}
+
+fn post_tool_use_stops_repeating_an_answered_incursion(
+    incursion: &IncursionAfterBash,
+) -> TestResult {
     incursion.record_every_incursion()?;
 
     let output = incursion.report_another_bash_call()?;
 
-    assert_hook_stayed_silent(&output, POST_TOOL_USE_RECORDED_INCURSION_SILENT_ENTRY)
+    assert_hook_stayed_silent(&output, POST_TOOL_USE_RECORDED_INCURSION_SILENT_ENTRY)?;
+    Ok(())
 }
 
-/// The silence is specific to the answered incident, not to the whole response.
-#[test]
-fn post_tool_use_states_a_widening_after_the_incursion_was_answered() -> TestResult {
-    let incursion = incursion_after_bash(1)?;
-    incursion.record_every_incursion()?;
+fn post_tool_use_states_a_widening_after_the_incursion_was_answered(
+    incursion: &IncursionAfterBash,
+) -> TestResult {
     fs::write(
         incursion.straying_root.join(WIDENED_AFTER_INCURSION_SOURCE),
         "// widened after the answer\n",
@@ -3371,75 +3335,105 @@ fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> Test
 
 /// A trunk that resolves but has moved past the tip gets the recovery that names it.
 #[test]
-fn post_tool_use_states_the_rewritten_trunk_evidence_recovery() -> TestResult {
+fn hooks_state_the_rewritten_trunk_evidence_recovery() -> TestResult {
     let (evidence, trunk, _repository, _worktrees) =
         released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkRewrittenPastTheTip)?;
+    for event in [
+        HookResponseEvent::PostToolUse,
+        HookResponseEvent::SessionStart,
+    ] {
+        match event {
+            HookResponseEvent::PostToolUse => {
+                post_tool_use_states_the_rewritten_trunk_evidence_recovery(&evidence, &trunk)?;
+            },
+            HookResponseEvent::SessionStart => {
+                session_start_states_the_rewritten_trunk_evidence_recovery(&evidence, &trunk)?;
+            },
+        }
+    }
+    Ok(())
+}
 
+fn post_tool_use_states_the_rewritten_trunk_evidence_recovery(
+    evidence: &LostIntegrationEvidence,
+    trunk: &ObservedTrunk,
+) -> TestResult {
     let output = run_post_tool_use(
         &evidence.reporting_root,
         &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
     )?;
-
     assert_post_tool_use_feedback_matches_corpus(
         &output,
         POST_TOOL_USE_LOST_EVIDENCE_REWRITTEN_ENTRY,
-        &evidence.corpus_identifiers(&trunk),
+        &evidence.corpus_identifiers(trunk),
+    )
+}
+
+fn session_start_states_the_rewritten_trunk_evidence_recovery(
+    evidence: &LostIntegrationEvidence,
+    trunk: &ObservedTrunk,
+) -> TestResult {
+    let output = run_session_start(
+        &evidence.reporting_root,
+        &session_start_payload(&evidence.reporting_root, Some(BOARD_SESSION)),
+        &AmbientHarnessSession::Absent,
+    )?;
+    assert_session_start_feedback_matches_corpus(
+        &output,
+        SESSION_START_LOST_EVIDENCE_REWRITTEN_ENTRY,
+        &evidence.corpus_identifiers(trunk),
     )
 }
 
 /// A trunk that resolves to nothing cannot be named, so the recovery asks for trunk first.
 #[test]
-fn post_tool_use_states_the_unresolvable_trunk_evidence_recovery() -> TestResult {
+fn hooks_state_the_unresolvable_trunk_evidence_recovery() -> TestResult {
     let (evidence, trunk, _repository, _worktrees) =
         released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkNamesAnAbsentObject)?;
+    for event in [
+        HookResponseEvent::PostToolUse,
+        HookResponseEvent::SessionStart,
+    ] {
+        match event {
+            HookResponseEvent::PostToolUse => {
+                post_tool_use_states_the_unresolvable_trunk_evidence_recovery(&evidence, &trunk)?;
+            },
+            HookResponseEvent::SessionStart => {
+                session_start_states_the_unresolvable_trunk_evidence_recovery(&evidence, &trunk)?;
+            },
+        }
+    }
+    Ok(())
+}
 
+fn post_tool_use_states_the_unresolvable_trunk_evidence_recovery(
+    evidence: &LostIntegrationEvidence,
+    trunk: &ObservedTrunk,
+) -> TestResult {
     let output = run_post_tool_use(
         &evidence.reporting_root,
         &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
     )?;
-
     assert_post_tool_use_feedback_matches_corpus(
         &output,
         POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY,
-        &evidence.corpus_identifiers(&trunk),
+        &evidence.corpus_identifiers(trunk),
     )
 }
 
-/// Both events state the same recovery, so session-start carries it inside its board report.
-#[test]
-fn session_start_states_the_rewritten_trunk_evidence_recovery() -> TestResult {
-    let (evidence, trunk, _repository, _worktrees) =
-        released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkRewrittenPastTheTip)?;
-
+fn session_start_states_the_unresolvable_trunk_evidence_recovery(
+    evidence: &LostIntegrationEvidence,
+    trunk: &ObservedTrunk,
+) -> TestResult {
     let output = run_session_start(
         &evidence.reporting_root,
         &session_start_payload(&evidence.reporting_root, Some(BOARD_SESSION)),
         &AmbientHarnessSession::Absent,
     )?;
-
-    assert_session_start_feedback_matches_corpus(
-        &output,
-        SESSION_START_LOST_EVIDENCE_REWRITTEN_ENTRY,
-        &evidence.corpus_identifiers(&trunk),
-    )
-}
-
-/// The unresolvable recovery reaches a starting session under the same words.
-#[test]
-fn session_start_states_the_unresolvable_trunk_evidence_recovery() -> TestResult {
-    let (evidence, trunk, _repository, _worktrees) =
-        released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkNamesAnAbsentObject)?;
-
-    let output = run_session_start(
-        &evidence.reporting_root,
-        &session_start_payload(&evidence.reporting_root, Some(BOARD_SESSION)),
-        &AmbientHarnessSession::Absent,
-    )?;
-
     assert_session_start_feedback_matches_corpus(
         &output,
         SESSION_START_LOST_EVIDENCE_UNRESOLVABLE_ENTRY,
-        &evidence.corpus_identifiers(&trunk),
+        &evidence.corpus_identifiers(trunk),
     )
 }
 
