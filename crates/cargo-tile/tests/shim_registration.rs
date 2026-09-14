@@ -989,7 +989,8 @@ def carrier_source_is_rendered(writer, source):
         # Resize only an observed clipped pane, not the reader's startup frame.
         panes = fixture_panes(rendered, (first[1].name,))
         if len(panes) == 1:
-            sizes = [re.search(r'content rows: (\d+) r/c: (\d+)/', line) for line in panes[0]]
+            # The readout pads its cell size label and may carry a measured width first.
+            sizes = [re.search(r'content rows: (\d+).*?r/c: (\d+)/', line) for line in panes[0]]
             if any(size and int(size[1]) > int(size[2]) for size in sizes):
                 terminal_rows *= 2
                 fcntl.ioctl(terminal, termios.TIOCSWINSZ,
@@ -1703,8 +1704,10 @@ try:
                      'child does not switch to ' + source)
             wait_for(lambda: carrier_source_is_rendered(carrier, source),
                      'reader does not observe child source ' + source)
-            assert assert_child_family(first, carrier) == initial, \
-                'child source change alters family color, start, or headings\n' + screen()
+            observed = assert_child_family(first, carrier)
+            assert observed == initial, \
+                ('child source change alters family color, start, or headings: '
+                 + repr(initial) + ' became ' + repr(observed) + '\n' + screen())
     if scenario.startswith('fallback'):
         if scenario in ('fallback-unknown', 'fallback-excluded', 'fallback-ambiguous',
                         'fallback-selected-unknown', 'fallback-foreign-owned'):
