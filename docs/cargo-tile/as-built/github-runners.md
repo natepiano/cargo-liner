@@ -2,13 +2,23 @@
 
 ## What it is
 
-cargo-tile is a terminal grid of every live cargo invocation on the machine. A process's output belongs to the terminal that started it, so the grid cannot read progress from the process table alone. The capture shim closes that gap: it stands in front of each toolchain's `cargo`, mirrors the run's output into a log, and registers the run for as long as it lives. This feature extends capture to every account on the machine, in particular the self-hosted GitHub Actions runner accounts, so a build started by a runner shows in the grid under that account's name with nothing to configure. Every account writes under its own uid directory below one shared parent, the grid reads all of them, and `sudo cargo-tile install --all-accounts` installs the shim for every account's toolchains in one command.
+cargo-tile is a terminal grid of every live cargo invocation on the machine. A process's output belongs to the terminal that started it, so the grid cannot read progress from the process table alone. The capture shim closes that gap: it stands in front of each toolchain's `cargo`, mirrors the run's output into a log, and registers the run for as long as it lives. Capture extends to every account on the machine, in particular the self-hosted GitHub Actions runner accounts (`hana-linux-1` and `hana-linux-2` on Linux, `hana-ci` on macOS), so a build started by a runner shows in the grid under that account's name with nothing to configure. Every account writes under its own uid directory below one shared parent, the grid reads all of them, and `sudo cargo tile install --all-accounts` installs the shim for every account's toolchains in one command.
+
+The pieces:
+- A POSIX `sh` shim that publishes a `cargo-tile-v3` NUL-framed registration before its log.
+- A shared `/tmp/cargo-tile/<uid>` directory, read for every account and swept only for the reader's own, with each file proved on its own before unlink.
+- Registration parsing bound to kernel birth stamps, with a diagnostic for a newer framing version.
+- `install`, `uninstall` and `status` for every account, reporting each toolchain by name. A Darwin account keeps its full group membership past the 16-group `setgroups` limit.
+- Cargo rows that report the CPU time their invocation causes, including reaped children and compiler-cache work.
+- A Settings pane in which every line can be scrolled to.
+- A Linux desktop backdrop that does not spawn a process or open a session-bus connection on every capture tick.
+- cargo-berth readers that tolerate the `merge_extent_observed` journal record, with evidence decisions that match the live answer.
 
 ## How it works
 
 ### The shim
 
-`crates/cargo-tile/src/cargo-capture-shim.sh` is POSIX `sh`, embedded into the binary as `SHIM_SOURCE` in `crates/cargo-tile/src/hook.rs`. `cargo-tile install` moves a toolchain's real cargo to `cargo-tile-real` and writes the shim as `cargo`. An installed shim is recognised by `SHIM_MARKER` within its first `SHIM_MARKER_SEARCH_BYTES` bytes.
+`crates/cargo-tile/src/cargo-capture-shim.sh` is POSIX `sh`, embedded into the binary as `SHIM_SOURCE` in `crates/cargo-tile/src/hook.rs`. `cargo-tile install` moves a toolchain's real cargo to `cargo-tile-real` and writes the shim as `cargo`. An installed shim is recognised by `SHIM_MARKER` within its first `SHIM_MARKER_SEARCH_BYTES` bytes, and its line 3 is `# cargo-tile-shim-version: 3`.
 
 Per invocation the shim:
 
@@ -18,6 +28,8 @@ Per invocation the shim:
 - Records identity. Linux: `boot` is `/proc/sys/kernel/random/boot_id`; `birth` is field 22 of `/proc/$$/stat`, parsed past the last `)`. macOS: `boot` is `sysctl -n kern.bootsessionuuid`; `birth` is `ps -o lstart= -p $$` under `LC_ALL=C TZ=UTC0`, trimmed of BSD column padding, converted by `date -j` to epoch seconds. A field is empty when unobtainable.
 - Writes the record with `printf '%s\000'` into an exclusively created `.tmp` file: `cargo-tile-v3`, generation, boot, birth, log basename, `pwd -P` directory, `$HOME` when absolute, argument count, then each argument verbatim. It publishes with `ln` onto `<pid>.<generation>`, and only then creates the log. Any failure removes only the artifacts this invocation owns and `exec`s the real cargo with the original arguments.
 - Runs cargo under `script` (util-linux or BSD form) when all three streams are a tty. Otherwise it mirrors stderr through the FIFO with `tee -a`, asks for a progress bar with `CARGO_TERM_PROGRESS_WHEN=always`, and for a `--message-format=json` caller drops standalone `--quiet` and `-q` before `--`. The EXIT trap removes the registration, log and FIFO, so only a run killed outright leaves artifacts behind.
+
+A `cargo install` goes down the capture path the same way `cargo build` does: the shim's `case $first` classifier, the `Building [...] n/m` counter, and `heading_gauge`. No install-specific code exists.
 
 ### The shared directory
 
@@ -36,25 +48,69 @@ Per invocation the shim:
 
 `CaptureRoots::from_parent(CAPTURE_ROOT)` in `crates/cargo-tile/src/progress/capture_roots.rs` runs once on the scanner worker. It calls `root_scan::prepare_shared_directory`, which creates the parent and repairs its mode to `1777` through the open handle when the effective user owns it or is root, and canonicalises the parent's ancestors with `canonical_capture_path`. Every scan `discover_accounts` reads the parent with `read_dir` and keeps directories named by a canonical decimal uid, the reader's own uid first, then ascending. Positions are stable across scans (`CaptureRootIndex`). Each is a `CaptureRoot { path, uid, cleanup }` with `cleanup == CaptureCleanup::Here` only when `effective_user()` equals the uid.
 
-`AccountCaptureDirectory::inspect` in `crates/cargo-tile/src/progress/capture_roots.rs` checks the final component with `symlink_metadata` and marks `RootReadStatus::ForeignOwned` when the owner differs from the uid the name claims; such a directory is reported and never read. `SharedCaptureDirectory::inspect` samples the parent into `SharedDirectoryState::{Missing, Shared, NotShared, Unavailable}`. Both travel on `Scan` into `App.shared_directory` and `App.root_status`, and `drain_scans` redraws when either changes. `settings::shared_directory_status` and `settings::capture_root_status` render them with no filesystem access. An account line carries the name (resolved from `sysinfo::Users` on the worker, the uid otherwise), `yours` for the reader's own directory, readable or unreadable, the active capture count, read diagnostics, and per-pid associations. Cleanup conditions never reach Settings. `CaptureDiagnostic::EnumerationIncomplete` in `progress/capture_diagnostic.rs` remains a per-root read diagnostic shown there.
+`AccountCaptureDirectory::inspect` checks the final component with `symlink_metadata` and marks `RootReadStatus::ForeignOwned` when the owner differs from the uid the name claims; such a directory is reported and never read. `SharedCaptureDirectory::inspect` samples the parent into `SharedDirectoryState::{Missing, Shared, NotShared, Unavailable}`. Both travel on `Scan` into `App.shared_directory` and `App.root_status`, and `drain_scans` redraws when either changes. `settings::shared_directory_status` and `settings::capture_root_status` render them with no filesystem access. An account line carries the name (resolved from `sysinfo::Users` on the worker, the uid otherwise), `yours` for the reader's own directory, readable or unreadable, the active capture count, read diagnostics, and per-pid associations. Cleanup conditions never reach Settings. `CaptureDiagnostic::EnumerationIncomplete` is a per-root read diagnostic and is shown there.
 
-### The root access layer
+### Progress capture modules (`crates/cargo-tile/src/progress/`)
 
-`RootScan::open` in `crates/cargo-tile/src/root_scan/mod.rs` opens the account directory, then `state`, then `pids`, each relative to the previous handle with `RDONLY | DIRECTORY | NOFOLLOW | CLOEXEC`, and `fstat`s each into `InspectedDirectoryMetadata { device, inode, owner, mode }`. It samples the registration inventory at open (`Inventory::sample` in `root_scan/inspected_directory.rs`: `RawDir` on Linux, `Dir` on Darwin) into fixed 255-byte names, bounded by `CAPTURE_INVENTORY_LIMIT`. The log inventory is a lazy `OnceLock` used only for legacy annotation. `ScanEntry::read_registration` and `RootScan::read_log` open a validated basename relative to the held handle with `NOFOLLOW | NONBLOCK`, reject non-regular files, and read under `Read::take` caps.
+`mod.rs` holds `Progress` and re-exports nothing.
 
-`RootHistory` in `root_scan/root_history.rs`, thread-local on the worker, pins one `OwnedFd` per root so `RootIncarnation(Uuid)` changes only when the directory object is replaced, and records a `TreeIdentity` per scan so `RootContinuity::Changed` withholds cleanup for one scan after a replacement or a recovered access failure.
+| File | Contents |
+| --- | --- |
+| `capture.rs` | `CaptureRootIndex`, `CaptureKey`, `CaptureGeneration`, `CaptureSelection`, `ConfirmedCapture`, `Capture`, `LogWriter` |
+| `capture_roots.rs` | `CaptureRoot`, `CaptureCleanup`, `CaptureParent`, `CaptureRoots::from_parent`, `AccountCaptureDirectory`, `RootReadStatus`, `AccountName` |
+| `capture_read.rs` | `Phase`, `RunState`, `CaptureLookup`, `CaptureRead`, `Counter`, and the parser outcomes |
+| `capture_diagnostic.rs` | `CaptureDiagnostic`, `CaptureFailure`, `PathFailure` |
+| `registered_runs.rs` | `RegisteredRuns`, `RegisteredRun`, `RegistrationName`, `registered_runs` |
 
-Cleanup authority is the private `RootScan::access`, which returns `SweepAuthority` from `root_scan/sweep_authority.rs` when the effective uid owns the root, `state`, and `pids`, scan continuity holds, and `revalidate_paths` matches reopened directories against their retained handles. The payload-free `SweepAdmissionRefusal` has exactly three outcomes: `ForeignRoot`, `EffectiveUserUnavailable`, and `AccessFailure`. Directory write grants do not decide admission or candidate eligibility. Each registration/log pair needs its own file proof and fresh ended-writer evidence under one `SweepBudget` shared across the scan.
+Parser outcomes in `capture_read.rs`:
+- `CurrentProgress::{Active, RetiredCounter, Unrecognized}`, `TailCounter` and `ParsedCounter`.
+- `LeadingNumber::{Digits, NoLeadingDigits, Overflow}`.
+- `CaptureRead` folds `RetiredCounter` and `Unrecognized` into `NoCurrentProgress`.
+- `impl From<&CaptureLookup> for CounterState` in `render.rs` is the only conversion from a lookup to the gauge.
 
-`SweepCounts` has four private counters: `removed_files` counts successful unlinks; `skipped_pair_attempts` counts candidate pairs whose attempted removal did not finish; `incomplete_inventories` counts every incomplete or failed sampled registration/log inventory directly after admission; `unavailable_roots` counts roots refused before pair inspection. Partial inventories permit sweeping established pairs. These counts stay on the worker and produce no Settings cleanup text.
+### The root access layer and sweeps (`crates/cargo-tile/src/root_scan/`)
 
-Before either file is removed, the sweep proves each candidate through its own open descriptor: regular file, effective-user ownership, no group or other write bit, and link count one. It revalidates file identity before unlinking the basename through the retained directory handle; a failed proof preserves the candidate and is counted. The final identity check and `unlinkat` are separate syscalls: replacement between them can remove a different directory entry. Retained handles prevent traversal redirection, not that final replacement race; replacement regressions establish detection before the final check only.
+Files: `mod.rs` (`RootScan`), `inspected_directory.rs` (directory inspection, `Inventory`, `ScanEntry`, `read_registration_file`), `root_history.rs` (`RootHistory`, `RootIncarnation`, `TreeIdentity`, `RootContinuity`), `sweep_authority.rs` (sweep policy).
+
+`RootScan::open` opens the account directory, then `state`, then `pids`, each relative to the previous handle with `RDONLY | DIRECTORY | NOFOLLOW | CLOEXEC`, and `fstat`s each into `InspectedDirectoryMetadata { device, inode, owner, mode }`. It samples the registration inventory at open (`Inventory::sample`: `RawDir` on Linux, `Dir` on Darwin) into fixed 255-byte names, bounded by `CAPTURE_INVENTORY_LIMIT`. The log inventory is a lazy `OnceLock` initialised only by legacy annotation. `ScanEntry::read_registration` and `RootScan::read_log` open a validated basename relative to the held handle with `NOFOLLOW | NONBLOCK`, reject non-regular files, and read under `Read::take` caps.
+
+`RootHistory`, thread-local on the worker, pins one `OwnedFd` per root so `RootIncarnation(Uuid)` changes only when the directory object is replaced, and records a `TreeIdentity` per scan so `RootContinuity::Changed` withholds cleanup for one scan after a replacement or a recovered access failure.
+
+Sweeping:
+- `RootScan::sweep(&self, &mut SweepBudget, impl FnMut(ScanEntry<'_>) -> SweepDisposition) -> SweepCounts`. One `SweepBudget` is shared across the scan. `SweepCounts` is not re-exported from the hub.
+- The private `access(EffectiveUser) -> Result<SweepAuthority<'_>, SweepAdmissionRefusal>` admits a sweep when:
+  - the effective uid equals the root owner (otherwise `ForeignRoot`, or `EffectiveUserUnavailable`);
+  - `revalidate_paths` reopens root, `state` and `pids` and matches dev/ino/owner against the held handles;
+  - root, `state` and `pids` are all owned by that uid;
+  - continuity is not `Changed` (otherwise `AccessFailure`).
+- `SweepAdmissionRefusal` is payload-free with exactly those three outcomes. A refusal becomes `SweepCounts::unavailable_root()`: no callback runs and no budget is spent. Directory write grants decide neither admission nor candidate eligibility.
+- `SweepAuthority::sweep` counts each non-`Complete` `Enumeration` in the registration sample and in any sampled log inventory into `incomplete_inventories`, then proceeds. A partial inventory still sweeps the pairs it established.
+- `sweep_pair` proves the registration and then its log, each through `SweepFileInspection::inspect`:
+  1. `openat` with `NOFOLLOW|NONBLOCK|CLOEXEC` relative to the retained directory handle.
+  2. `fstat`: the file must be regular, owned by the effective uid, have no group or other write bit, and have `st_nlink == 1`.
+
+  It then:
+  1. Re-runs the callback with `RegistrationReadPurpose::SweepRevalidation`.
+  2. Revalidates paths and charges two budget units for the pair.
+  3. `SweepEligibleFile::revalidate` compares the held dev/ino against `statat(SYMLINK_NOFOLLOW)` right before each `unlinkat`.
+  4. Unlinks the log first, re-checks the callback and paths, then unlinks the registration.
+  5. A missing log is allowed.
+- A failed pair is preserved and increments `skipped_pair_attempts`.
+- `SweepCounts { removed_files, skipped_pair_attempts, incomplete_inventories, unavailable_roots }` stays on the worker. Only `cfg(test)` accessors read it, and nothing about cleanup reaches Settings.
+- The module contains no ACL inspector. Its only `unsafe` is the test FIFO fixture in `inspected_directory.rs`.
 
 ### Registration parsing and verification
 
-`Registration::parse` in `crates/cargo-tile/src/registration.rs` yields `Versioned(RegistrationCandidate)` for a NUL-framed record with the `cargo-tile-v3` magic, or `Legacy` for tab-separated text. The current reader also accepts v2 as `Versioned`; a newer numeric header yields `UnsupportedVersion` before interpreting the payload. Deploy readers before v3 writers. A legacy record can annotate a process row and never sources one. The generation and log fields must be single basenames and the argument count must match. `RegistrationCandidate::verify_observation(pid, &KernelObservation)` is the only route to `VerifiedRegistration`: `Confirmed` when the observation is for the same pid and its `BirthStamp` equals the record's, `Ended` when the kernel proves the writer gone, `Unknown` otherwise.
+`Registration::parse` in `crates/cargo-tile/src/registration.rs` yields `Versioned(RegistrationCandidate)` for a NUL-framed record, or `Legacy` for tab-separated text. It calls `check_version(bytes)` first, which scans at most `REGISTRATION_VERSION_HEADER_BYTES + 1` bytes for the NUL separator:
+- A `cargo-tile-v3` or `cargo-tile-v2` header returns `Ok`.
+- `cargo-tile-v<digits>` above `SUPPORTED_REGISTRATION_VERSION` (3) returns `UnsupportedVersion { encountered }`, whatever the payload size.
+- A header with no separator returns `Framing`, and the record falls through to the legacy parse.
 
-`registered_runs` in `crates/cargo-tile/src/progress/registered_runs.rs` reads every sampled entry, requires the filename generation to match the record's, verifies against `birth_stamp::observe(pid)`, and retains one `CaptureDiagnostic` per problem. The capture assembly in `progress/capture.rs`, through `Capture::scan_root`, keys each reading by `CaptureKey { root, pid, incarnation, generation, birth }`, reads each named log once per scan, and pushes a `ConfirmedCapture` for every confirmed record. `sweep_ended` runs only for the reader's own uid directory and only for records verified `Ended`: it rereads the file, requires equality of the parsed registration with the scan's record, observes the kernel again, and only then returns `SweepDisposition::Remove(log)`.
+Size (`TooLarge` above `CAPTURE_REGISTRATION_BYTES`) is checked after the version. The descriptor read takes one byte past the cap and returns the bytes it already holds, so a newer oversized record still reaches version dispatch.
+
+A legacy record can annotate a process row and never sources one. The generation and log fields must be single basenames and the argument count must match. `RegistrationCandidate::verify_observation(pid, &KernelObservation)` is the only route to `VerifiedRegistration`: `Confirmed` when the observation is for the same pid and its `BirthStamp` equals the record's, `Ended` when the kernel proves the writer gone, `Unknown` otherwise.
+
+`registered_runs` in `progress/registered_runs.rs` reads every sampled entry, requires the filename generation to match the record's, verifies against `birth_stamp::observe(pid)`, and retains one `CaptureDiagnostic` per problem. It maps `UnsupportedVersion` to `CaptureDiagnostic::UnsupportedRegistrationVersion { path, encountered, supported }` and `continue`s before inserting into `generations`; that record never becomes a `RegisteredRun`, never gains sweep authority, and neither it nor its log is unlinked. The capture assembly in `progress/capture.rs`, through `Capture::scan_root`, keys each reading by `CaptureKey { root, pid, incarnation, generation, birth }`, reads each named log once per scan, and pushes a `ConfirmedCapture` for every confirmed record. `sweep_ended` runs only for the reader's own uid directory and only for records verified `Ended`: it rereads the file, requires equality of the parsed registration with the scan's record, observes the kernel again, and only then returns `SweepDisposition::Remove(log)`.
 
 ### Birth stamps
 
@@ -66,24 +122,214 @@ Each scan (`census::scan` in `crates/cargo-tile/src/census/scan.rs`) takes `Capt
 
 Ownership resolves through `Capture::select(pid)`: the lowest root index first, then within that root one confirmed key, otherwise `Ambiguous`. `Census::captured_run` walks parents up to `PARENT_WALK_LIMIT` for the nearest selection. `Census::direct_capture` yields `DirectAssociation::Direct` only when the walk from the process to the shim pid crosses nothing but observed wrappers; any other intervening process gives the row `CaptureMembership::Enclosing`. A directly captured process row takes its directory and command from the record per field (`row_fields`) before display formatting. A confirmed registration with no directly representing process row sources its own row through `registration_row`: the record's directory, `cargo <args>`, the shim pid, start from the registration file's mtime, cpu and managed `Unavailable(Unproven)`. `registration_directory` shortens the directory to `~` only when the record's `WriterHome` is known and equals the scanner's home, so another account's path is shown in full. `RowProvenance::{Uncaptured, Direct, Enclosing}` carries `CaptureContext { root, incarnation, account }`, and `GroupingIdentity` in `crates/cargo-tile/src/render.rs` groups on that plus the raw `WorkingDirectoryIdentity`, so headings carry `[account]` and rows from different accounts never merge.
 
-### The admin install
+### Process census and CPU accounting (`crates/cargo-tile/src/census/`)
 
-`all_accounts` in `crates/cargo-tile/src/cli.rs` handles `install`, `uninstall`, and `status` with root required. It reads the account database through `hook::system_accounts`, prepares the shared directory for installation, and uses `hook::stage_executable` to stage a root-owned `0755` executable under the sticky `/tmp` parent. `hook::run_account_hooks` runs the staged copy once per eligible account with `HOME`, `RUSTUP_HOME`, and the operation-neutral hidden flag `--account-hook-report`. Credentials are applied together in pre_exec: Linux uses setgroups, then setgid, then setuid. Darwin uses the raw __initgroups kernel entry with the account uid, then setgid and setuid; its administrative proof (step18) is pending. No root-owned file operation reaches an account’s toolchain tree. The child prints and flushes one `<toolchain>\t<result>` row at a time, preserving completed rows if a later operation fails. `AccountHookOutcome` distinguishes `Completed`, `NoToolchains`, and `Incomplete`; later accounts are still processed.
+**Module layout.** `mod.rs` re-exports only thirteen items used outside `census`: `command_name`, `DirectAssociation`, `SelectedProof`, `Measurement`, `InvocationId`, `VisibleParent`, `Ancestor`, `CargoGroup`, `CargoProcess`, `CompilerObservation`, `RowProvenance`, `RunStart`, `spawn_with_resolver`. Code inside `census` imports from the owning submodule.
 
-account_groups grows its getgrouplist buffer geometrically from32 entries to65,536, handling both a reported required size and Darwin’s unchanged count on failure. It resolves the complete membership in the parent. On Darwin, `DarwinGroupMembership` keeps that list, places the primary gid first, and passes a runtime-sized credential prefix plus the account uid to __initgroups; Apple’s [Libinfo implementation](https://github.com/apple-oss-distributions/Libinfo/blob/39b70c515baee5b609e7e91693edbd934b6845a1/lookup.subproj/libinfo.c#L896) uses this entry after directory lookup. The child performs only credential calls with preallocated data and last_os_error. The working tree no longer contains the over-limit refusal; the installed `7a724382` readers still carry it. Step18 has not run, so access through a group outside the prefix and product status behavior remain unproved, and its output decides keep or revert.
+| File | Contents |
+| --- | --- |
+| `process_identity.rs` | `InvocationId`, `RunId`, `ProcessIdentity`, `ProcessIdentities`, `CaptureMembership`, `VisibleParent` |
+| `direct_capture.rs` | `DirectCapture`, `DirectAssociation`, `NearestRegistration`, `SelectedProof` |
+| `invocation_cpu_accounting.rs` | Measurement and accounting types |
+| `command_text.rs` | `CommandText`; `cargo_split` → `CargoArgvAbsence::{ArgvUnavailable, ProgramRejected}`, converted losslessly into `RowAbsence` and `SubcommandAbsence` |
+| `scan.rs` | `Census` and every scan, attribution, row and grouping method; `CargoAncestry::{Owner, ParentUnavailable, WalkLimitReached}` |
 
-Per toolchain, `Hook::install` takes `HookInstallationLock` (exclusive creation of `cargo-tile-shim.lock`, retried, removed on drop) before inspecting `HookState::{Installed, Absent, Repairable, Orphaned}`, and returns an installation `HookOperationOutcome`: `Installed`, `Refreshed`, `AlreadyCurrent`, `DowngradeRefused`, or `Orphaned`. `Hook::remove` takes the same lock and reports `Removed`, `AlreadyAbsent`, or `Orphaned`. `Repairable` means the real cargo was moved aside but the shim file is missing, and install rewrites the shim without a second rename. `Orphaned` means a shim is present with no `cargo-tile-real` beside it, and install reports it rather than overwriting. At launch, `capture::stand_up` reaches `hook::at_startup` when `auto_install` is true (the default), so merely restarting an upgraded reader can refresh shims. During rollout, suppress automatic installation and runner job-start hooks before the first upgraded reader starts; restore them only after every reader on that machine is upgraded and restarted and the deliberate v3 installation completes. The plain `install` reports a failing toolchain and continues, exiting zero so a runner job-start hook never fails over capture setup.
+**Measurements.**
+- `Measurement<T>` is `Reading(T)` or `Unavailable(MeasurementAbsence::{FirstObservation, ReadFailed, Unproven})`. Adding any `Unavailable` to anything yields `Unavailable`.
+- `InvocationMeasurements { compilers, cpu }` holds disjoint per-pid buckets. A nested cargo's bucket is its own and is never folded into its parent's.
+
+**Cumulative CPU.**
+- `InvocationCpuAccounting` persists across scans. It holds `owners`, `invocations: HashMap<InvocationId, InvocationCpuHistory>`, `targets`, `cache_owners`, `identities`, `observed`, `settled`, `reported`, and `publication`.
+- `InvocationCpuHistory::measure(InvocationCpuContributions { tree, detached, nested }, evidence, now)`:
+  1. Updates each `RetainedSubtreeCpuTime`. On Linux the subtree total is the maximum of the current sum. On other platforms each process's maximum observed time is retained after the process exits.
+  2. On Linux, subtracts retained nested-cargo totals.
+  3. Holds `accumulated` monotonic.
+  4. Returns `Unavailable` when `evidence` is unavailable.
+  5. Otherwise compares against the `InvocationCpuBaseline::{AwaitingFirstSample, Established { accumulated, at }}` from the previous scan. It returns `FirstObservation` for the first sample and `Unproven` for zero elapsed time or a lower counter.
+- `Census::process_cpu_time` reads the per-process counter. Linux: `linux_cpu_time(pid)` reads `utime+stime+cutime+cstime` from `/proc/<pid>/stat`, `LinuxCpuSample::verify` binds the sample to the process lifetime through the field-22 birth stamp, and `linux_clock_ticks` reads `AT_CLKTCK` from `/proc/self/auxv`. Other platforms: sysinfo's `accumulated_cpu_time`, which excludes reaped children.
+- Only the invocation's own counter is validated. A new or idle descendant never blanks the row.
+- A parent that has accrued zero ticks of its own, and has no failed or unproven own sample, still publishes its descendants' combined CPU.
+
+**Compiler-cache attribution.**
+- A `rustc` outside any cargo ancestry is charged by `--out-dir` to the one invocation whose target directory contains it. The target directory comes from `--target-dir`, then `CARGO_TARGET_DIR`, then observed clients.
+- `compile_owner` returns `CompileOwner::{Unique, Unknown, Ambiguous}`. `Ambiguous` charges nothing.
+- `CpuAssignment::{Direct, Detached { owner, compiler }, Unassigned}`: ancestry wins over detached attribution.
+- `CompilerCreditRetention::{Keep, Retire}` keeps a live compiler with its first owner.
+- `Census::attribute(&details, smoothing, now)` takes the detailed `System` because target directories come from command lines.
+
+**Smoothing.** `settle` moves each settled reading toward the latest sample over `CPU_SMOOTHING_SECONDS` and publishes every `CPU_REPORT_MILLIS`. An unavailable sample replaces the published reading at once.
+
+**Grouping (`Census::groups`).**
+1. Builds process rows and snapshots `process_rows: HashSet<InvocationId>`.
+2. Only then appends registration-sourced rows (plus the `cfg(test)` `registration_rows`).
+3. Assembles groups.
+4. For each group, `subtree_cpu(&shares, &members, &process_rows)` walks the tree leaves first. It seeds a member from its pid bucket only when its identity is in `process_rows` and adds each descendant's pids once. Any unproven contributor or a cyclic parent chain makes the total `Unavailable(Unproven)`.
+
+`CargoProcess.subtree_cpu` carries the result. `render::summary_rows` draws it for a promoted summary row. Command rows keep `aggregate_cpu`, which charges a pid shared by two rows once.
+
+**Test adapters.** `groups_with_registration_rows_for_test` and `groups_with_cpu_for_test` are `cfg(test)`. `tests/summary_totals.rs` drives them.
+
+### Account hooks and credentials (`crates/cargo-tile/src/hook.rs`, `cli.rs`)
+
+- `HookOperation::{Install, Uninstall, Status}` drives one shared account protocol. `cli::all_accounts(operation)`:
+  1. Requires root.
+  2. Reads accounts through `hook::system_accounts()` (`getpwent`, sorted by name then uid).
+  3. For `Install` only, runs `root_scan::prepare_shared_directory(CAPTURE_ROOT)`.
+  4. Stages the running executable with `hook::stage_executable`: a root-owned `0755` copy under the sticky parent of `CAPTURE_ROOT`, removed with its directory on drop.
+  5. Calls `hook::run_account_hooks(&accounts, staged, operation) -> Vec<AccountHookReport>`.
+  6. Prints each report, then `N accounts: C completed, T with no toolchains, I incomplete`.
+  7. Returns `operation.completion(&reports)`.
+- `run_account_hooks` skips any account with no `<home>/.rustup`. As root it applies `account_credentials`; otherwise it uses `Command::uid/gid`. `run_account_hooks_with(accounts, executable, operation, impl FnMut(&mut Command, &HookAccount) -> io::Result<()>)` injects the credential step for tests. No root-owned file operation reaches an account's toolchain tree.
+- The child runs `<staged> <subcommand> --account-hook-report` with `HOME` and `RUSTUP_HOME` set to the account's database home. It writes one `<toolchain>\t<result>` row per toolchain and flushes each row before the next toolchain starts.
+- `ToolchainHookOutcome::{Install, Uninstall, Status(HookState), Unreadable, Failed}` encodes the rows. `AccountHookReport::from_output` decodes them and keeps valid rows past a malformed line and past a failed child exit.
+- `AccountHookOutcome` is one of `NoToolchains`, `Completed` or `Incomplete(String)`. A credential failure becomes `Incomplete("could not resolve <name>'s groups: <error>")`, and later accounts still run.
+- Local paths consume `Hook::reports(operation) -> io::Result<impl Iterator<Item = ToolchainHookReport>>` lazily through `.inspect(print_local_report)`.
+- `Hook::at` returns `HookDiscovery::{Discovered, AbsentCargo, InspectionFailed { path, error }}`.
+- `Hook::state` is the only inspection that runs without the lock. `Hook::install`/`ensure` and `Hook::remove` take `HookInstallationLock` (exclusive creation of `cargo-tile-shim.lock`, retried, removed on drop) before they classify `HookState::{Installed, Absent, Repairable, Orphaned}`.
+  - `Repairable` means the real cargo was moved aside but the shim file is missing; install rewrites the shim without a second rename. `Orphaned` means a shim is present with no `cargo-tile-real` beside it; install reports it and does not overwrite.
+  - `install` returns `HookOperationOutcome::{Installed, Refreshed, AlreadyCurrent, DowngradeRefused { installed, supported }, Orphaned}`.
+  - `remove` returns `Removed`, `AlreadyAbsent` or `Orphaned`.
+  - `is_incomplete` counts `Unreadable`, `Failed`, `Orphaned` and `DowngradeRefused`.
+- `account_groups(name, primary_gid) -> io::Result<Vec<u32>>` wraps `getgrouplist` in the private generic `account_groups_with<Group: Copy>(primary_gid, resolve)`, resolving the complete membership in the parent. The loop:
+  1. Resets the count to the buffer length before each call.
+  2. Resizes to a reported larger count when one arrives. A zero, smaller or unchanged count doubles the buffer instead.
+  3. Returns `InvalidData` for a negative count.
+  4. Errors at `ACCOUNT_GROUPS_MAX_CAPACITY`, naming the ceiling.
+- **Linux credentials:** `pre_exec` calls `setgroups(full list)`, then `setgid`, then `setuid`.
+- **Darwin credentials:**
+  - The parent builds `DarwinGroupMembership::new(uid, primary_gid, groups, sysconf(_SC_NGROUPS_MAX))` before fork. It:
+    1. Requires a positive limit.
+    2. Requires that the primary gid is in the resolved list, and swaps it to index 0.
+    3. Sets `count = min(len, limit)` and converts uid to `c_int`.
+  - The `pre_exec` child calls the raw libsyscall entry `__initgroups(count, groups.as_ptr(), uid)`, then `setgid`, then `setuid`. It does no allocation, no locking and no directory lookup. Apple's [Libinfo implementation](https://github.com/apple-oss-distributions/Libinfo/blob/39b70c515baee5b609e7e91693edbd934b6845a1/lookup.subproj/libinfo.c#L896) of `initgroups(3)` uses this entry after its directory lookup.
+  - The kernel keeps the first `count` groups in the credential and resolves the remaining groups dynamically through the registered uid.
+  - No account is refused and no membership is shortened.
+- `unsafe_code` allowances in `hook.rs`, each with a `// SAFETY:` comment: `system_accounts`, `account_groups`, `account_credentials`.
+- Shim versioning:
+  - `shim_version(contents)` reads only the first `SHIM_MARKER_SEARCH_BYTES`. A declaration that does not terminate inside that window is `InvalidData("incomplete shim version line")`. So is a trailing fragment that is a proper prefix of `SHIM_VERSION_PREFIX`.
+  - Under the lock, a newer declared version yields `DowngradeRefused` and leaves the shim, the saved real cargo, their modes and their mtimes untouched.
+  - `capture::stand_up` reaches `hook::at_startup` when `auto_install` is true (the default), and folds `Startup.kept_newer: Vec<NewerShim>` into `App.capture_note: CaptureStartupNotice::{Quiet, InstallationFailed, NewerShimKept, NewerShimKeptWithFailures { kept, failures }}`. The startup toast and Settings render it.
+
+### Terminal UI and settings scrolling (`crates/tui_pane/src/overlays/settings.rs`)
+
+- `SettingsPane` holds a `Viewport`, `line_targets: Vec<SettingsLineTarget>`, `row_lines: BTreeMap<usize, Range<usize>>` and `drawn_scroll_offset: DrawnScrollOffset::{Undrawn, Drawn(usize)}`. `SettingsPane::new` is a `const fn`.
+- `SettingsLineTarget` is one of `Row(SettingsRowPayload)`, `Decoration` or `OutsideContent`.
+- `render_rows(&mut self, rows, options) -> SettingsRender` numbers selectable rows by position. Wrapped continuation lines carry their row's target.
+- `update_scroll` keeps the selected row visible. `navigate` shows a tall row's hidden continuation lines before it moves to the next row.
+- `render_lines(&mut self, frame, lines)` slices to the viewport, paints, and records `Drawn(offset)`.
+- `row_at(pos) -> SettingsRowHit::{Row(usize), Missed}` resolves against the recorded drawn offset. Before the first paint every click misses. Keyboard navigation and mouse selection use the same rows.
+- `line_for_selection(selection) -> SettingsSelectionLine::{Rendered(usize), NotRendered}`.
+- `SettingsRowIdentity::{Decoration, Selectable(SettingsRowPayload)}` (`settings_store/row.rs`): a selectable payload must equal the row's zero-based position among selectable rows.
+- Consumers: `cargo-tile` `render.rs` (geometry, `update_scroll`, then `render_lines`), `navigation.rs` and `interaction.rs`.
+- Input: crossterm carries the `use-dev-tty` feature in `crates/cargo-tile/Cargo.toml`. This selects the level-triggered Unix input backend, so a keystroke that arrives together with a resize is not lost.
+- Rows readout: `draw_with_readout`, `content_area` and `rows_readout_height` in `render.rs` split a tile's interior between contents and the readout row. The readout row counts toward height demand, and a one-row interior shows only the readout.
+
+### Linux backdrop (`crates/tui_pane/src/backdrop/desktop/platform/linux/`, `backdrop/monitor/mod.rs`, `theme/poller.rs`)
+
+**Shared subprocess reader (`mod.rs`).**
+- `read_desktop_command(&mut Command) -> Result<Vec<u8>, DesktopReadFailure::{Expired, Failed(String)}>` spawns a `DesktopSubprocess`. That process's stdout is one end of a nonblocking `UnixStream::pair`, and stdin and stderr are null.
+- It polls `try_wait` before each read of up to `DESKTOP_STDOUT_CHUNK_BYTES`, every `DESKTOP_READ_POLL_INTERVAL`, until `TOPOLOGY_READ_DEADLINE`.
+- On expiry or error it kills and reaps the child even when the kill fails. A nonzero exit is `Failed`.
+- `kscreen-doctor` and `kdotool` both go through this reader.
+
+**Session bus.**
+- `SESSION_CONNECTION: Mutex<SessionConnection<Connection>>` is one of `Unconnected`, `Connected` or `Retrying { failure, retry_at }`.
+- `session_connection() -> SessionBus::{Connected(Connection), Unavailable(ConnectionFailure::{NeverConnected, Disconnected, StatePoisoned})}` clones the held connection. It reconnects only after `retry_at` (`DESKTOP_RETRY_INTERVAL`) or when `is_closed`.
+- Capture, position and topology workers all share this one connection.
+
+**Display topology (`display.rs`).**
+- `TOPOLOGY: Mutex<DisplayTopology::{Unread, Watching(Vec<Output>), Recovering(TopologyRead)}>`. `TopologyRead` is `Read(Vec<Output>)`, which may be empty, or `Unreadable`.
+- `active_outputs()` starts one watcher thread through a `Once` and returns the snapshot. Capture ticks never spawn `kscreen-doctor`.
+- `watch_connected_topology`:
+  1. Subscribes to KScreen `configChanged` and `NameOwnerChanged` for `org.kde.KScreen`, each buffered to `TOPOLOGY_SIGNAL_CAPACITY`.
+  2. Calls `requestBackend` and records the replying owner.
+  3. Reads the layout (`kscreen-doctor -j`).
+  4. Re-reads on each change.
+  5. Ignores an owner-change signal naming the owner that answered.
+- On interruption the state becomes `Recovering(last snapshot)`, and the watch retries after `DESKTOP_RETRY_INTERVAL`.
+- `parse_outputs` keeps connected, enabled outputs with a finite positive scale and swaps size for rotation 2 or 8.
+- `under(outputs, frame) -> OutputSelection::{Containing, Nearest, NoActiveOutputs}` picks by window centre.
+- `capture` reports `Unread`, `Unreadable` and an empty layout as `CaptureFailure::DisplayNotFound`.
+
+**Terminal window inventory (`window.rs`).**
+- `TERMINAL_WINDOWS: LazyLock<Mutex<TerminalWindowInventory>>` has three parts:
+  - `search: TerminalWindowSearch::{NotSearched, Found { uuids, searched_at }, Unavailable { failure, tried_at }}`.
+  - `registry: WindowRegistry`: a UUID↔`u32` handle map whose handles stay stable across refreshes.
+  - `classifications: HashMap<String, TerminalClassification::{Unclassified, Known(TerminalClass::{Matching, Other})}>`.
+- The one discovery command is `kdotool search --name .* getwindowid %@`, serialized by `KDO_TOOL_ACCESS` because concurrent `kdotool` runs collide on their temporary KWin scripts.
+- `read(usage, now, source)` for `WindowInventoryUse::{Capture(target), Identification, MarkerIdentification}`:
+  1. A `Capture(PreferWindow { window_id })` whose registered window still answers returns that window with no discovery.
+  2. Otherwise it queries held UUIDs through `held_windows`.
+  3. It searches again only when nothing has been searched, or when the last search or failure is at least `DESKTOP_RETRY_INTERVAL` old and either no windows were found or the use is `Capture(TerminalWindowHeuristic)`.
+- `held_windows`:
+  - Skips querying `Known(Other)` UUIDs unless the use is `MarkerIdentification`.
+  - Sends one `getWindowInfo` per remaining UUID over the held bus.
+  - Drops a UUID and its classification when it does not answer.
+  - Filters the result to `TerminalClass::Matching` except for marker identification.
+- `TerminalClass` is `Matching` when the KWin `resourceClass` contains `TERM_PROGRAM`, ignoring ASCII case.
+- `frame(handle)` queries one registered UUID and drops it on no answer.
+
+**Position worker (`monitor/mod.rs`).**
+- `PositionReadState::{Unwatched, Holding { window, position, read_at }}` with `WindowPosition::{Unavailable, Settled(Frame), Moving { frame, unchanged_since }}`.
+- `read` returns the held answer without querying when the same window is `Settled` or `Unavailable` and less than `POSITION_IDLE_INTERVAL` has passed since `read_at`. Otherwise it reads.
+- `observe` enters `Moving` on a changed frame. The state stays `Moving` while the frame has been unchanged for less than `POSITION_SETTLE_DURATION`, then becomes `Settled`.
+- A different window reads at once.
+- `position_loop_with(watches, frames, clock, read_frame)` sends one `Option<Frame>` per request.
+
+**Appearance (`theme/poller.rs`, Linux).**
+- `AppearanceBackend` (`connect`, `watch`, `read`) is implemented by `PortalBackend` over `org.freedesktop.portal.Settings`.
+- `subscribe` connects, then installs the `SettingChanged` (`org.freedesktop.appearance`/`color-scheme`) and owner-changed streams, then reads the startup value, all on one connection.
+- `follow(initial, stream, history, recovery, on_change: FnMut)` sets `SubscriptionRecovery::Live`.
+- `AppearanceHistory::{Unobserved, Observed(AppearanceObservation::{Unspecified, Selected})}` delivers only a changed `Selected` value.
+- The stream ends with `SubscriptionEnd::{Disconnected, OwnerChanged, InvalidSetting}`.
+- `track` logs `tracing::warn!` on each end or failure. `SubscriptionRecovery::{NeverConnected { failures }, Live, Interrupted { failures }}::failed()` waits `POLL_INTERVAL` until `BACKOFF_THRESHOLD` failures, then `BACKOFF_INTERVAL`.
+- Non-Linux keeps the polled `dark_light::detect`.
+- Manifests: workspace `futures-lite = "2.6.1"` and `zbus = "5.19.0"`. Both are non-optional Linux dependencies of `tui_pane` and are not tied to `backdrop`.
+
+### cargo-berth reader compatibility (`crates/cargo-berth/`)
+
+- `board --reservation <id> --json` reports `Race extent` and `Merge extent` in `ReservationReport` (`board/report.rs`). An unresolvable trunk yields `unavailable` with the prior extent as `retained_evidence`.
+  - The success variant is `Snapshot(Box<ReservationReportSnapshot>)`, which is untagged, so the JSON shape does not change.
+  - `docs/cargo-berth/generated/output-contract.json` carries the extent fields.
+- `reconcile.rs`: `prepare_reconciliation_transaction` calls `derive_merge_extents` first and then `append_evidence_operations`. `prepare_gate_reconciliation` uses the same appender.
+  - Every persisted evidence record derives `edit_blocking_status` through `Reservation::edit_blocking_status` (`reservation/record.rs`) on the post-transaction reservation from `with_merge_extent`.
+  - `append_evidence_operations` takes out the scoped-patch scheduling operations, appends evidence, and puts them back, so retry priorities survive.
+- `IntegrationEvidenceStatus::edit_blocking_status` (`reservation/lifecycle.rs`) is `#[cfg(test)]` and is kept only for historical replay comparison.
+- `verb/release.rs` `outstanding_operation`: on an unreadable trunk it persists `ObjectUnknown` through `evidence_operation`. The retained merge extent's protection then decides clear versus blocking.
+- Historical records replay byte-for-byte unchanged.
+- `tests/reader_compat.rs` checks a chosen reader:
+  - It runs the executable named by `CARGO_BERTH_EXECUTABLE` against a frozen ledger restored from `tests/fixtures/reader_compat/repository.bundle`.
+  - Five cases: `board`, `check` and `drift` responses, plus SessionStart and PostToolUse hook payloads.
+  - It compares the canonicalized root against expectations built in `tests/support/reader_compat_hooks.rs` (shared with `tests/hooks.rs`).
+
+### Runner services and upgrade procedure
+
+**Services.**
+- Linux: `github-runner-hana-linux-1.service` (uid 992) and `github-runner-hana-linux-2.service` (uid 991). The units are generated by the machine's NixOS configuration. Units use `UMask=0066` and `PrivateTmp=yes` with `BindPaths=/tmp/cargo-tile`. Runtime `HOME` is `/run/github-runner/<account>`, state is `/var/lib/github-runner/<account>`, `RUSTUP_HOME` is `/var/lib/hana-ci/<account>/rustup`, and `CARGO_HOME` is `/var/lib/hana-ci/<account>/cargo`. The generated unconfigure `ExecStartPre` deletes the runtime HOME contents, so a config placed there does not survive a restart.
+- Mac: `org.nixos.hana-macos-runner` runs as `hana-ci` (uid 502). The plist is `/Library/LaunchDaemons/org.nixos.hana-macos-runner.plist`, with working directory `/Users/hana-ci/actions-runner`; its Nix launcher rewrites `.env` and `.path` at startup. The plist sets neither `CARGO_TILE_ROOT` (read by nothing) nor a job-start hook.
+- The three runners are registered to the `hana` repository. cargo-liner CI uses GitHub-hosted runners, so runner rows are observed from hana CI runs.
+
+**Upgrade order.** Readers are deployed before v3 writers, and shims only after every reader on the machine is upgraded:
+1. Before any upgraded reader starts, set `capture.auto_install = false` for every account (keeping each original config's bytes and mode, or its absence) and withhold runner job-start hooks. On Linux the runner accounts need a NixOS configuration change and a rebuild first, because the unconfigure pre-start wipes runtime HOME: a last-position `ExecStartPre`, run as the runner account, copies the suppressed config into runtime HOME.
+2. Deploy the readers (`cargo-tile`, `cargo-berth`, `cargo-port`) and restart them.
+3. Run `sudo cargo tile install --all-accounts`.
+4. Verify each shim's version line.
+5. Run `status --all-accounts` and check that every expected toolchain reports `Installed`.
+6. Restore each account's original config bytes, mode, or absence.
 
 ### What the tests prove
 
 `crates/cargo-tile/tests/shim_registration.rs` reaches the sources through `#[path]` modules and drives the built binary under a PTY. `crates/cargo-tile/tests/support/shared_capture.rs` holds the cross-account scenarios. Fixtures write records with Python under the test's own uid; no test needs a second account.
 
-- Injected accounts install through the built binary. The staged installer copies the executable and removes its directory on drop. An installer that cannot start is reported per account, not as a crash. Group resolution matches the account database.
+- Injected accounts install through the built binary. The staged installer copies the executable and removes its directory on drop. An installer that cannot start is reported per account, not as a crash. Group resolution matches the account database. Unit tests cover the Darwin primary-first list, credential prefix and uid, and continuation past a credential failure.
 - The reader reports a foreign-owned uid directory as ignored, skips symlinked and non-numeric entries, and shows a new account directory on the next scan.
 - The reader creates the parent when missing and repairs a mode it owns.
 - A live capture under the real path, scanned through the `/private/tmp` alias, survives the sweep. A record carrying a legacy `{ sec = ` boot is reported `IdentityUnknown` and never unlinked.
 - The reader reaps its own ended capture and leaves a foreign-owned directory untouched. The obsolete `roots` key is ignored.
 - `reader_regression` covers nested shims, a quiet JSON caller, recovery from ambiguity, locale and timezone variation, legacy registration survival, and removal of an ended staging file.
+- `tests/summary_totals.rs` covers promoted-summary CPU totals, including zero-own-tick parents and unreadable counters.
+- `tests/capture_root_acl.rs` (`#![cfg(target_os = "macos")]`, 20 tests) exercises real ACLs through `/bin/chmod +a` with `CAPTURE_ACL_TEST_*` fixture constants.
+- cargo-berth `tests/reader_compat.rs` checks a chosen reader against the frozen `merge_extent_observed` ledger.
 
 ## Invariants
 
@@ -91,422 +337,154 @@ Per toolchain, `Hook::install` takes `HookInstallationLock` (exclusive creation 
 - The shim is POSIX `sh`: no bashisms, no `readlink -f`, no `local`.
 - Publication order and sampling order are one invariant read from two ends. The shim publishes the registration before it creates the log. The reader samples registrations when it opens the root and collects the sample before consulting liveness.
 - A sweep removes `<pid>.<generation>` and the log the record names as a pair, decided by fresh kernel evidence for that pid immediately before the unlink, never by age or by name alone. `Unknown` authorizes neither a row nor a deletion.
+- Sweep authority comes from `access` alone. Each file needs its own descriptor proof and a dev/ino recheck immediately before `unlinkat`. The log is unlinked before its registration. Directory write grants and incomplete inventories never veto a proved pair.
 - Only the reader's own uid directory is swept (`CaptureCleanup::Here`). A foreign-owned directory is reported, not read. Another account's dead captures are reaped by that account's next shim invocation.
+- No sweep count or refusal reaches Settings or any user surface.
 - `VerifiedRegistration` is the only proof of identity, and production `KernelObservation` values come only from `observe(pid)`.
+- A registration newer than `SUPPORTED_REGISTRATION_VERSION` never becomes a `RegisteredRun`. The version is classified from the bounded header before size or fields.
 - Every directory is opened with `O_NOFOLLOW` relative to a held handle. Ancestor symlinks are resolved once by `canonical_capture_path`; the final component never is.
-- `unsafe_code` is denied workspace-wide. The exceptions are `birth_stamp/macos.rs` (sysctl) and the account-database and credential calls in `hook.rs`, each under a per-item `allow(reason)` with a `// SAFETY:` comment.
+- `install` exits zero when a toolchain fails, because job-start hooks call it. `uninstall` and `status` exit nonzero when any account is incomplete.
+- `Hook::reports` is lazy. Each consumer prints or forwards an item before it pulls the next. A child flushes each row before starting the next toolchain.
+- A mutating hook operation takes `HookInstallationLock` before inspecting state. `Hook::state` is the only inspection without the lock.
+- A reader never replaces a shim that declares a newer version.
+- A supplementary-group list is never shortened.
+  - Darwin: pass the credential-limit prefix and the uid to `__initgroups`, with the primary gid first.
+  - Linux: pass the full list to `setgroups`.
+  - All allocation and conversion happen in the parent. `pre_exec` makes credential syscalls only.
+- `Census::groups` snapshots `process_rows` before it injects registration rows. Subtree totals seed only members in that set. CPU aggregation keys on invocation identity and charges a pid once per lead.
+- Detached compiler work is charged only for a `CompileOwner::Unique`. Ancestry takes precedence.
+- `progress/mod.rs` and `census/mod.rs` re-export only items used across the crate. Other consumers import from the owning submodule.
+- Settings content is painted through `SettingsPane::render_lines`. A selectable row's payload is its position among selectable rows. The settings pane does no filesystem access; everything it shows was observed on the worker.
+- No capture tick spawns `kscreen-doctor`. `kdotool` discovery runs at most once per `DESKTOP_RETRY_INTERVAL` except on the startup or no-window path. One process-wide session-bus connection serves every desktop worker.
+- Every desktop subprocess goes through `read_desktop_command`, and every expiry or failure kills and reaps the child. Every `kdotool` invocation holds `KDO_TOOL_ACCESS`.
+- cargo-berth evidence records are built after extent derivation and match the live `Reservation::edit_blocking_status`. Historical journal records are never rewritten.
+- Every cargo-berth reader that can reconcile or release includes the extent and evidence handling before a newer binary touches a shared ledger.
+- `unsafe_code` is denied workspace-wide. In cargo-tile the exceptions are `birth_stamp/macos.rs` (sysctl), the account-database and credential calls in `hook.rs`, and the test FIFO fixture in `root_scan/inspected_directory.rs`, each under a per-item `allow(reason)` with a `// SAFETY:` comment.
 - Every constant lives in `crates/cargo-tile/src/constants.rs` with a rationale.
-- The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules, and `crates/cargo-tile/tests/` reaches the sources through `#[path]` modules and drives the built binary.
-- The settings pane does no filesystem access; everything it shows was observed on the worker.
+- The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules. Each integration harness that reaches the sources (`shim_registration.rs`, `summary_totals.rs`, `capture_root_acl.rs`) has its own full `#[path = "../src/…"]` block; moving a file means updating every block.
 - Two uids are never required by a test.
 
 ## Calibration and gotchas
 
-- `CAPTURE_SWEEP_LIMIT` is 512 removal attempts per scan across all roots; a pair costs two. `CAPTURE_INVENTORY_LIMIT` is 4096 entries, `CAPTURE_ENTRY_NAME_BYTES` 255, `CAPTURE_REGISTRATION_BYTES` and `RUN_LOG_TAIL_BYTES` 64 KiB, `BIRTH_SYSCTL_MAX_BYTES` 4096, `ACCOUNT_GROUPS_INITIAL_CAPACITY` 32. The worker sleeps `PROCESS_POLL_MILLIS` (250) after each scan, so the scan rate is at most four per second.
+**Capture, registration and sweeps.**
+- `CAPTURE_SWEEP_LIMIT` is 512 removal attempts per scan across all roots; a pair costs two, reserved before the first unlink. `CAPTURE_INVENTORY_LIMIT` is 4096 entries, `CAPTURE_ENTRY_NAME_BYTES` 255, `CAPTURE_REGISTRATION_BYTES` and `RUN_LOG_TAIL_BYTES` 64 KiB, `BIRTH_SYSCTL_MAX_BYTES` 4096. `REGISTRATION_VERSION_HEADER_BYTES` is `len("cargo-tile-v") + 20`. The worker sleeps `PROCESS_POLL_MILLIS` (250) after each scan, so the scan rate is at most four per second.
 - When a live run's log is swept, cargo reopens it through `script` or `tee -a` outside the setup subshell under the caller's umask (`0066` on the runner units), so it lands `0600` and stays unreadable for the rest of that run. That is the reason for the ordering invariant.
 - `read_dir` is lazy; collecting is the sample. Keeping the calls in order but dropping the collection reintroduces the defect.
-- An unreadable registration retains its path-qualified Settings diagnostic and is preserved, while independently proved ended sibling pairs remain eligible for sweeping. Partial inventories likewise permit sweeping their established pairs.
+- An unreadable registration retains its path-qualified Settings diagnostic and is preserved, while independently proved ended sibling pairs remain eligible for sweeping.
+- The final identity check and `unlinkat` are separate syscalls. A basename replaced between them can be unlinked. Retained handles prevent traversal redirection, not that final replacement; no POSIX conditional unlink exists, so the recheck detects replacement and does not guarantee a replaced file survives.
+- A mode or group change on a capture directory between scans does not count as a changed directory. `same_directory` compares dev, ino and owner only.
 - `effective_user()` and each platform's boot read cache their first result, failure included, for the process lifetime. `IdentityUnknown` (retried next scan) and `IdentityBlockedByBoot` (restart required) stay separate for that reason.
-- Sweep eligibility is proved per candidate from its open descriptor: a regular file owned by the effective uid, no group or other write bit, one link, and identity rechecked before unlink through the retained directory handle. A candidate failing proof is preserved and counted. Another account’s directory write access decides nothing, and no cleanup condition reaches Settings.
 - macOS: `kern.boottime` is recomputed on clock corrections, so the boot field is the session UUID. `BirthStamp::compare` returns `Unknown`, never `Ended`, for a legacy `{ sec = ` boot string against a present process. The macOS birth truncates to whole seconds; the generation, not the birth, separates two invocations born in one second. `ps -o lstart=` is padded to column width and rendered through `localtime`, so the shim trims it and reads under `LC_ALL=C TZ=UTC0`. `/tmp` is `/private/tmp`; `DirectoryComparison::between` compares aliased directories by device and inode, and relative paths never establish identity.
 - A runner service whose PATH lists Nix or Homebrew coreutils ahead of `/bin` resolves `date` to the GNU binary, which rejects `-j`. The shim tries the BSD form and falls back to `date -u -d`, so the birth field is filled under either binary. An empty birth field means the tile can neither draw nor delete that registration.
-- Legacy birth evidence cannot establish identity. Readers accept both v2 and v3 framing and diagnose newer numeric versions; a version line alone does not establish that an installed binary includes later sweep or CPU changes.
 - The state column draws `blocked` only for `waiting for file lock on build directory`; a package-cache lock wait is ignored by design.
-- sysinfo: a CPU rate is trustworthy only when the previous accumulated counter is positive; `accumulated_cpu_time()` is quantized; start times are whole seconds, which is why registration-sourced rows use the registration mtime. `UpdateKind::OnlyIfNotSet` never re-reads a populated field, so the detail pass builds a fresh `System` per scan.
-- `uninstall` attempts every toolchain and exits nonzero for incomplete removal; an orphan is a rendered incomplete result. `install` reports and continues but exits zero even on per-toolchain failure. `status --all-accounts` checks installation state, not framing or shim bytes: inspect every version line and installation report separately. A zero status exit can accompany `Absent`, `Repairable`, or `Orphaned` rows, so every expected toolchain must actually report `Installed`. Top-level setup or discovery can still make installation fail before its per-account/toolchain report handling.
-- Settings uses a row viewport and a rendered-line map in `crates/tui_pane/src/overlays/settings.rs`; keyboard navigation and mouse selection use the same rows.
+
+**Hooks and installation.**
+- `ACCOUNT_GROUPS_INITIAL_CAPACITY` is 32, `ACCOUNT_GROUPS_GROWTH_FACTOR` is 2, and `ACCOUNT_GROUPS_MAX_CAPACITY` is 65,536 entries (256 KiB).
+- glibc writes the required count back through the count pointer. Darwin can leave the count unchanged, which is why the loop resets the count and grows.
+- Darwin `_SC_NGROUPS_MAX` is 16. macOS adds implicit groups (12, 61, 701, 100), so an account with 17 explicit groups resolves to about 21.
+- `SHIM_MARKER_SEARCH_BYTES` is 1024 and the version declaration sits near byte 44. A comment `#` landing at the window boundary would make install refuse a correct shim.
+- `status --all-accounts` checks installation state, not framing or shim bytes. Only each shim's version line proves v3. A zero status exit can accompany `Absent` or `Repairable` rows, so every expected toolchain must actually report `Installed`. Top-level setup or discovery can still fail before per-account report handling.
+- Neither reader version strings nor shim version lines identify which reader build is installed; compare executable hashes.
+- Restarting a reader installs shims unless `capture.auto_install` is false. A TOML type error anywhere falls back to defaults, which set `auto_install = true`.
+- The local install path ends `.inspect(print_local_report).count()`. It only iterates because a `filter_map` chain is not `ExactSizeIterator`.
+- A cargo-tile older than v3 framing writes `cargo-tile-v2`. When install progress is missing, check the installed version first.
+- The staged executable relies on the parent of `CAPTURE_ROOT` being sticky and root-owned.
+
+**CPU and census.**
+- Two invocation identities can share one pid: a registration fallback and a process row whose command differs. Anything keyed on pid charges that pid twice.
+- A contested compile is refused silently: the row shows only its own tree's time.
+- On non-Linux platforms the counter is sysinfo's: `accumulated_cpu_time()` is quantized, and a rate is trustworthy only when the previous accumulated counter is positive. Start times are whole seconds, which is why registration-sourced rows use the registration mtime. `UpdateKind::OnlyIfNotSet` never re-reads a populated field, so the detail pass builds a fresh `System` per scan.
+- An import used only under `cfg(target_os = "linux")` passes Linux lint but fails macOS lint as unused. `invocation_cpu_accounting.rs` guards those imports.
+- `RowAbsence::ProgramRejected` and `PolicyExcluded` both render as `GroupAbsence::Excluded`.
+
+**Settings.**
+- `HashMap::new` is not `const`, so `row_lines` is a `BTreeMap` to keep `SettingsPane::new` a `const fn`.
+- Crossterm's default edge-triggered backend drops a readiness token when a resize arrives in the same batch. Only `use-dev-tty` prevents this.
+
+**Backdrop.**
+- `DESKTOP_RETRY_INTERVAL` is 30 s, `TOPOLOGY_READ_DEADLINE` is 5 s (it bounds `kdotool` too), `DESKTOP_READ_POLL_INTERVAL` is 10 ms, and `DESKTOP_STDOUT_CHUNK_BYTES` is 8192. `CAPTURE_REFRESH` stays at 1000 ms.
+- `POSITION_IDLE_INTERVAL` is 250 ms and `POSITION_SETTLE_DURATION` is 500 ms. A move can register up to one idle interval late.
+- A plain `kdotool getwindowid` returns only the first match. `%@` returns every UUID.
+- `.*` holds windows whose class does not match `TERM_PROGRAM`, so marker titles still resolve.
+- The first capture tick after startup can land on `Unread` and report `DisplayNotFound` once.
+- Backdrop capture runs only while the attract screen is visible.
+- `backdrop` is off by default in `tui_pane`, so topology, selection and bus tests run only with that feature.
+- A `NameOwnerChanged` emitted at `AppearanceBackend::watch` would cause a reconnect loop. This has not been observed.
+- Measured on a KDE Plasma machine over one idle minute: 2 `kdotool` children, 0 `kscreen-doctor` runs, 0 new session-bus connections, and `getWindowInfo` at about 4.5/s.
+
+**cargo-berth.**
+- With `CARGO_BERTH_EXECUTABLE` unset, `reader_compat` tests the freshly built binary and passes silently.
+- Passing `reader_compat` does not prove a reader has the evidence handling. The fixture exercises neither `board --reservation` nor an evidence transition.
+- An evidence record describes its own moment, so compare against the live answer.
+- `release::execute` returns the reconciliation result before reaching `outstanding_operation`. A test must materialize `object_unknown` with a board read first.
+- A fixture must commit its berth configuration before creating worktrees. An untracked config adds merge protection.
+
+**Platform and tests.**
+- XNU hides the platform `/bin/bash` environment even from root. The runner Listener process carries the runner environment instead.
+- An unsigned copy of `/bin/sh` or `/bin/bash` is killed on macOS, and `/bin/sh` re-execs as bash. Darwin fixtures ad-hoc sign a copied `/bin/bash`.
+- Darwin fixtures canonicalize the `/var` alias and set `PYTHONUTF8=1`.
+- On Linux, the cache-readiness check retries an unavailable `ps` within its deadline.
+- Fixture writers live about 20 s. The two 10 s `wait_for` deadlines plus the 1 s settle already use about 21 s, so a new wait replaces an existing one. `wait_for_fixture_pane(markers)` is the readiness predicate.
+- `capture_root_acl.rs` compiles only on macOS. A green Linux gate says nothing about it.
+- An empty ACL (a live allocation with zero entries, from `chmod -a# 0`) differs from an absent one (`-N`).
 - `reader_keeps_application_spawned_cargo_when_run_is_excluded` is timing-sensitive: about one flake in three package runs, green on rerun.
-- The staged executable relies on the parent of `CAPTURE_ROOT` being sticky and root-owned. Darwin membership beyond the runtime group limit is no longer refused in the working tree. Unit tests cover the prepared primary-first list, credential prefix and uid; step18 proved access through a group beyond the prefix on a real administrator-created account (see "Step18 outcome" below).
-- A runner unit with a private `/tmp` needs `BindPaths=/tmp/cargo-tile`. Both inventoried Linux units already provide it. The inspected Mac launchd plist has no `CARGO_TILE_ROOT`; the removed variable is read by nothing.
 
 ## Why
 
-- One shared parent with per-uid children replaces a configured root list: the shim, reader and installer all know one machine location, and a runner account needs no configuration. Sticky `1777` lets any account create its directory while only the owner can replace it.
+**Shared directory and sweeps.**
+- One shared parent with per-uid children, not a configured root list: the shim, reader and installer all know one machine location, and a runner account needs no configuration. Sticky `1777` lets any account create its directory while only the owner can replace it.
 - Cleanup is per account because a non-owning reader cannot unlink under a `0755` directory, and every cross-uid removal attempt would fail on every entry, permanently. The shim reaps its own predecessors instead.
-- Hard-link publication rather than `mv -f`: a rename silently replaces a name a live run still owns, while `ln` fails and a failure is a setup failure like any other.
-- NUL framing rather than a `<cwd>\tcargo <args>` line: space-joined argv loses argument boundaries, and a tab or newline inside an argument breaks the framing.
-- `/proc/$$/stat` rather than `/proc/self/stat`: inside the setup subshell `self` is the short-lived child, not the pid the registration is filed under.
-- Verification by kernel evidence before deletion: exclusive creation prevents a name being taken while a record holds it, and does not prevent the same name being published again once removed, so deleting by exact name is not safe on its own. Age cannot establish that a paused writer ended, so a staging file is eligible only when the kernel confirms its writer gone.
-- `libc::sysctl` on macOS rather than `sysctl(8)` or `ps(1)`: a subprocess per registration per scan at four scans a second. rustix has no sysctl binding, and sysinfo's start times are rounded on Linux and zero on the macOS fallback.
-- The boot session UUID rather than `kern.boottime`: the latter follows clock corrections, so every live registration mismatched and was swept within a scan.
-- `kill(pid, 0)` before calling a process ended: an empty `KERN_PROC_PID` reply can mean a hidden record, not an exited process.
-- One ownership rule on both platforms rather than a platform gate returning foreign for every non-Linux root, under which no Mac would ever sweep. A trusted-prefix list preserving macOS `/tmp` became unnecessary with the uniform rule.
-- `geteuid` from `rustix::process` rather than a process-table view, which depends on process visibility.
-- A staged root-owned installer copy under `/tmp` rather than the administrator's own binary: the account child must execute it whatever the permissions on the administrator's home, and a sticky parent stops another account replacing it.
-- Credentials applied together in `pre_exec`, group credentials first (`setgroups` on Linux, `__initgroups` on Darwin): `Command::uid` alone leaves the child without the account's supplementary groups, so a toolchain the account reaches through a group would fail. On Darwin, `setgroups` would also cap the membership at the runtime limit, while `__initgroups` leaves the remaining groups resolvable through the account uid.
-- Registration mtime as the run start: it is the one value the reader already has across a uid boundary.
-- Restoring `cargo-tile-real` before installing over it was ruled out; the round trip is the window in which a second installer saves a shim as the real cargo. A file-locking dependency was ruled out in favour of the existing exclusive-create idiom.
-- Changing the runner unit's `UMask=0066` was ruled out; it reaches every file the runner writes, credentials included. Recursive mode correction beneath the root was ruled out; one level, only directories the shim owns.
+- One ownership rule on both platforms, not a platform gate returning foreign for every non-Linux root, under which no Mac would ever sweep.
+- Each file is proved on its own, not through the directory, because a world-writable or ACL-granted directory says nothing about who owns a given file. Once each file carries its own proof, no ACL inspection and no cleanup reporting is needed.
+- `SweepAdmissionRefusal` does not include `EnumerationIncomplete` because an incomplete inventory is counted inside an already-admitted sweep.
 - Canonicalising the whole account path was ruled out; it would resolve the final component and defeat the `O_NOFOLLOW` check.
-- A second row for a pid confirmed under a non-selected root was ruled out; one live invocation is one tile, and `Ambiguous` means no owner rather than pick one.
-- Letting `CaptureKey`'s derived `Ord` decide ownership was ruled out; a filename string would pick the live generation among equally confirmed registrations.
+- Recursive mode correction beneath the root was ruled out; one level, only directories the shim owns. Changing the runner unit's `UMask=0066` was ruled out; it reaches every file the runner writes, credentials included.
+
+**Registration and identity.**
+- Hard-link publication, not `mv -f`: a rename silently replaces a name a live run still owns, while `ln` fails and a failure is a setup failure like any other.
+- NUL framing, not a `<cwd>\tcargo <args>` line: space-joined argv loses argument boundaries, and a tab or newline inside an argument breaks the framing.
+- `/proc/$$/stat`, not `/proc/self/stat`: inside the setup subshell `self` is the short-lived child, not the pid the registration is filed under.
+- Verification by kernel evidence before deletion: exclusive creation prevents a name being taken while a record holds it, and does not prevent the same name being published again once removed, so deleting by exact name is not safe on its own. Age cannot establish that a paused writer ended, so a staging file is eligible only when the kernel confirms its writer gone.
+- The version is classified before size so a newer oversized record is reported as skew, not as unreadable. Parsing a truncated version declaration from its visible prefix was ruled out: it reads a newer shim as older and overwrites it.
+- `libc::sysctl` on macOS, not `sysctl(8)` or `ps(1)`: a subprocess per registration per scan at four scans a second. rustix has no sysctl binding, and sysinfo's start times are rounded on Linux and zero on the macOS fallback.
+- The boot session UUID, not `kern.boottime`: the latter follows clock corrections, so every live registration mismatches and is swept within a scan.
+- `kill(pid, 0)` before calling a process ended: an empty `KERN_PROC_PID` reply can mean a hidden record, not an exited process.
+- `geteuid` from `rustix::process`, not a process-table view, which depends on process visibility.
+- Registration mtime as the run start: it is the one value the reader already has across a uid boundary.
+- A second row for a pid confirmed under a non-selected root was ruled out; one live invocation is one tile, and `Ambiguous` means no owner, not pick one. Letting `CaptureKey`'s derived `Ord` decide ownership was ruled out; a filename string would pick the live generation among equally confirmed registrations.
 - Resolving the owner uid to a name at render time was ruled out; the worker resolves it and grouping keys on the number.
 - Capturing `cargo tile`, `cargo port` and `cargo berth` was ruled out; the first two would run a terminal UI under `script`, and the third fires several times a second with no build to mirror.
 
-
-## Rollout record — 2026-09-13–14
-
-Phase 17's **reader/shim deployment and restoration are complete on both machines; remaining rollout observations are outstanding**. Accepted Linux steps05–09 establish release readers, installed-path berth acceptance, runner/reader proof, six v3 shims, all-account status and restoration. Accepted Mac steps10–14 establish the same sequence, including restoration of natemccoy's original config bytes/mode and hana-ci's original config absence, with typed auto-install true for both. Step14 verified all five then-installed v3 shims. The orchestrator subsequently removed natemccoy toolchains 1.83.0 and 1.96.0 at the administrator's request; final Mac coverage is three v3 shims: natemccoy stable/nightly and hana-ci stable. Deployment and restoration need no further administrative script; step18, the Darwin group-membership proof, is the one pending script. The inventory is `/tmp/claude/delegate/3c2be97d-180e-425d-a7fe-ba18822feee4/rollout_inventory.md`; native observations and script checks are in `preflight_observations.md` and `root_step_checks.md`. Round17 completed the authorized CI push; its jobs route exclusively to hosted runners, so round18 observed the three hana CI rows through hana run 34846831512 instead. Desktop/appearance and promoted-summary CPU observations are recorded by test. Administrator1950 dropped step15; round18 superseded it when the administrator authorized replacing the Darwin over-limit refusal with the `__initgroups` switch and proving it in step18 (natemccoy's 16 groups equal the runtime limit of 16).
-
-Both checkouts name `7a72438263c92834d8acbb775e2e94ed615f543d`, containing Phases 9 and 11–16. Version strings alone do not identify the installed sweep, CPU, input, or desktop implementation. Reported versions are berth 0.1.0-dev, tile 0.2.78-dev, and port registry 0.8.0-dev. The release manifest and output identify the new Linux bytes; the cargo registry's local source paths remain historical.
-
-| Machine | Current rollout state | Installed readers |
-| --- | --- | --- |
-| linux-host | release readers, installed berth acceptance, runner/reader proof, six v3 shims and all-account status accepted; generation 122 removes the suppression helper; step 09 restores all five config paths and proves typed auto-install true | natepiano `/home/natepiano/.cargo/bin/{cargo-berth,cargo-tile,cargo-port}` |
-| mac | steps10–14 and tile relaunch accepted; both accounts restored with typed auto-install true; after orchestrator cleanup, three v3 shims (natemccoy stable/nightly, hana-ci stable); deployment scripts complete; step18 group-membership proof passed and the Darwin switch is kept | natemccoy `/Users/natemccoy/.cargo/bin/{cargo-berth,cargo-tile,cargo-port}`; pinned native releases from `7a724382` |
-
-### Installed Linux releases
-
-The administrator ran `/tmp/r/05.sh` with body SHA-256 `f7506e9643707e64f1a06552b72b2f5f9c25f5fa9bee45dbd9de84a58400c1d4`, cleared by both tester and reviewer. The successful `root_steps/05.out` has 40 lines, zero FAIL lines, and its full POST-CONDITION; output SHA-256 is `aad56c5cefe3791ea0c21272c2d7a1ef0249ea0063b84f7d8ca0ca0f73eea893`. An earlier non-administrator refusal changed nothing and is excluded from the successful record. All three replacements ran as natepiano, with complete group membership, an old-hash check before atomic rename, and owner/mode/hash verification afterwards. No staging file remains. Original reader copies and progress remain under `/var/tmp/cargo-tile-rollout-phase17-linux-host/upgrade-05`.
-
-| Installed executable | Release SHA-256 |
-| --- | --- |
-| `/home/natepiano/.cargo/bin/cargo-tile` | `fb97c01ee67f26c2b359413e34d5a5d23a80d1fd931cf365c2a6e4849e134b4f` |
-| `/home/natepiano/.cargo/bin/cargo-berth` | `3d30253177369172114cbcb4034b3e9ff5729d14e325b04236d3503bb73d1f3e` |
-| `/home/natepiano/.cargo/bin/cargo-port` | `dd3abdda5d322ab96da91d700f6b078b10e8ac2108a7519b06aa263b7c8186a5` |
-
-The pinned release manifest, SHA-256 `106154827a32cfb9d97888dfc577947d9c98bc794449c8a0a108fcbd351fdd2d`, records that commit, clean tracked build sources, release profile, and `release_build.out` ending with exit 0. Staged artifact hashes matched that log and were independently checked after installation. Step 05 established file replacement and retained suppression only; it did not restart a reader or service. The earlier post-05 rediscovery found neither interactive tile nor port; accepted 06/07 now prove the persistent processes recorded below. Verification requires actual live processes mapping the release hashes, with a one-line user relaunch instruction for an old or missing interactive reader. No root script kills or launches those terminal programs.
-
-The tester explicitly selected installed `/home/natepiano/.cargo/bin/cargo-berth` through `CARGO_BERTH_EXECUTABLE` after 05: nextest run `ff226e4d-832d-497b-8e8f-00bec52d1b71`, exit 0. Each result applies to installed release hash `3d302531…`:
-
-| Case | Result |
-| --- | --- |
-| `board_reads_merge_extent_fixture` | PASS |
-| `check_reads_merge_extent_fixture` | PASS |
-| `drift_reads_merge_extent_fixture` | PASS |
-| `session_start_reads_merge_extent_fixture` | PASS |
-| `post_tool_use_reads_merge_extent_fixture` | PASS |
-
-Separate installed-path acceptance used the frozen bundle in a disposable repository, with installed hash checks before and after. `board --reservation` reported editing race extent and protected merge extent. The measured release appended clear, equal to the immediate live clear answer, with no work change between them. Historical records remained an unchanged prefix. All six subprocesses exited zero and the temporary repository was removed. The tester independently audited the helper and complete output; impl ran it under its owned root_steps, as in round 2. `06_installed_berth_acceptance.out` has SHA-256 `6e9773204db7ebaebb2dac78f186b7c9215b602802db20047be3fcdac11a3438`; the installed acceptance manifest binds that output, the explicit path/hash, and all five compatibility results. No shared ledger was used. The old Linux berth's missing-extent failure is historical and does not describe these installed release bytes.
-
-### Accounts and service authority
-
-Successful administrator inventories 01/02 and suppression steps 03/04 covered linux-host natepiano (1000:100), hana-linux-1 (992:988), hana-linux-2 (991:987), and root; Mac natemccoy (501:20), hana-ci (502:20), and root. Expanded account-database discovery also checked alternate `cargo`/`rustup` homes and `.local/bin` readers. No additional relevant account or reader was found. Every runner/root lacks berth, tile, and port in `.cargo/bin`, `cargo/bin`, and `.local/bin`; runners have toolchains, while root has neither readers nor Rust homes. New accounts, paths, or changed identities must be inventoried before mutation. The original 01/02 outputs are not retroactively broadened by later discovery.
-
-The Linux services are `github-runner-hana-linux-1.service` and `github-runner-hana-linux-2.service`. The linux-host configuration session owns `/etc/nixos/modules/linux/hana-runners.nix` and the generated units. They already retain `PrivateTmp=yes` with the shared `/tmp/cargo-tile` bind; no change to that access configuration is needed. Runtime HOME is `/run/github-runner/<account>`, state is `/var/lib/github-runner/<account>`, RUSTUP_HOME is `/var/lib/hana-ci/<account>/rustup`, and CARGO_HOME is `/var/lib/hana-ci/<account>/cargo`. The Listener executable is a separate Nix artifact, SHA-256 `734880ecdd5c3e28ffeca157e526803302a35377a13346fa851ae84d623a68f3`; its mapping must not be described as a cargo reader release. Generation 121 activation and accepted step 06 originally established PIDs 2936246/2936249. The owner restoration activation on 2026-09-13 stopped both services at 21:58:01 EDT and started them at 21:58:03; they logged Listening for Jobs at 21:58:05. Current PIDs are 3055491 and 3055511, independently reverified against the applied owner report, with zero restarts and no drop-ins or pending daemon reload.
-
-Mac `org.nixos.hana-macos-runner` runs as hana-ci. Its authoritative plist is `/Library/LaunchDaemons/org.nixos.hana-macos-runner.plist`, with `/Users/hana-ci/actions-runner` as working directory. The plist omits CARGO_TILE_ROOT and the job-start hook. Its Nix launcher rewrites `.env` and `.path`; inspected `.env` has no hook and `.path` matches plist PATH. Linux configured, loaded, and live service environments likewise have no job-start hook; `.env` and `.path` are absent at runtime and state paths. Configured hook absence is preserved during suppression and restoration. No delegate edits a unit, drop-in, plist, or NixOS source.
-
-Ordinary berth hooks are the three SessionStart/PreToolUse/PostToolUse wrappers under each account's `.claude/scripts/berth/install/hooks`, configured by `.claude/settings.json`. Live inspected agent environments use the ordinary `.cargo/bin/cargo-berth` through PATH, with `CARGO_BERTH_EXECUTABLE` unset; the inventory records actual selected HOME/config/PATH fields. The native Mac process observation includes tile, Claude, and GUI Codex, so SSH's environment is not used as proof of their invocation environment.
-
-Both stale `/var/lib/hana-ci/hana-linux-{1,2}/cargo-tile` trees are confirmed absent on both machines; nothing was deleted. Accepted step 07 now proves all six Linux toolchain shims match embedded v3 bytes, hash `3fcd50e27e785dafcb749fba5aaa0a7339e44eb02ab2187446703b0f1dda26f3`, with mode 0755 and account ownership. Before that deliberate install, ordinary stable/nightly already matched v3, both runner stable shims emitted v2 (`d265abc8…`), and runner nightly cargo files had no framing line. Accepted Mac step12 refreshed all five toolchain shims from the historical v2 hash `448c5dc0b3ff973cecac43754bd99847dfb38aee9ab9894b7b19b1c5c88cc7d1` to the same exact embedded v3 bytes, with account ownership and mode0755; every saved real cargo is unchanged. Every observed toolchain has saved real cargo; step 07 protected both originals before replacing runner nightly saved-real with its pre-install cargo.
-
-### Suppression and restoration
-
-Both suppression scripts completed with zero FAIL lines and their full POST-CONDITION. Accepted body hashes are 03 `7f62e57b8fc112f0acfeb4595b956611e0c617f8f4d23b8b836429e9c1d951b9` and 04 `b81dc35f4e0acb2dad1e9d8337a330486494197695f373b81279e6d2d3915ae9`. Original bytes, modes, and absence are preserved in root-owned `/var/tmp/cargo-tile-rollout-phase17-<machine>/backup.json`; `suppressed.json` records success. Do not rerun suppression over those backups.
-
-| Account | Config paths / original baseline | Suppressed / restored |
-| --- | --- | --- |
-| linux-host/natepiano | `/home/natepiano/.config/cargo-tile/config.toml`; raw capture true | established by 03, retained through accepted 08 / restored by 09, original bytes/mode and typed auto-install true |
-| linux-host/hana-linux-1 | `/var/lib/hana-ci/hana-linux-1/.config/cargo-tile/config.toml` and `/run/github-runner/hana-linux-1/.config/cargo-tile/config.toml`; originally absent | established by 03 through 08; runtime removed by generation 122 / restored by 09, both paths absent and typed defaults true |
-| linux-host/hana-linux-2 | `/var/lib/hana-ci/hana-linux-2/.config/cargo-tile/config.toml` and `/run/github-runner/hana-linux-2/.config/cargo-tile/config.toml`; originally absent | established by 03 through 08; runtime removed by generation 122 / restored by 09, both paths absent and typed defaults true |
-| mac/natemccoy | `/Users/natemccoy/Library/Application Support/cargo-tile/config.toml`; raw capture true | established by04, retained through accepted10–13 and tile relaunch / restored by accepted14: original bytes aaad5046…/0644 and typed auto-install true |
-| mac/hana-ci | `/Users/hana-ci/Library/Application Support/cargo-tile/config.toml`; absent | established by04, retained through accepted10–13 and tile relaunch / restored by accepted14: original absence and typed defaults true |
-| root on both machines | no readers or Rust homes, rechecked during suppression | no config mutation needed by inventory / unchanged |
-
-Raw TOML alone does not establish effective capture settings: a type error anywhere falls back to complete defaults with auto-install true. Suppression used a minimal complete replacement after backup, then the already-installed reader's typed loader restated every section with auto-install false. The probe applied the account's complete groups/gid/uid, actual config HOME, empty temporary RUSTUP_HOME, and no controlling terminal; it required the explicit terminal-setup failure before scanner startup. All seven configs became SHA-256 `516b528742956fbe73372ec2410b150baac8b6efa212db3110a5de339df7f946`. Old shim/saved-real bytes and absent hooks remained unchanged. Unrelated settings temporarily use defaults; original preferences remain in backups. Mac's duplicate identical root enumeration and Python fork warning did not prevent either account proof or the final postcondition.
-
-### Applied startup ordering and remaining acceptance
-
-Round 3 found a startup ordering defect in the first 06 draft: the generated Nix unconfigure ExecStartPre deletes all runtime HOME contents, including suppression. Recreating false config after `systemctl restart` returns leaves an interval in which Listener can accept work with default auto-install true; interruption can leave it absent. Pre/post process samples and matching final hashes do not establish an uninterrupted suppression window. Test and review rejected that draft before readiness or execution.
-
-The configuration owner applied the prerequisite as `/etc/nixos` commit `435fac9`, generation system-121, with `/run/current-system` at `/nix/store/rf7d2ji1y45m4fpaia3f7ga97cgv9dgc-nixos-system-linux-host-26.05.20260910.d58a46e`. That generation had no drop-ins and exactly four loaded pre-start commands: unconfigure (root `+` prefix), configure, setup-work-dirs, then the account-run cargo-tile-prestart helper. Both helpers completed successfully before that generation’s Listener start; systemd's precise realtime/monotonic fields place them after step 05's protected completion record at 13:49:33.209483621 EDT. Activation already performed the needed restart, so the rewritten 06 restarts nothing and refuses a failed proof.
-
-The full helper bytes and measured identities are in `root_steps/06_applied_configuration.json`. Helper SHA-256 values are hana-linux-1 `c075402a5783679dbd19073d9c323cd68a30951c7b6640bd9f203d252fbb6746` and hana-linux-2 `167db1381936133ae61a0d944a0b7746f1dcbe8cab094934d6fb46f511cf7b95`. The relayed `06_owner_report.md` records the user's post-start source/runtime config checks: account uid:gid 992:988 and 991:987 respectively, mode 0644, accepted suppressed hash `516b5287…f946`. Accepted step 06 independently proves those protected files and all five configs, with full path-component and uid/gid/mode/hash checks.
-
-Both helpers were read in full. Their symlink checks cover listed suffix components but omit protected ancestors; an existing destination is compared by hash/mode without checking uid/gid. These are recorded helper limits, not evidence of an observed wrong path or owner. Current omitted ancestors are real directories whose entries the runner cannot replace, and pinned unconfigure removes the destination before the helper. Step 06 independently checks every source/destination component and exact uid/gid/mode/hash. Open owner follow-up R4-01/R4-02 in `06_linux-host_configuration_owner.md` requires complete ancestor checks and existing-destination uid/gid comparisons in both helpers. Those omissions remained in the temporary helper, bounded by the independent 06 proofs. Generation 122 now removes the helper from both units after accepted 07/08; the earlier helper repair is no longer a prerequisite for step 09.
-
-Administrator step 06 ran at 20:25 EDT on 2026-09-13 with cleared body SHA-256 `b7146f8f971f03169abcbdef7dc87d6f00f54ecbaf69df1c76b69ccf3355f3dd`. The orchestrator relayed `root_steps/06.out` at board 658: SHA-256 `60ccb050df9ce4b00858f1d2944c38d8487ceb277be4c2d66a00bf4a952c408d`, 86 lines, zero FAIL lines, and one complete final POST-CONDITION, read in full. Protected `restart-06/started.json` and `complete.json` record the successful proof. Both Listeners map `734880ec…`; retained journal and diagnostic samples show no worker activity since 05. All five suppression configs, every cargo/saved-real baseline, and absent hooks are unchanged. No service or reader was restarted by 06.
-
-The live interactive readers are natepiano cargo-tile PID 2960634 (`fb97c01e…`) and cargo-port PID 2960635 (`dd3abdda…`), launched by the orchestrator under util-linux script pseudo-terminals with `TUI_PANE_LOG=warn`, display variables, and the session bus. The user is remote; these are live readers without visible windows, so their mapped-byte proof does not establish desktop or CI-row visual acceptance.
-
-Administrator step 07 succeeded on 2026-09-13 with cleared body SHA-256 `f3f13f1c0d0aa1201fc2deb7479029e8ffabcdcfd7de2cbeac7027f83e76cc36` (TEST CLEAR796, REVIEW CLEAR799). The orchestrator relayed `root_steps/07.out` at board824: SHA-256 `5e7ac4a2fb0af34d814a4f8832d38deb14f1fb106612620cf2fdf612217d25f9`,196 lines read in full, zero FAIL, one final POST-CONDITION. The pinned installed release performed deliberate `install --all-accounts`: both runner nightly toolchains installed, both runner stable toolchains refreshed, and both natepiano toolchains already installed. All three accounts completed, zero without toolchains, zero incomplete. Each of six shims passed exact v3 header/full embedded-byte, owner, and mode proof; saved cargo matches the classified expected outcome. Twelve originals and raw reports/progress are retained under root-protected `install-07`. All five suppression configs, both services, persistent tile2960634/port2960635, and absent hooks were unchanged; nothing restarted or restored.
-
-Earlier 07 body `d819e1e5…` was held before user handoff because transient berth hooks affected persistent reader equality. The executed repair compares only tile/port continuity while still validating sampled berth paths/hashes. Its process-read errors skip a PID only after confirming disappearance, and kernel threads are excluded explicitly. Nineteen controlled process-sampling cases passed. Those guards carry into 08.
-
-Administrator step 08 succeeded with source/body SHA-256 `3d3d4f8b5f1325d00bbf081c7edd9ba08498ad489d44349a197423c4362642bf`, previously cleared by TEST CLEAR871 and REVIEW CLEAR862. Orchestrator board 904 relayed `root_steps/08.out`, SHA-256 `a8226905bbfa8577fdc41e73b71d02f92c870d915193d54822924f5b3e0fb8d6`: all 150 lines read, zero FAIL and one final POST-CONDITION. All three accounts completed, all six toolchains reported installed, and separate version/header/full-byte/owner/mode proof matched the embedded v3 shim. Accepted 07 protected originals/reports/proofs remained unchanged. All five configs retained suppression, hooks stayed absent, services and persistent tile/port retained accepted identities, and sampled worker history remained clear. Only status proof/output files and the CLI's temporary staged account executable were written; nothing was installed, restarted, or restored. Protected proof is under `/var/tmp/cargo-tile-rollout-phase17-linux-host/status-08`.
-
-The reviewed owner restoration note `root_steps/09_linux-host_owner_restoration.md` has SHA-256 `15abfb153a0f310613590fcde972fa5d0431a0fdce56970f859b4f84943e1656`. Its applied report `root_steps/09_owner_report.md`, SHA-256 `be4e3da9d395a08d87799a43ad150b429fbf7be4c443c085748f35bd20f71e2a`, establishes owner commit `bded66d297823a854ae7b33648c8d3d9d146e05e`, `cargoTileSuppression = false`, and user activation of `system-122-link`. `/run/current-system` resolves to `/nix/store/ra1vxcyh3nximgkwjs19nsaz00pb1san-nixos-system-linux-host-26.05.20260910.d58a46e`. Generated unit hashes are hana-linux-1 `4ecdca20a1932cf80d442e2b1fbc12d13f6a0d7fb0ec692c6ad93a50aaf88aed` and hana-linux-2 `828e1e820c5a8cad0be5a29194bd964430912dc4735e5c3e276b69ab2dbe9bbf`. The helper is absent, while the other three pre-start commands and Listener command are unchanged. Systemd generation, unit bytes, command paths, restart identities and precise timing were independently checked; complete pins are in `root_steps/09_accessible_pins.json`. The owner left account configs and protected originals untouched.
-
-After activation both runtime-HOME configs were absent, as reported by the owner's root probe and independently observed by impl as ENOENT. Database-HOME and ordinary configs still held suppression until administrator step 09. Job-start hooks retained their configured absence throughout.
-
-Step 09 source `root_steps/09_linux-host_restore_auto_install.sh` and `/tmp/r/09_body.sh` have SHA-256 `ca6e55a97bec28cfaaad99d9f0f174329d15e168ac7c44963fcc639dc6bef437`; the source wrapper and `/tmp/r/09.sh` have SHA-256 `7fe411f17c28cf17f623839bd9352baaa3997ad8e1c62aee0400f998438dc078`. All four files are 0755 and pass shell syntax; the embedded Python parses. Every owner pin is filled. TEST CLEAR1046 and REVIEW CLEAR1043 cover these exact bytes; impl remeasured them and posted READY1063. The orchestrator confirmed the package at1066 before the administrator ran it. The script checks the accepted 07/08 proof chain, release readers, six shims and helper-free applied owner state, then binds all five original backups to suppression records. It checks typed defaults/preferences in isolated probe homes and restores exact original bytes/mode or absence under each account's complete credentials. Exclusive per-path progress under `restore-09` refuses blind reruns and exposes partial restoration; originals remain unchanged. It does not restart services/readers or install hooks. No Mac mutation script was written during that step09 preparation. The two-line tee wrapper can mask a body failure, so acceptance requires the exact final POST-CONDITION and no failure in the complete output.
-
-Administrator step 09 succeeded on 2026-09-13; orchestrator board1072 relayed `root_steps/09.out` at 22:14 EDT. SHA-256 `8ecf5b1e103d177830efefd3d77815b1ce1ccc9e7ee9c8f77464290d96a5b23d` matches `/tmp/r/09.out`. All133 lines were read: zero FAIL, five completed typed probes, five completed path restorations and the sole final POST-CONDITION at133. All five paths match protected original bytes/modes or absence. Natepiano's original config is restored, SHA-256 `90b0617dbf85465779999da0f46ad8762c7f31e95fb34454150e0df918691f71`,0644, uid:gid1000:100, auto-install true. Both runner database-HOME configs were removed and runtime-HOME absence preserved; impl independently checked all four absent paths and the ordinary config. Isolated pinned-release loader probes establish typed auto-install true for every path's restored preference or defaults.
-
-The final root proof retains all six exact v3 shims and saved cargo, accepted release readers, helper-free generation122, active Listeners3055491/3055511, shared capture identity, absent hooks, clear sampled worker history and unchanged protected03/05/06/07/08 records. Restoration proofs remain under `/var/tmp/cargo-tile-rollout-phase17-linux-host/restore-09/proof`. Step09 restarted no service/reader and installed no shim. Linux-host's installation/restoration sequence is complete; there is no pending linux-host administrative script this round. Completed09 must not be rerun.
-
-
-Current acceptance observations (round18; earlier rounds below are historical):
-
-- Both machines remain deployed and restored with the accepted 7a724382 release readers, six Linux v3 shims and three Mac v3 shims. The candidate Darwin credentials and CPU/CI repairs are uncommitted and are not installed releases.
-- All three hana CI rows were observed from ordinary-account installed readers during [hana run34846831512](https://github.com/natepiano/hana/actions/runs/34846831512), dispatched on main with experiment cargo-tile runner rows. The additional Linux and Mac PTY observers have stopped; existing readers and config bytes are unchanged. Exact job/row evidence is recorded in the round18 section below. Cargo-liner CI continues to use hosted runners; no workflow or registration was changed and no additional push occurred.
-- Final round17 desktop evidence is recorded: 60.038s, 956 samples with no kscreen-doctor hit; four Screenshot requests attributed to Baloo, no direct reader reconnect, one observed layout reaction and one appearance change followed by exact restoration, and three diagnostic warnings under TUI_PANE_LOG=warn. The 118 new connections from59 tile kdotool children remain disclosed; the record does not claim absence of all tile-related bus traffic or sub-sample processes.
-- Promoted combined CPU was observed at200% (parent100% + nested100%) under installed tile fb97c01e. R17-CPU-01 also reproduced: parent own ticks remain0 across13 samples, nested leaf97%, and promoted parent unavailable. Review repaired the native-readable-counter path in the working tree, and test added real-counter regressions for all13 own-zero samples and a genuinely unreadable parent. The local regression/package gates pass. Installed7a724382 readers retain their previous behavior until a separate deployment; the200% positive control alone did not close the defect.
-- The administrator now authorizes an initgroups mechanism proof, superseding the dropped step15 scope. hook.rs contains a candidate Darwin raw __initgroups switch with parent-resolved membership and no child directory lookup. Step18 is being prepared for administrator execution; no disposable account/group has been created and the mechanism is not yet proved. The keep-or-revert decision requires its complete output. Orchestrator decision2116 accepts the actual total above16, including implicit groups, and requires choosing a disposable probe-file group outside the actual credential prefix.
-
-F001 remains open for the Darwin mechanism/product proof and the final CPU/branch-CI repair gates. The shared ledger has not been touched by this rollout.
-
-### Repair round 9 — native test fixtures
-
-Repairs run in the tester-owned `/tmp/cargo-tile-mac-repair`, based on `7a724382` plus the uncommitted test diff. The user's Mac checkout and installed readers/shims remain unchanged. Native baseline runs `5b0bc16d-e2b0-463b-babd-1858880005cf` and `5bd6bb57-39ce-40c7-a06d-a268c40f270f` each report 3,077 passed / 11 failed. Full logs establish inconsistent `/var` and `/private/var` fixture paths and a copied `/bin/sh` killed before fixture readiness. The two cache-refusal cases passed in both baselines; their prior intermittent failures remain under investigation.
-
-The shim fixture now embeds a capture parent under the physical temporary root, so FIFO fault injection and publication comparisons use the same spelling. Its argv, umask, output, publication and cleanup assertions are unchanged. The source-owned fixtures likewise compare the unreadable-registration diagnostic against the physical root, assert that its symlink survives, and select the copied metadata shell from PATH. These are test-only changes: production Rust and embedded shim bytes are unchanged, so linux-host's accepted installed `7a724382` release provenance remains valid for production behavior. The repaired test tree still requires its own final native result.
-
-Focused native run `53269b1e-380d-4b07-ad65-d29d6aa9592e` passes all five repaired cases, with one leaky capture case. Linux integration tests, the source owner's package run and the coordinated nightly formatting/clippy gate pass. Complete native logs and remaining CPU-refusal diagnostics belong to `preflight_observations.md`; these focused results do not replace the final package execution.
-
-The tester's measured native package run `08104f36-647f-488c-9308-06dd6cd7b37a` passes all 3,088 tests. The ambiguous and excluded refusal fixtures report only 0% on visible cargo candidates while their external compilers report 28.8% and 27.3%. This run includes disposable measurement instrumentation, so the final gate must use a fresh reset and the exact writer diff. The historical CPU-refusal cause remains unestablished after two passing baselines and this diagnostic run; neither test's assertions, workload, thresholds or deadlines changed. That causal requirement remains open for the orchestrator. Impl's final Linux package run `01d4e576-4197-4c59-b326-74dd57136e7e` passes all 2,359 tests after source-owner completion and package formatting.
-
-Mac natemccoy and hana-ci remain suppressed and unrestored. The tester records the final combined package run, all twenty ACL names and the Phase 11 CPU/input names after both writers finish; the orchestrator must accept the native result before rollout resumes. This round prepares no root-step or deployment script. F001 and the outstanding desktop, administrative and CI observations remain open.
-
-
-### Repair round 10 — compiler work during refusal
-
-The final round-9 native package `a9e9755f-2a91-4790-bcd3-9c9821f7d224` passed 3,087 tests and failed the excluded-requester fixture after its row-refusal and capture-artifact assertions passed: the external compiler's final native CPU percentage was 16.5 against a required 20. The shared-target sibling uses the same workload check; its historical failure body remains unavailable.
-
-Both refusal fixtures now measure cumulative compiler CPU after pane readiness while observing every candidate row. Collection lasts at least four seconds and continues until two CPU seconds have accumulated, bounded by the existing ten-second `wait_for` polling deadline. Linux reads the compiler's own user/system ticks; Darwin reads cumulative `ps time=`. Two CPU seconds preserve the original twenty-percent workload margin at the maximum wait, above the unchanged ten-percent refusal ceiling. Startup CPU cannot satisfy the guard. The first draft's 250ms guard was rejected by review because fully misattributed CPU could still fit below that ceiling; it was replaced before final acceptance. Every existing refusal-row, excluded-owner artifact and completed-scan assertion remains unchanged, and no blind retry or platform skip is added.
-
-This round changes only the integration test harness and rollout records. Production Rust, the two previously repaired inline-test files, the embedded shim, manifest and lockfile retain their round-10 entry bytes. The test patch over `7a724382` is SHA-256 `e86ae0c52ad3f607991cec1e29a77d3fab3304df7b16cf345560968ab3a04232`; linux-host's accepted installed-production provenance remains valid. Revised Linux integration run `7c8c03b6-020c-4460-84fd-b1d5b5f4e75f` passes 854/854, final package `535af902-150b-44b7-97fd-9a54c584d2d4` passes 2,359/2,359, and nightly formatting/clippy passes. Renewed cold review accepts this patch and closes R10-D001. Clean-reset native full-package stress runs `f5a7a3d0-d0f7-4914-bf7b-61031cf3fc25` and `1adde2c2-eb5a-4791-a1d1-84e7773a054a` each pass 3,088/3,088 with no skips or leaks and both refusal cases passed. Final native acceptance also passes: full package `782b3a5c-4964-40d9-82a8-e571b1009600` is 3,088/3,088; ACL target `6750503a-a5b1-4572-8bcb-fba1130751c9` is 747/747; CPU/cache/resize-key target `da29af89-6cf6-4e49-b39b-99908c90321e` is 31/31. All commands exited zero. Both refusal cases pass in all three full executions, all twenty ACL-specific cases pass in package and ACL targets, and every required Phase 11 case passes. Complete logs, names and hashes are in `preflight_observations.md`; post-run source identity remains the same `e86ae0c5` patch. The native-suite blocker is cleared.
-
-Linux-host remains restored. Mac natemccoy and hana-ci remain suppressed and unrestored; this repair changes no installed reader, shim, configuration or service and prepares no root step. F001 and the remaining deployment, desktop, administrative and CI observations stay open. The current tester recorded final native evidence in `preflight_observations.md`; impl received it and recorded it in the rollout inventory. These results validate the disposable test tree; the Mac installed readers and shims still require deployment and restoration.
-
-
-### Repair round 11 — historical Mac upgrade preparation
-
-The final round-10 native results lift the Mac hold. Production sources and embedded shim bytes remain those of `7a72438263c92834d8acbb775e2e94ed615f543d`, so native release artifacts built from that commit have the same production provenance as the final preflighted tree and the restored linux-host readers. The rollout inventory records artifact hashes and per-executable compatibility and extent/evidence acceptance as the tester establishes them.
-
-Mac is inventoried and eligible, with step 10 READY and awaiting administrator output. Natemccoy and hana-ci retain step 04's typed `auto_install=false`; both are unrestored and all five shims remain v2. Natemccoy's old installed tile, berth and port require replacement. Hana-ci and root have no installed reader. Original natemccoy bytes/mode and hana-ci absence remain protected in `/var/tmp/cargo-tile-rollout-phase17-mac/backup.json`. The plist and loaded service already omit `CARGO_TILE_ROOT` and the job-start hook; restoration keeps that configured absence. There is no Mac owner suppression switch.
-
-The ordered administrator sequence is 10 reader replacement, orchestrator relaunch of ordinary-account tile/port, 11 runner restart/proof, 12 deliberate v3 install, 13 all-account status, and 14 restoration. Each later script requires the accepted previous output. Every READY handoff names exact bytes cleared by test and review; wrapper exit status alone cannot establish success. Linux-host remains restored. This round does not attempt CI, desktop, promoted-summary CPU, or administrative over-limit-account observations. F001 remains open until the remaining deployment and observations are established.
-
-
-The staged Mac files under `/tmp/cargo-tile-mac-release-artifacts` are release builds from clean `7a724382`: tile SHA-256 `cb7f5a1e592b6ece431ee6462123bc148de5a4978061bdb3ddbfea68da6cc24f`, berth `65d5b88c96a3bfeefde107cc528640ed1e3df5ddffa5cfddf57039de07645c16`, port `58da53deccd81a6e91419418b7b04664574741d3bd3a93530148dc068f8f6637`. The explicit staged berth passes all five native compatibility cases (`4839b97e`) and isolated reservation-extents/release-evidence checks; its pre-upgrade installed counterpart fails all five (`0cc64a53`). Complete per-case receipts and source identity are in the inventory and tester observations. No installed-file replacement is inferred from staging.
-
-
-Step 10 is READY for Mac `/tmp/r/10.sh` after TEST CLEAR1424 and REVIEW CLEAR1426. The source and `/tmp/r/10_body.sh` hash `4d9eb4cae0639f7aacc2902d42722435de0651d1dc07d1b5f70c9a0f3341764d`; the exact two-line wrapper hashes `c8c9211cb5da839e44b2583233c0ed4c25e17319ca7373daac8da5c2b1987de1`, all mode0755. Its pinned `/tmp/r/10_manifest.json` hashes `2b8fceeafc459e38a764314f98135f4e556159062a74213e995c8bd8f28076c3`. Native shell/Python syntax, source/copy identity, all artifact/receipt hashes, accessible live pins and the full cold read pass. The script checks both accepted typed-false configs and every v2 baseline before replacing natemccoy's reader files under full account credentials, preserving uid/gid/mode by atomic rename and retaining protected original/new copies and progress. It restarts nothing and refuses blind reruns.
-
-At the historical round-11 handoff, no `10.out` had been accepted; round12 acceptance below supersedes that state. Mac account suppression, installed old readers and v2 shim state remain the recorded state. Step 10 is the only pending ready script; reader relaunch and scripts 11–14 await predecessor outputs. F001 stays open. No root action was performed by the implementation slot.
-
-
-### Repair round 12 — accepted Mac upgrade and reader relaunch
-
-Accepted administrator `root_steps/10.out` is 60 lines, SHA-256 `90e8b5b3bcea1d6d4ff2110aa1c49ef7462d666af415f5a62d1745ba02df11d5`, zero FAIL and the final POST-CONDITION. Impl read the complete receipt. Natemccoy installed `/Users/natemccoy/.cargo/bin/cargo-tile` now hashes `cb7f5a1e592b6ece431ee6462123bc148de5a4978061bdb3ddbfea68da6cc24f`, `cargo-berth` `65d5b88c96a3bfeefde107cc528640ed1e3df5ddffa5cfddf57039de07645c16`, and `cargo-port` `58da53deccd81a6e91419418b7b04664574741d3bd3a93530148dc068f8f6637`. All three are the pinned release artifacts from `7a72438263c92834d8acbb775e2e94ed615f543d`, owner/group501:20, mode0755. Protected original/new copies and completed progress remain under `/var/tmp/cargo-tile-rollout-phase17-mac/upgrade-10/`. The Python fork deprecation warnings are not failure reports.
-
-Both Mac account configs retain step04 accepted typed `auto_install=false` bytes `516b528742956fbe73372ec2410b150baac8b6efa212db3110a5de339df7f946`; both remain unrestored. All five v2 shims and saved real cargo remain identical to the protected suppression baseline. Plist, loaded service, `.env` and `.path` retain configured job-start-hook absence and omit `CARGO_TILE_ROOT`. Step10 restarted nothing.
-
-The orchestrator then stopped the only live old reader, natemccoy tile PID83994 on ttys001, and relaunched `/Users/natemccoy/.cargo/bin/cargo-tile tile` as PID28709, parent28707 (`/usr/bin/script -q /dev/null`), ttys005, start `2026-09-14 06:21:03` America/New_York. It uses `TUI_PANE_LOG=warn`, HOME `/Users/natemccoy`, CARGO_HOME `/Users/natemccoy/.cargo`, RUSTUP_HOME `/Users/natemccoy/.rustup`, and inventoried PATH. Suppression held through this restart. This is a live interactive reader under a pseudo-terminal, without a visible window; it supplies no desktop or CI-row observation. No cargo-port process was running, so none was relaunched. Step11 pins this tile PID, executable path and installed file hash and refuses any additional reader requiring a separate restart.
-
-At the round12 handoff, Mac rollout awaited step11 runner restart and proof; steps12 deliberate v3 installation,13 all-account status,14 restoration remain dependent on accepted predecessor outputs. No root action, CI push or excluded observation is performed by impl. F001 remains open.
-
-
-The upgraded installed Mac berth `65d5b88c…` passes the tester’s explicit-path native `reader_compat` run `f24b8d34` (all five named cases) and repeated isolated reservation-extents/release-evidence acceptance. Impl read the complete logs, SHA-256 `17eff690c4c0bf01fdde5554eebc387b9e2a70bd39aba995eb18436468ff8d5e` and `b75ccce8e285a709c59cd9968e7b6590b46ea8b21b467231ba7ba5f7bbf2dc4d`. The release-appended clear decision equals immediate live clear with historical bytes unchanged; no shared ledger was used.
-
-At the historical round12 handoff, step11 was READY after exact-byte TEST CLEAR1508 and REVIEW CLEAR1513. Mac `/tmp/r/11.sh` invokes `11_body.sh`; both are0755 and pass native shell/embedded-Python syntax. It guards the completed upgrade, active release tile, absence of runner work, both typed-false configs and all five v2 baselines before one runner kickstart, then verifies the new hana-ci launcher/Listener and unchanged suppression. Protected progress under `restart-11` refuses blind reruns. Its configured launcher refreshes `.env`/`.path` and sets existing credential modes to0600 during normal startup; no plist or unit is edited. Accepted11.out remains required before12–14.
-
-
-At the historical round12 handoff, step11 was READY for Mac `/tmp/r/11.sh` after TEST CLEAR1508 and REVIEW CLEAR1513. Source `root_steps/11_mac_restart_runner.sh` and native `/tmp/r/11_body.sh` SHA-256 `14ad2c2f3f7b2e5af944aa7b0e16b41a13812e7d45ef46e373a6e69848d4ec1e`; source/native exact two-line wrapper SHA-256 `d1a7efad2887ec20ecc1612dcf2dccc1f790e8f8590e151b9a12bde91b2ef049`. All copies are0755; native shell/AST, wrapper/copy equality, accessible live pins and both full cold reads pass. No11.out is accepted. Pending administrative script order is **11 only**;12 v3 install,13 all-account status and14 restoration have not been written and require their predecessor outputs. Both Mac accounts remain suppressed/unrestored with five v2 shims. Linux-host remains restored. F001 is open. The implementation slot performs no root action and exits for the orchestrator’s handoff.
-
-
-### Repair round 13 — step11 refusal and environment comparison
-
-The administrator's first step11 attempt used body `14ad2c2f3f7b2e5af944aa7b0e16b41a13812e7d45ef46e373a6e69848d4ec1e`. Impl read all 27 lines of `root_steps/11_refused_1.out`, SHA-256 `a68cc30f8b90e2f4b2a80c8d7874c5d0b4bc1496607aa022378fe628e54fff30`: the sole failure is `live runner differs from configured environment: pid=92668`. It occurs in the first runner-state inspection before creating `restart-11`, writing progress or running kickstart. No runner mutation occurred. Accepted10, installed berth receipts, three release hashes, both typed-false configs, live tile28709, agent berth selection and hook/root-override absence passed before that refusal. The old body is preserved at `root_steps/11_mac_restart_runner_refused_1.sh` with its original hash.
-
-The orchestrator and review independently observe unchanged runner ancestry92668 →92696 →Listener92703, uid502, started Sep10 21:12:59; launchd reports runs=1. The plist's six configured environment keys are CARGO_HOME, CARGO_TARGET_DIR, HOME, LANG, PATH and RUSTUP_HOME. Loaded values match the plist; actual cross-account values remain unavailable without administrator inspection. The refusal alone does not identify a differing key or establish whether the difference is real or a parser artifact.
-
-The first revised step11 candidate source and Mac `/tmp/r/11_body.sh` hash `428a9299bf6b5713dea049308340248f440fe14061f1cb117b871e68fde62fc4`. It prints configured/live differences for only those plist keys, once per inspected main/Listener process, with `absent` for a missing key; matches are stated explicitly. The protected `runner_before` in `started.json` records observed allowed environment, configured environment and differences. Pre-restart differences permit progress; post-restart differences are printed and remain a hard failure. Every worker, expected process-tree, forbidden environment, reader-PATH, release, suppression, v2 baseline and no-blind-rerun guard is retained. Process arguments parsing is unchanged pending native verification.
-
-That candidate remained0755 and passed local/native sh-n and complete468-line Python AST checks. Exact two-line wrapper `/tmp/r/11.sh` is unchanged, SHA-256 `d1a7efad2887ec20ecc1612dcf2dccc1f790e8f8590e151b9a12bde91b2ef049`. The stale root-owned Mac `/tmp/r/11.out` was verified against the archived refusal hash and removed through its natemccoy-owned parent, as round13 directs; no root permission was used. `root_steps/11_round13_packaging.out` records that action and copy checks. That candidate was held: tester board1553 reported an empty environment from the exact parser on a disposable native execv/shebang-bash process with known inherited keys. Subsequent controlled raw-buffer inspection found no environment bytes to parse; the non-platform Nix bash/Python positive control returned every supplied key/value correctly. The issue is native visibility, rather than parser offsets. Explicit missing-PATH refusal candidate `e858ec69…` also stayed held; neither candidate was READY or run.
-
-Natemccoy and hana-ci both remain suppressed and unrestored at accepted typed-false config hash `516b528742956fbe73372ec2410b150baac8b6efa212db3110a5de339df7f946`; all five shims remain v2. Linux-host remains restored. Steps12 deliberate install,13 status and14 restoration are unwritten and require their accepted predecessor outputs. F001 remains open. No root action, user-checkout change, ledger operation, push or excluded rollout observation was performed by impl.
-
-
-Orchestrator board1580 supplies binding `fix_spec_13_decision_1.md`. The runner's platform `/bin/bash` processes with zero environment entries are classified `not_inspectable`, printed with their PID/executable, and recorded without any vacuous equality, forbidden-variable or PATH result. Every runner process is classified before comparison. The Listener supplies actual environment evidence: before restart, differences on plist keys, forbidden key names and resolved reader paths are diagnostics recorded under `runner_before` in `started.json`; after restart, inspectability, complete configured-key equality, forbidden-key absence and no reader on PATH are hard requirements. Only configured plist-key values are printed; forbidden values and unrelated environment values are never printed or persisted. The loaded service must match the plist and may add only `OSLogRateLimit` and `XPC_SERVICE_NAME`. All file, worker, tree, uid, Listener hash, release/suppression and no-blind-rerun guards remain hard.
-
-Decision13-1 source and Mac `/tmp/r/11_body.sh` SHA-256 `1fb486a97e20b573e4b35c9e50aaabe70d15ccdad0be766d28552035c8d551eb` are0755; shell syntax and full499-line embedded AST pass natively. Exact two-line wrapper stays `d1a7efad2887ec20ecc1612dcf2dccc1f790e8f8590e151b9a12bde91b2ef049`,0755. At preparation, Mac `11.out` was absent after removal of the archived refusal. Renewed tester classification proof passes. TEST CLEAR1622 and REVIEW CLEAR1615 cover these exact bytes, and impl has issued READY after rechecking the unchanged package. That clearance established preparation only; the accepted administrator restart is recorded below. Steps12–14 remain dependent on successful predecessor outputs. The decision explicitly replaces the earlier requirement to inspect the platform shell and the pre-restart Listener equality/forbidden/PATH refusals; it changes no installed file or service configuration.
-
-
-Historical round13 preparation handoff: **step11 READY; awaiting administrator `root_steps/11.out`**. The accepted execution is recorded below. Body `1fb486a97e20b573e4b35c9e50aaabe70d15ccdad0be766d28552035c8d551eb`, wrapper `d1a7efad2887ec20ecc1612dcf2dccc1f790e8f8590e151b9a12bde91b2ef049`, Mac `/tmp/r/11.sh`, all0755. Tester1622 proved native Apple-bash parent43433 classified not inspectable and Nix-Python child43434 returned exact executable/argv and all nine controlled environment values; the printer reported only deliberately changed LANG. Disposable processes/files were removed. Reviewer1615 independently read the full final body and validated eight pre/post evidence branches. Both checked final source/native bytes, syntax, full499-line AST and accessible live pins. Impl read both complete dispositions and rechecked package hashes, modes, exact wrapper, stale11.out absence and restart-11 absence before READY.
-
-At that preparation handoff, only administrator script11 was pending. Its complete output with no FAIL and terminal POST-CONDITION was required before12; wrapper status alone was insufficient. Steps12 deliberate v3 installation,13 all-account status and14 restoration are not written. Both Mac accounts remain suppressed/unrestored, with five v2 shims and accepted release reader files/live tile28709; linux-host remains restored. F001 stays open. All implementation commands completed and output was read; required documentation absence/presence and behavior checks and scoped diff whitespace check pass. No root action or excluded observation was attempted.
-
-
-### Accepted step11 — Mac runner restarted, 2026-09-14
-
-Orchestrator board1664 accepts administrator `root_steps/11.out`, SHA-256 `8b40a79789bdfec1eebd100ccc454ae4fb2c8f6736867167274095add248a758`, from cleared body `1fb486a97e20b573e4b35c9e50aaabe70d15ccdad0be766d28552035c8d551eb`. Impl read all 87 lines and independently checked zero FAIL, one terminal POST-CONDITION, and matching repeated before/after records. The administrator performed one `launchctl kickstart -k system/org.nixos.hana-macos-runner`; completed proof is retained under `/var/tmp/cargo-tile-rollout-phase17-mac/restart-11/complete.json`. Completed step11 must not be rerun. The earlier READY/awaiting11 statements are historical.
-
-The new runner tree is main47933 → helper47940 → Listener47945, all hana-ci uid502, started `Mon Sep 14 07:00:34 2026` America/New_York. Main and helper are `/bin/bash` and explicitly `not_inspectable`. Actual Listener environment is inspectable and equals the six plist keys; its differences and forbidden-key lists are empty, PATH inspection succeeds, and no reader resolves on PATH. The old Listener92703 likewise matched the configured environment in both pre-restart samples. The successful body proves old main92668 and Listener92703 absent after restart. This establishes decision13-1's Listener evidence without claiming that the shell environments became readable.
-
-Listener file SHA-256 remains `c4e8b5e15ef851b60ba02fd3db900a9082435e4bfbc790a5c48b619147eb0855`; plist remains `e9ef6061215086779d37c83eedbeea8ef261b0d9e6017aa54143641bc26ffe69` and launcher `3665439aed6e56499b13b7319ce5ef4fe25bbc5aafdb9392fd21905c6145bb9b`. The pinned Python and accepted04/10 protected records also pass unchanged. Loaded environment matches the plist plus only permitted launchd additions; `.env` is empty and `.path` matches configured PATH. Job-start hook, capture-root override and berth/config overrides remain absent. Worker/process and diagnostic-history samples remain clear.
-
-Natemccoy's release tile28709, parent28707, ttys005, start06:21:03, executable hash `cb7f5a1e592b6ece431ee6462123bc148de5a4978061bdb3ddbfea68da6cc24f`, and inventoried HOME/PATH/Rust environment with `TUI_PANE_LOG=warn` are unchanged. Installed berth `65d5b88c96a3bfeefde107cc528640ed1e3df5ddffa5cfddf57039de07645c16` and port `58da53deccd81a6e91419418b7b04664574741d3bd3a93530148dc068f8f6637` remain the accepted `7a724382` releases. Both agent berth resolutions and installed compatibility/isolated-acceptance receipts pass unchanged.
-
-Per-account suppression remains active: natemccoy and hana-ci each retain the accepted typed `auto_install=false` config bytes `516b528742956fbe73372ec2410b150baac8b6efa212db3110a5de339df7f946`, with protected originals retained. Both accounts are unrestored. All five v2 shims and their saved real cargo remain identical to the accepted suppression baseline. Step11 installed no shim and restored no config; linux-host remains restored.
-
-Historical round13 closeout: **Mac steps10–11 and ordinary tile relaunch are accepted; steps12–14 await round14 with all three seats.** The orchestrator explicitly directs impl to record acceptance and finish because test and review have finished. No step12 preparation, native rerun or successor clearance occurs in this closeout. Round14 proceeds with12 deliberate v3 install,13 all-account status,14 restoration in order. F001 and the remaining rollout observations remain open. Impl performed no root action, service/configuration mutation, shared-ledger operation, push or CI observation.
-
-
-### Repair round 14 — Mac deliberate v3 installation preparation
-
-Accepted11 is confirmed in both records and its full87-line receipt reread: SHA-256 `8b40a79789bdfec1eebd100ccc454ae4fb2c8f6736867167274095add248a758`, no FAIL, terminal POST-CONDITION. Read-only Mac observations reconfirm runner47933/47940/Listener47945 with accepted ancestry/start, live tile28709/parent28707, all three installed release hashes, and matching11.out. Natemccoy and hana-ci remain suppressed/unrestored; five shims remain at the accepted v2 baseline pending deliberate12. Linux-host remains restored.
-
-Step12 is being prepared from the cleared Mac11 guards and Linux07 install pattern. It pins accepted11 and its protected completion, hard post-restart Listener evidence under decision13-1, account/reader/toolchain coverage, full group memberships, both typed-false configs, and the five v2/saved-cargo pairs. It backs up all originals under protected `install-12`, invokes the pinned installed release for all accounts once, inspects every report and all five shims against exact embedded v3 bytes, and retains suppression and all reader/runner identities. Partial or completed progress refuses a blind rerun. Root has no Rust home/toolchain and is normally omitted before credential resolution; a printed refusal is accepted only with root name,23 resolved groups, primary gid0 and runtime limit16, and is recorded separately. Omission establishes no administrative refusal observation.
-
-Preparation is not an installation or READY clearance. Only step12 can be handed off next;13 and14 require accepted predecessor outputs and are not written. CI, desktop, promoted-summary CPU and administrative over-limit-account observations remain outside this round. No root action is performed by impl; F001 remains open.
-
-
-Step12 source `root_steps/12_mac_install_v3_shims.sh` and Mac `/tmp/r/12_body.sh` now hash `373c12659429a8035710b45bcf26d2b07824c7c88e55c4f08689f47eb4086abc`; exact two-line wrapper `12_mac_wrapper.sh` and Mac `/tmp/r/12.sh` hash `36b96bdfcfeb9ade4e68cd6b1da225a4623a6f44aecce345f6c455571b6eb220`, all0755. Local/native shell syntax, complete674-line Python AST and wrapper/copy checks pass; native12.out is absent. TEST CLEAR1727 names these bytes after full cold read, native report parser2-positive/13-negative checks and accessible live pins. REVIEW clearance and READY remain pending at this preparation record.
-
-Review findings are repaired before readiness: the current F001 paragraph and suppression table now include accepted11; the old-shim guard now matches the observed v2 publication framing and absent version header, under the exact protected baseline hash. The first candidate3a47f3b2 wrongly required a v2 header and was held before mutation; it was never READY or executed. Required documentation names/behavior checks and scoped diff whitespace pass. Implementation audit is in root_steps/12_checks.md.
-
-
-Final round14 handoff: **step12 READY; awaiting accepted administrator `root_steps/12.out`**. TEST CLEAR1727 and REVIEW CLEAR1738 both name body `373c12659429a8035710b45bcf26d2b07824c7c88e55c4f08689f47eb4086abc` and exact wrapper `36b96bdfcfeb9ade4e68cd6b1da225a4623a6f44aecce345f6c455571b6eb220`. Impl read both full dispositions, rechecked the unchanged Mac source/copy hashes,0755 single-link files, native sh-n, full674-line Python AST and exact wrapper, and verified no stale12.out or install-12 progress exists before READY. The administrator handoff is Mac `/tmp/r/12.sh`. No root body has been executed by any delegate.
-
-The only pending prepared administrative script is **12**. It deliberately installs the five v3 shims; full12.out with no FAIL and terminal POST-CONDITION is required before writing13. Steps13 all-account status and14 restoration remain unwritten and depend on their accepted predecessors. The script retains original shims/saved cargo, raw reports and progress under `/var/tmp/cargo-tile-rollout-phase17-mac/install-12`; any partial run is inspected rather than blindly rerun. Mac natemccoy and hana-ci are still suppressed/unrestored and the accepted installed state remains five v2 shims until administrator output establishes installation. Linux-host remains restored. F001 and excluded rollout observations remain open.
-
-
-### Repair round 15 — accepted Mac step12, 2026-09-14
-
-The administrator executed Mac `/tmp/r/12.sh`, cleared body `373c12659429a8035710b45bcf26d2b07824c7c88e55c4f08689f47eb4086abc`, wrapper `36b96bdfcfeb9ade4e68cd6b1da225a4623a6f44aecce345f6c455571b6eb220`. Accepted `root_steps/12.out` SHA-256 `07ff670c1302312c199e0d006adf2aadfb2fc1f1a8e3852df31a47d072834274` has 165 lines, zero FAIL and one terminal POST-CONDITION; impl read the complete receipt and verified its hash. Earlier awaiting12/v2 preparation statements are historical. Completed12 must not be rerun.
-
-The pinned installed release cargo-tile `cb7f5a1e592b6ece431ee6462123bc148de5a4978061bdb3ddbfea68da6cc24f`, production commit `7a72438263c92834d8acbb775e2e94ed615f543d`, deliberately refreshed every Mac shim. Hana-ci completed stable; natemccoy completed 1.83.0, 1.96.0, nightly and stable (all aarch64-apple-darwin). The exact report totals were `2 accounts: 2 completed, 0 with no toolchains, 0 incomplete`. Each of the five cargo paths matches the full embedded 18,559-byte shim SHA-256 `3fcd50e27e785dafcb749fba5aaa0a7339e44eb02ab2187446703b0f1dda26f3`, with sole version line `# cargo-tile-shim-version: 3`, account uid/gid and mode0755. Every saved cargo-tile-real remains unchanged. Protected originals, raw reports, per-toolchain proofs and completion are under `/var/tmp/cargo-tile-rollout-phase17-mac/install-12/`.
-
-Per account: natemccoy and hana-ci both retain the accepted step04 typed-false config SHA-256 `516b528742956fbe73372ec2410b150baac8b6efa212db3110a5de339df7f946`. Both are suppressed and unrestored. Natemccoy original bytes/mode (raw capture true) and hana-ci original absence remain in protected backup.json; deliberate v3 installation does not restore these configs.
-
-Hana-ci retained all five resolved groups and natemccoy all sixteen, primary gid20 for each, within Darwin's runtime limit16. Root resolves23 with primary gid0 but has no Rust home and was omitted by discovery. No real over-limit refusal or continuation observation was established.
-
-Accepted tile28709/parent28707 and runner47933/47940/Listener47945 remain unchanged. Platform shells explicitly remain not inspectable; the Listener's inspectable actual environment equals the plist, with no forbidden keys or reader on PATH. Plist `e9ef6061…`, launcher `3665439a…`, Listener file `c4e8b5e1…`, installed berth `65d5b88c…` and port `58da53de…` retain their accepted hashes. Loaded service and runner .env/.path retain configured hook and override absence; sampled worker activity is clear. Linux-host remains restored.
-
-Current order: prepare13 all-account status and obtain both exact-byte clearances; only accepted13.out permits writing14 restoration from backup.json. Both accounts remain suppressed/unrestored, so F001 stays open. CI push/rows, desktop, promoted-summary CPU and administrative over-limit observation are outside this round. Impl performed no root action.
-
-
-Step13 preparation: source `root_steps/13_mac_all_account_status.sh` and Mac `/tmp/r/13_body.sh` SHA-256 `61568678b5e358f6128754d8469c186405e22f2a3ad8c350049fd2547c3a3d17`; exact two-line wrapper `13_mac_wrapper.sh` and Mac `/tmp/r/13.sh` SHA-256 `45431581b264f90099bb2dc84e74cbb948253c73cf7882905271b30545ef5744`, all0755. Native/local shell syntax, full731-line Python AST, exact wrapper/copy checks and stale13.out absence pass. Full diff from accepted12 reviewed; no installation or restart call survives. The status proof validates accepted12 originals/reports/per-shim records and requires all five installed outcomes with both accounts complete, with both typed-false configs and accepted readers/runner unchanged. TEST and REVIEW dispositions are pending; no READY or status success is claimed. `root_steps/13_checks.md` records implementation checks. Required documentation names/behavior and scoped whitespace checks pass.
-
-
-Final round15 handoff: **step13 READY; awaiting accepted administrator `root_steps/13.out`**. TEST CLEAR1800 and REVIEW CLEAR1804 both name body `61568678b5e358f6128754d8469c186405e22f2a3ad8c350049fd2547c3a3d17`, exact wrapper `45431581b264f90099bb2dc84e74cbb948253c73cf7882905271b30545ef5744`. Impl read both full dispositions and rechecked unchanged source/Mac hashes, regular single-link0755 copies, native shell/731-line AST, exact wrapper and absence of stale13.out/status-13 before posting READY. The administrator handoff is Mac `/tmp/r/13.sh`. Tester status-report proof passed one positive/fifteen negatives; reviewer independently passed one positive/twelve negatives and empty-environment/configured-key checks. R15-01's stale Mac v2 service-authority paragraph is replaced with accepted12 v3 state.
-
-Pending script order: **13 only**, prepared and cleared; **14 restoration remains unwritten** until accepted13 output. Complete13.out with no FAIL and its final POST-CONDITION is required; wrapper exit alone is insufficient. Natemccoy and hana-ci both remain suppressed/unrestored at typed-false hash `516b5287…`, with the five accepted v3 shims and accepted release reader/runner identities. Linux-host remains restored. No root script was run by impl; F001 and the excluded observations remain open. No independent implementation work remains before administrator13 output.
-
-
-### Repair round 16 — accepted Mac step13, 2026-09-14
-
-Administrator step13 is accepted. `root_steps/13.out` SHA-256 `6bce70d6746ebe39245904f49e2d3d8ec7bf35c8468bbe4fb427c2391521b983` has 147 lines, zero FAIL and one terminal POST-CONDITION; impl read the receipt and verified its hash and identity lines against accepted12. Executed body `61568678b5e358f6128754d8469c186405e22f2a3ad8c350049fd2547c3a3d17` and wrapper `45431581b264f90099bb2dc84e74cbb948253c73cf7882905271b30545ef5744` are unchanged. Earlier pending13 statements are historical; completed13 must not be rerun.
-
-The pinned installed release cargo-tile `cb7f5a1e592b6ece431ee6462123bc148de5a4978061bdb3ddbfea68da6cc24f` reports hana-ci stable installed and natemccoy 1.83.0, 1.96.0, nightly and stable installed, all aarch64-apple-darwin. Exact totals: `2 accounts: 2 completed, 0 with no toolchains, 0 incomplete`. Every shim still matches embedded v3 `3fcd50e27e785dafcb749fba5aaa0a7339e44eb02ab2187446703b0f1dda26f3`, account uid/gid and0755; saved real cargo and protected install12 records are unchanged. Protected status receipts and completion reside under `/var/tmp/cargo-tile-rollout-phase17-mac/status-13/`. Root has no Rust home and was omitted; this proves no over-limit refusal.
-
-Natemccoy and hana-ci each remain suppressed/unrestored at typed-false config hash `516b528742956fbe73372ec2410b150baac8b6efa212db3110a5de339df7f946`. Their full memberships remain16 and5, primary gid20, runtime limit16. The three release hashes, tile28709/parent28707, agent berth resolutions, runner47933/47940/Listener47945 and configured hook absence equal accepted12. Platform shells remain explicitly not inspectable; hard actual Listener environment evidence passes under decision13-1. Linux-host remains restored.
-
-Step14 is being prepared to restore natemccoy's protected original bytes/mode and hana-ci's original absence from backup.json. It must prove typed auto-install true with isolated pinned-release probes and preserve all five v3 toolchains and accepted reader/runner identities. Natemccoy toolchains1.83.0 and1.96.0 remain required by14; their later removal belongs to the orchestrator after accepted14. Preparation is not READY or restoration. F001 remains open; CI push/rows, desktop, promoted-summary CPU and administrative refusal observations are outside this round. Impl performs no root action.
-
-
-Step 14 preparation: `root_steps/14_mac_restore_auto_install.sh` and Mac `/tmp/r/14_body.sh` SHA-256 `f7f9997c27d97b20953575cfd51c884427a1b7816f3fc519d2f8d73b75632b69`; exact two-line wrapper `14_mac_wrapper.sh` and Mac `/tmp/r/14.sh` SHA-256 `5c8728e558d7c284aa80afa6090d4cc13ce890cb294d758650c744af506288ae`, all 0755. Local/native shell syntax, full 909-line Python AST and exact wrapper checks pass. Mac `14.out` and `restore-14` are absent. Full diff from accepted13 was read: accepted status receipts replace the status invocation, and per-account config restoration with isolated typed probes is added. Required documentation names/behavior and scoped whitespace checks pass. Implementation audit is `root_steps/14_checks.md`. Test and review clearance are pending; no READY or restoration is claimed.
-
-
-Final round 16 handoff: **step 14 READY; awaiting accepted administrator `root_steps/14.out`**. TEST CLEAR1884 and REVIEW CLEAR1882 both name body `f7f9997c27d97b20953575cfd51c884427a1b7816f3fc519d2f8d73b75632b69` and exact wrapper `5c8728e558d7c284aa80afa6090d4cc13ce890cb294d758650c744af506288ae`. Impl read both complete dispositions and rechecked unchanged source/Mac hashes, regular single-link 0755 files, native shell/full 909-line Python AST, exact wrapper and absence of stale `14.out` or `restore-14` before READY. The administrator handoff is Mac `/tmp/r/14.sh`. Tester passed native receipt validation with one positive/eighteen negatives and restoration-plan validation with one positive/nine negatives; review independently checked receipt/config/plan and Darwin environment branches.
-
-Impl additionally exercised the exact pinned-release typed-probe body as natemccoy in disposable `/tmp/r/14-native-*` user copies: present-config and absent/default inputs passed, and a type-invalid input retained its sentinel and was refused. The first filesystem fixture correctly failed because `/tmp/r` passed its wheel gid0 to the fixture file; after setting the fixture to the real config's uid501/gid20, exact restoration helpers passed native descriptor reads, same-owner fchown, directory fsync, atomic rename and original-absence unlink. Credential switching and the actual account-home boundary were substituted only in these disposable fixtures; no root body ran. All created fixture trees were removed. The real ordinary config, four shims/four saved cargo and three release-reader files were unchanged. Receipts are `root_steps/14_native_probe.out` and `14_native_restore_checks.out`; these fixtures do not prove the inaccessible original backup's typed acceptance.
-
-Pending administrative script order: **14 only**. Complete administrator output with zero FAIL and the terminal POST-CONDITION is required; wrapper exit alone is insufficient. Natemccoy and hana-ci remain suppressed/unrestored until accepted14 proves their original bytes/mode or absence and typed true. All five toolchains remain required through14; later removal of 1.83.0 and 1.96.0 belongs to the orchestrator. Linux-host remains restored. F001 and excluded CI/desktop/promoted-summary/admin-refusal observations remain open. No independent implementation work remains before administrator14 output; impl performed no root action, service edit, ledger operation, push or user-checkout mutation.
-
-
-### Accepted Mac restoration and final toolchain coverage — historical round16 closeout, 2026-09-14
-
-Orchestrator board1911 accepts administrator `root_steps/14.out`, SHA-256 `e932ca46f591d52fdbf5f0fe3462c52b76cf582bfe0731191b041899be4df163`: 147 lines, zero FAIL and a terminal POST-CONDITION. Impl read the receipt and verified the hash, all repeated identity records against accepted13, both restoration plans/results and per-account completion. Executed body `f7f9997c27d97b20953575cfd51c884427a1b7816f3fc519d2f8d73b75632b69` and wrapper `5c8728e558d7c284aa80afa6090d4cc13ce890cb294d758650c744af506288ae` retain TEST1884/REVIEW1882 clearance. One distinct Python fork DeprecationWarning appears twice; both children completed and no failure occurred. The protected restoration record is `/var/tmp/cargo-tile-rollout-phase17-mac/restore-14/proof/complete.json`, with each probe and account's started/completed evidence beside it. Completed14 must not be rerun.
-
-Natemccoy's `/Users/natemccoy/Library/Application Support/cargo-tile/config.toml` is restored to original SHA-256 `aaad50463277759ed6856eef0a4b824a08f31a16f1da3adabef0f2eca6357175`, uid501/gid20, mode0644. Hana-ci's `/Users/hana-ci/Library/Application Support/cargo-tile/config.toml` is absent as originally recorded. Both actual protected-original/default probes passed pinned-release typed loading with `auto_install=true` before either real config changed. The Mac suppression window begun by04 on 2026-09-13 ended with accepted14 on 2026-09-14. Job-start hooks remain in their configured absent state. Neither account remains suppressed or partly restored.
-
-At restoration acceptance, all five shims still matched embedded v3 SHA-256 `3fcd50e27e785dafcb749fba5aaa0a7339e44eb02ab2187446703b0f1dda26f3`; every saved real cargo, release-reader identity, full membership and protected04/10/11/12/13 record was unchanged. Tile28709/parent28707 and runner47933/47940/Listener47945 retained accepted identities. Platform-shell environments remained not inspectable; the Listener's actual configured environment, forbidden-key absence and reader-free PATH passed. No sampled Worker activity was present. These are accepted administrator observations; impl executed no root operation.
-
-After accepted14, orchestrator board1912 records successful administrator-requested `rustup toolchain uninstall 1.83.0-aarch64-apple-darwin 1.96.0-aarch64-apple-darwin` as natemccoy. No `~/rust` rust-toolchain file pinned either removed version. `rustup toolchain list` then reported stable (active/default) and nightly. Natemccoy's own-account `cargo-tile status`, through unchanged release `cb7f5a1e…`, exited0 and reported both remaining toolchains `capturing`; hana-ci stable was unchanged. Final inventory comes from that orchestrator post, not a new impl root or uninstall action:
-
-| Account | Remaining toolchain | Shim path | Final evidence |
-| --- | --- | --- | --- |
-| natemccoy | stable-aarch64-apple-darwin (active/default) | `/Users/natemccoy/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo` | accepted14 exact v3 bytes; board1912 retained/capturing |
-| natemccoy | nightly-aarch64-apple-darwin | `/Users/natemccoy/.rustup/toolchains/nightly-aarch64-apple-darwin/bin/cargo` | accepted14 exact v3 bytes; board1912 retained/capturing |
-| hana-ci | stable-aarch64-apple-darwin | `/Users/hana-ci/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo` | accepted14 exact v3 bytes; board1912 unchanged |
-
-Final Mac coverage is **three v3 shims**. The five-toolchain coverage in completed12–14 scripts and receipts remains the correct historical installation/restoration evidence; those files are unchanged. Linux retains six v3 shims and accepted restoration. No administrative script remains pending on either machine for this round. Earlier awaiting14/unrestored statements describe preparation and are superseded by this accepted record. F001's broader rollout observations remain open: CI push/three rows, desktop/appearance, numeric promoted-summary CPU and real Darwin over-limit refusal/continuation were not performed in this round. Impl changed only the rollout records and required final summary during this acceptance closeout, with no root, service, ledger, push or toolchain action.
-
-
-### Repair round 17 — CI push and runner routing, 2026-09-14
-
-The one authorized push completed with exit 0: `3fb313b0..7a724382 HEAD -> enh/tile-runner`, after accepted linux-host09 and Mac14 restoration and the final three-shim Mac inventory. It pushed only committed `7a72438263c92834d8acbb775e2e94ed615f543d`; existing uncommitted work remains local. The push must not be repeated. Evidence: `root_steps/17_ci_push_and_routing.json`.
-
-[CI run 34843107906](https://github.com/natepiano/cargo-liner/actions/runs/34843107906) is the resulting push run at that exact SHA. Every scheduled job uses GitHub-hosted `ubuntu-latest`, `macos-latest`, or `windows-latest`; the assigned names are `GitHub Actions …`. The repository runner API reports `total_count: 0`. The checked-in `.github/workflows/ci.yml` contains no hana or self-hosted selection. This is a runner-routing defect outside impl's owned paths. No job from this push runs as hana-linux-1, hana-linux-2, or hana-ci; therefore no matching cargo-tile CI row is observed for any of the three accounts. Installed ordinary reader identities remain the accepted release builds; no rendered-row evidence is inferred from unrelated hosted jobs. The configuration/workflow owner must supply a CI route to all three accounts before this acceptance item can pass.
-
-Administrator decision1950 drops step15 and the live Darwin over-limit smoke from this rollout. Refusal and continuation have unit/integration coverage only; no real over-limit account was observed. Natemccoy resolves 16 groups, exactly Darwin's runtime limit of 16; one additional distinct resolved group would exceed it. Its successful installation proves the within-limit path. Hana-ci resolves5, primary gid20 for both. Root resolves23 but has no `.rustup` home and is skipped before credential resolution, so it supplies no live refusal proof. No disposable Mac account or group was created. The local unexecuted step15 body and wrapper drafted before impl received decision1950 were withdrawn; neither was copied, cleared, marked READY, or run. No step15 output or administrative handoff is pending.
-
-
-Orchestrator1955 acknowledges the CI routing blocker and is investigating runner registration. The three CI-row observations remain **not yet possible** on the authorized push run. Impl has no remaining independent CI-row action until that route is provided; no further push or root step is authorized. Test continues the desktop and promoted-summary CPU observations under its separate disposition.
-
-Review1975 independently confirms the exact pushed workflow and all12 hosted job assignments, preserves R17-01/F001 for the missing hana CI rows, and closes R17-02 after checking the corrected current-scope documentation. Desktop/CPU evidence continues in the test seat; its partial progress is not recorded here as final acceptance.
-
-
-Round17 follow-up: all12 jobs in the authorized push run34843107906 have completed on the same hosted runners. Taplo Check, Mend Check, macOS cargo-tile and Test Suite failed; the other eight passed. These are hosted CI results, not any of the required hana CI-row observations. Final API receipt: `root_steps/17_ci_completed.json`; the earlier reviewed push/routing evidence is unchanged. No new CI route has been posted, so all three hana rows remain not yet possible.
-
-The orchestrator confirms the administrator's final decision: step15 and the live over-limit observation are dropped. Refusal and continuation remain covered by unit/integration tests only and were not observed live. Natemccoy resolves exactly 16 groups against Darwin's runtime limit of 16; one additional distinct resolved group would exceed it. No step15 script is written, packaged, or cleared, and no Mac account/group is created. No candidate or administrative output is pending. Remaining observations are the three hana CI rows (impl) and desktop plus promoted-summary CPU (test), with review of those records. No second push occurred.
-
-
-Round17 reviewed desktop progress — partial evidence:
-
-Review reports partial desktop evidence from test's attributed minute: zero `kscreen-doctor` hits, four Screenshot requests attributed entirely to Baloo, and no new direct reader bus connections. The same minute contains **116 new connections from 58 `kdotool` children of tile3734793**. This proves neither absence of all tile-caused connection churn nor full desktop acceptance. Test discloses those child connections and that limitation remains part of the record. The real DP-3 change to y32 and full restoration are recorded, with one topology read observed per action at2ms sampling; that is an observation at the sampling resolution, not proof that faster activity was impossible. Appearance, the diagnostic and promoted combined CPU still await final records and review. Source evidence remains in `preflight_observations.md` and `review_notes_fix_17.md`; no new implementation or live experiment was performed by impl.
-
-
-Round17 tester appearance and CPU update: the real layout change and restoration each produced one observed tile `kscreen-doctor -j`. Cargo-port followed the OS BreezeDark → BreezeLight → BreezeDark transition, changed its rendered colors, and restored the original colors exactly. Test reports zero reader Screenshot.Get calls or new direct reader connections during the attributed idle minute; Baloo accounts for the four portal calls, while tile's kdotool children retain the separately disclosed connection activity. Appearance transition/restoration is observed; final receipt review and the required warn-enabled appearance diagnostic remain pending.
-
-A promoted row showed a numeric100% CPU reading, but the nested verify invocation could not run inside the outer verification gate. This is not evidence of combined CPU from nested cargo invocations and does not pass that acceptance item. Test has asked the orchestrator for a fixture-only direct nested Cargo exception; impl grants no additional command permission and awaits the resulting observation. Step15 remains dropped.
-
-
-## Repair round18 — hana runner rows and Darwin candidate, 2026-09-14
-
-[Hana CI run34846831512](https://github.com/natepiano/hana/actions/runs/34846831512) was dispatched once on main using the authorized experiment label. The prior main CI runs were complete before dispatch, so its concurrency rule cancelled no prior run. All three runners took jobs; no redispatch, cancellation, push, workflow edit, variable/secret change or registration change occurred.
-
-| Ordinary reader | Rendered account and command | CI job / runner | First complete frame (EDT) |
-| --- | --- | --- | --- |
-| linux-host natepiano, installed cargo-tile fb97c01ee67f26c2b359413e34d5a5d23a80d1fd931cf365c2a6e4849e134b4f | [hana-linux-2], PID3830487, cargo nextest run; later345% and building98.8% | [103984797054 Rendering Diagnostic](https://github.com/natepiano/hana/actions/runs/34846831512/job/103984797054), hana-linux-2 | 09:03:12.720 |
-| same linux-host reader | [hana-linux-1], PID3831408, cargo deny check bans, CPU unavailable in first frame; child cargo fetch and metadata | [103984797043 Dependency Bans](https://github.com/natepiano/hana/actions/runs/34846831512/job/103984797043), hana-linux-1 | 09:03:17.744 |
-| Mac natemccoy, installed cargo-tile cb7f5a1e592b6ece431ee6462123bc148de5a4978061bdb3ddbfea68da6cc24f | [hana-ci], PID4811, cargo check, CPU unavailable in first frame | [103984778363 macOS Compile and Test](https://github.com/natepiano/hana/actions/runs/34846831512/job/103984778363), hana-macos | 09:03:13.497 |
-
-Both installed readers retain the accepted7a724382 production identity. Additional220x70 PTYs ran through script under uid1000/501 with the real ordinary HOME, CARGO_HOME and RUSTUP_HOME; the Mac observer was reached over BatchMode ssh. Each account label and command was reconstructed from complete cursor-hide draw boundaries in the real ANSI stream, without inserted registrations or process data. Linux paths were /run/github-runner/hana-linux-N/hana/hana; the Mac path was /Users/hana-ci/actions-runner/_work/hana/hana. All13 jobs completed successfully at09:13:15 EDT, including the three observed jobs. The run built hana main commit15d7fe92146d26aa9a56b438442c61b7dbbef683.
-
-Evidence is under root_steps:18_ci_observer.py,18_ci_{linux,mac}.identity.json, raw .ansi streams, .frames.jsonl, first-account .txt screens and .complete.json;18_hana_run.json and18_hana_jobs.json bind run/job assignments and time intervals. Both observers exited after capture. Linux script exited0; the Mac script required SIGTERM after the quit grace period and exited-15. Its additional process tree is gone. Original linux-host tile2960634/port2960635 and Mac tile28709 remain; both config files are byte-identical to their pre-observation hashes90b0617d…/aaad5046…. No visible GUI window is claimed; these are rendered PTY observations of ordinary host readers.
-
-The round17 final desktop and promoted200%=100%+100% receipts are in preflight_observations.md. The118 kdotool-child connections and R17-CPU-01 failure remain explicit. Step18's candidate Darwin switch and native product/probe builds are separate from the installed reader identities above. Administrative mechanism/product proof, cleanup and final keep-or-revert disposition are pending; this record does not claim an initgroups access result.
-
-
-The completed hana run and three full named-job logs have been read. Runner identity lines prove uid992/hana-linux-1, uid991/hana-linux-2 and uid502/hana-ci. Job command start times enclose the rendered observations: Linux2 nextest09:03:11.073, Linux1 dependency check09:03:15.252, Mac cargo check09:03:13.065. Evidence hashes and byte lengths are retained in root_steps/18_ci_evidence_manifest.json. No job completion is inferred from the PTY alone.
-
-Step18 follows count decision2116: the account has primary20,16 newly created groups, and any implicit memberships macOS returns; the actual count must exceed16 and the full list is printed. The script selects an actual disposable group outside the parent's first16 entries for its0640 file, then requires that the switched initgroups child can read it and an identical-prefix setgroups control receives EACCES. Existing memberships are never changed. Candidate script syntax and seven negative parser/control checks pass. Final pins are recorded in round19 below; intermediate artifacts are not accepted.
-
-Impl's initial Linux package execution d290ca4b-03d4-4ed2-a59a-1c66a1145d65 passed2358/2358 with no skipped cases. It includes the new Darwin parent-data/continuation tests and both zero-own/read-failure CPU regressions. Later hook Mend import/visibility fixes and the final owner formatting/native fixture changes require their final package gate. Formatting/lint belongs to review under the latest explicit handoff; impl does not run a second formatter.
-
-
-Round18 native staging status: final candidate snapshot04be0be3 built successfully, then full native run3686cdf1 passed3083/3084; its sole failure was reader_keeps_nested_invocations_distinct_with_one_enclosing_capture. Test corrected the copied-shell fixture with explicit exec in its background subshell; focused native run2b5f46c9 passes with unchanged exact row/PID assertions. All20 ACL cases and the six CPU/cache/resize cases passed in that full run. That partial result was superseded by final native run `3d1bbba9` (3086/3086), recorded in round19 below. No administrator proof operation has run.
-
-
-The review seat completed the CPU source repair, Taplo formatting and Mend visibility/import repairs. Exact local Taplo and both relevant Mend executable checks pass. The hosted Mac log contained34 failures: fixture path canonicalization, copied-platform-shell signing/re-execution, Python locale startup and process lifetime assumptions account for the repaired cases. The hosted Linux cache-server failure now retries a temporarily unavailable ps parent sample within the existing deadline; deterministic transient and permanent-absence tests pass, while the original ps failure cause remains unestablished. Final test fixtures use signed direct /bin/bash on Darwin and explicit exec for nested background commands. Full failing-name inventory and exact local gate receipts are in impl_summary_review.txt; final native validation belongs to test. No new hosted cargo-liner run or installed deployment of these uncommitted repairs is claimed.
-
-
-## Repair round19 — step18 pinned; pre-outcome state, 2026-09-14
-
-A replacement impl seat pinned step18 after the round18 impl seat was stopped by its model provider; the earlier seat's tree and session work stand. Body `root_steps/18_mac_initgroups_proof.sh` = Mac `/tmp/r/18_body.sh`, SHA-256 `97ef44f01239a511c39a95e225acee756bf5329bc0c8682ec8267893a6332e2e`; exact two-line wrapper `root_steps/18_mac_wrapper.sh` = Mac `/tmp/r/18.sh`, SHA-256 `6750fa3f94fc79d3e29b5863be55ee4c39ad714593fdb8aab2ce9cbf18a15b6e`. Both are 0755; local and native `sh -n` and the embedded Python AST parse pass; no `/tmp/r/18.out` exists.
-
-Pins, each rehashed natively on the Mac by impl before writing: staged fixed cargo-tile `/tmp/cargo-tile-mac-ig-artifacts/cargo-tile` `71ed59ffb6f227d5338f0d237f02be98e57a7857d340f4372f6eb32600add717` (uid 501, 0555; manifest `provenance.json` `67b85d0df32c3b0b5ef1106163d16f2163dcb8886b0e1f3d1bd1ec8f75376e84`); membership probe `667f8971f2bd870123e7cd6f3f6ece8d8b8190302152b9bacb7dbce32976ca64` (0555) from source `587dd5c5d7f36ef9353247fc1eff4d4430e93dd707ed2876be2f2eeef221e7f9`; base `7a72438263c92834d8acbb775e2e94ed615f543d` plus working diff `577cd6ccacb85db1b6f789c30038d4d9cbd0b49351ca2242a945fbd0de3d871d`; `hook.rs` `ab53c2eb877d702910dd57184212d07908f02cd0d38439e953197e67de4b774b`; native package run `3d1bbba9-3a88-459a-ba59-0b2ee632c6ef` 3086/3086, including all twenty ACL cases and the CPU, cache and resize cases. The Python pin now names the regular file `.../bin/python3.13` (hash `38a17665…` unchanged): the former `python3` path is a symlink and failed the script's O_NOFOLLOW guard (R18-TEST-01). No other byte changed from the round18 draft. The earlier probe `f3ac23fc…` is invalid. Clearances name these exact bytes: TEST CLEAR at board 2319, REVIEW CLEAR at board 2328; impl posted STEP 18 READY afterwards, and the orchestrator handed `sudo /tmp/r/18.sh` to the administrator (board 2330). Only a complete `18.out` with zero FAIL and its final POST-CONDITION is acceptable evidence.
-
-State while the proof is pending:
-
-- **Darwin switch.** Implemented in the working tree: `DarwinGroupMembership` in `crates/cargo-tile/src/hook.rs` prepares the primary-first membership, credential prefix and uid in the parent; the child calls raw `__initgroups`, then `setgid`, then `setuid`. The over-limit refusal is gone from the tree, and `crates/cargo-tile/README.md` describes the switch with confirmation pending. Installed readers on both machines remain the `7a724382` releases, which still refuse an over-limit account.
-- **Proof.** Not run. Mechanism, identical-prefix control denial, product status, and cleanup are all unestablished until an accepted `18.out`; work item 1d's rule (keep, restore the refusal byte-for-byte, or repair and re-prove) applies to that output.
-- **Runner rows.** All three observed during hana run 34846831512, recorded above.
-- **R17-CPU-01 and the four branch CI failures** (Taplo Check, Mend Check, macOS cargo-tile, Test Suite): repaired in the working tree. Local gates on the final tree: `verify.sh test cargo-tile` run `5f0d42ca-8fe4-4968-a3e4-5e5d32c2b292` 2360/2360, `verify.sh lint cargo-tile` pass, the CI Mend command with no findings, `taplo fmt --check` pass, `tui_pane` 463/463 and 607/607 with `backdrop`; native Mac 3086/3086. No hosted cargo-liner run covers these uncommitted repairs, and none is deployed.
-- **F001** stays open.
-
-## Step18 outcome — Darwin switch kept, 2026-09-14
-
-The administrator ran `sudo /tmp/r/18.sh` with the cleared body and wrapper named in round19. `root_steps/18.out` is 197 lines, SHA-256 `99199f27568762c5a929b5c9e9958a9c90cc9a06d777c73a2ed5074d44622883`, with its terminal POST-CONDITION at line 197.
-
-- **Membership.** Disposable account `_cargo_tile_ig18` (uid 62018, primary gid 20) resolves 21 groups against Darwin's runtime limit of 16 (line 113). The probe file's group, gid 620185, sits outside the 16-entry credential prefix.
-- **Mechanism.** The child switched through raw `__initgroups` read the probe file (`read=ALLOWED`); a child given the identical 16-group prefix through `setgroups` was refused with `EACCES` (line 123). Line 126: `MECHANISM PROVEN: initgroups reads through excluded group; identical setgroups prefix receives EACCES`.
-- **Product.** The fixed `cargo-tile status --all-accounts` reported the disposable account with no toolchains, and hana-ci and natemccoy completed: `3 accounts: 2 completed, 1 with no toolchains, 0 incomplete` (line 134).
-- **Cleanup.** The disposable account, its home, the 16 created groups and the probe file are removed; existing readers, shims, saved cargo, configs and memberships are unchanged (line 197).
-
-Work item 1d's rule resolves to **keep**: Darwin accounts retain full membership beyond 16 groups through kernel dynamic resolution, and the over-limit refusal stays removed. Installed readers on both machines remain the `7a724382` releases until a separate deployment.
+**Hooks and credentials.**
+- A staged root-owned installer copy under `/tmp`, not the administrator's own binary: the account child must execute it whatever the permissions on the administrator's home, and a sticky parent stops another account replacing it.
+- Credentials applied together in `pre_exec`, group credentials first: `Command::uid` alone leaves the child without the account's supplementary groups, so a toolchain the account reaches through a group would fail.
+- `__initgroups` instead of `setgroups` on Darwin: `setgroups` caps membership at the credential limit and removes dynamic resolution, so every group past 16 is lost. Refusing or truncating over-limit accounts was ruled out because a supplementary list is the account's whole membership to the kernel. A 21-group disposable account confirmed the mechanism: the switched child reads a file through a group past the first 16, and a child given the identical 16-group prefix through `setgroups` gets `EACCES`; `status --all-accounts` completes for that account.
+- The primary gid is placed first because the `setgid` that follows must not displace a group in the credential.
+- Groups are resolved in the parent because a forked child of a threaded process can only make async-signal-safe calls.
+- One resize loop serves both libcs, so no `cfg` branch is needed for the count contract. An unbounded retry was ruled out because it would spin forever on a libc that never reports a size.
+- Rows stream one toolchain at a time so an interrupted child still reports finished work. Collecting all reports before printing was ruled out.
+- `install` exits zero and `uninstall` exits nonzero because job-start hooks must not fail over capture setup, while automation must not read a partial uninstall as complete.
+- Restoring `cargo-tile-real` before installing over it was ruled out; the round trip is the window in which a second installer saves a shim as the real cargo. A file-locking dependency was ruled out in favour of the existing exclusive-create idiom.
+
+**CPU and census.**
+- Counters are cumulative, including `cutime`/`cstime`, because rates from per-process snapshots miss reaped children and blank the row whenever a descendant appears or exits.
+- A contested compile charges nothing because every other choice overstates some row.
+- Command-text parsing is not folded into `scan.rs`: `scan.rs` is the largest file, and parsing has its own tests and no `Census` dependency.
+- Types are not re-exported beyond cross-crate use, so each consumer names the owning module.
+
+**Settings.**
+- Hit testing uses the drawn offset because a click in the same input batch as a navigation key must select the row that is on screen.
+- Wrapping the mutable viewport accessor was ruled out because it breaks `const` callers.
+- A crossterm workaround in the application was ruled out because crossterm's own first readiness check can drop the key before any handler is installed.
+
+**Backdrop.**
+- Topology is watched, the bus connection is held, and appearance is subscribed because polling each of them opened about a hundred session-bus connections a minute across the binaries: 60 `kscreen-doctor` spawns and 40 `Settings.ReadOne` calls.
+- Subscribing before reading keeps a change that lands during the startup read.
+- One class-independent `kdotool` search is shared by capture and marker identification because class-scoped discovery misses windows whose class does not match `TERM_PROGRAM`.
+- Querying every desktop window on each capture tick and reading position every render frame were ruled out; together they drive `getWindowInfo` to about 27/s.
+- `dark-light` has no subscribe entry point. `follow` takes its callback by value because a shared reference held across an await needs `Sync` on the public bound.
+
+**cargo-berth.**
+- Evidence is appended after extent derivation so each record describes the extent the transaction persists, not the previous one. A derivation from the checkpoint alone reports `Clear` without looking at the merge extent.
+- Editing existing ledgers to remove `merge_extent_observed` was ruled out; older readers are upgraded instead.
+- `reader_compat` uses a frozen bundle so every reader faces the same historical journal, without touching a shared ledger.
