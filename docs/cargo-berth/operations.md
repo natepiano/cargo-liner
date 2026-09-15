@@ -81,6 +81,9 @@ a pending marker for a later session to recover. The fact names
 `CARGO_BERTH_BYPASS=1` and when it was taken. It has no reason and names no
 specific hold that it skipped, because nothing else had been read yet. If
 neither destination is writable, the tool warns and still permits the update.
+The committed `reference-transaction` hook also writes pending markers of
+`kind = "branch_rewrite"` under the same file naming to carry a rewrite map to
+the next reconciliation; those never count or report as bypasses.
 
 The same variable is the escape hatch for the edit gate. The pre-edit wrapper
 honors `CARGO_BERTH_BYPASS=1` before it reaches the engine, so an engine that
@@ -133,7 +136,15 @@ The reservation ledger could not be read: journal replay failed: journal schema 
 Upgrade `cargo-berth` for an unsupported schema version rather than
 reinitializing that journal.
 
-`resolve` records one of these explicit decisions:
+An outstanding reservation needs no command once its work reaches trunk:
+ordinary reconciliation (`board`, `check`, the post-Bash hook, the trunk gate,
+or `release`) settles it when git proves the whole scoped phase is on the
+checked-out trunk and no reserved work remains outside that proof, including
+after a rebase, amend, or reset. An orphan notice names the dispositions that
+fit the orphan and the observed trunk.
+
+`resolve` records one of these explicit decisions for what reconciliation
+cannot prove:
 
 - `--recovered` rebinds a reservation to the worktree running the command.
 - `--integrated-as <trunk-oid>` records a verified alternate commit already

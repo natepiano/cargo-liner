@@ -303,10 +303,11 @@ The sections mean:
   `resolve <id> --recovered` after restoring the worktree and
   `resolve <id> --integrated-as <trunk_oid>` after verifying merged work.
   With unresolved trunk, it requires trunk repair before naming an integration
-  commit. The legacy `recover` variant and its `flag` remain accepted; the
-  `retire_or_abandon` variant retains both explicit `flags`. These existing
-  variants and the `OrphanResolutionAction` schema name are unchanged.
-  The stale action names the reservation for `renew`; the bypass alert names
+  commit. When the orphan's commit is unavailable, `retire_or_abandon` carries
+  both explicit `flags`, `--retire-orphan --why <reason>` and
+  `--abandon --why <reason>`. A `recover` variant with a single `flag` still
+  decodes. An outstanding reservation whose work is proven on the actual trunk
+  settles during reconciliation and raises no orphan alert. The stale action names the reservation for `renew`; the bypass alert names
   the recovery step.
 - `git_cost`: exact Git-call counts used to build this board.
 
@@ -684,9 +685,11 @@ These operation fields use the following tagged values:
   replayed lifecycle and integration evidence, and a released reservation is
   always effectively `clear` even when the record it replays says `blocking`.
 - `snapshot.stage` is `active` with `claim_snapshot`, or `outstanding` with
-  `protected_tip` and `trunk_oid`.
+  `protected_tip`, `trunk_oid`, and optional `phase_start_head`. An absent
+  `phase_start_head` keeps the reservation's existing baseline; a present one
+  replaces it when reconciliation re-anchors a rewritten phase.
   A resnapshot can update only an active claim snapshot or an outstanding
-  protected tip. A resnapshot of a released reservation makes the journal
+  protected tip and baseline. A resnapshot of a released reservation makes the journal
   unreadable.
 - A release disposition is `{ "kind": "integrated" }`, or has `kind` equal to
   `rewritten_integration`, `abandoned`, or `retired_orphan` plus a scalar
