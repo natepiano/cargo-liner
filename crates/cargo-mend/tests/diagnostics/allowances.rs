@@ -268,13 +268,8 @@ fn assert_stored_forbidden_visibility_advice(
     finding_line: u64,
     expectation: ForbiddenVisibilityPersistenceExpectation<'_>,
 ) {
-    let findings_dir = temp.path().join("target/mend-findings");
     let mut matches = 0;
-    for entry in fs::read_dir(findings_dir).expect("read stored findings directory") {
-        let path = entry.expect("read stored finding entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
+    for path in stored_report_paths(temp.path()) {
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let stored_text = stored_report.to_string();
@@ -304,13 +299,8 @@ fn assert_stored_finding_has_no_refinement_metadata(
     diagnostic_code: &str,
     finding_path: &str,
 ) {
-    let findings_dir = temp.path().join("target/mend-findings");
     let mut matches = 0;
-    for entry in fs::read_dir(findings_dir).expect("read stored findings directory") {
-        let path = entry.expect("read stored finding entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
+    for path in stored_report_paths(temp.path()) {
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let findings = stored_report
@@ -347,13 +337,8 @@ fn assert_stored_finding_has_no_refinement_metadata(
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let findings_dir = temp.path().join("target/mend-findings");
     let mut stored_reports = 0;
-    for entry in fs::read_dir(findings_dir).expect("read stored findings directory") {
-        let path = entry.expect("read stored finding entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
+    for path in stored_report_paths(temp.path()) {
         stored_reports += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");

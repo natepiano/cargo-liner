@@ -199,7 +199,7 @@ pub(in crate::compiler) fn workspace_source_parent_export_literal_usage(
     let export_spellings = export_spellings(exported_names);
 
     for file in source_cache.source_files() {
-        if file.starts_with(&settings.findings_dir) {
+        if file.starts_with(&settings.analyzing_dir) {
             continue;
         }
         if export_spellings

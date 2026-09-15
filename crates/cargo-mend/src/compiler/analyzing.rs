@@ -7,11 +7,11 @@
 //! produces one line and then minutes of silence.
 //!
 //! Each analyzing wrapper therefore leaves a file named after its process id in
-//! a directory under `MEND_FINDINGS_DIR`, holding the crate name it is working
-//! on, and removes it when the analysis ends. The parent lists that directory
-//! once per spinner frame. A file rather than a line on stderr because cargo may
-//! hold a unit's `rustc` stderr until the unit finishes, which would deliver the
-//! announcement after the work it announces.
+//! the directory named by `MEND_ANALYZING_DIR`, holding the crate name it is
+//! working on, and removes it when the analysis ends. The parent lists that
+//! directory once per spinner frame. A file rather than a line on stderr because
+//! cargo may hold a unit's `rustc` stderr until the unit finishes, which would
+//! deliver the announcement after the work it announces.
 
 use std::fs;
 use std::path::Path;
@@ -20,8 +20,11 @@ use std::process;
 
 use super::constants::ANALYZING_DIR_NAME;
 
-/// The directory holding one file per in-flight analysis.
-fn analyzing_dir(findings_dir: &Path) -> PathBuf { findings_dir.join(ANALYZING_DIR_NAME) }
+/// The directory holding one file per in-flight analysis. `AnalyzingMarker`
+/// creates it on first use, so the parent only needs the path.
+pub(super) fn analyzing_dir(target_directory: &Path) -> PathBuf {
+    target_directory.join(ANALYZING_DIR_NAME)
+}
 
 /// Announces one target's analysis for as long as it is alive.
 ///
@@ -35,12 +38,11 @@ pub(super) struct AnalyzingMarker {
 impl AnalyzingMarker {
     /// Writes the marker, or yields an inert value if the directory or file
     /// cannot be created. Progress display is never worth failing a run over.
-    pub(super) fn new(findings_dir: &Path, crate_name: &str) -> Self {
-        let directory = analyzing_dir(findings_dir);
-        if fs::create_dir_all(&directory).is_err() {
+    pub(super) fn new(analyzing_dir: &Path, crate_name: &str) -> Self {
+        if fs::create_dir_all(analyzing_dir).is_err() {
             return Self { path: None };
         }
-        let path = directory.join(process::id().to_string());
+        let path = analyzing_dir.join(process::id().to_string());
         if fs::write(&path, crate_name).is_err() {
             return Self { path: None };
         }
@@ -58,8 +60,8 @@ impl Drop for AnalyzingMarker {
 
 /// The crate names currently being analyzed, sorted so the progress line does
 /// not reorder itself between frames while the same set is in flight.
-pub(super) fn targets_in_flight(findings_dir: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(analyzing_dir(findings_dir)) else {
+pub(super) fn targets_in_flight(analyzing_dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(analyzing_dir) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries

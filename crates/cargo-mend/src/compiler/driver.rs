@@ -44,7 +44,7 @@ impl Callbacks for AnalysisCallbacks {
     fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
         let crate_name = tcx.crate_name(LOCAL_CRATE);
         let _analyzing =
-            AnalyzingMarker::new(&self.driver_settings.findings_dir, crate_name.as_str());
+            AnalyzingMarker::new(&self.driver_settings.analyzing_dir, crate_name.as_str());
         let analysis_start = Instant::now();
         let findings = visibility::collect_and_store_findings(tcx, &self.driver_settings);
         sweep_counters::report(crate_name.as_str(), analysis_start.elapsed());

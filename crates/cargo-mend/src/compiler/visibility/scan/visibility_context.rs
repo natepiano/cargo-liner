@@ -7,10 +7,13 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use rustc_middle::middle::privacy::EffectiveVisibilities;
 use rustc_middle::ty::TyCtxt;
+use rustc_session::config::OutFileName;
+use rustc_session::output;
 use rustc_span::FileName;
 use rustc_span::Span;
 use rustc_span::def_id::CRATE_DEF_ID;
@@ -26,7 +29,6 @@ use crate::compiler::exposure::SignatureExposureCache;
 use crate::compiler::facade;
 use crate::compiler::facade::ModuleSourceMap;
 use crate::compiler::persistence;
-use crate::compiler::persistence::CacheBuildKind;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::persistence::StoredReport;
 use crate::compiler::settings::DriverSettings;
@@ -167,12 +169,7 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         visit::visit_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
 
-    let build_kind = cache_build_kind(tcx);
-    let output_path = settings.findings_dir.join(persistence::cache_filename_for(
-        &settings.package_root,
-        &crate_root_file,
-        build_kind,
-    ));
+    let output_path = report_path(tcx)?;
     let stored_crate_root = if crate_root_file.is_absolute() {
         crate_root_file.clone()
     } else {
@@ -234,11 +231,16 @@ fn sort_and_dedupe(sink: &mut FindingsSink) {
     sink.visibility_constraints.dedup();
 }
 
-fn cache_build_kind(tcx: TyCtxt<'_>) -> CacheBuildKind {
-    if tcx.sess.opts.test {
-        CacheBuildKind::Test
-    } else {
-        CacheBuildKind::Library
+/// Where this compilation's `StoredReport` is written: beside the `.rmeta` rustc
+/// emits for the unit, as `persistence::report_path_for_metadata` names it.
+fn report_path(tcx: TyCtxt<'_>) -> Result<PathBuf> {
+    match output::filename_for_metadata(tcx.sess, tcx.output_filenames(())) {
+        OutFileName::Real(metadata_path) => {
+            Ok(persistence::report_path_for_metadata(&metadata_path))
+        },
+        OutFileName::Stdout => {
+            bail!("crate metadata is written to stdout, so there is no path for the findings file")
+        },
     }
 }
 
@@ -264,6 +266,7 @@ fn build_source_cache(tcx: TyCtxt<'_>, crate_root_file: &Path) -> Result<SourceC
 mod counter_tests {
     use std::fs;
     use std::path::Path;
+    use std::path::PathBuf;
 
     use anyhow::Context;
     use anyhow::Result;
@@ -280,6 +283,7 @@ mod counter_tests {
 
     use super::collect_and_store_findings;
     use crate::compiler::facade;
+    use crate::compiler::persistence;
     use crate::compiler::persistence::StoredReport;
     use crate::compiler::settings;
     use crate::compiler::settings::DriverSettings;
@@ -293,17 +297,16 @@ mod counter_tests {
         write_fixture(temp.path())?;
         let source = temp.path().join("src/main.rs");
         let target_directory = temp.path().join("target");
-        let findings_dir = target_directory.join("mend-findings");
-        fs::create_dir_all(&findings_dir)?;
+        fs::create_dir_all(&target_directory)?;
         let output = target_directory.join("fixture.rmeta");
         let driver_settings = DriverSettings {
-            config_root: temp.path().to_path_buf(),
-            visibility_config: VisibilityConfig::default(),
-            config_fingerprint: String::from("test"),
+            config_root:          temp.path().to_path_buf(),
+            visibility_config:    VisibilityConfig::default(),
+            config_fingerprint:   String::from("test"),
             analysis_fingerprint: settings::current_analysis_fingerprint(),
-            scope_fingerprint: String::from("scope"),
-            findings_dir,
-            package_root: temp.path().to_path_buf(),
+            scope_fingerprint:    String::from("scope"),
+            analyzing_dir:        target_directory.join("mend-analyzing"),
+            package_root:         temp.path().to_path_buf(),
         };
         let arguments = vec![
             String::from("rustc"),
@@ -317,6 +320,7 @@ mod counter_tests {
         ];
         let mut callbacks = CounterAssertions {
             driver_settings,
+            report_path: persistence::report_path_for_metadata(&output),
             result: None,
         };
         rustc_driver::catch_with_exit_code(|| {
@@ -364,17 +368,26 @@ mod counter_tests {
 
     struct CounterAssertions {
         driver_settings: DriverSettings,
+        report_path:     PathBuf,
         result:          Option<Result<()>>,
     }
 
     impl Callbacks for CounterAssertions {
         fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
-            self.result = Some(assert_counter_behavior(tcx, &self.driver_settings));
+            self.result = Some(assert_counter_behavior(
+                tcx,
+                &self.driver_settings,
+                &self.report_path,
+            ));
             Compilation::Stop
         }
     }
 
-    fn assert_counter_behavior(tcx: TyCtxt<'_>, driver_settings: &DriverSettings) -> Result<()> {
+    fn assert_counter_behavior(
+        tcx: TyCtxt<'_>,
+        driver_settings: &DriverSettings,
+        report_path: &Path,
+    ) -> Result<()> {
         facade::reset_performance_counters();
         collect_and_store_findings(tcx, driver_settings).context("collect visibility findings")?;
 
@@ -427,23 +440,12 @@ mod counter_tests {
             facade::facade_usage_scan_count(first_occurrence.use_def_id),
             1
         );
-        assert_usage_findings(driver_settings)?;
+        assert_usage_findings(report_path)?;
         Ok(())
     }
 
-    fn assert_usage_findings(driver_settings: &DriverSettings) -> Result<()> {
-        let report_path = fs::read_dir(&driver_settings.findings_dir)?
-            .find_map(|entry| {
-                let entry = entry.ok()?;
-                (entry
-                    .path()
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    == Some("json"))
-                .then(|| entry.path())
-            })
-            .context("missing counter report")?;
-        let report_bytes = fs::read(&report_path)
+    fn assert_usage_findings(report_path: &Path) -> Result<()> {
+        let report_bytes = fs::read(report_path)
             .with_context(|| format!("read counter report {}", report_path.display()))?;
         let report: StoredReport = serde_json::from_slice(&report_bytes)?;
         if !report

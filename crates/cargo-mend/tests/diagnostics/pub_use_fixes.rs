@@ -65,13 +65,8 @@ edition = "2024"
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let findings_dir = temp.path().join("target/mend-findings");
     let mut stored_report_count = 0;
-    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
-        let path = entry.expect("read stored finding entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
+    for path in stored_report_paths(temp.path()) {
         stored_report_count += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
@@ -623,13 +618,8 @@ edition = "2024"
 /// no edit is observing the load-time prune rather than a fact that was never
 /// written.
 fn assert_stored_pub_use_fix_fact_exists(temp: &TempDir) {
-    let findings_dir = temp.path().join("target/mend-findings");
     let mut stored_fact_count = 0;
-    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
-        let path = entry.expect("read stored finding entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
+    for path in stored_report_paths(temp.path()) {
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         stored_fact_count += stored_report

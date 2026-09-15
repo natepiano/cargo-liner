@@ -1,11 +1,9 @@
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
-use anyhow::Context;
-use anyhow::Result;
 use serde_json::from_str;
 
 use super::StoredFinding;
@@ -16,7 +14,6 @@ use super::intersection;
 use super::visibility_constraint;
 use super::visibility_priority;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
-use crate::compiler::constants::JSON_FILE_EXTENSION;
 use crate::compiler::settings;
 use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
@@ -35,9 +32,9 @@ use crate::selection::Selection;
 /// An empty `Report::findings` means the code is clean only when at least one
 /// `StoredReport` matched the selection and passed `stored_report_is_compatible`.
 /// With none, the compiler examined no code at all — cargo found nothing to
-/// rebuild, so the driver never ran, and no cached report survived the
-/// compatibility check — and the empty findings list is indistinguishable from a
-/// clean crate without this.
+/// rebuild, so the driver never ran, and no report beside the units cargo listed
+/// survived the compatibility check — and the empty findings list is
+/// indistinguishable from a clean crate without this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::compiler) enum AnalysisEvidence {
     Present,
@@ -87,11 +84,19 @@ impl PubUseNarrowingSite {
     }
 }
 
+/// Merges the reports at `report_paths`, the `StoredReport` files beside the
+/// units cargo listed for this run (see `report_path_for_metadata`).
+///
+/// A listed path with no file is a unit the driver did not analyze — a
+/// dependency, or a workspace member outside the selection — and is skipped
+/// without affecting `AllFeaturesCoverage`. Reports from other units in the same
+/// target directory are never read, so another mend build's reports and reports
+/// from a different feature set or scope cannot enter the merge.
 pub(in crate::compiler) fn load_report(
-    findings_dir: &Path,
+    report_paths: &[PathBuf],
     selection: &Selection,
     config_fingerprint: &str,
-) -> Result<LoadedReport> {
+) -> LoadedReport {
     let selected_roots: Vec<PathBuf> = selection.package_roots.clone();
     let selected_root_strings: Vec<String> = selected_roots
         .iter()
@@ -104,23 +109,14 @@ pub(in crate::compiler) fn load_report(
     let mut matched_reports: Vec<StoredReport> = Vec::new();
     let mut all_features_coverage = AllFeaturesCoverage::Superset;
 
-    for entry in fs::read_dir(findings_dir).with_context(|| {
-        format!(
-            "failed to read findings directory {}",
-            findings_dir.display()
-        )
-    })? {
-        let Ok(entry) = entry else {
-            all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
-            continue;
-        };
-        if entry.path().extension().and_then(OsStr::to_str) != Some(JSON_FILE_EXTENSION) {
-            continue;
-        }
-
-        let Ok(text) = fs::read_to_string(entry.path()) else {
-            all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
-            continue;
+    for report_path in report_paths {
+        let text = match fs::read_to_string(report_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(_) => {
+                all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
+                continue;
+            },
         };
         let Ok(stored) = from_str::<StoredReport>(&text) else {
             all_features_coverage = AllFeaturesCoverage::NotGuaranteed;
@@ -166,7 +162,7 @@ pub(in crate::compiler) fn load_report(
     sort_and_dedup_findings(&mut findings);
     sort_and_dedup_pub_use_fix_facts(&mut pub_use_fix_facts);
 
-    Ok(LoadedReport {
+    LoadedReport {
         report: Report {
             root: selection_root_string(selection.analysis_root.as_path()),
             summary: ReportSummary::default(),
@@ -178,7 +174,7 @@ pub(in crate::compiler) fn load_report(
             },
         },
         analysis_evidence,
-    })
+    }
 }
 
 fn reconcile_cross_target_reports(reports: &mut [StoredReport]) {
@@ -421,7 +417,7 @@ mod tests {
 
     struct PersistenceFixture {
         temp:         TempDir,
-        findings_dir: PathBuf,
+        reports_dir:  PathBuf,
         package_root: PathBuf,
         crate_root:   PathBuf,
     }
@@ -434,11 +430,11 @@ mod tests {
             fs::create_dir_all(&source_dir).expect("create package src dir");
             let crate_root = source_dir.join("lib.rs");
             fs::write(&crate_root, "pub fn item() {}\n").expect("write crate root");
-            let findings_dir = temp.path().join("findings");
-            fs::create_dir_all(&findings_dir).expect("create findings dir");
+            let reports_dir = temp.path().join("deps");
+            fs::create_dir_all(&reports_dir).expect("create reports dir");
             Self {
                 temp,
-                findings_dir,
+                reports_dir,
                 package_root,
                 crate_root,
             }
@@ -461,17 +457,20 @@ mod tests {
             }
         }
 
-        fn write_report(&self, file_name: &str, report: &StoredReport) {
+        fn write_report(&self, file_name: &str, report: &StoredReport) -> PathBuf {
+            let report_path = self.reports_dir.join(file_name);
             fs::write(
-                self.findings_dir.join(file_name),
+                &report_path,
                 to_vec_pretty(report).expect("serialize stored report"),
             )
             .expect("write stored report");
+            report_path
         }
 
-        fn write_malformed_json(&self, file_name: &str) {
-            fs::write(self.findings_dir.join(file_name), b"{ not json")
-                .expect("write malformed report");
+        fn write_malformed_json(&self, file_name: &str) -> PathBuf {
+            let report_path = self.reports_dir.join(file_name);
+            fs::write(&report_path, b"{ not json").expect("write malformed report");
+            report_path
         }
 
         fn report_with_findings(&self, findings: Vec<StoredFinding>) -> StoredReport {
@@ -504,15 +503,12 @@ mod tests {
         );
         let mut report = fixture.report_with_findings(vec![finding]);
         report.all_features_coverage = AllFeaturesCoverage::Superset;
-        fixture.write_malformed_json("broken.json");
-        fixture.write_report("valid.json", &report);
+        let report_paths = [
+            fixture.write_malformed_json("broken.mend.json"),
+            fixture.write_report("valid.mend.json", &report),
+        ];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert_eq!(loaded.report.findings.len(), 1);
         assert_eq!(
@@ -522,15 +518,13 @@ mod tests {
     }
 
     #[test]
-    fn a_findings_directory_with_no_report_is_not_a_clean_crate() {
+    fn a_missing_report_is_not_a_clean_crate() {
         let fixture = PersistenceFixture::new();
+        let report_paths = [fixture
+            .reports_dir
+            .join("libabsent-0000000000000000.mend.json")];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert!(loaded.report.findings.is_empty());
         assert_eq!(
@@ -538,6 +532,35 @@ mod tests {
             AnalysisEvidence::Absent,
             "no stored report means nothing was analyzed, not that the crate is clean"
         );
+        assert_eq!(
+            loaded.report.facts.all_features_coverage,
+            AllFeaturesCoverage::default(),
+            "a listed unit the driver did not analyze must not lower coverage"
+        );
+    }
+
+    #[test]
+    fn a_report_outside_the_listed_paths_is_not_loaded() {
+        let fixture = PersistenceFixture::new();
+        let listed = fixture.report_with_findings(vec![stored_finding(
+            DiagnosticCode::OverbroadPubCrate,
+            &fixture.crate_root,
+            "listed",
+            1,
+        )]);
+        let sibling = fixture.report_with_findings(vec![stored_finding(
+            DiagnosticCode::OverbroadPubCrate,
+            &fixture.crate_root,
+            "sibling",
+            2,
+        )]);
+        let report_paths = [fixture.write_report("liblisted-0000000000000001.mend.json", &listed)];
+        fixture.write_report("liblisted-0000000000000002.mend.json", &sibling);
+
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
+
+        assert_eq!(loaded.report.findings.len(), 1);
+        assert_eq!(loaded.report.findings[0].item.as_deref(), Some("listed"));
     }
 
     #[test]
@@ -572,16 +595,13 @@ mod tests {
             1,
         )]);
         wrong_config.config_fingerprint = "old-config".to_string();
-        fixture.write_report("schema.json", &wrong_schema);
-        fixture.write_report("analysis.json", &wrong_analysis);
-        fixture.write_report("config.json", &wrong_config);
+        let report_paths = [
+            fixture.write_report("schema.mend.json", &wrong_schema),
+            fixture.write_report("analysis.mend.json", &wrong_analysis),
+            fixture.write_report("config.mend.json", &wrong_config),
+        ];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert!(loaded.report.findings.is_empty());
         assert!(
@@ -607,14 +627,9 @@ mod tests {
         );
         let mut report = fixture.report_with_findings(vec![finding]);
         report.crate_root_file = "src/missing.rs".to_string();
-        fixture.write_report("missing-root.json", &report);
+        let report_paths = [fixture.write_report("missing-root.mend.json", &report)];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert!(loaded.report.findings.is_empty());
         assert_eq!(loaded.analysis_evidence, AnalysisEvidence::Absent);
@@ -630,12 +645,11 @@ mod tests {
             1,
         );
         let report = fixture.report_with_findings(vec![finding]);
-        fixture.write_report("canonical-root.json", &report);
+        let report_paths = [fixture.write_report("canonical-root.mend.json", &report)];
         let selected_root = fixture.package_root.join("src").join("..");
         let selection = fixture.selection_with_roots(vec![selected_root]);
 
-        let loaded = load_report(&fixture.findings_dir, &selection, CONFIG_FINGERPRINT)
-            .expect("load report");
+        let loaded = load_report(&report_paths, &selection, CONFIG_FINGERPRINT);
 
         assert_eq!(loaded.report.findings.len(), 1);
     }
@@ -652,14 +666,9 @@ mod tests {
         let mut report = fixture.report_with_findings(vec![finding]);
         report.package_root.clear();
         report.crate_root_file.clear();
-        fixture.write_report("legacy-root.json", &report);
+        let report_paths = [fixture.write_report("legacy-root.mend.json", &report)];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert_eq!(loaded.report.findings.len(), 1);
     }
@@ -686,14 +695,9 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        fixture.write_report("driver-report.json", &report);
+        let report_paths = [fixture.write_report("driver-report.mend.json", &report)];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
         let facts = loaded
             .report
             .facts
@@ -731,14 +735,9 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        fixture.write_report("suppressed.json", &report);
+        let report_paths = [fixture.write_report("suppressed.mend.json", &report)];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert_eq!(loaded.report.findings.len(), 1);
         assert_eq!(
@@ -777,14 +776,9 @@ mod tests {
             parent_line:     3,
             child_module:    "child".to_string(),
         });
-        fixture.write_report("surviving.json", &report);
+        let report_paths = [fixture.write_report("surviving.mend.json", &report)];
 
-        let loaded = load_report(
-            &fixture.findings_dir,
-            &fixture.selection(),
-            CONFIG_FINGERPRINT,
-        )
-        .expect("load report");
+        let loaded = load_report(&report_paths, &fixture.selection(), CONFIG_FINGERPRINT);
 
         assert_eq!(loaded.report.findings.len(), 1);
         assert_eq!(loaded.report.facts.pub_use_fix_facts.iter().count(), 1);

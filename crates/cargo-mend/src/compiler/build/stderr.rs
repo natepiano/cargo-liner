@@ -61,10 +61,10 @@ impl From<bool> for ProgressStatus {
 pub(super) fn stream_cargo_stderr(
     stderr: ChildStderr,
     output_mode: BuildOutputMode,
-    findings_dir: &Path,
+    analyzing_dir: &Path,
 ) -> Result<StderrObservation> {
     let mut reader = BufReader::new(stderr);
-    let mut progress = CargoProgress::start(output_mode, findings_dir);
+    let mut progress = CargoProgress::start(output_mode, analyzing_dir);
     let mut line = String::new();
     let mut block = Vec::new();
     let mut suppression_notice = SuppressionNotice::Pending;

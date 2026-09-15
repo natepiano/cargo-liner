@@ -2,6 +2,7 @@ mod execute;
 mod progress;
 mod source_transaction;
 mod stderr;
+mod stdout;
 
 pub(crate) use execute::BuildOutputMode;
 pub(crate) use execute::SelectionResult;

@@ -38,7 +38,7 @@ struct CargoProgressState {
 }
 
 impl CargoProgress {
-    pub(super) fn start(output_mode: BuildOutputMode, findings_dir: &Path) -> Self {
+    pub(super) fn start(output_mode: BuildOutputMode, analyzing_dir: &Path) -> Self {
         let Some(message) = progress_message_for(output_mode) else {
             return Self { state: None };
         };
@@ -52,11 +52,11 @@ impl CargoProgress {
         let thread_active = Arc::clone(&active);
         let thread_lock = Arc::clone(&output_lock);
         let thread_width = Arc::clone(&line_width);
-        let thread_findings_dir = findings_dir.to_path_buf();
+        let thread_analyzing_dir = analyzing_dir.to_path_buf();
         let handle = thread::spawn(move || {
             let mut frame_index = 0;
             while thread_active.load(Ordering::Relaxed) {
-                let status = analyzing_status(&thread_findings_dir, message);
+                let status = analyzing_status(&thread_analyzing_dir, message);
                 let width = progress_line_width(&status);
                 if let Ok(_guard) = thread_lock.lock() {
                     let previous = thread_width.swap(width, Ordering::Relaxed);
@@ -154,8 +154,8 @@ const fn progress_message_for(output_mode: BuildOutputMode) -> Option<&'static s
 
 /// The status text for one frame: the targets under analysis right now, or
 /// `fallback` when the run is between analyses.
-fn analyzing_status(findings_dir: &Path, fallback: &str) -> String {
-    let targets = analyzing::targets_in_flight(findings_dir);
+fn analyzing_status(analyzing_dir: &Path, fallback: &str) -> String {
+    let targets = analyzing::targets_in_flight(analyzing_dir);
     if targets.is_empty() {
         return fallback.to_string();
     }

@@ -11,22 +11,28 @@ use std::process;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
 use anyhow::bail;
 use serde_json::to_string;
 
 use super::source_transaction::CompilerFixTransaction;
 use super::stderr;
+use super::stdout;
+use crate::compiler::analyzing;
+use crate::compiler::constants::ANALYZING_DIR_ENV;
 use crate::compiler::constants::CARGO_BIN;
 use crate::compiler::constants::CARGO_FLAG_ALL_FEATURES;
 use crate::compiler::constants::CARGO_FLAG_ALL_TARGETS;
 use crate::compiler::constants::CARGO_FLAG_ALLOW_DIRTY;
 use crate::compiler::constants::CARGO_FLAG_ALLOW_STAGED;
 use crate::compiler::constants::CARGO_FLAG_FEATURES;
+use crate::compiler::constants::CARGO_FLAG_MESSAGE_FORMAT_JSON_RENDER_DIAGNOSTICS;
 use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
 use crate::compiler::constants::CARGO_FLAG_TESTS;
 use crate::compiler::constants::CARGO_SUBCOMMAND_CHECK;
@@ -36,7 +42,6 @@ use crate::compiler::constants::CONFIG_JSON_ENV;
 use crate::compiler::constants::CONFIG_ROOT_ENV;
 use crate::compiler::constants::DRIVER_ENV;
 use crate::compiler::constants::DRIVER_ENV_ENABLED;
-use crate::compiler::constants::FINDINGS_DIR_ENV;
 use crate::compiler::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use crate::compiler::constants::RUSTC_WORKSPACE_WRAPPER_ENV;
 use crate::compiler::constants::SCOPE_FINGERPRINT_ENV;
@@ -70,13 +75,15 @@ pub(crate) enum BuildOutputMode {
     Quiet,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct CommandOutcome {
     exit_status:            ExitStatus,
     compiler_warning_facts: CompilerWarningFacts,
     duration:               Duration,
     compiler_warnings:      usize,
     compiler_fixable:       usize,
+    /// The `StoredReport` path of every unit cargo listed, fresh or rebuilt.
+    report_paths:           Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,18 +106,13 @@ pub(crate) fn run_selection(
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
 ) -> Result<SelectionResult, MendFailure> {
-    let findings_dir = persistence::prepare_findings_dir(cargo_plan.target_directory.as_path())
-        .map_err(|err| {
-            MendFailure::Analysis(AnalysisFailure {
-                cause: CompilerFailureCause::DriverSetup(err),
-            })
-        })?;
+    let analyzing_dir = analyzing::analyzing_dir(cargo_plan.target_directory.as_path());
     let scope_fingerprint = scope_fingerprint_for(cargo_plan);
 
     let command_outcome = run_cargo_check(
         cargo_plan,
         loaded_config,
-        &findings_dir,
+        &analyzing_dir,
         &scope_fingerprint,
         output_mode,
         color_mode,
@@ -127,12 +129,11 @@ pub(crate) fn run_selection(
         }));
     }
 
-    let loaded = persistence::load_report(&findings_dir, selection, &loaded_config.fingerprint)
-        .map_err(|err| {
-            MendFailure::Analysis(AnalysisFailure {
-                cause: CompilerFailureCause::DriverExecution(err),
-            })
-        })?;
+    let loaded = persistence::load_report(
+        &command_outcome.report_paths,
+        selection,
+        &loaded_config.fingerprint,
+    );
 
     match loaded.analysis_evidence {
         AnalysisEvidence::Absent => {
@@ -168,7 +169,7 @@ pub(crate) fn run_selection(
 fn run_cargo_check(
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
-    findings_dir: &Path,
+    analyzing_dir: &Path,
     scope_fingerprint: &str,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
@@ -177,6 +178,7 @@ fn run_cargo_check(
     let mut command = Command::new(CARGO_BIN);
     command.arg(CARGO_SUBCOMMAND_CHECK);
     command.args(&cargo_plan.cargo_args);
+    command.arg(CARGO_FLAG_MESSAGE_FORMAT_JSON_RENDER_DIAGNOSTICS);
 
     let wrapper =
         wrapper_alias(cargo_plan.target_directory.as_path(), &current_exe).unwrap_or(current_exe);
@@ -191,11 +193,11 @@ fn run_cargo_check(
                 .context("failed to serialize mend config for compiler driver")?,
         )
         .env(CONFIG_FINGERPRINT_ENV, &loaded_config.fingerprint)
-        .env(FINDINGS_DIR_ENV, findings_dir)
+        .env(ANALYZING_DIR_ENV, analyzing_dir)
         .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint)
         .stdin(Stdio::inherit());
 
-    run_cargo_command(&mut command, output_mode, color_mode, findings_dir)
+    run_cargo_command(&mut command, output_mode, color_mode, analyzing_dir)
         .context("failed to run cargo check for mend")
 }
 
@@ -214,7 +216,10 @@ fn run_cargo_check(
 /// mend build into a new wrapper path, which is the one input cargo does rebuild
 /// for. Re-running the same build reuses the alias and stays fresh, and two mend
 /// builds keep separate alias paths, so cargo keeps both artifact sets and
-/// switching between them costs nothing.
+/// switching between them costs nothing. The alias path is part of each unit id,
+/// and every unit's `StoredReport` is named after its unit id by
+/// `persistence::report_path_for_metadata`, so each build's reports sit beside
+/// its own artifacts and a build that finds its units fresh still loads them.
 ///
 /// Returns `None` when the alias cannot be created; the caller then passes the
 /// binary's own path and behaves as before.
@@ -479,26 +484,33 @@ fn run_cargo_command(
     command: &mut Command,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
-    findings_dir: &Path,
+    analyzing_dir: &Path,
 ) -> Result<CommandOutcome> {
     if color_mode.is_enabled() {
         command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
     command.stdin(Stdio::inherit());
     command.stderr(Stdio::piped());
-    match output_mode {
-        BuildOutputMode::Full => command.stdout(Stdio::inherit()),
-        BuildOutputMode::Json
-        | BuildOutputMode::SuppressUnusedImportWarnings
-        | BuildOutputMode::Quiet => command.stdout(Stdio::null()),
-    };
+    command.stdout(Stdio::piped());
     let start = Instant::now();
     let mut child = command.spawn().context("failed to spawn cargo command")?;
     let stderr = child
         .stderr
         .take()
         .context("failed to capture cargo stderr")?;
-    let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode, findings_dir)?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to capture cargo stdout")?;
+    // Cargo writes both pipes as the build runs; reading stdout on its own
+    // thread keeps a full stdout pipe from stalling cargo while this thread
+    // is still streaming stderr.
+    let stdout_reader = thread::spawn(move || stdout::collect_report_paths(stdout, output_mode));
+    let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode, analyzing_dir)?;
+    let report_paths = stdout_reader
+        .join()
+        .map_err(|_| anyhow!("cargo stdout reader panicked"))?
+        .context("failed to read cargo stdout")?;
     let exit_status = child.wait().context("failed to wait for cargo command")?;
     let duration = start.elapsed();
     Ok(CommandOutcome {
@@ -507,6 +519,7 @@ fn run_cargo_command(
         duration,
         compiler_warnings: stderr_outcome.warning_count,
         compiler_fixable: stderr_outcome.fixable_count,
+        report_paths,
     })
 }
 

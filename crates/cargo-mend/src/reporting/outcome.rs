@@ -139,7 +139,6 @@ pub(crate) enum CompilerFailureCause {
     /// clean crate.
     NoAnalysisProduced,
     DriverSetup(Error),
-    DriverExecution(Error),
     Unexpected(Error),
 }
 
@@ -196,9 +195,9 @@ impl Display for AnalysisFailure {
                     "no analysis was produced for this crate\n\nmend: cargo had nothing to rebuild and no compatible cached findings were available, so no code was examined; force a rebuild (touch a source file, or `cargo clean -p <package>`) and run again"
                 )
             },
-            CompilerFailureCause::DriverSetup(error)
-            | CompilerFailureCause::DriverExecution(error)
-            | CompilerFailureCause::Unexpected(error) => write!(f, "{error:#}"),
+            CompilerFailureCause::DriverSetup(error) | CompilerFailureCause::Unexpected(error) => {
+                write!(f, "{error:#}")
+            },
         }
     }
 }
@@ -216,9 +215,9 @@ impl Display for FixValidationFailure {
             CompilerFailureCause::NoAnalysisProduced => {
                 "no analysis was produced after applying mend fixes".to_string()
             },
-            CompilerFailureCause::DriverSetup(error)
-            | CompilerFailureCause::DriverExecution(error)
-            | CompilerFailureCause::Unexpected(error) => format!("{error:#}"),
+            CompilerFailureCause::DriverSetup(error) | CompilerFailureCause::Unexpected(error) => {
+                format!("{error:#}")
+            },
         };
         match self.rollback_status {
             RollbackStatus::Restored => write!(

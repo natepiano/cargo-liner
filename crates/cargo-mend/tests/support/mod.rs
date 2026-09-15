@@ -17,11 +17,15 @@ mod mend_json;
 mod report;
 
 pub(super) use std::collections::BTreeSet;
+use std::ffi::OsStr;
 pub(super) use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 pub(super) use tempfile::tempdir;
+use walkdir::DirEntry;
+use walkdir::WalkDir;
 
 pub(super) use self::diagnostics::AdvertisedFix;
 pub(super) use self::diagnostics::DiagnosticBatch;
@@ -69,6 +73,25 @@ pub(super) fn pin_pub_in_path(project_root: &Path, pub_in_path: PubInPath) {
         ),
     )
     .expect("write fixture mend.toml");
+}
+
+/// The suffix mend gives each stored report: the unit's `.rmeta` file name with
+/// its extension replaced.
+const STORED_REPORT_SUFFIX: &str = ".mend.json";
+
+/// Every stored report mend wrote under the fixture's `target/`, one
+/// `deps/lib<crate>-<unit id>.mend.json` per analyzed compilation unit.
+pub(super) fn stored_report_paths(project_root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(project_root.join("target"))
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(DirEntry::into_path)
+        .filter(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|file_name| file_name.ends_with(STORED_REPORT_SUFFIX))
+        })
+        .collect()
 }
 
 pub(super) fn assert_summary_matches_findings(report: &Report) {

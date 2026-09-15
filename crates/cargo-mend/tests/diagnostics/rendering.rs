@@ -1116,14 +1116,9 @@ edition = "2024"
         "the unreferenced sibling must retain its stale-facade finding: {report:#?}"
     );
 
-    let findings_dir = temp.path().join("target/mend-findings");
     let mut parsed_path_fact = false;
     let mut unused_fact = false;
-    for entry in fs::read_dir(&findings_dir).expect("read stored findings directory") {
-        let path = entry.expect("read stored finding entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-            continue;
-        }
+    for path in stored_report_paths(temp.path()) {
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let fix_facts = stored_report

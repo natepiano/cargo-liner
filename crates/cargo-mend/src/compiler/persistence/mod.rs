@@ -1,23 +1,21 @@
-mod cache;
 mod caller_aware;
 mod intersection;
 mod load;
+mod report_path;
 mod schema;
 mod sink;
 mod visibility_constraint;
 mod visibility_priority;
 
-pub(super) use cache::CacheBuildKind;
-pub(super) use cache::cache_filename_for;
 pub(super) use load::AnalysisEvidence;
 pub(super) use load::load_report;
+pub(super) use report_path::report_path_for_metadata;
 pub(super) use schema::StoredFinding;
 pub(super) use schema::StoredPubUseFixFact;
 pub(super) use schema::StoredReport;
 pub(super) use schema::UseSiteReference;
 pub(super) use sink::FindingsSink;
 pub(super) use sink::UseSiteIndex;
-pub(super) use sink::prepare_findings_dir;
 pub(super) use visibility_constraint::StoredCallerReconciliation;
 pub(super) use visibility_constraint::StoredConstraintOutcome;
 pub(super) use visibility_constraint::StoredExactBoundaryAcceptance;

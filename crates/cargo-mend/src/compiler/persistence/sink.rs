@@ -1,18 +1,11 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::Path;
-use std::path::PathBuf;
-
-use anyhow::Context;
-use anyhow::Result;
 
 use super::schema::StoredFinding;
 use super::schema::StoredPubUseFixFact;
 use super::schema::UseSite;
 use super::schema::UseSiteReference;
 use super::visibility_constraint::StoredVisibilityConstraint;
-use crate::compiler::constants::FINDINGS_DIR_NAME;
 
 #[derive(Default)]
 pub(in crate::compiler) struct FindingsSink {
@@ -88,15 +81,4 @@ impl UseSiteIndex {
             })
             .collect()
     }
-}
-
-pub(in crate::compiler) fn prepare_findings_dir(target_directory: &Path) -> Result<PathBuf> {
-    let findings_dir = target_directory.join(FINDINGS_DIR_NAME);
-    fs::create_dir_all(&findings_dir).with_context(|| {
-        format!(
-            "failed to create findings directory {}",
-            findings_dir.display()
-        )
-    })?;
-    Ok(findings_dir)
 }

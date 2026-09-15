@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+// analysis markers
+pub(super) const ANALYZING_DIR_NAME: &str = "mend-analyzing";
+
 // binary names
 pub(super) const CARGO_BIN: &str = "cargo";
 pub(super) const RUSTC_BIN: &str = "rustc";
@@ -16,6 +19,8 @@ pub(super) const CARGO_FLAG_ALLOW_STAGED: &str = "--allow-staged";
 pub(crate) const CARGO_FLAG_EXCLUDE: &str = "--exclude";
 pub(super) const CARGO_FLAG_FEATURES: &str = "--features";
 pub(crate) const CARGO_FLAG_MANIFEST_PATH: &str = "--manifest-path";
+pub(super) const CARGO_FLAG_MESSAGE_FORMAT_JSON_RENDER_DIAGNOSTICS: &str =
+    "--message-format=json-render-diagnostics";
 pub(super) const CARGO_FLAG_NO_DEFAULT_FEATURES: &str = "--no-default-features";
 pub(crate) const CARGO_FLAG_PACKAGE: &str = "--package";
 pub(super) const CARGO_FLAG_TESTS: &str = "--tests";
@@ -44,24 +49,25 @@ pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
 pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
 
 // driver-ipc environment variables
-pub(super) const ANALYZING_DIR_NAME: &str = "analyzing";
+pub(super) const ANALYZING_DIR_ENV: &str = "MEND_ANALYZING_DIR";
 pub(super) const CARGO_PRIMARY_PACKAGE_ENV: &str = "CARGO_PRIMARY_PACKAGE";
 pub(super) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
 pub(super) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 pub(super) const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
 pub(crate) const DRIVER_ENV: &str = "MEND_DRIVER";
 pub(super) const DRIVER_ENV_ENABLED: &str = "1";
-pub(super) const FINDINGS_DIR_ENV: &str = "MEND_FINDINGS_DIR";
-pub(super) const PASSTHROUGH_RUSTC_WRAPPER_ENV: &str = "MEND_PASSTHROUGH_RUSTC_WRAPPER";
 pub(super) const PACKAGE_ROOT_ENV: &str = "CARGO_MANIFEST_DIR";
+pub(super) const PASSTHROUGH_RUSTC_WRAPPER_ENV: &str = "MEND_PASSTHROUGH_RUSTC_WRAPPER";
 pub(super) const RUSTC_WORKSPACE_WRAPPER_ENV: &str = "RUSTC_WORKSPACE_WRAPPER";
 pub(super) const SCOPE_FINGERPRINT_ENV: &str = "MEND_SCOPE_FINGERPRINT";
 
 // file extensions
-pub(super) const JSON_FILE_EXTENSION: &str = "json";
+/// The extension cargo gives a unit's crate metadata under `deps/`; the unit's
+/// `StoredReport` takes the same file name with `REPORT_FILE_EXTENSION`.
+pub(super) const METADATA_FILE_EXTENSION: &str = "rmeta";
+pub(super) const REPORT_FILE_EXTENSION: &str = "mend.json";
 
 // findings
-pub(super) const FINDINGS_DIR_NAME: &str = "mend-findings";
 pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 33;
 
 // progress indicator
