@@ -137,6 +137,106 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
 #[test]
+fn enrollment_authorizes_both_edits_but_holds_integration_under_each_gate_policy() {
+    for (mode, acting_index) in [
+        ("observe", 0),
+        ("observe", 1),
+        ("enforce", 0),
+        ("enforce", 1),
+    ] {
+        let repository = scratch_repository();
+        let root = repository.path();
+        let base = git_stdout(root, &["rev-parse", "main"]);
+        let worktrees = tempdir().expect("worktree parent should exist");
+        let first = add_worktree(root, worktrees.path(), "enrolled-first");
+        let second = add_worktree(root, worktrees.path(), "enrolled-second");
+        for (checkout, contents) in [
+            (&first, "pub fn first_committed() {}\n"),
+            (&second, "pub fn second_committed() {}\n"),
+        ] {
+            commit_work_without_hooks(checkout, "src/lib.rs", contents, "work before enrollment");
+            fs::write(
+                checkout.join("src/lib.rs"),
+                format!("{contents}// dirty before init\n"),
+            )
+            .expect("dirty shared work should write");
+        }
+        let initialized = run_berth(root, &["init", "--json"]);
+        let initialized_envelope = json_output(&initialized);
+        assert!(initialized.status.success(), "{initialized_envelope}");
+        let enrollment = &initialized_envelope["payload"]["data"]["enrollment"];
+        assert_eq!(
+            enrollment["enrolled"]
+                .as_array()
+                .expect("enrolled rows")
+                .len(),
+            2
+        );
+        assert_eq!(
+            enrollment["overlaps"]
+                .as_array()
+                .expect("overlap rows")
+                .len(),
+            1
+        );
+        set_gate_mode(root, mode);
+        let mut reservation_ids = Vec::new();
+        for (checkout, session) in [
+            (&first, "enrolled-first-session"),
+            (&second, "enrolled-second-session"),
+        ] {
+            let checked =
+                run_berth_with_session(checkout, &["check", "file:src/lib.rs", "--json"], session);
+            let envelope = json_output(&checked);
+            assert!(checked.status.success(), "{envelope}");
+            assert_eq!(envelope["status"], "clear");
+            assert_eq!(
+                envelope["payload"]["data"]["acquisition"]["kind"],
+                "already_held"
+            );
+            reservation_ids.push(
+                envelope["payload"]["data"]["acquisition"]["reservation_id"]
+                    .as_str()
+                    .expect("reused enrolled reservation")
+                    .to_owned(),
+            );
+            commit_work(
+                checkout,
+                "src/lib.rs",
+                &format!("// edited by {session}\n"),
+                "authorized shared edit",
+            );
+            let drift = run_berth_with_session(checkout, &["drift", "--full", "--json"], session);
+            assert!(drift.status.success(), "{}", json_output(&drift));
+        }
+        let board = run_berth(root, &["board", "--json"]);
+        let board_envelope = json_output(&board);
+        assert!(board.status.success(), "{board_envelope}");
+        assert_eq!(
+            board_envelope["payload"]["data"]["outstanding_incursions"]["entries"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            board_envelope["payload"]["data"]["unresolved_overlaps"]["entries"][0]["origin"],
+            "enrollment"
+        );
+
+        let acting_root = [&first, &second][acting_index];
+        let integrated = run_berth(
+            acting_root,
+            &["integrate", &reservation_ids[acting_index], "--json"],
+        );
+        assert_enrollment_gate_decision(
+            root,
+            mode,
+            &base,
+            &integrated,
+            &reservation_ids[1 - acting_index],
+        );
+    }
+}
+
+#[test]
 fn uninterrupted_apply_rebase_reanchors_active_reservation_above_unrelated_trunk_work() {
     let repository = initialized_repository();
     let root = repository.path();
@@ -5211,4 +5311,36 @@ fn git_binary() -> PathBuf {
 
 fn shell_single_quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+}
+
+fn assert_enrollment_gate_decision(
+    root: &Path,
+    mode: &str,
+    base: &str,
+    integrated: &Output,
+    other_reservation: &str,
+) {
+    let envelope = json_output(integrated);
+    let data = &envelope["payload"]["data"];
+    if mode == "observe" {
+        assert!(integrated.status.success(), "{envelope}");
+        assert_eq!(data["gate"]["kind"], "observed");
+        assert_eq!(
+            data["gate"]["violations"][0]["holds"][0]["kind"],
+            "deferred_overlap"
+        );
+        assert_ne!(git_stdout(root, &["rev-parse", "main"]), base);
+    } else {
+        assert_eq!(integrated.status.code(), Some(2), "{envelope}");
+        assert_eq!(envelope["status"], "blocked_by_ordering");
+        assert_eq!(
+            data["violations"][0]["holds"][0]["kind"],
+            "deferred_overlap"
+        );
+        assert_eq!(
+            envelope["blocked_by"],
+            serde_json::json!([other_reservation])
+        );
+        assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+    }
 }

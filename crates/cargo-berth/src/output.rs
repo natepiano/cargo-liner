@@ -86,6 +86,7 @@ use crate::session::CurrentSessionMappingRemoval;
 use crate::session::SessionIdentityMappingPublication;
 use crate::verb::claim::FirstTouchReservationAcquisition;
 use crate::verb::claim::FirstTouchReservationAcquisitionKind;
+use crate::worktree::WorktreeEnrollmentReport;
 
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
@@ -760,6 +761,9 @@ struct InitializationPayload {
     configuration: InitializationResource,
     /// Whether every registered managed hook is now in force.
     hooks:         Vec<InitializedManagedHook>,
+    /// Newly reserved worktrees, pending enrollment overlaps, and candidate failures.
+    #[serde(default)]
+    enrollment:    WorktreeEnrollmentReport,
 }
 
 /// The activation result for one hook in the managed-hook registry.
@@ -1525,12 +1529,13 @@ impl OutputEnvelope {
     pub(crate) fn initialized(
         initialization: LedgerInitialization,
         hook_installations: &[ManagedHookInstallation],
+        enrollment: WorktreeEnrollmentReport,
     ) -> Self {
         let hooks = hook_installations
             .iter()
             .map(InitializedManagedHook::from)
             .collect::<Vec<_>>();
-        let message = initialization_message(&hooks);
+        let message = initialization_message(&hooks, &enrollment);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Init,
@@ -1544,6 +1549,7 @@ impl OutputEnvelope {
                 ledger: initialization.ledger.into(),
                 configuration: initialization.configuration.into(),
                 hooks,
+                enrollment,
             })),
         }
     }
@@ -4284,7 +4290,10 @@ impl From<&crate::gate::install::ManagedHookInactivity> for ManagedHookInactivit
     }
 }
 
-fn initialization_message(hooks: &[InitializedManagedHook]) -> String {
+fn initialization_message(
+    hooks: &[InitializedManagedHook],
+    enrollment: &WorktreeEnrollmentReport,
+) -> String {
     let mut message = INITIALIZED_MESSAGE.to_owned();
     for hook in hooks {
         match &hook.activation {
@@ -4309,7 +4318,41 @@ fn initialization_message(hooks: &[InitializedManagedHook]) -> String {
             },
         }
     }
+    append_enrollment_message(&mut message, enrollment);
     message
+}
+
+fn append_enrollment_message(message: &mut String, enrollment: &WorktreeEnrollmentReport) {
+    for worktree in &enrollment.enrolled {
+        let _ = write!(
+            message,
+            "\nEnrolled reservation {}: {} ({}).",
+            worktree.reservation_id,
+            worktree.worktree_root.display(),
+            worktree.branch,
+        );
+    }
+    for overlap in &enrollment.overlaps {
+        let _ = write!(
+            message,
+            "\nEnrollment overlap between {} and {}: {}.\nChoose an integration order:",
+            overlap.first_reservation_id,
+            overlap.second_reservation_id,
+            render_scopes(&overlap.shared_scopes),
+        );
+        for command in &overlap.sequence_commands {
+            let _ = write!(message, "\n  {command}");
+        }
+    }
+    for failure in &enrollment.failures {
+        let _ = write!(
+            message,
+            "\nEnrollment failed for {} ({}): {}",
+            failure.worktree_root.display(),
+            failure.reason.as_str(),
+            failure.diagnostic,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4412,17 +4455,34 @@ mod tests {
     }
 
     #[test]
-    fn init_has_a_non_placeholder_status() {
+    fn init_preserves_legacy_text_and_accepts_payloads_without_enrollment()
+    -> Result<(), Box<dyn std::error::Error>> {
         let output_envelope = OutputEnvelope::initialized(
             LedgerInitialization {
                 ledger:        InitializationState::Created,
                 configuration: InitializationState::Existing,
             },
             &[],
+            crate::worktree::WorktreeEnrollmentReport::default(),
         );
 
         assert_eq!(output_envelope.status, OutputStatus::Initialized);
         assert_eq!(output_envelope.exit_code, crate::exit::BerthExit::Clear);
+        assert_eq!(output_envelope.message, super::INITIALIZED_MESSAGE);
+        let mut serialized = serde_json::to_value(&output_envelope)?;
+        assert_eq!(
+            serialized["payload"]["data"]["enrollment"],
+            json!({"enrolled": [], "overlaps": [], "failures": []})
+        );
+        let Some(data) = serialized["payload"]["data"].as_object_mut() else {
+            return Err("initialization data must be an object".into());
+        };
+        data.remove("enrollment");
+        assert_eq!(
+            serde_json::from_value::<OutputEnvelope>(serialized)?,
+            output_envelope
+        );
+        Ok(())
     }
 
     #[test]

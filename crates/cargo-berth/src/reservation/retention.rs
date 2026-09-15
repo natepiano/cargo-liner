@@ -149,8 +149,18 @@ impl Reservation {
 pub(crate) struct RetainedReservationSet {
     reservations:            Vec<Reservation>,
     incursion_incidents:     Vec<IncursionIncident>,
-    /// Foreign work the acting HEAD already contains; absent, every foreign extent protects fully.
-    acting_head_containment: Option<ActingHeadContainment>,
+    /// Whether foreign protection excludes work already present in the acting HEAD.
+    acting_head_containment: ForeignProtectionPolicy,
+}
+
+/// How foreign work is compared against the acting checkout.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum ForeignProtectionPolicy {
+    /// Retain the complete foreign merge extent.
+    #[default]
+    FullProtection,
+    /// Exclude committed work that the acting checkout already contains.
+    ExcludeContainedWork(ActingHeadContainment),
 }
 
 /// Whether replay has recorded a protected tip for this reservation.
@@ -280,7 +290,8 @@ impl RetainedReservationSet {
         mut self,
         acting_head_containment: ActingHeadContainment,
     ) -> Self {
-        self.acting_head_containment = Some(acting_head_containment);
+        self.acting_head_containment =
+            ForeignProtectionPolicy::ExcludeContainedWork(acting_head_containment);
         self
     }
 
@@ -1510,12 +1521,12 @@ impl RetainedReservationSet {
             match reservation.protection_in_worktree(acting_worktree) {
                 ReservationProtection::Clear => None,
                 ReservationProtection::Protected(scopes) => {
-                    let remaining = self.acting_head_containment.as_ref().map_or_else(
-                        || scopes.as_slice().to_vec(),
-                        |containment| {
+                    let remaining = match &self.acting_head_containment {
+                        ForeignProtectionPolicy::FullProtection => scopes.as_slice().to_vec(),
+                        ForeignProtectionPolicy::ExcludeContainedWork(containment) => {
                             containment.remaining_protection(reservation, acting_worktree, scopes)
                         },
-                    );
+                    };
                     (!remaining.is_empty()).then_some((reservation, remaining))
                 },
             }

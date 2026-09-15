@@ -114,73 +114,39 @@
 
 **Ruled out:** passing a bare main-root path to `initialize` (loses the linked carry-over source).
 
-### Phase 3 — Worktree enrollment in `init`  · status: todo
+### Phase 3 — Worktree enrollment in `init`  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo berth init` enrolls every never-reserved live worktree with one reservation per worktree; a second run appends nothing new.
-
-**Spec:**
-- **Module.** New leaf module `src/worktree/enrollment.rs` (`mod enrollment;` in `src/worktree/mod.rs`). Its aggregate result type is `WorktreeEnrollmentReport`; candidate skips and failures are semantic variants, not optional result fields.
-- **History query.** A worktree has reservation history when replay holds any `Claim` whose actor worktree is its id, whatever source or lifecycle. Such a worktree is never enrolled.
-- **Candidates.** `WorktreeRegistry` (`src/worktree/liveness.rs:90`) exposes a typed enrollment enumeration from its existing single registry read: eligible candidates (registration `Available` or `Locked`, location `Discovered`, with their `WorktreeContext`) and unavailable roots (`Prunable` or `Unavailable`), which are reported as failures. Do not reuse `marker_sweep_contexts` (:210).
-- **Footprint**, per candidate, outside the lock:
-  1. Resolve trunk and `HEAD` object ids once.
-  2. If `rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, or `REVERT_HEAD` exists in that worktree's git dir, report `operation_in_progress`.
-  3. Merge-base of trunk and `HEAD`; none, trunk unresolved, or unborn `HEAD` reports `no_merge_base`.
-  4. Committed: `git::unmerged_branch_paths(trunk, head)` (`src/git/reachability.rs:349`).
-  5. Working tree: `drift::observe_merge_working_tree` (`src/drift/observation.rs:522`) `tracked_paths` ∪ `untracked_paths`, in that worktree's root.
-  6. Union as exact file scopes. Empty: not enrolled, not reported.
-
-  A failing git command reports `git_failure` with the command and error; other candidates proceed.
-- **Configuration is not work.** `observe_merge_working_tree` omits an untracked `.claude/config/berth.toml` under the observed root, so neither enrollment footprints nor merge-extent dirty evidence count the file `init` creates; tracked changes to that path still count. A clean repository without an ignore rule for the file enrolls nothing, and a main-worktree run can still end automatically.
-- **Stacked containment.** Overlaps use the edit check's containment rule (`ActingHeadContainment`, `src/reservation/containment.rs:41`): a shared path forms an enrollment overlap only when each side would still bring it to the other — it is in that side's working-tree paths, or in `git::unmerged_branch_paths(other_head, this_head)`. Compute these pairwise remainders outside the lock for candidate pairs, and `ActingHeadContainment::observe` for existing holders, with the footprints. A worktree stacked on another in-flight branch therefore forms no pair for the parent's commits it already contains; dirty or independently changed shared work keeps its pair. Reservation footprints themselves stay full (trunk-relative).
-- **Enrollment transaction**, one `Ledger::transact` (`src/ledger/handle.rs:260`) per candidate, actor = candidate worktree id and a newly issued run. Inside validation: skip if the locked replay shows history; replay reservations (earlier candidates' claims included), attach the precomputed containment, call `RetainedReservationSet::conflicts_for_claim(&footprint, candidate_worktree_id, path_case)` (`src/reservation/retention.rs:330`), drop shared scopes the pairwise remainders show as contained, and convert each remaining conflict with `AuthorizedOverlap::from` (`src/answer/scope_binding.rs:73`) — `scope_revision` stays on the wire although `Enrollment` coverage ignores it. Append one `Claim` with `source: ClaimSource::Enrolled`, `purpose` naming enrollment and the branch or detached head, `phase_start_head` = merge-base as `ProtectedPhaseStartHead` (`journal.rs:353`), `head_snapshot` and `trunk_at_claim` from step 1, `worktree_root` and `worktree_administrative_locator` from the candidate's `WorktreeContext`, `coordination_identity_provenance: NotPresented`, `authorization` = `NoConflict` for no conflicts or `Enrollment { overlaps: AuthorizedOverlapSet }`. Build the operation directly, modeled on `PreparedClaim::into_operation` (`src/verb/claim.rs:1405`); do not use `ClaimRepositoryFacts`, and do not copy `validate_claim_transaction`'s Git observation into validation — all Git facts are read before the lock. A `RecordTooLarge` rejection reports `record_too_large` for that worktree. Session mapping publication (`session::apply_journal_event`, `src/session/mod.rs:286`) is skipped for enrolled claims so the invoking session is not mapped to sibling reservations.
-- **Containment type.** Replace `RetainedReservationSet.acting_head_containment: Option<ActingHeadContainment>` (`retention.rs:153`) with a named policy — `FullProtection` or `ExcludeContainedWork(ActingHeadContainment)` — and match existing `MergeExtent` states rather than adding new callers of `protected_key()`'s `Option` (`merge_extent.rs:140`).
-- **Automatic ending.** An enrolled reservation ends like any other run (`append_merged_run_endings`, `src/reconcile.rs:3085`). Enrollment itself counts as having done work — its footprint was non-empty — and replay keeps that as a named state that later empty drift or gate observations do not erase. So an enrollment on trunk whose edits are later committed to trunk or discarded ends automatically once its checkout is clean at a head trunk contains. An unresolved enrollment deferral stays pending after either endpoint ends, until `sequence` resolves it (`graph.rs`, `board/rows.rs:627`).
-- **Run marker.** After each claim succeeds, publish its run with `publish_coordination_run_marker` (`worktree_context.rs:271`) in that worktree. Sessions there then join the run through existing identity resolution and reuse the reservation with no append (`tests/overlap.rs:122`); first-touch reuse (`select_first_touch_reservation_reuse`, `verb/claim.rs:1045`) and drift attribution are already source-independent.
-- **Output.** Additive enrollment section on `InitializationPayload` (`src/output.rs:756`); regenerate `output-contract.json`:
-  - enrolled: reservation id, worktree root, branch or detached head;
-  - overlaps: both reservation ids, shared scopes, and the two ready-to-run `sequence <a> <b> --why <text>` commands (both orders);
-  - failures: worktree root, reason (`operation_in_progress`, `no_merge_base`, `git_failure`, `unavailable`, `record_too_large`), and diagnostic.
-  - Worktrees with history or empty footprints are omitted. The single legacy `init` line is emitted only when enrolled, unresolved enrollment overlaps, and failures are all empty.
-- **Idempotence.** A re-run enrolls only worktrees still without history (added since, or previously failed) and re-reports unresolved enrollment overlaps, including a pair whose endpoint has since ended.
-- **Docs.** `crates/cargo-berth/README.md` "First use": `init` on a repository with work in flight, reading the overlap report, answering with `sequence`, and re-running `init` after adding a worktree that already has commits, before its first edit. `docs/cargo-berth/operations.md`: a short enrollment section (config location, failure reasons and what to do).
+- `cargo berth init` (`initialize_ledger` in `cli.rs`) runs `worktree::enroll_worktrees(&WorktreeContext, &BerthConfig) -> Result<WorktreeEnrollmentReport, LedgerError>` after configuration and hooks. A worktree has history when replay holds any `Claim` whose actor worktree is its id, whatever source or lifecycle; such a worktree is never enrolled. Every other live worktree with a non-empty footprint receives one `Claim { source: ClaimSource::Enrolled }` in its own `Ledger::transact` (actor = that worktree, newly issued run), then its run marker via `publish_coordination_run_marker`, so sessions there join the run and reuse the reservation with no append. A re-run enrolls only worktrees still without history and appends nothing else.
+- `WorktreeRegistry::enrollment_candidates()` yields `WorktreeEnrollmentCandidate::{Eligible(WorktreeContext), Unavailable { root }}` from the single registry read; locked worktrees enroll, prunable or unavailable ones report `unavailable`.
+- Footprint, read outside the lock: operation markers (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`) report `operation_in_progress`; HEAD and trunk resolve once via `git rev-parse` (unresolved or unborn reports `no_merge_base`); merge-base exit 1 reports `no_merge_base`; `git::unmerged_branch_paths(trunk, head)` ∪ `observe_merge_working_tree` tracked and untracked paths form exact file scopes. An empty footprint is neither enrolled nor reported. The claim records `phase_start_head` = merge-base, `head_snapshot` and `trunk_at_claim` from the same resolution, and `coordination_identity_provenance: NotPresented`; validation reads no Git.
+- Overlaps: `conflicts_for_claim` under `ForeignProtectionPolicy::ExcludeContainedWork(ActingHeadContainment::observe_at_head(..))`, narrowed to shared scopes each side still brings to the other (its working-tree paths or `unmerged_branch_paths(other_head, this_head)`). Pairwise remainders cover candidates and observed worktrees that already have history, so a worktree stacked on an in-flight branch forms no pair for the parent commits it contains. Remaining conflicts become `ConflictAuthorization::Enrollment` via `AuthorizedOverlap::from`, otherwise `NoConflict`; footprints stay trunk-relative.
+- `WorktreeEnrollmentReport { enrolled, overlaps, failures }`: enrolled carries reservation id, root, and branch or detached head; `EnrollmentOverlap` carries both reservation ids, shared scopes, and both `cargo berth sequence <a> <b> --why 'Order enrolled work'` commands; failures carry root, reason (`operation_in_progress`, `no_merge_base`, `git_failure`, `unavailable`, `record_too_large`), and diagnostic. Unresolved overlaps replay in `enrollment.rs` from Claim/Widen `Enrollment` authorizations minus matching `ResolveDefer` events, not the ordering graph, so a pair is re-reported after either endpoint ends until `sequence` resolves it. `InitializationPayload.enrollment` is serde-default; the legacy single `init` line prints only when all three lists are empty.
+- `RetainedReservationSet` holds `ForeignProtectionPolicy::{FullProtection, ExcludeContainedWork(ActingHeadContainment)}`; `MergeExtent::protected_key()` is removed and its states are matched explicitly. Replayed `ClaimSource::Enrolled` counts as work for automatic ending even after an Empty merge-extent observation, so a trunk enrollment ends once its checkout is clean at a head trunk contains. Enrolled claims skip session-mapping publication, leaving the invoking session unmapped to sibling reservations. `observe_merge_working_tree` omits an untracked `.claude/config/berth.toml` under the observed root (tracked changes still count), so a clean repository enrolls nothing.
 
 **Files:**
-- `crates/cargo-berth/src/worktree/mod.rs` — `mod enrollment;`.
-- `crates/cargo-berth/src/worktree/enrollment.rs` — new: `WorktreeEnrollmentReport`, history query, candidates, footprint, pairwise containment, per-candidate transaction, run marker.
-- `crates/cargo-berth/src/worktree/liveness.rs` — typed enrollment enumeration.
-- `crates/cargo-berth/src/session/mod.rs` — skip mapping publication for `ClaimSource::Enrolled`.
-- `crates/cargo-berth/src/drift/observation.rs` — untracked configuration file is not work.
-- `crates/cargo-berth/src/reservation/retention.rs` — containment policy type; enrolled work evidence in replay.
-- `crates/cargo-berth/src/reservation/containment.rs` — containment policy type, if it lives here.
-- `crates/cargo-berth/src/reservation/merge_extent.rs` — enrolled work evidence, if it lives in the extent.
-- `crates/cargo-berth/src/reconcile.rs` — automatic ending counts enrollment as work.
-- `crates/cargo-berth/src/cli.rs` — `initialize_ledger` :1425 runs enrollment after config and hooks.
-- `crates/cargo-berth/src/output.rs` — enrollment section.
-- `docs/cargo-berth/generated/output-contract.json` — regenerated.
-- `crates/cargo-berth/README.md` — First use.
-- `docs/cargo-berth/operations.md` — enrollment section.
-- `crates/cargo-berth/tests/ledger.rs` — integration tests.
-- `crates/cargo-berth/tests/gate.rs` — integration tests.
+- `crates/cargo-berth/src/worktree/enrollment.rs` — enrollment engine, history query, footprint, pairwise containment, per-candidate transaction, run marker, report types, unresolved-overlap replay.
+- `crates/cargo-berth/src/worktree/liveness.rs` — `enrollment_candidates()` and `WorktreeEnrollmentCandidate`.
+- `crates/cargo-berth/src/worktree/mod.rs` — module and re-exports.
+- `crates/cargo-berth/src/reservation/retention.rs`, `containment.rs`, `merge_extent.rs` — `ForeignProtectionPolicy`, `observe_at_head`, explicit extent matching.
+- `crates/cargo-berth/src/reconcile.rs` — enrolled source counts as work for automatic ending.
+- `crates/cargo-berth/src/session/mod.rs` — no session mapping for enrolled claims.
+- `crates/cargo-berth/src/drift/observation.rs` — config-file exclusion in merge observation.
+- `crates/cargo-berth/src/cli.rs`, `src/output.rs`, `docs/cargo-berth/generated/output-contract.json` — init wiring and enrollment section.
+- `crates/cargo-berth/README.md` — First use: work in flight, overlap report, `sequence`, re-running `init` for a new worktree. `docs/cargo-berth/operations.md` — enrollment section with failure remedies.
+- `crates/cargo-berth/tests/ledger.rs`, `tests/gate.rs` — enrollment scenarios and the integration hold for an unresolved pair; `tests/board.rs` — fixtures carry real dirty work instead of the untracked config file.
 
-**Seats:** 2 writers + 1 tester — enrollment engine split from CLI/output/docs.
-- `impl` — `src/worktree/{mod.rs,enrollment.rs,liveness.rs}`, `src/session/mod.rs`, `src/drift/observation.rs`, `src/reservation/{containment.rs,retention.rs,merge_extent.rs}`, `src/reconcile.rs`; hub: `src/worktree/enrollment.rs` (define `WorktreeEnrollmentReport` first — output renders it).
-- `test` — `tests/ledger.rs` and `tests/gate.rs`:
-  - `tests/ledger.rs`, one three-worktree scenario (two with committed and dirty edits to one shared file, one on trunk with dirty edits) run with `init` from a linked worktree: three reservations with journal `source.kind = enrolled`; the init report lists them; the overlap is reported with two `sequence` commands; `cargo-berth board --json` shows the unresolved overlap with `origin: "enrollment"` and a recorded `enrollment` answer with acquisition origin `enrollment`; one rendered `sequence` command runs as printed, resolves the pair, and the board shows the ordering created from that deferral; second `init` appends nothing and re-reports any still-unresolved pair; a worktree whose reservation was released is not re-enrolled; a worktree mid-rebase reports `operation_in_progress`; a worktree added after `init` with commits enrolls on the next `init`; an unavailable registered worktree is reported while a locked one enrolls.
-  - `tests/ledger.rs`, stacked: a worktree branched from another in-flight branch, touching only its own paths, enrolls with no overlap pair against the parent.
-  - `tests/ledger.rs`, automatic ending: the trunk worktree's enrollment ends automatically after its dirty edits are discarded; an unresolved pair with an ended endpoint is still re-reported by `init`.
-  - `tests/ledger.rs`, configuration: `init` in a clean repository with no ignore rule for `.claude/config/berth.toml` enrolls nothing and prints the legacy line.
-  - `tests/ledger.rs`, sessions: with `CARGO_BERTH_SESSION_ID` set, `init` leaves the invoking session's mapping unchanged; an unmapped session in an enrolled worktree edits a covered path with no new `Claim` or `Widen`, and widens that same reservation for a new unclaimed path.
-  - `tests/gate.rs`: the unresolved enrollment pair holds integration (reported under observe, rejected under enforce), and both sides edit the shared file with no incursion.
-- `review` — opens as impl: `src/cli.rs`, `src/output.rs`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/README.md`, `docs/cargo-berth/operations.md`; regenerates the contract after both writers post `done`.
+**Gotchas:**
+- The config exclusion lives only in `observe_merge_working_tree`; ordinary and full drift still attribute the untracked config file, and existing tests depend on it.
+- `git rev-parse` failures (unborn HEAD, missing trunk branch) surface as `GitError::CommandFailed`, not cat-file resolution variants; they map to `no_merge_base`.
+- Containment for existing holders reads their retained merge-extent key, so a holder with a stale saved observation can hide a fresh dirty overlap at enrollment, the same as the edit check.
+- A run-marker publish failure after the claim commits is not retried by re-running `init`.
+- Managed hooks install into git's hooks directory, so `init` creates no work file beyond the excluded config.
 
-**Constraints from prior phases:**
-- Phase 1 added `ClaimSource::Enrolled` (wire `enrolled`; `source_description` and the `verb/claim.rs` exhaustive match already handle it) and `ConflictAuthorization::Enrollment { overlaps: AuthorizedOverlapSet }`. `covers` (`conflict_authorization.rs:105`) matches counterpart plus recorded shared scopes via `AuthorizedOverlap::covers_shared_scope` and ignores `scope_revision`, but `AuthorizedOverlap` still requires `scope_revision` on the wire.
-- Replay projects one `DeferredOverlap` per counterpart stamped `DeferralOrigin::Enrollment` (`edge/mod.rs:192`) with the engine reason `OverlapAuthorizationReason::enrollment()` (`answer/proposal.rs:159`); existing holds and `sequence` resolution apply. Board JSON already labels it: `UnresolvedOverlap.origin` (`user_answer` / `enrollment`), `RecordedAnswer::Enrollment { reservation_id, exact_approved_scopes, acquisition, consequence }`, `AnswerAcquisition::Enrollment`; enrollment answers stay listed per unresolved pair until each pair is sequenced. The reason's wording is covered by unit tests, not a text contract.
-- Holder-side authorization in `reservations_authorize_scope` (`partition.rs:155`) is consulted only when the requester's foreign protection is `Protected`; unchanged here (author scope note: a clean active counterpart is rare, and a contained one ends automatically).
-- Adding an enum variant makes its exhaustive match sites hub work for the variant's owner.
-- Phase 2 writes `berth.toml` at the main worktree root, located through `configuration_lookup` (`ConfigurationLookup::OwnThenMain`); when the main-root file is absent, a validated linked-worktree file's policy (`trunk`, `gate_mode`, `maximum_reservations`, `maximum_ordering_edges`) carries over and the linked file stays; a present main-root file is kept; linked worktrees without their own file read the main-root file, and README "First use" already says so. `read_file` returns `ConfigurationFilePresence::{Missing, Present(BerthConfig)}`.
+**Ruled out:**
+- Refreshing existing holders' merge extents from fresh footprints before binding overlaps (rare; enrollment follows the edit check's containment).
+- Retrying run-marker publication for already-enrolled worktrees (requires an obstructed marker path).
+- Extending the config-file exclusion to ordinary or full drift.
+- A separate enrolled-work evidence field in replay (the immutable `ClaimSource::Enrolled` carries it).
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; the named integration tests pass; the output-contract test passes.

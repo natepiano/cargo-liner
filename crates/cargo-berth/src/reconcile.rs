@@ -3107,7 +3107,10 @@ fn append_merged_run_endings(
         let MergeExtent::Empty { key } = extent else {
             continue;
         };
-        let did_work = reservation.merge_extent().observed_unmerged_work()
+        // Enrollment requires a nonempty observed footprint. Its immutable source preserves
+        // that evidence even if a preceding drift or gate already recorded an empty extent.
+        let did_work = matches!(reservation.source(), crate::ledger::ClaimSource::Enrolled)
+            || reservation.merge_extent().observed_unmerged_work()
             || key.head != *reservation.phase_start_head().as_ref();
         if !did_work {
             continue;

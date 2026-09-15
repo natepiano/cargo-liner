@@ -2312,6 +2312,8 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
         "file:second-foreign.rs",
         FIRST_RUN,
     ));
+    dirty_source(repository.path(), "first-foreign.rs");
+    dirty_source(repository.path(), "second-foreign.rs");
     let before = board_data(repository.path())["recorded_overlap_answers"]["entries"].clone();
     for (foreign_id, path) in [
         (&first_foreign, "first-foreign.rs"),
@@ -3777,6 +3779,7 @@ fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
 fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     let fixture = reverted_scoped_patch_proof_fixture();
     let reservation = &fixture.reservation;
+    dirty_source(reservation.repository.path(), "src/lib.rs");
     let competing_reservations =
         append_released_reservations(reservation, 1, ProofSubjectSimilarity::Distinct);
     append_scoped_patch_attempt(

@@ -289,6 +289,10 @@ pub(crate) fn apply_journal_event(
 ) -> SessionIdentityMappingPublication {
     let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
     let publication = match &event.operation {
+        JournalOperation::Claim {
+            source: crate::ledger::ClaimSource::Enrolled,
+            ..
+        } => Ok(()),
         JournalOperation::Claim { reservation_id, .. }
         | JournalOperation::Widen { reservation_id, .. } => {
             return publish_reservation_identity(

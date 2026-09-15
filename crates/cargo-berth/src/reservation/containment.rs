@@ -8,7 +8,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use super::merge_extent::MergeExtent;
 use super::merge_extent::MergeExtentKey;
+use super::merge_extent::RetainedMergeEvidence;
 use super::record::Reservation;
 use super::retention::RetainedReservationSet;
 use crate::git;
@@ -46,9 +48,18 @@ impl ActingHeadContainment {
         let mut keys = reservations
             .iter()
             .filter(|holder| holder.actor().worktree != acting_worktree)
-            .filter_map(|holder| holder.merge_extent().protected_key())
+            .filter_map(|holder| match holder.merge_extent() {
+                MergeExtent::Protected { key, .. }
+                | MergeExtent::Unavailable {
+                    retained_evidence: RetainedMergeEvidence::Protected { key, .. },
+                    ..
+                } => Some(key),
+                MergeExtent::NotDerived { .. }
+                | MergeExtent::Empty { .. }
+                | MergeExtent::Unavailable { .. } => None,
+            })
             .peekable();
-        let mut holder_heads: Vec<HolderHeadRemainder> = Vec::new();
+        let holder_heads = Vec::new();
         if keys.peek().is_none() {
             return Self {
                 acting_worktree,
@@ -61,14 +72,38 @@ impl ActingHeadContainment {
                 holder_heads,
             };
         };
+        Self::observe_at_head(reservations, repository_root, acting_worktree, &acting_head)
+    }
+
+    /// Reuse a caller's resolved HEAD when observing foreign committed protection.
+    pub(crate) fn observe_at_head(
+        reservations: &RetainedReservationSet,
+        repository_root: &Path,
+        acting_worktree: WorktreeId,
+        acting_head: &GitObjectId,
+    ) -> Self {
+        let keys = reservations
+            .iter()
+            .filter(|holder| holder.actor().worktree != acting_worktree)
+            .filter_map(|holder| match holder.merge_extent() {
+                MergeExtent::Protected { key, .. }
+                | MergeExtent::Unavailable {
+                    retained_evidence: RetainedMergeEvidence::Protected { key, .. },
+                    ..
+                } => Some(key),
+                MergeExtent::NotDerived { .. }
+                | MergeExtent::Empty { .. }
+                | MergeExtent::Unavailable { .. } => None,
+            });
+        let mut holder_heads: Vec<HolderHeadRemainder> = Vec::new();
         for MergeExtentKey { trunk, head, .. } in keys {
-            if *trunk == acting_head || holder_heads.iter().any(|observed| observed.head == *head) {
+            if trunk == acting_head || holder_heads.iter().any(|observed| observed.head == *head) {
                 continue;
             }
-            let committed_paths = if *head == acting_head {
+            let committed_paths = if head == acting_head {
                 HashSet::new()
             } else {
-                match git::unmerged_branch_paths(repository_root, &acting_head, head) {
+                match git::unmerged_branch_paths(repository_root, acting_head, head) {
                     Ok(paths) => paths.into_iter().collect(),
                     Err(_) => continue,
                 }
@@ -93,16 +128,24 @@ impl ActingHeadContainment {
         acting_worktree: WorktreeId,
         scopes: &ReservationScopeSet,
     ) -> Vec<ReservationScope> {
-        let remainder = (acting_worktree == self.acting_worktree)
-            .then(|| holder.merge_extent().protected_key())
-            .flatten()
-            .and_then(|key| {
-                self.holder_heads
-                    .iter()
-                    .find(|observed| observed.head == key.head)
-                    .map(|observed| (key, observed))
-            });
-        let Some((key, observed)) = remainder else {
+        if acting_worktree != self.acting_worktree {
+            return scopes.as_slice().to_vec();
+        }
+        let key = match holder.merge_extent() {
+            MergeExtent::Protected { key, .. }
+            | MergeExtent::Unavailable {
+                retained_evidence: RetainedMergeEvidence::Protected { key, .. },
+                ..
+            } => key,
+            MergeExtent::NotDerived { .. }
+            | MergeExtent::Empty { .. }
+            | MergeExtent::Unavailable { .. } => return scopes.as_slice().to_vec(),
+        };
+        let Some(observed) = self
+            .holder_heads
+            .iter()
+            .find(|observed| observed.head == key.head)
+        else {
             return scopes.as_slice().to_vec();
         };
         scopes

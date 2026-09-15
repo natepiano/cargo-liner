@@ -30,7 +30,30 @@ $ cargo berth release <reservation-id>     # records the integrated disposition
 available: a `reference-transaction` trunk gate and a non-blocking `post-commit`
 drift warning.
 
-`init` creates the configuration at the main worktree root, and linked worktrees read it when they have no configuration of their own.
+`init` creates the configuration at the main worktree root, and linked worktrees
+read it when they have no configuration of their own.
+
+You can initialize a repository with work already in flight. `init` inspects
+every live worktree and reserves its committed changes relative to trunk plus
+its staged, unstaged, and untracked paths. Each worktree with work and no prior
+reservation gets one reservation; clean worktrees and worktrees with reservation
+history are omitted. The untracked configuration file created by `init` does not
+count as work.
+
+The report lists new reservation ids, worktree roots, and branches or detached
+heads. If worktrees overlap, it names both reservations and their shared paths,
+then prints two ready-to-run `sequence` commands. Choose the command whose first
+reservation should integrate first; edit its `--why` explanation if needed.
+Both sides may keep editing the recorded overlap, but integration has a pending
+ordering hold until you answer. The board also shows these enrollment overlaps.
+
+Re-running `init` preserves existing reservations and reports unresolved
+enrollment overlaps again, including pairs with an ended reservation. After
+adding a worktree that already has commits, run `init` again before its first
+edit to enroll that work. Fix any reported enrollment failure and retry `init`;
+other eligible worktrees are still enrolled. See
+[enrollment operations](../../docs/cargo-berth/operations.md#worktree-enrollment)
+for recovery steps.
 
 **`release` is a lifecycle walk, not a single act**, which is why it appears
 more than once above. Called on an active reservation it *checkpoints* — pinning

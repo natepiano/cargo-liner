@@ -6,6 +6,45 @@ a harness.
 
 For what the tool is and how to use it, see the [README](../../crates/cargo-berth/README.md).
 
+## Worktree enrollment
+
+Run `cargo berth init` from any worktree to set up the ledger and hooks, then
+enroll live worktrees with existing work and no reservation history. The
+configuration lives at the main worktree's `.claude/config/berth.toml`; a linked
+worktree reads that file unless it has its own. An untracked configuration file
+at that path is excluded from enrollment and merge-extent observations; tracked
+changes still count.
+
+Enrollment reserves exact paths changed relative to trunk or present in the
+working tree. Locked worktrees are eligible. Existing reservations, including
+ended ones, prevent a worktree from being enrolled again. Re-run `init` after
+adding a worktree with commits, before its first edit, or after fixing a failed
+candidate. Enrollment at later hook contacts is not automatic.
+
+The report gives each unresolved enrollment overlap's reservation ids, shared
+paths, and two runnable `sequence` commands. Run the order you intend, with a
+useful `--why` explanation. Editing remains authorized on both sides; the
+overlap holds integration until sequenced (reported in observe mode, rejected
+in enforce mode). Re-running `init` repeats unresolved pairs even after an
+endpoint ends. Enrollment runs end through the usual checkpoint and release
+workflow, or automatically when their checkout is clean with no remaining
+branch change at a commit trunk contains.
+
+Failures name the worktree root and include a diagnostic. Other candidates
+continue:
+
+| Reason | Recovery |
+| --- | --- |
+| `operation_in_progress` | Finish or abort the rebase, merge, cherry-pick, or revert, then retry. |
+| `no_merge_base` | Ensure `HEAD` and configured trunk resolve to commits with a shared ancestor, then retry. |
+| `git_failure` | Repair the Git command failure shown in the diagnostic, then retry. |
+| `unavailable` | Restore access to the registered worktree, or remove its stale registration through Git. |
+| `record_too_large` | Reduce the work footprint before retrying; enrollment does not split a claim across journal records. |
+
+Enrollment publishes a coordination-run marker in each enrolled worktree and
+leaves the invoking harness session mapping unchanged. An unmapped session
+there joins through the marker and reuses the reservation for covered edits.
+
 ## Harness identity
 
 `session-identities.json` sits beside the journal. A harness supplies
@@ -168,4 +207,3 @@ Exit 6 is the opposite: another mutation held the lock until the command's
 ten-second wait was exhausted, so nothing was decided. Run the command again by
 hand. Do not wrap it in another retry loop that multiplies the already-spent
 wait.
-

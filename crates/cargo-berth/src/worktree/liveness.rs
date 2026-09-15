@@ -91,6 +91,14 @@ pub(crate) struct WorktreeRegistry {
     registrations: Vec<WorktreeRegistration>,
 }
 
+/// A registered checkout's eligibility for initial reservation enrollment.
+pub(crate) enum WorktreeEnrollmentCandidate {
+    /// A live or locked checkout whose administrative context is available.
+    Eligible(WorktreeContext),
+    /// A retained registration whose checkout cannot be observed.
+    Unavailable { root: PathBuf },
+}
+
 struct WorktreeRegistration {
     root:     PathBuf,
     state:    WorktreeRegistrationState,
@@ -151,6 +159,24 @@ impl WorktreeRegistry {
             )?;
         }
         Ok(registry)
+    }
+
+    /// Enumerate enrollment candidates from the same registry observation.
+    pub(crate) fn enrollment_candidates(&self) -> Vec<WorktreeEnrollmentCandidate> {
+        self.registrations
+            .iter()
+            .map(
+                |registration| match (&registration.state, &registration.location) {
+                    (
+                        WorktreeRegistrationState::Available | WorktreeRegistrationState::Locked,
+                        RegisteredWorktreeLocation::Discovered { context, .. },
+                    ) => WorktreeEnrollmentCandidate::Eligible(context.clone()),
+                    _ => WorktreeEnrollmentCandidate::Unavailable {
+                        root: registration.root.clone(),
+                    },
+                },
+            )
+            .collect()
     }
 
     /// Classify one recorded holder without treating any absence as abandonment.

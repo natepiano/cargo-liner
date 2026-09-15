@@ -3625,6 +3625,62 @@
             }
           ]
         },
+        "EnrolledWorktree": {
+          "description": "A worktree's first reservation, protecting its complete current footprint.",
+          "properties": {
+            "branch": {
+              "description": "The branch name, or a description of the detached HEAD.",
+              "type": "string"
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The newly acquired reservation."
+            },
+            "worktree_root": {
+              "description": "The checkout containing the work.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reservation_id",
+            "worktree_root",
+            "branch"
+          ],
+          "type": "object"
+        },
+        "EnrollmentOverlap": {
+          "description": "One unresolved pair created by enrollment, including either ordering command.",
+          "properties": {
+            "first_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "One endpoint of the pending pair."
+            },
+            "second_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The other endpoint of the pending pair."
+            },
+            "sequence_commands": {
+              "description": "Ready-to-run sequence commands, one for each order.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "shared_scopes": {
+              "$ref": "#/$defs/ReservationScopeSet",
+              "description": "Paths for which an ordering decision is still required."
+            }
+          },
+          "required": [
+            "first_reservation_id",
+            "second_reservation_id",
+            "shared_scopes",
+            "sequence_commands"
+          ],
+          "type": "object"
+        },
         "ExplicitSelectionPersistenceReason": {
           "description": "Why an explicit reservation selection cannot become reusable harness-session state.",
           "oneOf": [
@@ -6204,6 +6260,91 @@
           ],
           "type": "object"
         },
+        "WorktreeEnrollmentFailure": {
+          "description": "A failure confined to one candidate; other worktrees continue enrollment.",
+          "properties": {
+            "diagnostic": {
+              "description": "Details explaining the failed observation or append.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/WorktreeEnrollmentFailureReason",
+              "description": "The semantic failure category."
+            },
+            "worktree_root": {
+              "description": "The registered checkout that could not be enrolled.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "worktree_root",
+            "reason",
+            "diagnostic"
+          ],
+          "type": "object"
+        },
+        "WorktreeEnrollmentFailureReason": {
+          "description": "Why a registered checkout could not be enrolled.",
+          "oneOf": [
+            {
+              "const": "operation_in_progress",
+              "description": "A merge, rebase, cherry-pick, or revert is underway.",
+              "type": "string"
+            },
+            {
+              "const": "no_merge_base",
+              "description": "HEAD and trunk have no resolvable common ancestor.",
+              "type": "string"
+            },
+            {
+              "const": "git_failure",
+              "description": "A repository observation or publication failed.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "Git retains a registration whose checkout cannot be used.",
+              "type": "string"
+            },
+            {
+              "const": "record_too_large",
+              "description": "The complete claim exceeds the journal's single-record limit.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorktreeEnrollmentReport": {
+          "description": "Reservations acquired and unresolved ordering decisions discovered by initialization.",
+          "properties": {
+            "enrolled": {
+              "description": "Worktrees that acquired their first reservation in this invocation.",
+              "items": {
+                "$ref": "#/$defs/EnrolledWorktree"
+              },
+              "type": "array"
+            },
+            "failures": {
+              "description": "Candidates whose enrollment could not be completed.",
+              "items": {
+                "$ref": "#/$defs/WorktreeEnrollmentFailure"
+              },
+              "type": "array"
+            },
+            "overlaps": {
+              "description": "Enrollment deferrals still awaiting an explicit sequence decision.",
+              "items": {
+                "$ref": "#/$defs/EnrollmentOverlap"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "enrolled",
+            "overlaps",
+            "failures"
+          ],
+          "type": "object"
+        },
         "WorktreeLiveness": {
           "description": "Whether the worktree that owns a retained reservation can be validated now.",
           "oneOf": [
@@ -7129,6 +7270,15 @@
             "configuration": {
               "$ref": "#/$defs/initialization_resource",
               "description": "Whether initialization created the config or left an existing file intact."
+            },
+            "enrollment": {
+              "$ref": "#/$defs/WorktreeEnrollmentReport",
+              "default": {
+                "enrolled": [],
+                "failures": [],
+                "overlaps": []
+              },
+              "description": "Newly reserved worktrees, pending enrollment overlaps, and candidate failures."
             },
             "hooks": {
               "description": "Whether every registered managed hook is now in force.",
@@ -10847,6 +10997,62 @@
             }
           ]
         },
+        "EnrolledWorktree": {
+          "description": "A worktree's first reservation, protecting its complete current footprint.",
+          "properties": {
+            "branch": {
+              "description": "The branch name, or a description of the detached HEAD.",
+              "type": "string"
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The newly acquired reservation."
+            },
+            "worktree_root": {
+              "description": "The checkout containing the work.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reservation_id",
+            "worktree_root",
+            "branch"
+          ],
+          "type": "object"
+        },
+        "EnrollmentOverlap": {
+          "description": "One unresolved pair created by enrollment, including either ordering command.",
+          "properties": {
+            "first_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "One endpoint of the pending pair."
+            },
+            "second_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The other endpoint of the pending pair."
+            },
+            "sequence_commands": {
+              "description": "Ready-to-run sequence commands, one for each order.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "shared_scopes": {
+              "$ref": "#/$defs/ReservationScopeSet",
+              "description": "Paths for which an ordering decision is still required."
+            }
+          },
+          "required": [
+            "first_reservation_id",
+            "second_reservation_id",
+            "shared_scopes",
+            "sequence_commands"
+          ],
+          "type": "object"
+        },
         "ExplicitSelectionPersistenceReason": {
           "description": "Why an explicit reservation selection cannot become reusable harness-session state.",
           "oneOf": [
@@ -13326,6 +13532,91 @@
           ],
           "type": "object"
         },
+        "WorktreeEnrollmentFailure": {
+          "description": "A failure confined to one candidate; other worktrees continue enrollment.",
+          "properties": {
+            "diagnostic": {
+              "description": "Details explaining the failed observation or append.",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/WorktreeEnrollmentFailureReason",
+              "description": "The semantic failure category."
+            },
+            "worktree_root": {
+              "description": "The registered checkout that could not be enrolled.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "worktree_root",
+            "reason",
+            "diagnostic"
+          ],
+          "type": "object"
+        },
+        "WorktreeEnrollmentFailureReason": {
+          "description": "Why a registered checkout could not be enrolled.",
+          "oneOf": [
+            {
+              "const": "operation_in_progress",
+              "description": "A merge, rebase, cherry-pick, or revert is underway.",
+              "type": "string"
+            },
+            {
+              "const": "no_merge_base",
+              "description": "HEAD and trunk have no resolvable common ancestor.",
+              "type": "string"
+            },
+            {
+              "const": "git_failure",
+              "description": "A repository observation or publication failed.",
+              "type": "string"
+            },
+            {
+              "const": "unavailable",
+              "description": "Git retains a registration whose checkout cannot be used.",
+              "type": "string"
+            },
+            {
+              "const": "record_too_large",
+              "description": "The complete claim exceeds the journal's single-record limit.",
+              "type": "string"
+            }
+          ]
+        },
+        "WorktreeEnrollmentReport": {
+          "description": "Reservations acquired and unresolved ordering decisions discovered by initialization.",
+          "properties": {
+            "enrolled": {
+              "description": "Worktrees that acquired their first reservation in this invocation.",
+              "items": {
+                "$ref": "#/$defs/EnrolledWorktree"
+              },
+              "type": "array"
+            },
+            "failures": {
+              "description": "Candidates whose enrollment could not be completed.",
+              "items": {
+                "$ref": "#/$defs/WorktreeEnrollmentFailure"
+              },
+              "type": "array"
+            },
+            "overlaps": {
+              "description": "Enrollment deferrals still awaiting an explicit sequence decision.",
+              "items": {
+                "$ref": "#/$defs/EnrollmentOverlap"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "enrolled",
+            "overlaps",
+            "failures"
+          ],
+          "type": "object"
+        },
         "WorktreeLiveness": {
           "description": "Whether the worktree that owns a retained reservation can be validated now.",
           "oneOf": [
@@ -14082,6 +14373,15 @@
             "configuration": {
               "$ref": "#/$defs/initialization_resource",
               "description": "Whether initialization created the config or left an existing file intact."
+            },
+            "enrollment": {
+              "$ref": "#/$defs/WorktreeEnrollmentReport",
+              "default": {
+                "enrolled": [],
+                "failures": [],
+                "overlaps": []
+              },
+              "description": "Newly reserved worktrees, pending enrollment overlaps, and candidate failures."
             },
             "hooks": {
               "description": "Whether every registered managed hook is now in force.",

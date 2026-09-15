@@ -136,18 +136,6 @@ impl MergeExtent {
         )
     }
 
-    /// The inputs behind committed protection, including protection retained through failure.
-    pub(crate) const fn protected_key(&self) -> Option<&MergeExtentKey> {
-        match self {
-            Self::Protected { key, .. }
-            | Self::Unavailable {
-                retained_evidence: RetainedMergeEvidence::Protected { key, .. },
-                ..
-            } => Some(key),
-            Self::NotDerived { .. } | Self::Empty { .. } | Self::Unavailable { .. } => None,
-        }
-    }
-
     /// Read only this ground's own protection, including retained failure evidence.
     pub(crate) const fn protection(&self) -> ReservationProtection<'_> {
         match self {

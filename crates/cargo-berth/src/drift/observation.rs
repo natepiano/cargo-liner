@@ -522,7 +522,11 @@ fn observe_full(
 pub(crate) fn observe_merge_working_tree(
     repository_root: &Path,
 ) -> Result<WorkingTreeFingerprint, String> {
-    let status = observe_working_tree_status(repository_root).map_err(|error| error.to_string())?;
+    let mut status =
+        observe_working_tree_status(repository_root).map_err(|error| error.to_string())?;
+    status
+        .untracked
+        .retain(|path| path.to_string() != ".claude/config/berth.toml");
     Ok(WorkingTreeFingerprint {
         tracked_paths:   status.tracked(),
         untracked_paths: status.untracked,

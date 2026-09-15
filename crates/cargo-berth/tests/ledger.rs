@@ -57,6 +57,408 @@ const UNKNOWN_RESERVATION_ID: &str = "01a03f08-e197-7a83-9b7c-bc7c555d0c01";
 const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 
 #[test]
+fn linked_init_enrolls_three_worktrees_and_sequences_reported_overlaps() {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let first = add_worktree(root, worktrees.path(), "first");
+    let second = add_worktree(root, worktrees.path(), "second");
+    for (checkout, contents) in [
+        (&first, "first committed\n"),
+        (&second, "second committed\n"),
+    ] {
+        commit_enrollment_work(checkout, "README.md", contents);
+        fs::write(checkout.join("README.md"), format!("{contents}dirty\n"))
+            .expect("shared dirty work should write");
+    }
+    fs::write(root.join("README.md"), "trunk dirty\n").expect("trunk work should write");
+
+    let enrollment = enrollment_report(&first);
+    assert_eq!(
+        enrollment["enrolled"]
+            .as_array()
+            .expect("enrolled rows")
+            .len(),
+        3
+    );
+    assert_eq!(
+        enrollment["overlaps"]
+            .as_array()
+            .expect("overlap rows")
+            .len(),
+        3
+    );
+    assert_eq!(enrollment["failures"], serde_json::json!([]));
+    let claims = enrollment_claims(root);
+    assert_eq!(claims.len(), 3);
+    for checkout in [root, first.as_path(), second.as_path()] {
+        let reservation_id = enrolled_reservation(&enrollment, checkout);
+        let claim = claims
+            .iter()
+            .find(|claim| claim["reservation_id"] == reservation_id)
+            .expect("each reported reservation should have a claim");
+        assert_eq!(claim["source"]["kind"], "enrolled");
+        assert_eq!(
+            claim["scopes"],
+            serde_json::json!([{"kind": "file", "path": "README.md"}])
+        );
+    }
+    let board = enrollment_board(root);
+    let unresolved = board["unresolved_overlaps"]["entries"]
+        .as_array()
+        .expect("unresolved pairs");
+    assert_eq!(unresolved.len(), 3);
+    assert!(unresolved.iter().all(|pair| pair["origin"] == "enrollment"));
+    let answers = board["recorded_overlap_answers"]["entries"]
+        .as_array()
+        .expect("recorded answers");
+    assert!(answers.iter().any(|answer| answer["answer"] == "enrollment"
+        && answer["acquisition"]["origin"] == "enrollment"));
+    sequence_reported_enrollment_overlap(root, &enrollment["overlaps"][0]);
+    let sequenced = enrollment_board(root);
+    assert_eq!(
+        sequenced["unresolved_overlaps"]["entries"]
+            .as_array()
+            .expect("pending pairs")
+            .len(),
+        2
+    );
+    assert!(
+        sequenced["recorded_overlap_answers"]["entries"]
+            .as_array()
+            .expect("answers")
+            .iter()
+            .any(|answer| answer["answer"] == "ordering_created_from_deferral")
+    );
+    let before = fs::read(root.join(JOURNAL_PATH)).expect("journal should read");
+    let repeated = enrollment_report(&first);
+    assert_eq!(repeated["enrolled"], serde_json::json!([]));
+    assert_eq!(
+        repeated["overlaps"]
+            .as_array()
+            .expect("pending pairs")
+            .len(),
+        2
+    );
+    assert_eq!(
+        fs::read(root.join(JOURNAL_PATH)).expect("journal should reread"),
+        before
+    );
+}
+
+#[test]
+fn init_never_reenrolls_a_released_worktree() {
+    let repository = scratch_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let checkout = add_worktree(repository.path(), worktrees.path(), "released");
+    commit_enrollment_work(&checkout, "README.md", "committed work\n");
+    let first = enrollment_report(repository.path());
+    let reservation_id = enrolled_reservation(&first, &checkout);
+    let released = run_berth(&checkout, ["release", &reservation_id, "--json"]);
+    assert!(released.status.success(), "{}", json_output(&released));
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .any(|event| event["op"] == "checkpoint" && event["reservation_id"] == reservation_id)
+    );
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--ff-only",
+            "released",
+        ],
+    );
+    let _board = enrollment_board(repository.path());
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .any(|event| event["op"] == "release" && event["reservation_id"] == reservation_id)
+    );
+    fs::write(checkout.join("later.txt"), "new work after release\n")
+        .expect("later work should write");
+
+    let repeated = enrollment_report(repository.path());
+
+    assert_eq!(repeated["enrolled"], serde_json::json!([]));
+    assert_eq!(enrollment_claims(repository.path()).len(), 1);
+}
+
+#[test]
+fn init_reports_a_rebase_and_retries_that_worktree_after_abort() {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let checkout = add_worktree(root, worktrees.path(), "rebasing");
+    commit_enrollment_work(&checkout, "README.md", "branch edit\n");
+    commit_enrollment_work(root, "README.md", "trunk edit\n");
+    let rebase = GIT.output(&checkout, ["rebase", "main"]);
+    assert!(
+        !rebase.status.success(),
+        "rebase should stop at a real conflict"
+    );
+
+    let enrollment = enrollment_report(root);
+
+    assert_eq!(enrollment["enrolled"], serde_json::json!([]));
+    assert_enrollment_failure(&enrollment, &checkout, "operation_in_progress");
+    git(
+        &checkout,
+        &["-c", "core.hooksPath=/dev/null", "rebase", "--abort"],
+    );
+    let retried = enrollment_report(root);
+    assert_eq!(
+        retried["enrolled"].as_array().expect("enrolled rows").len(),
+        1
+    );
+    assert_eq!(retried["failures"], serde_json::json!([]));
+}
+
+#[test]
+fn init_enrolls_committed_work_added_after_initialization() {
+    let repository = scratch_repository();
+    assert_eq!(
+        enrollment_report(repository.path())["enrolled"],
+        serde_json::json!([])
+    );
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let checkout = add_worktree(repository.path(), worktrees.path(), "later");
+    commit_enrollment_work(
+        &checkout,
+        "later.txt",
+        "already committed before first edit\n",
+    );
+
+    let enrollment = enrollment_report(repository.path());
+
+    let reservation_id = enrolled_reservation(&enrollment, &checkout);
+    let claims = enrollment_claims(repository.path());
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0]["reservation_id"], reservation_id);
+    assert_eq!(
+        claims[0]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "later.txt"}])
+    );
+}
+
+#[test]
+fn init_reports_unavailable_worktrees_and_enrolls_locked_worktrees() {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let unavailable = add_worktree(root, worktrees.path(), "unavailable");
+    let locked = add_worktree(root, worktrees.path(), "locked");
+    git(
+        root,
+        &["worktree", "lock", locked.to_str().expect("UTF-8 path")],
+    );
+    fs::write(locked.join("locked.txt"), "locked work\n").expect("locked work should write");
+    fs::remove_dir_all(&unavailable).expect("registered checkout should become unavailable");
+
+    let enrollment = enrollment_report(root);
+
+    assert_enrollment_failure(&enrollment, &unavailable, "unavailable");
+    assert_eq!(
+        enrollment["enrolled"]
+            .as_array()
+            .expect("enrolled rows")
+            .len(),
+        1
+    );
+    let _reservation_id = enrolled_reservation(&enrollment, &locked);
+}
+
+#[test]
+fn init_keeps_stacked_footprints_without_a_contained_overlap() {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let parent = add_worktree(root, worktrees.path(), "parent");
+    commit_enrollment_work(&parent, "parent.txt", "parent work\n");
+    let child = worktrees.path().join("child");
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "child",
+            child.to_str().expect("UTF-8 path"),
+            "parent",
+        ],
+    );
+    commit_enrollment_work(&child, "child.txt", "child work\n");
+
+    let enrollment = enrollment_report(root);
+
+    assert_eq!(
+        enrollment["enrolled"]
+            .as_array()
+            .expect("enrolled rows")
+            .len(),
+        2
+    );
+    assert_eq!(enrollment["overlaps"], serde_json::json!([]));
+    assert_eq!(
+        enrollment_board(root)["unresolved_overlaps"]["entries"],
+        serde_json::json!([])
+    );
+    let child_id = enrolled_reservation(&enrollment, &child);
+    let claims = enrollment_claims(root);
+    let child_claim = claims
+        .iter()
+        .find(|claim| claim["reservation_id"] == child_id)
+        .expect("child claim");
+    assert_eq!(
+        child_claim["scopes"],
+        serde_json::json!([{"kind": "file", "path": "child.txt"}, {"kind": "file", "path": "parent.txt"}])
+    );
+}
+
+#[test]
+fn discarded_trunk_enrollment_ends_but_its_unresolved_overlap_survives_init() {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let checkout = add_worktree(root, worktrees.path(), "sibling");
+    fs::write(root.join("README.md"), "trunk dirty\n").expect("trunk work should write");
+    fs::write(checkout.join("README.md"), "sibling dirty\n").expect("sibling work should write");
+    let enrollment = enrollment_report(root);
+    let trunk_id = enrolled_reservation(&enrollment, root);
+    assert_eq!(
+        enrollment["overlaps"]
+            .as_array()
+            .expect("overlap rows")
+            .len(),
+        1
+    );
+    git(root, &["restore", "README.md"]);
+    let _board = enrollment_board(root);
+    assert!(
+        journal_events(root)
+            .iter()
+            .any(|event| event["op"] == "release" && event["reservation_id"] == trunk_id)
+    );
+
+    let repeated = enrollment_report(root);
+
+    assert_eq!(repeated["enrolled"], serde_json::json!([]));
+    assert_eq!(repeated["overlaps"], enrollment["overlaps"]);
+    let board = enrollment_board(root);
+    assert_eq!(
+        board["unresolved_overlaps"]["entries"]
+            .as_array()
+            .expect("pending pairs")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line() {
+    let repository = scratch_repository();
+    let initialized = run_berth(repository.path(), ["init"]);
+    assert!(initialized.status.success());
+    assert_eq!(
+        String::from_utf8(initialized.stdout).expect("UTF-8 output"),
+        INITIALIZED_MESSAGE
+    );
+    assert_eq!(
+        git_stdout(
+            repository.path(),
+            &["ls-files", "--others", "--exclude-standard"]
+        ),
+        CONFIGURATION_PATH
+    );
+    let enrollment = enrollment_report(repository.path());
+    for section in ["enrolled", "overlaps", "failures"] {
+        assert_eq!(enrollment[section], serde_json::json!([]));
+    }
+    assert!(enrollment_claims(repository.path()).is_empty());
+}
+
+#[test]
+fn init_preserves_session_mapping_and_an_unmapped_session_reuses_and_widens_enrollment() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let session_id = "existing-invoking-session";
+    let _existing = claim(
+        root,
+        "file:existing.txt",
+        MAIN_COORDINATION_RUN_ID,
+        session_id,
+    );
+    fs::write(root.join("existing.txt"), "existing work\n").expect("existing work should write");
+    let mapping_path = root.join(".git/cargo-berth/session-identities.json");
+    let mapping_before = fs::read(&mapping_path).expect("existing session mapping");
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let checkout = add_worktree(root, worktrees.path(), "unmapped");
+    fs::write(checkout.join("README.md"), "enrolled work\n").expect("enrolled work should write");
+    let initialized = run_berth_with_session(root, &["init", "--json"], session_id);
+    assert!(
+        initialized.status.success(),
+        "{}",
+        json_output(&initialized)
+    );
+    assert_eq!(
+        fs::read(&mapping_path).expect("session mapping after init"),
+        mapping_before
+    );
+    let enrollment = &json_output(&initialized)["payload"]["data"]["enrollment"];
+    let reservation_id = enrolled_reservation(enrollment, &checkout);
+    let before = journal_events(root);
+    let checked = run_berth_with_session(
+        &checkout,
+        &["check", "file:README.md", "--json"],
+        "new-enrolled-session",
+    );
+    assert!(checked.status.success(), "{}", json_output(&checked));
+    let acquired = &json_output(&checked)["payload"]["data"]["acquisition"];
+    assert_eq!(acquired["kind"], "already_held");
+    assert_eq!(acquired["reservation_id"], reservation_id);
+    let acquisition_events = |events: Vec<serde_json::Value>| {
+        events
+            .into_iter()
+            .filter(|event| matches!(event["op"].as_str(), Some("claim" | "widen")))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        acquisition_events(journal_events(root)),
+        acquisition_events(before)
+    );
+    fs::write(
+        checkout.join("README.md"),
+        "edited through enrolled reservation\n",
+    )
+    .expect("covered edit should write");
+
+    let widened = run_berth_with_session(
+        &checkout,
+        &["check", "file:new.txt", "--json"],
+        "new-enrolled-session",
+    );
+
+    assert!(widened.status.success(), "{}", json_output(&widened));
+    let acquired = &json_output(&widened)["payload"]["data"]["acquisition"];
+    assert_eq!(acquired["kind"], "widened");
+    assert_eq!(acquired["reservation_id"], reservation_id);
+    let events = journal_events(root);
+    assert_eq!(
+        events.iter().filter(|event| event["op"] == "claim").count(),
+        2
+    );
+    let widens = events
+        .iter()
+        .filter(|event| event["op"] == "widen")
+        .collect::<Vec<_>>();
+    assert_eq!(widens.len(), 1);
+    assert_eq!(widens[0]["reservation_id"], reservation_id);
+}
+
+#[test]
 fn init_creates_the_shared_ledger_and_is_idempotent() {
     let repository = scratch_repository();
 
@@ -1221,4 +1623,131 @@ fn run_berth_with_git_environment(
         .env(GIT_COMMON_DIRECTORY_ENVIRONMENT, git_common_directory)
         .output()
         .expect("cargo-berth should run")
+}
+
+fn enrollment_report(root: &Path) -> serde_json::Value {
+    let initialized = run_berth(root, ["init", "--json"]);
+    let envelope = json_output(&initialized);
+    assert!(initialized.status.success(), "{envelope}");
+    assert_eq!(envelope["payload"]["kind"], "init");
+    envelope["payload"]["data"]["enrollment"].clone()
+}
+
+fn enrollment_board(root: &Path) -> serde_json::Value {
+    let board = run_berth(root, ["board", "--json"]);
+    let envelope = json_output(&board);
+    assert!(board.status.success(), "{envelope}");
+    envelope["payload"]["data"].clone()
+}
+
+fn enrollment_claims(root: &Path) -> Vec<serde_json::Value> {
+    journal_events(root)
+        .into_iter()
+        .filter(|event| event["op"] == "claim" && event["source"]["kind"] == "enrolled")
+        .collect()
+}
+
+fn enrolled_reservation(report: &serde_json::Value, root: &Path) -> String {
+    let canonical_root = fs::canonicalize(root).expect("checkout should canonicalize");
+    let row = report["enrolled"]
+        .as_array()
+        .expect("enrolled rows")
+        .iter()
+        .find(|row| row["worktree_root"] == canonical_root.to_str().expect("UTF-8 root"))
+        .expect("checkout should have an enrolled reservation");
+    assert!(
+        row["branch"]
+            .as_str()
+            .is_some_and(|branch| !branch.is_empty())
+    );
+    row["reservation_id"]
+        .as_str()
+        .expect("reservation id")
+        .to_owned()
+}
+
+fn assert_enrollment_failure(report: &serde_json::Value, root: &Path, reason: &str) {
+    let failures = report["failures"].as_array().expect("failure rows");
+    let failure = failures
+        .iter()
+        .find(|failure| failure["worktree_root"] == root.to_str().expect("UTF-8 root"))
+        .expect("checkout should have a reported failure");
+    assert_eq!(failure["reason"], reason);
+    assert!(
+        failure["diagnostic"]
+            .as_str()
+            .is_some_and(|diagnostic| !diagnostic.is_empty())
+    );
+}
+
+fn commit_enrollment_work(root: &Path, path: &str, contents: &str) {
+    fs::write(root.join(path), contents).expect("work should write");
+    git(root, &["add", path]);
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "work before enrollment",
+        ],
+    );
+}
+
+fn run_printed_enrollment_sequence(root: &Path, printed: &str) {
+    let arguments = printed
+        .strip_prefix("cargo berth ")
+        .or_else(|| printed.strip_prefix("cargo-berth "))
+        .expect("command should invoke berth");
+    let output = Command::new("sh")
+        .args([
+            "-c",
+            &format!("exec \"$BERTH_ENROLLMENT_TEST_EXECUTABLE\" {arguments}"),
+        ])
+        .env("BERTH_ENROLLMENT_TEST_EXECUTABLE", BERTH_EXECUTABLE)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(GIT_DIRECTORY_ENVIRONMENT)
+        .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
+        .current_dir(root)
+        .output()
+        .expect("printed sequence should execute");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn sequence_reported_enrollment_overlap(root: &Path, overlap: &serde_json::Value) {
+    assert_eq!(
+        overlap["shared_scopes"],
+        serde_json::json!([{"kind": "file", "path": "README.md"}])
+    );
+    let commands = overlap["sequence_commands"]
+        .as_array()
+        .expect("sequence commands");
+    assert_eq!(commands.len(), 2);
+    for (index, command) in commands.iter().enumerate() {
+        let command = command.as_str().expect("rendered sequence command");
+        let first_id = overlap["first_reservation_id"]
+            .as_str()
+            .expect("first endpoint");
+        let second_id = overlap["second_reservation_id"]
+            .as_str()
+            .expect("second endpoint");
+        let (before, after) = if index == 0 {
+            (first_id, second_id)
+        } else {
+            (second_id, first_id)
+        };
+        assert!(
+            command.contains(&format!("sequence {before} {after} --why ")),
+            "{command}"
+        );
+    }
+    run_printed_enrollment_sequence(root, commands[0].as_str().expect("printed command"));
 }

@@ -1457,7 +1457,14 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                             worktree_context.repository_root(),
                             &trunk_reference,
                         );
-                        OutputEnvelope::initialized(initialization, &hook_installations)
+                        let enrollment = match crate::worktree::enroll_worktrees(
+                            &worktree_context,
+                            &berth_config,
+                        ) {
+                            Ok(enrollment) => enrollment,
+                            Err(error) => return initialization_error(error),
+                        };
+                        OutputEnvelope::initialized(initialization, &hook_installations, enrollment)
                     },
                     Err(error) => initialization_error(error),
                 },
