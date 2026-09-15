@@ -934,6 +934,8 @@ try:
                  + repr(initial) + ' became ' + repr(observed) + '\n' + screen())
     if scenario == 'root-headings':
         markers = (first[1].name, second[1].name)
+        # The reader has shown the first writer; the second can arrive in a later scan.
+        rendered = wait_for_fixture_pane(markers)
         commands = fixture_pane(rendered, markers)
         for marker in markers:
             assert sum(marker in line for line in commands) == 1, rendered
