@@ -17,7 +17,6 @@ use serde_json::Map;
 use serde_json::Value;
 
 use crate::alert::Alert;
-use crate::alert::RecoverabilityVerdict;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::board;
@@ -2657,9 +2656,6 @@ impl OutputEnvelope {
         if matches!(self.payload.facts, OutputFacts::Drift(_)) {
             self.refresh_post_tool_use_presentation();
         }
-        if matches!(self.verb, CommandVerb::Board) {
-            self.presentation = presentation_from_actionable_alerts(&self.payload.alerts);
-        }
         self
     }
 
@@ -3044,47 +3040,6 @@ fn unverifiable_live_incursion_rendering() -> PostToolUseRendering {
     PostToolUseRendering::Feedback {
         summary: block.summary,
         detail:  block.detail,
-    }
-}
-
-fn presentation_from_actionable_alerts(alerts: &[Alert]) -> EnvelopePresentation {
-    let details = alerts
-        .iter()
-        .map(|alert| match alert {
-            Alert::MergeExtentUnavailable { .. } | Alert::LostIntegrationEvidence(_) => {
-                alert.to_string()
-            },
-            Alert::OrphanedOutstanding(orphan) => {
-                let reservation_id = orphan.reservation_id().to_string();
-                let (recoverability, recovery_commands) = match orphan.recoverability() {
-                    RecoverabilityVerdict::RecoverableFromBranch => (
-                        "recoverable_from_branch",
-                        vec![format!("resolve {reservation_id} --recovered")],
-                    ),
-                    RecoverabilityVerdict::RecoverableFromProtectedTip => (
-                        "recoverable_from_protected_tip",
-                        vec![format!("resolve {reservation_id} --recovered")],
-                    ),
-                    RecoverabilityVerdict::CommitUnavailable => (
-                        "commit_unavailable",
-                        vec![
-                            format!("resolve {reservation_id} --retire-orphan --why <reason>"),
-                            format!("resolve {reservation_id} --abandon --why <reason>"),
-                        ],
-                    ),
-                };
-                presentation::orphaned_outstanding_block(
-                    &reservation_id,
-                    &orphan.protected_tip().to_string(),
-                    recoverability,
-                    &recovery_commands,
-                )
-            },
-        })
-        .collect::<Vec<_>>();
-    match details.as_slice() {
-        [] => EnvelopePresentation::nothing_to_show(),
-        [_, ..] => presentation::actionable_board_notices_block(&details).into(),
     }
 }
 

@@ -47,6 +47,7 @@ pub(super) fn commit_forced_permit_audits(
                     ledger_repository,
                     berth_config,
                     update.proposed.clone(),
+                    reconcile::GateReconciliationPurpose::CommittedAudit,
                 ) {
                     Ok(prepared) => prepared,
                     Err(error) => {

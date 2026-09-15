@@ -197,6 +197,7 @@ pub(super) fn evaluate_locked(
                     ledger_repository,
                     &berth_config,
                     update.proposed.clone(),
+                    reconcile::GateReconciliationPurpose::PreparedDecision,
                 ) {
                     Ok(prepared) => prepared,
                     Err(error) => {

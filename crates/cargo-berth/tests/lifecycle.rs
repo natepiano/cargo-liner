@@ -220,12 +220,6 @@ fn resolve_reports_failed_session_mapping_retirement() {
     );
 }
 
-/// Releases needed before a merged reservation carries its disposition.
-///
-/// One revalidates the integration evidence and one records what it proved; a
-/// third would be the no-op this test is about.
-const RELEASES_TO_A_DISPOSITION: usize = 2;
-
 #[test]
 fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted() {
     let repository = initialized_repository();
@@ -250,37 +244,21 @@ fn a_release_that_changed_nothing_does_not_repeat_the_sentence_of_one_that_acted
     );
     let claim = claim(repository.path(), "tree:src", FIRST_RUN);
     let reservation_id = reservation_id(&claim);
-    assert!(
-        run_berth(repository.path(), &["release", &reservation_id])
-            .status
-            .success()
-    );
+    let checkpointed = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    assert!(checkpointed.status.success());
+    let checkpointed = json_output(&checkpointed);
+    assert_eq!(checkpointed["payload"]["data"]["status"], "checkpointed");
+    let acted = checkpointed["message"]
+        .as_str()
+        .expect("checkpoint should describe its action");
     git(repository.path(), &["switch", "--quiet", "main"]);
     git(
         repository.path(),
         &["merge", "--quiet", "--ff-only", "phase"],
     );
 
-    // Reaching a disposition takes one release to revalidate the evidence and one
-    // to record what it proved; which of the two a given call performs depends on
-    // what reconciliation had already materialized.
-    let mut acted = String::new();
-    for _ in 0..RELEASES_TO_A_DISPOSITION {
-        let release = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
-        let release = json_output(&release);
-        if release["payload"]["data"]["status"] == "released" {
-            acted = release["message"]
-                .as_str()
-                .expect("release should carry a message")
-                .to_owned();
-            break;
-        }
-    }
-    assert!(
-        !acted.is_empty(),
-        "the reservation should reach a disposition"
-    );
-
+    let settled = run_berth(repository.path(), &["board", "--json"]);
+    assert!(settled.status.success());
     let repeated = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     let repeated = json_output(&repeated);
     assert_eq!(repeated["payload"]["data"]["status"], "already_settled");
@@ -337,7 +315,7 @@ fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
     let terminal = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     assert_eq!(
         json_output(&terminal)["payload"]["data"]["status"],
-        "released"
+        "already_settled"
     );
 
     git(
@@ -395,7 +373,7 @@ fn stored_integrated_evidence_is_revalidated_before_release() {
     let integrated = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     assert_eq!(
         json_output(&integrated)["payload"]["data"]["status"],
-        "evidence_revalidated"
+        "released"
     );
 
     git(
@@ -1914,7 +1892,7 @@ mod merge_extent {
     }
 
     #[test]
-    fn evidence_decisions_follow_extents_that_empty_and_reappear() {
+    fn settled_extents_stay_empty_while_a_new_reservation_protects_later_work() {
         let fixture = Repository::new();
         let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
         commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
@@ -1931,11 +1909,27 @@ mod merge_extent {
         assert_eq!(reservation["edit_blocking_status"], "clear");
         assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
 
+        assert_eq!(reservation["lifecycle"]["stage"], "released");
+        let settled_id = id;
+        let id = claim(&fixture.holder, "file:later.rs", SECOND_RUN);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            SECOND_RUN,
+        ));
         commit(&fixture.holder, "later.rs", "later branch work\n");
-        // A new trunk object makes checkpoint evidence change in the same transaction
-        // that must replace the previously empty extent with this later branch work.
+
+        // A later phase owns new work; the settled checkpoint remains terminal.
         commit(fixture.trunk(), "trunk.rs", "independent trunk work\n");
         let protected = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&protected, &settled_id)["lifecycle"]["stage"],
+            "released"
+        );
+        assert_eq!(
+            snapshot(&protected, &settled_id)["merge_extent"]["status"],
+            "empty"
+        );
         let reservation = snapshot(&protected, &id);
         assert_eq!(reservation["merge_extent"]["status"], "protected");
         assert_eq!(reservation["edit_blocking_status"], "blocking");
@@ -2935,6 +2929,217 @@ mod merge_extent {
                 .iter()
                 .all(|event| { event["reservation_id"] != id || event["op"] != "release" })
         );
+
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--ff-only", &later_tip],
+        );
+        let settled = board(fixture.trunk());
+        let reservation = snapshot(&settled, &id);
+        assert_eq!(reservation["lifecycle"]["stage"], "released");
+        assert_eq!(
+            reservation["lifecycle"]["disposition"]["kind"],
+            "integrated"
+        );
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+        assert_eq!(
+            events(fixture.trunk())
+                .iter()
+                .filter(|event| event["reservation_id"] == id && event["op"] == "release")
+                .count(),
+            1
+        );
+        assert_allowed(&fixture.outsider, "file:later.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn rebased_integrated_checkpoint_settles_despite_unrelated_dirt() {
+        for dirty_path in ["untracked.txt", "tracked.rs"] {
+            let fixture = Repository::new();
+            let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+            commit(&fixture.holder, "branch.rs", "phase work\n");
+            let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+            succeed(&berth(
+                &fixture.holder,
+                &["release", &id, "--json"],
+                FIRST_RUN,
+            ));
+            commit(fixture.trunk(), "trunk.txt", "independent trunk work\n");
+            GIT.run(&fixture.holder, ["rebase", "main"]);
+            let rebased = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+            assert_ne!(checkpoint, rebased);
+            GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+            write(&fixture.holder, dirty_path, "unrelated local work\n");
+
+            let observed = board(fixture.trunk());
+            let reservation = snapshot(&observed, &id);
+            assert_eq!(reservation["lifecycle"]["stage"], "released", "{observed}");
+            assert_eq!(
+                reservation["lifecycle"]["disposition"]["kind"],
+                "rewritten_integration"
+            );
+            assert_eq!(
+                fs::read_to_string(fixture.holder.join(dirty_path)).expect("dirt remains"),
+                "unrelated local work\n"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_out_of_scope_path_keeps_its_unmerged_committed_work_protected() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:a.rs", FIRST_RUN);
+        write(&fixture.holder, "a.rs", "proven work\n");
+        write(&fixture.holder, "b.rs", "unmerged committed work\n");
+        GIT.run(&fixture.holder, ["add", "a.rs", "b.rs"]);
+        GIT.run(
+            &fixture.holder,
+            ["commit", "--quiet", "-m", "checkpoint both paths"],
+        );
+        let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        commit(fixture.trunk(), "a.rs", "proven work\n");
+        write(&fixture.holder, "b.rs", "dirty work on the unmerged path\n");
+
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["proof"],
+            "scoped_patch_equivalent"
+        );
+        assert_eq!(
+            reservation["lifecycle"]["stage"], "outstanding",
+            "{observed}"
+        );
+        assert_eq!(
+            GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]),
+            checkpoint
+        );
+        assert!(scope_paths(&reservation["merge_extent"]["scopes"]).contains("b.rs"));
+        assert!(
+            !events(fixture.trunk())
+                .iter()
+                .any(|event| event["op"] == "release" && event["reservation_id"] == id)
+        );
+        assert_refused(&fixture.outsider, "file:b.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn repeated_release_with_a_collected_rewritten_witness_reports_already_settled() {
+        let fixture = Repository::new();
+        let base = GIT.stdout(fixture.trunk(), ["rev-parse", "HEAD"]);
+        let id = claim(&fixture.holder, "file:a.rs", FIRST_RUN);
+        commit(&fixture.holder, "a.rs", "phase work\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        commit(fixture.trunk(), "a.rs", "phase work\n");
+        // A different message guarantees a distinct witness even within one clock tick.
+        GIT.run(
+            fixture.trunk(),
+            ["commit", "--amend", "--quiet", "-m", "rewritten witness"],
+        );
+        let witness = GIT.stdout(fixture.trunk(), ["rev-parse", "HEAD"]);
+        let settled = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&settled, &id)["lifecycle"]["disposition"]["kind"],
+            "rewritten_integration"
+        );
+        GIT.run(fixture.trunk(), ["reset", "--hard", &base]);
+        GIT.run(
+            fixture.trunk(),
+            ["update-ref", "-d", &format!("{RETENTION_REF_PREFIX}{id}")],
+        );
+        GIT.run(
+            fixture.trunk(),
+            ["reflog", "expire", "--expire=now", "--all"],
+        );
+        GIT.run(fixture.trunk(), ["gc", "--prune=now"]);
+        assert!(
+            !GIT.output(fixture.trunk(), ["cat-file", "-e", &witness])
+                .status
+                .success()
+        );
+        let unknown = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&unknown, &id)["integration_evidence"]["status"]["status"],
+            "object_unknown"
+        );
+
+        let released = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&released);
+        let released = json(&released);
+        assert_eq!(released["status"], "object_unknown");
+        assert_eq!(released["payload"]["data"]["status"], "already_settled");
+        assert_eq!(
+            released["payload"]["data"]["evidence"]["status"],
+            "object_unknown"
+        );
+        assert_eq!(
+            latest_evidence(&events(fixture.trunk()), &id)["status"]["status"],
+            "object_unknown"
+        );
+    }
+
+    #[test]
+    fn release_reports_the_settlement_performed_by_its_leading_reconciliation() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:a.rs", FIRST_RUN);
+        commit(&fixture.holder, "a.rs", "phase work\n");
+        let checkpointed = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&checkpointed);
+        assert_eq!(
+            json(&checkpointed)["payload"]["data"]["status"],
+            "checkpointed"
+        );
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+
+        let released = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&released);
+        let released = json(&released);
+        assert_eq!(released["payload"]["data"]["status"], "released");
+        assert_eq!(
+            released["payload"]["data"]["disposition"]["kind"],
+            "integrated"
+        );
+        assert!(
+            released["payload"]["alerts"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        let repeated = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&repeated);
+        assert_eq!(
+            json(&repeated)["payload"]["data"]["status"],
+            "already_settled"
+        );
+        let journal = events(fixture.trunk());
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
+                .count(),
+            1
+        );
+        let settlement = journal
+            .iter()
+            .position(|event| event["op"] == "release" && event["reservation_id"] == id)
+            .expect("settlement should be journaled");
+        assert_eq!(journal[settlement - 1]["op"], "evidence_revalidated");
+        assert_eq!(journal[settlement - 1]["reservation_id"], id);
     }
 
     #[test]

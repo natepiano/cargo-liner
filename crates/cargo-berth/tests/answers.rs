@@ -1220,6 +1220,8 @@ fn assert_stale_claim_session_rejection(repository: &TempDir, second_root: &Path
             .status
             .success()
     );
+    // Complete automatic settlement before restoring a deliberately stale mapping.
+    assert!(run_berth(second_root, ["board", "--json"]).status.success());
     fs::write(&mapping_path, stale_mapping).expect("stale session mapping should write");
 
     let rejected = run_berth_with_session(
@@ -1791,11 +1793,6 @@ fn assert_only_answer_reservation_acquires_scope(
 }
 
 fn retire_answer_carrying_reservation(repository_root: &Path, reservation_id: &str) {
-    assert!(
-        run_berth(repository_root, ["release", reservation_id, "--json"])
-            .status
-            .success()
-    );
     let abandoned = run_berth(
         repository_root,
         [

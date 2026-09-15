@@ -2725,6 +2725,8 @@ fn proof_subject_changes_force_rechecks_at_an_unchanged_target() {
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
         let fixture =
             rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Outstanding);
+        // These mutations require an outstanding subject even after an equivalent proof warms.
+        dirty_source(fixture.repository.path(), "src/lib.rs");
         let baseline_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
             .expect("baseline journal should read");
         for proof_subject_change in [
@@ -2758,38 +2760,110 @@ fn proof_subject_changes_force_rechecks_at_an_unchanged_target() {
 
 #[test]
 fn reachability_integrates_every_outstanding_subject_without_scoped_comparisons() {
-    let one = reachable_outstanding_reservations_fixture(1);
-    let one_trace = run_board_with_git_trace(one.repository.path());
-    assert!(one_trace.output.status.success());
-    assert_eq!(
-        scoped_patch_comparison_attempts(&one_trace, &one.phase_start_head, &one.target),
-        0
-    );
-    assert_integration_statuses(
-        &json_output(&one_trace.output)["payload"]["data"],
-        &one.reservation_ids,
-        "integrated",
-    );
-
-    let several = reachable_outstanding_reservations_fixture(4);
-    let several_trace = run_board_with_git_trace(several.repository.path());
-    assert!(several_trace.output.status.success());
-    assert_eq!(
-        scoped_patch_comparison_attempts(
-            &several_trace,
-            &several.phase_start_head,
-            &several.target,
-        ),
-        0
-    );
-    let several_data = &json_output(&several_trace.output)["payload"]["data"];
-    assert_integration_statuses(several_data, &several.reservation_ids, "integrated");
-    for reservation_id in &several.reservation_ids {
+    for (reservation_count, seed_integrated_evidence) in [(1, false), (4, false), (1, true)] {
+        let fixture = reachable_outstanding_reservations_fixture(reservation_count);
         assert_eq!(
-            board_reservation_snapshot(several_data, reservation_id)["integration_evidence"]["status"]
-                ["proof"],
-            "protected_tip_ancestor"
+            git_stdout(
+                fixture.repository.path(),
+                &["status", "--porcelain", "--", CONFIGURATION_PATH],
+            ),
+            format!("?? {CONFIGURATION_PATH}"),
+            "unrelated untracked configuration must not prevent settlement"
         );
+        if seed_integrated_evidence {
+            // Model a restart after durable affirmative evidence but before the release append.
+            for reservation_id in &fixture.reservation_ids {
+                append_journal_operation(
+                    fixture.repository.path(),
+                    &serde_json::json!({
+                        "op": "evidence_revalidated",
+                        "reservation_id": reservation_id,
+                        "status": {
+                            "status": "integrated",
+                            "trunk_oid": fixture.target,
+                            "proof": "protected_tip_ancestor",
+                        },
+                        "edit_blocking_status": "clear",
+                    }),
+                );
+            }
+        }
+        assert_eq!(
+            journal_operation_count(fixture.repository.path(), "release"),
+            0
+        );
+        let traced = run_board_with_git_trace(fixture.repository.path());
+        assert!(traced.output.status.success());
+        assert_eq!(
+            scoped_patch_comparison_attempts(&traced, &fixture.phase_start_head, &fixture.target),
+            0
+        );
+        let board = json_output(&traced.output);
+        let data = &board["payload"]["data"];
+        assert_integration_statuses(data, &fixture.reservation_ids, "integrated");
+        for reservation_id in &fixture.reservation_ids {
+            let snapshot = board_reservation_snapshot(data, reservation_id);
+            assert_eq!(snapshot["lifecycle"]["stage"], "released");
+            assert_eq!(snapshot["lifecycle"]["disposition"]["kind"], "integrated");
+            assert_eq!(
+                snapshot["integration_evidence"]["status"]["proof"],
+                "protected_tip_ancestor"
+            );
+            assert_eq!(
+                journal_operation_count_for_reservation(
+                    fixture.repository.path(),
+                    "release",
+                    reservation_id,
+                ),
+                1
+            );
+            assert!(
+                data["alerts"]["entries"]
+                    .as_array()
+                    .expect("board alerts should exist")
+                    .iter()
+                    .all(|alert| alert["reservation_id"] != *reservation_id),
+                "the settlement pass must not emit a stale orphan notice: {board}"
+            );
+        }
+        assert_ancestry_settlement_journal(&fixture);
+        let settled_journal = fs::read(fixture.repository.path().join(JOURNAL_PATH))
+            .expect("settled journal should read");
+        let replayed = run_board_with_git_trace(fixture.repository.path());
+        assert!(replayed.output.status.success());
+        assert_eq!(
+            scoped_patch_comparison_attempts(&replayed, &fixture.phase_start_head, &fixture.target),
+            0
+        );
+        assert_eq!(
+            fs::read(fixture.repository.path().join(JOURNAL_PATH)).expect("journal should read"),
+            settled_journal,
+            "reconciliation after settlement must append nothing"
+        );
+    }
+}
+
+/// Each automatic ancestry release follows an affirmative record for the actual trunk.
+fn assert_ancestry_settlement_journal(fixture: &OutstandingReservationFixture) {
+    let settled_events = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
+        .expect("settled journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .collect::<Vec<_>>();
+    for reservation_id in &fixture.reservation_ids {
+        let release_index = settled_events
+            .iter()
+            .position(|event| {
+                event["op"] == "release" && event["reservation_id"] == *reservation_id
+            })
+            .expect("settlement should append a release");
+        let evidence = &settled_events[release_index
+            .checked_sub(1)
+            .expect("release should follow evidence")];
+        assert_eq!(evidence["op"], "evidence_revalidated");
+        assert_eq!(evidence["reservation_id"], *reservation_id);
+        assert_eq!(evidence["status"]["status"], "integrated");
+        assert_eq!(evidence["status"]["trunk_oid"], fixture.target);
     }
 }
 
@@ -3016,7 +3090,11 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     );
 
     let deferred = run_board_with_git_trace(reservation.repository.path());
-    assert!(deferred.output.status.success());
+    assert!(
+        deferred.output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&deferred.output.stdout)
+    );
     assert_eq!(
         scoped_patch_comparison_attempts(
             &deferred,
@@ -3244,6 +3322,65 @@ fn orphan_recoverability_and_each_observed_git_query_are_explicit() {
 
     let traced = run_board_with_git_trace(repository.path());
     assert!(traced.output.status.success());
+    assert_orphan_git_trace(&traced, &protected_tip, &reservation_id);
+    let traced_board = json_output(&traced.output);
+    assert_eq!(
+        traced_board["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
+        1
+    );
+    assert_eq!(
+        traced_board["payload"]["data"]["git_cost"]["orphan_recovery_evidence_queries"],
+        4
+    );
+    let trunk_oid = git_stdout(repository.path(), &["rev-parse", "refs/heads/main"]);
+    assert_orphan_verdict(
+        &traced_board["payload"]["data"],
+        "recoverable_from_branch",
+        "work_recoverable",
+        "recover_with_trunk",
+        &trunk_oid,
+    );
+
+    git(
+        repository.path(),
+        &[
+            "update-ref",
+            "refs/heads/orphan-recovery",
+            "refs/heads/main",
+        ],
+    );
+    assert_orphan_verdict(
+        &board_data(repository.path()),
+        "recoverable_from_protected_tip",
+        "work_recoverable",
+        "recover_with_trunk",
+        &trunk_oid,
+    );
+
+    git(
+        repository.path(),
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/cargo-berth/reservations/{reservation_id}"),
+        ],
+    );
+    git(
+        repository.path(),
+        &["reflog", "expire", "--expire=now", "--all"],
+    );
+    git(repository.path(), &["gc", "--prune=now"]);
+    assert_orphan_verdict(
+        &board_data(repository.path()),
+        "commit_unavailable",
+        "commits_lost",
+        "retire_or_abandon",
+        &trunk_oid,
+    );
+}
+
+/// Orphan recovery reuses the batched observations and queries each extra fact once.
+fn assert_orphan_git_trace(traced: &TracedBoard, protected_tip: &str, reservation_id: &str) {
     let branch = "rev-parse refs/heads/orphan-recovery".to_owned();
     let retention = format!("rev-parse refs/cargo-berth/reservations/{reservation_id}");
     let branch_ancestry = format!("merge-base --is-ancestor {protected_tip} {protected_tip}");
@@ -3266,56 +3403,6 @@ fn orphan_recoverability_and_each_observed_git_query_are_explicit() {
             .count(),
         1
     );
-    let traced_board = json_output(&traced.output);
-    assert_eq!(
-        traced_board["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
-        1
-    );
-    assert_eq!(
-        traced_board["payload"]["data"]["git_cost"]["orphan_recovery_evidence_queries"],
-        4
-    );
-    assert_orphan_verdict(
-        &traced_board["payload"]["data"],
-        "recoverable_from_branch",
-        "work_recoverable",
-        "recover",
-    );
-
-    git(
-        repository.path(),
-        &[
-            "update-ref",
-            "refs/heads/orphan-recovery",
-            "refs/heads/main",
-        ],
-    );
-    assert_orphan_verdict(
-        &board_data(repository.path()),
-        "recoverable_from_protected_tip",
-        "work_recoverable",
-        "recover",
-    );
-
-    git(
-        repository.path(),
-        &[
-            "update-ref",
-            "-d",
-            &format!("refs/cargo-berth/reservations/{reservation_id}"),
-        ],
-    );
-    git(
-        repository.path(),
-        &["reflog", "expire", "--expire=now", "--all"],
-    );
-    git(repository.path(), &["gc", "--prune=now"]);
-    assert_orphan_verdict(
-        &board_data(repository.path()),
-        "commit_unavailable",
-        "commits_lost",
-        "retire_or_abandon",
-    );
 }
 
 fn assert_orphan_verdict(
@@ -3323,6 +3410,7 @@ fn assert_orphan_verdict(
     recoverability: &str,
     consequence: &str,
     action: &str,
+    trunk_oid: &str,
 ) {
     let alert = data["alerts"]["entries"]
         .as_array()
@@ -3335,6 +3423,16 @@ fn assert_orphan_verdict(
     assert_eq!(alert["recoverability"], recoverability);
     assert_eq!(alert["recovery_consequence"], consequence);
     assert_eq!(alert["resolution"]["action"], action);
+    if action == "recover_with_trunk" {
+        let recovery = &alert["resolution"]["recovery"];
+        assert_eq!(recovery["kind"], "verify_resolved_trunk");
+        assert_eq!(recovery["trunk_oid"], trunk_oid);
+        assert_eq!(recovery["action"]["action"], "resolve_integrated_as");
+        assert_eq!(
+            recovery["action"]["reservation_id"],
+            alert["reservation_id"]
+        );
+    }
     let encoded = alert.to_string();
     if consequence == "commits_lost" {
         assert!(encoded.contains("commits_lost"));
@@ -3781,14 +3879,22 @@ fn assert_proof_subject_change_rechecks(
     };
 
     let rechecked = run_board_with_git_trace(fixture.repository.path());
-    assert!(rechecked.output.status.success());
+    assert!(
+        rechecked.output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rechecked.output.stdout)
+    );
+    let witness_replacement = matches!(
+        proof_subject_change,
+        ProofSubjectChange::ReleaseDispositionReplacement
+    );
     assert_eq!(
         scoped_patch_comparison_attempts(&rechecked, &fixture.phase_start_head, &fixture.target,),
-        1
+        usize::from(!witness_replacement)
     );
-    let expected_status = match target_rewrite {
-        TargetRewrite::Equivalent => "integrated",
-        TargetRewrite::Different => "trunk_rewritten",
+    let expected_status = match (target_rewrite, witness_replacement) {
+        (TargetRewrite::Equivalent, false) => "integrated",
+        (TargetRewrite::Different, _) | (TargetRewrite::Equivalent, true) => "trunk_rewritten",
     };
     assert_eq!(
         board_reservation_snapshot(
@@ -3802,7 +3908,7 @@ fn assert_proof_subject_change_rechecks(
             fixture.repository.path(),
             "scoped_patch_equivalence_checked"
         ),
-        2
+        1 + usize::from(!witness_replacement)
     );
 }
 
@@ -3930,6 +4036,8 @@ fn reverted_scoped_patch_proof_fixture() -> RevertedScopedPatchProofFixture {
         "pub fn protected() {}\n",
         "equivalent proof target",
     );
+    // Keep the old phase subject available for the deliberately stale comparison record.
+    dirty_source(repository.path(), "src/lib.rs");
     let warmed = run_board_with_git_trace(repository.path());
     assert!(warmed.output.status.success());
     let warmed_board = json_output(&warmed.output);
@@ -4065,13 +4173,11 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
             ["status"]["proof"],
         "protected_tip_ancestor"
     );
-    append_journal_operation(
-        repository.path(),
-        &serde_json::json!({
-            "op": "release",
-            "reservation_id": reservation_id,
-            "disposition": {"kind": "integrated"},
-        }),
+    assert_eq!(
+        board_reservation_snapshot(&warmed_board["payload"]["data"], &reservation_id)["lifecycle"]
+            ["stage"],
+        "released",
+        "ordinary reconciliation should settle the reachable checkpoint"
     );
     git(
         repository.path(),
@@ -4456,6 +4562,77 @@ fn ordered_fixture() -> OrderedFixture {
         predecessor_id,
         successor_id,
     }
+}
+
+#[test]
+fn first_equivalence_settlement_retains_the_witness_for_a_nonterminal_successor() {
+    let fixture = ordered_fixture();
+    checkpoint_predecessor(&fixture);
+    let checkpoint = git_stdout(&fixture.predecessor_root, &["rev-parse", "HEAD"]);
+    let retention_ref = format!("refs/cargo-berth/reservations/{}", fixture.predecessor_id);
+    assert_eq!(
+        git_stdout(fixture.repository.path(), &["rev-parse", &retention_ref]),
+        checkpoint
+    );
+    fs::write(
+        fixture.repository.path().join("src/lib.rs"),
+        "pub fn predecessor() {}\n",
+    )
+    .expect("equivalent trunk source should write");
+    git(fixture.repository.path(), &["add", "src/lib.rs"]);
+    git(
+        fixture.repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "equivalent trunk witness",
+        ],
+    );
+    let witness = git_stdout(fixture.repository.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(checkpoint, witness);
+
+    let settled = board_data(fixture.repository.path());
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            fixture.repository.path(),
+            "release",
+            &fixture.predecessor_id
+        ),
+        1,
+        "{settled}"
+    );
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            fixture.repository.path(),
+            "release",
+            &fixture.successor_id
+        ),
+        0
+    );
+    assert_eq!(
+        git_stdout(fixture.repository.path(), &["rev-parse", &retention_ref]),
+        witness
+    );
+    // No further berth pass repairs retention before the only trunk reference disappears.
+    git(
+        fixture.repository.path(),
+        &["-c", "core.hooksPath=/dev/null", "reset", "--hard", "HEAD^"],
+    );
+    git(
+        fixture.repository.path(),
+        &["reflog", "expire", "--expire=now", "--all"],
+    );
+    git(fixture.repository.path(), &["gc", "--prune=now"]);
+    assert_eq!(
+        git_stdout(
+            fixture.repository.path(),
+            &["rev-parse", &format!("{retention_ref}^{{commit}}")]
+        ),
+        witness
+    );
 }
 
 fn checkpoint_predecessor(fixture: &OrderedFixture) {

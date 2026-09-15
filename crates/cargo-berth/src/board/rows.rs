@@ -468,6 +468,7 @@ impl BoardModel {
             &report.alerts,
             &reservation_snapshots,
             &report.unrecorded_bypass_occurrences,
+            report.repository_trunk(),
         )?;
         let git_cost = alerts::board_git_cost(
             &reservations,
@@ -1116,12 +1117,13 @@ mod tests {
 
     fn assert_object_unknown_action() -> FixtureResult<()> {
         let unknown = OrderedBoardFixture::new()?;
-        let known_tip = unknown.board.trunk()?;
+        let known_tip = unknown.commit_predecessor()?;
+        let checkpoint_trunk = unknown.board.trunk()?;
         unknown.board.checkpoint(
             &unknown.predecessor_actor,
             unknown.predecessor.reservation_id,
-            known_tip.clone(),
-            known_tip.clone(),
+            known_tip,
+            checkpoint_trunk.clone(),
         )?;
         unknown.model()?;
         let unknown_tip = UNKNOWN_OBJECT_ID.parse::<GitObjectId>()?;
@@ -1131,7 +1133,7 @@ mod tests {
                 reservation_id: unknown.predecessor.reservation_id,
                 snapshot:       ReservationSnapshot::Outstanding {
                     protected_tip: ProtectedReservationTip::from(unknown_tip),
-                    trunk_oid:     known_tip,
+                    trunk_oid:     checkpoint_trunk,
                 },
             },
         )?;

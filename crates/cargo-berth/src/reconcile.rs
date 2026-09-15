@@ -89,6 +89,7 @@ use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
+use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::reservation::ScopedPatchComparisonObservation;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluationPriority;
@@ -98,6 +99,7 @@ use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability;
 use crate::scope::ReservationScope;
 use crate::scope::ReservationScopeSet;
 use crate::scope::ScopeKind;
+use crate::session::SessionIdentityMappingPublication;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
 use crate::worktree::WorktreeMarkerSweepContext;
@@ -120,6 +122,10 @@ pub(crate) struct ReconciliationReport {
     pub(crate) alerts:                        Vec<Alert>,
     /// Integration conclusions appended by this reconciliation.
     pub(crate) evidence:                      Vec<ReconciledEvidence>,
+    /// Reservations released by this actual-trunk reconciliation transaction.
+    pub(crate) settlements:                   Vec<ReconciledSettlement>,
+    /// Mapping publication returned by the requesting reconciliation transaction.
+    pub(crate) session_mapping_publication:   SessionIdentityMappingPublication,
     /// The one complete repository observation shared by edge and board consumers.
     pub(crate) repository_snapshot:           RepositorySnapshot,
     /// Complete edge and answer state derived from the same committed locked replay.
@@ -161,7 +167,7 @@ pub(crate) struct ReconciliationGitCost {
     pub(crate) orphan_recovery_evidence_queries:     u64,
     /// Status observations shared across the reservations of each live holder.
     pub(crate) merge_extent_worktree_status_queries: u64,
-    /// Net merge-base path queries; unchanged successful keys need none.
+    /// Net merge-base path queries, including separation of committed paths for settlement.
     pub(crate) merge_extent_path_queries:            u64,
 }
 
@@ -170,7 +176,7 @@ pub(crate) struct ReconciliationGitCost {
 struct MergeExtentGitCost {
     /// Includes attempted status reads that report an observation failure.
     worktree_status_queries: u64,
-    /// Includes attempted net path reads that fail; cache hits cost no query.
+    /// Includes failed reads and fresh committed-path reads needed to settle a cached extent.
     path_queries:            u64,
 }
 
@@ -198,6 +204,14 @@ pub(crate) struct ReconciledEvidence {
     pub(crate) reservation_id: ReservationId,
     /// The newly materialized integration result.
     pub(crate) status:         IntegrationEvidenceStatus,
+}
+
+/// One terminal integration disposition appended by this reconciliation.
+pub(crate) struct ReconciledSettlement {
+    /// The outstanding reservation this transaction released.
+    pub(crate) reservation_id: ReservationId,
+    /// The complete integration proof retained by the release.
+    pub(crate) disposition:    ReleaseDisposition,
 }
 
 struct ReconciliationPlan {
@@ -533,11 +547,29 @@ enum SuccessorScopedPatchComparisonObservation {
     Deferred,
 }
 
+/// The commit whose incorporation a successor must prove.
+enum SuccessorIncorporationSubject {
+    /// A fixed checkpoint permits ancestry or complete scoped equivalence.
+    CheckpointTip(ProtectedReservationTip),
+    /// A rewritten-integration witness requires the witness itself in successor ancestry.
+    RewrittenIntegrationWitness(RewrittenIntegrationTrunkCommit),
+}
+
+impl SuccessorIncorporationSubject {
+    /// Borrow the commit used by the grouped successor ancestry query.
+    fn commit(&self) -> &GitObjectId {
+        match self {
+            Self::CheckpointTip(tip) => tip.as_ref(),
+            Self::RewrittenIntegrationWitness(witness) => witness.as_ref(),
+        }
+    }
+}
+
 struct PredecessorSuccessorEvidenceSubject<'reservation> {
-    reservation:               &'reservation Reservation,
-    prior_integration_status:  PriorIntegrationStatus,
-    protected_reservation_tip: ProtectedReservationTip,
-    successor_heads:           Vec<GitObjectId>,
+    incorporation_subject:    SuccessorIncorporationSubject,
+    reservation:              &'reservation Reservation,
+    prior_integration_status: PriorIntegrationStatus,
+    successor_heads:          Vec<GitObjectId>,
 }
 
 struct SuccessorScopedPatchEvaluationCandidate {
@@ -572,8 +604,8 @@ impl SuccessorScopedPatchTargetHistory {
 enum PredecessorEvidenceStanding {
     /// The predecessor holds a protected tip its successors can be measured against.
     Measurable {
-        protected_reservation_tip: ProtectedReservationTip,
-        prior_integration_status:  PriorIntegrationStatus,
+        incorporation_subject:    SuccessorIncorporationSubject,
+        prior_integration_status: PriorIntegrationStatus,
     },
     /// The predecessor never reached a checkpoint, so no successor evidence applies to it.
     NoProtectedTip,
@@ -581,40 +613,53 @@ enum PredecessorEvidenceStanding {
 
 impl PredecessorEvidenceStanding {
     fn of(evidence: &RepositoryReservationEvidence) -> Self {
-        match evidence {
+        let (incorporation_subject, integration_status) = match evidence {
             RepositoryReservationEvidence::Outstanding {
                 protected_tip,
                 integration_status,
-            }
-            | RepositoryReservationEvidence::Released {
-                protected_tip,
+            } => (
+                SuccessorIncorporationSubject::CheckpointTip(protected_tip.clone()),
                 integration_status,
-                ..
-            } => Self::Measurable {
-                protected_reservation_tip: protected_tip.clone(),
-                prior_integration_status:  if matches!(
-                    integration_status,
-                    IntegrationEvidenceStatus::Integrated { .. }
-                ) {
-                    PriorIntegrationStatus::Proven
-                } else {
-                    PriorIntegrationStatus::Unproven
-                },
+            ),
+            RepositoryReservationEvidence::Released {
+                protected_tip,
+                disposition,
+                integration_status,
+            } => {
+                let subject = match disposition.revalidation_subject() {
+                    ReleaseRevalidationSubject::RewrittenIntegration(witness) => {
+                        SuccessorIncorporationSubject::RewrittenIntegrationWitness(witness.clone())
+                    },
+                    ReleaseRevalidationSubject::ProtectedTip | ReleaseRevalidationSubject::None => {
+                        SuccessorIncorporationSubject::CheckpointTip(protected_tip.clone())
+                    },
+                };
+                (subject, integration_status)
             },
             RepositoryReservationEvidence::Active
             | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
-                Self::NoProtectedTip
+                return Self::NoProtectedTip;
+            },
+        };
+        Self::Measurable {
+            incorporation_subject,
+            prior_integration_status: if matches!(
+                integration_status,
+                IntegrationEvidenceStatus::Integrated { .. }
+            ) {
+                PriorIntegrationStatus::Proven
+            } else {
+                PriorIntegrationStatus::Unproven
             },
         }
     }
 }
 
-/// The two grouped ancestry answers one predecessor contributes: which successors its protected
-/// tip already reaches, and what history each successor gained since the predecessor's phase start.
+/// The grouped ancestry answers for the predecessor's incorporation subject and phase start.
 #[derive(Clone, Copy)]
 struct PredecessorSuccessorReachability<'classification> {
-    from_protected_tip: &'classification ProtectedTipSuccessorHeadClassification,
-    from_phase_start:   &'classification ProtectedTipSuccessorHeadClassification,
+    from_incorporation_subject: &'classification ProtectedTipSuccessorHeadClassification,
+    from_phase_start:           &'classification ProtectedTipSuccessorHeadClassification,
 }
 
 impl PredecessorSuccessorReachability<'_> {
@@ -649,7 +694,11 @@ struct PendingScopedPatchCandidateContext<'subject> {
 }
 
 impl PendingScopedPatchCandidateContext<'_> {
-    fn candidate(&self, successor_head: &GitObjectId) -> SuccessorScopedPatchEvaluationCandidate {
+    fn candidate(
+        &self,
+        protected_tip: &ProtectedReservationTip,
+        successor_head: &GitObjectId,
+    ) -> SuccessorScopedPatchEvaluationCandidate {
         let predecessor = self.evidence_subject.reservation;
         SuccessorScopedPatchEvaluationCandidate {
             predecessor_index:          self.predecessor_index,
@@ -657,11 +706,7 @@ impl PendingScopedPatchCandidateContext<'_> {
             subject:                    self.subject_revision,
             phase_start_head:           predecessor.phase_start_head().as_ref().clone(),
             scopes:                     predecessor.scopes().clone(),
-            protected_tip:              self
-                .evidence_subject
-                .protected_reservation_tip
-                .as_ref()
-                .clone(),
+            protected_tip:              protected_tip.as_ref().clone(),
             successor_head:             successor_head.clone(),
             target_history:             self.target_histories.get(successor_head).map_or(
                 SuccessorScopedPatchTargetHistory::NeedsGitQueries,
@@ -714,6 +759,15 @@ impl ReconciliationScopedPatchEvaluationBudget {
     }
 }
 
+/// The gate caller whose lifecycle rules govern the proposed-trunk decision.
+#[derive(Clone, Copy)]
+pub(crate) enum GateReconciliationPurpose {
+    /// Settle actual-trunk work before deciding whether a proposed integration may proceed.
+    PreparedDecision,
+    /// Preserve reservation lifecycles so the committed integration consumes its forced permits.
+    CommittedAudit,
+}
+
 /// Actual-trunk reconciliation plus proposed-trunk constraints prepared under one lock.
 pub(crate) struct GateReconciliation {
     reconciliation: ReconciliationPlan,
@@ -741,7 +795,7 @@ struct ReconciliationAction {
     repository_root:               PathBuf,
     retention_repairs:             Vec<ReservationRetentionRefRepair>,
     retention_deletions:           Vec<ReservationId>,
-    resolved_retention_candidates: ResolvedBatchCommitCandidates,
+    retention_commit_resolution:   RetentionCommitResolution,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
     repository_snapshot:           RepositorySnapshot,
@@ -751,6 +805,39 @@ struct ReconciliationAction {
     unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
     trunk_resolution_calls:        u64,
     merge_extent_git_cost:         MergeExtentGitCost,
+    settlements:                   Vec<ReconciledSettlement>,
+}
+
+/// Which commit batch establishes availability for the final retention repairs.
+enum RetentionCommitResolution {
+    /// The initial observation includes every commit the final repairs name.
+    InitialObservation(ResolvedBatchCommitCandidates),
+    /// Settlement introduced a witness, so resolve the final repairs together after append.
+    IncludeSettlementWitness,
+}
+
+impl RetentionCommitResolution {
+    /// Write all final repairs and deletions after the journal append succeeds.
+    fn apply(
+        &self,
+        repository_root: &Path,
+        repairs: &[ReservationRetentionRefRepair],
+        deletions: &[ReservationId],
+    ) -> Result<(), GitError> {
+        match self {
+            Self::InitialObservation(resolved_candidates) => {
+                git::update_reservation_retention_refs_from_resolved_batch(
+                    repository_root,
+                    repairs,
+                    deletions,
+                    resolved_candidates,
+                )
+            },
+            Self::IncludeSettlementWitness => {
+                git::update_reservation_retention_refs(repository_root, repairs, deletions)
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -760,7 +847,7 @@ struct ActiveHolder {
 }
 
 struct AlertSubject {
-    reservation:       Reservation,
+    reservation_id:    ReservationId,
     worktree_liveness: WorktreeLiveness,
 }
 
@@ -954,7 +1041,13 @@ fn reconcile_with_open_ledger(
             LedgerCommittedActionError::Action(error) => error,
         })?;
     match outcome {
-        LedgerCommittedActionOutcome::Appended { output: report, .. } => Ok(report),
+        LedgerCommittedActionOutcome::Appended {
+            output: mut report,
+            session_mapping_publication,
+        } => {
+            report.session_mapping_publication = session_mapping_publication;
+            Ok(report)
+        },
         LedgerCommittedActionOutcome::Rejected(error) => Err(error.into()),
     }
 }
@@ -1001,18 +1094,6 @@ fn prepare_reconciliation_transaction(
             ReconciliationPlanningError::WorktreeRegistry(error)
         },
     })?;
-    let mut merge_extent_git_cost = MergeExtentGitCost::default();
-    let merge_operations = derive_merge_extents(
-        &reservations,
-        &reconciliation_plan.action.repository_snapshot,
-        &reconciliation_plan.operations,
-        &mut merge_extent_git_cost,
-    )
-    .map_err(ReconciliationPlanningError::Reservation)?;
-    reconciliation_plan.operations.extend(merge_operations);
-    reconciliation_plan.action.merge_extent_git_cost = merge_extent_git_cost;
-    append_evidence_operations(&reservations, &mut reconciliation_plan)
-        .map_err(ReconciliationPlanningError::Reservation)?;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
         worktree_context.common_git_directory(),
         state.events(),
@@ -1035,6 +1116,29 @@ fn prepare_reconciliation_transaction(
     })
 }
 
+/// Committed paths retained separately from dirty paths during this observation pass.
+#[derive(Clone, Default)]
+enum CommittedMergeEvidence {
+    /// No current committed-path observation can support settlement of a protected extent.
+    #[default]
+    Unavailable,
+    /// The merge-base query produced these committed paths before dirty paths were added.
+    Observed(Vec<ReservationScopePath>),
+}
+
+/// One holder's independent committed-path evidence and its complete merge protection.
+#[derive(Clone)]
+struct HolderMergeProtection {
+    extent:          MergeExtent,
+    committed_paths: CommittedMergeEvidence,
+}
+
+/// Journal updates and committed-path evidence derived together under the reconciliation lock.
+struct MergeExtentReconciliation {
+    operations:          Vec<JournalOperation>,
+    committed_by_holder: HashMap<WorktreeId, CommittedMergeEvidence>,
+}
+
 /// Share status and net branch reads across every reservation in the same holder checkout.
 /// The successful key lives in the journal, so process boundaries do not defeat the cache.
 fn derive_merge_extents(
@@ -1042,7 +1146,7 @@ fn derive_merge_extents(
     snapshot: &RepositorySnapshot,
     planned: &[JournalOperation],
     git_cost: &mut MergeExtentGitCost,
-) -> Result<Vec<JournalOperation>, ReservationReplayError> {
+) -> Result<MergeExtentReconciliation, ReservationReplayError> {
     let mut observed_by_worktree = HashMap::new();
     let mut operations = Vec::new();
     for reservation in reservations.iter().filter(|reservation| {
@@ -1057,7 +1161,7 @@ fn derive_merge_extents(
                 observe_merge_extent(reservation, reservations, snapshot, planned, git_cost)
             });
         let extent = match observed {
-            Ok(extent) => extent.clone(),
+            Ok(observation) => observation.extent.clone(),
             Err(failure) => reservation.merge_extent().unavailable(failure.clone()),
         };
         if &extent != reservation.merge_extent() {
@@ -1088,7 +1192,20 @@ fn derive_merge_extents(
             });
         }
     }
-    Ok(operations)
+    Ok(MergeExtentReconciliation {
+        operations,
+        committed_by_holder: observed_by_worktree
+            .into_iter()
+            .map(|(holder, observation)| {
+                (
+                    holder,
+                    observation.map_or(CommittedMergeEvidence::Unavailable, |observation| {
+                        observation.committed_paths
+                    }),
+                )
+            })
+            .collect(),
+    })
 }
 
 /// Read the dirty union even on a cache hit: a fingerprint cannot be assumed unchanged.
@@ -1098,7 +1215,7 @@ fn observe_merge_extent(
     snapshot: &RepositorySnapshot,
     planned: &[JournalOperation],
     git_cost: &mut MergeExtentGitCost,
-) -> Result<MergeExtent, String> {
+) -> Result<HolderMergeProtection, String> {
     let RepositoryTrunk::Resolved(trunk) = snapshot.trunk() else {
         return Err(MERGE_EXTENT_TRUNK_UNAVAILABLE.to_owned());
     };
@@ -1134,15 +1251,33 @@ fn observe_merge_extent(
         head: head.clone(),
         working_tree,
     };
+    let settlement_needs_committed_paths = reservations.iter().any(|candidate| {
+        candidate.actor().worktree == reservation.actor().worktree
+            && snapshot.reservation(candidate.id()).is_ok_and(|observed| {
+                matches!(
+                    observed.evidence,
+                    RepositoryReservationEvidence::Outstanding {
+                        integration_status: IntegrationEvidenceStatus::Integrated { .. },
+                        ..
+                    }
+                )
+            })
+    });
     if let Some(cached) = reservations.iter().find(|holder| {
         holder.actor().worktree == reservation.actor().worktree
             && holder.merge_extent().matches_key(&key)
-    }) {
-        return Ok(cached.merge_extent().clone());
+    }) && (!settlement_needs_committed_paths
+        || matches!(cached.merge_extent(), MergeExtent::Empty { .. }))
+    {
+        return Ok(HolderMergeProtection {
+            extent:          cached.merge_extent().clone(),
+            committed_paths: CommittedMergeEvidence::Unavailable,
+        });
     }
     git_cost.path_queries += 1;
-    let mut paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
+    let committed_paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
         .map_err(|error| error.to_string())?;
+    let mut paths = committed_paths.clone();
     paths.extend(key.working_tree.tracked_paths.iter().cloned());
     paths.extend(key.working_tree.untracked_paths.iter().cloned());
     paths.sort_by_key(ToString::to_string);
@@ -1154,7 +1289,10 @@ fn observe_merge_extent(
             kind: ScopeKind::File,
         })
         .collect();
-    Ok(reservation::MergeExtent::derived(key, scopes))
+    Ok(HolderMergeProtection {
+        extent:          reservation::MergeExtent::derived(key, scopes),
+        committed_paths: CommittedMergeEvidence::Observed(committed_paths),
+    })
 }
 
 fn build_plan(
@@ -1180,7 +1318,7 @@ fn build_plan(
         reconciliation_evidence_context,
     )?;
     let ReconciledReservations {
-        mut changes,
+        changes,
         alert_subjects,
         snapshots: reservation_snapshots,
     } = reconcile_observed_reservations(
@@ -1193,22 +1331,8 @@ fn build_plan(
         &worktree_registry,
         repository_evidence_observations,
     )?;
-    let successor_incorporation = successor_incorporation_evidence(
-        repository_root,
-        reservations,
-        ordering_graph,
-        repository_observation_scope,
-        &reservation_snapshots,
-        reconciliation_evidence_context.successor_scoped_patch_evaluation_budget,
-    )?;
-    changes
-        .operations
-        .extend(successor_incorporation.operations);
-    let repository_snapshot = RepositorySnapshot::new(
-        repository_trunk,
-        reservation_snapshots,
-        successor_incorporation.by_predecessor,
-    );
+    let repository_snapshot =
+        RepositorySnapshot::new(repository_trunk, reservation_snapshots.clone(), Vec::new());
     let active_holders = reservations
         .iter()
         .filter(|reservation| matches!(reservation.lifecycle(), ReservationLifecycle::Active))
@@ -1217,7 +1341,7 @@ fn build_plan(
             coordination_run_id: reservation.actor().run,
         })
         .collect();
-    Ok(ReconciliationPlan {
+    let mut plan = ReconciliationPlan {
         operations: changes.operations,
         action:     ReconciliationAction {
             active_holders,
@@ -1225,8 +1349,11 @@ fn build_plan(
             repository_root: repository_root.to_path_buf(),
             retention_repairs: changes.retention_repairs,
             retention_deletions: changes.retention_deletions,
-            resolved_retention_candidates: integration_reachability.resolved_candidates,
+            retention_commit_resolution: RetentionCommitResolution::InitialObservation(
+                integration_reachability.resolved_candidates,
+            ),
             alert_subjects,
+            settlements: Vec::new(),
             evidence: changes.evidence,
             repository_snapshot,
             recovered_bypass_reporting: RecoveredBypassReporting::Defer,
@@ -1236,7 +1363,76 @@ fn build_plan(
             trunk_resolution_calls,
             merge_extent_git_cost: MergeExtentGitCost::default(),
         },
-    })
+    };
+    complete_reconciliation_plan(
+        reservations,
+        ordering_graph,
+        repository_observation_scope,
+        reservation_snapshots,
+        reconciliation_evidence_context,
+        &mut plan,
+    )?;
+    Ok(plan)
+}
+
+/// Observe successors against the lifecycle this same actual-trunk transaction will commit.
+fn complete_reconciliation_plan(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    observation_scope: RepositoryObservationScope,
+    mut snapshots: Vec<RepositoryReservationSnapshot>,
+    context: &mut ReconciliationEvidenceContext<'_>,
+    plan: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
+    let extents = derive_merge_extents(
+        reservations,
+        &plan.action.repository_snapshot,
+        &plan.operations,
+        &mut plan.action.merge_extent_git_cost,
+    )?;
+    plan.operations.extend(extents.operations);
+    append_evidence_operations(reservations, plan)?;
+    append_settlement_operations(
+        reservations,
+        ordering_graph,
+        &extents.committed_by_holder,
+        plan,
+    )?;
+    for snapshot in &mut snapshots {
+        for operation in &plan.operations {
+            if let JournalOperation::Release {
+                reservation_id,
+                disposition,
+            } = operation
+                && *reservation_id == snapshot.reservation_id
+                && let RepositoryReservationEvidence::Outstanding {
+                    protected_tip,
+                    integration_status,
+                } = &snapshot.evidence
+            {
+                snapshot.evidence = RepositoryReservationEvidence::Released {
+                    protected_tip:      protected_tip.clone(),
+                    integration_status: integration_status.clone(),
+                    disposition:        disposition.clone(),
+                };
+            }
+        }
+    }
+    let successors = successor_incorporation_evidence(
+        &plan.action.repository_root,
+        reservations,
+        ordering_graph,
+        observation_scope,
+        &snapshots,
+        context.successor_scoped_patch_evaluation_budget,
+    )?;
+    plan.operations.extend(successors.operations);
+    plan.action.repository_snapshot = RepositorySnapshot::new(
+        plan.action.repository_snapshot.trunk().clone(),
+        snapshots,
+        successors.by_predecessor,
+    );
+    Ok(())
 }
 
 /// Read the worktree registry, trunk reachability, and per-reservation repository evidence in one
@@ -1317,7 +1513,7 @@ fn reconcile_observed_reservations(
             });
         }
         alert_subjects.push(AlertSubject {
-            reservation:       reservation.clone(),
+            reservation_id:    reservation.id(),
             worktree_liveness: observation.liveness,
         });
         append_evidence_and_retention(
@@ -1355,10 +1551,15 @@ fn scoped_patch_evaluation_order<'reservation>(
 
 /// Prepare the actual reconciliation and proposed-ref constraint read from one replay.
 ///
+/// Prepared decisions project actual-trunk settlements before observing the proposal. Committed
+/// audits keep replayed lifecycles so newly integrated reservations still enter the permit audit.
+/// Proposed-trunk evidence never settles reservations.
+///
 /// Each observed trunk target uses one `cat-file` batch and one grouped `rev-list` to classify all
 /// integration-proof ancestors. Graph predecessor queries use one grouped `rev-list` for every
-/// protected tip and successor head. The initial object-resolution batch also supplies retention
-/// repair availability, after which one `update-ref` transaction applies every repair and deletion.
+/// incorporation subject and successor head. The initial object batch also supplies retention
+/// availability; newly settled witnesses require one additional batch of the final repairs.
+/// One `update-ref` transaction applies every repair and deletion after append succeeds.
 /// These invocation counts are independent of the total retained-reservation count. Scoped patch
 /// comparisons reuse identical proof inputs and evaluate at most one distinct proof subject for
 /// each observed trunk target.
@@ -1369,6 +1570,7 @@ pub(crate) fn prepare_gate_reconciliation(
     ledger_repository: RepoInstanceId,
     berth_config: &BerthConfig,
     proposed_trunk: GitObjectId,
+    purpose: GateReconciliationPurpose,
 ) -> Result<GateReconciliation, GateReconciliationError> {
     let reservations =
         RetainedReservationSet::replay(events).map_err(GateReconciliationError::Reservation)?;
@@ -1395,6 +1597,12 @@ pub(crate) fn prepare_gate_reconciliation(
             GateReconciliationError::WorktreeRegistry(error)
         },
     })?;
+    let reservations = match purpose {
+        GateReconciliationPurpose::PreparedDecision => reservations
+            .with_pending_settlements(&reconciliation.operations)
+            .map_err(GateReconciliationError::Reservation)?,
+        GateReconciliationPurpose::CommittedAudit => reservations,
+    };
     let proposed_observation = observe_proposed_trunk(
         &reservations,
         &ordering_graph,
@@ -1409,8 +1617,6 @@ pub(crate) fn prepare_gate_reconciliation(
             reconciliation.operations.push(operation);
         }
     }
-    append_evidence_operations(&reservations, &mut reconciliation)
-        .map_err(GateReconciliationError::Reservation)?;
     let constraints = ordering_graph
         .integration_constraints(&reservations, &proposed_observation.snapshot, generation)
         .map_err(GateReconciliationError::MissingReadinessFact)?;
@@ -1685,13 +1891,20 @@ fn observe_released_repository_evidence(
             &materialized,
         ),
         ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
-            let revalidation_tip = ProtectedReservationTip::from(trunk_commit.as_ref().clone());
-            revalidate_release(
-                target_evidence_context,
-                reservation,
-                &revalidation_tip,
-                &materialized,
-            )
+            IntegrationStatusObservation {
+                status:                  match target_evidence_context.repository_trunk {
+                    RepositoryTrunk::Resolved(trunk) => {
+                        trunk_commit.revalidate_ancestry(trunk, |witness| {
+                            target_evidence_context
+                                .integration_reachability
+                                .for_ancestor(witness)
+                        })
+                    },
+                    RepositoryTrunk::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+                },
+                revalidation:            EvidenceRevalidationObservation::Apply,
+                scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
+            }
         },
         ReleaseRevalidationSubject::None => IntegrationStatusObservation {
             status:                  materialized,
@@ -1906,17 +2119,21 @@ fn append_evidence_and_retention(
     ordering_graph: &OrderingGraph,
     changes: &mut ReconciliationChanges,
 ) -> Result<(), ReservationReplayError> {
-    let (protected_tip, evidence, retention) = match &repository_evidence_observation.evidence {
+    let (retained_commit, evidence, retention) = match &repository_evidence_observation.evidence {
         RepositoryReservationEvidence::Active
         | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => return Ok(()),
         RepositoryReservationEvidence::Outstanding {
             protected_tip,
             integration_status,
-        } => (protected_tip, integration_status, RetentionDecision::Repair),
+        } => (
+            protected_tip.as_ref(),
+            integration_status,
+            RetentionDecision::Repair,
+        ),
         RepositoryReservationEvidence::Released {
             protected_tip,
             integration_status,
-            ..
+            disposition,
         } => {
             let retention =
                 if ordering_graph.has_nonterminal_dependent(reservation.id(), reservations)? {
@@ -1924,7 +2141,13 @@ fn append_evidence_and_retention(
                 } else {
                     RetentionDecision::Delete
                 };
-            (protected_tip, integration_status, retention)
+            let retained_commit = match disposition.revalidation_subject() {
+                ReleaseRevalidationSubject::RewrittenIntegration(witness) => witness.as_ref(),
+                ReleaseRevalidationSubject::ProtectedTip | ReleaseRevalidationSubject::None => {
+                    protected_tip.as_ref()
+                },
+            };
+            (retained_commit, integration_status, retention)
         },
     };
     match retention {
@@ -1933,7 +2156,7 @@ fn append_evidence_and_retention(
                 .retention_repairs
                 .push(git::ReservationRetentionRefRepair::new(
                     reservation.id(),
-                    protected_tip.as_ref().clone(),
+                    retained_commit.clone(),
                 ));
         },
         RetentionDecision::Delete => changes.retention_deletions.push(reservation.id()),
@@ -1972,8 +2195,189 @@ fn append_evidence_and_retention(
     Ok(())
 }
 
+/// Whether actual-trunk evidence permits ending this outstanding reservation.
+#[derive(Debug, Eq, PartialEq)]
+enum SettlementSelection {
+    /// The lifecycle, target, or remaining branch work prevents settlement.
+    Unchanged,
+    /// The complete protected work reached the actual trunk under this disposition.
+    Release(ReleaseDisposition),
+}
+
+/// Select from state so a previously appended proof can finish settlement after a restart.
+fn settlement_selection(
+    reservation: &Reservation,
+    evidence: &IntegrationEvidenceStatus,
+    actual_trunk: &RepositoryTrunk,
+    merge_extent: &MergeExtent,
+    committed_paths: &CommittedMergeEvidence,
+) -> SettlementSelection {
+    if !matches!(
+        reservation.lifecycle(),
+        ReservationLifecycle::Outstanding { .. }
+    ) {
+        return SettlementSelection::Unchanged;
+    }
+    let has_unproven_work = match committed_paths {
+        CommittedMergeEvidence::Observed(paths) => {
+            reservation.has_unproven_merge_work(merge_extent, paths)
+        },
+        CommittedMergeEvidence::Unavailable => {
+            reservation.has_unproven_retained_merge_work(merge_extent)
+        },
+    };
+    if has_unproven_work {
+        return SettlementSelection::Unchanged;
+    }
+    let (
+        IntegrationEvidenceStatus::Integrated { trunk_oid, proof },
+        RepositoryTrunk::Resolved(actual),
+    ) = (evidence, actual_trunk)
+    else {
+        return SettlementSelection::Unchanged;
+    };
+    if trunk_oid != actual {
+        return SettlementSelection::Unchanged;
+    }
+    SettlementSelection::Release(match proof {
+        IntegrationProof::ProtectedTipAncestor => ReleaseDisposition::Integrated,
+        IntegrationProof::ScopedPatchEquivalent => ReleaseDisposition::RewrittenIntegration(
+            RewrittenIntegrationTrunkCommit::from(trunk_oid.clone()),
+        ),
+    })
+}
+
+/// Finish ordinary actual-trunk settlement after fresh merge extents and evidence are planned.
+fn append_settlement_operations(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    committed_by_holder: &HashMap<WorktreeId, CommittedMergeEvidence>,
+    reconciliation: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
+    let mut settled = HashMap::new();
+    for reservation in reservations.iter() {
+        let ReservationEvidenceState::Outstanding {
+            integration_status, ..
+        } = reservation.evidence_state()?
+        else {
+            continue;
+        };
+        let evidence = reconciliation
+            .action
+            .evidence
+            .iter()
+            .find(|evidence| evidence.reservation_id == reservation.id())
+            .map_or(&integration_status, |evidence| &evidence.status);
+        let extent = reconciliation
+            .operations
+            .iter()
+            .rev()
+            .find_map(|operation| match operation {
+                JournalOperation::MergeExtentObserved {
+                    reservation_id,
+                    extent,
+                    ..
+                } if *reservation_id == reservation.id() => Some(extent),
+                _ => None,
+            })
+            .unwrap_or_else(|| reservation.merge_extent());
+        let SettlementSelection::Release(disposition) = settlement_selection(
+            reservation,
+            evidence,
+            reconciliation.action.repository_snapshot.trunk(),
+            extent,
+            committed_by_holder
+                .get(&reservation.actor().worktree)
+                .unwrap_or(&CommittedMergeEvidence::Unavailable),
+        ) else {
+            continue;
+        };
+        let edit_blocking_status = reservation
+            .with_merge_extent(extent.clone())
+            .edit_blocking_status();
+        reconciliation.operations.retain(|operation| !matches!(operation,
+            JournalOperation::EvidenceRevalidated { reservation_id, .. } if *reservation_id == reservation.id()
+        ));
+        reconciliation
+            .operations
+            .push(JournalOperation::EvidenceRevalidated {
+                reservation_id: reservation.id(),
+                status: evidence.clone(),
+                edit_blocking_status,
+            });
+        reconciliation.operations.push(JournalOperation::Release {
+            reservation_id: reservation.id(),
+            disposition:    disposition.clone(),
+        });
+        reconciliation
+            .action
+            .settlements
+            .push(ReconciledSettlement {
+                reservation_id: reservation.id(),
+                disposition:    disposition.clone(),
+            });
+        settled.insert(reservation.id(), disposition);
+    }
+    rebuild_settlement_retention(reservations, ordering_graph, &settled, reconciliation)
+}
+
+/// Choose one final ref action per reservation after this pass selects its settlements.
+fn rebuild_settlement_retention(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    settled: &HashMap<ReservationId, ReleaseDisposition>,
+    reconciliation: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
+    // Rebuild the ref actions so no transaction updates and deletes the same ref. These
+    // actions still run only after the entire evidence-and-release append succeeds.
+    reconciliation.action.retention_repairs.clear();
+    reconciliation.action.retention_deletions.clear();
+    for reservation in reservations.iter() {
+        let (protected_tip, disposition) = match reservation.evidence_state()? {
+            ReservationEvidenceState::Outstanding { protected_tip, .. } => {
+                (protected_tip, settled.get(&reservation.id()))
+            },
+            ReservationEvidenceState::Released { protected_tip, .. } => {
+                let ReservationLifecycle::Released { disposition } = reservation.lifecycle() else {
+                    continue;
+                };
+                (protected_tip, Some(disposition))
+            },
+            ReservationEvidenceState::Active { .. }
+            | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => continue,
+        };
+        if disposition.is_some()
+            && !ordering_graph.has_nonterminal_dependent(reservation.id(), reservations)?
+        {
+            reconciliation
+                .action
+                .retention_deletions
+                .push(reservation.id());
+        } else {
+            let retained_commit = match disposition {
+                Some(ReleaseDisposition::RewrittenIntegration(witness)) => {
+                    if settled.contains_key(&reservation.id()) {
+                        reconciliation.action.retention_commit_resolution =
+                            RetentionCommitResolution::IncludeSettlementWitness;
+                    }
+                    witness.as_ref()
+                },
+                _ => protected_tip.as_ref(),
+            };
+            reconciliation
+                .action
+                .retention_repairs
+                .push(ReservationRetentionRefRepair::new(
+                    reservation.id(),
+                    retained_commit.clone(),
+                ));
+        }
+    }
+    Ok(())
+}
+
 /// Construct evidence records only after the transaction has planned its merge extents.
-/// Reconciliation preserves lifecycle; checkpoint and release run in their own transactions.
+/// Ordinary reconciliation appends settlements after these evidence records.
 fn append_evidence_operations(
     reservations: &RetainedReservationSet,
     reconciliation: &mut ReconciliationPlan,
@@ -2132,7 +2536,7 @@ fn predecessor_successor_evidence_subjects<'reservation>(
             continue;
         };
         let PredecessorEvidenceStanding::Measurable {
-            protected_reservation_tip,
+            incorporation_subject,
             prior_integration_status,
         } = PredecessorEvidenceStanding::of(&predecessor_snapshot.evidence)
         else {
@@ -2143,9 +2547,9 @@ fn predecessor_successor_evidence_subjects<'reservation>(
             continue;
         }
         evidence_subjects.push(PredecessorSuccessorEvidenceSubject {
+            incorporation_subject,
             reservation: reservations.reservation(predecessor_id)?,
             prior_integration_status,
-            protected_reservation_tip,
             successor_heads,
         });
     }
@@ -2179,12 +2583,12 @@ fn classify_successor_incorporation(
     repository_root: &Path,
     evidence_subjects: Vec<PredecessorSuccessorEvidenceSubject<'_>>,
 ) -> SuccessorIncorporationClassification {
-    let protected_tip_successor_heads = evidence_subjects
+    let subject_successor_heads = evidence_subjects
         .iter()
         .flat_map(|subject| {
             [
                 ProtectedTipSuccessorHeads::new(
-                    subject.protected_reservation_tip.as_ref(),
+                    subject.incorporation_subject.commit(),
                     &subject.successor_heads,
                 ),
                 ProtectedTipSuccessorHeads::new(
@@ -2194,8 +2598,8 @@ fn classify_successor_incorporation(
             ]
         })
         .collect::<Vec<_>>();
-    let Ok(protected_tip_successor_head_classifications) =
-        git::descendant_commits(repository_root, &protected_tip_successor_heads)
+    let Ok(subject_successor_classifications) =
+        git::descendant_commits(repository_root, &subject_successor_heads)
     else {
         return SuccessorIncorporationClassification {
             by_predecessor:      evidence_subjects
@@ -2210,25 +2614,20 @@ fn classify_successor_incorporation(
             pending_comparisons: Vec::new(),
         };
     };
-    let protected_tip_classifications = protected_tip_successor_head_classifications
-        .iter()
-        .step_by(2);
-    let phase_start_classifications = protected_tip_successor_head_classifications
-        .iter()
-        .skip(1)
-        .step_by(2);
+    let subject_classifications = subject_successor_classifications.iter().step_by(2);
+    let phase_start_classifications = subject_successor_classifications.iter().skip(1).step_by(2);
     let mut by_predecessor = Vec::new();
     let mut pending_comparisons = Vec::new();
-    for ((evidence_subject, from_protected_tip), from_phase_start) in evidence_subjects
+    for ((evidence_subject, from_incorporation_subject), from_phase_start) in evidence_subjects
         .into_iter()
-        .zip(protected_tip_classifications)
+        .zip(subject_classifications)
         .zip(phase_start_classifications)
     {
         let predecessor_id = evidence_subject.reservation.id();
         let incorporation = predecessor_successor_incorporation(
             &evidence_subject,
             PredecessorSuccessorReachability {
-                from_protected_tip,
+                from_incorporation_subject,
                 from_phase_start,
             },
             by_predecessor.len(),
@@ -2242,7 +2641,7 @@ fn classify_successor_incorporation(
     }
 }
 
-/// Classify one predecessor's successor heads against its protected tip.
+/// Classify successor heads against the predecessor's checkpoint or integration witness.
 fn predecessor_successor_incorporation(
     evidence_subject: &PredecessorSuccessorEvidenceSubject<'_>,
     reachability: PredecessorSuccessorReachability<'_>,
@@ -2250,7 +2649,7 @@ fn predecessor_successor_incorporation(
     pending_comparisons: &mut Vec<SuccessorScopedPatchEvaluationCandidate>,
 ) -> PredecessorSuccessorIncorporation {
     let ProtectedTipSuccessorHeadClassification::Classified(classified_heads) =
-        reachability.from_protected_tip
+        reachability.from_incorporation_subject
     else {
         return PredecessorSuccessorIncorporation::PredecessorObjectUnknown;
     };
@@ -2281,7 +2680,7 @@ fn predecessor_successor_incorporation(
     PredecessorSuccessorIncorporation::Classified(evidence_by_head)
 }
 
-/// Decide a successor head the predecessor's protected tip does not reach.
+/// Decide a successor head the predecessor's incorporation subject does not reach.
 ///
 /// A retained verdict settles it outright; otherwise it joins the queue competing for the one
 /// scoped comparison this reconciliation admits.
@@ -2291,6 +2690,11 @@ fn unreached_successor_evidence(
     pending_comparisons: &mut Vec<SuccessorScopedPatchEvaluationCandidate>,
 ) -> SuccessorIncorporationEvidence {
     let evidence_subject = candidate_context.evidence_subject;
+    let SuccessorIncorporationSubject::CheckpointTip(protected_tip) =
+        &evidence_subject.incorporation_subject
+    else {
+        return SuccessorIncorporationEvidence::NotIncorporated;
+    };
     if !matches!(
         evidence_subject.prior_integration_status,
         PriorIntegrationStatus::Proven
@@ -2309,7 +2713,7 @@ fn unreached_successor_evidence(
             SuccessorScopedPatchEquivalenceVerdict::Different,
         ) => SuccessorIncorporationEvidence::NotIncorporated,
         SuccessorScopedPatchTargetVerdictAvailability::Miss => {
-            pending_comparisons.push(candidate_context.candidate(successor_head));
+            pending_comparisons.push(candidate_context.candidate(protected_tip, successor_head));
             SuccessorIncorporationEvidence::NotIncorporated
         },
     }
@@ -2431,11 +2835,10 @@ impl ReconciliationAction {
                     .push(pending_import.into_recovered_marker());
             }
         }
-        git::update_reservation_retention_refs_from_resolved_batch(
+        self.retention_commit_resolution.apply(
             &self.repository_root,
             &self.retention_repairs,
             &self.retention_deletions,
-            &self.resolved_retention_candidates,
         )?;
         for marker_context in self.marker_contexts {
             marker_context.sweep_coordination_run_marker(|worktree_id, coordination_run_id| {
@@ -2469,7 +2872,9 @@ impl ReconciliationAction {
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
                 &self.repository_root,
-                &alert_subject.reservation,
+                reservations
+                    .reservation(alert_subject.reservation_id)
+                    .map_err(ReconcileError::Replay)?,
                 alert_subject.worktree_liveness,
             )?);
         }
@@ -2488,6 +2893,8 @@ impl ReconciliationAction {
         Ok(ReconciliationReport {
             alerts,
             evidence: self.evidence,
+            settlements: self.settlements,
+            session_mapping_publication: SessionIdentityMappingPublication::Published,
             repository_snapshot: self.repository_snapshot,
             constraints,
             journal_snapshot: ReconciledJournalSnapshot {
@@ -2637,5 +3044,194 @@ impl From<ReconciliationPlanningError> for ReconcileError {
                 Self::Ledger(LedgerError::Io(error))
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+    use serde_json::json;
+
+    use super::SettlementSelection;
+    use crate::edge::RepositoryTrunk;
+    use crate::ids::ReservationId;
+    use crate::ledger::JournalEvent;
+    use crate::reservation::IntegrationEvidenceStatus;
+    use crate::reservation::IntegrationProof;
+    use crate::reservation::MergeExtent;
+    use crate::reservation::ReleaseDisposition;
+    use crate::reservation::ReservationEvidenceState;
+    use crate::reservation::RetainedReservationSet;
+    use crate::reservation::RewrittenIntegrationTrunkCommit;
+
+    const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
+    const TRUNK: &str = "1111111111111111111111111111111111111111";
+    const TIP: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn settlement_selection() -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, checkpoint] = checkpoint_events()?;
+        let actual_trunk = RepositoryTrunk::Resolved(TRUNK.parse()?);
+        let other_trunk = RepositoryTrunk::Resolved(TIP.parse()?);
+        let extent = later_work_extent()?;
+        for proof in [
+            IntegrationProof::ProtectedTipAncestor,
+            IntegrationProof::ScopedPatchEquivalent,
+        ] {
+            let status = IntegrationEvidenceStatus::Integrated {
+                trunk_oid: TRUNK.parse()?,
+                proof,
+            };
+            let integrated = integrated_evidence_event(&status)?;
+            let events = [claim.clone(), checkpoint.clone(), integrated.clone()];
+            let retained = RetainedReservationSet::replay(&events)?;
+            let reservation = retained.reservation(reservation_id)?;
+            let ReservationEvidenceState::Outstanding {
+                integration_status, ..
+            } = reservation.evidence_state()?
+            else {
+                return Err("the seeded proof must remain outstanding until settlement".into());
+            };
+            let disposition = match proof {
+                IntegrationProof::ProtectedTipAncestor => ReleaseDisposition::Integrated,
+                IntegrationProof::ScopedPatchEquivalent => {
+                    ReleaseDisposition::RewrittenIntegration(RewrittenIntegrationTrunkCommit::from(
+                        TRUNK.parse::<crate::ids::GitObjectId>()?,
+                    ))
+                },
+            };
+            assert_eq!(
+                super::settlement_selection(
+                    reservation,
+                    &integration_status,
+                    &actual_trunk,
+                    reservation.merge_extent(),
+                    &super::CommittedMergeEvidence::Unavailable,
+                ),
+                SettlementSelection::Release(disposition.clone())
+            );
+            let unavailable_extent = extent.unavailable("holder missing".to_owned());
+            for (status, trunk, extent) in [
+                (
+                    &integration_status,
+                    &other_trunk,
+                    reservation.merge_extent(),
+                ),
+                (&integration_status, &actual_trunk, &extent),
+                (&integration_status, &actual_trunk, &unavailable_extent),
+                (
+                    &IntegrationEvidenceStatus::NotIntegrated,
+                    &actual_trunk,
+                    reservation.merge_extent(),
+                ),
+            ] {
+                assert_eq!(
+                    super::settlement_selection(
+                        reservation,
+                        status,
+                        trunk,
+                        extent,
+                        &super::CommittedMergeEvidence::Unavailable,
+                    ),
+                    SettlementSelection::Unchanged
+                );
+            }
+            let release = journal_event(
+                4,
+                &json!({
+                    "op": "release", "reservation_id": RESERVATION_ID, "disposition": disposition,
+                }),
+            )?;
+            let released = RetainedReservationSet::replay(&[
+                claim.clone(),
+                checkpoint.clone(),
+                integrated,
+                release,
+            ])?;
+            let reservation = released.reservation(reservation_id)?;
+            assert_eq!(
+                super::settlement_selection(
+                    reservation,
+                    &integration_status,
+                    &actual_trunk,
+                    reservation.merge_extent(),
+                    &super::CommittedMergeEvidence::Unavailable,
+                ),
+                SettlementSelection::Unchanged
+            );
+            assert!(
+                matches!(reservation.evidence_state()?, ReservationEvidenceState::Released {
+                integration_status: retained_status, ..
+            } if retained_status == status)
+            );
+        }
+        Ok(())
+    }
+
+    /// A durable proof that can settle without another evidence change.
+    fn integrated_evidence_event(
+        status: &IntegrationEvidenceStatus,
+    ) -> Result<JournalEvent, serde_json::Error> {
+        journal_event(
+            3,
+            &json!({
+                "op": "evidence_revalidated", "reservation_id": RESERVATION_ID,
+                "status": status, "edit_blocking_status": "clear",
+            }),
+        )
+    }
+
+    /// Retained branch work beyond the checkpoint continues to block settlement.
+    fn later_work_extent() -> Result<MergeExtent, serde_json::Error> {
+        serde_json::from_value(json!({
+            "status": "protected",
+            "key": {"trunk": TRUNK, "head": "3333333333333333333333333333333333333333",
+                "working_tree": {"tracked_paths": [], "untracked_paths": []}},
+            "scopes": [{"path": "src/later.rs", "kind": "file"}],
+        }))
+    }
+
+    fn checkpoint_events() -> Result<[JournalEvent; 2], serde_json::Error> {
+        let claim = journal_event(
+            1,
+            &json!({
+                "op": "claim", "reservation_id": RESERVATION_ID,
+                "scopes": [{"path": "src", "kind": "tree"}],
+                "source": {"kind": "explicit"}, "purpose": {"kind": "not_provided_by_caller"},
+                "trunk_at_claim": TRUNK,
+                "head_snapshot": {"kind": "branch", "full_ref": "refs/heads/phase", "head": TIP},
+                "phase_start_head": TRUNK, "worktree_root": "/repo",
+                "worktree_administrative_locator": ".", "authorization": {"kind": "no_conflict"},
+                "coordination_identity_provenance": "presented",
+            }),
+        )?;
+        let checkpoint = journal_event(
+            2,
+            &json!({
+                "op": "checkpoint", "reservation_id": RESERVATION_ID,
+                "protected_tip": TIP, "trunk_snapshot": TRUNK,
+            }),
+        )?;
+        Ok([claim, checkpoint])
+    }
+
+    fn journal_event(
+        generation: u64,
+        operation: &Value,
+    ) -> Result<JournalEvent, serde_json::Error> {
+        let mut event = json!({
+            "schema_version": 2, "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
+            "actor": {
+                "repository": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c",
+                "worktree": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d",
+                "run": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e"
+            },
+            "at": "2026-08-23T17:34:54.123Z", "projection_generation": generation,
+        });
+        if let (Some(event), Some(operation)) = (event.as_object_mut(), operation.as_object()) {
+            event.extend(operation.clone());
+        }
+        serde_json::from_value(event)
     }
 }

@@ -49,6 +49,7 @@ use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
+use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::ReservationScopeSet;
 use crate::session::SessionIdentityMappingPublication;
 
@@ -95,6 +96,20 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             },
             Err(error) => return error.into_output(CommandVerb::Release),
         };
+    for settlement in &reconciliation_report.settlements {
+        if settlement.reservation_id == release_request.reservation_id {
+            reconciliation_report
+                .alerts
+                .retain(|alert| alert.reservation_id() != release_request.reservation_id);
+            return OutputEnvelope::released(ReleasePayload::Released {
+                reservation_id:              release_request.reservation_id,
+                disposition:                 settlement.disposition.clone(),
+                marker:                      CoordinationRunMarkerRetirement::AlreadyAbsent,
+                session_mapping_publication: reconciliation_report.session_mapping_publication,
+            })
+            .with_alerts(reconciliation_report.alerts);
+        }
+    }
     for reconciled_evidence in &reconciliation_report.evidence {
         if reconciled_evidence.reservation_id == release_request.reservation_id {
             return OutputEnvelope::released(ReleasePayload::EvidenceRevalidated {
@@ -346,7 +361,7 @@ fn validate_release_transaction(
         operation: Box::new(release_append.operation),
         action:    ReleaseCommittedAction {
             payload_seed: release_append.payload_seed,
-            protected_tip_retention: release_append.protected_tip_retention,
+            retention_plan: release_append.retention_plan,
             marker_plan,
             retention_deletions,
         },
@@ -575,13 +590,12 @@ fn released_evidence_operation(
     protected_tip: &ProtectedReservationTip,
     disposition: &ReleaseDisposition,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
-    let revalidation_tip = match disposition.revalidation_subject() {
-        ReleaseRevalidationSubject::ProtectedTip => protected_tip.clone(),
-        ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
-            ProtectedReservationTip::from(trunk_commit.as_ref().clone())
-        },
-        ReleaseRevalidationSubject::None => return Err(ReleaseRejection::AlreadyReleased),
-    };
+    if matches!(
+        disposition.revalidation_subject(),
+        ReleaseRevalidationSubject::None
+    ) {
+        return Err(ReleaseRejection::AlreadyReleased);
+    }
     let Ok(current_trunk) = reservation::current_trunk(
         release_repository_context.repository_root,
         release_repository_context.trunk_branch,
@@ -593,15 +607,27 @@ fn released_evidence_operation(
             protected_tip.clone(),
         ));
     };
-    let evidence = reservation::integration_status(
-        release_repository_context.repository_root,
-        release_repository_context.phase_start_head,
-        release_repository_context.scopes,
-        &revalidation_tip,
-        &current_trunk,
-        PriorIntegrationStatus::Proven,
-    )
-    .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown);
+    let evidence = match disposition.revalidation_subject() {
+        ReleaseRevalidationSubject::ProtectedTip => reservation::integration_status(
+            release_repository_context.repository_root,
+            release_repository_context.phase_start_head,
+            release_repository_context.scopes,
+            protected_tip,
+            &current_trunk,
+            PriorIntegrationStatus::Proven,
+        )
+        .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown),
+        ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => trunk_commit
+            .revalidate_ancestry(&current_trunk, |witness| {
+                git::reachability(
+                    release_repository_context.repository_root,
+                    witness,
+                    &current_trunk,
+                )
+                .unwrap_or(git::Reachability::ObjectUnknown)
+            }),
+        ReleaseRevalidationSubject::None => return Err(ReleaseRejection::AlreadyReleased),
+    };
     Ok(already_settled_operation(
         reservation,
         disposition,
@@ -623,20 +649,34 @@ fn already_settled_operation(
     protected_tip: ProtectedReservationTip,
 ) -> ReleaseAppend {
     let reservation_id = reservation.id();
-    ReleaseAppend::new(
-        JournalOperation::EvidenceRevalidated {
+    let retention_plan = match (&evidence, disposition.revalidation_subject()) {
+        (IntegrationEvidenceStatus::ObjectUnknown, _) => ReleaseRetentionPlan::Preserve,
+        (_, ReleaseRevalidationSubject::RewrittenIntegration(witness)) => {
+            ReleaseRetentionPlan::RetainIntegrationWitness {
+                reservation_id,
+                witness: witness.clone(),
+            }
+        },
+        (_, ReleaseRevalidationSubject::ProtectedTip | ReleaseRevalidationSubject::None) => {
+            ReleaseRetentionPlan::RetainProtectedTip {
+                reservation_id,
+                protected_tip,
+            }
+        },
+    };
+    ReleaseAppend {
+        operation: JournalOperation::EvidenceRevalidated {
             reservation_id,
             status: evidence.clone(),
             edit_blocking_status: reservation.edit_blocking_status(),
         },
-        ReleasePayloadSeed::AlreadySettled {
+        payload_seed: ReleasePayloadSeed::AlreadySettled {
             reservation_id,
             disposition: disposition.clone(),
             evidence,
         },
-        reservation_id,
-        protected_tip,
-    )
+        retention_plan,
+    }
 }
 
 struct ReleaseRepositoryContext<'repository> {
@@ -703,9 +743,9 @@ fn marker_plan_for(
 }
 
 struct ReleaseAppend {
-    operation:               JournalOperation,
-    payload_seed:            ReleasePayloadSeed,
-    protected_tip_retention: ProtectedTipRetention,
+    operation:      JournalOperation,
+    payload_seed:   ReleasePayloadSeed,
+    retention_plan: ReleaseRetentionPlan,
 }
 
 impl ReleaseAppend {
@@ -718,7 +758,7 @@ impl ReleaseAppend {
         Self {
             operation,
             payload_seed,
-            protected_tip_retention: ProtectedTipRetention {
+            retention_plan: ReleaseRetentionPlan::RetainProtectedTip {
                 reservation_id,
                 protected_tip,
             },
@@ -726,22 +766,51 @@ impl ReleaseAppend {
     }
 }
 
-struct ProtectedTipRetention {
-    reservation_id: ReservationId,
-    protected_tip:  ProtectedReservationTip,
+/// The retention ref action admitted before appending release evidence.
+enum ReleaseRetentionPlan {
+    /// Keep the ref unchanged when its evidence subject could not be resolved.
+    Preserve,
+    /// Retain a known checkpoint after the append succeeds.
+    RetainProtectedTip {
+        /// The reservation whose ref retains the commit.
+        reservation_id: ReservationId,
+        /// The checkpoint to retain.
+        protected_tip:  ProtectedReservationTip,
+    },
+    /// Retain the settled integration location after the append succeeds.
+    RetainIntegrationWitness {
+        /// The reservation whose ref retains the integration witness.
+        reservation_id: ReservationId,
+        /// The trunk commit that witnessed the complete integration.
+        witness:        RewrittenIntegrationTrunkCommit,
+    },
 }
 
-impl ProtectedTipRetention {
+impl ReleaseRetentionPlan {
     fn commit(self, repository_root: &Path) -> Result<(), GitError> {
-        reservation::retain_protected_tip(repository_root, self.reservation_id, &self.protected_tip)
+        match self {
+            Self::Preserve => Ok(()),
+            Self::RetainProtectedTip {
+                reservation_id,
+                protected_tip,
+            } => reservation::retain_protected_tip(repository_root, reservation_id, &protected_tip),
+            Self::RetainIntegrationWitness {
+                reservation_id,
+                witness,
+            } => git::write_reservation_retention_ref(
+                repository_root,
+                reservation_id,
+                witness.as_ref(),
+            ),
+        }
     }
 }
 
 struct ReleaseCommittedAction {
-    payload_seed:            ReleasePayloadSeed,
-    protected_tip_retention: ProtectedTipRetention,
-    marker_plan:             CoordinationRunMarkerPlan,
-    retention_deletions:     Vec<ReservationId>,
+    payload_seed:        ReleasePayloadSeed,
+    retention_plan:      ReleaseRetentionPlan,
+    marker_plan:         CoordinationRunMarkerPlan,
+    retention_deletions: Vec<ReservationId>,
 }
 
 impl ReleaseCommittedAction {
@@ -751,7 +820,7 @@ impl ReleaseCommittedAction {
         worktree_context: &WorktreeContext,
     ) -> Result<ReleasePayloadPreparation, ReleaseError> {
         git::update_reservation_retention_refs(repository_root, &[], &self.retention_deletions)?;
-        self.protected_tip_retention.commit(repository_root)?;
+        self.retention_plan.commit(repository_root)?;
         let marker = self.marker_plan.finish(worktree_context);
         Ok(ReleasePayloadPreparation {
             payload_seed: self.payload_seed,

@@ -967,13 +967,13 @@ fn retention_ref_writes_and_deletions_suppress_the_repository_root_hook() {
     assert!(evidence.status.success());
     assert_eq!(
         json_output(&evidence)["payload"]["data"]["status"],
-        "evidence_revalidated"
+        "released"
     );
     let released = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
     assert!(released.status.success());
     assert_eq!(
         json_output(&released)["payload"]["data"]["status"],
-        "released"
+        "already_settled"
     );
     assert!(reference_exists(repository.path(), &retention_ref));
 
@@ -2127,6 +2127,124 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
 }
 
 #[test]
+fn forced_checkpoint_consumes_its_permit_before_ordinary_reconciliation_settles_it() {
+    let fixture = deferred_pair(initialized_repository());
+    let root = fixture.repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let sequenced = run_berth(
+        root,
+        &[
+            "sequence",
+            &fixture.holder_id,
+            &fixture.blocked_id,
+            "--why",
+            "unintegrated predecessor must land first",
+            "--json",
+        ],
+    );
+    assert!(sequenced.status.success(), "{}", json_output(&sequenced));
+    let checkpoint = commit_work(
+        &fixture.blocked_root,
+        "src/lib.rs",
+        "pub fn checkpointed_successor() {}\n",
+        "checkpoint successor work",
+    );
+    let released = run_berth(
+        &fixture.blocked_root,
+        &["release", &fixture.blocked_id, "--json"],
+    );
+    assert!(released.status.success());
+    assert_eq!(
+        json_output(&released)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    assert_eq!(
+        git_stdout(&fixture.blocked_root, &["rev-parse", "HEAD"]),
+        checkpoint
+    );
+    assert!(git_stdout(&fixture.blocked_root, &["status", "--porcelain"]).is_empty());
+    set_gate_mode(root, "enforce");
+
+    let blocked = propose_trunk(root, &base, &checkpoint);
+    assert!(!blocked.status.success());
+    let denial = String::from_utf8_lossy(&blocked.stderr);
+    assert!(denial.contains(&fixture.holder_id), "{denial}");
+    assert!(denial.contains(&fixture.blocked_id), "{denial}");
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+    let before = journal_text(root).lines().count();
+
+    let forced = run_berth(
+        &fixture.blocked_root,
+        &[
+            "integrate",
+            &fixture.blocked_id,
+            "--force",
+            "--why",
+            "accept checkpoint ordering exception",
+            "--json",
+        ],
+    );
+    assert!(forced.status.success(), "{}", json_output(&forced));
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), checkpoint);
+    assert_checkpoint_permit_audit(root, &fixture.blocked_id);
+
+    let repeated = run_private_hook(
+        root,
+        "committed",
+        &format!("{base} {checkpoint} refs/heads/main\n"),
+    );
+    assert!(repeated.status.success());
+    assert_checkpoint_permit_audit(root, &fixture.blocked_id);
+    let journal = journal_text(root);
+    assert!(
+        journal.lines().skip(before).all(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("event should decode");
+            event["op"] != "release" || event["reservation_id"] != fixture.blocked_id
+        }),
+        "the committed hook must leave the checkpoint outstanding"
+    );
+    let board = run_berth(root, &["board", "--json"]);
+    assert!(board.status.success(), "{}", json_output(&board));
+    let settlements = journal_text(root)
+        .lines()
+        .skip(before)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .filter(|event| event["op"] == "release" && event["reservation_id"] == fixture.blocked_id)
+        .count();
+    assert_eq!(
+        settlements, 1,
+        "board must settle the integrated checkpoint"
+    );
+    assert_checkpoint_permit_audit(root, &fixture.blocked_id);
+}
+
+/// Tie the one-use consumption and bypass audit to the checkpoint's issued permit.
+fn assert_checkpoint_permit_audit(repository_root: &Path, reservation_id: &str) {
+    assert_forced_permit_consumed(repository_root);
+    let records = journal_text(repository_root)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .collect::<Vec<_>>();
+    let issued = records
+        .iter()
+        .find(|event| event["op"] == "forced_integration_permit")
+        .expect("forced integration should issue a permit");
+    let consumed = records
+        .iter()
+        .find(|event| event["op"] == "consume_forced_integration_permit")
+        .expect("committed integration should consume its permit");
+    assert_eq!(issued["reservation_id"], reservation_id);
+    assert_eq!(consumed["reservation_id"], reservation_id);
+    assert_eq!(consumed["permit_id"], issued["permit_id"]);
+    let audits = records
+        .iter()
+        .filter(|event| event["op"] == "bypass" && event["cause"]["kind"] == "forced_integration")
+        .collect::<Vec<_>>();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0]["cause"]["permit_id"], issued["permit_id"]);
+}
+
+#[test]
 fn committed_hook_persists_one_scoped_patch_evaluation_record() {
     let repository = initialized_repository();
     let claimed = claim(
@@ -2190,6 +2308,180 @@ fn committed_hook_persists_one_scoped_patch_evaluation_record() {
             .matches("\"op\":\"scoped_patch_equivalence_checked\"")
             .count(),
         1
+    );
+}
+
+#[test]
+fn prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness() {
+    for witness_is_actual in [false, true] {
+        let repository = initialized_repository();
+        let worktrees = tempdir().expect("worktree parent should exist");
+        let holder = add_worktree(repository.path(), worktrees.path(), "settlement-holder");
+        let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+        let id = reservation_id(&claim(
+            &holder,
+            "file:src/lib.rs",
+            FIRST_RUN,
+            "docs/settlement.md",
+            "settlement",
+        ));
+        let checkpoint = commit_work_without_hooks(
+            &holder,
+            "src/lib.rs",
+            "pub fn integrated() {}\n",
+            "protected checkpoint",
+        );
+        let released = run_berth(&holder, &["release", &id, "--json"]);
+        assert!(released.status.success());
+        assert_eq!(
+            json_output(&released)["payload"]["data"]["status"],
+            "checkpointed"
+        );
+        let witness = commit_work_without_hooks(
+            repository.path(),
+            "src/lib.rs",
+            "pub fn integrated() {}\n",
+            "equivalent trunk witness",
+        );
+        assert_ne!(checkpoint, witness);
+        let (actual, proposed) = if witness_is_actual {
+            (witness.clone(), checkpoint.clone())
+        } else {
+            git(
+                repository.path(),
+                &["-c", "core.hooksPath=/dev/null", "reset", "--hard", &base],
+            );
+            (base, witness.clone())
+        };
+        let before = journal_text(repository.path()).lines().count();
+        let input = format!("{actual} {proposed} refs/heads/main\n");
+
+        let prepared = run_private_hook(repository.path(), "prepared", &input);
+        assert!(
+            prepared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&prepared.stderr)
+        );
+        assert_eq!(
+            git_stdout(repository.path(), &["rev-parse", "main"]),
+            actual
+        );
+        let journal = journal_text(repository.path());
+        let operations = journal
+            .lines()
+            .skip(before)
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).expect("event should decode")
+            })
+            .collect::<Vec<_>>();
+        let settlements = operations
+            .iter()
+            .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            settlements.len(),
+            usize::from(witness_is_actual),
+            "{journal}"
+        );
+        if witness_is_actual {
+            assert_eq!(
+                settlements[0]["disposition"]["kind"],
+                "rewritten_integration"
+            );
+            assert_eq!(settlements[0]["disposition"]["evidence"], witness);
+            let release_position = operations
+                .iter()
+                .position(|event| event["op"] == "release" && event["reservation_id"] == id)
+                .expect("actual settlement should exist");
+            assert_eq!(
+                operations[release_position - 1]["op"],
+                "evidence_revalidated"
+            );
+            assert_eq!(operations[release_position - 1]["reservation_id"], id);
+        }
+    }
+    assert_prepared_gate_requires_the_settled_predecessor_witness();
+}
+
+/// A successor carrying the old checkpoint still needs the rewritten trunk witness.
+fn assert_prepared_gate_requires_the_settled_predecessor_witness() {
+    let fixture = deferred_pair(initialized_repository());
+    let root = fixture.repository.path();
+    let holder = fixture.worktrees.path().join("pair-holder");
+    let sequenced = run_berth(
+        root,
+        &[
+            "sequence",
+            &fixture.holder_id,
+            &fixture.blocked_id,
+            "--why",
+            "predecessor lands first",
+            "--json",
+        ],
+    );
+    assert!(sequenced.status.success(), "{}", json_output(&sequenced));
+    let checkpoint = commit_work_without_hooks(
+        &holder,
+        "src/lib.rs",
+        "pub fn integrated() {}\n",
+        "protected predecessor",
+    );
+    let released = run_berth(&holder, &["release", &fixture.holder_id, "--json"]);
+    assert!(released.status.success());
+    git(
+        &fixture.blocked_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            &checkpoint,
+        ],
+    );
+    let successor = commit_work_without_hooks(
+        &fixture.blocked_root,
+        "src/successor.rs",
+        "pub fn successor() {}\n",
+        "successor work",
+    );
+    let witness = commit_work_without_hooks(
+        root,
+        "src/lib.rs",
+        "pub fn integrated() {}\n",
+        "rewritten predecessor witness",
+    );
+    assert_ne!(checkpoint, witness);
+    set_gate_mode(root, "enforce");
+    let input = format!("{witness} {successor} refs/heads/main\n");
+
+    let first = run_private_hook(root, "prepared", &input);
+    assert!(
+        !first.status.success(),
+        "gate admitted successor without the trunk witness"
+    );
+    let denial = String::from_utf8_lossy(&first.stderr);
+    assert!(denial.contains(&fixture.holder_id), "{denial}");
+    assert!(denial.contains(&fixture.blocked_id), "{denial}");
+    let journal = journal_text(root);
+    assert!(
+        journal.lines().any(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("event should decode");
+            event["op"] == "release" && event["reservation_id"] == fixture.holder_id
+        }),
+        "actual-trunk settlement must commit even when the proposal is denied"
+    );
+    let board = run_berth(root, &["board", "--json"]);
+    assert!(board.status.success());
+    let repeated = run_private_hook(root, "prepared", &input);
+    assert_eq!(repeated.status.code(), first.status.code());
+    let repeated_denial = String::from_utf8_lossy(&repeated.stderr);
+    assert!(
+        repeated_denial.contains(&fixture.holder_id),
+        "{repeated_denial}"
+    );
+    assert!(
+        repeated_denial.contains(&fixture.blocked_id),
+        "{repeated_denial}"
     );
 }
 
@@ -2739,6 +3031,15 @@ fn prepared_gate_scoped_comparison_fixture() -> PreparedGateScopedComparisonFixt
         &["-c", "core.hooksPath=/dev/null", "reset", "--hard", &base],
     );
     let actual = commit_scoped_target(repository.path(), &scopes, "actual equivalent target");
+    // Keep every proof subject outstanding while both target schedules are exercised.
+    for scope in &scopes {
+        fs::write(
+            repository.path().join(scope),
+            "// reserved work remains dirty\n",
+        )
+        .expect("reserved dirt should prevent lifecycle settlement");
+    }
+
     let worktrees = tempdir().expect("worktree parent should exist");
     let proposed_root = worktrees.path().join("uncommitted-proposal");
     git(
@@ -4053,16 +4354,12 @@ fn trace_retention_ref_reconciliation(
             apply_test_ref_transaction(repository.path(), &transaction);
         },
         RetentionRefPass::DeletionOnly => {
+            for index in 0..reservation_count {
+                fs::remove_file(repository.path().join(format!("retention-trace-{index}")))
+                    .expect("discard setup dirt before automatic settlement");
+            }
             let observed = run_berth(repository.path(), &["board", "--json"]);
             assert!(observed.status.success());
-            for reservation_id in &reservation_ids {
-                let released = run_berth(repository.path(), &["release", reservation_id, "--json"]);
-                assert!(released.status.success());
-                assert_eq!(
-                    json_output(&released)["payload"]["data"]["status"],
-                    "released"
-                );
-            }
             let transaction =
                 reservation_ids
                     .iter()
@@ -4084,6 +4381,15 @@ fn trace_retention_ref_reconciliation(
         "traced reconciliation failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    for reservation_id in &reservation_ids {
+        assert_eq!(
+            reference_exists(
+                repository.path(),
+                &format!("refs/cargo-berth/reservations/{reservation_id}")
+            ),
+            matches!(pass, RetentionRefPass::RepairOnly),
+        );
+    }
     assert!(!sentinel_log.exists());
     invocations
 }
@@ -4102,6 +4408,14 @@ fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String
             reservation_id(&claimed)
         })
         .collect::<Vec<_>>();
+    // Keep every checkpoint outstanding until the repair/deletion case chooses its lifecycle.
+    for index in 0..count {
+        fs::write(
+            repository_root.join(format!("retention-trace-{index}")),
+            "unmerged work\n",
+        )
+        .expect("reserved dirty work should write");
+    }
     for reservation_id in &reservation_ids {
         let checkpointed = run_berth(repository_root, &["release", reservation_id, "--json"]);
         assert!(checkpointed.status.success());

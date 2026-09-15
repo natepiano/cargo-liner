@@ -1470,7 +1470,7 @@
           "type": "string"
         },
         "release_disposition": {
-          "description": "A user-confirmed terminal reservation outcome.",
+          "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
               "description": "Git proved the protected work reached trunk.",
@@ -1486,7 +1486,7 @@
               "type": "object"
             },
             {
-              "description": "The user supplied a verified alternate trunk commit.",
+              "description": "An alternate trunk commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -4276,6 +4276,22 @@
               "required": [
                 "action",
                 "flags"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "action": {
+                  "const": "recover_with_trunk",
+                  "type": "string"
+                },
+                "recovery": {
+                  "$ref": "#/$defs/lost_evidence_recovery"
+                }
+              },
+              "required": [
+                "action",
+                "recovery"
               ],
               "type": "object"
             }
@@ -8030,7 +8046,7 @@
           "type": "object"
         },
         "release_disposition": {
-          "description": "A user-confirmed terminal reservation outcome.",
+          "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
               "description": "Git proved the protected work reached trunk.",
@@ -8046,7 +8062,7 @@
               "type": "object"
             },
             {
-              "description": "The user supplied a verified alternate trunk commit.",
+              "description": "An alternate trunk commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -11364,6 +11380,22 @@
                 "flags"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "action": {
+                  "const": "recover_with_trunk",
+                  "type": "string"
+                },
+                "recovery": {
+                  "$ref": "#/$defs/lost_evidence_recovery"
+                }
+              },
+              "required": [
+                "action",
+                "recovery"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -14311,7 +14343,7 @@
           "type": "object"
         },
         "release_disposition": {
-          "description": "A user-confirmed terminal reservation outcome.",
+          "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
               "description": "Git proved the protected work reached trunk.",
@@ -14327,7 +14359,7 @@
               "type": "object"
             },
             {
-              "description": "The user supplied a verified alternate trunk commit.",
+              "description": "An alternate trunk commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -15517,7 +15549,7 @@
     },
     "release_disposition": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "A user-confirmed terminal reservation outcome.",
+      "description": "A verified or user-confirmed terminal reservation outcome.",
       "oneOf": [
         {
           "description": "Git proved the protected work reached trunk.",
@@ -15533,7 +15565,7 @@
           "type": "object"
         },
         {
-          "description": "The user supplied a verified alternate trunk commit.",
+          "description": "An alternate trunk commit witnesses verified rewritten integration.",
           "properties": {
             "evidence": {
               "minLength": 1,
@@ -15726,7 +15758,7 @@
           "type": "string"
         },
         "release_disposition": {
-          "description": "A user-confirmed terminal reservation outcome.",
+          "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
               "description": "Git proved the protected work reached trunk.",
@@ -15742,7 +15774,7 @@
               "type": "object"
             },
             {
-              "description": "The user supplied a verified alternate trunk commit.",
+              "description": "An alternate trunk commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -16196,7 +16228,7 @@
           "type": "string"
         },
         "release_disposition": {
-          "description": "A user-confirmed terminal reservation outcome.",
+          "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
               "description": "Git proved the protected work reached trunk.",
@@ -16212,7 +16244,7 @@
               "type": "object"
             },
             {
-              "description": "The user supplied a verified alternate trunk commit.",
+              "description": "An alternate trunk commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -16455,7 +16487,7 @@
           ]
         },
         "release_disposition": {
-          "description": "A user-confirmed terminal reservation outcome.",
+          "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
               "description": "Git proved the protected work reached trunk.",
@@ -16471,7 +16503,7 @@
               "type": "object"
             },
             {
-              "description": "The user supplied a verified alternate trunk commit.",
+              "description": "An alternate trunk commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,

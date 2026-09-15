@@ -749,42 +749,39 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
         &["merge", "--quiet", "--ff-only", "release-alert-phase"],
     );
 
-    let evidence = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
-    assert_eq!(json_output(&evidence)["status"], "integrated");
+    let settled = run_berth(repository.path(), &["board", "--json"]);
+    assert!(settled.status.success());
+    let settled_json = json_output(&settled);
+    let reservation = settled_json["payload"]["data"]["resolved"]["entries"]
+        .as_array()
+        .expect("resolved reservations should exist")
+        .iter()
+        .find(|reservation| reservation["reservation_id"] == reservation_id)
+        .expect("integrated orphan should settle on the same pass");
+    assert_eq!(reservation["lifecycle"]["stage"], "released");
     assert_eq!(
-        json_output(&evidence)["payload"]["alerts"]
-            .as_array()
-            .map(|alerts| alerts
-                .iter()
-                .filter(|alert| alert["kind"] == "orphaned_outstanding")
-                .count()),
-        Some(1)
-    );
-    // An unavailable checkout cannot prove an empty merge extent; ending it needs a
-    // deliberate disposition even when its recorded checkpoint is integrated.
-    let released = run_berth(
-        repository.path(),
-        &[
-            "resolve",
-            &reservation_id,
-            "--abandon",
-            "--why",
-            "integrated checkpoint belongs to a deliberately discarded checkout",
-            "--json",
-        ],
-    );
-
-    assert!(released.status.success());
-    assert_eq!(
-        json_output(&released)["payload"]["data"]["status"],
-        "released"
+        reservation["lifecycle"]["disposition"]["kind"],
+        "integrated"
     );
     assert!(
-        json_output(&released)["payload"]["alerts"]
+        settled_json["payload"]["data"]["alerts"]["entries"]
             .as_array()
-            .is_some_and(|alerts| alerts
-                .iter()
-                .all(|alert| alert["kind"] == "merge_extent_unavailable"))
+            .expect("board alerts should exist")
+            .iter()
+            .all(|alert| alert["reservation_id"] != reservation_id)
+    );
+    let repeated = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    assert!(repeated.status.success());
+    assert_eq!(
+        json_output(&repeated)["payload"]["data"]["status"],
+        "already_settled"
+    );
+    assert!(
+        json_output(&repeated)["payload"]["alerts"]
+            .as_array()
+            .expect("release alerts should exist")
+            .iter()
+            .all(|alert| alert["kind"] != "orphaned_outstanding")
     );
 }
 
@@ -1265,8 +1262,8 @@ fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
     );
     for (expected_status, expected_fact_status) in [
         ("outstanding", "checkpointed"),
-        ("integrated", "evidence_revalidated"),
         ("integrated", "released"),
+        ("integrated", "already_settled"),
     ] {
         let release = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
         assert!(release.status.success());

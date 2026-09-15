@@ -2947,8 +2947,8 @@ fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
     );
     for (expected_status, expected_fact_status) in [
         ("outstanding", "checkpointed"),
-        ("integrated", "evidence_revalidated"),
         ("integrated", "released"),
+        ("integrated", "already_settled"),
     ] {
         let release = run_berth(repository.path(), &["release", &released_id, "--json"]);
         assert!(release.status.success());

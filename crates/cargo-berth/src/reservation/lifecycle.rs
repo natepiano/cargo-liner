@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::evidence::ProtectedReservationTip;
+use crate::git::Reachability;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 
@@ -187,14 +188,14 @@ declare_wire_enum! {
     }
 }
 
-/// A user-confirmed terminal reservation outcome.
+/// A verified or user-confirmed terminal reservation outcome.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "release_disposition")]
 #[serde(tag = "kind", content = "evidence", rename_all = "snake_case")]
 pub(crate) enum ReleaseDisposition {
     /// Git proved the protected work reached trunk.
     Integrated,
-    /// The user supplied a verified alternate trunk commit.
+    /// An alternate trunk commit witnesses verified rewritten integration.
     RewrittenIntegration(
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
@@ -232,7 +233,7 @@ impl ReleaseDisposition {
 pub(crate) enum ReleaseRevalidationSubject<'reservation> {
     /// Ordinary integration continues to use the retained protected tip.
     ProtectedTip,
-    /// Rewritten integration uses the user-verified trunk commit.
+    /// Rewritten integration requires ancestry of its verified trunk witness.
     RewrittenIntegration(&'reservation RewrittenIntegrationTrunkCommit),
     /// A deliberate retirement has no future git evidence to revalidate.
     None,
@@ -314,10 +315,28 @@ nonempty_release_reason!(
     "an orphan-retirement reason cannot be empty"
 );
 
-/// The verified trunk commit supplied for rewritten integration.
+/// The verified trunk commit witnessing rewritten integration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct RewrittenIntegrationTrunkCommit(GitObjectId);
+
+impl RewrittenIntegrationTrunkCommit {
+    /// Revalidate this witness by ancestry alone, without replaying the original phase.
+    pub(crate) fn revalidate_ancestry(
+        &self,
+        trunk: &GitObjectId,
+        reachability: impl FnOnce(&GitObjectId) -> Reachability,
+    ) -> IntegrationEvidenceStatus {
+        match reachability(self.as_ref()) {
+            Reachability::Ancestor => IntegrationEvidenceStatus::Integrated {
+                trunk_oid: trunk.clone(),
+                proof:     IntegrationProof::ProtectedTipAncestor,
+            },
+            Reachability::NotAncestor => IntegrationEvidenceStatus::TrunkRewritten,
+            Reachability::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+        }
+    }
+}
 
 impl From<GitObjectId> for RewrittenIntegrationTrunkCommit {
     fn from(git_object_id: GitObjectId) -> Self { Self(git_object_id) }
@@ -374,3 +393,59 @@ impl Display for LifecycleTransitionError {
 }
 
 impl Error for LifecycleTransitionError {}
+
+#[cfg(test)]
+mod tests {
+    use super::IntegrationEvidenceStatus;
+    use super::IntegrationProof;
+    use super::ReleaseDisposition;
+    use super::ReleaseRevalidationSubject;
+    use super::RewrittenIntegrationTrunkCommit;
+    use crate::git::Reachability;
+    use crate::ids::GitObjectId;
+
+    #[test]
+    fn revalidation_subject_selection() -> Result<(), Box<dyn std::error::Error>> {
+        let witness = "1111111111111111111111111111111111111111".parse::<GitObjectId>()?;
+        let trunk = "2222222222222222222222222222222222222222".parse::<GitObjectId>()?;
+        let disposition = ReleaseDisposition::RewrittenIntegration(
+            RewrittenIntegrationTrunkCommit::from(witness.clone()),
+        );
+        assert_eq!(
+            ReleaseDisposition::Integrated.revalidation_subject(),
+            ReleaseRevalidationSubject::ProtectedTip
+        );
+        let ReleaseRevalidationSubject::RewrittenIntegration(subject) =
+            disposition.revalidation_subject()
+        else {
+            return Err("rewritten integration must select the trunk witness".into());
+        };
+        for (reachability, expected) in [
+            (
+                Reachability::Ancestor,
+                IntegrationEvidenceStatus::Integrated {
+                    trunk_oid: trunk.clone(),
+                    proof:     IntegrationProof::ProtectedTipAncestor,
+                },
+            ),
+            (
+                Reachability::NotAncestor,
+                IntegrationEvidenceStatus::TrunkRewritten,
+            ),
+            (
+                Reachability::ObjectUnknown,
+                IntegrationEvidenceStatus::ObjectUnknown,
+            ),
+        ] {
+            let mut ancestry_queries = 0;
+            let status = subject.revalidate_ancestry(&trunk, |commit| {
+                assert_eq!(commit, &witness);
+                ancestry_queries += 1;
+                reachability
+            });
+            assert_eq!(status, expected);
+            assert_eq!(ancestry_queries, 1);
+        }
+        Ok(())
+    }
+}

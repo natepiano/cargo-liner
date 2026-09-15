@@ -288,15 +288,22 @@ The sections mean:
   names `resolve <reservation-id> --incursion <incident-id>`.
 - `recorded_incursion_answers`: durable resolutions for those incidents.
 - `alerts`: lost integration evidence and its `resolve_integrated_as` action;
-  orphan recovery evidence and its `recover` or `retire_or_abandon` action;
+  orphan recovery evidence and its `recover_with_trunk` or `retire_or_abandon` action;
   stale reservations and their
   `resolution.action = "renew"`; or bypasses not yet recorded and an instruction
   for restoring the journal audit path. A lost-evidence alert identifies the
   released reservation, protected tip, current evidence status, and whether
   trunk must resolve before the operator can confirm integration. The orphan
-  action names either `resolve --recovered` or the explicit retire/abandon
-  flags; the stale action names the reservation for `renew`; the bypass alert
-  names the recovery step.
+  `recover_with_trunk` action carries `recovery` using the existing
+  `lost_evidence_recovery` shape. With resolved trunk, it offers
+  `resolve <id> --recovered` after restoring the worktree and
+  `resolve <id> --integrated-as <trunk_oid>` after verifying merged work.
+  With unresolved trunk, it requires trunk repair before naming an integration
+  commit. The legacy `recover` variant and its `flag` remain accepted; the
+  `retire_or_abandon` variant retains both explicit `flags`. These existing
+  variants and the `OrphanResolutionAction` schema name are unchanged.
+  The stale action names the reservation for `renew`; the bypass alert names
+  the recovery step.
 - `git_cost`: exact Git-call counts used to build this board.
 
 `integration_order` is `undeclared` or `constraints_recorded`.

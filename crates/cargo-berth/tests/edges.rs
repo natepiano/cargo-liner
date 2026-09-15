@@ -421,7 +421,7 @@ fn assert_successor_abandonment(
 
 struct RewrittenSuccessorFixture {
     repository:       TempDir,
-    _worktrees:       TempDir,
+    worktrees:        TempDir,
     predecessor_id:   String,
     successor_id:     String,
     phase_start_head: String,
@@ -593,6 +593,12 @@ fn sequence_rejects_each_invalid_identity_and_carries_alerts() {
     let stale_mapping = fs::read(&mapping_path).expect("session mapping should read");
     assert!(
         run_berth(&third_root, &["release", &mapped_reservation_id, "--json"])
+            .status
+            .success()
+    );
+    // Complete automatic settlement before restoring a deliberately stale mapping.
+    assert!(
+        run_berth(repository.path(), &["board", "--json"])
             .status
             .success()
     );
@@ -846,6 +852,7 @@ fn successor_head_and_current_trunk_both_control_readiness() {
 fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
     for successor_is_equivalent in [true, false] {
         let fixture = rewritten_successor_fixture(successor_is_equivalent);
+        retain_protected_tip_release(&fixture);
         assert!(!git_status(
             fixture.repository.path(),
             &[
@@ -868,7 +875,11 @@ fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
             ],
             "",
         );
-        assert!(first.output.status.success());
+        assert!(
+            first.output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&first.output.stdout)
+        );
         assert_eq!(
             scoped_patch_comparisons_for_target(
                 &first,
@@ -919,8 +930,231 @@ fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
 }
 
 #[test]
+fn witness_survives_pruning_and_controls_successors() {
+    let fixture = rewritten_successor_fixture(true);
+    let root = fixture.repository.path();
+    let witness = prepare_pruned_witness(&fixture);
+
+    let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(&revalidated, &fixture.predecessor_id, "integrated", false);
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated");
+
+    let holding = run_berth_with_git_trace(
+        root,
+        &[
+            "sequence",
+            &fixture.predecessor_id,
+            &fixture.successor_id,
+            "--why",
+            "the successor must contain the integration witness",
+            "--json",
+        ],
+        "",
+    );
+    assert!(holding.output.status.success());
+    assert_eq!(scoped_patch_comparison_count(&holding), 0);
+    assert_eq!(
+        json_output(&holding.output)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}
+        })
+    );
+
+    let successor_root = fixture.worktrees.path().join("successor");
+    git(&successor_root, &["reset", "--hard", &witness]);
+    let fulfilled = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(&fulfilled, &fixture.predecessor_id, "integrated", false);
+    assert_successor_round_robin_progress(&fulfilled.output, 1, 1);
+
+    // Equivalent replacement content cannot reaffirm a witness removed from actual trunk.
+    git(root, &["reset", "--hard", &fixture.successor_head]);
+    let lost = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(&lost, &fixture.predecessor_id, "trunk_rewritten", true);
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "trunk_rewritten");
+    git(root, &["reset", "--hard", &witness]);
+    let recovered = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(&recovered, &fixture.predecessor_id, "integrated", false);
+    assert_successor_round_robin_progress(&recovered.output, 1, 1);
+    assert!(!git_status(
+        root,
+        &["cat-file", "-e", &fixture.protected_tip]
+    ));
+    assert_eq!(journal_operation_count(root, "release"), 1);
+}
+
+/// Explicit release revalidates the same surviving witness without consulting the old phase.
+fn assert_explicit_witness_evidence(root: &Path, reservation_id: &str, status: &str) {
+    let released = run_berth_with_git_trace(root, &["release", reservation_id, "--json"], "");
+    assert!(released.output.status.success());
+    assert_eq!(scoped_patch_comparison_count(&released), 0);
+    let output = json_output(&released.output);
+    assert_eq!(output["payload"]["data"]["status"], "already_settled");
+    assert_eq!(output["payload"]["data"]["evidence"]["status"], status);
+}
+
+/// Rebase the holder, settle against its trunk witness, and collect the original protected tip.
+fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
+    let root = fixture.repository.path();
+    assert_eq!(journal_operation_count(root, "release"), 0);
+    git(root, &["config", "core.hooksPath", "/dev/null"]);
+    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(witness, fixture.protected_tip);
+    assert_ne!(witness, fixture.successor_head);
+    assert!(!git_status(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &fixture.protected_tip,
+            &witness
+        ]
+    ));
+    assert!(!git_status(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &witness,
+            &fixture.successor_head
+        ]
+    ));
+    assert_eq!(
+        git_stdout(root, &["rev-parse", &format!("{witness}^{{tree}}")]),
+        git_stdout(
+            root,
+            &["rev-parse", &format!("{}^{{tree}}", fixture.successor_head)]
+        ),
+        "the successor has equivalent content without the recorded witness"
+    );
+
+    // Model the holder after its branch was rebased onto the equivalent trunk commit.
+    let predecessor_root = fixture.worktrees.path().join("predecessor");
+    git(&predecessor_root, &["reset", "--hard", &witness]);
+    assert_equivalence_settlement(fixture, &witness);
+
+    // Remove every ref and reflog retaining the old tip, then prove actual collection.
+    git(
+        &predecessor_root,
+        &["reset", "--hard", &fixture.phase_start_head],
+    );
+    git(
+        root,
+        &[
+            "update-ref",
+            "-d",
+            &reservation_ref(&fixture.predecessor_id),
+        ],
+    );
+    git(root, &["reflog", "expire", "--expire=now", "--all"]);
+    git(root, &["gc", "--prune=now"]);
+    assert!(!git_status(
+        root,
+        &["cat-file", "-e", &fixture.protected_tip]
+    ));
+    assert!(git_status(root, &["cat-file", "-e", &witness]));
+    witness
+}
+
+/// Settlement records the affirmative scoped proof directly before its witness disposition.
+fn assert_equivalence_settlement(fixture: &RewrittenSuccessorFixture, witness: &str) {
+    let root = fixture.repository.path();
+    let settled = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert!(settled.output.status.success());
+    let settled_board = json_output(&settled.output);
+    let predecessor = witness_reservation_snapshot(&settled_board, &fixture.predecessor_id);
+    assert_eq!(predecessor["lifecycle"]["stage"], "released");
+    assert_eq!(
+        predecessor["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": witness})
+    );
+    assert_eq!(
+        predecessor["integration_evidence"]["status"]["status"],
+        "integrated"
+    );
+    assert_eq!(
+        predecessor["integration_evidence"]["status"]["proof"],
+        "scoped_patch_equivalent"
+    );
+    assert!(
+        settled_board["payload"]["data"]["alerts"]["entries"]
+            .as_array()
+            .expect("board alerts should exist")
+            .iter()
+            .all(|alert| alert["reservation_id"] != fixture.predecessor_id)
+    );
+    let events = journal_text(root)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .collect::<Vec<_>>();
+    let release_index = events
+        .iter()
+        .position(|event| {
+            event["op"] == "release" && event["reservation_id"] == fixture.predecessor_id
+        })
+        .expect("equivalence must append a release");
+    let evidence = &events[release_index
+        .checked_sub(1)
+        .expect("release must follow evidence")];
+    assert_eq!(evidence["op"], "evidence_revalidated");
+    assert_eq!(evidence["reservation_id"], fixture.predecessor_id);
+    assert_eq!(evidence["status"]["proof"], "scoped_patch_equivalent");
+    assert_eq!(evidence["status"]["trunk_oid"], witness);
+}
+
+/// Find a settled predecessor in the board's durable reservation snapshots.
+fn witness_reservation_snapshot<'board>(
+    board: &'board serde_json::Value,
+    reservation_id: &str,
+) -> &'board serde_json::Value {
+    ["ready_now", "unconstrained_reservations", "resolved"]
+        .into_iter()
+        .flat_map(|section| {
+            board["payload"]["data"][section]["entries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .find(|snapshot| snapshot["reservation_id"] == reservation_id)
+        .expect("predecessor should have a board snapshot")
+}
+
+/// Revalidation remains ancestry-only even when the original protected object is absent.
+fn assert_witness_evidence(
+    traced: &TracedBerth,
+    reservation_id: &str,
+    status: &str,
+    lost_evidence: bool,
+) {
+    assert!(traced.output.status.success());
+    assert_eq!(
+        scoped_patch_comparison_count(traced),
+        0,
+        "witness revalidation must never replay patches"
+    );
+    let board = json_output(&traced.output);
+    let snapshot = witness_reservation_snapshot(&board, reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "released");
+    assert_eq!(snapshot["integration_evidence"]["status"]["status"], status);
+    let alerts = board["payload"]["data"]["alerts"]["entries"]
+        .as_array()
+        .expect("board alerts should exist");
+    assert_eq!(
+        alerts.iter().any(|alert| {
+            alert["kind"] == "lost_integration_evidence"
+                && alert["reservation_id"] == reservation_id
+        }),
+        lost_evidence
+    );
+    assert!(alerts.iter().all(|alert| {
+        alert["kind"] != "orphaned_outstanding" || alert["reservation_id"] != reservation_id
+    }));
+}
+
+#[test]
 fn unavailable_successor_comparison_is_retried_instead_of_cached() {
     let fixture = rewritten_successor_fixture(false);
+    retain_protected_tip_release(&fixture);
     let unavailable = run_berth_with_git_trace(
         fixture.repository.path(),
         &[
@@ -933,7 +1167,11 @@ fn unavailable_successor_comparison_is_retried_instead_of_cached() {
         ],
         &fixture.successor_head,
     );
-    assert!(unavailable.output.status.success());
+    assert!(
+        unavailable.output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unavailable.output.stdout)
+    );
     assert_eq!(
         journal_operation_count(
             fixture.repository.path(),
@@ -1192,6 +1430,7 @@ fn released_predecessor_ref_retires_only_after_every_successor_is_terminal() {
 
     let repair_subject = claim(repository.path(), "tree:tests", THIRD_RUN);
     let repair_subject_id = reservation_id(&repair_subject);
+    dirty_source(repository.path(), "tests/repair.rs");
     assert!(
         run_berth(
             repository.path(),
@@ -1528,13 +1767,6 @@ fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSucces
             .success()
     );
 
-    fs::write(repository.path().join("src/lib.rs"), rewritten_content)
-        .expect("rewritten trunk source should write");
-    git(repository.path(), &["add", "src/lib.rs"]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "rewritten trunk integration"],
-    );
     if successor_is_equivalent {
         fs::write(successor_root.join("src/lib.rs"), rewritten_content)
             .expect("equivalent successor source should write");
@@ -1549,13 +1781,36 @@ fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSucces
     }
     git(
         &successor_root,
-        &["commit", "--quiet", "-m", "successor work"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "successor work",
+        ],
     );
     let successor_head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
 
+    // Integrate last without hooks so the command under test owns the first settlement.
+    fs::write(repository.path().join("src/lib.rs"), rewritten_content)
+        .expect("rewritten trunk source should write");
+    git(repository.path(), &["add", "src/lib.rs"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "rewritten trunk integration",
+        ],
+    );
+
     RewrittenSuccessorFixture {
         repository,
-        _worktrees: worktrees,
+        worktrees,
         predecessor_id,
         successor_id,
         phase_start_head,
@@ -1581,6 +1836,40 @@ fn commit_middle_work(middle_root: &Path) {
             "middle work",
         ],
     );
+}
+
+/// Exercise legacy protected-tip cache subjects independently of automatic rewritten witnesses.
+fn retain_protected_tip_release(fixture: &RewrittenSuccessorFixture) {
+    let root = fixture.repository.path();
+    assert_eq!(journal_operation_count(root, "release"), 0);
+    let previous = last_journal_event(root);
+    let mut generation = previous["projection_generation"]
+        .as_u64()
+        .expect("generation should be numeric");
+    let mut journal = journal_text(root);
+    for mut event in [
+        serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": fixture.predecessor_id,
+            "status": {"status": "integrated", "trunk_oid": git_stdout(root, &["rev-parse", "HEAD"]), "proof": "scoped_patch_equivalent"},
+            "edit_blocking_status": "clear",
+        }),
+        serde_json::json!({
+            "op": "release",
+            "reservation_id": fixture.predecessor_id,
+            "disposition": {"kind": "integrated"},
+        }),
+    ] {
+        generation += 1;
+        for field in ["schema_version", "actor", "at"] {
+            event[field] = previous[field].clone();
+        }
+        event["event_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+        event["projection_generation"] = serde_json::json!(generation);
+        journal.push_str(&event.to_string());
+        journal.push('\n');
+    }
+    fs::write(root.join(JOURNAL_PATH), journal).expect("legacy proof and release should append");
 }
 
 /// Start successor scale fixtures with the same tracked scope files.
@@ -1725,9 +2014,7 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
         })
         .collect::<Vec<_>>();
 
-    for (predecessor_index, (predecessor_branch, predecessor_root)) in
-        predecessor_worktrees.iter().enumerate()
-    {
+    for (predecessor_index, (_, predecessor_root)) in predecessor_worktrees.iter().enumerate() {
         let predecessor_path = format!("predecessors/predecessor-{predecessor_index}.rs");
         dirty_source(predecessor_root, &predecessor_path);
         let predecessor_run = uuid::Uuid::now_v7().to_string();
@@ -1772,6 +2059,10 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
                 .status
                 .success()
         );
+    }
+
+    // Observe every cold predecessor together, before ordinary reconciliation can settle one.
+    for (predecessor_branch, _) in &predecessor_worktrees {
         git(
             repository.path(),
             &[

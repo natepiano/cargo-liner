@@ -1038,6 +1038,8 @@ fn create_stale_session_mapping(repository: &TempDir, session_id: &str) -> TestR
     let stale_mapping = fs::read(&mapping_path)?;
     let released = run_berth(repository.path(), &["release", reservation_id, "--json"])?;
     require_success(&released, "mapped reservation release")?;
+    let settled = run_berth(repository.path(), &["board", "--json"])?;
+    require_success(&settled, "settle mapped reservation")?;
     fs::write(mapping_path, stale_mapping)?;
     Ok(())
 }
@@ -1805,11 +1807,6 @@ struct OrphanedReservations {
 }
 
 impl OrphanedReservations {
-    /// The corpus names each orphaned reservation and the tip it protects.
-    fn corpus_identifiers(&self) -> TestResult<Vec<CorpusIdentifier>> {
-        self.corpus_identifiers_for(ORPHAN_SESSION_START_ENTRY)
-    }
-
     fn corpus_identifiers_for(&self, entry_name: &str) -> TestResult<Vec<CorpusIdentifier>> {
         let entry = corpus_entry(entry_name)?;
         let frozen = required_array(
@@ -2160,18 +2157,18 @@ fn lose_integration_evidence(
             "integrated",
         ],
     )?;
-    let integrated_trunk = git_revision(repository.path(), TRUNK_BRANCH)?;
-    let resolved = run_berth(
-        repository.path(),
-        &[
-            "resolve",
-            &reservation_id,
-            "--integrated-as",
-            &integrated_trunk,
-            "--json",
-        ],
-    )?;
-    require_success(&resolved, "integration record")?;
+    let reconciled = run_berth(repository.path(), &["board", "--json"])?;
+    require_success(&reconciled, "settle integrated reservation")?;
+    let settled = run_berth(repository.path(), &["release", &reservation_id, "--json"])?;
+    require_success(&settled, "automatic integration settlement")?;
+    assert_eq!(
+        json_output(&settled)?["payload"]["data"]["status"],
+        "already_settled"
+    );
+    assert_eq!(
+        json_output(&settled)?["payload"]["data"]["evidence"]["status"],
+        "integrated"
+    );
     take_the_integration_proof_away(repository, &trunk_before_integration, loss)?;
     let trunk = match loss {
         IntegrationProofLoss::TrunkRewrittenPastTheTip => {
@@ -2988,23 +2985,38 @@ fn session_start_publishes_the_engine_board_report() -> TestResult {
             &session_start_payload(orphans.repository.path(), Some(BOARD_SESSION)),
             &AmbientHarnessSession::Absent,
         )?;
-        assert_session_start_feedback_matches_corpus(
-            &output,
-            ORPHAN_SESSION_START_ENTRY,
-            &orphans.corpus_identifiers()?,
-        )?;
         let feedback = hook_feedback(
             &output,
             HookResponseEvent::SessionStart,
             "raw session-start payload",
         )?;
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            feedback.system_message,
+            "cargo-berth found 4 actionable coordination notice(s)."
+        );
+        assert_eq!(
+            feedback
+                .additional_context
+                .lines()
+                .filter(|line| line.contains("retains its previous merge protection:"))
+                .count(),
+            2
+        );
+        let trunk = git_revision(orphans.repository.path(), TRUNK_BRANCH)?;
         for orphan in &orphans.orphans {
+            let id = &orphan.reservation_id;
+            let tip = &orphan.protected_tip;
+            let expected = format!(
+                "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --integrated-as {trunk}` after reviewing the work. Use --recovered after restoring the worktree; for a merged branch, use --integrated-as after verifying trunk contains the work."
+            );
             assert!(
-                feedback.additional_context.contains(&format!(
-                    "`cargo-berth resolve {} --recovered`",
-                    orphan.reservation_id
-                )),
-                "an orphaned reservation should name its resolve command: {feedback:?}"
+                feedback
+                    .additional_context
+                    .lines()
+                    .any(|line| line == expected),
+                "the hook must name both exact recovery commands: {feedback:?}"
             );
         }
     }

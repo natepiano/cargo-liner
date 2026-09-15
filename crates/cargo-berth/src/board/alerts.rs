@@ -15,11 +15,13 @@ use crate::alert::BranchRefStatus;
 use crate::alert::LostEvidenceRecovery;
 use crate::alert::LostIntegrationEvidenceStatus;
 use crate::alert::ObjectAvailability;
+use crate::alert::OrphanResolutionAction;
 use crate::alert::RecoverabilityVerdict;
 use crate::alert::RetentionRefStatus;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositorySnapshot;
+use crate::edge::RepositoryTrunk;
 use crate::gate::permit;
 use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
@@ -158,7 +160,7 @@ pub(super) enum BoardAlert {
         retention_ref:        BoardRetentionRefStatus,
         recoverability:       RecoverabilityVerdict,
         recovery_consequence: OrphanRecoveryConsequence,
-        resolution:           OrphanResolutionAction,
+        resolution:           BoardOrphanResolutionAction,
     },
     StaleReservation {
         reservation_id: ReservationId,
@@ -206,9 +208,25 @@ pub(super) enum BoardRetentionRefStatus {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
-pub(super) enum OrphanResolutionAction {
+#[schemars(rename = "OrphanResolutionAction")]
+pub(super) enum BoardOrphanResolutionAction {
     Recover { flag: String },
     RetireOrAbandon { flags: Vec<String> },
+    RecoverWithTrunk { recovery: LostEvidenceRecovery },
+}
+
+impl From<OrphanResolutionAction> for BoardOrphanResolutionAction {
+    fn from(action: OrphanResolutionAction) -> Self {
+        match action {
+            OrphanResolutionAction::Recover(recovery) => Self::RecoverWithTrunk { recovery },
+            OrphanResolutionAction::RetireOrAbandon => Self::RetireOrAbandon {
+                flags: OrphanResolutionAction::retirement_flags()
+                    .iter()
+                    .map(|flag| format!("resolve {flag}"))
+                    .collect(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -321,7 +339,7 @@ fn orphaned_outstanding_detail(
     reservation_id: ReservationId,
     protected_tip: &ProtectedReservationTip,
     recoverability: RecoverabilityVerdict,
-    resolution: &OrphanResolutionAction,
+    resolution: &BoardOrphanResolutionAction,
 ) -> String {
     let recoverability = match recoverability {
         RecoverabilityVerdict::RecoverableFromBranch => "recoverable_from_branch",
@@ -329,20 +347,28 @@ fn orphaned_outstanding_detail(
         RecoverabilityVerdict::CommitUnavailable => "commit_unavailable",
     };
     let recovery_commands = match resolution {
-        OrphanResolutionAction::Recover { flag } => {
+        BoardOrphanResolutionAction::RecoverWithTrunk { recovery } => {
+            OrphanResolutionAction::Recover(recovery.clone()).commands(reservation_id)
+        },
+        BoardOrphanResolutionAction::Recover { flag } => {
             vec![reservation_resolution_command(flag, reservation_id)]
         },
-        OrphanResolutionAction::RetireOrAbandon { flags } => flags
+        BoardOrphanResolutionAction::RetireOrAbandon { flags } => flags
             .iter()
             .map(|flag| reservation_resolution_command(flag, reservation_id))
             .collect(),
     };
-    presentation::orphaned_outstanding_block(
+    let mut detail = presentation::orphaned_outstanding_block(
         &reservation_id.to_string(),
         &protected_tip.to_string(),
         recoverability,
         &recovery_commands,
-    )
+    );
+    if let BoardOrphanResolutionAction::RecoverWithTrunk { recovery } = resolution {
+        detail.push(' ');
+        detail.push_str(OrphanResolutionAction::Recover(recovery.clone()).integration_guidance());
+    }
+    detail
 }
 
 fn reservation_resolution_command(flag: &str, reservation_id: ReservationId) -> String {
@@ -519,10 +545,11 @@ pub(super) fn board_alerts(
     alerts: &[Alert],
     reservation_snapshots: &[BoardReservationSnapshot],
     unrecorded_bypasses: &[BypassOccurrenceTime],
+    repository_trunk: &RepositoryTrunk,
 ) -> Result<Vec<BoardAlert>, BoardError> {
     let mut board_alerts = alerts
         .iter()
-        .map(board_alert)
+        .map(|alert| board_alert(alert, repository_trunk))
         .collect::<Result<Vec<_>, BoardError>>()?;
     board_alerts.extend(reservation_snapshots.iter().filter_map(
         |snapshot| match &snapshot.freshness {
@@ -559,7 +586,10 @@ pub(super) fn board_alerts(
     Ok(board_alerts)
 }
 
-fn board_alert(alert: &Alert) -> Result<BoardAlert, BoardError> {
+fn board_alert(
+    alert: &Alert,
+    repository_trunk: &RepositoryTrunk,
+) -> Result<BoardAlert, BoardError> {
     match alert {
         Alert::MergeExtentUnavailable {
             reservation_id,
@@ -592,22 +622,7 @@ fn board_alert(alert: &Alert) -> Result<BoardAlert, BoardError> {
                         OrphanRecoveryConsequence::CommitsLost
                     },
                 },
-                resolution: match recoverability {
-                    RecoverabilityVerdict::RecoverableFromBranch
-                    | RecoverabilityVerdict::RecoverableFromProtectedTip => {
-                        OrphanResolutionAction::Recover {
-                            flag: "resolve --recovered".to_owned(),
-                        }
-                    },
-                    RecoverabilityVerdict::CommitUnavailable => {
-                        OrphanResolutionAction::RetireOrAbandon {
-                            flags: vec![
-                                "resolve --retire-orphan --why <reason>".to_owned(),
-                                "resolve --abandon --why <reason>".to_owned(),
-                            ],
-                        }
-                    },
-                },
+                resolution: OrphanResolutionAction::new(orphan, repository_trunk).into(),
             })
         },
     }
@@ -716,13 +731,33 @@ mod tests {
     use std::io;
 
     use super::BoardAlert;
+    use super::BoardOrphanResolutionAction;
     use super::StaleReservationResolutionAction;
     use super::board_alerts;
     use crate::answer::ConflictAuthorization;
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
+    use crate::edge::RepositoryTrunk;
     use crate::reservation::ReservationFreshness;
+
+    #[test]
+    fn legacy_orphan_resolution_wires_round_trip() -> FixtureResult<()> {
+        for wire in [
+            serde_json::json!({"action": "recover", "flag": "resolve --recovered"}),
+            serde_json::json!({
+                "action": "retire_or_abandon",
+                "flags": [
+                    "resolve --retire-orphan --why <reason>",
+                    "resolve --abandon --why <reason>",
+                ],
+            }),
+        ] {
+            let action: BoardOrphanResolutionAction = serde_json::from_value(wire.clone())?;
+            assert_eq!(serde_json::to_value(action)?, wire);
+        }
+        Ok(())
+    }
 
     #[test]
     fn stale_reservation_alert_names_the_renew_resolution() -> FixtureResult<()> {
@@ -732,14 +767,22 @@ mod tests {
         let model = fixture.model()?;
         let fresh_row =
             test_support::board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
-        assert!(board_alerts(&[], std::slice::from_ref(&fresh_row), &[])?.is_empty());
+        assert!(
+            board_alerts(
+                &[],
+                std::slice::from_ref(&fresh_row),
+                &[],
+                &RepositoryTrunk::ObjectUnknown
+            )?
+            .is_empty()
+        );
 
         let mut stale_row = fresh_row;
         let ReservationFreshness::Fresh { last_activity_at } = stale_row.freshness.clone() else {
             return Err(io::Error::other("new reservation should be fresh").into());
         };
         stale_row.freshness = ReservationFreshness::Stale { last_activity_at };
-        let alerts = board_alerts(&[], &[stale_row], &[])?;
+        let alerts = board_alerts(&[], &[stale_row], &[], &RepositoryTrunk::ObjectUnknown)?;
         assert!(matches!(
             alerts.as_slice(),
             [BoardAlert::StaleReservation {
