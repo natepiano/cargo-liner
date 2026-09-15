@@ -1260,8 +1260,8 @@ fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
         "released work\n",
         "unknown trunk work",
     );
+    // Work committed on trunk ends its run in the release command's own reconciliation.
     for (expected_status, expected_fact_status) in [
-        ("outstanding", "checkpointed"),
         ("integrated", "released"),
         ("integrated", "already_settled"),
     ] {

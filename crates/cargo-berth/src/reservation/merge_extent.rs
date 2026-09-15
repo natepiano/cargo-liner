@@ -55,7 +55,7 @@ pub(crate) enum MergeExtent {
         /// The immutable acquisition scope protects until the first successful observation.
         protection: ReservationScopeSet,
     },
-    /// Successful emptiness ends merge protection without ending the editing run.
+    /// Successful emptiness ends merge protection, and ends the run once it has done work.
     Empty {
         /// The exact inputs that proved this empty answer.
         key: MergeExtentKey,
@@ -120,6 +120,20 @@ impl MergeExtent {
             retained_evidence,
             failure,
         }
+    }
+
+    /// Whether a completed observation last found unmerged paths, including through failure.
+    ///
+    /// An acquisition's declaration is not observed work, so `NotDerived` answers false.
+    pub(crate) const fn observed_unmerged_work(&self) -> bool {
+        matches!(
+            self,
+            Self::Protected { .. }
+                | Self::Unavailable {
+                    retained_evidence: RetainedMergeEvidence::Protected { .. },
+                    ..
+                }
+        )
     }
 
     /// Read only this ground's own protection, including retained failure evidence.

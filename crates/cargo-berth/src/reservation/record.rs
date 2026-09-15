@@ -305,7 +305,7 @@ impl Reservation {
     }
 
     /// An explicit disposition, or an ended run with no merge surface, needs only audit retention.
-    /// A live clean claim remains nonterminal because its editing extent is still active.
+    /// A clean claim that has not written yet remains nonterminal while its run is active.
     pub(crate) const fn is_terminal(&self) -> bool {
         matches!(self.lifecycle, ReservationLifecycle::Released { .. })
             || !self.is_active() && matches!(self.merge_extent, MergeExtent::Empty { .. })
@@ -585,7 +585,7 @@ pub(crate) enum RaceExtent {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReservationRunStatus {
-    /// An empty merge extent alone never ends the run.
+    /// An empty merge extent ends the run only after the run has done work.
     #[default]
     Editing,
     /// A checkpoint or release has ended the run's editing protection.

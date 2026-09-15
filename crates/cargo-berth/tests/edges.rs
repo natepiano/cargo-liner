@@ -1188,6 +1188,8 @@ fn witness_survives_pruning_and_controls_successors() {
 
     let successor_root = fixture.worktrees.path().join("successor");
     git(&successor_root, &["reset", "--hard", &witness]);
+    // Uncommitted work keeps the successor's run from ending now that its head is on trunk.
+    dirty_source(&successor_root, "tests/successor_pending.rs");
     let fulfilled = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert_witness_evidence(
         &fulfilled,

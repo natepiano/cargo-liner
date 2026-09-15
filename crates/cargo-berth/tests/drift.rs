@@ -1162,6 +1162,9 @@ fn a_claim_taken_after_a_commit_is_not_entered_by_it() {
         "{}",
         String::from_utf8_lossy(&committed.stderr)
     );
+    // Uncommitted work in the subject's own scope keeps its run from ending on trunk.
+    fs::write(repository.path().join("first.txt"), "subject work\n")
+        .expect("subject work should write");
     dirty_source(&foreign_root, "shared.txt");
     let late_holder_id = claim(&foreign_root, "file:shared.txt", SECOND_RUN);
 
@@ -2931,6 +2934,9 @@ fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
     let repository = initialized_repository();
     let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
     let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
+    // Uncommitted work keeps both runs in this worktree from ending on trunk.
+    fs::write(repository.path().join("observer.txt"), "observer work\n")
+        .expect("observer work should write");
     fs::write(repository.path().join("released.txt"), "released work\n")
         .expect("released work should write");
     git(repository.path(), &["add", "released.txt"]);
@@ -2945,6 +2951,7 @@ fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
             "released work",
         ],
     );
+    // The observer's uncommitted work keeps the worktree dirty, so release checkpoints first.
     for (expected_status, expected_fact_status) in [
         ("outstanding", "checkpointed"),
         ("integrated", "released"),

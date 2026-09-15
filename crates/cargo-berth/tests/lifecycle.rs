@@ -1739,9 +1739,70 @@ mod merge_extent {
                 "an accessible holder must remain observable when locked={locked}: {integrated}"
             );
 
+            let ended = snapshot(&integrated, &id);
+            assert_eq!(ended["lifecycle"]["stage"], "released");
+            assert_eq!(ended["lifecycle"]["disposition"]["kind"], "integrated");
+            assert_eq!(ended["edit_blocking_status"], "clear");
+
             assert_allowed(&fixture.outsider, "file:branch.rs", THIRD_RUN);
-            assert_refused(&fixture.holder, "file:branch.rs", SECOND_RUN, &id);
+            assert_allowed(&fixture.holder, "file:branch.rs", SECOND_RUN);
         }
+    }
+
+    #[test]
+    fn committing_on_trunk_ends_the_run_without_a_release_command() {
+        let fixture = Repository::new();
+        let id = claim(fixture.trunk(), "file:tracked.rs", FIRST_RUN);
+        write(fixture.trunk(), "tracked.rs", "uncommitted work\n");
+        let dirty = board(fixture.trunk());
+        assert_eq!(snapshot(&dirty, &id)["merge_extent"]["status"], "protected");
+        assert_refused(&fixture.outsider, "file:tracked.rs", THIRD_RUN, &id);
+
+        GIT.run(fixture.trunk(), ["commit", "--quiet", "-am", "trunk work"]);
+        let committed = board(fixture.trunk());
+        let ended = snapshot(&committed, &id);
+        assert_eq!(ended["lifecycle"]["stage"], "released");
+        assert_eq!(ended["lifecycle"]["disposition"]["kind"], "integrated");
+        assert!(
+            events(fixture.trunk())
+                .iter()
+                .any(|event| event["op"] == "release" && event["reservation_id"] == id),
+            "the board read itself should append the release"
+        );
+        assert_allowed(&fixture.outsider, "file:tracked.rs", THIRD_RUN);
+        assert_allowed(fixture.trunk(), "file:tracked.rs", SECOND_RUN);
+
+        let settled = berth(fixture.trunk(), &["release", &id, "--json"], FIRST_RUN);
+        succeed(&settled);
+    }
+
+    #[test]
+    fn a_clean_claim_that_has_not_written_keeps_running() {
+        let fixture = Repository::new();
+        let id = claim(fixture.trunk(), "file:tracked.rs", FIRST_RUN);
+        board(fixture.trunk());
+        let observed = board(fixture.trunk());
+        let running = snapshot(&observed, &id);
+        assert_eq!(running["merge_extent"]["status"], "empty");
+        assert_eq!(running["lifecycle"]["stage"], "active");
+        assert_refused(fixture.trunk(), "file:tracked.rs", SECOND_RUN, &id);
+    }
+
+    #[test]
+    fn a_merged_branch_with_work_left_uncommitted_keeps_its_run() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "branch work\n");
+        board(fixture.trunk());
+        GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
+        write(&fixture.holder, "tracked.rs", "follow-on work\n");
+        let observed = board(fixture.trunk());
+        let running = snapshot(&observed, &id);
+        assert_eq!(running["lifecycle"]["stage"], "active");
+        assert_eq!(
+            scope_paths(&running["merge_extent"]["scopes"]),
+            BTreeSet::from(["tracked.rs".to_owned()])
+        );
     }
 
     #[test]

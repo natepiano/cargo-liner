@@ -84,6 +84,7 @@ use crate::output::OutputEnvelope;
 use crate::reservation;
 use crate::reservation::DeferredScopedPatchIntegrationStatus;
 use crate::reservation::DurableScopedPatchComparison;
+use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceObservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
@@ -189,7 +190,8 @@ pub(crate) struct ReconciliationGitCost {
 struct MergeExtentGitCost {
     /// Includes attempted status reads that report an observation failure.
     worktree_status_queries: u64,
-    /// Includes failed reads and fresh committed-path reads needed to settle a cached extent.
+    /// Includes failed reads, fresh committed-path reads needed to settle a cached extent, and
+    /// the ancestry read that ends a clean run whose head trunk contains.
     path_queries:            u64,
 }
 
@@ -233,6 +235,7 @@ struct ReconciliationPlan {
 }
 
 struct ReconciliationEvidenceContext<'context> {
+    merged_run_endings:                       MergedRunEndings,
     berth_config:                             &'context BerthConfig,
     scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
     successor_scoped_patch_evaluation_budget:
@@ -894,6 +897,23 @@ enum RepositoryObservationScope {
     },
 }
 
+/// Whether this reconciliation may end active runs whose work trunk already contains.
+#[derive(Clone, Copy)]
+enum MergedRunEndings {
+    /// End every such run in this append.
+    End,
+    /// Leave them for a later reconciliation, so drift attributes a new commit to its run first.
+    Defer,
+}
+
+/// What one reconciliation caller chooses to observe, report and end.
+#[derive(Clone, Copy)]
+struct ReconciliationRequest {
+    repository_observation_scope: RepositoryObservationScope,
+    recovered_bypass_reporting:   RecoveredBypassReporting,
+    merged_run_endings:           MergedRunEndings,
+}
+
 /// Reconcile every retained reservation before a stateful command consumes it.
 pub(crate) fn reconcile(
     invocation_directory: &Path,
@@ -927,8 +947,13 @@ where
                     &worktree_context,
                     &ledger,
                     &berth_config,
-                    RepositoryObservationScope::CurrentOrderingGraph,
-                    RecoveredBypassReporting::Defer,
+                    ReconciliationRequest {
+                        repository_observation_scope:
+                            RepositoryObservationScope::CurrentOrderingGraph,
+                        recovered_bypass_reporting:   RecoveredBypassReporting::Defer,
+                        // Post-commit drift must attribute the commit before its run can end.
+                        merged_run_endings:           MergedRunEndings::Defer,
+                    },
                 );
                 let observation = observation_worker
                     .join()
@@ -1033,8 +1058,11 @@ fn reconcile_enrolled(
         worktree_context,
         &ledger,
         berth_config,
-        repository_observation_scope,
-        recovered_bypass_reporting,
+        ReconciliationRequest {
+            repository_observation_scope,
+            recovered_bypass_reporting,
+            merged_run_endings: MergedRunEndings::End,
+        },
     )
 }
 
@@ -1043,8 +1071,7 @@ fn reconcile_with_open_ledger(
     worktree_context: &WorktreeContext,
     ledger: &Ledger,
     berth_config: &BerthConfig,
-    repository_observation_scope: RepositoryObservationScope,
-    recovered_bypass_reporting: RecoveredBypassReporting,
+    request: ReconciliationRequest,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
@@ -1060,10 +1087,9 @@ fn reconcile_with_open_ledger(
                     |state| match prepare_reconciliation_transaction(
                         &state,
                         berth_config,
-                        repository_observation_scope,
+                        request,
                         ledger_repository,
                         worktree_context,
-                        recovered_bypass_reporting,
                         rewrite_preflight,
                     ) {
                         Ok(prepared) => ReconciliationValidation::Apply {
@@ -1568,10 +1594,9 @@ struct PreparedReconciliationTransaction {
 fn prepare_reconciliation_transaction(
     state: &ReplayedLedgerState<'_>,
     berth_config: &BerthConfig,
-    repository_observation_scope: RepositoryObservationScope,
+    request: ReconciliationRequest,
     ledger_repository: RepoInstanceId,
     worktree_context: &WorktreeContext,
-    recovered_bypass_reporting: RecoveredBypassReporting,
     rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<PreparedReconciliationTransaction, ReconciliationPlanningError> {
     let reservations = RetainedReservationSet::replay(state.events())
@@ -1583,6 +1608,7 @@ fn prepare_reconciliation_transaction(
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
+        merged_run_endings: request.merged_run_endings,
         berth_config,
         scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
         successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
@@ -1590,7 +1616,7 @@ fn prepare_reconciliation_transaction(
     let mut reconciliation_plan = build_plan(
         &reservations,
         &ordering_graph,
-        repository_observation_scope,
+        request.repository_observation_scope,
         ledger_repository,
         worktree_context,
         &mut reconciliation_evidence_context,
@@ -1620,7 +1646,7 @@ fn prepare_reconciliation_transaction(
         .map(|pending_import| pending_import.operation().clone())
         .collect();
     reconciliation_plan.action.pending_bypass_imports = pending_bypass_imports;
-    reconciliation_plan.action.recovered_bypass_reporting = recovered_bypass_reporting;
+    reconciliation_plan.action.recovered_bypass_reporting = request.recovered_bypass_reporting;
     reconciliation_plan.action.recovered_bypass_markers = pending_bypasses.take_completed_markers();
     reconciliation_plan.action.unrecorded_bypass_occurrences =
         pending_bypasses.take_unrecorded_occurrences();
@@ -1915,7 +1941,21 @@ fn complete_reconciliation_plan(
         &extents.committed_by_holder,
         plan,
     )?;
+    let merged_runs = match context.merged_run_endings {
+        MergedRunEndings::End => append_merged_run_endings(reservations, plan),
+        MergedRunEndings::Defer => Vec::new(),
+    };
     for snapshot in &mut snapshots {
+        if let Some(merged_run) = merged_runs
+            .iter()
+            .find(|merged_run| merged_run.reservation_id == snapshot.reservation_id)
+        {
+            snapshot.evidence = RepositoryReservationEvidence::Released {
+                protected_tip:      merged_run.protected_tip.clone(),
+                disposition:        ReleaseDisposition::Integrated,
+                integration_status: merged_run.integration_status.clone(),
+            };
+        }
         for operation in &plan.operations {
             if let JournalOperation::Release {
                 reservation_id,
@@ -2097,7 +2137,9 @@ pub(crate) fn prepare_gate_reconciliation(
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
+    // A gate decides one ref update; runs end on the ordinary reconciliation that follows.
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
+        merged_run_endings: MergedRunEndings::Defer,
         berth_config,
         scoped_patch_evaluation_budget: &mut scoped_patch_evaluation_budget,
         successor_scoped_patch_evaluation_budget: &mut successor_scoped_patch_evaluation_budget,
@@ -3023,6 +3065,103 @@ fn append_settlement_operations(
         settled.insert(reservation.id(), disposition);
     }
     rebuild_settlement_retention(reservations, ordering_graph, &settled, reconciliation)
+}
+
+/// An active run this pass ended because trunk already contains all of its work.
+struct MergedRunEnding {
+    reservation_id:     ReservationId,
+    protected_tip:      ProtectedReservationTip,
+    integration_status: IntegrationEvidenceStatus,
+}
+
+/// End every active run whose work trunk now contains, with no release command.
+///
+/// A run qualifies once it has done work — an earlier observation found unmerged paths, or its
+/// checkout has committed past the phase start — and this pass observes a clean checkout with
+/// no net branch change at a head trunk contains. Nothing is left to protect, so the run
+/// checkpoints at that head and settles in the same append. The result is the ordinary
+/// integrated release, revalidated on later reads like any other. A fresh claim that has not
+/// written yet has neither kind of work and keeps running.
+fn append_merged_run_endings(
+    reservations: &RetainedReservationSet,
+    reconciliation: &mut ReconciliationPlan,
+) -> Vec<MergedRunEnding> {
+    let mut merged_runs = Vec::new();
+    for reservation in reservations.iter() {
+        if !matches!(reservation.lifecycle(), ReservationLifecycle::Active) {
+            continue;
+        }
+        let extent = reconciliation
+            .operations
+            .iter()
+            .rev()
+            .find_map(|operation| match operation {
+                JournalOperation::MergeExtentObserved {
+                    reservation_id,
+                    extent,
+                    ..
+                } if *reservation_id == reservation.id() => Some(extent),
+                _ => None,
+            })
+            .unwrap_or_else(|| reservation.merge_extent());
+        let MergeExtent::Empty { key } = extent else {
+            continue;
+        };
+        let did_work = reservation.merge_extent().observed_unmerged_work()
+            || key.head != *reservation.phase_start_head().as_ref();
+        if !did_work {
+            continue;
+        }
+        if key.head != key.trunk {
+            reconciliation.action.merge_extent_git_cost.path_queries += 1;
+            let reachability = git::reachability(
+                &reconciliation.action.repository_root,
+                &key.head,
+                &key.trunk,
+            );
+            if !matches!(reachability, Ok(Reachability::Ancestor)) {
+                continue;
+            }
+        }
+        let protected_tip = ProtectedReservationTip::from(key.head.clone());
+        let integration_status = IntegrationEvidenceStatus::Integrated {
+            trunk_oid: key.trunk.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
+            witness:   IntegrationWitness::EvaluatedTrunk,
+        };
+        let trunk_snapshot = key.trunk.clone();
+        reconciliation
+            .operations
+            .push(JournalOperation::Checkpoint {
+                reservation_id: reservation.id(),
+                protected_tip: protected_tip.clone(),
+                trunk_snapshot,
+            });
+        reconciliation
+            .operations
+            .push(JournalOperation::EvidenceRevalidated {
+                reservation_id:       reservation.id(),
+                status:               integration_status.clone(),
+                edit_blocking_status: EditBlockingStatus::Clear,
+            });
+        reconciliation.operations.push(JournalOperation::Release {
+            reservation_id: reservation.id(),
+            disposition:    ReleaseDisposition::Integrated,
+        });
+        reconciliation
+            .action
+            .settlements
+            .push(ReconciledSettlement {
+                reservation_id: reservation.id(),
+                disposition:    ReleaseDisposition::Integrated,
+            });
+        merged_runs.push(MergedRunEnding {
+            reservation_id: reservation.id(),
+            protected_tip,
+            integration_status,
+        });
+    }
+    merged_runs
 }
 
 /// Choose one final ref action per reservation after this pass selects its settlements.

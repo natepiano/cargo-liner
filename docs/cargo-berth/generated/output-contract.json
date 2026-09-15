@@ -4112,7 +4112,7 @@
               "type": "object"
             },
             {
-              "description": "Successful emptiness ends merge protection without ending the editing run.",
+              "description": "Successful emptiness ends merge protection, and ends the run once it has done work.",
               "properties": {
                 "key": {
                   "$ref": "#/$defs/MergeExtentKey",
@@ -11262,7 +11262,7 @@
               "type": "object"
             },
             {
-              "description": "Successful emptiness ends merge protection without ending the editing run.",
+              "description": "Successful emptiness ends merge protection, and ends the run once it has done work.",
               "properties": {
                 "key": {
                   "$ref": "#/$defs/MergeExtentKey",
@@ -16119,7 +16119,7 @@
               "type": "object"
             },
             {
-              "description": "Successful emptiness ends merge protection without ending the editing run.",
+              "description": "Successful emptiness ends merge protection, and ends the run once it has done work.",
               "properties": {
                 "key": {
                   "$ref": "#/$defs/MergeExtentKey",
