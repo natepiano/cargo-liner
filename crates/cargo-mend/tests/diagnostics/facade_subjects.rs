@@ -4,13 +4,17 @@ use tempfile::TempDir;
 use crate::support::*;
 
 fn write_manifest(temp: &TempDir, package_name: &str, features: bool) {
+    write_manifest_at(temp.path(), package_name, features);
+}
+
+fn write_manifest_at(root: &std::path::Path, package_name: &str, features: bool) {
     let feature_section = if features {
         "\n[features]\npromote = []\n"
     } else {
         ""
     };
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         format!(
             "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n{feature_section}"
         ),
@@ -150,125 +154,127 @@ fn path_module_and_raw_identifier_facades_use_hir_module_identity() {
     );
 }
 
-#[test]
-fn spaced_facade_visibility_uses_resolved_reach() {
-    let temp = tempdir().expect("create spaced visibility fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "spaced_facade_visibility_fixture", false);
-    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-        .expect("write fixture main");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+fn spaced_facade_visibility_uses_resolved_reach(batch: &mut DiagnosticBatch) -> fn(&Report) {
+    let root = batch.add_member("spaced_facade_visibility_uses_resolved_reach", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
+    write_manifest_at(&root, "spaced_facade_visibility_fixture", false);
+    fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        temp.path().join("src/a/b.rs"),
+        root.join("src/a/b.rs"),
         "mod child;\npub (crate) use child::Spaced;\n",
     )
     .expect("write spaced facade");
-    fs::write(
-        temp.path().join("src/a/b/child.rs"),
-        "pub(crate) struct Spaced;\n",
-    )
-    .expect("write facade subject");
+    fs::write(root.join("src/a/b/child.rs"), "pub(crate) struct Spaced;\n")
+        .expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/child.rs"
-        }),
-        "resolved pub(crate) facade reach must permit its subject: {report:#?}"
-    );
+    |report| {
+        assert!(
+            !report.findings.iter().any(|finding| {
+                finding.code == DiagnosticCode::OverbroadPubCrate
+                    && finding.path
+                        == "spaced_facade_visibility_uses_resolved_reach/src/a/b/child.rs"
+            }),
+            "resolved pub(crate) facade reach must permit its subject: {report:#?}"
+        );
+    }
 }
 
-#[test]
-fn variant_reexport_normalizes_to_its_containing_enum() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "variant_subject_fixture", false);
-    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-        .expect("write fixture main");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+fn variant_reexport_normalizes_to_its_containing_enum(batch: &mut DiagnosticBatch) -> fn(&Report) {
+    let root = batch.add_member("variant_reexport_normalizes_to_its_containing_enum", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
+    write_manifest_at(&root, "variant_subject_fixture", false);
+    fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        temp.path().join("src/a/b.rs"),
+        root.join("src/a/b.rs"),
         "mod c;\nmod unfacaded;\npub(crate) use c::Choice::Selected;\n",
     )
     .expect("write facade module");
     fs::write(
-        temp.path().join("src/a/b/c.rs"),
+        root.join("src/a/b/c.rs"),
         "pub(crate) enum Choice { Selected }\n",
     )
     .expect("write subjects");
     fs::write(
-        temp.path().join("src/a/b/unfacaded.rs"),
+        root.join("src/a/b/unfacaded.rs"),
         "pub(crate) struct Unfacaded;\n",
     )
     .expect("write control subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
-        }),
-        "the re-exported variant must normalize to Choice: {report:#?}"
-    );
-    assert_eq!(
-        report
-            .findings
-            .iter()
-            .filter(|finding| {
+    |report| {
+        assert!(
+            !report.findings.iter().any(|finding| {
                 finding.code == DiagnosticCode::OverbroadPubCrate
-                    && finding.path == "src/a/b/unfacaded.rs"
-            })
-            .count(),
-        1,
-        "{report:#?}"
-    );
+                    && finding.path
+                        == "variant_reexport_normalizes_to_its_containing_enum/src/a/b/c.rs"
+            }),
+            "the re-exported variant must normalize to Choice: {report:#?}"
+        );
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| {
+                    finding.code == DiagnosticCode::OverbroadPubCrate
+                        && finding.path == "variant_reexport_normalizes_to_its_containing_enum/src/a/b/unfacaded.rs"
+                })
+                .count(),
+            1,
+            "{report:#?}"
+        );
+    }
 }
 
-#[test]
-fn inherent_items_follow_their_self_type_facade_subject() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-    write_manifest(&temp, "inherent_visibility_cap_fixture", false);
-    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-        .expect("write fixture main");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+fn inherent_items_follow_their_self_type_facade_subject(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member("inherent_items_follow_their_self_type_facade_subject", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/a/b")).expect("create fixture modules");
+    write_manifest_at(&root, "inherent_visibility_cap_fixture", false);
+    fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        temp.path().join("src/a/b.rs"),
+        root.join("src/a/b.rs"),
         "mod c;\nmod unfacaded;\npub(crate) use c::Widget;\n",
     )
     .expect("write facade module");
     fs::write(
-        temp.path().join("src/a/b/c.rs"),
+        root.join("src/a/b/c.rs"),
         "pub(crate) struct Widget;\nimpl Widget { pub(crate) fn facade_method() {} pub(crate) const FACADE_CONST: usize = 1; }\n",
     )
     .expect("write facade-reachable inherent items");
     fs::write(
-        temp.path().join("src/a/b/unfacaded.rs"),
+        root.join("src/a/b/unfacaded.rs"),
         "pub(crate) struct Unfacaded;\n",
     )
     .expect("write control subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c.rs"
-        }),
-        "the Widget facade must reach its associated items through their self type: {report:#?}"
-    );
-    assert_eq!(
-        report
-            .findings
-            .iter()
-            .filter(|finding| {
+    |report| {
+        assert!(
+            !report.findings.iter().any(|finding| {
                 finding.code == DiagnosticCode::OverbroadPubCrate
-                    && finding.path == "src/a/b/unfacaded.rs"
-            })
-            .count(),
-        1,
-        "{report:#?}"
-    );
+                    && finding.path
+                        == "inherent_items_follow_their_self_type_facade_subject/src/a/b/c.rs"
+            }),
+            "the Widget facade must reach its associated items through their self type: {report:#?}"
+        );
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| {
+                    finding.code == DiagnosticCode::OverbroadPubCrate
+                        && finding.path == "inherent_items_follow_their_self_type_facade_subject/src/a/b/unfacaded.rs"
+                })
+                .count(),
+            1,
+            "{report:#?}"
+        );
+    }
 }
 
 #[test]
@@ -1558,4 +1564,31 @@ fn facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place() {
         !parent.contains("pub use local_only::LocalOnly;"),
         "the fixer left an internal facade in place: {parent}"
     );
+}
+
+#[test]
+fn resolved_subjects_with_permitted_visibility() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let assertions = [
+        (
+            "spaced_facade_visibility_uses_resolved_reach",
+            spaced_facade_visibility_uses_resolved_reach(&mut batch),
+        ),
+        (
+            "variant_reexport_normalizes_to_its_containing_enum",
+            variant_reexport_normalizes_to_its_containing_enum(&mut batch),
+        ),
+        (
+            "inherent_items_follow_their_self_type_facade_subject",
+            inherent_items_follow_their_self_type_facade_subject(&mut batch),
+        ),
+    ];
+    let reports = batch.member_reports();
+    for (member, assert_case) in assertions {
+        assert_case(&reports[member]);
+    }
 }

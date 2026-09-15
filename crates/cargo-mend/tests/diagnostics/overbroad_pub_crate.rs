@@ -262,12 +262,13 @@ fn pub_crate_at_depth_3_names_exact_boundary_for_supported_facade_spellings() {
     }
 }
 
-#[test]
-fn restricted_facade_sets_the_exact_declaration_boundary() {
-    let temp = tempdir().expect("create restricted facade fixture dir");
-    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+fn restricted_facade_sets_the_exact_declaration_boundary(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member("restricted_facade_sets_the_exact_declaration_boundary", &[]);
+    fs::create_dir_all(root.join("src/a/b/c")).expect("create fixture modules");
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "restricted_facade_reach_fixture"
 version = "0.1.0"
@@ -276,50 +277,54 @@ edition = "2024"
     )
     .expect("write manifest");
     fs::write(
-        temp.path().join("mend.toml"),
+        root.join("mend.toml"),
         "[visibility]\npub_in_path = \"permitted\"\n",
     )
     .expect("write visibility config");
-    fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-        .expect("write fixture main");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
-    fs::write(temp.path().join("src/a/b.rs"), "mod c;\n").expect("write middle module");
+    fs::write(root.join("src/main.rs"), "mod a;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(root.join("src/a/b.rs"), "mod c;\n").expect("write middle module");
     fs::write(
-        temp.path().join("src/a/b/c.rs"),
+        root.join("src/a/b/c.rs"),
         "mod child;\npub(in crate::a) use child::helper;\n",
     )
     .expect("write restricted facade");
     fs::write(
-        temp.path().join("src/a/b/c/child.rs"),
+        root.join("src/a/b/c/child.rs"),
         "pub(crate) fn helper() {}\n",
     )
     .expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate
-                && finding.path == "src/a/b/c/child.rs"
-        })
-        .unwrap_or_else(|| panic!("missing forbidden visibility finding: {report:#?}"));
-    assert!(
-        finding
-            .help
+    |report| {
+        let finding = report
+            .findings
             .iter()
-            .any(|help| help == "consider using: `pub(in crate::a)`"),
-        "{report:#?}"
-    );
+            .find(|finding| {
+                finding.code == DiagnosticCode::OverbroadPubCrate
+                    && finding.path == "restricted_facade_sets_the_exact_declaration_boundary/src/a/b/c/child.rs"
+            })
+            .unwrap_or_else(|| panic!("missing forbidden visibility finding: {report:#?}"));
+        assert!(
+            finding
+                .help
+                .iter()
+                .any(|help| help == "consider using: `pub(in crate::a)`"),
+            "{report:#?}"
+        );
+    }
 }
 
-#[test]
-fn restricted_facade_chain_renders_the_resolved_boundary_exactly() {
-    let temp = tempdir().expect("create restricted facade chain fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+fn restricted_facade_chain_renders_the_resolved_boundary_exactly(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "restricted_facade_chain_renders_the_resolved_boundary_exactly",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/a/b/c")).expect("create fixture modules");
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "restricted_facade_chain_fixture"
 version = "0.1.0"
@@ -327,48 +332,50 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
-    fs::write(temp.path().join("src/lib.rs"), "mod a;\n").expect("write library root");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(root.join("src/lib.rs"), "mod a;\n").expect("write library root");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        temp.path().join("src/a/b.rs"),
+        root.join("src/a/b.rs"),
         "mod c;\npub(in crate::a) use c::d::helper;\n",
     )
     .expect("write restricted outer facade");
     fs::write(
-        temp.path().join("src/a/b/c.rs"),
+        root.join("src/a/b/c.rs"),
         "pub(super) mod d;\npub(super) use d::helper;\n",
     )
     .expect("write inner facade");
-    fs::write(
-        temp.path().join("src/a/b/c/d.rs"),
-        "pub(crate) fn helper() {}\n",
-    )
-    .expect("write facade subject");
+    fs::write(root.join("src/a/b/c/d.rs"), "pub(crate) fn helper() {}\n")
+        .expect("write facade subject");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let finding = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
-        })
-        .unwrap_or_else(|| panic!("missing restricted chain finding: {report:#?}"));
-    assert!(
-        finding
-            .help
+    |report| {
+        let finding = report
+            .findings
             .iter()
-            .any(|help| help == "consider using: `pub(in crate::a)`"),
-        "the restricted facade chain must render its resolved crate::a boundary: {report:#?}"
-    );
+            .find(|finding| {
+                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "restricted_facade_chain_renders_the_resolved_boundary_exactly/src/a/b/c/d.rs"
+            })
+            .unwrap_or_else(|| panic!("missing restricted chain finding: {report:#?}"));
+        assert!(
+            finding
+                .help
+                .iter()
+                .any(|help| help == "consider using: `pub(in crate::a)`"),
+            "the restricted facade chain must render its resolved crate::a boundary: {report:#?}"
+        );
+    }
 }
 
-#[test]
-fn pub_crate_at_depth_3_fires_when_parent_does_not_reexport() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn pub_crate_at_depth_3_fires_when_parent_does_not_reexport(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "pub_crate_at_depth_3_fires_when_parent_does_not_reexport",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "depth_3_no_reexport_fixture"
 version = "0.1.0"
@@ -376,29 +383,30 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
-    fs::create_dir_all(temp.path().join("src/foo/bar")).expect("create src/foo/bar");
-    fs::write(temp.path().join("src/lib.rs"), "mod foo;\n").expect("write lib");
-    fs::write(temp.path().join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
-    fs::write(temp.path().join("src/foo/bar/mod.rs"), "mod baz;\n").expect("write foo/bar/mod.rs");
+    fs::create_dir_all(root.join("src/foo/bar")).expect("create src/foo/bar");
+    fs::write(root.join("src/lib.rs"), "mod foo;\n").expect("write lib");
+    fs::write(root.join("src/foo/mod.rs"), "mod bar;\n").expect("write foo/mod.rs");
+    fs::write(root.join("src/foo/bar/mod.rs"), "mod baz;\n").expect("write foo/bar/mod.rs");
     fs::write(
-        temp.path().join("src/foo/bar/baz.rs"),
+        root.join("src/foo/bar/baz.rs"),
         "pub(crate) fn helper() {}\n",
     )
     .expect("write foo/bar/baz.rs");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let forbidden_count = report
-        .findings
-        .iter()
-        .filter(|f| {
-            f.code == DiagnosticCode::OverbroadPubCrate && f.path.ends_with("src/foo/bar/baz.rs")
-        })
-        .count();
-    assert_eq!(
-        forbidden_count, 1,
-        "pub(crate) at depth 3 should fire when the parent does not re-export it: {:?}",
-        report.findings,
-    );
+    |report| {
+        let forbidden_count = report
+            .findings
+            .iter()
+            .filter(|f| {
+                f.code == DiagnosticCode::OverbroadPubCrate && f.path == "pub_crate_at_depth_3_fires_when_parent_does_not_reexport/src/foo/bar/baz.rs"
+            })
+            .count();
+        assert_eq!(
+            forbidden_count, 1,
+            "pub(crate) at depth 3 should fire when the parent does not re-export it: {:?}",
+            report.findings,
+        );
+    }
 }
 
 #[test]
@@ -438,12 +446,16 @@ edition = "2024"
     );
 }
 
-#[test]
-fn super_to_super_chain_uses_a_non_root_restricted_boundary() {
-    let temp = tempdir().expect("create stacked super facade fixture dir");
-    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+fn super_to_super_chain_uses_a_non_root_restricted_boundary(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "super_to_super_chain_uses_a_non_root_restricted_boundary",
+        &[],
+    );
+    fs::create_dir_all(root.join("src/a/b/c")).expect("create fixture modules");
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "super_to_super_chain_fixture"
 version = "0.1.0"
@@ -452,65 +464,73 @@ edition = "2024"
     )
     .expect("write manifest");
     fs::write(
-        temp.path().join("mend.toml"),
+        root.join("mend.toml"),
         "[visibility]\npub_in_path = \"permitted\"\n",
     )
     .expect("write visibility config");
-    fs::write(temp.path().join("src/lib.rs"), "mod a;\n").expect("write library root");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(root.join("src/lib.rs"), "mod a;\n").expect("write library root");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        temp.path().join("src/a/b.rs"),
+        root.join("src/a/b.rs"),
         "mod c;\npub(super) use c::d::exact;\npub(super) use c::d::wide;\n",
     )
     .expect("write outer super facade");
     fs::write(
-        temp.path().join("src/a/b/c.rs"),
+        root.join("src/a/b/c.rs"),
         "pub(super) mod d;\npub(super) use d::exact;\npub(super) use d::wide;\n",
     )
     .expect("write inner super facade");
     fs::write(
-        temp.path().join("src/a/b/c/d.rs"),
+        root.join("src/a/b/c/d.rs"),
         "pub(in crate::a) fn exact() {}\npub(crate) fn wide() {}\n",
     )
     .expect("write facade subjects");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report.findings.iter().any(|finding| {
-            finding.code == DiagnosticCode::ForbiddenPubInCrate
-                && finding.path == "src/a/b/c/d.rs"
-                && finding.headline.contains("pub(in crate::a)")
-        }),
-        "the exact crate::a boundary must be accepted: {report:#?}"
-    );
-    let wide = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
-        })
-        .unwrap_or_else(|| panic!("missing too-wide pub(crate) finding: {report:#?}"));
-    assert!(
-        wide.help
+    |report| {
+        assert!(
+            !report.findings.iter().any(|finding| {
+                finding.code == DiagnosticCode::ForbiddenPubInCrate
+                    && finding.path
+                        == "super_to_super_chain_uses_a_non_root_restricted_boundary/src/a/b/c/d.rs"
+                    && finding.headline.contains("pub(in crate::a)")
+            }),
+            "the exact crate::a boundary must be accepted: {report:#?}"
+        );
+        let wide = report
+            .findings
             .iter()
-            .any(|help| help == "consider using: `pub(in crate::a)`"),
-        "the joined non-root boundary must be rendered exactly: {report:#?}"
-    );
-    assert!(
-        wide.help.iter().all(|help| {
-            help != "consider using: `pub(crate)`" && help != "consider using: `pub(super)`"
-        }),
-        "the joined non-root boundary must be neither crate-wide nor a second pub(super): {report:#?}"
-    );
+            .find(|finding| {
+                finding.code == DiagnosticCode::OverbroadPubCrate
+                    && finding.path
+                        == "super_to_super_chain_uses_a_non_root_restricted_boundary/src/a/b/c/d.rs"
+            })
+            .unwrap_or_else(|| panic!("missing too-wide pub(crate) finding: {report:#?}"));
+        assert!(
+            wide.help
+                .iter()
+                .any(|help| help == "consider using: `pub(in crate::a)`"),
+            "the joined non-root boundary must be rendered exactly: {report:#?}"
+        );
+        assert!(
+            wide.help.iter().all(|help| {
+                help != "consider using: `pub(crate)`" && help != "consider using: `pub(super)`"
+            }),
+            "the joined non-root boundary must be neither crate-wide nor a second pub(super): {report:#?}"
+        );
+    }
 }
 
-#[test]
-fn renamed_facades_resolve_the_chain_without_advertising_an_auto_fix() {
-    let temp = tempdir().expect("create renamed facade fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create fixture modules");
+fn renamed_facades_resolve_the_chain_without_advertising_an_auto_fix(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "renamed_facades_resolve_the_chain_without_advertising_an_auto_fix",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/a/b/c")).expect("create fixture modules");
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "renamed_facade_chain_fixture"
 version = "0.1.0"
@@ -518,54 +538,55 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
-    fs::write(temp.path().join("src/lib.rs"), "mod a;\n").expect("write library root");
-    fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
+    fs::write(root.join("src/lib.rs"), "mod a;\n").expect("write library root");
+    fs::write(root.join("src/a.rs"), "mod b;\n").expect("write outer module");
     fs::write(
-        temp.path().join("src/a/b.rs"),
+        root.join("src/a/b.rs"),
         "mod c;\npub(super) use c::d::boundary as attach;\n",
     )
     .expect("write outer renamed facade");
     fs::write(
-        temp.path().join("src/a/b/c.rs"),
+        root.join("src/a/b/c.rs"),
         "pub(super) mod d;\npub(super) use d::boundary as inner_boundary;\npub(super) use d::manual as manual_alias;\n",
     )
     .expect("write inner renamed facades");
     fs::write(
-        temp.path().join("src/a/b/c/d.rs"),
+        root.join("src/a/b/c/d.rs"),
         "pub(crate) fn boundary() {}\npub fn manual() {}\n",
     )
     .expect("write renamed facade subjects");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let boundary = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "src/a/b/c/d.rs"
-        })
-        .unwrap_or_else(|| panic!("missing renamed chain boundary: {report:#?}"));
-    assert!(
-        boundary
-            .help
+    |report| {
+        let boundary = report
+            .findings
             .iter()
-            .any(|help| help == "consider using: `pub(in crate::a)`"),
-        "the renamed chain must provide its joined restricted boundary: {report:#?}"
-    );
-    let manual = report
-        .findings
-        .iter()
-        .find(|finding| {
-            finding.code == DiagnosticCode::SuspiciousPub
-                && finding.path == "src/a/b/c/d.rs"
-                && finding.item.as_deref() == Some("fn manual")
-        })
-        .unwrap_or_else(|| panic!("missing manual-only renamed facade finding: {report:#?}"));
-    assert_ne!(
-        manual.fix_support,
-        FixSupport::PubUse,
-        "a renamed facade cannot advertise a pub-use rewrite: {report:#?}"
-    );
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0, "{report:#?}");
+            .find(|finding| {
+                finding.code == DiagnosticCode::OverbroadPubCrate && finding.path == "renamed_facades_resolve_the_chain_without_advertising_an_auto_fix/src/a/b/c/d.rs"
+            })
+            .unwrap_or_else(|| panic!("missing renamed chain boundary: {report:#?}"));
+        assert!(
+            boundary
+                .help
+                .iter()
+                .any(|help| help == "consider using: `pub(in crate::a)`"),
+            "the renamed chain must provide its joined restricted boundary: {report:#?}"
+        );
+        let manual = report
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.code == DiagnosticCode::SuspiciousPub
+                    && finding.path == "renamed_facades_resolve_the_chain_without_advertising_an_auto_fix/src/a/b/c/d.rs"
+                    && finding.item.as_deref() == Some("fn manual")
+            })
+            .unwrap_or_else(|| panic!("missing manual-only renamed facade finding: {report:#?}"));
+        assert_ne!(
+            manual.fix_support,
+            FixSupport::PubUse,
+            "a renamed facade cannot advertise a pub-use rewrite: {report:#?}"
+        );
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 0, "{report:#?}");
+    }
 }
 
 #[test]
@@ -1498,4 +1519,39 @@ pub fn entry() -> u32 { present::call() }
         "a module no excluded region names is still reported, got {review_pub_mod_items:?}",
     );
     assert_summary_matches_findings(&report);
+}
+
+#[test]
+fn restricted_facades_with_permitted_visibility() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let assertions = [
+        (
+            "restricted_facade_sets_the_exact_declaration_boundary",
+            restricted_facade_sets_the_exact_declaration_boundary(&mut batch),
+        ),
+        (
+            "restricted_facade_chain_renders_the_resolved_boundary_exactly",
+            restricted_facade_chain_renders_the_resolved_boundary_exactly(&mut batch),
+        ),
+        (
+            "pub_crate_at_depth_3_fires_when_parent_does_not_reexport",
+            pub_crate_at_depth_3_fires_when_parent_does_not_reexport(&mut batch),
+        ),
+        (
+            "super_to_super_chain_uses_a_non_root_restricted_boundary",
+            super_to_super_chain_uses_a_non_root_restricted_boundary(&mut batch),
+        ),
+        (
+            "renamed_facades_resolve_the_chain_without_advertising_an_auto_fix",
+            renamed_facades_resolve_the_chain_without_advertising_an_auto_fix(&mut batch),
+        ),
+    ];
+    let reports = batch.member_reports();
+    for (member, assert_case) in assertions {
+        assert_case(&reports[member]);
+    }
 }

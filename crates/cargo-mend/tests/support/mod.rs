@@ -24,10 +24,14 @@ use std::process::Command;
 pub(super) use tempfile::tempdir;
 
 pub(super) use self::diagnostics::AdvertisedFix;
+pub(super) use self::diagnostics::DiagnosticBatch;
 pub(super) use self::diagnostics::DiagnosticCode;
 pub(super) use self::diagnostics::FixSummaryBucket;
 pub(super) use self::diagnostics::FixSupport;
+pub(super) use self::diagnostics::assert_codes_at;
 pub(super) use self::diagnostics::diagnostic_spec;
+pub(super) use self::diagnostics::findings_at;
+pub(super) use self::diagnostics::member_report;
 pub(super) use self::mend_json::fix_support_for;
 pub(super) use self::mend_json::mend_command;
 pub(super) use self::mend_json::parse_mend_json_output;

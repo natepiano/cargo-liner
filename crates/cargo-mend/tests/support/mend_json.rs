@@ -52,7 +52,7 @@ const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     }
 }
 
-fn expected_summary(report: &Report) -> Summary {
+pub(super) fn expected_summary(report: &Report) -> Summary {
     let mut summary = Summary {
         errors:                   0,
         warnings:                 0,

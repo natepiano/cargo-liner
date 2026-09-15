@@ -1,4 +1,224 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
+
 use serde::Deserialize;
+use tempfile::TempDir;
+
+use super::mend_json::expected_summary;
+use super::mend_json::mend_command;
+use super::mend_json::parse_mend_json_output;
+use super::report::Finding;
+use super::report::Report;
+use super::report::Summary;
+
+enum FixtureLayout {
+    Workspace,
+    SiblingModules,
+}
+
+/// Independent cases checked together with one explicit configuration.
+pub(crate) struct DiagnosticBatch {
+    temp:    TempDir,
+    members: Vec<String>,
+    layout:  FixtureLayout,
+}
+
+impl DiagnosticBatch {
+    pub(crate) fn new(config: &str) -> Self {
+        let temp = tempfile::tempdir().expect("create diagnostics workspace");
+        fs::write(temp.path().join("mend.toml"), config).expect("write batch configuration");
+        Self {
+            temp,
+            members: Vec::new(),
+            layout: FixtureLayout::Workspace,
+        }
+    }
+
+    pub(crate) fn new_crate(config: &str) -> Self {
+        let mut batch = Self::new(config);
+        batch.layout = FixtureLayout::SiblingModules;
+        fs::create_dir(batch.path().join("src")).expect("create batch source directory");
+        fs::write(
+            batch.path().join("Cargo.toml"),
+            "[package]\nname = \"diagnostics_batch\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write batch crate manifest");
+        batch
+    }
+
+    /// Sources are relative to `src/name`; the case's root is `mod.rs`.
+    pub(crate) fn add_module(&mut self, name: &str, sources: &[(&str, &str)]) -> PathBuf {
+        assert!(matches!(self.layout, FixtureLayout::SiblingModules));
+        assert!(
+            !self.members.iter().any(|member| member == name),
+            "duplicate module {name}"
+        );
+        let root = self.path().join("src").join(name);
+        fs::create_dir_all(&root).expect("create case module");
+        for (relative, source) in sources {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().expect("source parent"))
+                .expect("create source directory");
+            fs::write(path, source).expect("write module source");
+        }
+        self.members.push(name.to_owned());
+        let declarations = format!("mod {};\nfn main() {{}}\n", self.members.join(";\nmod "));
+        fs::write(self.path().join("src/main.rs"), declarations).expect("write batch crate root");
+        root
+    }
+
+    /// Sources are relative to the member. Supply Cargo.toml to customize targets.
+    pub(crate) fn add_member(&mut self, name: &str, sources: &[(&str, &str)]) -> PathBuf {
+        assert!(matches!(self.layout, FixtureLayout::Workspace));
+        assert!(
+            !self.members.iter().any(|member| member == name),
+            "duplicate member {name}"
+        );
+        let root = self.temp.path().join(name);
+        fs::create_dir_all(&root).expect("create fixture member");
+        fs::write(
+            root.join("Cargo.toml"),
+            format!("[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .expect("write member manifest");
+        for (relative, source) in sources {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().expect("source parent"))
+                .expect("create source directory");
+            fs::write(path, source).expect("write member source");
+        }
+        self.members.push(name.to_owned());
+        fs::write(
+            self.temp.path().join("Cargo.toml"),
+            format!(
+                "[workspace]\nresolver = \"3\"\nmembers = {:?}\n",
+                self.members
+            ),
+        )
+        .expect("write workspace manifest");
+        root
+    }
+
+    pub(crate) fn path(&self) -> &Path { self.temp.path() }
+
+    pub(crate) fn command(&self) -> Command {
+        let mut command = mend_command();
+        command
+            .current_dir(self.path())
+            .arg("--manifest-path")
+            .arg(self.path().join("Cargo.toml"))
+            .arg("--workspace");
+        command
+    }
+
+    pub(crate) fn report(&self) -> Report {
+        let output = self
+            .command()
+            .arg("--json")
+            .output()
+            .expect("run batch diagnostics");
+        assert!(
+            matches!(output.status.code(), Some(0..=2)),
+            "batch diagnostics failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        parse_mend_json_output(&output.stdout)
+    }
+
+    /// Retain complete paths while restoring each case's own summary counts.
+    pub(crate) fn member_reports(&self) -> BTreeMap<String, Report> {
+        self.partition_report(self.report())
+    }
+
+    pub(crate) fn partition_report(&self, report: Report) -> BTreeMap<String, Report> {
+        assert!(matches!(self.layout, FixtureLayout::Workspace));
+        let mut reports = self
+            .members
+            .iter()
+            .map(|member| {
+                (
+                    member.clone(),
+                    Report {
+                        findings: Vec::new(),
+                        summary:  Summary {
+                            errors:                   0,
+                            warnings:                 0,
+                            fixable_with_fix:         0,
+                            fixable_with_fix_pub_use: 0,
+                        },
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for finding in report.findings {
+            let (member, _) = finding
+                .path
+                .split_once('/')
+                .expect("member-prefixed finding path");
+            reports
+                .get_mut(member)
+                .expect("finding belongs to a registered member")
+                .findings
+                .push(finding);
+        }
+        for report in reports.values_mut() {
+            report.summary = expected_summary(report);
+        }
+        reports
+    }
+}
+
+/// Copy one member's findings using a directory-component prefix, retaining full paths.
+pub(crate) fn member_report(report: &Report, member: &str) -> Report {
+    let findings = report
+        .findings
+        .iter()
+        .filter(|finding| Path::new(&finding.path).starts_with(member))
+        .map(|finding| Finding {
+            code:        finding.code,
+            headline:    finding.headline.clone(),
+            path:        finding.path.clone(),
+            line_start:  finding.line_start,
+            item:        finding.item.clone(),
+            fix_support: finding.fix_support,
+            help:        finding.help.clone(),
+        })
+        .collect();
+    let mut report = Report {
+        findings,
+        summary: Summary {
+            errors:                   0,
+            warnings:                 0,
+            fixable_with_fix:         0,
+            fixable_with_fix_pub_use: 0,
+        },
+    };
+    report.summary = expected_summary(&report);
+    report
+}
+
+/// Match the entire reported path, including a workspace member's directory.
+pub(crate) fn findings_at<'a>(report: &'a Report, path: &str) -> Vec<&'a Finding> {
+    report
+        .findings
+        .iter()
+        .filter(|finding| finding.path == path)
+        .collect()
+}
+
+pub(crate) fn assert_codes_at(report: &Report, path: &str, expected: &[DiagnosticCode]) {
+    let codes = findings_at(report, path)
+        .iter()
+        .map(|finding| finding.code)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        codes, expected,
+        "unexpected diagnostic codes at {path}: {report:#?}"
+    );
+}
 
 // fix notes
 const NOTE_FIXABLE_WITH_FIX: &str = "this warning is auto-fixable with `cargo mend --fix`";

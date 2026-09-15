@@ -994,14 +994,15 @@ fn main() {
     assert!(report.findings.is_empty());
 }
 
-#[test]
-fn suspicious_pub_still_warns_for_parent_facade_unused_outside_parent() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn suspicious_pub_still_warns_for_parent_facade_unused_outside_parent(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member("still_warns_for_parent_facade_unused_outside_parent", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "facade_negative_fixture"
 version = "0.1.0"
@@ -1010,43 +1011,45 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent/mod.rs"),
+        root.join("src/private_parent/mod.rs"),
         "mod child;\npub use child::PublicContainer;\n",
     )
     .expect("write private parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
-    assert_eq!(report.findings.len(), 1);
-    let codes = report
-        .findings
-        .iter()
-        .map(|finding| finding.code.as_str())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 1);
+        assert_eq!(report.summary.fixable_with_fix, 0);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+        assert_eq!(report.findings.len(), 1);
+        let codes = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+    }
 }
 
-#[test]
-fn internal_parent_pub_use_facade_warns_for_parent_facade_used_inside_parent_subtree() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn internal_parent_pub_use_facade_warns_for_parent_facade_used_inside_parent_subtree(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member("warns_for_parent_facade_used_inside_parent_subtree", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "internal_facade_fixture"
 version = "0.1.0"
@@ -1055,47 +1058,52 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent/mod.rs"),
+        root.join("src/private_parent/mod.rs"),
         "mod child;\nmod sibling;\npub use child::PublicContainer;\n",
     )
     .expect("write private parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/private_parent/sibling.rs"),
+        root.join("src/private_parent/sibling.rs"),
         "fn sibling_uses_facade() {\n    let _ = std::mem::size_of::<super::PublicContainer>();\n}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
-    let codes = report
-        .findings
-        .iter()
-        .map(|finding| finding.code.as_str())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 1);
+        assert_eq!(report.summary.fixable_with_fix, 0);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+        let codes = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+    }
 }
 
-#[test]
-fn internal_parent_pub_use_facade_warns_for_parent_facade_imported_inside_parent_subtree() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn internal_parent_pub_use_facade_warns_for_parent_facade_imported_inside_parent_subtree(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "warns_for_parent_facade_imported_inside_parent_subtree",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "internal_facade_import_fixture"
 version = "0.1.0"
@@ -1104,37 +1112,38 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent/mod.rs"),
+        root.join("src/private_parent/mod.rs"),
         "mod child;\nmod sibling;\npub use child::PublicContainer;\n",
     )
     .expect("write private parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/private_parent/sibling.rs"),
+        root.join("src/private_parent/sibling.rs"),
         "use super::PublicContainer;\n\nfn sibling_uses_facade() {\n    let _ = std::mem::size_of::<PublicContainer>();\n}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
-    let codes = report
-        .findings
-        .iter()
-        .map(|finding| finding.code.as_str())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 1);
+        assert_eq!(report.summary.fixable_with_fix, 0);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+        let codes = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(codes, BTreeSet::from(["internal_parent_pub_use_facade"]));
+    }
 }
 
 #[test]
@@ -1182,14 +1191,18 @@ edition = "2024"
     assert!(report.findings.is_empty());
 }
 
-#[test]
-fn suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_mod_rs() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_mod_rs(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "is_narrowed_to_an_internal_parent_super_facade_in_mod_rs",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "internal_super_facade_mod_fixture"
 version = "0.1.0"
@@ -1198,38 +1211,39 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent/mod.rs"),
+        root.join("src/private_parent/mod.rs"),
         "mod child;\nmod sibling;\npub(super) use child::PublicContainer;\n",
     )
     .expect("write private parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/private_parent/sibling.rs"),
+        root.join("src/private_parent/sibling.rs"),
         "use super::PublicContainer;\n\nfn sibling_uses_facade() {\n    let _ = std::mem::size_of::<PublicContainer>();\n}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
-    assert!(
-        report.findings[0]
-            .help
-            .iter()
-            .any(|line| line == "consider using: `pub(crate)`"),
-        "unexpected internal facade refinement: {report:#?}",
-    );
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 1);
+        assert_eq!(report.summary.fixable_with_fix, 1);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+        assert!(
+            report.findings[0]
+                .help
+                .iter()
+                .any(|line| line == "consider using: `pub(crate)`"),
+            "unexpected internal facade refinement: {report:#?}",
+        );
+    }
 }
 
 #[test]
@@ -1272,14 +1286,18 @@ edition = "2024"
     assert!(report.findings.is_empty());
 }
 
-#[test]
-fn suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_file_module() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_file_module(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "is_narrowed_to_an_internal_parent_super_facade_in_file_module",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "internal_super_facade_file_fixture"
 version = "0.1.0"
@@ -1288,48 +1306,53 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent.rs"),
+        root.join("src/private_parent.rs"),
         "mod child;\nmod sibling;\npub(super) use child::PublicContainer;\n",
     )
     .expect("write file parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/private_parent/sibling.rs"),
+        root.join("src/private_parent/sibling.rs"),
         "use super::PublicContainer;\n\nfn sibling_uses_facade() {\n    let _ = std::mem::size_of::<PublicContainer>();\n}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
-    assert!(
-        report.findings[0]
-            .help
-            .iter()
-            .any(|line| line == "consider using: `pub(crate)`"),
-        "unexpected internal facade refinement: {report:#?}",
-    );
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 1);
+        assert_eq!(report.summary.fixable_with_fix, 1);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+        assert!(
+            report.findings[0]
+                .help
+                .iter()
+                .any(|line| line == "consider using: `pub(crate)`"),
+            "unexpected internal facade refinement: {report:#?}",
+        );
+    }
 }
 
-#[test]
-fn crate_relative_parent_facade_use_inside_parent_subtree_stays_fixable() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn crate_relative_parent_facade_use_inside_parent_subtree_stays_fixable(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "crate_relative_parent_facade_use_inside_parent_subtree_stays_fixable",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "crate_relative_internal_use_fixture"
 version = "0.1.0"
@@ -1338,43 +1361,44 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent.rs"),
+        root.join("src/private_parent.rs"),
         "mod child;\nmod sibling;\npub use child::PublicContainer;\n",
     )
     .expect("write private parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/private_parent/sibling.rs"),
+        root.join("src/private_parent/sibling.rs"),
         "use crate::private_parent::PublicContainer;\n\nfn sibling_uses_facade() {\n    let _ = std::mem::size_of::<PublicContainer>();\n}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 2);
-    assert_eq!(report.summary.fixable_with_fix, 1);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
-    let codes = report
-        .findings
-        .iter()
-        .map(|finding| finding.code.as_str())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        codes,
-        BTreeSet::from([
-            "internal_parent_pub_use_facade",
-            "shorten_local_crate_import"
-        ])
-    );
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 2);
+        assert_eq!(report.summary.fixable_with_fix, 1);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+        let codes = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            codes,
+            BTreeSet::from([
+                "internal_parent_pub_use_facade",
+                "shorten_local_crate_import"
+            ])
+        );
+    }
 }
 
 #[test]
@@ -1632,14 +1656,18 @@ pub enum ResponseStatus {
     );
 }
 
-#[test]
-fn suspicious_pub_still_warns_for_file_parent_facade_unused_outside_parent() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn suspicious_pub_still_warns_for_file_parent_facade_unused_outside_parent(
+    batch: &mut DiagnosticBatch,
+) -> fn(&Report) {
+    let root = batch.add_member(
+        "still_warns_for_file_parent_facade_unused_outside_parent",
+        &[],
+    );
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "file_facade_negative_fixture"
 version = "0.1.0"
@@ -1648,33 +1676,34 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         "mod private_parent;\n\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent.rs"),
+        root.join("src/private_parent.rs"),
         "mod child;\npub use child::PublicContainer;\n",
     )
     .expect("write file parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\n",
     )
     .expect("write child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert_eq!(report.summary.errors, 0);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.fixable_with_fix, 0);
-    assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
-    assert_eq!(report.findings.len(), 1);
-    let codes = report
-        .findings
-        .iter()
-        .map(|finding| finding.code.as_str())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+    |report| {
+        assert_eq!(report.summary.errors, 0);
+        assert_eq!(report.summary.warnings, 1);
+        assert_eq!(report.summary.fixable_with_fix, 0);
+        assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+        assert_eq!(report.findings.len(), 1);
+        let codes = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(codes, BTreeSet::from(["suspicious_pub"]));
+    }
 }
 
 #[test]
@@ -5063,5 +5092,54 @@ fn attribute_metadata_alone_does_not_expose_a_child_through_a_public_signature()
             !claims_public_signature_exposure(path),
             "a type named only by attribute metadata must not count as publicly exposed at {path}: {report:#?}",
         );
+    }
+}
+
+#[test]
+fn internal_parent_facades_with_permitted_visibility() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let assertions = [
+        (
+            "still_warns_for_parent_facade_unused_outside_parent",
+            suspicious_pub_still_warns_for_parent_facade_unused_outside_parent(&mut batch),
+        ),
+        (
+            "warns_for_parent_facade_used_inside_parent_subtree",
+            internal_parent_pub_use_facade_warns_for_parent_facade_used_inside_parent_subtree(
+                &mut batch,
+            ),
+        ),
+        (
+            "warns_for_parent_facade_imported_inside_parent_subtree",
+            internal_parent_pub_use_facade_warns_for_parent_facade_imported_inside_parent_subtree(
+                &mut batch,
+            ),
+        ),
+        (
+            "is_narrowed_to_an_internal_parent_super_facade_in_mod_rs",
+            suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_mod_rs(&mut batch),
+        ),
+        (
+            "is_narrowed_to_an_internal_parent_super_facade_in_file_module",
+            suspicious_pub_is_narrowed_to_an_internal_parent_super_facade_in_file_module(
+                &mut batch,
+            ),
+        ),
+        (
+            "crate_relative_parent_facade_use_inside_parent_subtree_stays_fixable",
+            crate_relative_parent_facade_use_inside_parent_subtree_stays_fixable(&mut batch),
+        ),
+        (
+            "still_warns_for_file_parent_facade_unused_outside_parent",
+            suspicious_pub_still_warns_for_file_parent_facade_unused_outside_parent(&mut batch),
+        ),
+    ];
+    let reports = batch.member_reports();
+    for (member, assert_case) in assertions {
+        assert_case(&reports[member]);
     }
 }

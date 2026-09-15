@@ -623,7 +623,7 @@ none.
 - macOS nextest green, or recorded unreachable.
 - Measurements row present.
 
-### Phase 6 — cargo-mend: batch diagnostics fixtures  · status: todo
+### Phase 6 — cargo-mend: batch diagnostics fixtures  · status: done
 
 #### Work Order
 

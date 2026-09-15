@@ -586,171 +586,104 @@ edition = "2024"
     );
 }
 
-#[test]
-fn deep_super_is_flagged_and_fixed() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn deep_super_is_flagged_and_fixed(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("deep_super_is_flagged_and_fixed", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("tui/columns")).expect("create src/tui/columns");
+    fs::write(root.join("mod.rs"), "mod tui;\n\nfn main() {}\n").expect("write fixture main");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "deep_super_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/tui/columns")).expect("create src/tui/columns");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod tui;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/tui/mod.rs"),
+        root.join("tui/mod.rs"),
         "mod columns;\npub struct ResolvedWidths;\n",
     )
     .expect("write tui mod");
-    fs::write(temp.path().join("src/tui/columns/mod.rs"), "mod render;\n")
-        .expect("write columns mod");
+    fs::write(root.join("tui/columns/mod.rs"), "mod render;\n").expect("write columns mod");
     fs::write(
-        temp.path().join("src/tui/columns/render.rs"),
+        root.join("tui/columns/render.rs"),
         "use super::super::ResolvedWidths;\n\nfn use_it(_widths: ResolvedWidths) {}\n",
     )
     .expect("write render");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
-        "deep super::super:: should trigger replace_deep_super_import, got: {:?}",
-        report.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
-    );
+    move |report| {
+        let findings = findings_at(
+            report,
+            "src/deep_super_is_flagged_and_fixed/tui/columns/render.rs",
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
+            "deep super::super:: should trigger replace_deep_super_import, got: {:?}",
+            findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+        );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let render =
-        fs::read_to_string(temp.path().join("src/tui/columns/render.rs")).expect("read fixed file");
-    assert!(
-        render.contains("use crate::tui::ResolvedWidths;"),
-        "expected crate::tui::ResolvedWidths, got: {render}"
-    );
-    assert!(!render.contains("use super::super::ResolvedWidths;"));
+        let render =
+            fs::read_to_string(root.join("tui/columns/render.rs")).expect("read fixed file");
+        assert!(
+            render.contains("use crate::deep_super_is_flagged_and_fixed::tui::ResolvedWidths;"),
+            "expected crate::deep_super_is_flagged_and_fixed::tui::ResolvedWidths, got: {render}"
+        );
+        assert!(!render.contains("use super::super::ResolvedWidths;"));
+    }
 }
 
-#[test]
-fn triple_super_is_flagged_and_fixed() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn triple_super_is_flagged_and_fixed(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("triple_super_is_flagged_and_fixed", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("a/b/c")).expect("create src/a/b/c");
+    fs::write(root.join("mod.rs"), "mod a;\n\nfn main() {}\n").expect("write main");
+    fs::write(root.join("a/mod.rs"), "mod b;\npub struct Root;\n").expect("write a mod");
+    fs::write(root.join("a/b/mod.rs"), "mod c;\n").expect("write b mod");
+    fs::write(root.join("a/b/c/mod.rs"), "mod leaf;\n").expect("write c mod");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "triple_super_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/a/b/c")).expect("create src/a/b/c");
-    fs::write(temp.path().join("src/main.rs"), "mod a;\n\nfn main() {}\n").expect("write main");
-    fs::write(
-        temp.path().join("src/a/mod.rs"),
-        "mod b;\npub struct Root;\n",
-    )
-    .expect("write a mod");
-    fs::write(temp.path().join("src/a/b/mod.rs"), "mod c;\n").expect("write b mod");
-    fs::write(temp.path().join("src/a/b/c/mod.rs"), "mod leaf;\n").expect("write c mod");
-    fs::write(
-        temp.path().join("src/a/b/c/leaf.rs"),
+        root.join("a/b/c/leaf.rs"),
         "use super::super::super::Root;\n\nfn use_it(_root: Root) {}\n",
     )
     .expect("write leaf");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
-        "super::super::super:: should trigger replace_deep_super_import, got: {:?}",
-        report.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
-    );
+    move |report| {
+        let findings = findings_at(
+            report,
+            "src/triple_super_is_flagged_and_fixed/a/b/c/leaf.rs",
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
+            "super::super::super:: should trigger replace_deep_super_import, got: {:?}",
+            findings.iter().map(|f| &f.code).collect::<Vec<_>>()
+        );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let leaf = fs::read_to_string(temp.path().join("src/a/b/c/leaf.rs")).expect("read fixed file");
-    assert!(
-        leaf.contains("use crate::a::Root;"),
-        "expected crate::a::Root, got: {leaf}"
-    );
-    assert!(!leaf.contains("super::super::super::"));
+        let leaf = fs::read_to_string(root.join("a/b/c/leaf.rs")).expect("read fixed file");
+        assert!(
+            leaf.contains("use crate::triple_super_is_flagged_and_fixed::a::Root;"),
+            "expected crate::triple_super_is_flagged_and_fixed::a::Root, got: {leaf}"
+        );
+        assert!(!leaf.contains("super::super::super::"));
+    }
 }
 
-#[test]
-fn single_super_is_not_flagged_as_deep() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn single_super_is_not_flagged_as_deep(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("single_super_is_not_flagged_as_deep", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("outer")).expect("create src/outer");
+    fs::write(root.join("mod.rs"), "mod outer;\n").expect("write lib");
+    fs::write(root.join("outer/mod.rs"), "mod child;\nmod sibling;\n").expect("write outer mod");
+    fs::write(root.join("outer/child.rs"), "pub struct Thing;\n").expect("write child");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "single_super_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer")).expect("create src/outer");
-    fs::write(temp.path().join("src/lib.rs"), "mod outer;\n").expect("write lib");
-    fs::write(
-        temp.path().join("src/outer/mod.rs"),
-        "mod child;\nmod sibling;\n",
-    )
-    .expect("write outer mod");
-    fs::write(
-        temp.path().join("src/outer/child.rs"),
-        "pub struct Thing;\n",
-    )
-    .expect("write child");
-    fs::write(
-        temp.path().join("src/outer/sibling.rs"),
+        root.join("outer/sibling.rs"),
         "use super::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
-        "single super:: should not trigger replace_deep_super_import"
-    );
+    move |report| {
+        let report = member_report(report, "src/single_super_is_not_flagged_as_deep");
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.code == DiagnosticCode::ReplaceDeepSuperImport),
+            "single super:: should not trigger replace_deep_super_import"
+        );
+    }
 }
 
 /// A module attached with `#[path]` does not live where its directory says. Its
@@ -819,4 +752,24 @@ edition = "2024"
         !detached.contains("use super::"),
         "a super import was introduced against the wrong parent: {detached}"
     );
+}
+
+#[test]
+fn super_path_depths_are_reported_and_fixed_independently() {
+    let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
+    let deep_super_is_flagged_and_fixed = deep_super_is_flagged_and_fixed(&mut batch);
+    let triple_super_is_flagged_and_fixed = triple_super_is_flagged_and_fixed(&mut batch);
+    let single_super_is_not_flagged_as_deep = single_super_is_not_flagged_as_deep(&mut batch);
+    let report = batch.report();
+    let output = batch.command().arg("--fix").output().expect("fix batch");
+    assert!(
+        output.status.success(),
+        "batch fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    deep_super_is_flagged_and_fixed(&report);
+    triple_super_is_flagged_and_fixed(&report);
+    single_super_is_not_flagged_as_deep(&report);
 }

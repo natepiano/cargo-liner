@@ -14,68 +14,54 @@ edition = "2024"
     .expect("write fixture manifest");
 }
 
-#[test]
-fn moves_use_from_fn_body_to_file_top() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    write_manifest(temp.path(), "imports_at_top_basic");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+fn moves_use_from_fn_body_to_file_top(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("moves_use_from_fn_body_to_file_top", &[("mod.rs", "")]);
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("mod.rs"),
         r#"mod child {
     pub struct Movable;
 }
 
 fn example() {
-    use crate::child::Movable;
+    use self::child::Movable;
     let _movable = Movable;
 }
 "#,
     )
     .expect("write lib.rs");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let lib = fs::read_to_string(temp.path().join("src/lib.rs")).expect("read lib.rs");
-    let moved_count = lib.matches("use crate::child::Movable;").count();
-    assert_eq!(
-        moved_count, 1,
-        "expected exactly one `use crate::child::Movable;`, got:\n{lib}"
-    );
-    let top_use_index = lib
-        .find("use crate::child::Movable;")
-        .expect("`use` should appear");
-    let fn_index = lib.find("fn example()").expect("fn should still exist");
-    assert!(
-        top_use_index < fn_index,
-        "use should be moved above fn, got:\n{lib}"
-    );
+    move || {
+        let lib = fs::read_to_string(root.join("mod.rs")).expect("read lib.rs");
+        let moved_count = lib.matches("use self::child::Movable;").count();
+        assert_eq!(
+            moved_count, 1,
+            "expected exactly one `use self::child::Movable;`, got:\n{lib}"
+        );
+        let top_use_index = lib
+            .find("use self::child::Movable;")
+            .expect("`use` should appear");
+        let fn_index = lib.find("fn example()").expect("fn should still exist");
+        assert!(
+            top_use_index < fn_index,
+            "use should be moved above fn, got:\n{lib}"
+        );
+    }
 }
 
-#[test]
-fn moves_use_in_inline_mod_to_top_of_inline_mod() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    write_manifest(temp.path(), "imports_at_top_inline_mod");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+fn moves_use_in_inline_mod_to_top_of_inline_mod(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "moves_use_in_inline_mod_to_top_of_inline_mod",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("mod.rs"),
         r#"pub struct Outer;
 
 mod inner {
     fn example() {
-        use crate::Outer;
+        use super::Outer;
         let _outer = Outer;
     }
 }
@@ -83,37 +69,26 @@ mod inner {
     )
     .expect("write lib.rs");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let lib = fs::read_to_string(temp.path().join("src/lib.rs")).expect("read lib.rs");
-    let mod_start = lib
-        .find("mod inner {")
-        .expect("inline mod should still exist");
-    let mod_end = lib[mod_start..]
-        .find('}')
-        .map(|relative| mod_start + relative)
-        .expect("closing brace of inline mod");
-    let inside_inline_mod = &lib[mod_start..mod_end];
-    assert!(
-        inside_inline_mod.contains("use crate::Outer;"),
-        "expected moved use inside inline mod, got body:\n{inside_inline_mod}"
-    );
-    let above_mod = &lib[..mod_start];
-    assert!(
-        !above_mod.contains("use crate::Outer;"),
-        "use should not be moved above the inline mod, got:\n{lib}"
-    );
+    move || {
+        let lib = fs::read_to_string(root.join("mod.rs")).expect("read lib.rs");
+        let mod_start = lib
+            .find("mod inner {")
+            .expect("inline mod should still exist");
+        let mod_end = lib[mod_start..]
+            .find('}')
+            .map(|relative| mod_start + relative)
+            .expect("closing brace of inline mod");
+        let inside_inline_mod = &lib[mod_start..mod_end];
+        assert!(
+            inside_inline_mod.contains("use super::Outer;"),
+            "expected moved use inside inline mod, got body:\n{inside_inline_mod}"
+        );
+        let above_mod = &lib[..mod_start];
+        assert!(
+            !above_mod.contains("use super::Outer;"),
+            "use should not be moved above the inline mod, got:\n{lib}"
+        );
+    }
 }
 
 #[test]
@@ -282,14 +257,15 @@ pub fn native_id(handle: &Handle) -> u64 {
     );
 }
 
-#[test]
-fn skips_when_bare_name_collides_with_existing_top_import() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    write_manifest(temp.path(), "imports_at_top_collision");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+fn skips_when_bare_name_collides_with_existing_top_import(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "skips_when_bare_name_collides_with_existing_top_import",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("mod.rs"),
         r#"mod a {
     pub struct Foo;
 }
@@ -297,83 +273,81 @@ mod b {
     pub struct Foo;
 }
 
-use crate::a::Foo;
+use self::a::Foo;
 
 fn example() {
-    use crate::b::Foo;
+    use self::b::Foo;
     let _x: Foo = Foo;
 }
 "#,
     )
     .expect("write lib.rs");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let lib = fs::read_to_string(temp.path().join("src/lib.rs")).expect("read lib.rs");
-    // The in-body `use crate::b::Foo;` must stay because moving it would
-    // collide with the top-level `use crate::a::Foo;`.
-    assert!(
-        lib.contains("use crate::b::Foo;"),
-        "colliding in-body use should stay, got:\n{lib}"
-    );
+    move || {
+        let lib = fs::read_to_string(root.join("mod.rs")).expect("read lib.rs");
+        // The in-body `use self::b::Foo;`
+        // must stay because moving it would collide with the top-level `use
+        // self::a::Foo;`.
+        assert!(
+            lib.contains("use self::b::Foo;"),
+            "colliding in-body use should stay, got:\n{lib}"
+        );
+    }
 }
 
-#[test]
-fn dedupes_when_use_already_at_top() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    write_manifest(temp.path(), "imports_at_top_dedupe");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+fn dedupes_when_use_already_at_top(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("dedupes_when_use_already_at_top", &[("mod.rs", "")]);
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("mod.rs"),
         r#"mod a {
     pub struct Foo;
 }
 
-use crate::a::Foo;
+use self::a::Foo;
 
 fn example() {
-    use crate::a::Foo;
+    use self::a::Foo;
     let _foo = Foo;
 }
 "#,
     )
     .expect("write lib.rs");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
+    move || {
+        let lib = fs::read_to_string(root.join("mod.rs")).expect("read lib.rs");
+        let use_count = lib.matches("use self::a::Foo;").count();
+        assert_eq!(
+            use_count, 1,
+            "duplicate in-body use should be deleted; expected one top-level use, got:\n{lib}"
+        );
+        let fn_index = lib.find("fn example()").expect("fn should still exist");
+        let use_index = lib.find("use self::a::Foo;").expect("use should exist");
+        assert!(
+            use_index < fn_index,
+            "remaining use should be the top-level one, got:\n{lib}"
+        );
+    }
+}
+
+#[test]
+fn moves_and_deduplicates_uses_in_independent_files() {
+    let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
+    let moves_use_from_fn_body_to_file_top = moves_use_from_fn_body_to_file_top(&mut batch);
+    let moves_use_in_inline_mod_to_top_of_inline_mod =
+        moves_use_in_inline_mod_to_top_of_inline_mod(&mut batch);
+    let skips_when_bare_name_collides_with_existing_top_import =
+        skips_when_bare_name_collides_with_existing_top_import(&mut batch);
+    let dedupes_when_use_already_at_top = dedupes_when_use_already_at_top(&mut batch);
+    let output = batch.command().arg("--fix").output().expect("fix batch");
     assert!(
         output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
+        "batch fix failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let lib = fs::read_to_string(temp.path().join("src/lib.rs")).expect("read lib.rs");
-    let use_count = lib.matches("use crate::a::Foo;").count();
-    assert_eq!(
-        use_count, 1,
-        "duplicate in-body use should be deleted; expected one top-level use, got:\n{lib}"
-    );
-    let fn_index = lib.find("fn example()").expect("fn should still exist");
-    let use_index = lib.find("use crate::a::Foo;").expect("use should exist");
-    assert!(
-        use_index < fn_index,
-        "remaining use should be the top-level one, got:\n{lib}"
-    );
+    moves_use_from_fn_body_to_file_top();
+    moves_use_in_inline_mod_to_top_of_inline_mod();
+    skips_when_bare_name_collides_with_existing_top_import();
+    dedupes_when_use_already_at_top();
 }

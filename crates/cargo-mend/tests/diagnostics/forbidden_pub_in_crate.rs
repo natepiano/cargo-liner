@@ -569,121 +569,45 @@ edition = "2024"
 }
 
 #[test]
-fn the_exact_boundary_rewrite_is_offered_only_under_required() {
-    // One fixture across all three settings, with nothing varying but
-    // `pub_in_path`. The rewrite spells `pub(in crate::a)`: under `forbidden`
-    // that is exactly what `forbidden_pub_in_crate` reports as an error on the
-    // next run, and under `permitted` it is one accepted spelling rather than
-    // the one the policy asks for, so only `required` may hand the declaration
-    // to `--fix`.
-    //
-    // Two independent gates produce that outcome, and keeping the `required`
-    // arm alongside the other two is what makes their absence meaningful:
-    // `policy::exact_boundary_narrowing` elevates a bare `pub` behind a resolved
-    // facade only under `required`, so the other settings report nothing at all
-    // for this declaration, and `rewrites_annotation_only` in `scan/record.rs`
-    // re-checks the setting before granting `FixSupport::RestrictedAnnotation`.
-    // If the elevation ever stops depending on the setting, the two quiet arms
-    // start seeing a finding and fail on the declaration bytes below instead of
-    // writing an annotation the same run rejects.
+fn visibility_cases_under_forbidden() { assert_visibility_setting("forbidden"); }
+
+#[test]
+fn visibility_cases_under_permitted() { assert_visibility_setting("permitted"); }
+
+#[test]
+fn visibility_cases_under_required() { assert_visibility_setting("required"); }
+
+fn assert_visibility_setting(pub_in_path: &str) {
     let declaration = "pub fn exact() {}\n";
-    for (pub_in_path, expected_codes, expected_declaration) in [
-        ("forbidden", Vec::new(), declaration),
-        ("permitted", Vec::new(), declaration),
+    let (expected_codes, expected_declaration) = if pub_in_path == "required" {
         (
-            "required",
             vec![DiagnosticCode::SuspiciousPub],
             "pub(in crate::a) fn exact() {}\n",
-        ),
-    ] {
-        let temp = tempdir().expect("create pub-in-path mode fix fixture dir");
-        write_sources(
-            &temp,
-            &[
-                (
-                    "Cargo.toml",
-                    r#"[package]
-name = "pub_in_path_mode_fix_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-                ),
-                (
-                    "mend.toml",
-                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
-                ),
-                ("src/lib.rs", "mod a;\n"),
-                ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
-                ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
-                ("src/a/b/c.rs", declaration),
-            ],
-        );
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        assert_codes(&report, "src/a/b/c.rs", &expected_codes);
+        )
+    } else {
+        (Vec::new(), declaration)
+    };
+    let batch = visibility_batch(pub_in_path, declaration);
+    let workspace_report = batch.report();
+    {
+        let report = &member_report(&workspace_report, "exact_boundary");
+        assert_codes(report, "exact_boundary/src/a/b/c.rs", &expected_codes);
         assert_eq!(
             report.summary.fixable_with_fix,
             usize::from(expected_declaration != declaration),
             "`pub_in_path = \"{pub_in_path}\"` advertised the wrong `--fix` route count: {report:#?}"
         );
-
-        let output = mend_command()
-            .arg("--manifest-path")
-            .arg(temp.path().join("Cargo.toml"))
-            .arg("--fix")
-            .output()
-            .expect("run cargo-mend --fix");
-
-        assert_eq!(
-            fs::read_to_string(temp.path().join("src/a/b/c.rs")).expect("read declaration"),
-            expected_declaration,
-            "`pub_in_path = \"{pub_in_path}\"` left the wrong declaration: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            fs::read_to_string(temp.path().join("src/a/b.rs")).expect("read facade"),
-            "mod c;\npub(super) use c::exact;\n",
-            "`pub_in_path = \"{pub_in_path}\"` must leave the facade line byte-identical"
-        );
     }
-}
-
-#[test]
-fn boundary_mismatch_precedes_redundant_spelling_at_every_setting() {
-    for pub_in_path in ["forbidden", "permitted", "required"] {
-        let temp = tempdir().expect("create boundary-mismatch fixture dir");
-        write_sources(
-            &temp,
-            &[
-                (
-                    "Cargo.toml",
-                    r#"[package]
-name = "boundary_mismatch_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-                ),
-                (
-                    "mend.toml",
-                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
-                ),
-                ("src/lib.rs", "mod a;\n"),
-                ("src/a.rs", "mod b;\n"),
-                ("src/a/b.rs", "mod c;\npub(super) use c::wide;\n"),
-                ("src/a/b/c.rs", "pub(in crate) fn wide() {}\n"),
-            ],
-        );
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    {
+        let report = &member_report(&workspace_report, "boundary_mismatch");
         assert_codes(
-            &report,
-            "src/a/b/c.rs",
+            report,
+            "boundary_mismatch/src/a/b/c.rs",
             &[DiagnosticCode::OverbroadPubCrate],
         );
         assert_headline_and_help(
-            &report,
-            "src/a/b/c.rs",
+            report,
+            "boundary_mismatch/src/a/b/c.rs",
             if pub_in_path == "forbidden" {
                 "`pub(in crate)` is wider than the exact parent facade boundary"
             } else {
@@ -692,115 +616,135 @@ edition = "2024"
             "consider using: `pub(in crate::a)`",
         );
     }
-}
-
-#[test]
-fn crate_boundary_uses_the_canonical_pub_crate_spelling_at_every_setting() {
-    for pub_in_path in ["forbidden", "permitted", "required"] {
-        let temp = tempdir().expect("create crate-boundary fixture dir");
-        write_sources(
-            &temp,
-            &[
-                (
-                    "Cargo.toml",
-                    r#"[package]
-name = "crate_boundary_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-                ),
-                (
-                    "mend.toml",
-                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
-                ),
-                ("src/lib.rs", "mod a;\npub(crate) use a::helper;\n"),
-                ("src/a.rs", "pub(in super) fn helper() {}\n"),
-            ],
+    {
+        let report = &member_report(&workspace_report, "crate_boundary");
+        assert_codes(
+            report,
+            "crate_boundary/src/a.rs",
+            &[DiagnosticCode::ForbiddenPubInCrate],
         );
-
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        assert_codes(&report, "src/a.rs", &[DiagnosticCode::ForbiddenPubInCrate]);
         assert_headline_and_help(
-            &report,
-            "src/a.rs",
+            report,
+            "crate_boundary/src/a.rs",
             "parent facade caps reach at `pub(crate)`",
             "consider using: `pub(crate)`",
         );
     }
+    assert_written_syntaxes(&member_report(&workspace_report, "written_syntaxes"));
+    let output = batch
+        .command()
+        .arg("--fix")
+        .output()
+        .expect("run batch --fix");
+    assert!(
+        matches!(output.status.code(), Some(0..=2)),
+        "batch --fix failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(batch.path().join("exact_boundary/src/a/b/c.rs"))
+            .expect("read declaration"),
+        expected_declaration,
+        "`pub_in_path = \"{pub_in_path}\"` left the wrong declaration: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(batch.path().join("exact_boundary/src/a/b.rs")).expect("read facade"),
+        "mod c;\npub(super) use c::exact;\n",
+        "`pub_in_path = \"{pub_in_path}\"` must leave the facade line byte-identical"
+    );
 }
 
-#[test]
-fn written_visibility_syntaxes_are_tightened_at_every_setting() {
-    for pub_in_path in ["forbidden", "permitted", "required"] {
-        let temp = tempdir().expect("create written-syntax matrix fixture dir");
-        write_sources(
-            &temp,
-            &[
-                (
-                    "Cargo.toml",
-                    r#"[package]
-name = "written-syntax-matrix-fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-                ),
-                (
-                    "mend.toml",
-                    &format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"),
-                ),
-                ("src/lib.rs", "mod a;\n"),
-                ("src/a.rs", "pub(in crate) fn crate_wide() {}\nmod b;\n"),
-                (
-                    "src/a/b.rs",
-                    "pub(in self) fn current_only() {}\npub(in super) fn parent_only() {}\nmod c;\n",
-                ),
-                (
-                    "src/a/b/c.rs",
-                    "pub(in super::super) fn grandparent_only() {}\n",
-                ),
-            ],
-        );
+fn visibility_batch(pub_in_path: &str, declaration: &str) -> DiagnosticBatch {
+    let mut batch =
+        DiagnosticBatch::new(&format!("[visibility]\npub_in_path = \"{pub_in_path}\"\n"));
+    batch.add_member(
+        "exact_boundary",
+        &[
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\nfn use_exact() { b::exact(); }\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::exact;\n"),
+            ("src/a/b/c.rs", declaration),
+        ],
+    );
+    batch.add_member(
+        "boundary_mismatch",
+        &[
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "mod b;\n"),
+            ("src/a/b.rs", "mod c;\npub(super) use c::wide;\n"),
+            ("src/a/b/c.rs", "pub(in crate) fn wide() {}\n"),
+        ],
+    );
+    batch.add_member(
+        "crate_boundary",
+        &[
+            ("src/lib.rs", "mod a;\npub(crate) use a::helper;\n"),
+            ("src/a.rs", "pub(in super) fn helper() {}\n"),
+        ],
+    );
+    batch.add_member(
+        "written_syntaxes",
+        &[
+            ("src/lib.rs", "mod a;\n"),
+            ("src/a.rs", "pub(in crate) fn crate_wide() {}\nmod b;\n"),
+            (
+                "src/a/b.rs",
+                "pub(in self) fn current_only() {}\npub(in super) fn parent_only() {}\nmod c;\n",
+            ),
+            (
+                "src/a/b/c.rs",
+                "pub(in super::super) fn grandparent_only() {}\n",
+            ),
+        ],
+    );
+    batch
+}
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        assert_codes(&report, "src/a.rs", &[DiagnosticCode::OverbroadPubCrate]);
-        assert_headline_and_help(
-            &report,
-            "src/a.rs",
-            "`pub(crate)` is broader than required",
-            "consider removing the visibility",
-        );
-        assert_codes(
-            &report,
-            "src/a/b.rs",
-            &[
-                DiagnosticCode::ForbiddenPubInCrate,
-                DiagnosticCode::ForbiddenPubInCrate,
-            ],
-        );
-        assert_headline_and_help(
-            &report,
-            "src/a/b.rs",
-            "`pub(in self)` is a redundant spelling of `pub(self)`",
-            "consider using: `pub(self)`",
-        );
-        assert_headline_and_help(
-            &report,
-            "src/a/b.rs",
-            "`pub(in super)` is a redundant spelling of `pub(super)`",
-            "consider using: `pub(super)`",
-        );
-        assert_codes(
-            &report,
-            "src/a/b/c.rs",
-            &[DiagnosticCode::ForbiddenPubInCrate],
-        );
-        assert_headline_and_help(
-            &report,
-            "src/a/b/c.rs",
-            "`pub(in super::super)` is not the path callers use to name this item",
-            "consider removing the visibility",
-        );
-    }
+fn assert_written_syntaxes(report: &Report) {
+    assert_codes(
+        report,
+        "written_syntaxes/src/a.rs",
+        &[DiagnosticCode::OverbroadPubCrate],
+    );
+    assert_headline_and_help(
+        report,
+        "written_syntaxes/src/a.rs",
+        "`pub(crate)` is broader than required",
+        "consider removing the visibility",
+    );
+    assert_codes(
+        report,
+        "written_syntaxes/src/a/b.rs",
+        &[
+            DiagnosticCode::ForbiddenPubInCrate,
+            DiagnosticCode::ForbiddenPubInCrate,
+        ],
+    );
+    assert_headline_and_help(
+        report,
+        "written_syntaxes/src/a/b.rs",
+        "`pub(in self)` is a redundant spelling of `pub(self)`",
+        "consider using: `pub(self)`",
+    );
+    assert_headline_and_help(
+        report,
+        "written_syntaxes/src/a/b.rs",
+        "`pub(in super)` is a redundant spelling of `pub(super)`",
+        "consider using: `pub(super)`",
+    );
+    assert_codes(
+        report,
+        "written_syntaxes/src/a/b/c.rs",
+        &[DiagnosticCode::ForbiddenPubInCrate],
+    );
+    assert_headline_and_help(
+        report,
+        "written_syntaxes/src/a/b/c.rs",
+        "`pub(in super::super)` is not the path callers use to name this item",
+        "consider removing the visibility",
+    );
 }
 
 #[test]
@@ -1717,11 +1661,8 @@ edition = "2024"
         "src/animation/sequence/installation.rs",
     ] {
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|finding| finding.path.ends_with(suffix)
-                    && finding.code == DiagnosticCode::ForbiddenPubInCrate),
+            report.findings.iter().any(|finding| finding.path == suffix
+                && finding.code == DiagnosticCode::ForbiddenPubInCrate),
             "expected a forbidden_pub_in_crate finding for {suffix}: {report:#?}"
         );
     }
@@ -1823,11 +1764,8 @@ edition = "2024"
         "src/animation/sequence/playback.rs",
     ] {
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|finding| finding.path.ends_with(suffix)
-                    && finding.code == DiagnosticCode::ForbiddenPubInCrate),
+            report.findings.iter().any(|finding| finding.path == suffix
+                && finding.code == DiagnosticCode::ForbiddenPubInCrate),
             "expected a forbidden_pub_in_crate finding for {suffix}: {report:#?}"
         );
     }
@@ -2008,25 +1946,15 @@ fn write_sources(temp: &TempDir, sources: &[(&str, &str)]) {
     }
 }
 
-fn assert_codes(report: &Report, suffix: &str, expected: &[DiagnosticCode]) {
-    let codes = report
-        .findings
-        .iter()
-        .filter(|finding| finding.path.ends_with(suffix))
-        .map(|finding| finding.code)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        codes, expected,
-        "unexpected diagnostic code set for {suffix}: {:?}",
-        report.findings,
-    );
+fn assert_codes(report: &Report, path: &str, expected: &[DiagnosticCode]) {
+    assert_codes_at(report, path, expected);
 }
 
 fn assert_headline_and_help(report: &Report, suffix: &str, headline: &str, help: &str) {
     let finding = report
         .findings
         .iter()
-        .find(|finding| finding.path.ends_with(suffix) && finding.headline == headline)
+        .find(|finding| finding.path == suffix && finding.headline == headline)
         .unwrap_or_else(|| {
             panic!(
                 "missing headline {headline:?} for {suffix}: {:?}",
@@ -2048,7 +1976,7 @@ fn assert_note(report: &Report, suffix: &str, note: &str) {
     let finding = report
         .findings
         .iter()
-        .find(|finding| finding.path.ends_with(suffix))
+        .find(|finding| finding.path == suffix)
         .unwrap_or_else(|| panic!("missing finding for {suffix}: {:?}", report.findings));
     assert!(
         finding.help.iter().any(|line| line == note),

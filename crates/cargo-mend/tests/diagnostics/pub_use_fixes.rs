@@ -754,61 +754,12 @@ edition = "2024"
     assert!(stderr.contains("mend: no `pub use` fixes available"));
 }
 
-#[test]
-fn fix_pub_use_rewrites_grouped_pub_use_in_dry_run() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_grouped_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("grouped", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_pub_use_grouped_fix_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod child;\npub use child::{Thing, Other};\n",
-    )
-    .expect("write parent");
-    fs::write(
-        temp.path().join("src/parent/child.rs"),
-        "pub struct Thing;\npub struct Other;\n",
-    )
-    .expect("write child");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix-pub-use")
-        .arg("--dry-run")
-        .output()
-        .expect("run cargo-mend --fix-pub-use --dry-run");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix-pub-use --dry-run failed unexpectedly: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(stderr.contains("mend: would apply 2 `pub use` fix(es) in dry run"));
-}
-
-#[test]
-fn fix_pub_use_rewrites_grouped_pub_use_in_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_grouped_apply_fixture"
 version = "0.1.0"
@@ -816,63 +767,42 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::create_dir_all(root.join("src/parent")).expect("create src/parent");
+    fs::write(root.join("src/main.rs"), "mod parent;\n\nfn main() {}\n")
+        .expect("write fixture main");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
+        root.join("src/parent.rs"),
         "mod child;\npub use child::{Thing, Other};\n",
     )
     .expect("write parent");
     fs::write(
-        temp.path().join("src/parent/child.rs"),
+        root.join("src/parent/child.rs"),
         "pub struct Thing;\npub struct Other;\n",
     )
     .expect("write child");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix-pub-use")
-        .output()
-        .expect("run cargo-mend --fix-pub-use");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix-pub-use failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
 
-    let parent = fs::read_to_string(temp.path().join("src/parent.rs")).expect("read fixed parent");
-    let child =
-        fs::read_to_string(temp.path().join("src/parent/child.rs")).expect("read fixed child");
-    assert!(!parent.contains("pub use"));
-    assert!(child.contains("pub(super) struct Thing;"));
-    assert!(child.contains("pub(super) struct Other;"));
+    root
+}
 
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .output()
-        .expect("cargo check fixed grouped fixture");
-    assert!(
-        check.status.success(),
-        "cargo check failed after grouped apply fix: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr)
+fn assert_grouped_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            ("src/parent.rs", "mod child;\n\n"),
+            (
+                "src/parent/child.rs",
+                "pub(super) struct Thing;\npub(super) struct Other;\n",
+            ),
+        ],
     );
 }
 
-#[test]
-fn fix_pub_use_rewrites_multiline_grouped_pub_use_in_dry_run() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_multiline_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("multiline", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_multiline_grouped_fix_fixture"
 version = "0.1.0"
@@ -880,41 +810,24 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::create_dir_all(root.join("src/parent")).expect("create src/parent");
+    fs::write(root.join("src/main.rs"), "mod parent;\n\nfn main() {}\n")
+        .expect("write fixture main");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
+        root.join("src/parent.rs"),
         "mod child;\npub use child::{\n    Thing,\n    Other,\n};\n",
     )
     .expect("write parent");
     fs::write(
-        temp.path().join("src/parent/child.rs"),
+        root.join("src/parent/child.rs"),
         "pub struct Thing;\npub struct Other;\n",
     )
     .expect("write child");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix-pub-use")
-        .arg("--dry-run")
-        .output()
-        .expect("run cargo-mend --fix-pub-use --dry-run");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix-pub-use --dry-run failed unexpectedly: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
 
-    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(stderr.contains("mend: would apply 2 `pub use` fix(es) in dry run"));
-    assert!(!stderr.contains("warning: unused imports: `Thing` and `Other`"));
+    root
+}
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+fn assert_multiline_facade_findings(report: &Report) {
     let expected_findings = [
         ExpectedFinding {
             code:        DiagnosticCode::SuspiciousPub,
@@ -932,14 +845,13 @@ edition = "2024"
     );
 }
 
-#[test]
-fn fix_pub_use_rewrites_grouped_pub_use_in_file_parent_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/private_parent")).expect("create nested fixture dir");
+fn write_file_parent_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("file_parent", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/private_parent")).expect("create nested fixture dir");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "file_parent_grouped_apply_fixture"
 version = "0.1.0"
@@ -948,7 +860,7 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         r#"mod private_parent;
 
 fn main() {}
@@ -956,61 +868,40 @@ fn main() {}
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/private_parent.rs"),
+        root.join("src/private_parent.rs"),
         "mod child;\npub use child::{PublicContainer, Other};\n",
     )
     .expect("write file parent");
     fs::write(
-        temp.path().join("src/private_parent/child.rs"),
+        root.join("src/private_parent/child.rs"),
         "pub struct PublicContainer;\npub struct Other;\n",
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix-pub-use")
-        .output()
-        .expect("run cargo-mend --fix-pub-use");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix-pub-use failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    root
+}
 
-    let parent = fs::read_to_string(temp.path().join("src/private_parent.rs"))
-        .expect("read fixed file parent");
-    let child = fs::read_to_string(temp.path().join("src/private_parent/child.rs"))
-        .expect("read fixed child");
-
-    assert!(!parent.contains("pub use"));
-    assert!(child.contains("pub(super) struct PublicContainer;"));
-    assert!(child.contains("pub(super) struct Other;"));
-
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .output()
-        .expect("cargo check fixed file-parent grouped fixture");
-    assert!(
-        check.status.success(),
-        "cargo check failed after file-parent grouped apply fix: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr)
+fn assert_file_parent_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            ("src/private_parent.rs", "mod child;\n\n"),
+            (
+                "src/private_parent/child.rs",
+                "pub(super) struct PublicContainer;\npub(super) struct Other;\n",
+            ),
+        ],
     );
 }
 
-#[test]
-fn fix_pub_use_rewrites_obsidian_style_grouped_file_facades_in_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    fs::create_dir_all(temp.path().join("src/utils")).expect("create src/utils");
-    fs::create_dir_all(temp.path().join("src/report")).expect("create src/report");
+fn write_obsidian_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("obsidian", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
+    fs::create_dir_all(root.join("src/utils")).expect("create src/utils");
+    fs::create_dir_all(root.join("src/report")).expect("create src/report");
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "obsidian_style_grouped_facades_fixture"
 version = "0.1.0"
@@ -1019,7 +910,7 @@ edition = "2024"
     )
     .expect("write fixture manifest");
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("src/main.rs"),
         r#"mod report;
 mod utils;
 
@@ -1034,7 +925,7 @@ fn main() {
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/report.rs"),
+        root.join("src/report.rs"),
         r#"mod report_consumer;
 mod report_writer;
 
@@ -1043,7 +934,7 @@ pub use report_writer::{ReportDefinition, ReportWriter};
     )
     .expect("write report facade");
     fs::write(
-        temp.path().join("src/report/report_writer.rs"),
+        root.join("src/report/report_writer.rs"),
         r#"pub trait ReportDefinition {}
 
 pub struct ReportWriter;
@@ -1051,7 +942,7 @@ pub struct ReportWriter;
     )
     .expect("write report writer child");
     fs::write(
-        temp.path().join("src/report/report_consumer.rs"),
+        root.join("src/report/report_consumer.rs"),
         r#"use super::ReportDefinition;
 
 pub fn accept<T: ReportDefinition>(_value: &T) {}
@@ -1059,7 +950,7 @@ pub fn accept<T: ReportDefinition>(_value: &T) {}
     )
     .expect("write report consumer");
     fs::write(
-        temp.path().join("src/utils.rs"),
+        root.join("src/utils.rs"),
         r#"mod file_utils;
 mod sha256_cache;
 mod status_consumer;
@@ -1070,7 +961,7 @@ pub use sha256_cache::{CacheEntryStatus, CacheFileStatus, CachedImageInfo, Sha25
     )
     .expect("write utils facade");
     fs::write(
-        temp.path().join("src/utils/file_utils.rs"),
+        root.join("src/utils/file_utils.rs"),
         r#"pub fn collect_repository_files() {}
 
 pub struct RepositoryFiles;
@@ -1078,7 +969,7 @@ pub struct RepositoryFiles;
     )
     .expect("write file utils child");
     fs::write(
-        temp.path().join("src/utils/sha256_cache.rs"),
+        root.join("src/utils/sha256_cache.rs"),
         r#"pub enum CacheEntryStatus {
     Fresh,
 }
@@ -1094,7 +985,7 @@ pub struct Sha256Cache;
     )
     .expect("write sha256 child");
     fs::write(
-        temp.path().join("src/utils/status_consumer.rs"),
+        root.join("src/utils/status_consumer.rs"),
         r#"use super::CacheEntryStatus;
 
 pub fn touch(_: CacheEntryStatus) {}
@@ -1102,7 +993,10 @@ pub fn touch(_: CacheEntryStatus) {}
     )
     .expect("write status consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    root
+}
+
+fn assert_obsidian_facade_findings(report: &Report) {
     let codes = report
         .findings
         .iter()
@@ -1115,13 +1009,12 @@ pub fn touch(_: CacheEntryStatus) {}
     assert_eq!(report.summary.fixable_with_fix_pub_use, 6);
 }
 
-#[test]
-fn fix_pub_use_rewrites_grouped_in_subtree_imports_in_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_subtree_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("subtree", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_grouped_subtree_import_fixture"
 version = "0.1.0"
@@ -1129,29 +1022,29 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::create_dir_all(root.join("src/parent")).expect("create src/parent");
+    fs::write(root.join("src/main.rs"), "mod parent;\n\nfn main() {}\n")
+        .expect("write fixture main");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
+        root.join("src/parent.rs"),
         "mod child;\nmod sibling;\npub use child::{ReportDefinition, ReportWriter};\n",
     )
     .expect("write parent");
     fs::write(
-        temp.path().join("src/parent/child.rs"),
+        root.join("src/parent/child.rs"),
         "pub trait ReportDefinition {}\npub struct ReportWriter;\n",
     )
     .expect("write child");
     fs::write(
-        temp.path().join("src/parent/sibling.rs"),
+        root.join("src/parent/sibling.rs"),
         "use crate::parent::{ReportDefinition, ReportWriter};\n\npub fn keep<T: ReportDefinition>(_: ReportWriter, _: T) {}\n",
     )
     .expect("write sibling");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    root
+}
+
+fn assert_subtree_facade_findings(report: &Report) {
     let codes = report
         .findings
         .iter()
@@ -1165,13 +1058,12 @@ edition = "2024"
     assert_eq!(report.summary.fixable_with_fix_pub_use, 2);
 }
 
-#[test]
-fn fix_pub_use_rewrites_mixed_grouped_subtree_imports_in_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_mixed_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("mixed", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_mixed_grouped_subtree_import_fixture"
 version = "0.1.0"
@@ -1179,29 +1071,29 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/report")).expect("create src/report");
+    fs::create_dir_all(root.join("src/report")).expect("create src/report");
+    fs::write(root.join("src/main.rs"), "mod report;\n\nfn main() {}\n")
+        .expect("write fixture main");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod report;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/report.rs"),
+        root.join("src/report.rs"),
         "mod report_writer;\nmod frontmatter;\npub use report_writer::{DescriptionBuilder, ReportDefinition, ReportWriter};\n",
     )
     .expect("write report facade");
     fs::write(
-        temp.path().join("src/report/report_writer.rs"),
+        root.join("src/report/report_writer.rs"),
         "pub struct DescriptionBuilder;\npub trait ReportDefinition {}\npub struct ReportWriter;\n",
     )
     .expect("write report child");
     fs::write(
-        temp.path().join("src/report/frontmatter.rs"),
+        root.join("src/report/frontmatter.rs"),
         "use crate::report::{DescriptionBuilder, ReportDefinition, ReportWriter};\n\npub fn keep<T: ReportDefinition>(_: DescriptionBuilder, _: ReportWriter, _: T) {}\n",
     )
     .expect("write report consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    root
+}
+
+fn assert_mixed_facade_findings(report: &Report) {
     let codes = report
         .findings
         .iter()
@@ -1381,13 +1273,12 @@ fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
     );
 }
 
-#[test]
-fn fix_pub_use_rewrites_obsidian_report_style_private_parent_use_in_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_private_parent_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("private_parent", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_obsidian_report_style_fixture"
 version = "0.1.0"
@@ -1395,34 +1286,34 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/report")).expect("create src/report");
+    fs::create_dir_all(root.join("src/report")).expect("create src/report");
+    fs::write(root.join("src/main.rs"), "mod report;\n\nfn main() {}\n")
+        .expect("write fixture main");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod report;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/report.rs"),
+        root.join("src/report.rs"),
         "mod frontmatter_issues_report;\nmod invalid_wikilink_report;\nmod report_writer;\n\npub use report_writer::{ReportDefinition, ReportWriter};\nuse report_writer::DescriptionBuilder;\n\npub fn parent_local() {\n    let _ = DescriptionBuilder::new();\n}\n",
     )
     .expect("write report facade");
     fs::write(
-        temp.path().join("src/report/report_writer.rs"),
+        root.join("src/report/report_writer.rs"),
         "pub struct DescriptionBuilder;\npub trait ReportDefinition {}\npub struct ReportWriter;\n\nimpl DescriptionBuilder {\n    pub fn new() -> Self { Self }\n}\n",
     )
     .expect("write report writer child");
     fs::write(
-        temp.path().join("src/report/frontmatter_issues_report.rs"),
+        root.join("src/report/frontmatter_issues_report.rs"),
         "use crate::report::{DescriptionBuilder, ReportDefinition, ReportWriter};\n\npub fn use_items<T: ReportDefinition>(_: DescriptionBuilder, _: ReportWriter, _: T) {}\n",
     )
     .expect("write frontmatter report child");
     fs::write(
-        temp.path().join("src/report/invalid_wikilink_report.rs"),
+        root.join("src/report/invalid_wikilink_report.rs"),
         "use crate::report::{DescriptionBuilder, ReportDefinition, ReportWriter};\n\npub fn use_items_again<T: ReportDefinition>(_: DescriptionBuilder, _: ReportWriter, _: T) {}\n",
     )
     .expect("write invalid wikilink report child");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    root
+}
+
+fn assert_private_parent_facade_findings(report: &Report) {
     let codes = report
         .findings
         .iter()
@@ -1436,13 +1327,12 @@ edition = "2024"
     assert_eq!(report.summary.fixable_with_fix_pub_use, 2);
 }
 
-#[test]
-fn fix_pub_use_skips_grouped_pub_use_with_rename_in_dry_run() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_rename_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("rename", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_grouped_rename_skip_fixture"
 version = "0.1.0"
@@ -1450,41 +1340,24 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::create_dir_all(root.join("src/parent")).expect("create src/parent");
+    fs::write(root.join("src/main.rs"), "mod parent;\n\nfn main() {}\n")
+        .expect("write fixture main");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\n\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
+        root.join("src/parent.rs"),
         "mod child;\npub use child::{Thing as RenamedThing, Other};\n",
     )
     .expect("write parent");
     fs::write(
-        temp.path().join("src/parent/child.rs"),
+        root.join("src/parent/child.rs"),
         "pub struct Thing;\npub struct Other;\n",
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix-pub-use")
-        .arg("--dry-run")
-        .output()
-        .expect("run cargo-mend --fix-pub-use --dry-run");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix-pub-use --dry-run failed unexpectedly: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    root
+}
 
-    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(stderr.contains("mend: would apply 1 `pub use` fix(es) in dry run"));
-
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+fn assert_rename_facade_findings(report: &Report) {
     let expected_findings = [ExpectedFinding {
         code:        DiagnosticCode::SuspiciousPub,
         fix_support: FixSupport::PubUse,
@@ -1496,13 +1369,12 @@ edition = "2024"
     );
 }
 
-#[test]
-fn fix_pub_use_rewrites_pub_super_parent_facade_in_apply_mode() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn write_super_parent_facade(batch: &mut DiagnosticBatch) -> std::path::PathBuf {
+    let root = batch.add_member("super_parent", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "fix_pub_use_pub_super_parent_fixture"
 version = "0.1.0"
@@ -1510,55 +1382,33 @@ edition = "2024"
 "#,
     )
     .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create src/outer/parent");
+    fs::create_dir_all(root.join("src/outer/parent")).expect("create src/outer/parent");
+    fs::write(root.join("src/main.rs"), "mod outer;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
     fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
+        root.join("src/outer/parent.rs"),
         "mod child;\npub(super) use child::SpawnStats;\n",
     )
     .expect("write parent mod");
     fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
+        root.join("src/outer/parent/child.rs"),
         "pub struct SpawnStats;\n",
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix-pub-use")
-        .output()
-        .expect("run cargo-mend --fix-pub-use");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix-pub-use failed unexpectedly: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    root
+}
 
-    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
-    assert!(
-        stderr.contains("mend: applied 1 `pub use` fix(es)"),
-        "expected pub(super) parent facade to be fixed; stderr was:\n{stderr}"
-    );
-
-    let parent_after =
-        fs::read_to_string(temp.path().join("src/outer/parent.rs")).expect("read parent");
-    assert!(
-        !parent_after.contains("pub(super) use child::SpawnStats"),
-        "parent re-export should be removed after fix; got:\n{parent_after}"
-    );
-
-    let child_after =
-        fs::read_to_string(temp.path().join("src/outer/parent/child.rs")).expect("read child");
-    assert!(
-        child_after.contains("pub(super) struct SpawnStats"),
-        "child item should be narrowed to pub(super); got:\n{child_after}"
+fn assert_super_parent_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            ("src/outer/parent.rs", "mod child;\n\n"),
+            (
+                "src/outer/parent/child.rs",
+                "pub(super) struct SpawnStats;\n",
+            ),
+        ],
     );
 }
 
@@ -1878,4 +1728,291 @@ fn fix_pub_use_removes_an_internal_facade_and_repoints_its_inline_subtree_path()
         fs::read_to_string(temp.path().join("src/tool/widget.rs")).expect("read child"),
         "pub(super) struct Widget;\n",
     );
+}
+
+#[test]
+fn grouped_facades_share_dry_run_and_apply() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let members = [
+        ("grouped", write_grouped_facade(&mut batch), 2),
+        ("multiline", write_multiline_facade(&mut batch), 2),
+        ("file_parent", write_file_parent_facade(&mut batch), 2),
+        ("obsidian", write_obsidian_facade(&mut batch), 6),
+        ("subtree", write_subtree_facade(&mut batch), 2),
+        ("mixed", write_mixed_facade(&mut batch), 3),
+        ("private_parent", write_private_parent_facade(&mut batch), 2),
+        ("super_parent", write_super_parent_facade(&mut batch), 1),
+    ];
+    let before = members
+        .iter()
+        .flat_map(|(_, root, _)| facade_source_bytes(&root.join("src")))
+        .collect::<Vec<_>>();
+    let reports = batch.member_reports();
+    let dry_run = batch
+        .command()
+        .args(["--fix-pub-use", "--dry-run"])
+        .output()
+        .expect("dry-run grouped facades");
+    assert!(
+        dry_run.status.success(),
+        "grouped facade dry run failed: {}\n{}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let stderr = String::from_utf8(dry_run.stderr).expect("decode dry-run stderr");
+    assert!(stderr.contains("mend: would apply 20 `pub use` fix(es) in dry run"));
+    assert!(!stderr.contains("warning: unused imports: `Thing` and `Other`"));
+    for (member, _, expected) in &members {
+        assert_eq!(
+            reports[*member].summary.fixable_with_fix_pub_use, *expected,
+            "{member}"
+        );
+    }
+    assert_multiline_facade_findings(&reports["multiline"]);
+    assert_obsidian_facade_findings(&reports["obsidian"]);
+    assert_subtree_facade_findings(&reports["subtree"]);
+    assert_mixed_facade_findings(&reports["mixed"]);
+    assert_private_parent_facade_findings(&reports["private_parent"]);
+    for (path, bytes) in before {
+        assert_eq!(
+            fs::read(&path).expect("read dry-run source"),
+            bytes,
+            "dry run changed {}",
+            path.display()
+        );
+    }
+    let applied = batch
+        .command()
+        .arg("--fix-pub-use")
+        .output()
+        .expect("apply grouped facades");
+    assert!(
+        applied.status.success(),
+        "grouped facade apply failed: {}\n{}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let stderr = String::from_utf8(applied.stderr).expect("decode apply stderr");
+    assert!(
+        stderr.contains("mend: applied 20 `pub use` fix(es)"),
+        "{stderr}"
+    );
+    assert_grouped_facade_applied(&members[0].1);
+    assert_grouped_facade_applied(&members[1].1);
+    assert_file_parent_facade_applied(&members[2].1);
+    assert_obsidian_facade_applied(&members[3].1);
+    assert_subtree_facade_applied(&members[4].1);
+    assert_mixed_facade_applied(&members[5].1);
+    assert_private_parent_facade_applied(&members[6].1);
+    assert_super_parent_facade_applied(&members[7].1);
+}
+
+#[test]
+fn renamed_facade_shares_dry_run_and_apply_with_import_cleanup() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let root = write_rename_facade(&mut batch);
+    let before = facade_source_bytes(&root.join("src"));
+    let reports = batch.member_reports();
+    assert_eq!(reports["rename"].summary.fixable_with_fix_pub_use, 1);
+    assert_rename_facade_findings(&reports["rename"]);
+
+    let dry_run = batch
+        .command()
+        .args(["--fix-pub-use", "--dry-run"])
+        .output()
+        .expect("dry-run renamed facade");
+    assert!(
+        dry_run.status.success(),
+        "renamed facade dry run failed: {}\n{}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let stderr = String::from_utf8(dry_run.stderr).expect("decode dry-run stderr");
+    assert!(
+        stderr.contains("mend: would apply 1 `pub use` fix(es) in dry run"),
+        "{stderr}"
+    );
+    for (path, bytes) in before {
+        assert_eq!(
+            fs::read(&path).expect("read dry-run source"),
+            bytes,
+            "dry run changed {}",
+            path.display()
+        );
+    }
+
+    // Removing Other leaves the unused Thing-as-RenamedThing re-export, so
+    // this apply chains cargo fix, whose localhost server requires networking.
+    if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
+        eprintln!(
+            "skipping renamed_facade_shares_dry_run_and_apply_with_import_cleanup apply: \
+             CARGO_MEND_SKIP_NETWORK_TESTS is set"
+        );
+        return;
+    }
+
+    let initialized = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(batch.path())
+        .output()
+        .expect("initialize renamed facade repository");
+    assert!(
+        initialized.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let applied = batch
+        .command()
+        .arg("--fix-pub-use")
+        .output()
+        .expect("apply renamed facade");
+    assert!(
+        applied.status.success(),
+        "renamed facade apply failed: {}\n{}",
+        String::from_utf8_lossy(&applied.stdout),
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let stderr = String::from_utf8(applied.stderr).expect("decode apply stderr");
+    assert!(
+        stderr.contains("mend: applied 1 `pub use` fix(es)"),
+        "{stderr}"
+    );
+    assert_facade_sources(
+        &root,
+        &[
+            ("src/parent.rs", "mod child;\n"),
+            (
+                "src/parent/child.rs",
+                "pub struct Thing;\npub(super) struct Other;\n",
+            ),
+        ],
+    );
+}
+
+fn assert_obsidian_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            (
+                "src/report.rs",
+                "mod report_consumer;\nmod report_writer;\n\npub use report_writer::ReportWriter;\n",
+            ),
+            (
+                "src/report/report_writer.rs",
+                "pub(super) trait ReportDefinition {}\n\npub struct ReportWriter;\n",
+            ),
+            (
+                "src/report/report_consumer.rs",
+                "use super::report_writer::ReportDefinition;\n\npub fn accept<T: ReportDefinition>(_value: &T) {}\n",
+            ),
+            (
+                "src/utils.rs",
+                "mod file_utils;\nmod sha256_cache;\nmod status_consumer;\n\n\npub use sha256_cache::Sha256Cache;\n",
+            ),
+            (
+                "src/utils/file_utils.rs",
+                "pub(super) fn collect_repository_files() {}\n\npub(super) struct RepositoryFiles;\n",
+            ),
+            (
+                "src/utils/sha256_cache.rs",
+                "pub(super) enum CacheEntryStatus {\n    Fresh,\n}\n\npub(super) enum CacheFileStatus {\n    Present,\n}\n\npub(super) struct CachedImageInfo;\n\npub struct Sha256Cache;\n",
+            ),
+            (
+                "src/utils/status_consumer.rs",
+                "use super::sha256_cache::CacheEntryStatus;\n\npub fn touch(_: CacheEntryStatus) {}\n",
+            ),
+        ],
+    );
+}
+
+fn assert_subtree_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            ("src/parent.rs", "mod child;\nmod sibling;\n\n"),
+            (
+                "src/parent/child.rs",
+                "pub(super) trait ReportDefinition {}\npub(super) struct ReportWriter;\n",
+            ),
+            (
+                "src/parent/sibling.rs",
+                "use super::child::ReportDefinition;\nuse super::child::ReportWriter;\n\npub fn keep<T: ReportDefinition>(_: ReportWriter, _: T) {}\n",
+            ),
+        ],
+    );
+}
+
+fn assert_mixed_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            ("src/report.rs", "mod report_writer;\nmod frontmatter;\n\n"),
+            (
+                "src/report/report_writer.rs",
+                "pub(super) struct DescriptionBuilder;\npub(super) trait ReportDefinition {}\npub(super) struct ReportWriter;\n",
+            ),
+            (
+                "src/report/frontmatter.rs",
+                "use super::report_writer::DescriptionBuilder;\nuse super::report_writer::ReportDefinition;\nuse super::report_writer::ReportWriter;\n\npub fn keep<T: ReportDefinition>(_: DescriptionBuilder, _: ReportWriter, _: T) {}\n",
+            ),
+        ],
+    );
+}
+
+fn assert_private_parent_facade_applied(root: &std::path::Path) {
+    assert_facade_sources(
+        root,
+        &[
+            (
+                "src/report.rs",
+                "mod frontmatter_issues_report;\nmod invalid_wikilink_report;\nmod report_writer;\n\n\nuse report_writer::DescriptionBuilder;\n\npub fn parent_local() {\n    let _ = DescriptionBuilder::new();\n}\n",
+            ),
+            (
+                "src/report/report_writer.rs",
+                "pub struct DescriptionBuilder;\npub(super) trait ReportDefinition {}\npub(super) struct ReportWriter;\n\nimpl DescriptionBuilder {\n    pub fn new() -> Self { Self }\n}\n",
+            ),
+            (
+                "src/report/frontmatter_issues_report.rs",
+                "use super::DescriptionBuilder;\nuse super::report_writer::ReportDefinition;\nuse super::report_writer::ReportWriter;\n\npub fn use_items<T: ReportDefinition>(_: DescriptionBuilder, _: ReportWriter, _: T) {}\n",
+            ),
+            (
+                "src/report/invalid_wikilink_report.rs",
+                "use super::DescriptionBuilder;\nuse super::report_writer::ReportDefinition;\nuse super::report_writer::ReportWriter;\n\npub fn use_items_again<T: ReportDefinition>(_: DescriptionBuilder, _: ReportWriter, _: T) {}\n",
+            ),
+        ],
+    );
+}
+
+fn assert_facade_sources(root: &std::path::Path, sources: &[(&str, &str)]) {
+    for (relative, expected) in sources {
+        let path = root.join(relative);
+        assert_eq!(
+            fs::read_to_string(&path).expect("read fixed facade source"),
+            *expected,
+            "{}",
+            path.display()
+        );
+    }
+}
+
+fn facade_source_bytes(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(root).expect("read facade sources") {
+        let path = entry.expect("read facade source entry").path();
+        if path.is_dir() {
+            sources.extend(facade_source_bytes(&path));
+        } else {
+            let bytes = fs::read(&path).expect("read facade source");
+            sources.push((path, bytes));
+        }
+    }
+    sources
 }

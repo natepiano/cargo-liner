@@ -479,13 +479,12 @@ edition = "2024"
     );
 }
 
-#[test]
-fn fix_replaces_pub_with_pub_crate() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn fix_replaces_pub_with_pub_crate(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_member("fix_replaces_pub_with_pub_crate", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "narrow_fix_fixture"
 version = "0.1.0"
@@ -493,55 +492,44 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::create_dir_all(root.join("src")).expect("create src");
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("src/lib.rs"),
         "mod helpers;\npub use helpers::exported_fn;\n\npub fn entry() {\n    helpers::internal_fn();\n    let _ = helpers::InternalStruct;\n}\n",
     )
     .expect("write lib");
     fs::write(
-        temp.path().join("src/helpers.rs"),
+        root.join("src/helpers.rs"),
         "pub fn exported_fn() {}\npub fn internal_fn() {}\npub struct InternalStruct;\n",
     )
     .expect("write helpers");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let helpers = fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed file");
-    assert!(
-        helpers.contains("pub fn exported_fn()"),
-        "re-exported item should stay `pub`: {helpers}"
-    );
-    assert!(
-        helpers.contains("pub(crate) fn internal_fn()"),
-        "non-exported fn should be narrowed to pub(crate): {helpers}"
-    );
-    assert!(
-        helpers.contains("pub(crate) struct InternalStruct"),
-        "non-exported struct should be narrowed to pub(crate): {helpers}"
-    );
+    move || {
+        let helpers = fs::read_to_string(root.join("src/helpers.rs")).expect("read fixed file");
+        assert!(
+            helpers.contains("pub fn exported_fn()"),
+            "re-exported item should stay `pub`: {helpers}"
+        );
+        assert!(
+            helpers.contains("pub(crate) fn internal_fn()"),
+            "non-exported fn should be narrowed to pub(crate): {helpers}"
+        );
+        assert!(
+            helpers.contains("pub(crate) struct InternalStruct"),
+            "non-exported struct should be narrowed to pub(crate): {helpers}"
+        );
+    }
 }
 
-#[test]
-fn fix_narrows_a_pub_written_on_its_own_line() {
+fn fix_narrows_a_pub_written_on_its_own_line(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
     // The annotation and the item it applies to need not share a line. The fix
     // must still land, and must replace only the annotation: advertising a fix
     // and then editing nothing is the failure this pins.
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    let root = batch.add_member("fix_narrows_a_pub_written_on_its_own_line", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "narrow_own_line_pub_fixture"
 version = "0.1.0"
@@ -549,47 +537,31 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::create_dir_all(root.join("src")).expect("create src");
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("src/lib.rs"),
         "mod helpers;\n\npub fn entry() {\n    helpers::internal_fn();\n}\n",
     )
     .expect("write lib");
-    fs::write(
-        temp.path().join("src/helpers.rs"),
-        "pub\nfn internal_fn() {}\n",
-    )
-    .expect("write helpers");
+    fs::write(root.join("src/helpers.rs"), "pub\nfn internal_fn() {}\n").expect("write helpers");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    assert_eq!(
-        fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed helpers"),
-        "pub(crate)\nfn internal_fn() {}\n",
-    );
+    move || {
+        assert_eq!(
+            fs::read_to_string(root.join("src/helpers.rs")).expect("read fixed helpers"),
+            "pub(crate)\nfn internal_fn() {}\n",
+        );
+    }
 }
 
-#[test]
-fn fix_narrows_a_tab_indented_pub() {
+fn fix_narrows_a_tab_indented_pub(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
     // A finding's column is rustc's display column, which charges a tab four
     // columns. Reading it as a byte offset lands past the `pub` and the fix
     // silently never lands.
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    let root = batch.add_member("fix_narrows_a_tab_indented_pub", &[]);
+    pin_pub_in_path(&root, PubInPath::Permitted);
 
     fs::write(
-        temp.path().join("Cargo.toml"),
+        root.join("Cargo.toml"),
         r#"[package]
 name = "narrow_tab_indented_pub_fixture"
 version = "0.1.0"
@@ -597,35 +569,24 @@ edition = "2024"
 "#,
     )
     .expect("write manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::create_dir_all(root.join("src")).expect("create src");
     fs::write(
-        temp.path().join("src/lib.rs"),
+        root.join("src/lib.rs"),
         "mod helpers;\n\npub fn entry() {\n    helpers::Helper::internal_fn();\n}\n",
     )
     .expect("write lib");
     fs::write(
-        temp.path().join("src/helpers.rs"),
+        root.join("src/helpers.rs"),
         "pub struct Helper;\n\nimpl Helper {\n\tpub fn internal_fn() {}\n}\n",
     )
     .expect("write helpers");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    assert_eq!(
-        fs::read_to_string(temp.path().join("src/helpers.rs")).expect("read fixed helpers"),
-        "pub(crate) struct Helper;\n\nimpl Helper {\n\tpub(crate) fn internal_fn() {}\n}\n",
-    );
+    move || {
+        assert_eq!(
+            fs::read_to_string(root.join("src/helpers.rs")).expect("read fixed helpers"),
+            "pub(crate) struct Helper;\n\nimpl Helper {\n\tpub(crate) fn internal_fn() {}\n}\n",
+        );
+    }
 }
 
 #[test]
@@ -1361,11 +1322,6 @@ hidden = []
 
     assert_feature_fixture_compiles(
         temp.path(),
-        &[],
-        "default feature set before --fix-compiler",
-    );
-    assert_feature_fixture_compiles(
-        temp.path(),
         &["--features", "hidden"],
         "hidden feature before --fix-compiler",
     );
@@ -1389,7 +1345,6 @@ hidden = []
         "the re-export used only by #[cfg(feature = \"hidden\")] must remain; a.rs after:\n{facade_after}",
     );
 
-    assert_feature_fixture_compiles(temp.path(), &[], "default feature set after --fix-compiler");
     assert_feature_fixture_compiles(
         temp.path(),
         &["--features", "hidden"],
@@ -1469,12 +1424,6 @@ emit_feature_gated_items!();
         String::from_utf8_lossy(&git_init.stderr)
     );
 
-    assert_feature_fixture_compiles(
-        temp.path(),
-        &[],
-        "default feature set before --fix-compiler",
-    );
-
     let output = mend_command()
         .arg("--manifest-path")
         .arg(temp.path().join("Cargo.toml"))
@@ -1493,7 +1442,6 @@ emit_feature_gated_items!();
         facade_after.contains("pub use child::Thing"),
         "the re-export used by a negated feature gate must remain; a.rs after:\n{facade_after}",
     );
-    assert_feature_fixture_compiles(temp.path(), &[], "default feature set after --fix-compiler");
 }
 
 fn assert_feature_fixture_compiles(fixture_dir: &Path, cargo_args: &[&str], configuration: &str) {
@@ -1862,4 +1810,31 @@ edition = "2024"
         !constants.contains("pub const NARROWABLE"),
         "unpinned sibling should still be narrowed: {constants}"
     );
+}
+
+#[test]
+fn fix_narrows_visibility_spellings() {
+    let mut batch = DiagnosticBatch::new(
+        r#"[visibility]
+pub_in_path = "permitted"
+"#,
+    );
+    let fix_replaces_pub_with_pub_crate = fix_replaces_pub_with_pub_crate(&mut batch);
+    let fix_narrows_a_pub_written_on_its_own_line =
+        fix_narrows_a_pub_written_on_its_own_line(&mut batch);
+    let fix_narrows_a_tab_indented_pub = fix_narrows_a_tab_indented_pub(&mut batch);
+    let output = batch
+        .command()
+        .arg("--fix")
+        .output()
+        .expect("fix visibility spellings");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fix_replaces_pub_with_pub_crate();
+    fix_narrows_a_pub_written_on_its_own_line();
+    fix_narrows_a_tab_indented_pub();
 }

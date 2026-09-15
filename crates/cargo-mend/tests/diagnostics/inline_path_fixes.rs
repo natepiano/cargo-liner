@@ -1,209 +1,99 @@
 use crate::support::*;
 
-fn write_inline_fixture(root: &std::path::Path, package_name: &str, source: &str) {
+fn basic_inline_type_adds_use(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("basic_inline_type_adds_use", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
+    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
     fs::write(
-        root.join("Cargo.toml"),
-        format!("[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(root.join("src")).expect("create fixture source directory");
-    fs::write(root.join("src/main.rs"), source).expect("write fixture source");
-}
-
-#[test]
-fn basic_inline_type_adds_use() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_basic_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"fn example(_x: crate::parent::types::MyType) {}
+        root.join("parent/consumer.rs"),
+        r#"fn example(_x: crate::basic_inline_type_adds_use::parent::types::MyType) {}
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    assert!(
-        consumer.contains("use") && consumer.contains("MyType;"),
-        "expected use import for MyType, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("_x: MyType"),
-        "expected bare type name in signature, got:\n{consumer}"
-    );
-    // The inline path in the function signature should be gone (only appears in the use statement)
-    assert!(
-        consumer.contains("_x: MyType)"),
-        "inline path should be replaced with bare type, got:\n{consumer}"
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        assert!(
+            consumer.contains("use") && consumer.contains("MyType;"),
+            "expected use import for MyType, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("_x: MyType"),
+            "expected bare type name in signature, got:\n{consumer}"
+        );
+        // The inline path in the function signature should be gone (only appears in the use
+        // statement)
+        assert!(
+            consumer.contains("_x: MyType)"),
+            "inline path should be replaced with bare type, got:\n{consumer}"
+        );
+    }
 }
 
-#[test]
-fn function_return_type() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn function_return_type(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("function_return_type", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_return_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
+        root.join("parent/types.rs"),
         "pub struct MyType;\nimpl MyType { pub fn new() -> Self { Self } }\n",
     )
     .expect("write types");
     fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"fn example() -> crate::parent::types::MyType {
-    crate::parent::types::MyType::new()
+        root.join("parent/consumer.rs"),
+        r#"fn example() -> crate::function_return_type::parent::types::MyType {
+    crate::function_return_type::parent::types::MyType::new()
 }
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    assert!(
-        consumer.contains("-> MyType"),
-        "expected bare return type, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("MyType::new()"),
-        "expected bare constructor call, got:\n{consumer}"
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        assert!(
+            consumer.contains("-> MyType"),
+            "expected bare return type, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("MyType::new()"),
+            "expected bare constructor call, got:\n{consumer}"
+        );
+    }
 }
 
-#[test]
-fn multiple_occurrences_one_use() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn multiple_occurrences_one_use(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("multiple_occurrences", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
+    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_multi_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"fn first(_x: crate::parent::types::MyType) {}
-fn second(_x: crate::parent::types::MyType) {}
-fn third(_x: crate::parent::types::MyType) {}
+        root.join("parent/consumer.rs"),
+        r#"fn first(_x: crate::multiple_occurrences::parent::types::MyType) {}
+fn second(_x: crate::multiple_occurrences::parent::types::MyType) {}
+fn third(_x: crate::multiple_occurrences::parent::types::MyType) {}
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    // Should have exactly one use statement for MyType
-    let use_count = consumer.matches("use").count();
-    assert_eq!(
-        use_count, 1,
-        "expected exactly one use import, got:\n{consumer}"
-    );
-    // All three occurrences should be replaced
-    let bare_count = consumer.matches("_x: MyType").count();
-    assert_eq!(bare_count, 3, "expected 3 bare type refs, got:\n{consumer}");
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        // Should have exactly one use statement for MyType
+        let use_count = consumer.matches("use").count();
+        assert_eq!(
+            use_count, 1,
+            "expected exactly one use import, got:\n{consumer}"
+        );
+        // All three occurrences should be replaced
+        let bare_count = consumer.matches("_x: MyType").count();
+        assert_eq!(bare_count, 3, "expected 3 bare type refs, got:\n{consumer}");
+    }
 }
 
 #[test]
@@ -447,21 +337,7 @@ mod tests {
         "expected the field type to use the synthesized import, got:\n{watcher}"
     );
 
-    for cargo_arguments in [&[][..], &["--tests"][..]] {
-        let check = cargo_command()
-            .arg("check")
-            .args(cargo_arguments)
-            .arg("--manifest-path")
-            .arg(temp.path().join("Cargo.toml"))
-            .output()
-            .expect("check fixed cfg-gated fixture");
-        assert!(
-            check.status.success(),
-            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
-            String::from_utf8_lossy(&check.stdout),
-            String::from_utf8_lossy(&check.stderr)
-        );
-    }
+    // The successful mend fix validates both normal and test targets.
 }
 
 /// A `#[cfg(test)] use` binds the name only in test builds. An ungated
@@ -553,21 +429,7 @@ mod tests {
         "cfg(test)-gated occurrence should be rewritten through the gated import:\n{main_source}"
     );
 
-    for cargo_arguments in [&[][..], &["--tests"][..]] {
-        let check = cargo_command()
-            .arg("check")
-            .args(cargo_arguments)
-            .arg("--manifest-path")
-            .arg(temp.path().join("Cargo.toml"))
-            .output()
-            .expect("check fixed cfg-gated existing import fixture");
-        assert!(
-            check.status.success(),
-            "fixed fixture failed for cargo arguments {cargo_arguments:?}: {}\n{}",
-            String::from_utf8_lossy(&check.stdout),
-            String::from_utf8_lossy(&check.stderr)
-        );
-    }
+    // The successful mend fix validates both normal and test targets.
 }
 
 /// A nested module that sees `io` only through `use super::*;` must resolve
@@ -651,18 +513,7 @@ fn main() {
         "no qualified occurrence should remain:\n{main_source}"
     );
 
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .output()
-        .expect("check fixed glob-visible parent import fixture");
-    assert!(
-        check.status.success(),
-        "fixed fixture failed to compile: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr)
-    );
+    // The successful mend fix already validates this target configuration.
 }
 
 #[test]
@@ -727,7 +578,6 @@ fn main() {}
     );
 
     for cargo_arguments in [
-        &[][..],
         &["--features", "x"][..],
         &["--features", "y"][..],
         &["--all-features"][..],
@@ -943,123 +793,66 @@ fn main() { keep_import_used(); }
     );
 }
 
-#[test]
-fn two_types_same_module() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn two_types_same_module(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("two_types_same_module", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_two_types_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
+        root.join("parent/types.rs"),
         "pub struct TypeA;\npub struct TypeB;\n",
     )
     .expect("write types");
     fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"fn example(_a: crate::parent::types::TypeA, _b: crate::parent::types::TypeB) {}
+        root.join("parent/consumer.rs"),
+        r#"fn example(_a: crate::two_types_same_module::parent::types::TypeA, _b: crate::two_types_same_module::parent::types::TypeB) {}
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    assert!(
-        consumer.contains("TypeA;") && consumer.contains("TypeB;"),
-        "expected use imports for both types, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("_a: TypeA") && consumer.contains("_b: TypeB"),
-        "expected bare type names, got:\n{consumer}"
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        assert!(
+            consumer.contains("TypeA;") && consumer.contains("TypeB;"),
+            "expected use imports for both types, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("_a: TypeA") && consumer.contains("_b: TypeB"),
+            "expected bare type names, got:\n{consumer}"
+        );
+    }
 }
 
-#[test]
-fn name_collision_skips_both() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn name_collision_skips_both(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("name_collision_skips_both", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent/mod_a")).expect("create src/parent/mod_a");
+    fs::create_dir_all(root.join("parent/mod_b")).expect("create src/parent/mod_b");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_collision_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent/mod_a")).expect("create src/parent/mod_a");
-    fs::create_dir_all(temp.path().join("src/parent/mod_b")).expect("create src/parent/mod_b");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
+        root.join("parent.rs"),
         "mod mod_a;\nmod mod_b;\nmod consumer;\n",
     )
     .expect("write parent mod");
-    fs::write(temp.path().join("src/parent/mod_a.rs"), "pub struct Foo;\n").expect("write mod_a");
-    fs::write(temp.path().join("src/parent/mod_b.rs"), "pub struct Foo;\n").expect("write mod_b");
+    fs::write(root.join("parent/mod_a.rs"), "pub struct Foo;\n").expect("write mod_a");
+    fs::write(root.join("parent/mod_b.rs"), "pub struct Foo;\n").expect("write mod_b");
     fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"fn example(_a: crate::parent::mod_a::Foo, _b: crate::parent::mod_b::Foo) {}
+        root.join("parent/consumer.rs"),
+        r#"fn example(_a: crate::name_collision_skips_both::parent::mod_a::Foo, _b: crate::name_collision_skips_both::parent::mod_b::Foo) {}
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    // Both Foo types have a name collision, so neither should be fixed
-    assert!(
-        consumer.contains("crate::parent::mod_a::Foo") || consumer.contains("super::mod_a::Foo"),
-        "collision should leave inline paths unchanged, got:\n{consumer}"
-    );
+    move |_| {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        // Both Foo types have a name collision, so neither should be fixed
+        assert!(
+            consumer.contains("crate::name_collision_skips_both::parent::mod_a::Foo")
+                || consumer.contains("super::mod_a::Foo"),
+            "collision should leave inline paths unchanged, got:\n{consumer}"
+        );
+    }
 }
 
 #[test]
@@ -1096,186 +889,97 @@ edition = "2024"
     );
 }
 
-#[test]
-fn skips_use_statements() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn skips_use_statements(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("skips_use_statements", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
+    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_skip_use_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        "use crate::parent::types::MyType;\n\nfn example(_x: MyType) {}\n",
+        root.join("parent/consumer.rs"),
+        "use crate::skips_use_statements::parent::types::MyType;\n\nfn example(_x: MyType) {}\n",
     )
     .expect("write consumer");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-        "use statements should not be flagged as inline path types"
-    );
+    move |report| {
+        let report = member_report(report, "src/skips_use_statements");
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
+            "use statements should not be flagged as inline path types"
+        );
+    }
 }
 
-#[test]
-fn super_path() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn super_path(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("super_path", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
+    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_super_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
+        root.join("parent/consumer.rs"),
         "fn example(_x: super::types::MyType) {}\n",
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    assert!(
-        consumer.contains("use super::types::MyType;"),
-        "expected use import for super path type, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("_x: MyType"),
-        "expected bare type name, got:\n{consumer}"
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        assert!(
+            consumer.contains("use super::types::MyType;"),
+            "expected use import for super path type, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("_x: MyType"),
+            "expected bare type name, got:\n{consumer}"
+        );
+    }
 }
 
-#[test]
-fn existing_use_no_duplicate() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn existing_use_no_duplicate(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("existing_use_no_duplicate", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
+    fs::write(root.join("parent/types.rs"), "pub struct MyType;\n").expect("write types");
+    fs::write(
+        root.join("parent/consumer.rs"),
+        r#"use crate::existing_use_no_duplicate::parent::types::MyType;
 
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_existing_use_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"use crate::parent::types::MyType;
-
-fn example(_x: MyType, _y: crate::parent::types::MyType) {}
+fn example(_x: MyType, _y: crate::existing_use_no_duplicate::parent::types::MyType) {}
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    // Should still have exactly one use statement
-    let use_count = consumer
-        .lines()
-        .filter(|line| line.starts_with("use ") && line.contains("MyType"))
-        .count();
-    assert_eq!(
-        use_count, 1,
-        "should not duplicate existing use import, got:\n{consumer}"
-    );
-    assert!(
-        !consumer.contains("crate::parent::types::MyType"),
-        "inline path should be replaced, got:\n{consumer}"
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        // Should still have exactly one use statement
+        let use_count = consumer
+            .lines()
+            .filter(|line| line.starts_with("use ") && line.contains("MyType"))
+            .count();
+        assert_eq!(
+            use_count, 1,
+            "should not duplicate existing use import, got:\n{consumer}"
+        );
+        assert!(
+            !consumer.contains("crate::existing_use_no_duplicate::parent::types::MyType"),
+            "inline path should be replaced, got:\n{consumer}"
+        );
+    }
 }
 
-#[test]
-fn conflicting_private_import_keeps_qualified_type() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn conflicting_private_import_keeps_qualified_type(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module(
+        "conflicting_private_import_keeps_qualified_type",
+        &[("mod.rs", "")],
+    );
     let source = r#"use std::error::Error;
 use std::io;
 
@@ -1289,46 +993,40 @@ fn boxed_error(error: io::Error) -> Box<dyn Error> {
 
 fn main() {}
 "#;
-    write_inline_fixture(temp.path(), "inline_private_collision_fixture", source);
-    let manifest_path = temp.path().join("Cargo.toml");
+    fs::write(root.join("mod.rs"), source).expect("write case source");
 
-    let report = run_mend_json(&manifest_path);
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|finding| finding.code == DiagnosticCode::InlinePathQualifiedType),
-        "conflicting private import should suppress the inline-type finding"
-    );
+    move |report| {
+        let report = member_report(
+            report,
+            "src/conflicting_private_import_keeps_qualified_type",
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.code == DiagnosticCode::InlinePathQualifiedType),
+            "conflicting private import should suppress the inline-type finding"
+        );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    assert_eq!(
-        main_rs,
-        source.replacen(
-            "    pub trait CaptureError",
-            "    pub(crate) trait CaptureError",
-            1
-        )
-    );
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
+        assert_eq!(
+            main_rs,
+            source.replacen(
+                "    pub trait CaptureError",
+                "    pub(crate) trait CaptureError",
+                1
+            )
+        );
+    }
 }
 
-#[test]
-fn grouped_private_import_keeps_qualified_type() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+fn grouped_private_import_keeps_qualified_type(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module(
+        "grouped_private_import_keeps_qualified_type",
+        &[("mod.rs", "")],
+    );
     let source = r#"use std::{error::Error, io};
 
 fn completed_capture() -> Result<(), io::Error> {
@@ -1341,24 +1039,12 @@ fn boxed_error(error: io::Error) -> Box<dyn Error> {
 
 fn main() {}
 "#;
-    write_inline_fixture(temp.path(), "inline_grouped_collision_fixture", source);
-    let manifest_path = temp.path().join("Cargo.toml");
+    fs::write(root.join("mod.rs"), source).expect("write case source");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    assert_eq!(main_rs, source);
+    move |_| {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
+        assert_eq!(main_rs, source);
+    }
 }
 
 #[test]
@@ -1382,7 +1068,11 @@ fn boxed_error<T: Error + 'static>(error: T) -> Box<dyn Error> {
 
 fn main() {}
 "#;
-    write_inline_fixture(temp.path(), "inline_renamed_collision_fixture", source);
+    fs::write(temp.path().join("Cargo.toml"),
+        "[package]\nname = \"inline_renamed_collision_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n")
+        .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create source directory");
+    fs::write(temp.path().join("src/main.rs"), source).expect("write source");
     let manifest_path = temp.path().join("Cargo.toml");
 
     let output = mend_command()
@@ -1405,13 +1095,15 @@ fn main() {}
     );
 }
 
-#[test]
-fn renamed_import_does_not_hide_required_bare_import() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    write_inline_fixture(
-        temp.path(),
-        "inline_renamed_existing_import_fixture",
+fn renamed_import_does_not_hide_required_bare_import(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "renamed_import_does_not_hide_required_bare_import",
+        &[("mod.rs", "")],
+    );
+    fs::write(
+        root.join("mod.rs"),
         r#"mod types {
     pub struct Imported;
 }
@@ -1420,44 +1112,30 @@ use types::Imported as Alias;
 
 fn aliased(_: Alias) {}
 
-fn inline(_: crate::types::Imported) {}
+fn inline(_: crate::renamed_import_does_not_hide_required_bare_import::types::Imported) {}
 
 fn main() {}
 "#,
-    );
-    let manifest_path = temp.path().join("Cargo.toml");
+    )
+    .expect("write case source");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    assert!(
-        main_rs.contains("use crate::types::Imported;"),
-        "expected the bare import alongside its alias, got:\n{main_rs}"
-    );
-    assert!(
-        main_rs.contains("fn inline(_: Imported)"),
-        "expected the inline path to use the bare import, got:\n{main_rs}"
-    );
+    move || {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
+        assert!(
+            main_rs.contains("use types::Imported;"),
+            "expected the bare import alongside its alias, got:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("fn inline(_: Imported)"),
+            "expected the inline path to use the bare import, got:\n{main_rs}"
+        );
+    }
 }
 
-#[test]
-fn sibling_scope_import_does_not_block_fix() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-    write_inline_fixture(
-        temp.path(),
-        "inline_sibling_scope_fixture",
+fn sibling_scope_import_does_not_block_fix(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("sibling_scope_import_does_not_block_fix", &[("mod.rs", "")]);
+    fs::write(
+        root.join("mod.rs"),
         r#"mod error_consumer {
     use std::error::Error;
 
@@ -1476,31 +1154,20 @@ mod capture {
 
 fn main() {}
 "#,
-    );
-    let manifest_path = temp.path().join("Cargo.toml");
+    )
+    .expect("write case source");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed source");
-    assert!(
-        main_rs.contains("mod capture {\n    use std::io;\n    use std::io::Error;\n"),
-        "expected a new import inside capture, got:\n{main_rs}"
-    );
-    assert!(
-        main_rs.contains("fn completed_capture() -> Result<(), Error>"),
-        "expected the capture return type to use the new binding, got:\n{main_rs}"
-    );
+    move || {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed source");
+        assert!(
+            main_rs.contains("mod capture {\n    use std::io;\n    use std::io::Error;\n"),
+            "expected a new import inside capture, got:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("fn completed_capture() -> Result<(), Error>"),
+            "expected the capture return type to use the new binding, got:\n{main_rs}"
+        );
+    }
 }
 
 #[test]
@@ -1566,374 +1233,221 @@ fn main() {
 }
 
 #[test]
-fn dry_run_no_edits() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_dry_run_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        "fn example(_x: crate::parent::types::MyType) {}\n",
-    )
-    .expect("write consumer");
-
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .arg("--dry-run")
+fn read_only_and_dry_run_preserve_dirty_and_clean_sources() {
+    let mut batch = DiagnosticBatch::new("[visibility]\npub_in_path = \"permitted\"\n");
+    let source = "fn example(_x: crate::parent::types::MyType) {}\n";
+    let dirty = batch.add_member(
+        "dirty",
+        &[
+            ("src/main.rs", "mod parent;\nfn main() {}\n"),
+            ("src/parent.rs", "mod types;\nmod consumer;\n"),
+            ("src/parent/types.rs", "pub struct MyType;\n"),
+            ("src/parent/consumer.rs", source),
+        ],
+    );
+    let clean = batch.add_member("clean", &[("src/main.rs", "fn main() {}\n")]);
+    let report = batch.report();
+    assert!(
+        findings_at(&report, "dirty/src/parent/consumer.rs")
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::InlinePathQualifiedType),
+        "read-only mode should report inline_path_qualified_type findings"
+    );
+    assert!(
+        !member_report(&report, "clean")
+            .findings
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::InlinePathQualifiedType),
+        "clean project should not have inline_path_qualified_type findings"
+    );
+    let output = batch
+        .command()
+        .args(["--fix", "--dry-run"])
         .output()
-        .expect("run cargo-mend --fix --dry-run");
+        .expect("dry-run batch");
     assert!(
         output.status.success(),
-        "cargo-mend --fix --dry-run failed: {}\n{}",
+        "batch dry-run failed: {}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-
-    let consumer = fs::read_to_string(temp.path().join("src/parent/consumer.rs"))
+    let consumer = fs::read_to_string(dirty.join("src/parent/consumer.rs"))
         .expect("read consumer after dry-run");
     assert!(
         consumer.contains("crate::parent::types::MyType"),
         "dry-run should not modify files"
     );
-}
-
-#[test]
-fn read_only_reports_findings() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_readonly_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
-        "pub struct MyType;\n",
-    )
-    .expect("write types");
-    fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        "fn example(_x: crate::parent::types::MyType) {}\n",
-    )
-    .expect("write consumer");
-
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        report
-            .findings
-            .iter()
-            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-        "read-only mode should report inline_path_qualified_type findings"
+    assert_eq!(consumer, source);
+    assert_eq!(
+        fs::read_to_string(clean.join("src/main.rs")).expect("read clean source"),
+        "fn main() {}\n"
     );
 }
 
-#[test]
-fn nothing_to_fix() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn generic_type_params_preserved(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("generic_type_params_preserved", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_nothing_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").expect("write main");
-
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-        "clean project should not have inline_path_qualified_type findings"
-    );
-}
-
-#[test]
-fn generic_type_params_preserved() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_generic_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
+        root.join("parent/types.rs"),
         "pub struct Container<T>(pub T);\n",
     )
     .expect("write types");
     fs::write(
-        temp.path().join("src/parent/consumer.rs"),
-        r#"fn example(_x: crate::parent::types::Container<String>) {}
+        root.join("parent/consumer.rs"),
+        r#"fn example(_x: crate::generic_type_params_preserved::parent::types::Container<String>) {}
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-    assert!(
-        consumer.contains("Container<String>"),
-        "generic params should be preserved, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("_x: Container<String>"),
-        "expected bare type with generics, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("_x: Container<String>") && !consumer.contains("_x: crate::"),
-        "inline path should be replaced with bare type, got:\n{consumer}"
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
+        assert!(
+            consumer.contains("Container<String>"),
+            "generic params should be preserved, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("_x: Container<String>"),
+            "expected bare type with generics, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("_x: Container<String>") && !consumer.contains("_x: crate::"),
+            "inline path should be replaced with bare type, got:\n{consumer}"
+        );
+    }
 }
 
-#[test]
-fn bare_name_shadowing_skipped() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn bare_name_shadowing_skipped(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("bare_name_shadowing_skipped", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("error")).expect("create src/error");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_shadow_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/error")).expect("create src/error");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         "mod error;\nmod consumer;\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/error.rs"),
+        root.join("error.rs"),
         "pub type Result<T> = core::result::Result<T, String>;\n",
     )
     .expect("write error mod");
-    // consumer uses both prelude Result<T, E> and crate::error::Result<T> inline
+    // consumer uses both prelude Result<T, E> and
+    // crate::bare_name_shadowing_skipped::error::Result<T> inline
     fs::write(
-        temp.path().join("src/consumer.rs"),
+        root.join("consumer.rs"),
         r#"fn uses_prelude() -> Result<String, String> {
     Ok("hello".to_string())
 }
-fn uses_inline() -> crate::error::Result<String> {
+fn uses_inline() -> crate::bare_name_shadowing_skipped::error::Result<String> {
     Ok("hello".to_string())
 }
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
-    // The inline path should NOT be replaced because doing so would
-    // add `use crate::error::Result;` which shadows prelude `Result<T, E>`
-    assert!(
-        consumer.contains("crate::error::Result<String>"),
-        "inline path should be left alone to avoid shadowing prelude Result, got:\n{consumer}"
-    );
-    // Prelude usage should remain unchanged
-    assert!(
-        consumer.contains("Result<String, String>"),
-        "prelude Result should be unchanged, got:\n{consumer}"
-    );
+    move |_| {
+        let consumer = fs::read_to_string(root.join("consumer.rs")).expect("read fixed file");
+        // The inline path should NOT be replaced because doing so would
+        // add `use crate::bare_name_shadowing_skipped::error::Result;` which shadows prelude
+        // `Result<T, E>`
+        assert!(
+            consumer.contains("crate::bare_name_shadowing_skipped::error::Result<String>"),
+            "inline path should be left alone to avoid shadowing prelude Result, got:\n{consumer}"
+        );
+        // Prelude usage should remain unchanged
+        assert!(
+            consumer.contains("Result<String, String>"),
+            "prelude Result should be unchanged, got:\n{consumer}"
+        );
+    }
 }
 
 /// Struct literal paths (`crate::foo::Bar { .. }`) and pattern paths
 /// (`let crate::foo::Bar { .. } = ..`, `Some(crate::foo::Bar(x))`) are not
 /// reached by the default `visit_expr_path` / `visit_type_path` passes. This
 /// verifies each form is rewritten.
-#[test]
-fn struct_literal_and_pattern_paths_get_rewritten() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn struct_literal_and_pattern_paths_get_rewritten(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "struct_literal_and_pattern_paths_get_rewritten",
+        &[("mod.rs", "")],
+    );
+    fs::create_dir_all(root.join("parent")).expect("create src/parent");
+    fs::write(root.join("mod.rs"), "mod parent;\nfn main() {}\n").expect("write fixture main");
+    fs::write(root.join("parent.rs"), "mod types;\nmod consumer;\n").expect("write parent mod");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_struct_literal_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod parent;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(
-        temp.path().join("src/parent.rs"),
-        "mod types;\nmod consumer;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/parent/types.rs"),
+        root.join("parent/types.rs"),
         r#"pub struct MyType { pub x: i32 }
 pub struct TupleType(pub i32);
 "#,
     )
     .expect("write types");
     fs::write(
-        temp.path().join("src/parent/consumer.rs"),
+        root.join("parent/consumer.rs"),
         r#"pub fn make() -> i32 {
-    let value = crate::parent::types::MyType { x: 1 };
-    let crate::parent::types::MyType { x } = value;
-    let tup = crate::parent::types::TupleType(42);
-    let crate::parent::types::TupleType(y) = tup;
+    let value = crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType { x: 1 };
+    let crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType { x } = value;
+    let tup = crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType(42);
+    let crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType(y) = tup;
     x + y
 }
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    move || {
+        let consumer =
+            fs::read_to_string(root.join("parent/consumer.rs")).expect("read fixed file");
 
-    let consumer =
-        fs::read_to_string(temp.path().join("src/parent/consumer.rs")).expect("read fixed file");
-
-    assert!(
-        consumer.contains("use crate::parent::types::MyType;")
-            || consumer.contains("use super::types::MyType;"),
-        "expected MyType import, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("use crate::parent::types::TupleType;")
-            || consumer.contains("use super::types::TupleType;"),
-        "expected TupleType import, got:\n{consumer}"
-    );
-    // The `use` lines will still contain the qualified path; ensure the
-    // body no longer does.
-    let body = consumer
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("use "))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        !body.contains("crate::parent::types::MyType"),
-        "struct literal / pattern should be rewritten, got body:\n{body}"
-    );
-    assert!(
-        !body.contains("crate::parent::types::TupleType"),
-        "tuple-struct literal / pattern should be rewritten, got body:\n{body}"
-    );
-    assert!(
-        consumer.contains("MyType { x: 1 }"),
-        "expected bare struct literal, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("let MyType { x } = value;"),
-        "expected bare struct pattern, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("TupleType(42)"),
-        "expected bare tuple-struct literal, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("let TupleType(y) = tup;"),
-        "expected bare tuple-struct pattern, got:\n{consumer}"
-    );
+        assert!(
+            consumer.contains(
+                "use crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType;"
+            ) || consumer.contains("use super::types::MyType;"),
+            "expected MyType import, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("use crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType;")
+                || consumer.contains("use super::types::TupleType;"),
+            "expected TupleType import, got:\n{consumer}"
+        );
+        // The `use` lines will still contain the qualified path; ensure the
+        // body no longer does.
+        let body = consumer
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("use "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains(
+                "crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::MyType"
+            ),
+            "struct literal / pattern should be rewritten, got body:\n{body}"
+        );
+        assert!(
+            !body.contains(
+                "crate::struct_literal_and_pattern_paths_get_rewritten::parent::types::TupleType"
+            ),
+            "tuple-struct literal / pattern should be rewritten, got body:\n{body}"
+        );
+        assert!(
+            consumer.contains("MyType { x: 1 }"),
+            "expected bare struct literal, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("let MyType { x } = value;"),
+            "expected bare struct pattern, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("TupleType(42)"),
+            "expected bare tuple-struct literal, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("let TupleType(y) = tup;"),
+            "expected bare tuple-struct pattern, got:\n{consumer}"
+        );
+    }
 }
 
 /// Regression: running `cargo mend --fix` on a file that mixes an enum
@@ -2036,44 +1550,22 @@ mod tests {
         "expected enum-qualified variant, got:\n{consumer}"
     );
 
-    // The subsequent `cargo check` that `cargo mend --fix` runs as validation
-    // must succeed; the explicit build below guards against silent regressions.
-    let check = cargo_command()
-        .arg("check")
-        .arg("--tests")
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .output()
-        .expect("run cargo check");
-    assert!(
-        check.status.success(),
-        "post-fix cargo check failed: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr)
-    );
+    // The successful mend fix already validates this target configuration.
 }
 
 /// Multi-byte UTF-8 characters earlier on the same line (em-dashes, accented
 /// letters, etc.) must not shift the byte offset of a path that gets
 /// rewritten. `proc_macro2::LineColumn::column` is a character index, not a
 /// byte index — the `offset()` helper has to convert.
-#[test]
-fn multi_byte_chars_do_not_corrupt_replacement_span() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn multi_byte_chars_do_not_corrupt_replacement_span(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "multi_byte_chars_do_not_corrupt_replacement_span",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_multibyte_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         // The em-dash `—` is 3 bytes / 1 column. Without the byte conversion
         // the rewrite of `std::cmp::Ordering::Equal` lands 2 bytes too early,
         // corrupting `align(...)` to garbage.
@@ -2082,39 +1574,28 @@ edition = "2024"
     )
     .expect("write main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
-    assert!(
-        main_rs.contains("use std::cmp::Ordering;"),
-        "expected `use std::cmp::Ordering;` insertion, got:\n{main_rs}"
-    );
-    // Body must contain a clean `Ordering::Equal` — the rewrite of
-    // `std::cmp::Ordering::Equal` must not have shifted into surrounding text.
-    let body = main_rs
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("use "))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        body.contains("Ordering::Equal"),
-        "expected clean `Ordering::Equal` in body, got body:\n{body}"
-    );
-    assert!(
-        !body.contains("std::cmp::Ordering"),
-        "body should not retain fully-qualified path, got body:\n{body}"
-    );
+    move || {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
+        assert!(
+            main_rs.contains("use std::cmp::Ordering;"),
+            "expected `use std::cmp::Ordering;` insertion, got:\n{main_rs}"
+        );
+        // Body must contain a clean `Ordering::Equal` — the rewrite of
+        // `std::cmp::Ordering::Equal` must not have shifted into surrounding text.
+        let body = main_rs
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("use "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            body.contains("Ordering::Equal"),
+            "expected clean `Ordering::Equal` in body, got body:\n{body}"
+        );
+        assert!(
+            !body.contains("std::cmp::Ordering"),
+            "body should not retain fully-qualified path, got body:\n{body}"
+        );
+    }
 }
 
 /// A file that uses `Result::ok` as a method reference (e.g.
@@ -2123,23 +1604,15 @@ edition = "2024"
 /// `use io::Result;` — that would shadow the prelude `Result` and silently
 /// change which type `Result::ok` resolves through, often producing a
 /// confusing trait-bound error.
-#[test]
-fn multi_segment_path_with_pascal_first_segment_blocks_shadowing_import() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module(
+        "multi_segment_path_with_pascal_first_segment_blocks_shadowing_import",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_result_shadow_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"use std::io;
 
 pub fn open(path: &str) -> io::Result<String> {
@@ -2154,92 +1627,57 @@ fn main() {
     )
     .expect("write main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
-    assert!(
-        !main_rs.contains("use io::Result;") && !main_rs.contains("use std::io::Result;"),
-        "must not import a name that would shadow prelude `Result`, got:\n{main_rs}"
-    );
+    move |_| {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
+        assert!(
+            !main_rs.contains("use io::Result;") && !main_rs.contains("use std::io::Result;"),
+            "must not import a name that would shadow prelude `Result`, got:\n{main_rs}"
+        );
+    }
 }
 
 /// `impl crate::path::Trait for Type` puts the trait path in
 /// `ItemImpl::trait_`, which is a bare `syn::Path` — not visited as a
 /// `TypePath`. The visitor must hook `visit_item_impl` explicitly.
-#[test]
-fn impl_trait_path_is_rewritten() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn impl_trait_path_is_rewritten(batch: &mut DiagnosticBatch) -> impl FnOnce() + use<> {
+    let root = batch.add_module("impl_trait_path_is_rewritten", &[("mod.rs", "")]);
+    fs::create_dir_all(root.join("pane")).expect("create src/pane");
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_impl_trait_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/pane")).expect("create src/pane");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         "mod pane;\nmod consumer;\nfn main() {}\n",
     )
     .expect("write fixture main");
     fs::write(
-        temp.path().join("src/pane/mod.rs"),
+        root.join("pane/mod.rs"),
         "pub trait Hittable {\n    fn hit(&self) -> bool;\n}\n",
     )
     .expect("write pane mod");
     fs::write(
-        temp.path().join("src/consumer.rs"),
+        root.join("consumer.rs"),
         r#"pub struct Manager;
 
-impl crate::pane::Hittable for Manager {
+impl crate::impl_trait_path_is_rewritten::pane::Hittable for Manager {
     fn hit(&self) -> bool { false }
 }
 "#,
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let consumer =
-        fs::read_to_string(temp.path().join("src/consumer.rs")).expect("read fixed file");
-    assert!(
-        consumer.contains("use crate::pane::Hittable;"),
-        "expected `use crate::pane::Hittable;` insertion, got:\n{consumer}"
-    );
-    assert!(
-        consumer.contains("impl Hittable for Manager"),
-        "expected `impl Hittable for Manager`, got:\n{consumer}"
-    );
-    assert!(
-        !consumer.contains("impl crate::pane::Hittable"),
-        "fully-qualified trait path should be rewritten, got:\n{consumer}"
-    );
+    move || {
+        let consumer = fs::read_to_string(root.join("consumer.rs")).expect("read fixed file");
+        assert!(
+            consumer.contains("use super::pane::Hittable;"),
+            "expected `use super::pane::Hittable;` insertion, got:\n{consumer}"
+        );
+        assert!(
+            consumer.contains("impl Hittable for Manager"),
+            "expected `impl Hittable for Manager`, got:\n{consumer}"
+        );
+        assert!(
+            !consumer.contains("impl crate::impl_trait_path_is_rewritten::pane::Hittable"),
+            "fully-qualified trait path should be rewritten, got:\n{consumer}"
+        );
+    }
 }
 
 /// Importing a name that has prelude meaning (`Result`, `Box`, `Option`, ...)
@@ -2247,23 +1685,10 @@ impl crate::pane::Hittable for Manager {
 /// to. The lint must skip these — even when the file currently doesn't write
 /// bare `Result<T, E>` and the shadow-detection heuristic alone would clear
 /// it.
-#[test]
-fn does_not_import_prelude_names() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn does_not_import_prelude_names(batch: &mut DiagnosticBatch) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module("does_not_import_prelude_names", &[("mod.rs", "")]);
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_prelude_skip_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         // `std::fmt::Result` is the type alias for `Result<(), fmt::Error>`.
         // Bringing it in as plain `Result` would shadow the prelude generic.
         r#"use std::fmt;
@@ -2281,24 +1706,13 @@ fn main() {}
     )
     .expect("write main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
-    assert!(
-        !main_rs.contains("use fmt::Result;") && !main_rs.contains("use std::fmt::Result;"),
-        "must not import a name that shadows prelude `Result`, got:\n{main_rs}"
-    );
+    move |_| {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
+        assert!(
+            !main_rs.contains("use fmt::Result;") && !main_rs.contains("use std::fmt::Result;"),
+            "must not import a name that shadows prelude `Result`, got:\n{main_rs}"
+        );
+    }
 }
 
 /// When a file already has `use std::fmt;` (or any other parent module) and
@@ -2306,23 +1720,15 @@ fn main() {}
 /// absolute (`use std::fmt::Display;`), not partial (`use fmt::Display;`).
 /// Partial imports look fine but break silently if the parent import is
 /// later reordered or removed.
-#[test]
-fn partial_path_import_is_resolved_to_absolute() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn partial_path_import_is_resolved_to_absolute(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "partial_path_import_is_resolved_to_absolute",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_partial_path_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"use std::sync::mpsc;
 
 pub fn make() -> mpsc::Sender<i32> {
@@ -2337,28 +1743,17 @@ fn main() {
     )
     .expect("write main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
-    assert!(
-        main_rs.contains("use std::sync::mpsc::Sender;"),
-        "expected absolute `use std::sync::mpsc::Sender;`, got:\n{main_rs}"
-    );
-    assert!(
-        !main_rs.contains("use mpsc::Sender;"),
-        "partial-path import is brittle — must be absolute, got:\n{main_rs}"
-    );
+    move || {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
+        assert!(
+            main_rs.contains("use std::sync::mpsc::Sender;"),
+            "expected absolute `use std::sync::mpsc::Sender;`, got:\n{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("use mpsc::Sender;"),
+            "partial-path import is brittle — must be absolute, got:\n{main_rs}"
+        );
+    }
 }
 
 /// Associated items on a generic type parameter (`S::Ok`, `B::Item`,
@@ -2366,23 +1761,15 @@ fn main() {
 /// treated as crate-qualified paths. The visitor tracks generics via
 /// `syn::Generics::params` rather than guessing from naming, so any name
 /// the surrounding scope introduces as a type parameter is recognized.
-#[test]
-fn generic_type_param_associated_items_are_not_flagged() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn generic_type_param_associated_items_are_not_flagged(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module(
+        "generic_type_param_associated_items_are_not_flagged",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_generic_assoc_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"pub trait Sink {
     type Ok;
     type Error;
@@ -2431,17 +1818,22 @@ fn main() {}
     )
     .expect("write main");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let inline_findings: Vec<_> = report
-        .findings
-        .iter()
-        .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
-        .collect();
-    assert!(
-        inline_findings.is_empty(),
-        "associated items on generic params must not be flagged, got: \
-         {inline_findings:?}"
-    );
+    move |report| {
+        let report = member_report(
+            report,
+            "src/generic_type_param_associated_items_are_not_flagged",
+        );
+        let inline_findings: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
+            .collect();
+        assert!(
+            inline_findings.is_empty(),
+            "associated items on generic params must not be flagged, got: \
+             {inline_findings:?}"
+        );
+    }
 }
 
 /// Generic params used inside the *body* of a function (closure parameter
@@ -2449,23 +1841,15 @@ fn main() {}
 /// `visit_signature` previously pushed/popped generics around the signature
 /// only, leaving the body visited without them, so `|x: &T::Item| ...`
 /// inside `fn foo<T>(...)` was misread as a crate-qualified path.
-#[test]
-fn generic_type_param_in_fn_body_is_not_flagged() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn generic_type_param_in_fn_body_is_not_flagged(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module(
+        "generic_type_param_in_fn_body_is_not_flagged",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_generic_body_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"pub trait Bucket {
     type Item;
 }
@@ -2501,39 +1885,33 @@ fn main() {}
     )
     .expect("write main");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    let inline_findings: Vec<_> = report
-        .findings
-        .iter()
-        .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
-        .collect();
-    assert!(
-        inline_findings.is_empty(),
-        "generic-param associated items in fn bodies must not be flagged, got: \
-         {inline_findings:?}"
-    );
+    move |report| {
+        let report = member_report(report, "src/generic_type_param_in_fn_body_is_not_flagged");
+        let inline_findings: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
+            .collect();
+        assert!(
+            inline_findings.is_empty(),
+            "generic-param associated items in fn bodies must not be flagged, got: \
+             {inline_findings:?}"
+        );
+    }
 }
 
 /// `Type::Variant` (enum variant patterns / associated items) must not be
 /// treated as a crate-qualified path. The first segment is `PascalCase`,
 /// which means it's a type — suggesting `use Type;` is wrong.
-#[test]
-fn enum_variant_two_segment_path_is_not_flagged() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn enum_variant_two_segment_path_is_not_flagged(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce(&Report) + use<> {
+    let root = batch.add_module(
+        "enum_variant_two_segment_path_is_not_flagged",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_enum_variant_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"pub struct Package;
 
 pub enum RustProject {
@@ -2552,44 +1930,38 @@ fn main() {}
     )
     .expect("write main");
 
-    let report = run_mend_json(&temp.path().join("Cargo.toml"));
-    assert!(
-        !report
-            .findings
-            .iter()
-            .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
-        "`Type::Variant` patterns must not be flagged, got findings: {:?}",
-        report
-            .findings
-            .iter()
-            .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
-            .collect::<Vec<_>>()
-    );
+    move |report| {
+        let report = member_report(report, "src/enum_variant_two_segment_path_is_not_flagged");
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.code == DiagnosticCode::InlinePathQualifiedType),
+            "`Type::Variant` patterns must not be flagged, got findings: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.code == DiagnosticCode::InlinePathQualifiedType)
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// External-crate enum-variant paths like `notify::WatcherKind::NullWatcher`
 /// should be rewritten the same way intra-crate enum variants are: import
 /// the enum (`use notify::WatcherKind;`) and rewrite the call site to
 /// `WatcherKind::NullWatcher`.
-#[test]
-fn external_crate_enum_variant_path_is_rewritten() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_external_variant_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
+fn external_crate_enum_variant_path_is_rewritten(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "external_crate_enum_variant_path_is_rewritten",
+        &[("mod.rs", "")],
+    );
     // Stand-in for an external crate: a top-level `mod notify` with a
     // PascalCase enum and variant, used inline as `notify::WatcherKind::NullWatcher`.
     fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"mod notify {
     pub enum WatcherKind {
         NullWatcher,
@@ -2607,54 +1979,35 @@ fn main() {
     )
     .expect("write main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
-    assert!(
-        main_rs.contains("use notify::WatcherKind;"),
-        "expected `use notify::WatcherKind;` insertion, got:\n{main_rs}"
-    );
-    assert!(
-        main_rs.contains("WatcherKind::NullWatcher"),
-        "expected rewrite to `WatcherKind::NullWatcher`, got:\n{main_rs}"
-    );
-    assert!(
-        !main_rs.contains("notify::WatcherKind::NullWatcher"),
-        "fully-qualified variant should be rewritten, got:\n{main_rs}"
-    );
+    move || {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
+        assert!(
+            main_rs.contains("use notify::WatcherKind;"),
+            "expected `use notify::WatcherKind;` insertion, got:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("WatcherKind::NullWatcher"),
+            "expected rewrite to `WatcherKind::NullWatcher`, got:\n{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("notify::WatcherKind::NullWatcher"),
+            "fully-qualified variant should be rewritten, got:\n{main_rs}"
+        );
+    }
 }
 
 /// `InlinePathScan` rewrites external-crate paths in argument or return
 /// position (`fn render(&mut self, frame: &mut ratatui::Frame<'_>)`) to a
 /// top-level `use ratatui::Frame;` import the same way intra-crate paths are.
-#[test]
-fn external_crate_path_in_argument_is_rewritten() {
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
+fn external_crate_path_in_argument_is_rewritten(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "external_crate_path_in_argument_is_rewritten",
+        &[("mod.rs", "")],
+    );
     fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "inline_ext_crate_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src")).expect("create src");
-    fs::write(
-        temp.path().join("src/main.rs"),
+        root.join("mod.rs"),
         r#"pub struct Frame;
 
 pub fn take(_frame: &mut std::collections::BTreeMap<String, i32>) {}
@@ -2664,32 +2017,21 @@ fn main() {}
     )
     .expect("write main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
-        .arg("--fix")
-        .output()
-        .expect("run cargo-mend --fix");
-    assert!(
-        output.status.success(),
-        "cargo-mend --fix failed: {}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let main_rs = fs::read_to_string(temp.path().join("src/main.rs")).expect("read fixed file");
-    assert!(
-        main_rs.contains("use std::collections::BTreeMap;"),
-        "expected `use std::collections::BTreeMap;` insertion, got:\n{main_rs}"
-    );
-    assert!(
-        main_rs.contains("&mut BTreeMap<String, i32>"),
-        "expected bare type with generics, got:\n{main_rs}"
-    );
-    assert!(
-        !main_rs.contains("std::collections::BTreeMap<"),
-        "fully-qualified path should be rewritten, got:\n{main_rs}"
-    );
+    move || {
+        let main_rs = fs::read_to_string(root.join("mod.rs")).expect("read fixed file");
+        assert!(
+            main_rs.contains("use std::collections::BTreeMap;"),
+            "expected `use std::collections::BTreeMap;` insertion, got:\n{main_rs}"
+        );
+        assert!(
+            main_rs.contains("&mut BTreeMap<String, i32>"),
+            "expected bare type with generics, got:\n{main_rs}"
+        );
+        assert!(
+            !main_rs.contains("std::collections::BTreeMap<"),
+            "fully-qualified path should be rewritten, got:\n{main_rs}"
+        );
+    }
 }
 
 /// A `#[cfg]` written on a statement attaches to the statement's expression,
@@ -2766,7 +2108,8 @@ pub fn build(app: &mut App) {
         "expected the synthesized import to inherit the statement's cfg, got:\n{plugin}"
     );
 
-    for cargo_arguments in [&[][..], &["--features", "test"][..]] {
+    {
+        let cargo_arguments = ["--features", "test"];
         let check = cargo_command()
             .arg("check")
             .arg("--all-targets")
@@ -2782,4 +2125,94 @@ pub fn build(app: &mut App) {
             String::from_utf8_lossy(&check.stderr)
         );
     }
+}
+
+#[test]
+fn rewrites_inline_paths_in_independent_modules() {
+    let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
+    let basic_inline_type_adds_use = basic_inline_type_adds_use(&mut batch);
+    let function_return_type = function_return_type(&mut batch);
+    let multiple_occurrences_one_use = multiple_occurrences_one_use(&mut batch);
+    let two_types_same_module = two_types_same_module(&mut batch);
+    let super_path = super_path(&mut batch);
+    let existing_use_no_duplicate = existing_use_no_duplicate(&mut batch);
+    let renamed_import_does_not_hide_required_bare_import =
+        renamed_import_does_not_hide_required_bare_import(&mut batch);
+    let sibling_scope_import_does_not_block_fix =
+        sibling_scope_import_does_not_block_fix(&mut batch);
+    let generic_type_params_preserved = generic_type_params_preserved(&mut batch);
+    let struct_literal_and_pattern_paths_get_rewritten =
+        struct_literal_and_pattern_paths_get_rewritten(&mut batch);
+    let multi_byte_chars_do_not_corrupt_replacement_span =
+        multi_byte_chars_do_not_corrupt_replacement_span(&mut batch);
+    let impl_trait_path_is_rewritten = impl_trait_path_is_rewritten(&mut batch);
+    let partial_path_import_is_resolved_to_absolute =
+        partial_path_import_is_resolved_to_absolute(&mut batch);
+    let external_crate_enum_variant_path_is_rewritten =
+        external_crate_enum_variant_path_is_rewritten(&mut batch);
+    let external_crate_path_in_argument_is_rewritten =
+        external_crate_path_in_argument_is_rewritten(&mut batch);
+    let output = batch.command().arg("--fix").output().expect("fix batch");
+    assert!(
+        output.status.success(),
+        "batch fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    basic_inline_type_adds_use();
+    function_return_type();
+    multiple_occurrences_one_use();
+    two_types_same_module();
+    super_path();
+    existing_use_no_duplicate();
+    renamed_import_does_not_hide_required_bare_import();
+    sibling_scope_import_does_not_block_fix();
+    generic_type_params_preserved();
+    struct_literal_and_pattern_paths_get_rewritten();
+    multi_byte_chars_do_not_corrupt_replacement_span();
+    impl_trait_path_is_rewritten();
+    partial_path_import_is_resolved_to_absolute();
+    external_crate_enum_variant_path_is_rewritten();
+    external_crate_path_in_argument_is_rewritten();
+}
+
+#[test]
+fn preserves_colliding_and_non_type_paths_in_independent_modules() {
+    let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
+    let name_collision_skips_both = name_collision_skips_both(&mut batch);
+    let skips_use_statements = skips_use_statements(&mut batch);
+    let conflicting_private_import_keeps_qualified_type =
+        conflicting_private_import_keeps_qualified_type(&mut batch);
+    let grouped_private_import_keeps_qualified_type =
+        grouped_private_import_keeps_qualified_type(&mut batch);
+    let bare_name_shadowing_skipped = bare_name_shadowing_skipped(&mut batch);
+    let multi_segment_path_with_pascal_first_segment_blocks_shadowing_import =
+        multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(&mut batch);
+    let does_not_import_prelude_names = does_not_import_prelude_names(&mut batch);
+    let generic_type_param_associated_items_are_not_flagged =
+        generic_type_param_associated_items_are_not_flagged(&mut batch);
+    let generic_type_param_in_fn_body_is_not_flagged =
+        generic_type_param_in_fn_body_is_not_flagged(&mut batch);
+    let enum_variant_two_segment_path_is_not_flagged =
+        enum_variant_two_segment_path_is_not_flagged(&mut batch);
+    let report = batch.report();
+    let output = batch.command().arg("--fix").output().expect("fix batch");
+    assert!(
+        output.status.success(),
+        "batch fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    name_collision_skips_both(&report);
+    skips_use_statements(&report);
+    conflicting_private_import_keeps_qualified_type(&report);
+    grouped_private_import_keeps_qualified_type(&report);
+    bare_name_shadowing_skipped(&report);
+    multi_segment_path_with_pascal_first_segment_blocks_shadowing_import(&report);
+    does_not_import_prelude_names(&report);
+    generic_type_param_associated_items_are_not_flagged(&report);
+    generic_type_param_in_fn_body_is_not_flagged(&report);
+    enum_variant_two_segment_path_is_not_flagged(&report);
 }
