@@ -11,11 +11,11 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use super::constants;
 use super::constants::MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
 use super::constants::MUTATION_LOCK_INITIAL_RETRY_INTERVAL;
 use super::constants::MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL;
 use super::constants::MUTATION_LOCK_READY_PATH_ENVIRONMENT;
-use super::constants::shortened_by_environment;
 
 /// A held advisory lock whose descriptor releases automatically on process death.
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl MutationLock {
         lock_path: &Path,
         acquisition_timeout: Duration,
     ) -> Result<Self, MutationLockError> {
-        let acquisition_timeout = shortened_by_environment(
+        let acquisition_timeout = constants::shortened_by_environment(
             MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
             acquisition_timeout,
         );

@@ -3,7 +3,7 @@
 # same run open enough families to crowd that pane off the tile grid, so the
 # test takes every slot and runs with nothing else beside it.
 [[profile.default.overrides]]
-filter           = 'package(cargo-tile) & kind(bin) & test(=shim_registration::tests::reader_keeps_parent_family_across_its_only_childs_source_switch)'
+filter           = 'package(cargo-tile) & kind(bin) & test(=shim_registration::reader_scenarios::reader_keeps_parent_family_across_its_only_childs_source_switch)'
 threads-required = "num-cpus"
 
 # Tests outside this group are unaffected by its limit, so the exclusive slot
@@ -14,12 +14,12 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = """
 package(cargo-tile) & kind(bin) & (
-    test(=shim_registration::tests::reader_accepts_live_writer_under_different_locale_and_timezone) |
-    test(=shim_registration::tests::reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings) |
-    test(=shim_registration::tests::reader_opens_settings_when_resize_and_key_are_pending_together) |
-    test(=shim_registration::tests::reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation) |
-    test(=shim_registration::tests::reader_keeps_one_direct_row_for_quiet_json) |
-    test(=shim_registration::tests::reader_excludes_a_live_command_without_sweeping_its_capture)
+    test(=shim_registration::reader_scenarios::reader_accepts_live_writer_under_different_locale_and_timezone) |
+    test(=shim_registration::reader_scenarios::reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings) |
+    test(=shim_registration::reader_scenarios::reader_opens_settings_when_resize_and_key_are_pending_together) |
+    test(=shim_registration::reader_scenarios::reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation) |
+    test(=shim_registration::reader_scenarios::reader_keeps_one_direct_row_for_quiet_json) |
+    test(=shim_registration::reader_scenarios::reader_excludes_a_live_command_without_sweeping_its_capture)
 )
 """
 test-group = "cargo-tile-readers"

@@ -1,6 +1,9 @@
 // Reader scenarios sampled without subprocess timing or terminal polling.
 
 use super::*;
+use crate::render;
+use crate::roster::Roster;
+use crate::tiles::TileContent;
 
 #[test]
 fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
@@ -434,7 +437,7 @@ fn assert_nested_source_samples(samples: &[Vec<CargoGroup>], capture: &Capture) 
 }
 
 fn assert_nested_render(
-    roster: &crate::roster::Roster,
+    roster: &Roster,
     group: &CargoGroup,
     capture: &Capture,
     index: usize,
@@ -445,10 +448,10 @@ fn assert_nested_render(
     };
     let area = ratatui::layout::Rect::new(0, 0, 200, 20);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
-    crate::render::draw_cell_for_test(
+    render::draw_cell_for_test(
         &mut buffer,
         roster,
-        &crate::tiles::TileContent::Group(group.id()),
+        &TileContent::Group(group.id()),
         area,
         4,
     );

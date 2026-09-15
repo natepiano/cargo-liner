@@ -9,18 +9,18 @@ use sysinfo::Pid;
 use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
-use crate::census::CargoGroup;
-use crate::census::CargoProcess;
-use crate::census::CompilerObservation;
-use crate::census::InvocationId;
-use crate::census::Measurement;
-use crate::census::invocation_cpu_accounting::MeasurementAbsence;
-use crate::census::process_identity::ProcessIdentity;
-use crate::census::scan::CensusSequence;
-use crate::census::scan::ProcessField;
-use crate::census::scan::ProcessObservation;
-use crate::census::scan::ProcessObservations;
-use crate::render::summary_cpu_for_test;
+use super::CargoGroup;
+use super::CargoProcess;
+use super::CompilerObservation;
+use super::InvocationId;
+use super::Measurement;
+use super::invocation_cpu_accounting::MeasurementAbsence;
+use super::process_identity::ProcessIdentity;
+use super::scan::CensusSequence;
+use super::scan::ProcessField;
+use super::scan::ProcessObservation;
+use super::scan::ProcessObservations;
+use crate::render;
 use crate::roster::Roster;
 use crate::roster::TrackedGroup;
 
@@ -186,7 +186,10 @@ impl SummaryTree {
             rows.contains(&(driver, group_cpu.map(str::to_owned))),
             "sample {scan}: {rows:?}"
         );
-        assert_cpu_rows(summary_cpu_for_test(&roster, &[]), &[(driver, group_cpu)]);
+        assert_cpu_rows(
+            render::summary_cpu_for_test(&roster, &[]),
+            &[(driver, group_cpu)],
+        );
         Self::assert_summary(&roster, first_total, second_total);
     }
 
@@ -229,7 +232,7 @@ impl SummaryTree {
         let before = command_cpu(roster);
         let [_, first_pid, _, _, second_pid, _] = Self::pids();
         assert_cpu_rows(
-            summary_cpu_for_test(roster, &["port".to_owned()]),
+            render::summary_cpu_for_test(roster, &["port".to_owned()]),
             &[(first_pid, first), (second_pid, second)],
         );
         assert_eq!(
@@ -357,7 +360,7 @@ fn command_rows_keep_their_own_attributions_and_the_lead_keeps_its_group_total()
         ],
     );
     assert_cpu_rows(
-        summary_cpu_for_test(&roster, &[]),
+        render::summary_cpu_for_test(&roster, &[]),
         &[(driver, Measurement::Reading("183%"))],
     );
     SummaryTree::assert_summary(
@@ -450,7 +453,7 @@ fn an_unavailable_hidden_driver_does_not_replace_known_promoted_totals() {
             Measurement::Reading("48%"),
         );
         assert_cpu_rows(
-            summary_cpu_for_test(&roster, &[]),
+            render::summary_cpu_for_test(&roster, &[]),
             &[(driver, Measurement::Unavailable(reason))],
         );
     }
@@ -473,7 +476,7 @@ fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
         "the command lead cannot replace a missing member contribution with zero"
     );
     assert_cpu_rows(
-        summary_cpu_for_test(&roster, &[]),
+        render::summary_cpu_for_test(&roster, &[]),
         &[(
             driver,
             Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -522,7 +525,7 @@ fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
         ],
     );
     assert_cpu_rows(
-        summary_cpu_for_test(&roster, &[]),
+        render::summary_cpu_for_test(&roster, &[]),
         &[(
             driver,
             Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -585,7 +588,7 @@ fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total
         ],
     );
     assert_cpu_rows(
-        summary_cpu_for_test(&roster, &[]),
+        render::summary_cpu_for_test(&roster, &[]),
         &[(driver, Measurement::Reading("183%"))],
     );
     SummaryTree::assert_summary(
@@ -622,7 +625,7 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
         ],
     );
     assert_cpu_rows(
-        summary_cpu_for_test(&roster, &[]),
+        render::summary_cpu_for_test(&roster, &[]),
         &[(
             driver,
             Measurement::Unavailable(MeasurementAbsence::Unproven),

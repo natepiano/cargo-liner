@@ -19,6 +19,7 @@ use crate::constants::SHIM_MARKER;
 use crate::constants::SHIM_MARKER_SEARCH_BYTES;
 use crate::constants::SHIM_VERSION_PREFIX;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
+use crate::hook;
 use crate::hook::AccountHookOutcome;
 use crate::hook::AccountHookReport;
 use crate::hook::DarwinGroupMembership;
@@ -27,10 +28,6 @@ use crate::hook::HookOperation;
 use crate::hook::HookOperationOutcome;
 use crate::hook::HookState;
 use crate::hook::ToolchainHookOutcome;
-use crate::hook::account_groups;
-use crate::hook::run_account_hooks;
-use crate::hook::run_account_hooks_with;
-use crate::hook::stage_executable;
 use crate::progress::capture::Capture;
 use crate::progress::capture_diagnostic::CaptureDiagnostic;
 use crate::progress::capture_roots::AccountName;
@@ -39,8 +36,7 @@ use crate::progress::capture_roots::CaptureRoots;
 use crate::progress::capture_roots::RootReadStatus;
 use crate::root_scan::RootOwner;
 use crate::root_scan::SharedCaptureDirectory;
-use crate::settings::capture_root_status;
-use crate::settings::shared_directory_status;
+use crate::settings;
 
 /// Every fixture account uses the caller's credentials, so no root access is needed.
 fn account_at(home: &Path, name: &str) -> HookAccount {
@@ -108,7 +104,7 @@ fn cargo_tile() -> &'static Path {
     BINARY.as_path()
 }
 
-fn original_cargo(account: &HookAccount, toolchain: &str) -> std::path::PathBuf {
+fn original_cargo(account: &HookAccount, toolchain: &str) -> PathBuf {
     let bin = account
         .home
         .join(format!(".rustup/toolchains/{toolchain}/bin"));
@@ -132,7 +128,7 @@ fn injected_accounts_install_each_toolchain_through_the_built_binary() {
     }
     fs::create_dir_all(accounts[2].home.join(".rustup/toolchains"))
         .expect("empty toolchains directory");
-    let reports = run_account_hooks(&accounts, cargo_tile(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&accounts, cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 3, "accounts without .rustup have no report");
     assert_eq!(reports[0].account, "developer");
     assert_eq!(reports[1].account, "runner");
@@ -158,7 +154,7 @@ fn injected_accounts_install_each_toolchain_through_the_built_binary() {
             );
         }
     }
-    for report in run_account_hooks(&accounts[..2], cargo_tile(), HookOperation::Install) {
+    for report in hook::run_account_hooks(&accounts[..2], cargo_tile(), HookOperation::Install) {
         assert_eq!(report.outcome, AccountHookOutcome::Completed);
     }
 }
@@ -175,7 +171,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
         }
     }
     let staged =
-        stage_executable(directory.path(), cargo_tile()).expect("stage the built installer");
+        hook::stage_executable(directory.path(), cargo_tile()).expect("stage the built installer");
     let copy = staged.path().to_owned();
     let parent = copy.parent().expect("staged directory").to_owned();
     assert_eq!(parent.parent(), Some(directory.path()));
@@ -194,7 +190,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
         fs::read(&copy).expect("staged bytes"),
         fs::read(cargo_tile()).expect("original installer bytes")
     );
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         staged.path(),
         HookOperation::Install,
@@ -203,7 +199,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
     assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
     assert_eq!(
         reports,
-        run_account_hooks(
+        hook::run_account_hooks(
             std::slice::from_ref(&original),
             cargo_tile(),
             HookOperation::Install
@@ -222,7 +218,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
             b"#!/bin/sh\nexit 37\n"
         );
     }
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         staged.path(),
         HookOperation::Install,
@@ -230,7 +226,7 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
     assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
     assert_eq!(
         reports,
-        run_account_hooks(
+        hook::run_account_hooks(
             std::slice::from_ref(&original),
             cargo_tile(),
             HookOperation::Install
@@ -253,7 +249,7 @@ fn unstartable_installer_reports_each_account_separately() {
     for account in &accounts {
         original_cargo(account, "stable");
     }
-    let reports = run_account_hooks(&accounts, directory.path(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&accounts, directory.path(), HookOperation::Install);
     assert_eq!(reports.len(), accounts.len());
     for (account, report) in accounts.iter().zip(&reports) {
         assert_eq!(report.account, account.name);
@@ -282,7 +278,7 @@ fn resolved_account_groups_include_the_callers_primary_gid() -> std::io::Result<
         .find(|user| **user.id() == uid)
         .expect("caller has an account database entry");
     let gid = *user.group_id();
-    let groups = account_groups(user.name(), gid);
+    let groups = hook::account_groups(user.name(), gid);
     assert!(
         groups.is_ok(),
         "{} must resolve its groups successfully; a failure here means the resize path did not complete: {groups:?}",
@@ -341,7 +337,7 @@ fn account_owned_cargo_in_permitted_groups_keeps_its_saved_group() {
             .expect("assign one of the caller's permitted groups");
         std::os::unix::fs::chown(&bin, None, Some(gid)).expect("setgid directory group");
         set_mode(&bin, 0o2755);
-        let reports = run_account_hooks(
+        let reports = hook::run_account_hooks(
             std::slice::from_ref(&account),
             cargo_tile(),
             HookOperation::Install,
@@ -361,7 +357,7 @@ fn account_owned_cargo_in_permitted_groups_keeps_its_saved_group() {
                 "{name} retains directory or original group"
             );
         }
-        let reports = run_account_hooks(
+        let reports = hook::run_account_hooks(
             std::slice::from_ref(&account),
             cargo_tile(),
             HookOperation::Install,
@@ -391,7 +387,7 @@ fn injected_account_repairs_interrupted_and_refreshes_outdated_installs() {
             )
             .expect("outdated shim");
         }
-        let reports = run_account_hooks(
+        let reports = hook::run_account_hooks(
             std::slice::from_ref(&account),
             cargo_tile(),
             HookOperation::Install,
@@ -417,7 +413,7 @@ fn injected_account_reports_child_errors_and_continues_other_toolchains() {
     let broken = original_cargo(&account, "a-broken");
     fs::create_dir(broken.join("cargo-tile-shim.lock")).expect("lock open must fail");
     let good = original_cargo(&account, "z-working");
-    let reports = run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
     assert_admin_report(
         &reports[0],
@@ -461,7 +457,7 @@ fn assert_orphan_and_installed_reports(orphan_name: &str, installed_name: &str) 
     )
     .expect("orphan shim without saved cargo");
     let working = original_cargo(&account, installed_name);
-    let reports = run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
     let report = &reports[0];
     assert_admin_report(
@@ -529,7 +525,7 @@ fn assert_downgrade_and_installed_reports(newer_name: &str, installed_name: &str
     let original = fs::read(newer.join("cargo-tile-real")).expect("saved real cargo");
     let working = original_cargo(&account, installed_name);
     let observer = observe_account_child(directory.path());
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         &observer,
         HookOperation::Install,
@@ -750,7 +746,7 @@ fn injected_account_reports_every_orphan_beside_a_successful_install() {
         .expect("orphan shim without saved cargo");
     }
     original_cargo(&account, "m-working");
-    let reports = run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
     let report = &reports[0];
     assert_admin_report(
@@ -798,7 +794,7 @@ fn injected_account_reports_an_orphan_and_install_after_a_child_error() {
     )
     .expect("orphan shim without saved cargo");
     let working = original_cargo(&account, "z-working");
-    let reports = run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
     let report = &reports[0];
     assert_admin_report(
@@ -970,7 +966,7 @@ fn injected_account_reports_child_toolchain_discovery_failure() {
     fs::create_dir(account.home.join(".rustup")).expect("rustup exists");
     fs::write(account.home.join(".rustup/toolchains"), b"not a directory")
         .expect("child cannot list toolchains");
-    let reports = run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
+    let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
     assert_eq!(reports.len(), 1);
     assert!(
         matches!(&reports[0].outcome, AccountHookOutcome::Incomplete(reason)
@@ -989,7 +985,7 @@ fn account_child_has_account_environment_and_only_machine_report_lines() {
     let account = account_at(&directory.path().join("account"), "runner");
     let current = original_cargo(&account, "a-current");
     assert_eq!(
-        run_account_hooks(
+        hook::run_account_hooks(
             std::slice::from_ref(&account),
             cargo_tile(),
             HookOperation::Install
@@ -1012,7 +1008,7 @@ fn account_child_has_account_environment_and_only_machine_report_lines() {
     )
     .expect("outdated shim");
     let observer = observe_account_child(directory.path());
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         &observer,
         HookOperation::Install,
@@ -1041,7 +1037,7 @@ fn account_child_has_account_environment_and_only_machine_report_lines() {
 }
 
 /// Record the real child's environment and machine output before forwarding both streams.
-fn observe_account_child(directory: &Path) -> std::path::PathBuf {
+fn observe_account_child(directory: &Path) -> PathBuf {
     let observer = directory.join("observe-account");
     let binary = cargo_tile()
         .to_str()
@@ -1145,7 +1141,7 @@ fn account_status_child_reports_all_states_without_changing_toolchains() {
         .map(|path| fs::metadata(path).expect("fixture metadata"))
         .collect();
     let observer = observe_account_child(directory.path());
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         &observer,
         HookOperation::Status,
@@ -1241,7 +1237,7 @@ fn account_status_distinguishes_no_toolchains_from_failed_discovery_and_continue
         include_bytes!("../cargo-capture-shim.sh"),
     )
     .expect("orphan shim");
-    let reports = run_account_hooks(&accounts, cargo_tile(), HookOperation::Status);
+    let reports = hook::run_account_hooks(&accounts, cargo_tile(), HookOperation::Status);
     assert_eq!(reports.len(), 3);
     assert_eq!(reports[0].account, "empty");
     assert_eq!(reports[0].outcome, AccountHookOutcome::NoToolchains);
@@ -1297,7 +1293,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
         .map(|bin| fs::metadata(bin.join("cargo-tile-real")).expect("saved original"))
         .collect();
     let observer = observe_account_child(directory.path());
-    let reports = run_account_hooks(&[account, later], &observer, HookOperation::Uninstall);
+    let reports = hook::run_account_hooks(&[account, later], &observer, HookOperation::Uninstall);
     assert_eq!(reports.len(), 2);
     assert_eq!(reports[0].account, "runner");
     assert_eq!(reports[1].account, "later");
@@ -1354,7 +1350,7 @@ fn account_uninstall_child_restores_recoverable_toolchains_and_continues_account
 }
 
 /// Preserve the real cargo's inode so status and uninstall can be checked independently of install.
-fn installed_cargo(account: &HookAccount, toolchain: &str) -> std::path::PathBuf {
+fn installed_cargo(account: &HookAccount, toolchain: &str) -> PathBuf {
     let bin = original_cargo(account, toolchain);
     fs::rename(bin.join("cargo"), bin.join("cargo-tile-real")).expect("save original cargo");
     fs::write(
@@ -1448,7 +1444,7 @@ fn assert_terminated_child_retention(operation: HookOperation) {
     let lock = waiting.join("cargo-tile-shim.lock");
     fs::write(&lock, b"fixture installer owns this lock").expect("hold later toolchain lock");
     let wrapper = terminating_account_child(directory.path());
-    let reports = run_account_hooks(&accounts, &wrapper, operation);
+    let reports = hook::run_account_hooks(&accounts, &wrapper, operation);
     assert_eq!(reports.len(), 2, "{reports:?}");
     let first = &reports[0];
     assert_eq!(first.account, "first");
@@ -1531,7 +1527,7 @@ fn assert_finished_account_toolchain(bin: &Path, operation: HookOperation) {
 }
 
 /// Read an actual child row before killing it; never synthesize or discard protocol rows.
-fn terminating_account_child(directory: &Path) -> std::path::PathBuf {
+fn terminating_account_child(directory: &Path) -> PathBuf {
     let wrapper = directory.join("terminate-account-child");
     let binary = cargo_tile()
         .to_str()
@@ -1630,7 +1626,7 @@ fn assert_child_report_retention(operation: HookOperation, failure: ChildReportF
         }
     }
     let (wrapper, failure_reason) = failing_report_wrapper(directory.path(), failure);
-    let reports = run_account_hooks(&accounts, &wrapper, operation);
+    let reports = hook::run_account_hooks(&accounts, &wrapper, operation);
     assert_eq!(reports.len(), 2, "{reports:?}");
     let (expected, label) = match operation {
         HookOperation::Install => (
@@ -1674,7 +1670,7 @@ fn assert_child_report_retention(operation: HookOperation, failure: ChildReportF
 fn failing_report_wrapper(
     directory: &Path,
     failure: ChildReportFailure,
-) -> (std::path::PathBuf, &'static str) {
+) -> (PathBuf, &'static str) {
     let (forward_output, failure_reason) = match failure {
         ChildReportFailure::MalformedLine => (
             "awk '{ print; if (NR == 1) print \"malformed child report\"; }' \"$HOME/valid-output\"\nexit 0",
@@ -1779,7 +1775,7 @@ fn credential_failure_is_incomplete_preserves_reason_and_continues_accounts() {
     let observer = observe_account_child(directory.path());
     let reason = "fixture group resolver rejects membership count";
     let mut visited = Vec::new();
-    let reports = run_account_hooks_with(
+    let reports = hook::run_account_hooks_with(
         &accounts,
         &observer,
         HookOperation::Uninstall,
@@ -1858,37 +1854,39 @@ fn darwin_membership_beyond_the_credential_limit_keeps_account_children_running(
         HookOperation::Uninstall,
     ] {
         let mut prepared = Vec::new();
-        let reports = run_account_hooks_with(&accounts, &observer, operation, |_, account| {
-            let resolved = if account.name == accounts[0].name {
-                groups.clone()
-            } else {
-                vec![account.gid]
-            };
-            let membership = DarwinGroupMembership::new(account.uid, account.gid, resolved, 16)?;
-            assert_eq!(membership.groups[0], account.gid);
-            assert_eq!(
-                u32::try_from(membership.uid).expect("membership uid"),
-                account.uid
-            );
-            if account.name == accounts[0].name {
-                assert_eq!(membership.count, 16);
-                assert_eq!(membership.groups.len(), 17);
-                let mut retained = membership.groups.clone();
-                retained.sort_unstable();
-                let mut expected = groups.clone();
-                expected.sort_unstable();
+        let reports =
+            hook::run_account_hooks_with(&accounts, &observer, operation, |_, account| {
+                let resolved = if account.name == accounts[0].name {
+                    groups.clone()
+                } else {
+                    vec![account.gid]
+                };
+                let membership =
+                    DarwinGroupMembership::new(account.uid, account.gid, resolved, 16)?;
+                assert_eq!(membership.groups[0], account.gid);
                 assert_eq!(
-                    retained, expected,
-                    "the complete resolved list survives preparation"
+                    u32::try_from(membership.uid).expect("membership uid"),
+                    account.uid
                 );
-                assert!(!membership.groups[..16].contains(&membership.groups[16]));
-            } else {
-                assert_eq!(membership.count, 1);
-                assert_eq!(membership.groups, [account.gid]);
-            }
-            prepared.push(account.name.clone());
-            Ok(())
-        });
+                if account.name == accounts[0].name {
+                    assert_eq!(membership.count, 16);
+                    assert_eq!(membership.groups.len(), 17);
+                    let mut retained = membership.groups.clone();
+                    retained.sort_unstable();
+                    let mut expected = groups.clone();
+                    expected.sort_unstable();
+                    assert_eq!(
+                        retained, expected,
+                        "the complete resolved list survives preparation"
+                    );
+                    assert!(!membership.groups[..16].contains(&membership.groups[16]));
+                } else {
+                    assert_eq!(membership.count, 1);
+                    assert_eq!(membership.groups, [account.gid]);
+                }
+                prepared.push(account.name.clone());
+                Ok(())
+            });
         assert_eq!(prepared, ["runner-with-many-groups", "later"]);
         assert_eq!(reports.len(), accounts.len());
         for (account, report) in accounts.iter().zip(&reports) {
@@ -1918,7 +1916,7 @@ fn current_admin_install_preserves_shim_and_saved_cargo_metadata() {
     let shim = bin.join("cargo");
     fs::write(&shim, b"#!/bin/sh\nexit 37\n").expect("original cargo");
     set_mode(&shim, 0o751);
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         cargo_tile(),
         HookOperation::Install,
@@ -1937,7 +1935,7 @@ fn current_admin_install_preserves_shim_and_saved_cargo_metadata() {
             fs::metadata(path).expect("installed metadata")
         })
         .collect();
-    let reports = run_account_hooks(
+    let reports = hook::run_account_hooks(
         std::slice::from_ref(&account),
         cargo_tile(),
         HookOperation::Install,
@@ -1992,7 +1990,7 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
         .expect("unknown account");
     assert_eq!(own_status.root.cleanup, CaptureCleanup::Here);
     assert_eq!(other_status.root.cleanup, CaptureCleanup::AccountNextRun);
-    let own_line = capture_root_status(own_status);
+    let own_line = settings::capture_root_status(own_status);
     assert!(
         own_line.contains("yours")
             && own_line.contains("readable")
@@ -2011,7 +2009,7 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
         AccountName::Resolved(name) => name.clone(),
         AccountName::Unavailable => uid.to_string(),
     };
-    let other_line = capture_root_status(other_status);
+    let other_line = settings::capture_root_status(other_status);
     assert!(
         !other_line.to_lowercase().contains("cleanup"),
         "{other_line}"
@@ -2025,7 +2023,7 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
     );
     assert_eq!(other_status.confirmed, 0);
     assert!(capture.confirmed().is_empty());
-    let parent_line = shared_directory_status(&capture.shared_directory);
+    let parent_line = settings::shared_directory_status(&capture.shared_directory);
     assert!(
         parent_line.contains(parent.to_str().expect("parent text"))
             && parent_line.contains("1777")
@@ -2043,7 +2041,7 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
         .iter()
         .find(|status| status.root.uid == 4_294_967_292)
         .expect("new accounts appear on rescan");
-    let line = capture_root_status(status);
+    let line = settings::capture_root_status(status);
     assert!(
         matches!(status.state, RootReadStatus::ForeignOwned { .. })
             && line
@@ -2073,7 +2071,7 @@ fn reader_creates_parent_and_repairs_owned_modes_that_deny_reading() {
             observed_mode, 0o1777,
             "reader must repair owned mode {mode:04o}"
         );
-        let status = shared_directory_status(&capture.shared_directory);
+        let status = settings::shared_directory_status(&capture.shared_directory);
         assert!(status.contains("mode 1777"), "{status}");
     }
 }
@@ -2082,14 +2080,14 @@ fn reader_creates_parent_and_repairs_owned_modes_that_deny_reading() {
 fn shared_directory_settings_cover_missing_permissions_and_canonical_aliases() {
     let directory = tempfile::tempdir().expect("shared parent fixture");
     let parent = directory.path().join("capture");
-    let missing = shared_directory_status(&SharedCaptureDirectory::inspect(&parent));
+    let missing = settings::shared_directory_status(&SharedCaptureDirectory::inspect(&parent));
     assert!(
         missing.contains("created by the first captured cargo run"),
         "{missing}"
     );
     fs::create_dir(&parent).expect("unshared parent");
     set_mode(&parent, 0o755);
-    let unshared = shared_directory_status(&SharedCaptureDirectory::inspect(&parent));
+    let unshared = settings::shared_directory_status(&SharedCaptureDirectory::inspect(&parent));
     assert!(
         unshared.contains("0755") && unshared.contains("owner"),
         "{unshared}"

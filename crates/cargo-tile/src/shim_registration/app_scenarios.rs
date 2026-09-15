@@ -1,4 +1,4 @@
-//! App-level coverage moved from the process reader harness.
+//! Reader scenarios driven through an in-process `App` and a test terminal backend.
 
 #![allow(
     clippy::expect_used,
@@ -16,6 +16,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use sysinfo::Pid;
+use tempfile::TempDir;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
@@ -56,6 +57,7 @@ use crate::progress::capture_roots::RootReadStatus;
 use crate::render;
 use crate::root_scan::RootOwner;
 use crate::settings;
+use crate::settings::Step;
 use crate::tiles::TileContent;
 
 #[test]
@@ -108,7 +110,7 @@ fn settings_scroll_reaches_every_account_and_later_settings() {
         .expect("last selected account");
     let before = toml::to_string(&app.loaded_config.config).expect("serialize config");
     // Enter dispatches this same step; account rows must remain read-only.
-    settings::cycle(&mut app, settings::Step::Next);
+    settings::cycle(&mut app, Step::Next);
     navigate(&mut app, NavAction::Right);
     navigate(&mut app, NavAction::Left);
     assert_eq!(
@@ -534,7 +536,7 @@ fn summary_registration_row_keeps_measurements_above_the_footer() {
     assert_publications(root.path(), &entries, &publications);
 }
 
-fn published_capture(entries: &[(&str, u32, &str)]) -> (tempfile::TempDir, Capture, Vec<Vec<u8>>) {
+fn published_capture(entries: &[(&str, u32, &str)]) -> (TempDir, Capture, Vec<Vec<u8>>) {
     let root = tempfile::tempdir().expect("capture root");
     fs::create_dir_all(root.path().join("state/pids")).expect("registration directory");
     let publications = entries

@@ -2775,6 +2775,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::app::App;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
@@ -2796,8 +2797,10 @@ mod tests {
     use crate::progress::capture_read::RunState;
     use crate::progress::capture_roots::AccountName;
     use crate::registration::Registration;
+    use crate::root_scan::EffectiveUser;
     use crate::root_scan::RootOwner;
     use crate::roster::FamilyHead;
+    use crate::tiles::TileContent;
     use crate::tiles::TileDemands;
 
     /// Reap the metadata fixture even if an assertion fails before its exec transition.
@@ -3237,7 +3240,7 @@ mod tests {
     ) {
         let parent = tempdir().expect("shared capture parent");
         let roots = CaptureRoots::from_parent(parent.path());
-        let crate::root_scan::EffectiveUser::Known(uid) = crate::root_scan::effective_user() else {
+        let EffectiveUser::Known(uid) = crate::root_scan::effective_user() else {
             panic!("fixture owner");
         };
         let users = Users::new_with_refreshed_list();
@@ -3488,7 +3491,7 @@ mod tests {
         );
     }
 
-    fn account_settings_text(app: &crate::app::App) -> String {
+    fn account_settings_text(app: &App) -> String {
         crate::settings::rows(app)
             .rows
             .into_iter()
@@ -3583,7 +3586,7 @@ mod tests {
         crate::render::draw_cell_for_test(
             &mut buffer,
             &roster,
-            &crate::tiles::TileContent::Group(group.id()),
+            &TileContent::Group(group.id()),
             area,
             4,
         );
@@ -3707,7 +3710,7 @@ mod tests {
             crate::render::draw_cell_for_test(
                 &mut buffer,
                 &roster,
-                &crate::tiles::TileContent::Group(identity.clone()),
+                &TileContent::Group(identity.clone()),
                 area,
                 4,
             );

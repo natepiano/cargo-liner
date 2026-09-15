@@ -879,7 +879,7 @@ try:
     if scenario == 'cpu-cache-server':
         scan_environment = dict(environment, CARGO_TILE_TEST_CPU_PID=(first[1] / 'cargo-pid').read_text())
         with (root / 'cpu-scanner-output').open('wb') as output:
-            scan_reader = subprocess.Popen([binary, '--exact', 'shim_registration::tests::cpu_scan_child', '--nocapture'],
+            scan_reader = subprocess.Popen([binary, '--exact', 'shim_registration::reader_scenarios::cpu_scan_child', '--nocapture'],
                                            cwd=root, env=scan_environment, stdin=subprocess.DEVNULL,
                                            stdout=output, stderr=output)
     reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
@@ -892,7 +892,7 @@ try:
         if scenario == 'settings-scroll-burst':
             (root / 'reader-terminal').write_text(os.ttyname(0))
         reader_environment['CARGO_TILE_TEST_READER'] = '1'
-        os.execve(binary, [binary, '--exact', 'shim_registration::reader_child', '--nocapture'], reader_environment)
+        os.execve(binary, [binary, '--exact', 'shim_registration::reader_scenarios::reader_child', '--nocapture'], reader_environment)
     def reader_has_scanned():
         read_terminal(0.1)
         rendered = screen()

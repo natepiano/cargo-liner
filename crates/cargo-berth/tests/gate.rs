@@ -5,6 +5,9 @@
 
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
+#[path = "support/timing.rs"]
+mod timing;
+
 use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
@@ -37,14 +40,14 @@ use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
+use timing::LOCK_CONTENTION_TOLERANCE;
+use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
+use timing::POLL_INTERVAL;
+use timing::SCHEDULING_ALLOWANCE;
 
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BYPASSED_MERGE_IDENTITY_ENVIRONMENT: &str = "CARGO_BERTH_BYPASSED_MERGE_ID";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
-const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
-/// CI scheduling headroom, kept below the production ten-second deadline.
-const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
@@ -3211,7 +3214,7 @@ fn run_gate_with_blocked_mutation_lock(deadline_environment: &str, deadline: Dur
         .write_all(format!("{base} {feature_head} refs/heads/main\n").as_bytes())
         .expect("private gate stdin should write");
     while !ready_path.exists() && started_at.elapsed() < SCHEDULING_ALLOWANCE {
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(POLL_INTERVAL);
     }
     if !ready_path.exists() {
         child

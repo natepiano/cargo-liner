@@ -5,6 +5,9 @@
 
 //! Built-binary tests for worktree liveness, recovery, marker sweeping, and cache repair.
 
+#[path = "support/timing.rs"]
+mod timing;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 
@@ -33,11 +36,11 @@ use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
+use timing::LOCK_CONTENTION_TOLERANCE;
+use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
+use timing::POLL_INTERVAL;
+use timing::SCHEDULING_ALLOWANCE;
 
-const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
-const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
-/// CI scheduling headroom, kept below the production ten-second deadline.
-const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
@@ -1670,7 +1673,7 @@ fn git_binary() -> String {
 fn wait_for_path(path: &Path, child: &mut Child) {
     let deadline = Instant::now() + PAUSED_GIT_WRAPPER_TIMEOUT;
     while !path.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(POLL_INTERVAL);
     }
     if !path.exists() {
         assert!(child.kill().is_ok(), "timed-out command should stop");

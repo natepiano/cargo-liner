@@ -974,6 +974,7 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
 
     use serde_json::Value;
+    use tempfile::TempDir;
 
     use super::CoordinationIdentityRecoveryAction;
     use super::CoordinationIdentityRecoveryActions;
@@ -990,6 +991,9 @@ mod tests {
     use crate::ids::WorktreeId;
     use crate::ledger::CanonicalWorktreeRoot;
     use crate::ledger::EditAuthorization;
+    use crate::ledger::JournalEvent;
+    use crate::ledger::WorktreeContext;
+    use crate::reservation::RetainedReservationSet;
 
     #[test]
     fn identity_rejection_kinds_and_precedence_follow_the_resolved_authorization() {
@@ -1079,10 +1083,10 @@ mod tests {
     }
 
     fn assert_identity_validation(
-        reservations: &crate::reservation::RetainedReservationSet,
+        reservations: &RetainedReservationSet,
         authorization: EditAuthorization,
         expected: &str,
-        worktree_context: &crate::ledger::WorktreeContext,
+        worktree_context: &WorktreeContext,
         command: &RecoveryCommandLine,
     ) {
         let worktree_id = match authorization {
@@ -1115,15 +1119,12 @@ mod tests {
     }
 
     fn identity_validation_reservations(
-        directory: &tempfile::TempDir,
+        directory: &TempDir,
         holding_worktree: WorktreeId,
         run: CoordinationRunId,
         reservation_id: ReservationId,
-    ) -> (
-        crate::reservation::RetainedReservationSet,
-        crate::reservation::RetainedReservationSet,
-    ) {
-        let claim: crate::ledger::JournalEvent = serde_json::from_value(serde_json::json!({
+    ) -> (RetainedReservationSet, RetainedReservationSet) {
+        let claim: JournalEvent = serde_json::from_value(serde_json::json!({
             "schema_version": 2,
             "event_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b",
             "actor": {

@@ -7,6 +7,8 @@
 
 #[path = "support/reader_compat_hooks.rs"]
 mod reader_compat_hooks;
+#[path = "support/timing.rs"]
+mod timing;
 
 use cargo_berth_test_support::git_command;
 use reader_compat_hooks::AmbientHarnessSession;
@@ -37,11 +39,11 @@ use std::time::Instant;
 
 use serde_json::Value;
 use tempfile::TempDir;
+use timing::LOCK_CONTENTION_TOLERANCE;
+use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
+use timing::POLL_INTERVAL;
+use timing::SCHEDULING_ALLOWANCE;
 
-const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
-const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
-/// CI scheduling headroom, kept below the production ten-second deadline.
-const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
@@ -917,7 +919,7 @@ impl PausedHookCall {
                     "hook exited with {status} before the git pause"
                 )));
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(POLL_INTERVAL);
         }
         if self.ready_path.exists() {
             return Ok(());
@@ -2318,7 +2320,7 @@ fn run_contended_hook(repository_root: &Path, event: &str, payload: &Value) -> T
         .ok_or_else(|| failure("hook stdin should be piped"))?
         .write_all(&serde_json::to_vec(payload)?)?;
     while !ready_path.exists() && started_at.elapsed() < SCHEDULING_ALLOWANCE {
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(POLL_INTERVAL);
     }
     if !ready_path.exists() {
         child.kill()?;

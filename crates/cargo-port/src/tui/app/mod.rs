@@ -1513,8 +1513,7 @@ mod tests {
     use crate::scan;
     use crate::scan::BackgroundMsg;
     use crate::scan::CiFetchResult;
-    use crate::test_support::git_binary;
-    use crate::test_support::init_git_repo;
+    use crate::test_support;
     use crate::tui::columns::COL_NAME;
     use crate::tui::columns::ProjectListWidths;
     use crate::tui::dismiss_target::DismissTarget;
@@ -16145,7 +16144,7 @@ mod tests {
             .expect("write test file");
         std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").expect("write test file");
 
-        init_git_repo(dir);
+        test_support::init_git_repo(dir);
     }
 
     fn init_workspace_git_project_with_member(dir: &Path, name: &str, member_name: &str) {
@@ -16167,11 +16166,11 @@ mod tests {
         std::fs::write(member_dir.join("src").join("lib.rs"), "pub fn demo() {}\n")
             .expect("write test file");
 
-        init_git_repo(dir);
+        test_support::init_git_repo(dir);
     }
 
     fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
-        let status = Command::new(git_binary())
+        let status = Command::new(test_support::git_binary())
             .args([
                 "worktree",
                 "add",

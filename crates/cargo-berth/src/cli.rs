@@ -67,6 +67,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::WorkPlanPhase;
+use crate::ledger;
 use crate::ledger::BypassedAction;
 use crate::ledger::ClaimSource;
 use crate::ledger::ForcedIntegrationReason;
@@ -82,7 +83,6 @@ use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::WorkPlanReference;
-use crate::ledger::shortened_by_environment;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
@@ -1531,7 +1531,7 @@ fn run_reference_transaction(
         return run_environment_bypassed_reference_transaction(phase, &trunk_reference);
     }
     let total_gate_deadline =
-        shortened_by_environment(GATE_DEADLINE_ENVIRONMENT, TOTAL_GATE_DEADLINE);
+        ledger::shortened_by_environment(GATE_DEADLINE_ENVIRONMENT, TOTAL_GATE_DEADLINE);
     let started_at = std::time::Instant::now();
     let transaction = match read_reference_transaction(phase) {
         Ok(transaction) => transaction,

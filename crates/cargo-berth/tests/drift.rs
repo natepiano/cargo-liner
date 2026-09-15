@@ -5,6 +5,9 @@
 
 //! End-to-end drift fingerprint, selection, classification, replay, and hook tests.
 
+#[path = "support/timing.rs"]
+mod timing;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::git_command;
@@ -30,19 +33,18 @@ use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
-use std::time::Duration;
 use std::time::Instant;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
+use timing::LOCK_CONTENTION_TOLERANCE;
+use timing::LOCK_CONTENTION_TOLERANCE_ENVIRONMENT;
+use timing::POLL_INTERVAL;
+use timing::SCHEDULING_ALLOWANCE;
 
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BERTH_BINARY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_BINARY";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-const LOCK_CONTENTION_TOLERANCE: Duration = Duration::from_millis(300);
-const LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_LOCK_CONTENTION_TOLERANCE_MS";
-/// CI scheduling headroom, kept below the production ten-second deadline.
-const SCHEDULING_ALLOWANCE: Duration = Duration::from_secs(5);
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const FOREIGN_ROOT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_FOREIGN_ROOT";
@@ -57,7 +59,6 @@ const MARKER_RELEASE_TRIGGER_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MARKER_RELEAS
 /// Test-only path a process waiting on the mutation lock writes, making the wait observable.
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 const MUTATION_LOCK_WAIT_ATTEMPTS: usize = 500;
-const MUTATION_LOCK_WAIT_INTERVAL: Duration = Duration::from_millis(10);
 const POST_COMMIT_HOOK_PATH: &str = ".git/hooks/post-commit";
 const PROJECTION_PATH: &str = ".git/cargo-berth/reservations.json";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -4456,7 +4457,7 @@ fn wait_until_held_at_the_mutation_lock(waiting_path: &Path) {
         if waiting_path.is_file() {
             return true;
         }
-        thread::sleep(MUTATION_LOCK_WAIT_INTERVAL);
+        thread::sleep(POLL_INTERVAL);
         false
     });
     assert!(

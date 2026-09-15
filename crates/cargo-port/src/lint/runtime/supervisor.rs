@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::sync::Condvar;
+
 use tui_pane::PERF_LOG_TARGET;
 
 use super::AbsolutePath;
@@ -68,7 +71,7 @@ pub(super) struct PauseState {
     #[cfg(test)]
     worker_starts:   Mutex<HashMap<AbsolutePath, WorkerStart>>,
     #[cfg(test)]
-    worker_started:  std::sync::Condvar,
+    worker_started:  Condvar,
 }
 
 impl PauseState {

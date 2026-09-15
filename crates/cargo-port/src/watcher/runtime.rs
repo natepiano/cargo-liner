@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver as StdReceiver;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use notify::Config;
@@ -221,7 +222,7 @@ fn spawn_watcher_thread<W: Watcher + Send + 'static>(
     watch_rx: Receiver<WatcherMsg>,
     notify_rx: StdReceiver<notify::Result<Event>>,
     mut watcher_guard: W,
-) -> thread::JoinHandle<()> {
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let ctx = startup.register(&mut watcher_guard);
         watcher_loop(&ctx, &watch_rx, &notify_rx, watcher_guard);
@@ -565,8 +566,6 @@ mod tests {
     use crate::project::RustProject;
     use crate::scan;
     use crate::test_support;
-    use crate::test_support::git_binary;
-    use crate::test_support::init_git_repo;
     use crate::watcher::events;
     use crate::watcher::events::EventContext;
     use crate::watcher::events::WatcherDispatchContext;
@@ -1130,7 +1129,7 @@ mod tests {
     fn registration_batch_completes_without_metadata_watch_calls() {
         let (watch_tx, watch_rx) = channel::unbounded();
         let project_dir = tempfile::tempdir().expect("tempdir");
-        init_git_repo(project_dir.path());
+        test_support::init_git_repo(project_dir.path());
 
         watch_tx
             .send(WatcherMsg::Register(WatchRequest {
@@ -1166,7 +1165,7 @@ mod tests {
     fn registering_uncovered_project_adds_recursive_watch_root() {
         let (watch_tx, watch_rx) = channel::unbounded();
         let project_dir = tempfile::tempdir().expect("tempdir");
-        init_git_repo(project_dir.path());
+        test_support::init_git_repo(project_dir.path());
         watch_tx
             .send(WatcherMsg::Register(WatchRequest {
                 project_label: project_dir.path().display().to_string(),
@@ -1203,7 +1202,7 @@ mod tests {
         let root_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = root_dir.path().join("project");
         std::fs::create_dir_all(&project_dir).expect("mkdir project");
-        init_git_repo(&project_dir);
+        test_support::init_git_repo(&project_dir);
         watch_tx
             .send(WatcherMsg::Register(WatchRequest {
                 project_label: project_dir.display().to_string(),
@@ -1583,7 +1582,7 @@ mod tests {
         std::fs::create_dir_all(&project_dir).expect("create project dir");
         std::fs::write(project_dir.join("Cargo.toml"), b"[package]")
             .expect("write project Cargo.toml");
-        init_git_repo(&project_dir);
+        test_support::init_git_repo(&project_dir);
         let member_dir = project_dir.join("crates").join("member");
         std::fs::create_dir_all(&member_dir).expect("create member dir");
         std::fs::write(member_dir.join("Cargo.toml"), b"[package]")
@@ -1781,7 +1780,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let project_dir = tmp.path().join("demo");
         write_tracked_file(&project_dir, "fn main() {}\n");
-        init_git_repo(&project_dir);
+        test_support::init_git_repo(&project_dir);
 
         let projects = tracked_file_projects(&project_dir);
         let watch_roots = vec![AbsolutePath::from(tmp.path())];
@@ -2916,11 +2915,11 @@ mod tests {
         std::fs::write(dir.join("Cargo.toml"), manifest_contents(name, workspace))
             .expect("write Cargo.toml");
         std::fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").expect("write main.rs");
-        init_git_repo(dir);
+        test_support::init_git_repo(dir);
     }
 
     fn add_git_worktree(primary_dir: &Path, worktree_dir: &Path, branch: &str) {
-        let status = Command::new(git_binary())
+        let status = Command::new(test_support::git_binary())
             .args([
                 "worktree",
                 "add",
@@ -2953,7 +2952,7 @@ mod tests {
         let project_dir = tmp.path().join(project_name);
         std::fs::create_dir_all(&project_dir).expect("create dir");
         if git_metadata.is_tracked() {
-            init_git_repo(&project_dir);
+            test_support::init_git_repo(&project_dir);
         }
 
         let (tx, rx) = channel::unbounded();
