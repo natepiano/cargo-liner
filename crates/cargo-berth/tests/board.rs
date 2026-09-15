@@ -2439,6 +2439,513 @@ fn board_git_cost_separates_each_scaling_dimension() {
 }
 
 #[test]
+fn historical_candidate_settles_without_a_rewrite_marker() {
+    let fixture = historical_integration_fixture();
+    let reservation = &fixture.reservation;
+    let root = reservation.repository.path();
+    let settled = run_board_with_git_trace(root);
+    assert_historical_settlement(&fixture, &settled);
+    assert_eq!(historical_candidate_queries(&settled), 1);
+    assert_eq!(
+        historical_candidate_certifications(&settled, &fixture.witness),
+        1
+    );
+    assert_eq!(
+        scoped_patch_comparison_attempts(
+            &settled,
+            &reservation.phase_start_head,
+            &reservation.target
+        ),
+        0
+    );
+}
+
+#[test]
+fn discovered_historical_witness_survives_reserved_dirt_and_restart() {
+    let fixture = historical_integration_fixture();
+    let reservation = &fixture.reservation;
+    let root = reservation.repository.path();
+    dirty_source(&fixture.holder_root, "src/lib.rs");
+    let dirty = run_board_with_git_trace(root);
+    assert!(
+        dirty.output.status.success(),
+        "{}",
+        json_output(&dirty.output)
+    );
+    let board = json_output(&dirty.output);
+    let snapshot =
+        board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
+    assert_eq!(
+        snapshot["integration_evidence"]["status"],
+        historical_evidence(&fixture)
+    );
+    assert_eq!(historical_candidate_queries(&dirty), 1);
+    assert_eq!(journal_operation_count(root, "release"), 0);
+    assert_eq!(
+        git_stdout(&fixture.holder_root, &["diff", "--name-only"]),
+        "src/lib.rs"
+    );
+
+    git(
+        &fixture.holder_root,
+        &["restore", "--worktree", "--", "src/lib.rs"],
+    );
+    invalidate_projection(root);
+    let restarted = run_board_with_git_trace(root);
+    assert_historical_settlement(&fixture, &restarted);
+    assert_eq!(historical_candidate_queries(&restarted), 0);
+    assert_eq!(
+        historical_candidate_certifications(&restarted, &fixture.witness),
+        0
+    );
+    assert_eq!(
+        reservation_verdicts(root, &reservation.reservation_id).len(),
+        1
+    );
+}
+
+#[test]
+fn explicit_release_preserves_discovered_historical_witness_while_reserved_dirt_remains() {
+    let fixture = historical_integration_fixture();
+    let reservation = &fixture.reservation;
+    let root = reservation.repository.path();
+    dirty_source(&fixture.holder_root, "src/lib.rs");
+    let dirty = run_board_with_git_trace(root);
+    assert!(
+        dirty.output.status.success(),
+        "{}",
+        json_output(&dirty.output)
+    );
+    let board = json_output(&dirty.output);
+    let snapshot =
+        board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
+    assert_eq!(
+        snapshot["integration_evidence"]["status"],
+        historical_evidence(&fixture)
+    );
+    assert_eq!(historical_candidate_queries(&dirty), 1);
+    assert_eq!(journal_operation_count(root, "release"), 0);
+
+    let expected_evidence = serde_json::json!({
+        "status": "integrated", "trunk_oid": reservation.target,
+        "proof": "rewritten_witness_ancestor",
+        "witness": {"kind": "historical", "commit": fixture.witness},
+    });
+    {
+        let release = run_berth_with_run(
+            &fixture.holder_root,
+            &["release", &reservation.reservation_id, "--json"],
+            FIRST_RUN,
+        );
+        assert!(release.status.success(), "{}", json_output(&release));
+        // Inspect the release write before ordinary reconciliation can repair evidence.
+        let evidence = fs::read_to_string(root.join(JOURNAL_PATH))
+            .expect("release journal should read")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).expect("event should decode")
+            })
+            .filter(|event| {
+                event["op"] == "evidence_revalidated"
+                    && event["reservation_id"] == reservation.reservation_id
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            evidence
+                .iter()
+                .all(|event| event["status"]["status"] != "trunk_rewritten")
+        );
+        assert_eq!(
+            evidence.last().expect("release should retain evidence")["status"],
+            expected_evidence
+        );
+        assert_eq!(journal_operation_count(root, "release"), 0);
+        assert_eq!(
+            git_stdout(&fixture.holder_root, &["diff", "--name-only"]),
+            "src/lib.rs"
+        );
+    }
+
+    git(
+        &fixture.holder_root,
+        &["restore", "--worktree", "--", "src/lib.rs"],
+    );
+    invalidate_projection(root);
+    let restarted = run_board_with_git_trace(root);
+    assert!(
+        restarted.output.status.success(),
+        "{}",
+        json_output(&restarted.output)
+    );
+    let board = json_output(&restarted.output);
+    let snapshot =
+        board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "released");
+    assert_eq!(
+        snapshot["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
+    );
+    assert_eq!(
+        snapshot["integration_evidence"]["status"],
+        historical_evidence(&fixture)
+    );
+    assert_eq!(historical_candidate_queries(&restarted), 0);
+    assert_eq!(journal_operation_count(root, "release"), 1);
+    assert_historical_witness_settlement_journal(
+        reservation,
+        &historical_evidence(&fixture),
+        &fixture.witness,
+    );
+}
+
+#[test]
+fn explicit_release_preserves_historical_evidence_for_an_integrated_disposition() {
+    let mut fixture =
+        rewritten_reservation_fixture(TargetRewrite::Equivalent, ReservationCompletion::Released);
+    let witness = fixture.target.clone();
+    let root = fixture.repository.path();
+    commit_historical_source(
+        root,
+        "pub fn later_trunk_revision() {}\n",
+        "later protected-hunk rewrite",
+    );
+    fixture.target = git_stdout(root, &["rev-parse", "HEAD"]);
+    let discovered = run_board_with_git_trace(root);
+    assert!(discovered.output.status.success());
+    let board = json_output(&discovered.output);
+    let snapshot = board_reservation_snapshot(&board["payload"]["data"], &fixture.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "released");
+    assert_eq!(
+        snapshot["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "integrated"})
+    );
+    let mut expected_evidence = serde_json::json!({
+        "status": "integrated", "trunk_oid": fixture.target,
+        "proof": "scoped_patch_equivalent",
+        "witness": {"kind": "historical", "commit": witness},
+    });
+    assert_eq!(
+        snapshot["integration_evidence"]["status"],
+        expected_evidence
+    );
+    assert_eq!(historical_candidate_queries(&discovered), 1);
+
+    let release = run_berth(root, &["release", &fixture.reservation_id, "--json"]);
+    assert!(release.status.success(), "{}", json_output(&release));
+    let released = json_output(&release);
+    assert_eq!(released["payload"]["data"]["status"], "already_settled");
+    assert_eq!(
+        released["payload"]["data"]["disposition"],
+        serde_json::json!({"kind": "integrated"})
+    );
+    expected_evidence["proof"] = serde_json::json!("rewritten_witness_ancestor");
+    assert_eq!(released["payload"]["data"]["evidence"], expected_evidence);
+    let evidence = fs::read_to_string(root.join(JOURNAL_PATH))
+        .expect("release journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .filter(|event| {
+            event["op"] == "evidence_revalidated"
+                && event["reservation_id"] == fixture.reservation_id
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        evidence
+            .iter()
+            .all(|event| event["status"]["status"] != "trunk_rewritten")
+    );
+    assert_eq!(
+        evidence.last().expect("release should journal evidence")["status"],
+        expected_evidence
+    );
+
+    // Remove the witness from trunk ancestry and replace the protected work entirely.
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            &fixture.phase_start_head,
+        ],
+    );
+    commit_historical_source(root, "pub fn unrelated() {}\n", "genuinely rewritten trunk");
+    invalidate_projection(root);
+    let rewritten = board_data(root);
+    assert_eq!(
+        board_reservation_snapshot(&rewritten, &fixture.reservation_id)["integration_evidence"]["status"]
+            ["status"],
+        "trunk_rewritten"
+    );
+    let release = run_berth(root, &["release", &fixture.reservation_id, "--json"]);
+    assert!(release.status.success(), "{}", json_output(&release));
+    let released = json_output(&release);
+    assert_eq!(released["payload"]["data"]["status"], "already_settled");
+    assert_eq!(
+        released["payload"]["data"]["evidence"]["status"],
+        "trunk_rewritten"
+    );
+    assert_eq!(
+        released["payload"]["data"]["disposition"],
+        serde_json::json!({"kind": "integrated"})
+    );
+    assert_eq!(journal_operation_count(root, "release"), 1);
+}
+
+#[test]
+fn unavailable_historical_discovery_does_not_cache_a_negative_fallback() {
+    let fixture = historical_integration_fixture();
+    let reservation = &fixture.reservation;
+    let root = reservation.repository.path();
+    // Only nomination fails: the ordinary current-trunk comparison must still run.
+    let wrapper = TRACING_GIT_WRAPPER.replace(
+        "exec \"$CARGO_BERTH_TEST_REAL_GIT\" \"$@\"",
+        r#"if [ "$2" = "rev-list" ] && [ "$3" = "--cherry-mark" ]; then
+    for argument in "$@"; do
+        if [ "$argument" = "--right-only" ]; then exit 2; fi
+    done
+fi
+exec "$CARGO_BERTH_TEST_REAL_GIT" "$@""#,
+    );
+    assert_ne!(wrapper, TRACING_GIT_WRAPPER);
+    let unavailable = run_board_with_git_wrapper(root, &wrapper);
+    assert!(
+        unavailable.output.status.success(),
+        "{}",
+        json_output(&unavailable.output)
+    );
+    assert_eq!(historical_candidate_queries(&unavailable), 1);
+    assert_eq!(
+        scoped_patch_comparison_attempts(
+            &unavailable,
+            &reservation.phase_start_head,
+            &reservation.target
+        ),
+        1
+    );
+    let board = json_output(&unavailable.output);
+    let snapshot =
+        board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
+    assert_ne!(
+        snapshot["integration_evidence"]["status"]["status"],
+        "integrated"
+    );
+    assert!(reservation_verdicts(root, &reservation.reservation_id).is_empty());
+
+    invalidate_projection(root);
+    let restarted = run_board_with_git_trace(root);
+    assert_historical_settlement(&fixture, &restarted);
+    assert_eq!(historical_candidate_queries(&restarted), 1);
+    assert_eq!(
+        historical_candidate_certifications(&restarted, &fixture.witness),
+        1
+    );
+}
+
+/// An unobserved cherry-pick followed by a protected-hunk rewrite on actual trunk.
+struct HistoricalIntegrationFixture {
+    reservation: RewrittenReservationFixture,
+    holder_root: PathBuf,
+    witness:     String,
+    worktrees:   TempDir,
+}
+
+/// Keep the holder at its checkpoint so later trunk work is not mistaken for holder work.
+fn historical_integration_fixture() -> HistoricalIntegrationFixture {
+    let repository = initialized_repository();
+    let root = repository.path();
+    git(root, &["add", CONFIGURATION_PATH]);
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "configuration",
+        ],
+    );
+    git(root, &["config", "core.hooksPath", "/dev/null"]);
+    let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
+    let worktrees = tempdir().expect("holder parent should exist");
+    let holder_root = add_worktree(root, worktrees.path(), "historical-holder");
+    let reservation_id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
+    commit_historical_source(&holder_root, "pub fn protected() {}\n", "protected phase");
+    let protected_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "checkpoint", "reservation_id": reservation_id,
+            "protected_tip": protected_tip, "trunk_snapshot": phase_start_head,
+        }),
+    );
+    commit_historical_source(root, "pub fn protected() {}\n", "uncaptured cherry-pick");
+    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(witness, protected_tip);
+    commit_historical_source(
+        root,
+        "pub fn later_trunk_revision() {}\n",
+        "later protected-hunk rewrite",
+    );
+    let target = git_stdout(root, &["rev-parse", "HEAD"]);
+    let replay = GIT.output(
+        root,
+        [
+            "merge-tree",
+            "--write-tree",
+            &format!("--merge-base={phase_start_head}"),
+            &target,
+            &protected_tip,
+        ],
+    );
+    assert_eq!(
+        replay.status.code(),
+        Some(1),
+        "current-trunk replay must conflict"
+    );
+    assert!(
+        fs::read_dir(root.join(".git"))
+            .expect("Git directory should read")
+            .all(|entry| !entry
+                .expect("entry should read")
+                .file_name()
+                .to_string_lossy()
+                .starts_with("cargo-berth-pending-bypass-"))
+    );
+    HistoricalIntegrationFixture {
+        reservation: RewrittenReservationFixture {
+            repository,
+            reservation_id,
+            phase_start_head,
+            protected_tip,
+            target,
+        },
+        holder_root,
+        witness,
+        worktrees,
+    }
+}
+
+/// Commit one protected-hunk revision without invoking the managed gate.
+fn commit_historical_source(root: &Path, content: &str, message: &str) {
+    fs::write(root.join("src/lib.rs"), content).expect("protected source should write");
+    git(root, &["add", "src/lib.rs"]);
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+}
+
+/// Evaluation names actual trunk while its certified witness names the older candidate.
+fn historical_evidence(fixture: &HistoricalIntegrationFixture) -> serde_json::Value {
+    serde_json::json!({
+        "status": "integrated", "trunk_oid": fixture.reservation.target,
+        "proof": "scoped_patch_equivalent",
+        "witness": {"kind": "historical", "commit": fixture.witness},
+    })
+}
+
+/// A clean ordinary reconciliation settles the historical proof without an orphan alert.
+fn assert_historical_settlement(fixture: &HistoricalIntegrationFixture, traced: &TracedBoard) {
+    assert!(
+        traced.output.status.success(),
+        "{}",
+        json_output(&traced.output)
+    );
+    let board = json_output(&traced.output);
+    let reservation = &fixture.reservation;
+    let snapshot =
+        board_reservation_snapshot(&board["payload"]["data"], &reservation.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "released", "{board}");
+    assert_eq!(
+        snapshot["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
+    );
+    assert_eq!(
+        snapshot["integration_evidence"]["status"],
+        historical_evidence(fixture)
+    );
+    assert!(
+        board["payload"]["data"]["alerts"]["entries"]
+            .as_array()
+            .expect("alerts should exist")
+            .iter()
+            .all(|alert| alert["reservation_id"] != reservation.reservation_id)
+    );
+    let verdicts = reservation_verdicts(reservation.repository.path(), &reservation.reservation_id);
+    let verdict = verdicts
+        .last()
+        .expect("historical proof should be journaled");
+    assert_eq!(verdict["target"], reservation.target);
+    assert_eq!(verdict["witness"], historical_evidence(fixture)["witness"]);
+    assert_eq!(verdict["evaluator_version"], "historical_candidate");
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            reservation.repository.path(),
+            "release",
+            &reservation.reservation_id
+        ),
+        1
+    );
+    assert_historical_witness_settlement_journal(
+        reservation,
+        &historical_evidence(fixture),
+        &fixture.witness,
+    );
+}
+
+/// Count the whole-phase replay at the nominated destination.
+fn historical_candidate_certifications(traced: &TracedBoard, witness: &str) -> usize {
+    fs::read_to_string(&traced.trace_path)
+        .expect("Git trace should read")
+        .lines()
+        .filter(|line| {
+            line.starts_with("merge-tree ")
+                && line.split_whitespace().any(|argument| argument == witness)
+        })
+        .count()
+}
+
+/// Count only the trunk-side cherry-mark nomination query, separately from certification.
+fn historical_candidate_queries(traced: &TracedBoard) -> usize {
+    fs::read_to_string(&traced.trace_path)
+        .expect("Git trace should read")
+        .lines()
+        .filter(|line| {
+            line.starts_with("rev-list --cherry-mark --left-right ")
+                && line
+                    .split_whitespace()
+                    .any(|argument| argument == "--right-only")
+        })
+        .count()
+}
+
+/// Read the durable comparison history for one reservation.
+fn reservation_verdicts(root: &Path, reservation_id: &str) -> Vec<serde_json::Value> {
+    fs::read_to_string(root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .filter(|event| {
+            event["op"] == "scoped_patch_equivalence_checked"
+                && event["reservation_id"] == reservation_id
+        })
+        .collect()
+}
+
+#[test]
 fn retained_historical_witness_survives_dirty_settlement_and_process_restart() {
     let (fixture, evaluated_trunk) = retained_historical_witness_fixture();
     let root = fixture.repository.path();
@@ -2490,7 +2997,7 @@ fn retained_historical_witness_survives_dirty_settlement_and_process_restart() {
         released["integration_evidence"]["status"],
         expected_evidence
     );
-    assert_historical_witness_settlement_journal(&fixture, &expected_evidence);
+    assert_historical_witness_settlement_journal(&fixture, &expected_evidence, witness);
 
     let restarted = run_board_with_git_trace(root);
     assert!(restarted.output.status.success());
@@ -2561,6 +3068,7 @@ fn retained_historical_witness_fixture() -> (RewrittenReservationFixture, String
 fn assert_historical_witness_settlement_journal(
     fixture: &RewrittenReservationFixture,
     expected_evidence: &serde_json::Value,
+    witness: &str,
 ) {
     let events = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
         .expect("settled journal should read")
@@ -2575,7 +3083,7 @@ fn assert_historical_witness_settlement_journal(
         .expect("clean reconciliation should release the reservation");
     assert_eq!(
         events[release_index]["disposition"],
-        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.target})
+        serde_json::json!({"kind": "rewritten_integration", "evidence": witness})
     );
     let evidence = &events[release_index
         .checked_sub(1)
@@ -2623,6 +3131,58 @@ fn retained_scoped_patch_verdicts_reuse_both_results_after_process_restart() {
     .expect("baseline journal should restore");
     invalidate_projection(fixture.repository.path());
     assert_retained_negative_verdict(&fixture);
+    assert_legacy_negative_is_replaced_once();
+}
+
+/// An absent evaluator version retries once, then the replacement survives process restarts.
+fn assert_legacy_negative_is_replaced_once() {
+    let fixture =
+        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Released);
+    let root = fixture.repository.path();
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "scoped_patch_equivalence_checked",
+            "reservation_id": fixture.reservation_id,
+            "subject": 1,
+            "target": fixture.target,
+            "verdict": "trunk_rewritten",
+        }),
+    );
+    let first = run_board_with_git_trace(root);
+    assert!(
+        first.output.status.success(),
+        "{}",
+        json_output(&first.output)
+    );
+    assert_eq!(
+        scoped_patch_comparison_attempts(&first, &fixture.phase_start_head, &fixture.target),
+        1
+    );
+    assert_eq!(historical_candidate_queries(&first), 1);
+    let verdicts = reservation_verdicts(root, &fixture.reservation_id);
+    assert_eq!(verdicts.len(), 2);
+    assert!(verdicts[0].get("evaluator_version").is_none());
+    assert_eq!(verdicts[1]["verdict"], "trunk_rewritten");
+    assert_eq!(verdicts[1]["evaluator_version"], "historical_candidate");
+    for _ in 0..2 {
+        invalidate_projection(root);
+        let restarted = run_board_with_git_trace(root);
+        assert!(restarted.output.status.success());
+        assert_eq!(historical_candidate_queries(&restarted), 0);
+        assert_eq!(
+            scoped_patch_comparison_attempts(
+                &restarted,
+                &fixture.phase_start_head,
+                &fixture.target
+            ),
+            0
+        );
+        assert_eq!(
+            reservation_verdicts(root, &fixture.reservation_id),
+            verdicts
+        );
+    }
 }
 
 fn assert_retained_positive_verdict(positive: &RewrittenReservationFixture) {
@@ -3379,6 +3939,8 @@ fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject(
 
 #[test]
 fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations() {
+    assert_historical_candidate_subject_budget();
+    assert_mapped_acceptance_defers_historical_subjects();
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
         let one = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
         let one_trace = run_board_with_git_trace(one.repository.path());
@@ -3407,9 +3969,11 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             );
 
             let expected_argv_total = match target_rewrite {
-                TargetRewrite::Equivalent => 6,
-                TargetRewrite::Different => 5,
+                TargetRewrite::Equivalent => 7,
+                TargetRewrite::Different => 6,
             };
+            assert_eq!(historical_candidate_queries(&one_trace), 1);
+            assert_eq!(historical_candidate_queries(&two_trace), 1);
             assert!(!one_argv.is_empty());
             assert_eq!(one_argv.len(), expected_argv_total, "{one_argv:#?}");
             assert_eq!(two_argv.len(), expected_argv_total, "{two_argv:#?}");
@@ -3438,6 +4002,189 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
                 ProofSubjectSimilarity::Duplicate => expected_first_status,
             };
             assert_integration_statuses(two_data, &additional_reservation_ids, additional_status);
+        }
+    }
+}
+
+/// A mapped acceptance spends actual trunk's admission before historical discovery can run.
+fn assert_mapped_acceptance_defers_historical_subjects() {
+    let fixture = historical_integration_fixture();
+    let reservation = &fixture.reservation;
+    let root = reservation.repository.path();
+    let duplicates = append_comparison_reservations(
+        reservation,
+        1,
+        ProofSubjectSimilarity::Duplicate,
+        ReservationCompletion::Outstanding,
+    );
+    let mapped_id = append_pending_mapped_subject(&fixture);
+    let first = run_board_with_git_trace(root);
+    assert!(
+        first.output.status.success(),
+        "{}",
+        json_output(&first.output)
+    );
+    assert_eq!(
+        journal_operation_count_for_reservation(root, "resnapshot", &mapped_id),
+        1
+    );
+    assert_eq!(historical_candidate_queries(&first), 0);
+    for id in [&reservation.reservation_id, &duplicates[0]] {
+        assert!(reservation_verdicts(root, id).is_empty());
+    }
+    let first_board = json_output(&first.output);
+    let snapshot =
+        board_reservation_snapshot(&first_board["payload"]["data"], &reservation.reservation_id);
+    assert_eq!(snapshot["lifecycle"]["stage"], "outstanding");
+
+    invalidate_projection(root);
+    let second = run_board_with_git_trace(root);
+    assert_historical_settlement(&fixture, &second);
+    assert_eq!(historical_candidate_queries(&second), 1);
+    assert_eq!(
+        historical_candidate_certifications(&second, &fixture.witness),
+        1
+    );
+    let second_board = json_output(&second.output);
+    let duplicate = board_reservation_snapshot(&second_board["payload"]["data"], &duplicates[0]);
+    assert_eq!(
+        duplicate["integration_evidence"]["status"],
+        historical_evidence(&fixture)
+    );
+}
+
+/// Stage an unrelated mapped checkpoint in its own holder without invoking reconciliation.
+fn append_pending_mapped_subject(fixture: &HistoricalIntegrationFixture) -> String {
+    let reservation = &fixture.reservation;
+    let root = reservation.repository.path();
+    let mapped_root = add_worktree(root, fixture.worktrees.path(), "mapped-holder");
+    git(
+        &mapped_root,
+        &["reset", "--hard", &reservation.protected_tip],
+    );
+    let administrative = PathBuf::from(git_stdout(
+        &mapped_root,
+        &["rev-parse", "--absolute-git-dir"],
+    ));
+    let mapped_worktree_id = uuid::Uuid::now_v7().to_string();
+    fs::write(
+        administrative.join("cargo-berth-worktree-id"),
+        &mapped_worktree_id,
+    )
+    .expect("mapped worktree identity should write");
+    let claim = fs::read_to_string(root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .find(|event| {
+            event["op"] == "claim" && event["reservation_id"] == reservation.reservation_id
+        })
+        .expect("historical holder claim should exist");
+    let mapped_id = uuid::Uuid::now_v7().to_string();
+    let mut mapped_claim = claim;
+    mapped_claim["reservation_id"] = serde_json::json!(mapped_id);
+    mapped_claim["scopes"] = serde_json::json!([{"path": "src/mapped.rs", "kind": "file"}]);
+    for field in ["phase_start_head", "trunk_at_claim"] {
+        mapped_claim[field] = serde_json::json!(reservation.protected_tip);
+    }
+    mapped_claim["head_snapshot"]["head"] = serde_json::json!(reservation.protected_tip);
+    mapped_claim["head_snapshot"]["full_ref"] = serde_json::json!("refs/heads/mapped-holder");
+    mapped_claim["worktree_root"] = serde_json::json!(mapped_root);
+    mapped_claim["worktree_administrative_locator"] = serde_json::json!(
+        administrative
+            .strip_prefix(root.join(".git"))
+            .expect("linked administrative locator should be relative")
+    );
+    append_journal_operation_with_actor(
+        root,
+        &mapped_claim,
+        ActorFixture::TransactionOnly {
+            worktree_id: mapped_worktree_id,
+            run_id:      FIRST_RUN.to_owned(),
+        },
+    );
+    fs::write(mapped_root.join("src/mapped.rs"), "// mapped phase\n")
+        .expect("mapped source should write");
+    git(&mapped_root, &["add", "src/mapped.rs"]);
+    git(
+        &mapped_root,
+        &["commit", "--quiet", "-m", "mapped checkpoint"],
+    );
+    let old_tip = git_stdout(&mapped_root, &["rev-parse", "HEAD"]);
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "checkpoint", "reservation_id": mapped_id,
+            "protected_tip": old_tip, "trunk_snapshot": reservation.target,
+        }),
+    );
+    git(
+        &mapped_root,
+        &["commit", "--quiet", "--amend", "-m", "mapped replacement"],
+    );
+    let new_tip = git_stdout(&mapped_root, &["rev-parse", "HEAD"]);
+    assert_ne!(old_tip, new_tip);
+    fs::write(root.join(".git").join(PENDING_BYPASS_NAME), serde_json::json!({
+        "kind": "branch_rewrite",
+        "pairs": [{"old": old_tip, "new": new_tip}],
+        "new_tips": [new_tip], "created_commits": [new_tip],
+        "worktree_administrative_directory": git_stdout(&mapped_root, &["rev-parse", "--absolute-git-dir"]),
+    }).to_string()).expect("mapped marker should write");
+    mapped_id
+}
+
+/// Discovery and certification share one observed-trunk admission, including duplicate witnesses.
+fn assert_historical_candidate_subject_budget() {
+    for similarity in [
+        ProofSubjectSimilarity::Distinct,
+        ProofSubjectSimilarity::Duplicate,
+    ] {
+        let fixture = historical_integration_fixture();
+        let reservation = &fixture.reservation;
+        let extra = append_comparison_reservations(
+            reservation,
+            1,
+            similarity,
+            ReservationCompletion::Outstanding,
+        );
+        let traced = run_board_with_git_trace(reservation.repository.path());
+        assert_historical_settlement(&fixture, &traced);
+        assert_eq!(historical_candidate_queries(&traced), 1);
+        assert_eq!(
+            historical_candidate_certifications(&traced, &fixture.witness),
+            1
+        );
+        assert_eq!(
+            scoped_patch_comparison_attempts(
+                &traced,
+                &reservation.phase_start_head,
+                &reservation.target
+            ),
+            0
+        );
+        let board = json_output(&traced.output);
+        let snapshot = board_reservation_snapshot(&board["payload"]["data"], &extra[0]);
+        match similarity {
+            ProofSubjectSimilarity::Duplicate => {
+                assert_eq!(
+                    snapshot["integration_evidence"]["status"],
+                    historical_evidence(&fixture)
+                );
+                let verdicts = reservation_verdicts(reservation.repository.path(), &extra[0]);
+                assert_eq!(verdicts.len(), 1);
+                assert_eq!(verdicts[0]["target"], reservation.target);
+                assert_eq!(
+                    verdicts[0]["witness"],
+                    historical_evidence(&fixture)["witness"]
+                );
+            },
+            ProofSubjectSimilarity::Distinct => {
+                assert_ne!(
+                    snapshot["integration_evidence"]["status"]["status"],
+                    "integrated"
+                );
+                assert!(reservation_verdicts(reservation.repository.path(), &extra[0]).is_empty());
+            },
         }
     }
 }
@@ -4523,6 +5270,9 @@ fn scoped_patch_comparison_attempts(
         .filter(|line| {
             *line == merge_base_query
                 || (line.starts_with("rev-list --cherry-mark --left-right ")
+                    && !line
+                        .split_whitespace()
+                        .any(|argument| argument == "--right-only")
                     && line
                         .split_whitespace()
                         .any(|argument| argument == excluded_phase_start)
@@ -4535,6 +5285,21 @@ fn append_released_reservations(
     fixture: &RewrittenReservationFixture,
     additional_reservations: usize,
     proof_subject_similarity: ProofSubjectSimilarity,
+) -> Vec<String> {
+    append_comparison_reservations(
+        fixture,
+        additional_reservations,
+        proof_subject_similarity,
+        ReservationCompletion::Released,
+    )
+}
+
+/// Duplicate a subject's lifecycle context while optionally varying its protected scopes.
+fn append_comparison_reservations(
+    fixture: &RewrittenReservationFixture,
+    additional_reservations: usize,
+    proof_subject_similarity: ProofSubjectSimilarity,
+    completion: ReservationCompletion,
 ) -> Vec<String> {
     let journal = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
         .expect("journal should read");
@@ -4577,9 +5342,15 @@ fn append_released_reservations(
                 "op": "checkpoint",
                 "reservation_id": reservation_id,
                 "protected_tip": fixture.protected_tip,
-                "trunk_snapshot": fixture.protected_tip,
+                "trunk_snapshot": match completion {
+                    ReservationCompletion::Outstanding => &fixture.phase_start_head,
+                    ReservationCompletion::Released => &fixture.protected_tip,
+                },
             }),
         );
+        if matches!(completion, ReservationCompletion::Outstanding) {
+            continue;
+        }
         append_journal_operation(
             fixture.repository.path(),
             &serde_json::json!({
@@ -4806,10 +5577,15 @@ fn checkpoint_predecessor(fixture: &OrderedFixture) {
 }
 
 fn run_board_with_git_trace(repository_root: &Path) -> TracedBoard {
+    run_board_with_git_wrapper(repository_root, TRACING_GIT_WRAPPER)
+}
+
+/// Run a board process with a traceable, narrowly injected Git failure.
+fn run_board_with_git_wrapper(repository_root: &Path, wrapper: &str) -> TracedBoard {
     let directory = tempdir().expect("git wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
-    fs::write(&wrapper_path, TRACING_GIT_WRAPPER).expect("git wrapper should write");
+    fs::write(&wrapper_path, wrapper).expect("git wrapper should write");
     let mut permissions = fs::metadata(&wrapper_path)
         .expect("git wrapper metadata should read")
         .permissions();

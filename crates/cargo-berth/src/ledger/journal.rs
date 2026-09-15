@@ -53,6 +53,7 @@ use crate::reservation::IntegrationWitness;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
+use crate::reservation::ScopedPatchEvaluatorVersion;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 
 /// One append-only fact in the shared coordination journal.
@@ -441,6 +442,9 @@ pub(crate) enum JournalOperation {
         /// The integration commit, defaulting to the evaluated target for older records.
         #[serde(default)]
         witness:        IntegrationWitness,
+        /// The proof rules; absent on legacy records and omitted when legacy.
+        #[serde(default, skip_serializing_if = "ScopedPatchEvaluatorVersion::is_legacy")]
+        evaluator_version: ScopedPatchEvaluatorVersion,
     },
     /// Record a scoped comparison that produced no durable cache verdict.
     ScopedPatchComparisonAttempted {
@@ -461,6 +465,9 @@ pub(crate) enum JournalOperation {
         successor_head:             GitObjectId,
         /// The definitive successor-incorporation verdict produced by the check.
         verdict:                    SuccessorScopedPatchEquivalenceVerdict,
+        /// The proof rules; absent on legacy records and omitted when legacy.
+        #[serde(default, skip_serializing_if = "ScopedPatchEvaluatorVersion::is_legacy")]
+        evaluator_version: ScopedPatchEvaluatorVersion,
     },
     /// Record a successor comparison that produced no durable cache verdict.
     SuccessorScopedPatchComparisonAttempted {

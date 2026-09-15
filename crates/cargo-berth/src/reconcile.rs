@@ -42,6 +42,7 @@ use crate::git::CommitCandidateReachability;
 use crate::git::CommitTargetReachability;
 use crate::git::CommitTargetReachabilityObservation;
 use crate::git::GitError;
+use crate::git::HistoricalIntegrationCandidateDiscovery;
 use crate::git::PhaseStartTargetFirstParentHistories;
 use crate::git::ProtectedTipSuccessorHeadClassification;
 use crate::git::ProtectedTipSuccessorHeads;
@@ -101,6 +102,8 @@ use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::reservation::ScopedPatchComparisonObservation;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluationPriority;
+use crate::reservation::ScopedPatchEvaluatorVersion;
+use crate::reservation::ScopedPatchIntegrationEvaluation;
 use crate::reservation::ScopedPatchTargetVerdictAvailability;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability;
@@ -533,7 +536,7 @@ enum ScopedPatchEvaluationContext {
 /// Reuses identical proof inputs and admits one scoped comparison per trunk target.
 #[derive(Default)]
 struct ReconciliationScopedPatchEvaluationBudget {
-    comparisons:       HashMap<ScopedPatchEvaluationKey, ScopedPatchComparison>,
+    evaluations:       HashMap<ScopedPatchEvaluationKey, ScopedPatchIntegrationEvaluation>,
     evaluated_targets: HashSet<GitObjectId>,
 }
 
@@ -764,10 +767,10 @@ impl ReconciliationScopedPatchEvaluationBudget {
     fn evaluate(
         &mut self,
         scoped_patch_evaluation_key: ScopedPatchEvaluationKey,
-        evaluate: impl FnOnce() -> ScopedPatchComparison,
+        evaluate: impl FnOnce() -> ScopedPatchIntegrationEvaluation,
     ) -> ScopedPatchComparisonObservation {
-        if let Some(scoped_patch_comparison) = self.comparisons.get(&scoped_patch_evaluation_key) {
-            return ScopedPatchComparisonObservation::Observed(*scoped_patch_comparison);
+        if let Some(scoped_patch_comparison) = self.evaluations.get(&scoped_patch_evaluation_key) {
+            return ScopedPatchComparisonObservation::Observed(scoped_patch_comparison.clone());
         }
         if !self
             .evaluated_targets
@@ -776,8 +779,8 @@ impl ReconciliationScopedPatchEvaluationBudget {
             return ScopedPatchComparisonObservation::Deferred;
         }
         let scoped_patch_comparison = evaluate();
-        self.comparisons
-            .insert(scoped_patch_evaluation_key, scoped_patch_comparison);
+        self.evaluations
+            .insert(scoped_patch_evaluation_key, scoped_patch_comparison.clone());
         ScopedPatchComparisonObservation::Observed(scoped_patch_comparison)
     }
 }
@@ -1463,7 +1466,9 @@ fn import_rewrite_candidates(
             &mut preflight.budget,
         );
         match comparison {
-            ScopedPatchComparisonObservation::Observed(ScopedPatchComparison::Equivalent) => {
+            ScopedPatchComparisonObservation::Observed(
+                ScopedPatchIntegrationEvaluation::Equivalent(_),
+            ) => {
                 let operation = JournalOperation::Resnapshot {
                     reservation_id,
                     snapshot: ReservationSnapshot::Outstanding {
@@ -1482,7 +1487,9 @@ fn import_rewrite_candidates(
                     .map_err(ReconcileError::Replay)?;
                 preflight.operations.push(operation);
             },
-            ScopedPatchComparisonObservation::Observed(ScopedPatchComparison::Different) => {
+            ScopedPatchComparisonObservation::Observed(
+                ScopedPatchIntegrationEvaluation::Different,
+            ) => {
                 marker
                     .rewrite
                     .completed_subjects
@@ -1491,7 +1498,10 @@ fn import_rewrite_candidates(
                         subject: reservation.integration_proof_subject_revision(),
                     });
             },
-            ScopedPatchComparisonObservation::Observed(ScopedPatchComparison::Unavailable)
+            ScopedPatchComparisonObservation::Observed(
+                ScopedPatchIntegrationEvaluation::Unavailable
+                | ScopedPatchIntegrationEvaluation::HistoricalEvidenceUnavailable,
+            )
             | ScopedPatchComparisonObservation::Deferred => {
                 deferred = true;
                 preflight.defer_subject(reservation, marker, interval.destinations.into_iter());
@@ -1543,6 +1553,7 @@ fn compare_mapped_phase(
             },
         )
         .unwrap_or(ScopedPatchComparison::Unavailable)
+        .into()
     })
 }
 
@@ -2596,17 +2607,13 @@ fn integration_status_with_retained_verdict(
             };
             let observe_scoped_patch_comparison = || {
                 scoped_patch_evaluation_budget.evaluate(scoped_patch_evaluation_key, || {
-                    let target_history = integration_reachability
-                        .target_history_after_phase_start(reservation.phase_start_head().as_ref());
-                    git::scoped_patch_equivalence_with_target_history(
+                    evaluate_reservation_scoped_integration(
                         repository_root,
-                        reservation.phase_start_head().as_ref(),
-                        reservation.scopes(),
-                        protected_tip.as_ref(),
+                        reservation,
+                        protected_tip,
                         target,
-                        target_history,
+                        integration_reachability,
                     )
-                    .unwrap_or(ScopedPatchComparison::Unavailable)
                 })
             };
             let evidence_observation = match scoped_patch_evaluation_context {
@@ -2637,9 +2644,9 @@ fn integration_status_with_retained_verdict(
                         scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
                     }
                 },
-                IntegrationEvidenceObservation::ScopedPatchComparison(status) => {
+                IntegrationEvidenceObservation::ScopedPatchComparison { status, evaluation } => {
                     let scoped_patch_comparison =
-                        scoped_patch_journal_update(subject, target, &status);
+                        scoped_patch_journal_update(subject, target, &status, &evaluation);
                     IntegrationStatusObservation {
                         status,
                         revalidation: EvidenceRevalidationObservation::Apply,
@@ -2654,11 +2661,92 @@ fn integration_status_with_retained_verdict(
     }
 }
 
+/// Evaluate historical and current locations for one admitted reservation subject.
+fn evaluate_reservation_scoped_integration(
+    repository_root: &Path,
+    reservation: &Reservation,
+    protected_tip: &ProtectedReservationTip,
+    target: &GitObjectId,
+    integration_reachability: &BatchedIntegrationReachability,
+) -> ScopedPatchIntegrationEvaluation {
+    evaluate_historical_then_current_trunk(
+        target,
+        || {
+            git::discover_historical_integration_candidate(
+                repository_root,
+                reservation.phase_start_head().as_ref(),
+                protected_tip.as_ref(),
+                target,
+                &integration_reachability.target_histories,
+            )
+        },
+        |destination| {
+            let history = if destination == target {
+                integration_reachability
+                    .target_history_after_phase_start(reservation.phase_start_head().as_ref())
+            } else {
+                ScopedPatchTargetHistory::NeedsGitQueries
+            };
+            git::scoped_patch_equivalence_with_target_history(
+                repository_root,
+                reservation.phase_start_head().as_ref(),
+                reservation.scopes(),
+                protected_tip.as_ref(),
+                destination,
+                history,
+            )
+            .unwrap_or(ScopedPatchComparison::Unavailable)
+        },
+    )
+}
+
+/// Certify a nominated historical witness before falling back to current trunk replay.
+/// Both operations belong to the same admitted proof subject and observed trunk.
+fn evaluate_historical_then_current_trunk(
+    target: &GitObjectId,
+    discover: impl FnOnce() -> HistoricalIntegrationCandidateDiscovery,
+    mut compare: impl FnMut(&GitObjectId) -> ScopedPatchComparison,
+) -> ScopedPatchIntegrationEvaluation {
+    let historical_unavailable = match discover() {
+        HistoricalIntegrationCandidateDiscovery::Nominated(candidate) => {
+            match compare(&candidate) {
+                ScopedPatchComparison::Equivalent => {
+                    return ScopedPatchIntegrationEvaluation::Equivalent(
+                        IntegrationWitness::Historical(RewrittenIntegrationTrunkCommit::from(
+                            candidate,
+                        )),
+                    );
+                },
+                ScopedPatchComparison::Different => false,
+                ScopedPatchComparison::Unavailable => true,
+            }
+        },
+        HistoricalIntegrationCandidateDiscovery::NoMatch => false,
+        HistoricalIntegrationCandidateDiscovery::Unavailable => true,
+    };
+    match compare(target) {
+        ScopedPatchComparison::Different if historical_unavailable => {
+            ScopedPatchIntegrationEvaluation::HistoricalEvidenceUnavailable
+        },
+        comparison => comparison.into(),
+    }
+}
+
 fn scoped_patch_journal_update(
     subject: IntegrationProofSubjectRevision,
     target: &GitObjectId,
     status: &IntegrationEvidenceStatus,
+    evaluation: &ScopedPatchIntegrationEvaluation,
 ) -> ScopedPatchComparisonJournalUpdate {
+    if matches!(
+        evaluation,
+        ScopedPatchIntegrationEvaluation::HistoricalEvidenceUnavailable
+    ) {
+        return ScopedPatchComparisonJournalUpdate::Attempted {
+            subject,
+            target: target.clone(),
+        };
+    }
     match status {
         IntegrationEvidenceStatus::Integrated {
             proof: IntegrationProof::ScopedPatchEquivalent,
@@ -3065,11 +3153,12 @@ fn append_scoped_patch_journal_update(
             verdict,
             witness,
         } => operations.push(JournalOperation::ScopedPatchEquivalenceChecked {
-            reservation_id: reservation.id(),
-            subject:        *subject,
-            target:         target.clone(),
-            verdict:        *verdict,
-            witness:        witness.clone(),
+            reservation_id:    reservation.id(),
+            subject:           *subject,
+            target:            target.clone(),
+            verdict:           *verdict,
+            witness:           witness.clone(),
+            evaluator_version: ScopedPatchEvaluatorVersion::HistoricalCandidate,
         }),
     }
 }
@@ -3405,6 +3494,7 @@ fn record_successor_scoped_patch_verdict(
                 subject:                    candidate.subject,
                 successor_head:             candidate.successor_head,
                 verdict:                    SuccessorScopedPatchEquivalenceVerdict::Equivalent,
+                evaluator_version:          ScopedPatchEvaluatorVersion::HistoricalCandidate,
             });
         },
         ScopedPatchComparison::Different => {
@@ -3413,6 +3503,7 @@ fn record_successor_scoped_patch_verdict(
                 subject:                    candidate.subject,
                 successor_head:             candidate.successor_head,
                 verdict:                    SuccessorScopedPatchEquivalenceVerdict::Different,
+                evaluator_version:          ScopedPatchEvaluatorVersion::HistoricalCandidate,
             });
         },
         ScopedPatchComparison::Unavailable => {
@@ -3714,6 +3805,149 @@ mod tests {
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn ancestry_precedes_candidate_and_current_trunk_inside_one_admitted_evaluation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::cell::RefCell;
+
+        use super::HistoricalIntegrationCandidateDiscovery;
+        use super::ReconciliationScopedPatchEvaluationBudget;
+        use super::ScopedPatchComparisonDestination;
+        use super::ScopedPatchEvaluationContext;
+        use super::ScopedPatchEvaluationKey;
+        use crate::git::Reachability;
+        use crate::git::ScopedPatchComparison;
+        use crate::reservation::IntegrationEvidenceObservation;
+        use crate::reservation::PriorIntegrationStatus;
+        use crate::reservation::ScopedPatchComparisonObservation;
+        use crate::reservation::ScopedPatchIntegrationEvaluation;
+        let target = TRUNK.parse::<crate::ids::GitObjectId>()?;
+        let candidate = TIP.parse::<crate::ids::GitObjectId>()?;
+        let key = || ScopedPatchEvaluationKey {
+            phase_start_head: candidate.clone(),
+            protected_tip:    candidate.clone(),
+            target_trunk:     target.clone(),
+            scopes:           Vec::new(),
+            context:          ScopedPatchEvaluationContext::PriorIntegrationProven,
+            destination:      ScopedPatchComparisonDestination::Trunk,
+        };
+        let mut budget = ReconciliationScopedPatchEvaluationBudget::default();
+        let calls = RefCell::new(Vec::new());
+        let observation = crate::reservation::observe_integration_status(
+            {
+                calls.borrow_mut().push("ancestry");
+                Reachability::NotAncestor
+            },
+            &target,
+            PriorIntegrationStatus::Unproven,
+            &IntegrationEvidenceStatus::NotIntegrated,
+            || {
+                budget.evaluate(key(), || {
+                    calls.borrow_mut().push("admitted");
+                    super::evaluate_historical_then_current_trunk(
+                        &target,
+                        || {
+                            calls.borrow_mut().push("candidate");
+                            HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+                        },
+                        |destination| {
+                            calls.borrow_mut().push(if destination == &candidate {
+                                "certify"
+                            } else {
+                                "current_trunk"
+                            });
+                            ScopedPatchComparison::Different
+                        },
+                    )
+                })
+            },
+        );
+        assert_eq!(
+            *calls.borrow(),
+            [
+                "ancestry",
+                "admitted",
+                "candidate",
+                "certify",
+                "current_trunk"
+            ]
+        );
+        assert!(matches!(
+            observation,
+            IntegrationEvidenceObservation::ScopedPatchComparison {
+                status:     IntegrationEvidenceStatus::NotIntegrated,
+                evaluation: ScopedPatchIntegrationEvaluation::Different,
+            }
+        ));
+        assert_eq!(budget.evaluated_targets.len(), 1);
+        let cached = budget.evaluate(key(), || {
+            calls.borrow_mut().push("unexpected_duplicate");
+            ScopedPatchIntegrationEvaluation::Unavailable
+        });
+        assert!(matches!(
+            cached,
+            ScopedPatchComparisonObservation::Observed(ScopedPatchIntegrationEvaluation::Different)
+        ));
+        let mut other = key();
+        other.protected_tip = target.clone();
+        let deferred = budget.evaluate(other, || {
+            calls.borrow_mut().push("unexpected_second_subject");
+            ScopedPatchIntegrationEvaluation::Unavailable
+        });
+        assert!(matches!(
+            deferred,
+            ScopedPatchComparisonObservation::Deferred
+        ));
+        assert_eq!(calls.borrow().len(), 5);
+        Ok(())
+    }
+
+    #[test]
+    fn historical_witness_is_cached_and_unavailable_history_keeps_negatives_retryable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::HistoricalIntegrationCandidateDiscovery as Discovery;
+        use crate::git::ScopedPatchComparison as Comparison;
+        use crate::reservation::ScopedPatchIntegrationEvaluation as Evaluation;
+        let target = TRUNK.parse()?;
+        let candidate: crate::ids::GitObjectId = TIP.parse()?;
+        let certified = super::evaluate_historical_then_current_trunk(
+            &target,
+            || Discovery::Nominated(candidate.clone()),
+            |destination| {
+                assert_eq!(destination, &candidate);
+                Comparison::Equivalent
+            },
+        );
+        assert_eq!(
+            certified,
+            Evaluation::Equivalent(IntegrationWitness::Historical(candidate.into()))
+        );
+        let key = || super::ScopedPatchEvaluationKey {
+            phase_start_head: target.clone(),
+            protected_tip:    target.clone(),
+            target_trunk:     target.clone(),
+            scopes:           Vec::new(),
+            context:          super::ScopedPatchEvaluationContext::PriorIntegrationProven,
+            destination:      super::ScopedPatchComparisonDestination::Trunk,
+        };
+        let mut budget = super::ReconciliationScopedPatchEvaluationBudget::default();
+        let first = budget.evaluate(key(), || certified.clone());
+        let reused = budget.evaluate(key(), || Evaluation::Unavailable);
+        for observation in [first, reused] {
+            let super::ScopedPatchComparisonObservation::Observed(evaluation) = observation else {
+                return Err("identical subject should reuse admitted result".into());
+            };
+            assert_eq!(evaluation, certified);
+        }
+        let retryable = super::evaluate_historical_then_current_trunk(
+            &target,
+            || Discovery::Unavailable,
+            |_| Comparison::Different,
+        );
+        assert_eq!(retryable, Evaluation::HistoricalEvidenceUnavailable);
+        Ok(())
+    }
 
     #[test]
     fn settlement_selection() -> Result<(), Box<dyn std::error::Error>> {

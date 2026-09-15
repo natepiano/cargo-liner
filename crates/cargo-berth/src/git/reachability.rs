@@ -39,6 +39,7 @@ use super::error::GitError;
 use super::object;
 use super::object::CommitAvailability;
 use super::object::CommitObjectResolution;
+use super::patch::HistoricalIntegrationCandidateDiscovery;
 use super::patch::ScopedPatchTargetHistory;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
@@ -105,9 +106,22 @@ pub(crate) struct CommitTargetReachabilityObservation {
     pub(crate) target_histories:    PhaseStartTargetFirstParentHistories,
 }
 
-/// Target first-parent intervals keyed by a phase start proved to be its ancestor.
+/// Target intervals and ancestry shared by scoped replay and historical nomination.
 #[derive(Default)]
-pub(crate) struct PhaseStartTargetFirstParentHistories(HashMap<GitObjectId, Vec<GitObjectId>>);
+pub(crate) struct PhaseStartTargetFirstParentHistories {
+    intervals:         HashMap<GitObjectId, Vec<GitObjectId>>,
+    candidate_history: HistoricalCandidateHistory,
+}
+
+/// Whether the batch retained the complete graph needed to locate historical matches.
+#[derive(Default)]
+enum HistoricalCandidateHistory {
+    /// The target and every reachable parent link came from the shared batch.
+    Available(ResolvedTargetCommitHistory),
+    /// No matching batch graph is available; admitted discovery may read one.
+    #[default]
+    NeedsGitQuery,
+}
 
 impl PhaseStartTargetFirstParentHistories {
     /// Borrow the target interval after one phase start when the graph proved it.
@@ -115,11 +129,34 @@ impl PhaseStartTargetFirstParentHistories {
         &self,
         phase_start: &GitObjectId,
     ) -> ScopedPatchTargetHistory<'_> {
-        self.0
+        self.intervals
             .get(phase_start)
             .map_or(ScopedPatchTargetHistory::NeedsGitQueries, |commits| {
                 ScopedPatchTargetHistory::ProvenFirstParentInterval { commits }
             })
+    }
+
+    /// Locate every match on the first-parent chain, reusing the batch or reading one graph.
+    pub(super) fn earliest_containing_matches(
+        &self,
+        repository_root: &Path,
+        phase_start: &GitObjectId,
+        target: &GitObjectId,
+        matches: &[GitObjectId],
+    ) -> HistoricalIntegrationCandidateDiscovery {
+        if let HistoricalCandidateHistory::Available(history) = &self.candidate_history
+            && &history.target == target
+        {
+            return history
+                .graph
+                .earliest_containing_matches(target, phase_start, matches);
+        }
+        match target_commit_history(repository_root, &target.to_string()) {
+            Ok(history) => history
+                .graph
+                .earliest_containing_matches(target, phase_start, matches),
+            Err(_) => HistoricalIntegrationCandidateDiscovery::Unavailable,
+        }
     }
 }
 
@@ -134,6 +171,42 @@ struct ResolvedTargetCommitHistory {
 }
 
 impl CommitAncestryGraph {
+    /// Walk each ancestor once while advancing from the oldest first-parent commit.
+    fn earliest_containing_matches(
+        &self,
+        target: &GitObjectId,
+        phase_start: &GitObjectId,
+        matches: &[GitObjectId],
+    ) -> HistoricalIntegrationCandidateDiscovery {
+        let mut remaining = matches.iter().collect::<HashSet<_>>();
+        if remaining.is_empty() {
+            return HistoricalIntegrationCandidateDiscovery::NoMatch;
+        }
+        let mut visited = HashSet::new();
+        for commit in self
+            .first_parent_commits_after(target, phase_start)
+            .into_iter()
+            .rev()
+        {
+            let mut pending = vec![&commit];
+            while let Some(ancestor) = pending.pop() {
+                if !visited.insert(ancestor.clone()) {
+                    continue;
+                }
+                remaining.remove(ancestor);
+                let Some(parents) = self.parents_by_commit.get(ancestor) else {
+                    return HistoricalIntegrationCandidateDiscovery::Unavailable;
+                };
+                pending.extend(parents);
+            }
+            if remaining.is_empty() {
+                return HistoricalIntegrationCandidateDiscovery::Nominated(commit);
+            }
+        }
+        // Cherry-mark supplied target ancestors; failure to locate one means incomplete history.
+        HistoricalIntegrationCandidateDiscovery::Unavailable
+    }
+
     fn contains(&self, commit: &GitObjectId) -> bool { self.parents_by_commit.contains_key(commit) }
 
     fn ancestors_including(&self, tip: &GitObjectId) -> HashSet<GitObjectId> {
@@ -570,31 +643,27 @@ fn diagnose_failed_target_history(
 /// Classify every candidate against the target's own line of descent.
 fn classify_candidates_against_target(
     target: &GitObjectId,
-    target_history: &CommitAncestryGraph,
+    target_history: CommitAncestryGraph,
     candidate_resolutions: Vec<CommitObjectResolution>,
 ) -> (
     PhaseStartTargetFirstParentHistories,
     Vec<CommitCandidateReachability>,
 ) {
-    let target_histories = PhaseStartTargetFirstParentHistories(
-        candidate_resolutions
-            .iter()
-            .filter_map(|resolution| match resolution {
-                CommitObjectResolution::Resolved(candidate)
-                    if target_history.contains(candidate) =>
-                {
-                    Some((
-                        candidate.clone(),
-                        target_history.first_parent_commits_after(target, candidate),
-                    ))
-                },
-                CommitObjectResolution::Resolved(_)
-                | CommitObjectResolution::Missing
-                | CommitObjectResolution::Ambiguous
-                | CommitObjectResolution::WrongType { .. } => None,
-            })
-            .collect(),
-    );
+    let intervals = candidate_resolutions
+        .iter()
+        .filter_map(|resolution| match resolution {
+            CommitObjectResolution::Resolved(candidate) if target_history.contains(candidate) => {
+                Some((
+                    candidate.clone(),
+                    target_history.first_parent_commits_after(target, candidate),
+                ))
+            },
+            CommitObjectResolution::Resolved(_)
+            | CommitObjectResolution::Missing
+            | CommitObjectResolution::Ambiguous
+            | CommitObjectResolution::WrongType { .. } => None,
+        })
+        .collect();
     let candidates = candidate_resolutions
         .into_iter()
         .map(|resolution| match resolution {
@@ -609,6 +678,13 @@ fn classify_candidates_against_target(
             },
         })
         .collect();
+    let target_histories = PhaseStartTargetFirstParentHistories {
+        intervals,
+        candidate_history: HistoricalCandidateHistory::Available(ResolvedTargetCommitHistory {
+            target: target.clone(),
+            graph:  target_history,
+        }),
+    };
     (target_histories, candidates)
 }
 
@@ -665,7 +741,7 @@ fn commit_target_reachability(
         });
     }
     let (target_histories, candidates) =
-        classify_candidates_against_target(&target, &target_history, candidate_resolutions);
+        classify_candidates_against_target(&target, target_history, candidate_resolutions);
     Ok(CommitTargetReachabilityObservation {
         reachability: CommitTargetReachability::Resolved { target, candidates },
         resolved_candidates,
@@ -956,6 +1032,163 @@ mod tests {
     use crate::git::fixture::SECONDARY_PATH;
     use crate::git::fixture::UNAVAILABLE_OBJECT_ID;
     use crate::ids::GitObjectId;
+
+    #[test]
+    fn historical_candidate_history_survives_a_phase_start_outside_trunk_ancestry() -> FixtureResult
+    {
+        let mut fixture = PatchEquivalenceFixture::new()?;
+        let original_base = fixture.phase_start_head.clone();
+        fixture.write(SECONDARY_PATH, "earlier phase\n")?;
+        fixture.phase_start_head = fixture.commit("old phase start")?;
+        fixture.write(PRIMARY_PATH, "protected later checkpoint\n")?;
+        let protected_tip = fixture.commit("protected later checkpoint")?;
+        fixture.reset_to(&original_base)?;
+        fixture.write("docs/new-base.md", "new trunk base\n")?;
+        fixture.commit("advance trunk before rewrite")?;
+        fixture.write(SECONDARY_PATH, "earlier phase\n")?;
+        fixture.commit("rebased phase start")?;
+        fixture.write(PRIMARY_PATH, "protected later checkpoint\n")?;
+        let candidate = fixture.commit("rebased later checkpoint")?;
+        fixture.write(PRIMARY_PATH, "later trunk hunk rewrite\n")?;
+        let trunk = fixture.commit("rewrite protected hunk")?;
+        let observation = super::branch_commit_reachability(
+            fixture.root(),
+            "main",
+            std::slice::from_ref(&fixture.phase_start_head),
+        )?;
+        assert!(matches!(
+            observation
+                .target_histories
+                .after_phase_start(&fixture.phase_start_head),
+            super::ScopedPatchTargetHistory::NeedsGitQueries
+        ));
+        // An invalid query directory proves this uses the retained batch, including off-trunk
+        // starts.
+        assert_eq!(
+            observation.target_histories.earliest_containing_matches(
+                &fixture.root().join("absent-directory"),
+                &fixture.phase_start_head,
+                &trunk,
+                std::slice::from_ref(&candidate),
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+        );
+        assert_eq!(
+            crate::git::discover_historical_integration_candidate(
+                fixture.root(),
+                &fixture.phase_start_head,
+                &protected_tip,
+                &trunk,
+                &observation.target_histories,
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+        );
+        assert_eq!(
+            crate::git::discover_historical_integration_candidate(
+                fixture.root(),
+                &fixture.phase_start_head,
+                &protected_tip,
+                &trunk,
+                &super::PhaseStartTargetFirstParentHistories::default(),
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+        );
+        assert_eq!(
+            fixture.equivalence(
+                &crate::git::fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &candidate,
+            )?,
+            crate::git::ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn historical_candidate_locates_other_parent_matches_at_the_first_parent_merge() -> FixtureResult
+    {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_PATH, "first phase patch\n")?;
+        fixture.commit("original first phase patch")?;
+        fixture.write(SECONDARY_PATH, "second phase patch\n")?;
+        let protected_tip = fixture.commit("original second phase patch")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, "first phase patch\n")?;
+        let first_match = fixture.commit("trunk first phase patch")?;
+        fixture.git(&[
+            "checkout",
+            "--quiet",
+            "-b",
+            "side",
+            &fixture.phase_start_head.to_string(),
+        ])?;
+        fixture.write(SECONDARY_PATH, "second phase patch\n")?;
+        let other_parent_match = fixture.commit("side second phase patch")?;
+        fixture.git(&["checkout", "--quiet", "main"])?;
+        fixture.git(&[
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "side",
+            "-m",
+            "merge second phase patch",
+        ])?;
+        let candidate = crate::git::refs::head_object_id(fixture.root())?;
+        fixture.write(PRIMARY_PATH, "later trunk hunk rewrite\n")?;
+        let trunk = fixture.commit("rewrite phase after merge")?;
+        let observation = super::branch_commit_reachability(
+            fixture.root(),
+            "main",
+            std::slice::from_ref(&fixture.phase_start_head),
+        )?;
+        let super::ScopedPatchTargetHistory::ProvenFirstParentInterval { commits } = observation
+            .target_histories
+            .after_phase_start(&fixture.phase_start_head)
+        else {
+            return Err("expected retained first-parent interval".into());
+        };
+        assert!(commits.contains(&candidate));
+        assert!(!commits.contains(&other_parent_match));
+        let matches = [first_match, other_parent_match];
+        assert_eq!(
+            observation.target_histories.earliest_containing_matches(
+                &fixture.root().join("absent-directory"),
+                &fixture.phase_start_head,
+                &trunk,
+                &matches,
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+        );
+        assert_eq!(
+            super::PhaseStartTargetFirstParentHistories::default().earliest_containing_matches(
+                fixture.root(),
+                &fixture.phase_start_head,
+                &trunk,
+                &matches,
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+        );
+        assert_eq!(
+            crate::git::discover_historical_integration_candidate(
+                fixture.root(),
+                &fixture.phase_start_head,
+                &protected_tip,
+                &trunk,
+                &observation.target_histories,
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Nominated(candidate)
+        );
+        assert_eq!(
+            super::PhaseStartTargetFirstParentHistories::default().earliest_containing_matches(
+                &fixture.root().join("absent-directory"),
+                &fixture.phase_start_head,
+                &trunk,
+                &matches,
+            ),
+            super::HistoricalIntegrationCandidateDiscovery::Unavailable
+        );
+        Ok(())
+    }
 
     #[test]
     fn integrated_head_has_no_merge_paths_when_trunk_moves_ahead() -> FixtureResult {

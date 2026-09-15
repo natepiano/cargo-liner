@@ -26,6 +26,7 @@ use crate::reservation::IntegrationWitness;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationLifecycleSnapshot;
+use crate::reservation::ScopedPatchEvaluatorVersion;
 
 const CONTRACT_NAME: &str = "cargo-berth-output";
 
@@ -80,6 +81,10 @@ fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, 
     schemas.insert(
         "integration_proof".to_owned(),
         schema_value::<IntegrationProof>()?,
+    );
+    schemas.insert(
+        "scoped_patch_evaluator_version".to_owned(),
+        schema_value::<ScopedPatchEvaluatorVersion>()?,
     );
     schemas.insert(
         "integration_witness".to_owned(),

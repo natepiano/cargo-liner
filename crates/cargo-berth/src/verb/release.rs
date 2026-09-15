@@ -40,6 +40,7 @@ use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -419,12 +420,14 @@ fn operation_for_state(
         ReservationEvidenceState::Released {
             protected_tip,
             disposition,
+            integration_status,
             ..
         } => released_evidence_operation(
             &release_repository_context,
             reservation,
             &protected_tip,
             &disposition,
+            &integration_status,
         ),
         ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
             Err(ReleaseRejection::AlreadyReleased)
@@ -484,13 +487,11 @@ fn outstanding_operation(
         materialized_status,
         IntegrationEvidenceStatus::Integrated { .. }
     ) {
-        reservation::integration_status(
-            release_repository_context.repository_root,
-            release_repository_context.phase_start_head,
-            release_repository_context.scopes,
+        revalidate_proven_integration(
+            release_repository_context,
             protected_tip,
             &current_trunk,
-            PriorIntegrationStatus::Proven,
+            materialized_status,
         )
     } else {
         reservation::outstanding_integration_status(
@@ -501,8 +502,8 @@ fn outstanding_operation(
             trunk_snapshot,
             &current_trunk,
         )
-    }
-    .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown);
+        .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
+    };
     // Integrated checkpoint evidence says nothing about commits or dirty paths added later.
     // Keep the branch outstanding and move its checkpoint to the holder's current HEAD.
     if matches!(
@@ -518,23 +519,14 @@ fn outstanding_operation(
         release_repository_context.merge_extent,
         MergeExtent::Empty { .. }
     ) && matches!(
-        (materialized_status, &evidence),
-        (
-            IntegrationEvidenceStatus::Integrated { .. },
-            IntegrationEvidenceStatus::Integrated { .. }
-        )
-    ) {
-        return Ok(ReleaseAppend::new(
-            JournalOperation::Release {
-                reservation_id,
-                disposition: ReleaseDisposition::Integrated,
-            },
-            ReleasePayloadSeed::Released {
-                reservation_id,
-                disposition: ReleaseDisposition::Integrated,
-            },
+        materialized_status,
+        IntegrationEvidenceStatus::Integrated { .. }
+    ) && let IntegrationEvidenceStatus::Integrated { witness, .. } = &evidence
+    {
+        return Ok(integrated_release_operation(
             reservation_id,
-            protected_tip.clone(),
+            protected_tip,
+            witness,
         ));
     }
     if !matches!(
@@ -555,6 +547,93 @@ fn outstanding_operation(
         evidence,
         protected_tip.clone(),
     ))
+}
+
+/// Settle an empty merge extent while retaining the commit that witnesses integration.
+fn integrated_release_operation(
+    reservation_id: ReservationId,
+    protected_tip: &ProtectedReservationTip,
+    witness: &IntegrationWitness,
+) -> ReleaseAppend {
+    let (disposition, retention_plan) = match witness {
+        IntegrationWitness::EvaluatedTrunk => (
+            ReleaseDisposition::Integrated,
+            ReleaseRetentionPlan::RetainProtectedTip {
+                reservation_id,
+                protected_tip: protected_tip.clone(),
+            },
+        ),
+        IntegrationWitness::Historical(witness) => (
+            ReleaseDisposition::RewrittenIntegration(witness.clone()),
+            ReleaseRetentionPlan::RetainIntegrationWitness {
+                reservation_id,
+                witness: witness.clone(),
+            },
+        ),
+    };
+    ReleaseAppend {
+        operation: JournalOperation::Release {
+            reservation_id,
+            disposition: disposition.clone(),
+        },
+        payload_seed: ReleasePayloadSeed::Released {
+            reservation_id,
+            disposition,
+        },
+        retention_plan,
+    }
+}
+
+/// Revalidate prior integration using its historical witness before replaying current trunk.
+fn revalidate_proven_integration(
+    release_repository_context: &ReleaseRepositoryContext<'_>,
+    protected_tip: &ProtectedReservationTip,
+    current_trunk: &GitObjectId,
+    materialized_status: &IntegrationEvidenceStatus,
+) -> IntegrationEvidenceStatus {
+    revalidate_integrated_evidence(
+        materialized_status,
+        current_trunk,
+        |witness| {
+            git::reachability(
+                release_repository_context.repository_root,
+                witness,
+                current_trunk,
+            )
+            .unwrap_or(git::Reachability::ObjectUnknown)
+        },
+        || {
+            reservation::integration_status(
+                release_repository_context.repository_root,
+                release_repository_context.phase_start_head,
+                release_repository_context.scopes,
+                protected_tip,
+                current_trunk,
+                PriorIntegrationStatus::Proven,
+            )
+            .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
+        },
+    )
+}
+
+/// Preserve a certified historical witness while it remains reachable from current trunk.
+fn revalidate_integrated_evidence(
+    materialized_status: &IntegrationEvidenceStatus,
+    current_trunk: &GitObjectId,
+    witness_reachability: impl FnOnce(&GitObjectId) -> git::Reachability,
+    evaluate_current_trunk: impl FnOnce() -> IntegrationEvidenceStatus,
+) -> IntegrationEvidenceStatus {
+    if let IntegrationEvidenceStatus::Integrated {
+        witness: IntegrationWitness::Historical(witness),
+        ..
+    } = materialized_status
+    {
+        let revalidated = witness.revalidate_ancestry(current_trunk, witness_reachability);
+        if !matches!(revalidated, IntegrationEvidenceStatus::TrunkRewritten) {
+            return revalidated;
+        }
+    }
+    evaluate_current_trunk()
 }
 
 fn resnapshot_operation(
@@ -590,6 +669,7 @@ fn released_evidence_operation(
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
     disposition: &ReleaseDisposition,
+    materialized_status: &IntegrationEvidenceStatus,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     if matches!(
         disposition.revalidation_subject(),
@@ -609,15 +689,12 @@ fn released_evidence_operation(
         ));
     };
     let evidence = match disposition.revalidation_subject() {
-        ReleaseRevalidationSubject::ProtectedTip => reservation::integration_status(
-            release_repository_context.repository_root,
-            release_repository_context.phase_start_head,
-            release_repository_context.scopes,
+        ReleaseRevalidationSubject::ProtectedTip => revalidate_proven_integration(
+            release_repository_context,
             protected_tip,
             &current_trunk,
-            PriorIntegrationStatus::Proven,
-        )
-        .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown),
+            materialized_status,
+        ),
         ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => trunk_commit
             .revalidate_ancestry(&current_trunk, |witness| {
                 git::reachability(
@@ -657,6 +734,17 @@ fn already_settled_operation(
                 reservation_id,
                 witness: witness.clone(),
             }
+        },
+        (
+            IntegrationEvidenceStatus::Integrated {
+                witness: IntegrationWitness::Historical(_),
+                ..
+            },
+            ReleaseRevalidationSubject::ProtectedTip,
+        ) => {
+            // Historical ancestry does not establish that the original checkpoint still exists.
+            // Ordinary reconciliation maintains retention for this unchanged disposition.
+            ReleaseRetentionPlan::Preserve
         },
         (_, ReleaseRevalidationSubject::ProtectedTip | ReleaseRevalidationSubject::None) => {
             ReleaseRetentionPlan::RetainProtectedTip {
@@ -1048,4 +1136,176 @@ impl From<LedgerError> for ReleaseError {
 
 impl From<LedgerTransactionError> for ReleaseError {
     fn from(error: LedgerTransactionError) -> Self { Self::Transaction(error) }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::error::Error;
+
+    use super::ReleasePayloadSeed;
+    use super::ReleaseRetentionPlan;
+    use super::integrated_release_operation;
+    use super::revalidate_integrated_evidence;
+    use crate::git::Reachability;
+    use crate::ids::GitObjectId;
+    use crate::ids::ReservationId;
+    use crate::ledger::JournalOperation;
+    use crate::reservation::IntegrationEvidenceStatus;
+    use crate::reservation::IntegrationProof;
+    use crate::reservation::IntegrationWitness;
+    use crate::reservation::ProtectedReservationTip;
+    use crate::reservation::ReleaseDisposition;
+    use crate::reservation::RewrittenIntegrationTrunkCommit;
+
+    #[test]
+    fn empty_extent_release_retains_the_historical_witness_in_its_disposition_and_action()
+    -> Result<(), Box<dyn Error>> {
+        let reservation_id = ReservationId::new();
+        let protected_tip: ProtectedReservationTip =
+            "1111111111111111111111111111111111111111".parse()?;
+        let historical: RewrittenIntegrationTrunkCommit =
+            "2222222222222222222222222222222222222222".parse()?;
+        for (witness, expected_disposition, expected_retained_commit) in [
+            (
+                IntegrationWitness::EvaluatedTrunk,
+                ReleaseDisposition::Integrated,
+                protected_tip.as_ref(),
+            ),
+            (
+                IntegrationWitness::Historical(historical.clone()),
+                ReleaseDisposition::RewrittenIntegration(historical.clone()),
+                historical.as_ref(),
+            ),
+        ] {
+            let release = integrated_release_operation(reservation_id, &protected_tip, &witness);
+            assert!(matches!(
+                release.operation,
+                JournalOperation::Release { reservation_id: id, disposition }
+                    if id == reservation_id && disposition == expected_disposition
+            ));
+            assert!(matches!(
+                release.payload_seed,
+                ReleasePayloadSeed::Released { reservation_id: id, disposition }
+                    if id == reservation_id && disposition == expected_disposition
+            ));
+            let (retained_id, retained_commit) = match release.retention_plan {
+                ReleaseRetentionPlan::RetainProtectedTip {
+                    reservation_id,
+                    protected_tip,
+                } => (reservation_id, protected_tip.as_ref().clone()),
+                ReleaseRetentionPlan::RetainIntegrationWitness {
+                    reservation_id,
+                    witness,
+                } => (reservation_id, witness.as_ref().clone()),
+                ReleaseRetentionPlan::Preserve => {
+                    return Err("a release must retain its integration evidence".into());
+                },
+            };
+            assert_eq!(retained_id, reservation_id);
+            assert_eq!(&retained_commit, expected_retained_commit);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn release_preserves_reachable_historical_evidence_without_current_trunk_replay()
+    -> Result<(), Box<dyn Error>> {
+        let historical: GitObjectId = "1111111111111111111111111111111111111111".parse()?;
+        let current_trunk = "2222222222222222222222222222222222222222".parse()?;
+        for proof in [
+            IntegrationProof::ScopedPatchEquivalent,
+            IntegrationProof::RewrittenWitnessAncestor,
+        ] {
+            let witness = IntegrationWitness::Historical(historical.clone().into());
+            let materialized = IntegrationEvidenceStatus::Integrated {
+                trunk_oid: historical.clone(),
+                proof,
+                witness: witness.clone(),
+            };
+            let replayed = Cell::new(false);
+            let evidence = revalidate_integrated_evidence(
+                &materialized,
+                &current_trunk,
+                |commit| {
+                    assert_eq!(commit, &historical);
+                    Reachability::Ancestor
+                },
+                || {
+                    replayed.set(true);
+                    IntegrationEvidenceStatus::TrunkRewritten
+                },
+            );
+            assert_eq!(
+                evidence,
+                IntegrationEvidenceStatus::Integrated {
+                    trunk_oid: current_trunk.clone(),
+                    proof: IntegrationProof::RewrittenWitnessAncestor,
+                    witness,
+                }
+            );
+            assert!(!replayed.get());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn release_replays_current_trunk_only_for_evaluated_trunk_or_unreachable_witness()
+    -> Result<(), Box<dyn Error>> {
+        let historical: GitObjectId = "1111111111111111111111111111111111111111".parse()?;
+        let current_trunk: GitObjectId = "2222222222222222222222222222222222222222".parse()?;
+        let historical_witness = IntegrationWitness::Historical(historical.clone().into());
+        let fallback = IntegrationEvidenceStatus::Integrated {
+            trunk_oid: current_trunk.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
+            witness:   IntegrationWitness::EvaluatedTrunk,
+        };
+        for (witness, reachability, expected, should_replay, should_check_witness) in [
+            (
+                historical_witness.clone(),
+                Reachability::NotAncestor,
+                fallback.clone(),
+                true,
+                true,
+            ),
+            (
+                historical_witness,
+                Reachability::ObjectUnknown,
+                IntegrationEvidenceStatus::ObjectUnknown,
+                false,
+                true,
+            ),
+            (
+                IntegrationWitness::EvaluatedTrunk,
+                Reachability::Ancestor,
+                fallback.clone(),
+                true,
+                false,
+            ),
+        ] {
+            let materialized = IntegrationEvidenceStatus::Integrated {
+                trunk_oid: historical.clone(),
+                proof: IntegrationProof::ScopedPatchEquivalent,
+                witness,
+            };
+            let replayed = Cell::new(false);
+            let checked_witness = Cell::new(false);
+            let evidence = revalidate_integrated_evidence(
+                &materialized,
+                &current_trunk,
+                |_| {
+                    checked_witness.set(true);
+                    reachability
+                },
+                || {
+                    replayed.set(true);
+                    fallback.clone()
+                },
+            );
+            assert_eq!(evidence, expected);
+            assert_eq!(replayed.get(), should_replay);
+            assert_eq!(checked_witness.get(), should_check_witness);
+        }
+        Ok(())
+    }
 }

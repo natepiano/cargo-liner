@@ -30,8 +30,9 @@ use super::replay::ReservationReplayError;
 use super::scoped_patch_evaluation::IntegrationProofSubjectRevision;
 use super::scoped_patch_evaluation::RetainedScopedPatchTargetVerdicts;
 use super::scoped_patch_evaluation::RetainedSuccessorScopedPatchTargetVerdicts;
-use super::scoped_patch_evaluation::ScopedPatchEquivalenceVerdict;
+use super::scoped_patch_evaluation::ScopedPatchEvaluatorVersion;
 use super::scoped_patch_evaluation::ScopedPatchTargetEvaluationSchedule;
+use super::scoped_patch_evaluation::ScopedPatchVerdictEvidence;
 use super::scoped_patch_evaluation::SuccessorScopedPatchEquivalenceVerdict;
 use super::scoped_patch_evaluation::SuccessorScopedPatchTargetEvaluationSchedule;
 use crate::answer::AuthorizedOverlap;
@@ -888,12 +889,16 @@ impl RetainedReservationSet {
                 target,
                 verdict,
                 witness,
+                evaluator_version,
             } => self.apply_scoped_patch_equivalence_check(
                 *reservation_id,
                 *subject,
                 target,
-                *verdict,
-                witness,
+                &ScopedPatchVerdictEvidence {
+                    verdict:           *verdict,
+                    witness:           witness.clone(),
+                    evaluator_version: *evaluator_version,
+                },
                 event.projection_generation(),
             ),
             JournalOperation::ScopedPatchComparisonAttempted {
@@ -911,11 +916,13 @@ impl RetainedReservationSet {
                 subject,
                 successor_head,
                 verdict,
+                evaluator_version,
             } => self.apply_successor_scoped_patch_equivalence_check(
                 *predecessor_reservation_id,
                 *subject,
                 successor_head,
                 *verdict,
+                *evaluator_version,
                 event.projection_generation(),
             ),
             JournalOperation::SuccessorScopedPatchComparisonAttempted {
@@ -1308,14 +1315,17 @@ impl RetainedReservationSet {
         reservation_id: ReservationId,
         subject: IntegrationProofSubjectRevision,
         target: &GitObjectId,
-        verdict: ScopedPatchEquivalenceVerdict,
-        witness: &IntegrationWitness,
+        evidence: &ScopedPatchVerdictEvidence,
         generation: ProjectionGeneration,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.scoped_patch_comparison_subject_mut(reservation_id, subject)?;
-        reservation
-            .retained_scoped_patch_target_verdicts
-            .record(subject, target, verdict, witness);
+        reservation.retained_scoped_patch_target_verdicts.record(
+            subject,
+            target,
+            evidence.verdict,
+            &evidence.witness,
+            evidence.evaluator_version,
+        );
         reservation
             .scoped_patch_target_evaluation_schedule
             .record(subject, target, generation);
@@ -1342,6 +1352,7 @@ impl RetainedReservationSet {
         subject: IntegrationProofSubjectRevision,
         successor_head: &GitObjectId,
         verdict: SuccessorScopedPatchEquivalenceVerdict,
+        evaluator_version: ScopedPatchEvaluatorVersion,
         generation: ProjectionGeneration,
     ) -> Result<(), ReservationReplayError> {
         let predecessor =
@@ -1350,6 +1361,7 @@ impl RetainedReservationSet {
             subject,
             successor_head,
             verdict,
+            evaluator_version,
         );
         predecessor
             .successor_scoped_patch_target_evaluation_schedule
@@ -1873,7 +1885,113 @@ mod tests {
                 }
             );
         }
+        assert_verdict_version_precedence()?;
         Ok(())
+    }
+
+    /// Exercise both verdict domains with conflicting versions in either journal order.
+    fn assert_verdict_version_precedence() -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let target = TRUNK_OID.parse::<GitObjectId>()?;
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+        for successor in [false, true] {
+            for current_positive in [false, true] {
+                let mut current = versioned_verdict_operation(successor, current_positive);
+                current["evaluator_version"] = json!("historical_candidate");
+                let legacy = versioned_verdict_operation(successor, !current_positive);
+                let decoded: crate::ledger::JournalOperation =
+                    serde_json::from_value(legacy.clone())?;
+                assert!(
+                    serde_json::to_value(&decoded)?
+                        .get("evaluator_version")
+                        .is_none()
+                );
+                let legacy_only = RetainedReservationSet::replay(&[
+                    claim.clone(),
+                    checkpoint.clone(),
+                    journal_event(3, &legacy)?,
+                ])?;
+                assert_versioned_verdict_lookup(
+                    legacy_only.reservation(reservation_id)?,
+                    &target,
+                    successor,
+                    if current_positive { None } else { Some(true) },
+                );
+                for current_first in [false, true] {
+                    let (first, second) = if current_first {
+                        (&current, &legacy)
+                    } else {
+                        (&legacy, &current)
+                    };
+                    let retained = RetainedReservationSet::replay(&[
+                        claim.clone(),
+                        checkpoint.clone(),
+                        journal_event(3, first)?,
+                        journal_event(4, second)?,
+                    ])?;
+                    assert_versioned_verdict_lookup(
+                        retained.reservation(reservation_id)?,
+                        &target,
+                        successor,
+                        Some(current_positive),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Construct a legacy wire operation for either retained verdict domain.
+    fn versioned_verdict_operation(successor: bool, positive: bool) -> serde_json::Value {
+        if successor {
+            json!({"op": "successor_scoped_patch_equivalence_checked",
+                "predecessor_reservation_id": RESERVATION_ID, "subject": 1,
+                "successor_head": TRUNK_OID,
+                "verdict": if positive { "equivalent" } else { "different" }})
+        } else {
+            json!({"op": "scoped_patch_equivalence_checked",
+                "reservation_id": RESERVATION_ID, "subject": 1, "target": TRUNK_OID,
+                "verdict": if positive { "integrated" } else { "not_integrated" }})
+        }
+    }
+
+    /// Check a cache hit or retry without reaching into retained storage.
+    fn assert_versioned_verdict_lookup(
+        reservation: &crate::reservation::Reservation,
+        target: &GitObjectId,
+        successor: bool,
+        expected: Option<bool>,
+    ) {
+        use crate::reservation::SuccessorScopedPatchEquivalenceVerdict as Verdict;
+        use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability as Availability;
+        let subject = reservation.integration_proof_subject_revision();
+        if successor {
+            let actual = reservation
+                .retained_successor_scoped_patch_target_verdicts()
+                .lookup(subject, target);
+            let expected = match expected {
+                Some(true) => Availability::Hit(Verdict::Equivalent),
+                Some(false) => Availability::Hit(Verdict::Different),
+                None => Availability::Miss,
+            };
+            assert_eq!(actual, expected);
+        } else {
+            let actual = reservation
+                .retained_scoped_patch_target_verdicts()
+                .lookup(subject, target);
+            let expected =
+                expected.map_or(ScopedPatchTargetVerdictAvailability::Miss, |positive| {
+                    ScopedPatchTargetVerdictAvailability::Hit {
+                        comparison: if positive {
+                            DurableScopedPatchComparison::Equivalent
+                        } else {
+                            DurableScopedPatchComparison::Different
+                        },
+                        witness:    IntegrationWitness::EvaluatedTrunk,
+                    }
+                });
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
@@ -2830,6 +2948,7 @@ mod tests {
             projection_generation,
             &json!({
                 "op": "scoped_patch_equivalence_checked",
+                "evaluator_version": "historical_candidate",
                 "reservation_id": RESERVATION_ID,
                 "subject": subject,
                 "target": TRUNK_OID,
@@ -2847,6 +2966,7 @@ mod tests {
             projection_generation,
             &json!({
                 "op": "scoped_patch_equivalence_checked",
+                "evaluator_version": "historical_candidate",
                 "reservation_id": RESERVATION_ID,
                 "subject": 1,
                 "target": target,

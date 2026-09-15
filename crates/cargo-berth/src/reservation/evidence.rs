@@ -66,7 +66,12 @@ pub(crate) enum IntegrationEvidenceObservation {
     /// Reachability alone produced the status.
     Reachability(IntegrationEvidenceStatus),
     /// A scoped patch comparison contributed to the status.
-    ScopedPatchComparison(IntegrationEvidenceStatus),
+    ScopedPatchComparison {
+        /// Status evaluated against the observed trunk.
+        status:     IntegrationEvidenceStatus,
+        /// Certified witness and whether a negative remains retryable.
+        evaluation: ScopedPatchIntegrationEvaluation,
+    },
     /// The bounded comparison was not run after reachability rejected the protected-tip proof.
     ScopedPatchComparisonDeferred(DeferredScopedPatchIntegrationStatus),
 }
@@ -104,10 +109,35 @@ impl DeferredScopedPatchIntegrationStatus {
     }
 }
 
+/// The semantic result of one admitted scoped integration evaluation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ScopedPatchIntegrationEvaluation {
+    /// Replay certifies the entire phase at this integration witness.
+    Equivalent(IntegrationWitness),
+    /// Discovery and replay definitively reject integration.
+    Different,
+    /// Current-trunk replay differs, but unavailable historical evidence needs a retry.
+    HistoricalEvidenceUnavailable,
+    /// Scoped replay could not be completed.
+    Unavailable,
+}
+
+impl From<ScopedPatchComparison> for ScopedPatchIntegrationEvaluation {
+    fn from(comparison: ScopedPatchComparison) -> Self {
+        match comparison {
+            ScopedPatchComparison::Equivalent => {
+                Self::Equivalent(IntegrationWitness::EvaluatedTrunk)
+            },
+            ScopedPatchComparison::Different => Self::Different,
+            ScopedPatchComparison::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
 /// Whether the bounded reconciliation slot supplied a scoped patch comparison.
 pub(crate) enum ScopedPatchComparisonObservation {
     /// Git produced this comparison during the current reconciliation.
-    Observed(ScopedPatchComparison),
+    Observed(ScopedPatchIntegrationEvaluation),
     /// Another proof subject received the target's comparison slot.
     Deferred,
 }
@@ -207,13 +237,14 @@ pub(crate) fn observe_integration_status(
         },
         Reachability::NotAncestor => match observe_scoped_patch_comparison() {
             ScopedPatchComparisonObservation::Observed(scoped_patch_comparison) => {
-                IntegrationEvidenceObservation::ScopedPatchComparison(
-                    status_from_scoped_patch_comparison(
-                        scoped_patch_comparison,
+                IntegrationEvidenceObservation::ScopedPatchComparison {
+                    status:     status_from_scoped_patch_evaluation(
+                        &scoped_patch_comparison,
                         trunk_oid,
                         prior_integration_status,
                     ),
-                )
+                    evaluation: scoped_patch_comparison,
+                }
             },
             ScopedPatchComparisonObservation::Deferred => {
                 IntegrationEvidenceObservation::ScopedPatchComparisonDeferred(
@@ -245,9 +276,10 @@ pub(crate) fn observe_outstanding_integration_status(
         materialized,
         observe_scoped_patch_comparison,
     );
-    let IntegrationEvidenceObservation::ScopedPatchComparison(
-        IntegrationEvidenceStatus::NotIntegrated,
-    ) = observation
+    let IntegrationEvidenceObservation::ScopedPatchComparison {
+        status: IntegrationEvidenceStatus::NotIntegrated,
+        evaluation,
+    } = observation
     else {
         return observation;
     };
@@ -256,25 +288,30 @@ pub(crate) fn observe_outstanding_integration_status(
         Reachability::NotAncestor => IntegrationEvidenceStatus::TrunkRewritten,
         Reachability::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
     };
-    IntegrationEvidenceObservation::ScopedPatchComparison(status)
+    IntegrationEvidenceObservation::ScopedPatchComparison { status, evaluation }
 }
 
-fn status_from_scoped_patch_comparison(
-    scoped_patch_comparison: ScopedPatchComparison,
+fn status_from_scoped_patch_evaluation(
+    evaluation: &ScopedPatchIntegrationEvaluation,
     trunk_oid: &GitObjectId,
     prior_integration_status: PriorIntegrationStatus,
 ) -> IntegrationEvidenceStatus {
-    match scoped_patch_comparison {
-        ScopedPatchComparison::Equivalent => IntegrationEvidenceStatus::Integrated {
-            trunk_oid: trunk_oid.clone(),
-            proof:     IntegrationProof::ScopedPatchEquivalent,
-            witness:   IntegrationWitness::EvaluatedTrunk,
+    match evaluation {
+        ScopedPatchIntegrationEvaluation::Equivalent(witness) => {
+            IntegrationEvidenceStatus::Integrated {
+                trunk_oid: trunk_oid.clone(),
+                proof:     IntegrationProof::ScopedPatchEquivalent,
+                witness:   witness.clone(),
+            }
         },
-        ScopedPatchComparison::Different => match prior_integration_status {
-            PriorIntegrationStatus::Unproven => IntegrationEvidenceStatus::NotIntegrated,
-            PriorIntegrationStatus::Proven => IntegrationEvidenceStatus::TrunkRewritten,
+        ScopedPatchIntegrationEvaluation::Different
+        | ScopedPatchIntegrationEvaluation::HistoricalEvidenceUnavailable => {
+            match prior_integration_status {
+                PriorIntegrationStatus::Unproven => IntegrationEvidenceStatus::NotIntegrated,
+                PriorIntegrationStatus::Proven => IntegrationEvidenceStatus::TrunkRewritten,
+            }
         },
-        ScopedPatchComparison::Unavailable => IntegrationEvidenceStatus::ObjectUnknown,
+        ScopedPatchIntegrationEvaluation::Unavailable => IntegrationEvidenceStatus::ObjectUnknown,
     }
 }
 

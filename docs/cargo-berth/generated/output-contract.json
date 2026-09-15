@@ -16922,6 +16922,23 @@
         }
       ],
       "title": "resolve_payload"
+    },
+    "scoped_patch_evaluator_version": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The proof rules used to produce a durable scoped patch verdict.",
+      "oneOf": [
+        {
+          "const": "legacy",
+          "description": "Records predating historical discovery and scoped-history contiguity.",
+          "type": "string"
+        },
+        {
+          "const": "historical_candidate",
+          "description": "Historical candidate certification and contiguity over protected-path changes.",
+          "type": "string"
+        }
+      ],
+      "title": "scoped_patch_evaluator_version"
     }
   },
   "version": 2

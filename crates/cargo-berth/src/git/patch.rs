@@ -49,6 +49,7 @@ use super::constants::GIT_SYMMETRIC_RANGE_INFIX;
 use super::constants::GIT_WRITE_TREE_ARG;
 use super::error::GitError;
 use super::object;
+use super::reachability::PhaseStartTargetFirstParentHistories;
 use crate::ids::GitObjectId;
 use crate::scope::ReservationScopeSet;
 
@@ -61,6 +62,35 @@ pub(crate) enum ScopedPatchComparison {
     Different,
     /// Git could not compare the histories because a required object or result was unavailable.
     Unavailable,
+}
+
+/// A historical location nominated by patch matches, pending complete scoped replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HistoricalIntegrationCandidateDiscovery {
+    /// The earliest first-parent target commit containing every trunk-side patch match.
+    Nominated(GitObjectId),
+    /// No trunk-side commit has a patch equivalent to a protected phase commit.
+    NoMatch,
+    /// Git could not read the matches or their ancestry; discovery remains retryable.
+    Unavailable,
+}
+
+/// Nominate a historical integration site without certifying the protected phase's content.
+pub(crate) fn discover_historical_integration_candidate(
+    repository_root: &Path,
+    phase_start: &GitObjectId,
+    protected_tip: &GitObjectId,
+    target: &GitObjectId,
+    target_histories: &PhaseStartTargetFirstParentHistories,
+) -> HistoricalIntegrationCandidateDiscovery {
+    let Ok(matches) = phase_equivalent_commits(repository_root, phase_start, protected_tip, target)
+    else {
+        return HistoricalIntegrationCandidateDiscovery::Unavailable;
+    };
+    if matches.is_empty() {
+        return HistoricalIntegrationCandidateDiscovery::NoMatch;
+    }
+    target_histories.earliest_containing_matches(repository_root, phase_start, target, &matches)
 }
 
 enum ScopedPatchComparisonError {
@@ -233,7 +263,7 @@ fn commit_count(repository_root: &Path, range: &str) -> Result<usize, GitError> 
         })
 }
 
-/// Collect the commits on either side of the rewrite that carry a phase commit's patch.
+/// Collect target-side commits that carry a phase commit's patch.
 ///
 /// Excluding `phase_start` keeps the comparison to this phase's own commits, so an
 /// earlier phase sharing the branch is never mistaken for part of this one.
@@ -247,6 +277,7 @@ fn phase_equivalent_commits(
         GIT_REV_LIST_COMMAND.to_owned(),
         GIT_CHERRY_MARK_ARG.to_owned(),
         GIT_LEFT_RIGHT_ARG.to_owned(),
+        "--right-only".to_owned(),
         GIT_NO_MERGES_ARG.to_owned(),
         format!("{previous_tip}{GIT_SYMMETRIC_RANGE_INFIX}{proposed_tip}"),
         format!("{GIT_EXCLUDE_REVISION_PREFIX}{phase_start}"),
@@ -662,7 +693,7 @@ fn target_scoped_change_position(
         .iter()
         .map(|scoped_commit| {
             target_history
-                .commits
+                .scoped_commits
                 .iter()
                 .position(|target_commit| target_commit == scoped_commit)
                 .ok_or_else(|| GitError::ScopedCommitMissingFromTargetWalk {
@@ -992,10 +1023,12 @@ mod tests {
     use std::io;
     use std::process::Command;
 
+    use super::HistoricalIntegrationCandidateDiscovery;
     use super::ScopedPatchComparison;
     use super::ScopedPatchComparisonError;
     use super::ScopedPatchTargetHistory;
     use super::concurrent_scoped_patch_reads;
+    use super::discover_historical_integration_candidate;
     use super::scoped_patch_command_output;
     use super::scoped_patch_equivalence;
     use super::scoped_patch_equivalence_with_target_history;
@@ -1022,6 +1055,37 @@ mod tests {
     use crate::reservation::IntegrationWitness;
     use crate::reservation::PriorIntegrationStatus;
     use crate::reservation::ProtectedReservationTip;
+
+    /// Exercise both the retained graph and the bounded fallback with the same repository.
+    fn historical_candidate(
+        fixture: &PatchEquivalenceFixture,
+        protected_tip: &GitObjectId,
+        target: &GitObjectId,
+    ) -> FixtureResult<HistoricalIntegrationCandidateDiscovery> {
+        let fallback = discover_historical_integration_candidate(
+            fixture.root(),
+            &fixture.phase_start_head,
+            protected_tip,
+            target,
+            &crate::git::PhaseStartTargetFirstParentHistories::default(),
+        );
+        let observation = super::super::reachability::branch_commit_reachability(
+            fixture.root(),
+            "main",
+            std::slice::from_ref(&fixture.phase_start_head),
+        )?;
+        assert_eq!(
+            fallback,
+            discover_historical_integration_candidate(
+                fixture.root(),
+                &fixture.phase_start_head,
+                protected_tip,
+                target,
+                &observation.target_histories,
+            )
+        );
+        Ok(fallback)
+    }
 
     /// Spaced edits let replay distinguish protected changes from resolution additions.
     const MAPPED_BASE: &str =
@@ -2139,21 +2203,25 @@ mod tests {
         let mut fixture = PatchEquivalenceFixture::new()?;
         fixture.write(
             PRIMARY_PATH,
-            "prefix\nalpha\ntarget\nomega\nseparator\nalpha\ntarget\nomega\n",
+            "prefix\nalpha one\nalpha two\nalpha three\ntarget\nomega one\nomega two\nomega three\nseparator\nalpha one\nalpha two\nalpha three\ntarget\nomega one\nomega two\nomega three\n",
         )?;
         fixture.phase_start_head = fixture.commit("duplicate blocks baseline")?;
         fixture.write(
             PRIMARY_PATH,
-            "prefix\nalpha\nchanged\nomega\nseparator\nalpha\ntarget\nomega\n",
+            "prefix\nalpha one\nalpha two\nalpha three\nchanged\nomega one\nomega two\nomega three\nseparator\nalpha one\nalpha two\nalpha three\ntarget\nomega one\nomega two\nomega three\n",
         )?;
         let protected_tip = fixture.commit("protected first block")?;
         fixture.reset_to_phase_start()?;
         fixture.write(
             PRIMARY_PATH,
-            "prefix\nalpha\ntarget\nomega\nseparator\nalpha\nchanged\nomega\n",
+            "prefix\nalpha one\nalpha two\nalpha three\ntarget\nomega one\nomega two\nomega three\nseparator\nalpha one\nalpha two\nalpha three\nchanged\nomega one\nomega two\nomega three\n",
         )?;
         let target = fixture.commit("changed second block")?;
 
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &target)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(target.clone()),
+        );
         assert_eq!(
             fixture.equivalence(
                 &fixture::file_scopes(&[PRIMARY_PATH])?,
@@ -2305,12 +2373,105 @@ mod tests {
         let target = fixture.commit("rewritten first patch only")?;
 
         assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &target)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(target.clone()),
+        );
+        assert_eq!(
             fixture.equivalence(
                 &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &target,
             )?,
             ScopedPatchComparison::Different
+        );
+        fixture.reset_to_phase_start()?;
+        fixture.write(SECONDARY_PATH, "missing part\n")?;
+        let final_only = fixture.commit("rewritten final patch only")?;
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &final_only)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(final_only.clone()),
+        );
+        let scopes = fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?;
+        assert_eq!(
+            fixture.equivalence(&scopes, &protected_tip, &final_only)?,
+            ScopedPatchComparison::Different
+        );
+        fixture.write(PRIMARY_PATH, "integrated part\n")?;
+        let reordered = fixture.commit("replay first patch after final patch")?;
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &reordered)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(reordered.clone()),
+        );
+        assert_eq!(
+            fixture.equivalence(&scopes, &protected_tip, &reordered)?,
+            ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn historical_candidate_pins_complete_integration_before_later_hunk_rewrite() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_PATH, "phase first patch\n")?;
+        fixture.commit("phase prefix")?;
+        fixture.write(SECONDARY_PATH, "phase second patch\n")?;
+        let protected_tip = fixture.commit("phase complete")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, "phase first patch\n")?;
+        let sibling_prefix = fixture.commit("sibling carries only phase prefix")?;
+        fixture.git(&["branch", "prefix-sibling"])?;
+        let scopes = fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?;
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &sibling_prefix)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(sibling_prefix.clone())
+        );
+        assert_eq!(
+            fixture.equivalence(&scopes, &protected_tip, &sibling_prefix)?,
+            ScopedPatchComparison::Different
+        );
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, "phase first patch\n")?;
+        fixture.commit("trunk replays phase prefix")?;
+        fixture.write(SECONDARY_PATH, "phase second patch\n")?;
+        let candidate = fixture.commit("trunk completes phase")?;
+        fixture.write(PRIMARY_PATH, "later trunk replacement\n")?;
+        let target = fixture.commit("rewrite integrated hunk")?;
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &target)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
+        );
+        assert_eq!(
+            fixture.equivalence(&scopes, &protected_tip, &candidate)?,
+            ScopedPatchComparison::Equivalent
+        );
+        assert_eq!(
+            fixture.equivalence(&scopes, &protected_tip, &target)?,
+            ScopedPatchComparison::Different
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn historical_candidate_distinguishes_no_match_from_unavailable_history() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_PATH, "protected change\n")?;
+        let protected_tip = fixture.commit("protected change")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(SECONDARY_PATH, "unrelated target change\n")?;
+        let target = fixture.commit("unrelated target change")?;
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &target)?,
+            HistoricalIntegrationCandidateDiscovery::NoMatch
+        );
+        assert_eq!(
+            discover_historical_integration_candidate(
+                fixture.root(),
+                &fixture.phase_start_head,
+                &protected_tip,
+                &UNAVAILABLE_OBJECT_ID.parse()?,
+                &crate::git::PhaseStartTargetFirstParentHistories::default(),
+            ),
+            HistoricalIntegrationCandidateDiscovery::Unavailable
         );
         Ok(())
     }
@@ -2335,6 +2496,28 @@ mod tests {
                 &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &target,
+            )?,
+            ScopedPatchComparison::Equivalent
+        );
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, "first protected patch\n")?;
+        fixture.commit("rewritten first patch with protected gap")?;
+        fixture.write(
+            PRIMARY_PATH,
+            "first protected patch\nintervening scoped edit\n",
+        )?;
+        fixture.commit("intervening protected-path edit")?;
+        fixture.write(SECONDARY_PATH, "second protected patch\n")?;
+        let separated = fixture.commit("rewritten second patch after protected gap")?;
+        assert_eq!(
+            historical_candidate(&fixture, &protected_tip, &separated)?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(separated.clone()),
+        );
+        assert_eq!(
+            fixture.equivalence(
+                &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
+                &protected_tip,
+                &separated,
             )?,
             ScopedPatchComparison::Different
         );

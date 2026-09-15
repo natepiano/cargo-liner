@@ -638,9 +638,9 @@ The operation union is:
 | `release` | `reservation_id`, `disposition` |
 | `replace_release_disposition` | `reservation_id`, `superseded`, `replacement` |
 | `evidence_revalidated` | `reservation_id`, `status`, `edit_blocking_status` |
-| `scoped_patch_equivalence_checked` | `reservation_id`, `subject`, `target`, `verdict`, optional `witness` |
+| `scoped_patch_equivalence_checked` | `reservation_id`, `subject`, `target`, `verdict`, optional `witness`, optional `evaluator_version` |
 | `scoped_patch_comparison_attempted` | `reservation_id`, `subject`, `target` |
-| `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict` |
+| `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict`, optional `evaluator_version` |
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
 | `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
@@ -703,6 +703,15 @@ These operation fields use the following tagged values:
   decode as `evaluated_trunk`. Revalidating a rewritten integration retains
   its historical commit and uses `rewritten_witness_ancestor`, even after the
   protected checkpoint is collected.
+- Both scoped verdict records accept optional `evaluator_version`. Absence decodes
+  as `legacy` and is omitted when serialized again. New evaluations write
+  `historical_candidate`, which includes historical candidate certification and
+  contiguity over commits touching protected paths. A legacy negative permits
+  reevaluation; a current-version verdict replaces it, and replay in either order
+  preserves the newer evaluator's verdict. Legacy positive verdicts remain usable.
+  Candidate discovery, certification, and current-trunk fallback share one observed
+  trunk budget admission. An unavailable historical proof followed by a negative
+  current-trunk replay records an attempt, allowing a later pass to retry.
 - `scoped_patch_equivalence_checked` records the durable content cache. Its
   positive integer `subject` identifies the reservation's current baseline,
   protected content, and scopes; `target` is the checked trunk object id; and
@@ -722,8 +731,9 @@ These operation fields use the following tagged values:
   comparison; reconciliation maps that comparison through the reservation's
   current integration context. Git failures reported as `object_unknown` are
   transient and never produce this operation.
-- `scoped_patch_comparison_attempted` records scheduling state for a comparison
-  that produced transient `object_unknown`. Its `subject` and `target` use the same identities as
+- `scoped_patch_comparison_attempted` records scheduling state when comparison
+  produces transient `object_unknown`, or historical discovery or certification is
+  unavailable and current-trunk replay differs. Its `subject` and `target` use the same identities as
   `scoped_patch_equivalence_checked`. Reconciliation runs the least-recently
   attempted uncached subject first at each target, so every subject receives a
   comparison while the transient failure remains eligible for later retries.

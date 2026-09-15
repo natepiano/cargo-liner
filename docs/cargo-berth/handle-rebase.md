@@ -148,76 +148,36 @@
 - Changing the witness or proof shape requires regenerating the output contract with `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1`, or the reproducibility test fails.
 - An absent `witness` in legacy journals and `EvidenceRevalidated` records decodes as `EvaluatedTrunk`; frozen `tests/fixtures/reader_compat` bytes stay unchanged.
 
-### Phase 4 — Historical trunk candidate  · status: todo
+### Phase 4 — Historical trunk candidate  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A trunk commit patch-equivalent to a phase proves integration even when the rewrite map was never captured, and old negative verdicts, for reservations and for their successors, do not block the new evaluation.
-
-**Spec:**
-
-*Candidate.*
-- Covers a rebase the gate did not capture, rebases before this fix, and cherry-picks.
-- Matches come from the existing `phase_equivalent_commits` cherry-mark query (`src/git/patch.rs:240`, `rev-list --cherry-mark --left-right --no-merges <a>...<b> ^<phase_start>`), run between the protected tip and trunk with `--right-only` to list trunk-side `=` commits. No new patch-id pipeline.
-- The candidate is the **earliest** first-parent trunk commit that has every match as an ancestor, read from the batched first-parent history in `target_history_after_phase_start` (`src/reconcile.rs:441`). The latest such commit is the trunk tip, which is the replay that already fails.
-- Candidate history: `PhaseStartTargetFirstParentHistories` (`src/git/reachability.rs:110`) supplies an interval only when the old phase start is an ancestor of the target, so a later checkpoint whose start was itself rebased gets `NeedsGitQueries`, and its commit slice carries no parent relationships. Provide bounded candidate-history discovery when the old phase start is outside trunk ancestry, and ancestry evidence that locates a match introduced through a merge's other parent on trunk's first-parent chain. `git::patch` is private (`src/git/mod.rs:15`); export the candidate API through `src/git/mod.rs`.
-- Certify with `compare_scoped_patch` (phase start, scopes, protected tip, candidate). A pass yields `ScopedPatchEquivalent` evaluated against actual trunk with the candidate as the historical integration witness (the Phase 3 witness state), which settles as `RewrittenIntegration(candidate)`. A fail falls through to the current-trunk replay in `integration_status_with_retained_verdict` (`src/reconcile.rs:2547`).
-- Discovery returns `HistoricalIntegrationCandidateDiscovery::{Nominated(GitObjectId), NoMatch, Unavailable}`, never `Option<GitObjectId>`. `Unavailable` (history could not be read) stays retryable, the same distinction Phase 2 keeps for unavailable history (`src/reconcile.rs:1483`): when current-trunk replay then returns `Different`, the pass records no versioned negative that would suppress a later historical proof.
-- Order within a subject: ancestry, then candidate, then current-trunk replay.
-- Budget: `ReconciliationScopedPatchEvaluationBudget::evaluate` (`src/reconcile.rs:762`) admits work by `ScopedPatchEvaluationKey.target_trunk` (:477). Charge historical-candidate discovery to the observed trunk's shared subject budget and keep the comparison destination (the candidate) separate, so a candidate never becomes an admission key. Candidate certification and the current-trunk fallback run within one admitted subject evaluation. The budget unit stays one distinct cold proof subject per trunk target per pass.
-- The shared cache `ReconciliationScopedPatchEvaluationBudget::comparisons` (`src/reconcile.rs:533`) stores only `ScopedPatchComparison`, which drops a historical witness when a duplicate subject reuses a result. Replace it with a semantic evaluation result carrying the certified witness, and carry that result through the cache, the observation API in `src/reservation/evidence.rs`, and the journal update.
-
-*Contiguity rule.*
-- In `target_scoped_change_position` (`src/git/patch.rs:628`), take positions in `TargetFirstParentHistory::scoped_commits` (:168) instead of `commits`.
-- A gap commit touching no protected path is then allowed. One touching a protected path stays in `scoped_commits`, is not identified as a match, and still rejects.
-- The same comparator serves current-trunk and successor checks, which stay safe because the replay still validates content. Check `intervening_unrelated_commit_does_not_separate_the_phase_integration` (:2111) against the new rule.
-
-*Evaluator version.*
-- Serialize an evaluator version on `ScopedPatchEquivalenceChecked` (`src/ledger/journal.rs:431`) and `SuccessorScopedPatchEquivalenceChecked` (:451); the wire field is optional and omitted when absent. Convert it before replay into `ScopedPatchEvaluatorVersion`, with `Legacy` for an absent field and an explicitly named variant for the historical-candidate evaluator. Retained domain records and replay APIs carry that type, never a bare `Option`.
-- In `RetainedScopedPatchTargetVerdicts` (`src/reservation/scoped_patch_evaluation.rs:71`) and `RetainedSuccessorScopedPatchTargetVerdicts` (:106), a legacy negative permits one evaluation and its versioned replacement stops retries. For one subject and target the newer version wins.
-- Successors need it too: successor evaluation uses the same comparator (`settle_pending_scoped_patch_comparisons`, `src/reconcile.rs:3323`), but a retained `Different` returns `NotIncorporated` before evaluation (`unreached_successor_evidence`, :3286-3316), so without a version existing successor holds never see the new rule. Rewritten-integration witnesses stay ancestry-only and never enter the comparison.
-- Ship the version in the same step as the candidate and the contiguity rule, so no binary writes versioned negatives from the old evaluator. A resnapshot clears existing verdicts, but later passes repopulate both caches, so the version check applies after re-anchoring too.
-
-*Tests.*
-12. Unit candidate cases in one `PatchEquivalenceFixture` in `src/git/patch.rs`:
-    - extend `one_equivalent_commit_does_not_certify_partial_integration` (:2294) with final-only and reordered matches;
-    - extend `duplicate_context_does_not_relocate_the_protected_change` (:2135): equal patch ids nominate the wrong site and the comparator rejects it;
-    - add a sibling carrying only a prefix of the phase, and a later trunk commit that rewrites the hunk so the earliest candidate is pinned;
-    - update `separated_target_equivalents_do_not_prove_one_replayed_phase` (:2316) for the relaxed rule, with a protected-path gap that still rejects;
-    - in `src/git/reachability.rs`: candidate history for an old phase start outside trunk ancestry, and a match introduced through a merge's other parent located on the first-parent chain.
-13. Extend `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` (`tests/board.rs:3230`) so candidate discovery and certification count under the observed trunk's budget, and duplicate subjects receive the same historical witness without another evaluation, including when mapped acceptance has already consumed the target's budget; plus a unit test of call order in `src/reconcile.rs`: ancestry, candidate, then current-trunk fallback inside one admitted evaluation.
-14. Extend `replay_retains_positive_and_negative_scoped_patch_verdicts` (`src/reservation/retention.rs:1843`) with legacy decoding and version precedence in both orders, for reservation and successor verdicts. Extend `retained_scoped_patch_verdicts_reuse_both_results_after_process_restart` (`tests/board.rs:2438`) with a legacy negative: one evaluation, then zero across restart.
-15. Integration settlement in `tests/board.rs`: with no rewrite marker, an outstanding reservation whose successful candidate predates actual trunk and whose current-trunk replay fails ends `Released`, the disposition names the candidate OID, the evaluation evidence names actual trunk, and no orphan notice appears. Also cover settlement delayed by reserved dirt followed by a process restart, where the witness survives, and a restart after unavailable candidate discovery plus a negative current-trunk fallback, where the historical proof is still attempted and settles. In `tests/edges.rs`, extend `witness_survives_pruning_and_controls_successors` (:933) for a historical witness: retention, lost-evidence recovery, and successor ancestry.
-16. Successor regression in `tests/edges.rs`, modeled on `rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges` (:852): a legacy negative successor verdict gets exactly one reevaluation under the new rule, its versioned replacement persists across restart, and rewritten witnesses keep ancestry-only treatment.
+- `git::discover_historical_integration_candidate(repository_root, phase_start, protected_tip, target, target_histories) -> HistoricalIntegrationCandidateDiscovery::{Nominated(GitObjectId), NoMatch, Unavailable}` takes right-only cherry-mark matches (`phase_equivalent_commits` with `--right-only`) between protected tip and trunk and nominates the earliest first-parent trunk commit containing every match. `earliest_containing_matches` reads `rev-list --parents`, so a match entering through a merge's other parent is located; a missing parent yields `Unavailable`. Bounded history discovery covers an old phase start outside trunk ancestry.
+- `target_scoped_change_position` takes positions within `TargetFirstParentHistory::scoped_commits`: a gap commit touching no protected path is allowed, a protected-path gap still rejects. The mapped-history path does not use it.
+- `evaluate_historical_then_current_trunk` in `reconcile.rs` runs ancestry, then candidate discovery with `compare_scoped_patch` certification, then current-trunk replay, all inside one `ReconciliationScopedPatchEvaluationBudget::evaluate` admission keyed by the observed trunk. It returns `ScopedPatchIntegrationEvaluation::{Equivalent(witness), Different, Unavailable, HistoricalEvidenceUnavailable}`; the budget cache stores this result, so duplicate subjects reuse the historical witness. A certified candidate is recorded as `IntegrationWitness::Historical(candidate)` and settles as `RewrittenIntegration(candidate)`.
+- `HistoricalEvidenceUnavailable` (discovery or certification unavailable, current trunk `Different`) journals `ScopedPatchComparisonAttempted`, never a versioned negative, so the historical proof is retried.
+- `ScopedPatchEvaluatorVersion::{Legacy (default), HistoricalCandidate}` serializes as optional `evaluator_version` on `ScopedPatchEquivalenceChecked` and `SuccessorScopedPatchEquivalenceChecked`, omitted when legacy. Retained verdict lookup, for reservations and successors, ignores a legacy negative while legacy positives still hit; insertion never replaces a newer version, so replay order does not matter. New evaluations write `HistoricalCandidate`.
+- Explicit release: `revalidate_proven_integration` in `verb/release.rs` revalidates a `Historical` witness through `RewrittenIntegrationTrunkCommit::revalidate_ancestry` before the `PriorIntegrationStatus::Proven` current-trunk path, for outstanding checkpoints and already-released `ProtectedTip` dispositions. A reachable witness yields `Integrated { trunk_oid: current trunk, RewrittenWitnessAncestor, same witness }`; unknown stays `ObjectUnknown`; a non-ancestor falls back. Empty-extent `integrated_release_operation` releases `RewrittenIntegration(witness)` with `RetainIntegrationWitness`; an already-released `Integrated` disposition with historical evidence keeps `ReleaseRetentionPlan::Preserve`.
 
 **Files:**
-- `crates/cargo-berth/src/git/patch.rs` — candidate matches, contiguity rule; unit test 12
-- `crates/cargo-berth/src/git/reachability.rs` — bounded candidate-history discovery and off-first-parent match ancestry; unit test 12 history cases
-- `crates/cargo-berth/src/git/mod.rs` — export the candidate API
-- `crates/cargo-berth/src/reconcile.rs` — candidate nomination and ordering within one admitted subject evaluation; successor verdict versioning; call-order unit test
-- `crates/cargo-berth/src/ledger/journal.rs` — evaluator version on both verdict records
-- `crates/cargo-berth/src/reservation/scoped_patch_evaluation.rs` — `ScopedPatchEvaluatorVersion`; version precedence in both retained verdict sets
-- `crates/cargo-berth/src/reservation/retention.rs` — replay of versioned records; unit test 14
-- `crates/cargo-berth/src/reservation/evidence.rs` — observation API carries the witness-bearing evaluation result
-- `crates/cargo-berth/src/reservation/{lifecycle,mod}.rs` — only where a historical witness needs a constructor on the Phase 3 witness state
-- `crates/cargo-berth/src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json`, `docs/cargo-berth/json-contract.md` — only if a serialized output changes
-- `crates/cargo-berth/tests/board.rs` — tests 13, 14, and 15 integration parts
-- `crates/cargo-berth/tests/edges.rs` — test 15 witness parts and test 16
+- `crates/cargo-berth/src/git/patch.rs` — candidate discovery, right-only matches, scoped contiguity; unit candidate cases
+- `crates/cargo-berth/src/git/reachability.rs` — candidate history, earliest containing first-parent commit; unit history cases
+- `crates/cargo-berth/src/git/mod.rs` — candidate API export
+- `crates/cargo-berth/src/reconcile.rs` — historical-then-current-trunk evaluation, semantic budget cache, evaluator version on writes, call-order unit test
+- `crates/cargo-berth/src/ledger/journal.rs` — `evaluator_version` on both verdict records
+- `crates/cargo-berth/src/reservation/scoped_patch_evaluation.rs` — `ScopedPatchEvaluatorVersion`, version precedence
+- `crates/cargo-berth/src/reservation/{retention,evidence,mod}.rs` — versioned replay, witness-bearing observation API
+- `crates/cargo-berth/src/verb/release.rs` — historical witness revalidation and settlement on explicit release; unit tests
+- `crates/cargo-berth/src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json`, `docs/cargo-berth/json-contract.md` — `evaluator_version`
+- `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/edges.rs` — budget, restart, settlement, explicit-release, and successor regressions
 
-**Seats:** 2 writers + 1 tester — git history and the comparator split from reconciliation, the journal, and retained verdicts by file group.
-- `impl` — `src/git/{patch,reachability,mod}.rs`; candidate discovery, ancestry and history access, contiguity rule, unit test 12; hub: `src/git/mod.rs` (candidate API export)
-- `review` — opens as impl: `src/reconcile.rs`, `src/ledger/journal.rs`, `src/reservation/{lifecycle,evidence,scoped_patch_evaluation,retention,mod}.rs`, `src/output_contract.rs`, the generated contract, `docs/cargo-berth/json-contract.md`; candidate nomination, witness recording, both verdict caches, evaluator version, replay, call-order test, unit test 14; hub: `src/reconcile.rs`. It calls the candidate API through the signatures `impl` posts on the board.
-- `test` — `tests/*.rs` and integration support, excluding frozen `tests/fixtures/reader_compat` bytes; tests 13 to 16 integration parts and affected integration fixtures
+**Gotchas:**
+- `phase_equivalent_commits` is shared with `rewritten_phase_anchor`; `--right-only` is safe there only because that caller tests trunk-side membership.
+- Explicit release re-enters reconciliation first, which may restore cached `ScopedPatchEquivalent` evidence before the release caller runs; a test of release-produced `RewrittenWitnessAncestor` inspects the journal after the first release.
+- Historical witness ancestry does not prove the original protected checkpoint exists; release never recreates a retention ref to it.
+- When the nominated candidate equals the target and certification is `Different`, the same comparison runs twice.
 
-**Constraints from prior phases:**
-- Phase 1: actual-trunk settlement is selected in `complete_reconciliation_plan`; prepared decisions project it before proposed-trunk constraints, committed audits preserve lifecycles for forced-permit consumption, and proposed-trunk evidence never settles. Keep `forced_checkpoint_consumes_its_permit_before_ordinary_reconciliation_settles_it` (`tests/gate.rs:2615`) and `prepared_gate_settles_actual_trunk_evidence_but_never_a_proposed_witness` (:2804) green, including the bypass audit record.
-- Phase 1: witness revalidation is ancestry-only; `SuccessorIncorporationSubject::RewrittenIntegrationWitness` (`src/reconcile.rs:572`) never enters scoped comparison; `RetentionCommitResolution::IncludeSettlementWitness` (:839) retains a newly settled witness in the same pass.
-- Phase 2: `ScopedPatchTargetHistory` has a mapped variant that skips `target_scoped_change_position`; the contiguity change here applies only to the unmapped path.
-- Phase 2: a resnapshot advances the proof subject revision and clears existing retained verdicts; evaluator-version checks still apply to every subsequently retained reservation or successor verdict, including verdicts recorded after re-anchoring.
-- Phase 2: consume stored per-branch pairs and created_commits without reconstructing them from current refs or assuming hook stdin contains the previous tip; apply rebases can supply a zero previous OID.
-- Phase 2: project accepted resnapshots before repository observation, preserve deferred rewrite destinations in ordering decisions, and perform retention and marker changes only after append; keep the lifecycle re-anchoring suite and the `pending_rebase_checkpoint_obeys_ordering_*` and `budget_deferred_rewrite_obeys_ordering_*` gate tests (`tests/gate.rs:2320`, `:2416`) green. The committed-hook entry point is `GateReconciliation::into_committed_hook_action` (`src/reconcile.rs:2241`).
-- Audit surfaces: outstanding markers remain internal because board/check, reservation intervals, ordering denials, and orphan recovery expose their consequences; zero-previous non-rebase branch creation creates no reservation outcome and needs no additional surface, with coverage retained in `zero_previous_without_an_apply_map_keeps_skipping_capture` and `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture`.
-- Phase 2: mapped acceptance charges the observed trunk's shared subject budget and keeps the comparison destination separate; candidate discovery joins that same budget.
-- Phase 3: `IntegrationEvidenceStatus::Integrated { trunk_oid, proof, witness: IntegrationWitness }` (`src/reservation/lifecycle.rs`) keeps `trunk_oid` as the evaluated trunk; `IntegrationWitness::{EvaluatedTrunk (default), Historical(RewrittenIntegrationTrunkCommit)}` serializes as `{"kind":"evaluated_trunk"}` / `{"kind":"historical","commit":"<oid>"}` and `IntegrationWitness::resolve(&GitObjectId) -> RewrittenIntegrationTrunkCommit` yields the commit to settle on. Witness ancestry records `IntegrationProof::RewrittenWitnessAncestor`. `settlement_selection` (`src/reconcile.rs`) releases `ScopedPatchEquivalent | RewrittenWitnessAncestor` as `RewrittenIntegration(witness.resolve(trunk_oid))` only when the evaluated trunk equals actual trunk. The journal `ScopedPatchEquivalenceChecked` carries a defaulted `witness` field, and `scoped_patch_evaluation.rs` retains the witness with each verdict and returns it on lookup, replayed by `retention.rs`. Record the historical candidate as `IntegrationWitness::Historical(candidate)`; keep the output contract regenerated (`CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1`) when the witness shape changes.
+**Ruled out:**
+- A new patch-id pipeline — cherry-mark matches are reused.
+- The latest containing trunk commit as candidate — that is the trunk tip whose replay already fails.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `verify.sh test cargo-berth board` and `verify.sh test cargo-berth edges` green with tests 13 to 16; unit tests 12, 14, and the call-order test pass; frozen reader fixture bytes unchanged. Behavior: a phase whose rewrite map was never captured settles once a trunk commit contains every match and the replay certifies it, with that commit recorded as the witness.

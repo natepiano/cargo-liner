@@ -17,6 +17,39 @@ use super::lifecycle::IntegrationWitness;
 use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
 
+/// The proof rules used to produce a durable scoped patch verdict.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Deserialize,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "scoped_patch_evaluator_version")]
+pub(crate) enum ScopedPatchEvaluatorVersion {
+    /// Records predating historical discovery and scoped-history contiguity.
+    #[default]
+    Legacy,
+    /// Historical candidate certification and contiguity over protected-path changes.
+    HistoricalCandidate,
+}
+
+impl ScopedPatchEvaluatorVersion {
+    /// Older records omit the evaluator field entirely.
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde skip_serializing_if requires a borrowed field"
+    )]
+    pub(crate) fn is_legacy(&self) -> bool { *self == Self::Legacy }
+}
+
 /// The version of the baseline, protected content, and scopes used by a scoped proof.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -59,13 +92,25 @@ impl From<ScopedPatchEquivalenceVerdict> for DurableScopedPatchComparison {
     }
 }
 
+/// The certified location and evaluator rules accompanying a durable content verdict.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ScopedPatchVerdictEvidence {
+    /// The definitive content verdict.
+    pub(super) verdict:           ScopedPatchEquivalenceVerdict,
+    /// The integration location certified by an affirmative verdict.
+    pub(super) witness:           IntegrationWitness,
+    /// The proof rules that produced this verdict.
+    pub(super) evaluator_version: ScopedPatchEvaluatorVersion,
+}
+
 /// One definitive scoped patch verdict retained for an immutable target.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RetainedScopedPatchTargetVerdict {
-    subject: IntegrationProofSubjectRevision,
-    target:  GitObjectId,
-    verdict: ScopedPatchEquivalenceVerdict,
-    witness: IntegrationWitness,
+    subject:           IntegrationProofSubjectRevision,
+    target:            GitObjectId,
+    verdict:           ScopedPatchEquivalenceVerdict,
+    witness:           IntegrationWitness,
+    evaluator_version: ScopedPatchEvaluatorVersion,
 }
 
 /// Durable scoped patch verdicts retained for the most recently recorded reconciliation targets.
@@ -103,9 +148,10 @@ declare_wire_enum! {
 /// One definitive successor-incorporation verdict retained for an immutable head.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RetainedSuccessorScopedPatchTargetVerdict {
-    subject:        IntegrationProofSubjectRevision,
-    successor_head: GitObjectId,
-    verdict:        SuccessorScopedPatchEquivalenceVerdict,
+    subject:           IntegrationProofSubjectRevision,
+    successor_head:    GitObjectId,
+    verdict:           SuccessorScopedPatchEquivalenceVerdict,
+    evaluator_version: ScopedPatchEvaluatorVersion,
 }
 
 /// Durable scoped patch verdicts retained for recently observed successor heads.
@@ -230,7 +276,11 @@ impl RetainedScopedPatchTargetVerdicts {
         target: &GitObjectId,
     ) -> ScopedPatchTargetVerdictAvailability {
         for entry in &self.entries {
-            if entry.subject == subject && entry.target == *target {
+            if entry.subject == subject
+                && entry.target == *target
+                && (entry.evaluator_version != ScopedPatchEvaluatorVersion::Legacy
+                    || entry.verdict == ScopedPatchEquivalenceVerdict::Integrated)
+            {
                 return ScopedPatchTargetVerdictAvailability::Hit {
                     comparison: entry.verdict.into(),
                     witness:    entry.witness.clone(),
@@ -246,7 +296,15 @@ impl RetainedScopedPatchTargetVerdicts {
         target: &GitObjectId,
         verdict: ScopedPatchEquivalenceVerdict,
         witness: &IntegrationWitness,
+        evaluator_version: ScopedPatchEvaluatorVersion,
     ) {
+        if self.entries.iter().any(|entry| {
+            entry.subject == subject
+                && entry.target == *target
+                && entry.evaluator_version > evaluator_version
+        }) {
+            return;
+        }
         self.entries
             .retain(|entry| entry.subject != subject || entry.target != *target);
         if self.entries.len() == SCOPED_PATCH_TARGET_RETENTION_LIMIT {
@@ -257,6 +315,7 @@ impl RetainedScopedPatchTargetVerdicts {
             target: target.clone(),
             verdict,
             witness: witness.clone(),
+            evaluator_version,
         });
     }
 }
@@ -269,7 +328,11 @@ impl RetainedSuccessorScopedPatchTargetVerdicts {
         successor_head: &GitObjectId,
     ) -> SuccessorScopedPatchTargetVerdictAvailability {
         for entry in &self.entries {
-            if entry.subject == subject && entry.successor_head == *successor_head {
+            if entry.subject == subject
+                && entry.successor_head == *successor_head
+                && (entry.evaluator_version != ScopedPatchEvaluatorVersion::Legacy
+                    || entry.verdict == SuccessorScopedPatchEquivalenceVerdict::Equivalent)
+            {
                 return SuccessorScopedPatchTargetVerdictAvailability::Hit(entry.verdict);
             }
         }
@@ -281,7 +344,15 @@ impl RetainedSuccessorScopedPatchTargetVerdicts {
         subject: IntegrationProofSubjectRevision,
         successor_head: &GitObjectId,
         verdict: SuccessorScopedPatchEquivalenceVerdict,
+        evaluator_version: ScopedPatchEvaluatorVersion,
     ) {
+        if self.entries.iter().any(|entry| {
+            entry.subject == subject
+                && entry.successor_head == *successor_head
+                && entry.evaluator_version > evaluator_version
+        }) {
+            return;
+        }
         self.entries
             .retain(|entry| entry.subject != subject || entry.successor_head != *successor_head);
         if self.entries.len() == SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT {
@@ -292,6 +363,7 @@ impl RetainedSuccessorScopedPatchTargetVerdicts {
                 subject,
                 successor_head: successor_head.clone(),
                 verdict,
+                evaluator_version,
             });
     }
 }

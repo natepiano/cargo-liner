@@ -930,9 +930,199 @@ fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
 }
 
 #[test]
+fn legacy_negative_successor_verdict_retries_once_under_scoped_contiguity() {
+    for protected_gap in [false, true] {
+        let fixture = successor_with_separated_matches(protected_gap);
+        let root = fixture.repository.path();
+        retain_protected_tip_release(&fixture);
+        append_edge_fixture_event(
+            root,
+            serde_json::json!({
+                "op": "successor_scoped_patch_equivalence_checked",
+                "predecessor_reservation_id": fixture.predecessor_id,
+                "subject": 1, "successor_head": fixture.successor_head,
+                "verdict": "different",
+            }),
+        );
+        let first = run_berth_with_git_trace(
+            root,
+            &[
+                "sequence",
+                &fixture.predecessor_id,
+                &fixture.successor_id,
+                "--why",
+                "retry a legacy successor proof under scoped contiguity",
+                "--json",
+            ],
+            "",
+        );
+        assert!(
+            first.output.status.success(),
+            "{}",
+            json_output(&first.output)
+        );
+        let expected = if protected_gap {
+            serde_json::json!({"state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}})
+        } else {
+            serde_json::json!({"state": "fulfilled"})
+        };
+        assert_eq!(
+            json_output(&first.output)["payload"]["data"]["readiness"],
+            expected
+        );
+        assert_eq!(successor_cherry_queries(&first, &fixture.successor_head), 1);
+        let verdicts = successor_verdicts(root);
+        assert_eq!(verdicts.len(), 2);
+        assert!(verdicts[0].get("evaluator_version").is_none());
+        assert_eq!(
+            verdicts[1]["verdict"],
+            if protected_gap {
+                "different"
+            } else {
+                "equivalent"
+            }
+        );
+        assert_eq!(verdicts[1]["evaluator_version"], "historical_candidate");
+        for _ in 0..2 {
+            let restarted = run_berth_with_git_trace(root, &["board", "--json"], "");
+            assert!(restarted.output.status.success());
+            assert_eq!(
+                successor_cherry_queries(&restarted, &fixture.successor_head),
+                0
+            );
+            assert_eq!(scoped_patch_comparison_count(&restarted), 0);
+            assert_eq!(successor_verdicts(root), verdicts);
+        }
+    }
+}
+
+/// A two-commit phase whose successor inserts either unrelated or protected work between matches.
+fn successor_with_separated_matches(protected_gap: bool) -> RewrittenSuccessorFixture {
+    let mut fixture = rewritten_successor_fixture(true);
+    let root = fixture.repository.path();
+    git(root, &["config", "core.hooksPath", "/dev/null"]);
+    let predecessor_root = fixture.worktrees.path().join("predecessor");
+    let successor_root = fixture.worktrees.path().join("successor");
+    let old_tip = fixture.protected_tip.clone();
+    commit_successor_fixture_file(
+        &predecessor_root,
+        "src/second.rs",
+        "pub fn second() {}\n",
+        "second phase commit",
+    );
+    fixture.protected_tip = git_stdout(&predecessor_root, &["rev-parse", "HEAD"]);
+    let (gap, gap_content) = if protected_gap {
+        (
+            "src/lib.rs",
+            "pub fn rewritten_predecessor() {}\npub fn intervening() {}\n",
+        )
+    } else {
+        ("tests/gap.rs", "// intervening work\n")
+    };
+    commit_successor_fixture_file(&successor_root, gap, gap_content, "gap between equivalents");
+    commit_successor_fixture_file(
+        &successor_root,
+        "src/second.rs",
+        "pub fn second() {}\n",
+        "second equivalent",
+    );
+    fixture.successor_head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
+    commit_successor_fixture_file(
+        root,
+        "src/second.rs",
+        "pub fn second() {}\n",
+        "complete phase on trunk",
+    );
+    // Assemble the old checkpoint directly, before any evaluator sees the two-commit subject.
+    let journal = journal_text(root)
+        .lines()
+        .map(|line| {
+            let mut event: serde_json::Value =
+                serde_json::from_str(line).expect("event should decode");
+            if event["reservation_id"] == fixture.predecessor_id {
+                if event["op"] == "claim" {
+                    event["scopes"] = serde_json::json!([{"path": "src", "kind": "tree"}]);
+                }
+                if event["protected_tip"] == old_tip {
+                    event["protected_tip"] = serde_json::json!(fixture.protected_tip);
+                }
+            }
+            event.to_string() + "\n"
+        })
+        .collect::<String>();
+    fs::write(root.join(JOURNAL_PATH), journal).expect("two-commit checkpoint should write");
+    fixture
+}
+
+/// Commit one file without letting the fixture's construction trigger reconciliation.
+fn commit_successor_fixture_file(root: &Path, path: &str, content: &str, message: &str) {
+    fs::write(root.join(path), content).expect("fixture source should write");
+    git(root, &["add", path]);
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+}
+
+/// Append a legacy event with valid journal envelope metadata.
+fn append_edge_fixture_event(root: &Path, mut event: serde_json::Value) {
+    let previous = last_journal_event(root);
+    for field in ["schema_version", "actor", "at"] {
+        event[field] = previous[field].clone();
+    }
+    event["event_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+    event["projection_generation"] = serde_json::json!(
+        previous["projection_generation"]
+            .as_u64()
+            .expect("generation should exist")
+            + 1
+    );
+    let mut journal = journal_text(root);
+    journal.push_str(&event.to_string());
+    journal.push('\n');
+    fs::write(root.join(JOURNAL_PATH), journal).expect("legacy successor event should append");
+}
+
+/// Count the successor comparator even when a protected-path gap rejects before tree replay.
+fn successor_cherry_queries(traced: &TracedBerth, head: &str) -> usize {
+    git_trace(traced)
+        .iter()
+        .filter(|line| {
+            line.starts_with("rev-list --cherry-mark --left-right ") && line.contains(head)
+        })
+        .count()
+}
+
+/// Read both the legacy and replacement successor verdicts after replay.
+fn successor_verdicts(root: &Path) -> Vec<serde_json::Value> {
+    journal_text(root)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .filter(|event| event["op"] == "successor_scoped_patch_equivalence_checked")
+        .collect()
+}
+
+#[test]
 fn witness_survives_pruning_and_controls_successors() {
     let fixture = rewritten_successor_fixture(true);
     let root = fixture.repository.path();
+    append_edge_fixture_event(
+        root,
+        serde_json::json!({
+            "op": "successor_scoped_patch_equivalence_checked",
+            "predecessor_reservation_id": fixture.predecessor_id,
+            "subject": 1, "successor_head": fixture.successor_head,
+            "verdict": "different",
+        }),
+    );
+
     let witness = prepare_pruned_witness(&fixture);
 
     let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
@@ -970,26 +1160,15 @@ fn witness_survives_pruning_and_controls_successors() {
     );
     assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
 
-    let holding = run_berth_with_git_trace(
-        root,
-        &[
-            "sequence",
-            &fixture.predecessor_id,
-            &fixture.successor_id,
-            "--why",
-            "the successor must contain the integration witness",
-            "--json",
-        ],
-        "",
-    );
+    let holding = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert!(holding.output.status.success());
     assert_eq!(scoped_patch_comparison_count(&holding), 0);
     assert_eq!(
-        json_output(&holding.output)["payload"]["data"]["readiness"],
-        serde_json::json!({
-            "state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}
-        })
+        successor_cherry_queries(&holding, &fixture.successor_head),
+        0
     );
+    assert_eq!(successor_verdicts(root).len(), 1);
+    assert_successor_round_robin_progress(&holding.output, 1, 0);
 
     let successor_root = fixture.worktrees.path().join("successor");
     git(&successor_root, &["reset", "--hard", &witness]);
@@ -1074,10 +1253,36 @@ fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
         "the successor has equivalent content without the recorded witness"
     );
 
+    // Establish the dependency before trunk integration so settlement must retain its witness.
+    git(root, &["reset", "--hard", &fixture.phase_start_head]);
+    let ordered = sequence(
+        root,
+        &fixture.predecessor_id,
+        &fixture.successor_id,
+        "the successor must contain the integration witness",
+    );
+    assert!(ordered.status.success(), "{}", json_output(&ordered));
+    git(root, &["reset", "--hard", &witness]);
+
     // Model the holder after its branch was rebased onto the equivalent trunk commit.
     let predecessor_root = fixture.worktrees.path().join("predecessor");
     git(&predecessor_root, &["reset", "--hard", &witness]);
+    commit_successor_fixture_file(
+        root,
+        "src/lib.rs",
+        "pub fn later_trunk_work() {}\n",
+        "rewrite the integrated hunk after its witness",
+    );
+    let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(evaluated_trunk, witness);
     assert_equivalence_settlement(fixture, &witness);
+    assert_eq!(
+        git_stdout(
+            root,
+            &["rev-parse", &reservation_ref(&fixture.predecessor_id)]
+        ),
+        witness
+    );
 
     // Remove every ref and reflog retaining the old tip, then prove actual collection.
     git(
@@ -1145,7 +1350,15 @@ fn assert_equivalence_settlement(fixture: &RewrittenSuccessorFixture, witness: &
     assert_eq!(evidence["op"], "evidence_revalidated");
     assert_eq!(evidence["reservation_id"], fixture.predecessor_id);
     assert_eq!(evidence["status"]["proof"], "scoped_patch_equivalent");
-    assert_eq!(evidence["status"]["trunk_oid"], witness);
+    assert_eq!(
+        evidence["status"]["trunk_oid"],
+        git_stdout(root, &["rev-parse", "HEAD"])
+    );
+    assert_ne!(evidence["status"]["trunk_oid"], witness);
+    assert_eq!(
+        evidence["status"]["witness"],
+        serde_json::json!({"kind": "historical", "commit": witness})
+    );
 }
 
 /// Find a settled predecessor in the board's durable reservation snapshots.
@@ -1173,7 +1386,12 @@ fn assert_witness_evidence(
     status: &str,
     lost_evidence: bool,
 ) {
-    assert!(traced.output.status.success());
+    assert!(
+        traced.output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&traced.output.stdout),
+        String::from_utf8_lossy(&traced.output.stderr)
+    );
     assert_eq!(
         scoped_patch_comparison_count(traced),
         0,
