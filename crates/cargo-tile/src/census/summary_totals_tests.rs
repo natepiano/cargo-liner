@@ -1,85 +1,61 @@
 //! Command and summary rows charge each contributing process once.
 
-use std::io::BufRead;
-use std::io::BufReader;
-use std::process::Child;
-use std::process::Command;
-use std::process::Stdio;
+use std::ffi::OsString;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 use std::time::Instant;
 
 use sysinfo::Pid;
-use sysinfo::ProcessRefreshKind;
-use sysinfo::ProcessesToUpdate;
-use sysinfo::System;
-use sysinfo::UpdateKind;
 use uuid::Uuid;
 
+#[cfg(target_os = "linux")]
+use crate::census::CargoGroup;
 use crate::census::CargoProcess;
 use crate::census::CompilerObservation;
 use crate::census::InvocationId;
 use crate::census::Measurement;
 use crate::census::invocation_cpu_accounting::MeasurementAbsence;
 use crate::census::process_identity::ProcessIdentity;
-#[cfg(target_os = "linux")]
-use crate::census::scan::groups_with_cpu_counters_for_test;
-use crate::census::scan::groups_with_cpu_for_test;
-use crate::census::scan::groups_with_registration_rows_for_test;
+use crate::census::scan::CensusSequence;
+use crate::census::scan::ProcessField;
+use crate::census::scan::ProcessObservation;
+use crate::census::scan::ProcessObservations;
 use crate::render::summary_cpu_for_test;
 use crate::roster::Roster;
 use crate::roster::TrackedGroup;
 
-/// Live argv and cwd observations, with ancestry and CPU supplied independently.
+/// Independent argv, ancestry, and CPU observations for one invocation family.
 struct SummaryTree {
-    children: Vec<Child>,
-    system:   System,
+    argv: [Vec<OsString>; 6],
 }
 
 impl SummaryTree {
     fn new() -> Self {
-        let mut tree = Self {
-            children: Vec::new(),
-            system:   System::new(),
-        };
-        for command in ["port", "build", "test", "check", "clippy", "bench"] {
-            tree.children.push(
-                Command::new("sh")
-                    .args(["-c", "printf 'ready\\n'; read -r release", "cargo", command])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .expect("start a cargo-shaped process"),
-            );
-            let stdout = tree
-                .children
-                .last_mut()
-                .expect("the spawned process is owned by the tree")
-                .stdout
-                .take()
-                .expect("process readiness pipe");
-            let mut ready = String::new();
-            BufReader::new(stdout)
-                .read_line(&mut ready)
-                .expect("read process readiness");
-            assert_eq!(ready, "ready\n");
+        Self {
+            argv: ["port", "build", "test", "check", "clippy", "bench"]
+                .map(|command| vec!["cargo".into(), command.into()]),
         }
-        tree.system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&tree.pids().map(Pid::from_u32)),
-            false,
-            ProcessRefreshKind::nothing()
-                .without_tasks()
-                .with_cmd(UpdateKind::Always)
-                .with_cwd(UpdateKind::Always),
-        );
-        assert_eq!(tree.system.processes().len(), tree.children.len());
-        tree
     }
 
-    fn pids(&self) -> [u32; 6] { std::array::from_fn(|index| self.children[index].id()) }
+    const fn pids() -> [u32; 6] { [100, 101, 102, 103, 104, 105] }
+
+    fn observations(&self, parents: &[(u32, u32)], omitted: &[u32]) -> ProcessObservations<'_> {
+        ProcessObservations::new(Self::pids().into_iter().zip(&self.argv).map(|(pid, argv)| {
+            let mut record = ProcessObservation::cargo(pid, argv);
+            record.parent = parents
+                .iter()
+                .find(|(child, _)| *child == pid)
+                .map(|(_, parent)| Pid::from_u32(*parent))
+                .into();
+            if omitted.contains(&pid) {
+                record.argv = ProcessField::Unavailable;
+            }
+            record
+        }))
+    }
 
     fn roster(&self, shares: &[(u32, Measurement<f32>)]) -> Roster {
-        let [driver, first, nested, deep, second, sibling_nested] = self.pids();
+        let [driver, first, nested, deep, second, sibling_nested] = Self::pids();
         // The direct children are promoted; nested and deep stay in their command view.
         let parents = [
             (first, driver),
@@ -88,23 +64,24 @@ impl SummaryTree {
             (second, driver),
             (sibling_nested, second),
         ];
-        let groups = groups_with_cpu_for_test(&self.system, &parents, shares);
+        let groups =
+            CensusSequence::default().sample_cpu(&self.observations(&parents, &[]), shares);
         assert_eq!(groups.len(), 1, "the fixture is one invocation tree");
         assert_eq!(groups[0].lead.pid, driver);
-        assert_eq!(groups[0].rest.len(), self.children.len() - 1);
+        assert_eq!(groups[0].rest.len(), self.argv.len() - 1);
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         roster
     }
 
-    fn readings(&self) -> [(u32, Measurement<f32>); 6] {
+    fn readings() -> [(u32, Measurement<f32>); 6] {
         let cpu = [128.0, 1.0, 2.0, 4.0, 16.0, 32.0];
-        std::array::from_fn(|index| (self.children[index].id(), Measurement::Reading(cpu[index])))
+        std::array::from_fn(|index| (Self::pids()[index], Measurement::Reading(cpu[index])))
     }
 
     #[cfg(target_os = "linux")]
     fn roster_with_idle_parent(&self, parent: Measurement<Duration>) -> Roster {
-        let [driver, first, nested, deep, second, sibling_nested] = self.pids();
+        let [driver, first, nested, deep, second, sibling_nested] = Self::pids();
         let parents = [
             (first, driver),
             (nested, first),
@@ -114,31 +91,103 @@ impl SummaryTree {
         ];
         // Thirteen observations model a Cargo parent that accrues no CPU ticks of its own.
         // Native cumulative counters include each busy nested Cargo once.
+        let mut sequence = CensusSequence::default();
+        let now = Instant::now();
         let samples: Vec<_> = (0..13u64)
             .map(|scan| {
-                self.pids().map(|pid| {
-                    let millis = if pid == nested {
+                let records = Self::pids().into_iter().zip(&self.argv).map(|(pid, argv)| {
+                    let mut record = ProcessObservation::cargo(pid, argv);
+                    record.parent = parents
+                        .iter()
+                        .find(|(child, _)| *child == pid)
+                        .map(|(_, parent)| Pid::from_u32(*parent))
+                        .into();
+                    record.accumulated = if pid == nested {
                         scan * 1000
                     } else if pid == sibling_nested {
                         scan * 500
                     } else {
                         0
                     };
-                    let read = if pid == first {
+                    record.native_cpu.set(if pid == first {
                         parent
                     } else {
-                        Measurement::Reading(Duration::from_millis(millis))
-                    };
-                    (pid, millis, read)
-                })
+                        Measurement::Reading(Duration::from_millis(record.accumulated))
+                    });
+                    record
+                });
+                let groups = sequence.sample_counters(
+                    &mut ProcessObservations::new(records),
+                    now + Duration::from_secs(scan),
+                );
+                Self::assert_idle_parent_sample(&groups, parent, scan);
+                groups
             })
             .collect();
-        let samples: Vec<_> = samples.iter().map(<[_; 6]>::as_slice).collect();
-        let groups = groups_with_cpu_counters_for_test(&self.system, &parents, &samples);
-        assert_eq!(groups.len(), 1);
+        let groups = samples.last().expect("thirteen observations").clone();
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         roster
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_idle_parent_sample(groups: &[CargoGroup], parent: Measurement<Duration>, scan: u64) {
+        let [driver, first, nested, deep, second, sibling_nested] = Self::pids();
+        assert_eq!(groups.len(), 1, "sample {scan}");
+        assert_eq!(groups[0].lead.pid, driver, "sample {scan}");
+        assert_eq!(groups[0].rest.len(), 5, "sample {scan}");
+        for (pid, rate) in [
+            (nested, "100%"),
+            (sibling_nested, "50%"),
+            (deep, "0%"),
+            (second, "0%"),
+        ] {
+            let row = groups[0]
+                .rest
+                .iter()
+                .find(|row| row.pid == pid)
+                .expect("every synthetic child remains present");
+            let expected = if scan == 0 {
+                Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+            } else {
+                Measurement::Reading(rate.to_owned())
+            };
+            assert_eq!(row.cpu, expected, "sample {scan}, pid {pid}");
+        }
+        let parent_cpu = match parent {
+            Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
+            Measurement::Reading(_) if scan == 0 => {
+                Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+            },
+            Measurement::Reading(_) => Measurement::Reading("0%"),
+        };
+        let group_cpu = match parent {
+            _ if scan == 0 => Measurement::Unavailable(MeasurementAbsence::FirstObservation),
+            Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
+            Measurement::Reading(_) => Measurement::Reading("150%"),
+        };
+        let first_total = match parent_cpu {
+            Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
+            Measurement::Reading(_) => Measurement::Reading("100%"),
+        };
+        let second_total = if scan == 0 {
+            Measurement::Unavailable(MeasurementAbsence::FirstObservation)
+        } else {
+            Measurement::Reading("50%")
+        };
+        let mut roster = Roster::new();
+        roster.observe(groups.to_vec(), Instant::now());
+        let rows = command_cpu(&roster);
+        assert!(
+            rows.contains(&(first, parent_cpu.map(str::to_owned))),
+            "sample {scan}: {rows:?}"
+        );
+        assert!(
+            rows.contains(&(driver, group_cpu.map(str::to_owned))),
+            "sample {scan}: {rows:?}"
+        );
+        assert_cpu_rows(summary_cpu_for_test(&roster, &[]), &[(driver, group_cpu)]);
+        Self::assert_summary(&roster, first_total, second_total);
     }
 
     fn roster_with_registration(
@@ -146,7 +195,7 @@ impl SummaryTree {
         registration: &CargoProcess,
         omitted_process_pids: &[u32],
     ) -> Roster {
-        let [driver, first, nested, deep, second, sibling_nested] = self.pids();
+        let [driver, first, nested, deep, second, sibling_nested] = Self::pids();
         let parents = [
             (first, driver),
             (nested, first),
@@ -154,12 +203,11 @@ impl SummaryTree {
             (second, driver),
             (sibling_nested, second),
         ];
-        let groups = groups_with_registration_rows_for_test(
-            &self.system,
-            &parents,
-            &self.readings(),
-            std::slice::from_ref(registration),
-            omitted_process_pids,
+        let mut sequence = CensusSequence::default();
+        sequence.registration_rows = vec![registration.clone()];
+        let groups = sequence.sample_cpu(
+            &self.observations(&parents, omitted_process_pids),
+            &Self::readings(),
         );
         assert_eq!(
             groups.len(),
@@ -169,7 +217,7 @@ impl SummaryTree {
         assert_eq!(groups[0].lead.pid, driver);
         assert_eq!(
             groups[0].rest.len(),
-            self.children.len() - omitted_process_pids.len(),
+            self.argv.len() - omitted_process_pids.len(),
             "the injected invocation must survive group assembly"
         );
         let mut roster = Roster::new();
@@ -177,9 +225,9 @@ impl SummaryTree {
         roster
     }
 
-    fn assert_summary(&self, roster: &Roster, first: Measurement<&str>, second: Measurement<&str>) {
+    fn assert_summary(roster: &Roster, first: Measurement<&str>, second: Measurement<&str>) {
         let before = command_cpu(roster);
-        let [_, first_pid, _, _, second_pid, _] = self.pids();
+        let [_, first_pid, _, _, second_pid, _] = Self::pids();
         assert_cpu_rows(
             summary_cpu_for_test(roster, &["port".to_owned()]),
             &[(first_pid, first), (second_pid, second)],
@@ -189,15 +237,6 @@ impl SummaryTree {
             before,
             "selecting summary totals must preserve command-row measurements"
         );
-    }
-}
-
-impl Drop for SummaryTree {
-    fn drop(&mut self) {
-        for child in &mut self.children {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
@@ -247,9 +286,9 @@ fn assert_cpu_rows(
 #[test]
 fn promoted_totals_count_each_descendant_once_and_exclude_driver_and_sibling() {
     let tree = SummaryTree::new();
-    let roster = tree.roster(&tree.readings());
+    let roster = tree.roster(&SummaryTree::readings());
 
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -261,7 +300,7 @@ fn promoted_totals_count_each_descendant_once_and_exclude_driver_and_sibling() {
 fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric() {
     let tree = SummaryTree::new();
     let roster = tree.roster_with_idle_parent(Measurement::Reading(Duration::ZERO));
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
     assert_cpu_rows(
         command_cpu(&roster),
         &[
@@ -273,7 +312,7 @@ fn zero_own_ticks_across_thirteen_samples_keep_promoted_descendant_cpu_numeric()
             (sibling_nested, Measurement::Reading("50%")),
         ],
     );
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Reading("100%"),
         Measurement::Reading("50%"),
@@ -286,12 +325,12 @@ fn unreadable_parent_counter_keeps_its_promoted_total_unavailable_despite_busy_l
     let tree = SummaryTree::new();
     let unavailable = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
     let roster = tree.roster_with_idle_parent(unavailable);
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::ReadFailed),
         Measurement::Reading("50%"),
     );
-    let [_, first, nested, ..] = tree.pids();
+    let [_, first, nested, ..] = SummaryTree::pids();
     let rows = command_cpu(&roster);
     assert!(rows.contains(&(
         first,
@@ -303,8 +342,8 @@ fn unreadable_parent_counter_keeps_its_promoted_total_unavailable_despite_busy_l
 #[test]
 fn command_rows_keep_their_own_attributions_and_the_lead_keeps_its_group_total() {
     let tree = SummaryTree::new();
-    let roster = tree.roster(&tree.readings());
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let roster = tree.roster(&SummaryTree::readings());
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
 
     assert_cpu_rows(
         command_cpu(&roster),
@@ -321,7 +360,7 @@ fn command_rows_keep_their_own_attributions_and_the_lead_keeps_its_group_total()
         summary_cpu_for_test(&roster, &[]),
         &[(driver, Measurement::Reading("183%"))],
     );
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -331,7 +370,7 @@ fn command_rows_keep_their_own_attributions_and_the_lead_keeps_its_group_total()
 #[test]
 fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
     let tree = SummaryTree::new();
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
     for reason in [
         MeasurementAbsence::FirstObservation,
         MeasurementAbsence::ReadFailed,
@@ -339,7 +378,7 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
     ] {
         // Cover both depths and both siblings, as well as each promoted row's own bucket.
         for unavailable in [first, nested, deep, second, sibling_nested] {
-            let shares = tree.readings().map(|(pid, cpu)| {
+            let shares = SummaryTree::readings().map(|(pid, cpu)| {
                 (
                     pid,
                     if pid == unavailable {
@@ -360,7 +399,7 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
             } else {
                 Measurement::Reading("48%")
             };
-            tree.assert_summary(&roster, first_total, second_total);
+            SummaryTree::assert_summary(&roster, first_total, second_total);
 
             let expected = [
                 (driver, Measurement::Unavailable(reason)),
@@ -388,13 +427,13 @@ fn an_unavailable_contribution_affects_only_its_promoted_subtree() {
 #[test]
 fn an_unavailable_hidden_driver_does_not_replace_known_promoted_totals() {
     let tree = SummaryTree::new();
-    let [driver, ..] = tree.pids();
+    let [driver, ..] = SummaryTree::pids();
     for reason in [
         MeasurementAbsence::FirstObservation,
         MeasurementAbsence::ReadFailed,
         MeasurementAbsence::Unproven,
     ] {
-        let shares = tree.readings().map(|(pid, cpu)| {
+        let shares = SummaryTree::readings().map(|(pid, cpu)| {
             (
                 pid,
                 if pid == driver {
@@ -405,7 +444,7 @@ fn an_unavailable_hidden_driver_does_not_replace_known_promoted_totals() {
             )
         });
         let roster = tree.roster(&shares);
-        tree.assert_summary(
+        SummaryTree::assert_summary(
             &roster,
             Measurement::Reading("7%"),
             Measurement::Reading("48%"),
@@ -420,9 +459,8 @@ fn an_unavailable_hidden_driver_does_not_replace_known_promoted_totals() {
 #[test]
 fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
     let tree = SummaryTree::new();
-    let [driver, _, _, deep, _, _] = tree.pids();
-    let shares: Vec<_> = tree
-        .readings()
+    let [driver, _, _, deep, _, _] = SummaryTree::pids();
+    let shares: Vec<_> = SummaryTree::readings()
         .into_iter()
         .filter(|&(pid, _)| pid != deep)
         .collect();
@@ -441,7 +479,7 @@ fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         )],
     );
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         Measurement::Reading("48%"),
@@ -451,12 +489,12 @@ fn a_missing_nested_attribution_is_unavailable_instead_of_zero() {
 #[test]
 fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
     let tree = SummaryTree::new();
-    let baseline = tree.roster(&tree.readings());
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let baseline = tree.roster(&SummaryTree::readings());
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
     let registration = unproven_row(&baseline, deep);
     let roster = tree.roster_with_registration(&registration, &[deep]);
 
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &baseline,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -490,7 +528,7 @@ fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         )],
     );
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         Measurement::Reading("48%"),
@@ -500,8 +538,8 @@ fn a_non_process_contribution_with_a_cpu_bucket_keeps_leads_unavailable() {
 #[test]
 fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total() {
     let tree = SummaryTree::new();
-    let baseline = tree.roster(&tree.readings());
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let baseline = tree.roster(&SummaryTree::readings());
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
     let registration = unproven_row(&baseline, deep);
     let roster = tree.roster_with_registration(&registration, &[]);
     let shared: Vec<_> = roster
@@ -550,7 +588,7 @@ fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total
         summary_cpu_for_test(&roster, &[]),
         &[(driver, Measurement::Reading("183%"))],
     );
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Unavailable(MeasurementAbsence::Unproven),
         Measurement::Reading("48%"),
@@ -560,8 +598,8 @@ fn a_shared_pid_under_distinct_invocations_cannot_publish_a_double_charged_total
 #[test]
 fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
     let tree = SummaryTree::new();
-    let baseline = tree.roster(&tree.readings());
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let baseline = tree.roster(&SummaryTree::readings());
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
     let registration = unproven_row(&baseline, driver);
     let roster = tree.roster_with_registration(&registration, &[driver]);
     let lead = &roster.groups()[0].lead.process;
@@ -590,7 +628,7 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         )],
     );
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Reading("7%"),
         Measurement::Reading("48%"),
@@ -605,9 +643,9 @@ fn an_unproven_group_lead_cannot_use_its_cpu_bucket_for_a_subtree_total() {
 #[test]
 fn measured_zero_remains_available_in_each_promoted_subtree() {
     let tree = SummaryTree::new();
-    let [driver, ..] = tree.pids();
+    let [driver, ..] = SummaryTree::pids();
     for shares in [
-        tree.readings().map(|(pid, cpu)| {
+        SummaryTree::readings().map(|(pid, cpu)| {
             (
                 pid,
                 if pid == driver {
@@ -617,11 +655,10 @@ fn measured_zero_remains_available_in_each_promoted_subtree() {
                 },
             )
         }),
-        tree.readings()
-            .map(|(pid, _)| (pid, Measurement::Reading(0.0))),
+        SummaryTree::readings().map(|(pid, _)| (pid, Measurement::Reading(0.0))),
     ] {
         let roster = tree.roster(&shares);
-        tree.assert_summary(
+        SummaryTree::assert_summary(
             &roster,
             Measurement::Reading("0%"),
             Measurement::Reading("0%"),
@@ -633,16 +670,15 @@ fn measured_zero_remains_available_in_each_promoted_subtree() {
 fn subtree_totals_round_once_after_summing_raw_attributions() {
     let tree = SummaryTree::new();
     let cpu = [101.25, 11.25, 31.25, 43.25, 23.75, 59.5];
-    let shares: Vec<_> = tree
-        .pids()
+    let shares: Vec<_> = SummaryTree::pids()
         .into_iter()
         .zip(cpu.map(Measurement::Reading))
         .collect();
     let roster = tree.roster(&shares);
-    let [driver, first, nested, deep, second, sibling_nested] = tree.pids();
+    let [driver, first, nested, deep, second, sibling_nested] = SummaryTree::pids();
 
     // 85.75 and 83.25 round to 86 and 83; summing the row labels yields 85 and 84.
-    tree.assert_summary(
+    SummaryTree::assert_summary(
         &roster,
         Measurement::Reading("86%"),
         Measurement::Reading("83%"),

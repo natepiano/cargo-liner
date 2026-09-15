@@ -431,7 +431,7 @@ none.
 - Every deleted test has a ledger row naming a file:line assertion; rows reconcile with `cargo nextest list -p cargo-berth` before and after.
 - Three consecutive green full-workspace runs; measurements row present.
 
-### Phase 4 — cargo-tile: synthetic census and a lean reader harness  · status: todo
+### Phase 4 — cargo-tile: synthetic census and a lean reader harness  · status: done
 
 #### Work Order
 

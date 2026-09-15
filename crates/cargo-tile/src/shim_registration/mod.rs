@@ -1,6 +1,8 @@
 //! Exercise shim publications and the production reader with an explicit fixture parent.
 
 #[cfg(test)]
+mod app_scenarios;
+#[cfg(test)]
 mod rows_readout;
 #[cfg(test)]
 #[allow(
@@ -28,29 +30,6 @@ fn reader_child() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read actual process arguments and reject unsupported options before any installation.
-#[test]
-fn cli_rejects_unknown_process_arguments() -> std::io::Result<()> {
-    if std::env::var_os("CARGO_TILE_TEST_ARGUMENTS").is_some() {
-        // Libtest accepts --exact to enter this child, while cargo-tile must reject it.
-        let result = crate::cli::Cli::parse_arguments().run();
-        assert_eq!(result, std::process::ExitCode::FAILURE);
-        return Ok(());
-    }
-    let output = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "shim_registration::cli_rejects_unknown_process_arguments",
-            "--nocapture",
-        ])
-        .env("CARGO_TILE_TEST_ARGUMENTS", "1")
-        .output()?;
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("unexpected argument '--exact'"), "{error}");
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(
     clippy::expect_used,
@@ -65,7 +44,9 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::layout::Position;
+    use ratatui::layout::Rect;
     use sysinfo::Pid;
     use sysinfo::ProcessRefreshKind;
     use sysinfo::ProcessesToUpdate;
@@ -85,15 +66,13 @@ mod tests {
     use crate::constants::CAPTURE_REGISTRATION_BYTES;
     use crate::constants::POPUP_CHROME_HEIGHT;
     use crate::constants::PROCESS_POLL_MILLIS;
-    use crate::constants::SHIM_MARKER_SEARCH_BYTES;
-    use crate::constants::SUPPORTED_REGISTRATION_VERSION;
     use crate::interaction;
     use crate::navigation::AppNavigation;
     use crate::progress::capture_roots::CaptureRoots;
-    use crate::registration::ParseError;
-    use crate::registration::Registration;
     use crate::render;
+    use crate::roster::Roster;
     use crate::settings;
+    use crate::tiles::TileContent;
 
     /// Span several reporting windows while retaining every completed observation.
     const CPU_OBSERVATION_SCANS: usize = 16;
@@ -207,7 +186,23 @@ mod tests {
     /// The reader receives the shim's actual records, with no copied Rust implementation.
     fn reader_regression(scenario: &str) {
         let directory = tempfile::tempdir().expect("isolate writer and reader processes");
-        let output = Command::new("python3")
+        let mut command = Command::new("python3");
+        if scenario == "terminal-frame-completion" {
+            let inner = Rect::new(0, 0, 80, 10);
+            let mut buffer = Buffer::empty(inner);
+            render::draw_cell_for_test(
+                &mut buffer,
+                &Roster::new(),
+                &TileContent::Summary,
+                inner,
+                11,
+            );
+            let readout: String = (0..inner.width)
+                .map(|x| buffer[(x, inner.height - 1)].symbol())
+                .collect();
+            command.env("CARGO_TILE_TEST_ROWS_READOUT", readout);
+        }
+        let output = command
             .args(["-c", READER_SCENARIO_SCRIPT])
             .arg(directory.path())
             .arg(std::env::current_exe().expect("integration reader executable"))
@@ -217,7 +212,6 @@ mod tests {
             ))
             .arg(scenario)
             .arg(CAPTURE_REGISTRATION_BYTES.to_string())
-            .arg(SHIM_MARKER_SEARCH_BYTES.to_string())
             .arg(PROCESS_POLL_MILLIS.to_string())
             .arg(CPU_OBSERVATION_SCANS.to_string())
             .output()
@@ -242,30 +236,6 @@ mod tests {
             .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    /// Two HOME values cannot split one physical directory into separate headings.
-    #[test]
-    fn reader_groups_one_directory_across_different_writer_homes() {
-        reader_regression("grouping");
-    }
-
-    /// An unavailable parent sample stays inside the cache server's readiness deadline.
-    #[test]
-    fn cache_server_readiness_retries_unavailable_parent_observations() {
-        reader_regression("cache-readiness-delayed");
-    }
-
-    /// A missing cache server fails at the deadline with its retained diagnostics.
-    #[test]
-    fn cache_server_readiness_rejects_permanent_parent_absence() {
-        reader_regression("cache-readiness-never");
-    }
-
-    /// Navigation draws every account in a short popup and reaches the settings below them.
-    #[test]
-    fn reader_scrolls_settings_accounts_into_view_with_keyboard_navigation() {
-        reader_regression("settings-scroll");
     }
 
     /// One key queued beside a resize must open settings after the reader resumes.
@@ -333,48 +303,6 @@ mod tests {
         assert_eq!(app.framework.settings_pane.viewport().pos(), excluded);
     }
 
-    /// Select the fixture's command pane even when an unrelated pane precedes it.
-    #[test]
-    fn reader_grouping_finds_fixture_markers_after_an_unrelated_pane() {
-        reader_regression("grouping-earlier-pane");
-    }
-
-    /// Markers outside a pane or split across panes remain pending until one pane contains all.
-    #[test]
-    fn reader_pane_readiness_waits_for_all_fixture_markers_in_one_pane() {
-        reader_regression("pane-readiness-delayed");
-    }
-
-    /// Missing and duplicate fixture panes expire with their final count and terminal screen.
-    #[test]
-    fn reader_pane_readiness_reports_the_final_screen_on_timeout() {
-        reader_regression("pane-readiness-never");
-    }
-
-    /// A verified live registration supplies fields absent from the process census.
-    #[test]
-    fn reader_displays_a_registration_without_a_cargo_process_row() {
-        reader_regression("fallback");
-    }
-
-    /// The registration's home cannot abbreviate a different scanner's directory.
-    #[test]
-    fn reader_keeps_a_registration_from_another_home_absolute() {
-        reader_regression("fallback-other-home");
-    }
-
-    /// A log read failure cannot erase the separately verified registration's row.
-    #[test]
-    fn reader_displays_a_verified_registration_with_an_unreadable_log() {
-        reader_regression("fallback-unreadable-log");
-    }
-
-    /// Missing kernel proof permits retention, never a registration-sourced row.
-    #[test]
-    fn reader_does_not_source_a_row_from_an_unknown_registration() {
-        reader_regression("fallback-unknown");
-    }
-
     /// A future layout is diagnosed before its fields can supply identity or cleanup evidence.
     #[test]
     fn reader_retains_a_newer_registration_and_log_while_the_writer_is_alive() {
@@ -393,59 +321,10 @@ mod tests {
         reader_regression("version-newer-oversized");
     }
 
-    /// Header dispatch also precedes the payload cap for callers supplying bytes directly.
-    #[test]
-    fn oversized_newer_registration_reports_its_version_before_its_size() {
-        let encountered = SUPPORTED_REGISTRATION_VERSION + 1;
-        let mut bytes = format!("cargo-tile-v{encountered}\0").into_bytes();
-        bytes.resize(
-            usize::try_from(CAPTURE_REGISTRATION_BYTES).expect("registration cap fits usize") + 1,
-            b'x',
-        );
-        assert_eq!(
-            Registration::parse(&bytes),
-            Err(ParseError::UnsupportedVersion { encountered })
-        );
-    }
-
     /// Supported framing errors remain distinct from a request to upgrade the reader.
     #[test]
     fn reader_reports_a_malformed_supported_registration_separately() {
         reader_regression("version-malformed");
-    }
-
-    /// Both framing generations retain their live progress and registration-only row source.
-    #[test]
-    fn reader_reads_live_v2_and_v3_publications_together() { reader_regression("version-mixed"); }
-
-    /// Auto-install keeps the newer shim and retains recovery guidance after the toast expires.
-    #[test]
-    fn older_reader_startup_keeps_the_newer_shim_and_reports_it_in_settings() {
-        reader_regression("startup-newer");
-    }
-
-    /// Auto-install refuses a partial version line before touching either installed file.
-    #[test]
-    fn reader_startup_refuses_a_truncated_version_without_changing_installed_files() {
-        reader_regression("startup-truncated");
-    }
-
-    /// A separate failed installation cannot hide or mislabel a retained newer shim.
-    #[test]
-    fn older_reader_startup_distinguishes_a_kept_newer_shim_from_an_install_failure() {
-        reader_regression("startup-newer-failure");
-    }
-
-    /// Exclusion applies before either registration or process row construction.
-    #[test]
-    fn reader_excludes_both_sources_of_the_same_invocation() {
-        reader_regression("fallback-excluded");
-    }
-
-    /// Exec preserves the invocation's single row and heading in both directions.
-    #[test]
-    fn reader_keeps_one_row_when_registration_and_process_sources_switch() {
-        reader_regression("fallback-source-switch");
     }
 
     /// Nested invocations keep their own rows and their parent's tile through both source changes.
@@ -506,28 +385,10 @@ mod tests {
         reader_regression("root-headings");
     }
 
-    /// A valid live registration with no process row cannot enter through another uid's name.
-    #[test]
-    fn reader_never_sources_a_row_from_a_foreign_owned_account_directory() {
-        reader_regression("fallback-foreign-owned");
-    }
-
     /// The summary keeps real process ownership when a capture directory claims another uid.
     #[test]
     fn reader_summary_ignores_foreign_owned_account_attribution() {
         reader_regression("summary-root-headings");
-    }
-
-    /// The summary cannot hide any of a registration's three unavailable measurements.
-    #[test]
-    fn reader_shows_unavailable_registration_measurements_in_the_summary() {
-        reader_regression("fallback-summary");
-    }
-
-    /// Account qualification does not combine independent checkout directories.
-    #[test]
-    fn reader_keeps_two_directories_under_one_account_and_root_separate() {
-        reader_regression("two-directories");
     }
 
     /// A forged account directory never adds a second view of the process invocation.
@@ -546,12 +407,6 @@ mod tests {
     #[test]
     fn reader_does_not_borrow_confirmation_from_a_foreign_owned_directory() {
         reader_regression("fallback-selected-unknown");
-    }
-
-    /// Competing generations remain explained without a row and recover on the next scan.
-    #[test]
-    fn reader_reports_and_recovers_ambiguity_without_a_process_row() {
-        reader_regression("fallback-ambiguous");
     }
 
     /// One enclosing capture supplies progress without replacing nested commands or pids.
@@ -594,12 +449,6 @@ mod tests {
     #[test]
     fn reader_rejects_another_live_processes_registration_identity() {
         reader_regression("forged");
-    }
-
-    /// A fresh kernel absence permits staging cleanup while unknown and live records stay.
-    #[test]
-    fn reader_removes_ended_staging_and_preserves_unknown_and_live_staging() {
-        reader_regression("staging");
     }
 
     /// Production parsing and kernel verification accept the actual writer's bytes.

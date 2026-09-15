@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import codecs
 import errno
 import fcntl
 import os
@@ -15,12 +16,10 @@ import subprocess
 import sys
 import termios
 import time
-from unittest.mock import patch
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario, registration_limit, shim_header_limit, poll_millis, cpu_scans = sys.argv[2:]
+binary, source, scenario, registration_limit, poll_millis, cpu_scans = sys.argv[2:]
 registration_limit = int(registration_limit)
-shim_header_limit = int(shim_header_limit)
 poll_seconds = int(poll_millis) / 1000
 cpu_scans = int(cpu_scans)
 # Two CPU seconds within wait_for's ten-second limit preserve the original
@@ -28,6 +27,8 @@ cpu_scans = int(cpu_scans)
 refusal_cpu_seconds = 2
 # Ratatui completes every cursorless draw with Crossterm's Hide command.
 frame_end = b'\x1b[?25l'
+registration_fallback_scenarios = ('fallback-nested-source-switch', 'fallback-root-duplicate',
+                                   'fallback-selected-unknown')
 # Parallel reader tests share the host census; leave room for every fixture's rows.
 terminal_rows = 300
 terminal_columns = 300
@@ -53,25 +54,22 @@ def copy_named_shell(path):
         subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)],
                        check=True, capture_output=True, text=True)
 
-if scenario.startswith('settings-scroll'):
+if scenario == 'settings-scroll-burst':
     account_directories = [capture_parent / str(other_uid - index) for index in range(24)]
     for directory in account_directories:
         directory.mkdir()
 configuration = '[capture]\nauto_install = false\n'
-if scenario.startswith('startup-'):
-    configuration = '[capture]\nauto_install = true\n'
-if scenario in ('root-headings', 'summary-root-headings', 'root-duplicate', 'fallback-root-duplicate',
-                'fallback-selected-unknown', 'fallback-foreign-owned'):
+if scenario in ('root-headings', 'summary-root-headings', 'root-duplicate', 'fallback-root-duplicate', 'fallback-selected-unknown'):
     (other_capture / 'state/pids').mkdir(parents=True)
     # Account discovery is automatic; no roots configuration is written.
 configuration += '[tiles]\ninitial_rows = 100\n'
-if scenario in ('excluded', 'fallback-excluded'):
+if scenario == 'excluded':
     configuration += '[commands]\nexcluded = ["clippy"]\n'
 elif scenario == 'exec-excluded':
     configuration += '[commands]\nexcluded = ["run"]\n'
 elif scenario == 'cpu-cache-excluded':
     configuration += '[commands]\nexcluded = ["check"]\n'
-elif scenario in ('summary-root-headings', 'fallback-summary', 'child-source-switch'):
+elif scenario in ('summary-root-headings', 'child-source-switch'):
     # These rows must lead their own groups to appear in the summary. Exclude
     # the outer test driver, using the operator's ordinary configuration surface.
     configuration += '[commands]\nexcluded = ["nextest"]\n'
@@ -82,40 +80,6 @@ assignment = 'capture_parent=/tmp/cargo-tile'
 assert shim_source.splitlines().count(assignment) == 1
 (bin_directory / 'cargo').write_text(shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
 copy_named_shell(bin_directory / 'cargo-tile-real')
-if scenario.startswith('startup-'):
-    version_header = re.search(r'^# cargo-tile-shim-version: (\d+)$', shim_source, re.MULTILINE)
-    assert version_header is not None, 'embedded shim must declare its install version'
-    supported_version = int(version_header[1])
-    newer_version = supported_version + 1
-    newer_bin = root / 'rustup/toolchains/a-newer/bin'
-    newer_bin.mkdir(parents=True)
-    newer_bytes = shim_source.replace(version_header[0],
-                                     '# cargo-tile-shim-version: ' + str(newer_version), 1).encode()
-    if scenario == 'startup-truncated':
-        header = version_header[0].encode()
-        header_start = len(shim_source[:version_header.start()].encode())
-        padding = shim_header_limit - header_start - len(header)
-        newer_bytes = shim_source.encode().replace(header, b'#' + b' ' * (padding - 2) + b'\n' + header + b'0', 1)
-        assert newer_bytes[:shim_header_limit].endswith(header)
-        assert newer_bytes[shim_header_limit:shim_header_limit + 2] == b'0\n'
-    (newer_bin / 'cargo').write_bytes(newer_bytes)
-    (newer_bin / 'cargo').chmod(0o755)
-    saved_cargo = b'#!/bin/sh\nexit 37\n'
-    (newer_bin / 'cargo-tile-real').write_bytes(saved_cargo)
-    (newer_bin / 'cargo-tile-real').chmod(0o751)
-    if scenario == 'startup-truncated':
-        installed_paths = (newer_bin / 'cargo', newer_bin / 'cargo-tile-real')
-        for path in installed_paths:
-            path.chmod(0o751)
-            os.utime(path, ns=(0, 0))
-        installed_before = {path: (path.read_bytes(), path.stat()) for path in installed_paths}
-    newer_metadata = (newer_bin / 'cargo').stat()
-    if scenario == 'startup-newer-failure':
-        failed_bin = root / 'rustup/toolchains/z-broken/bin'
-        failed_bin.mkdir(parents=True)
-        (failed_bin / 'cargo').write_bytes(saved_cargo)
-        (failed_bin / 'cargo').chmod(0o751)
-        (failed_bin / 'cargo-tile-shim.lock').mkdir()
 (work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
 printf '%s' "$$" > "$OBSERVED/cargo-pid"
 printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
@@ -264,14 +228,14 @@ class ParentOwnedChild:
     def __init__(self, pid):
         self.pid = pid
 
-def start_registration_carrier(template, command='build', writer_home=home):
+def start_registration_carrier(template):
     # A live Python process has kernel identity but no cargo argv. Publish the
     # shim's wire format for that lifetime, then exec cargo without changing pid.
     observations = root / ('probe-carrier-' + root.name)
     observations.mkdir()
-    directory = writer_home / ('registered-directory-' + root.name)
+    directory = home / ('registered-directory-' + root.name)
     directory.mkdir(parents=True)
-    shutil.copyfile(work / 'build', directory / command)
+    shutil.copyfile(work / 'build', directory / 'build')
     carrier_script = observations / 'carrier.py'
     carrier_script.write_text('''import os
 from pathlib import Path
@@ -293,10 +257,10 @@ while not (observations / 'release').exists():
         os.execv(program, [program, os.environ['CARRIER_COMMAND'], observations.name])
     time.sleep(0.02)
 ''')
-    child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations),
+    child_environment = dict(environment, HOME=str(home), OBSERVED=str(observations),
                              REGISTRATION_CARRIER=str(carrier_script), CARRIER_PYTHON=sys.executable,
                              CARRIER_CARGO=str(bin_directory / 'cargo-tile-real'),
-                             CARRIER_COMMAND=command)
+                             CARRIER_COMMAND='build')
     if scenario == 'fallback-nested-source-switch':
         nested_directory = home / ('nested-carrier-' + root.name)
         nested_directory.mkdir()
@@ -336,8 +300,8 @@ while not (observations / 'release').exists():
                            .replace(tzinfo=timezone.utc).timestamp())).encode()
     fields[1] += b'-carrier'
     fields[4] = b'run-' + fields[1] + b'-' + str(child.pid).encode() + b'.log'
-    fields[5:8] = [os.fsencode(directory), os.fsencode(writer_home), b'2']
-    fields[8:] = [command.encode(), observations.name.encode(), b'']
+    fields[5:8] = [os.fsencode(directory), os.fsencode(home), b'2']
+    fields[8:] = [b'build', observations.name.encode(), b'']
     registration = pids / (str(child.pid) + '.' + fields[1].decode())
     log = capture / os.fsdecode(fields[4])
     log.write_bytes(b'Blocking waiting for file lock on build directory\n')
@@ -486,40 +450,6 @@ def wait_for_cache_server_parent(pid, launcher_pid, server):
              lambda: '\nlast ps observation: ' + repr(observations)
              + '\nserver output: ' + (server / 'output').read_text())
 
-def assert_cache_server_readiness():
-    original = subprocess.run, time.monotonic, time.sleep
-    elapsed = [0.0]
-    calls = []
-    server = root / 'cache-readiness'
-    server.mkdir()
-    (server / 'output').write_text('retained server diagnostic')
-    delayed = scenario == 'cache-readiness-delayed'
-    results = [(1, ''), (0, ''), (0, '41\n'), (0, '1\n')]
-    def observe(args, **kwargs):
-        calls.append(args)
-        code, output = results[min(len(calls) - 1, len(results) - 1)] if delayed else (1, '')
-        return subprocess.CompletedProcess(args, code, output, 'probe observation')
-    def advance(seconds):
-        elapsed[0] += seconds
-    try:
-        subprocess.run = observe
-        time.monotonic = lambda: elapsed[0]
-        time.sleep = advance
-        if delayed:
-            wait_for_cache_server_parent(42, 41, server)
-            assert len(calls) == 4, calls
-        else:
-            try:
-                wait_for_cache_server_parent(42, 41, server)
-            except AssertionError as error:
-                assert elapsed[0] >= 10 and len(calls) > 1, (elapsed, calls)
-                assert 'last ps observation' in str(error), error
-                assert 'retained server diagnostic' in str(error), error
-            else:
-                raise AssertionError('permanently missing cache server passes readiness')
-    finally:
-        subprocess.run, time.monotonic, time.sleep = original
-
 def process_ancestry(pid):
     ancestry = []
     while pid > 1:
@@ -660,67 +590,117 @@ def read_terminal(duration):
                 break
             transcript.extend(data)
 
-def terminal_snapshot():
-    # Ratatui positions each changed run with CSI row;column H. Reconstruct cells
-    # so repeated refreshes cannot manufacture extra headings or stale progress.
-    # A PTY read can stop halfway through moving rows. Hide follows the entire
-    # cursorless draw, so retain the preceding frame until that command arrives.
-    completed = transcript.rfind(frame_end)
-    published = transcript[:completed + len(frame_end)] if completed >= 0 else b''
-    cells = [[' '] * terminal_columns for _ in range(terminal_rows)]
-    colors = [[None] * terminal_columns for _ in range(terminal_rows)]
-    foreground = None
-    row = column = 0
-    tokens = re.split(r'(\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))',
-                      published.decode('utf-8', 'replace'))
-    for token in tokens:
-        if token.startswith('\x1b['):
-            command = token[-1]
-            parameters = token[2:-1]
-            if command in 'Hf':
-                position = parameters.split(';')
-                row = int(position[0] or 1) - 1
-                column = int(position[1] or 1) - 1 if len(position) > 1 else 0
-            elif command == 'J' and parameters in ('2', '3'):
-                cells = [[' '] * terminal_columns for _ in range(terminal_rows)]
-                colors = [[None] * terminal_columns for _ in range(terminal_rows)]
-            elif command == 'K':
-                if 0 <= row < len(cells):
-                    cells[row][column:] = [' '] * (terminal_columns - column)
-                    colors[row][column:] = [None] * (terminal_columns - column)
-            elif command == 'C':
-                column += int(parameters or 1)
-            elif command == 'G':
-                column = int(parameters or 1) - 1
-            elif command == 'm':
-                attributes = [int(value or 0) for value in parameters.split(';')]
-                index = 0
-                while index < len(attributes):
-                    attribute = attributes[index]
-                    if attribute in (0, 39):
-                        foreground = None
-                    elif 30 <= attribute <= 37 or 90 <= attribute <= 97:
-                        foreground = (attribute,)
-                    elif attribute in (38, 48) and index + 1 < len(attributes):
-                        count = 3 if attributes[index + 1] == 2 else 1
-                        if attribute == 38:
-                            foreground = tuple(attributes[index + 1:index + 2 + count])
-                        index += 1 + count
-                    index += 1
-            continue
-        if token.startswith('\x1b]'):
-            continue
-        for character in token:
+class CompletedTerminalFrames:
+    """Keep the mutable draw separate from the last completed screen."""
+
+    # Match the valid prefix even when its terminator has not arrived.
+    csi = re.compile(r'\x1b\[[0-?]*[ -/]*([@-~]?)')
+    osc = re.compile(r'\x1b\][^\x07\x1b]*(\x07|\x1b\\)?')
+
+    def __init__(self):
+        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
+        self.pending = ''
+        self.offset = 0
+        self.row = self.column = 0
+        self.foreground = None
+        self.cells = []
+        self.colors = []
+        self.rows = self.columns = 0
+        self.published = ('', [])
+
+    def resize(self, rows, columns):
+        if (rows, columns) == (self.rows, self.columns):
+            return
+        self.cells = [(line[:columns] + [' '] * max(0, columns - len(line)))
+                      for line in self.cells[:rows]]
+        self.colors = [(line[:columns] + [None] * max(0, columns - len(line)))
+                       for line in self.colors[:rows]]
+        self.cells.extend([[' '] * columns for _ in range(rows - len(self.cells))])
+        self.colors.extend([[None] * columns for _ in range(rows - len(self.colors))])
+        self.rows, self.columns = rows, columns
+
+    def feed(self, data):
+        self.pending += self.decoder.decode(data)
+        index = 0
+        while index < len(self.pending):
+            character = self.pending[index]
+            if character == '\x1b':
+                if index + 1 == len(self.pending):
+                    break
+                introducer = self.pending[index + 1]
+                if introducer == '[':
+                    match = self.csi.match(self.pending, index)
+                    if not match[1] and match.end() == len(self.pending):
+                        break
+                    if match[1]:
+                        token = match[0]
+                        self.command(token[-1], token[2:-1])
+                    # An invalid prefix ends before the byte that cancels it.
+                    index = match.end()
+                    continue
+                if introducer == ']':
+                    match = self.osc.match(self.pending, index)
+                    # A trailing ESC may be the first byte of the OSC terminator.
+                    if not match[1] and self.pending[match.end():] in ('', '\x1b'):
+                        break
+                    index = match.end()
+                    continue
+                index += 1 if introducer == '\x1b' else 2
+                continue
             if character == '\r':
-                column = 0
+                self.column = 0
             elif character == '\n':
-                row += 1
+                self.row += 1
             elif character >= ' ':
-                if 0 <= row < terminal_rows and 0 <= column < terminal_columns:
-                    cells[row][column] = character
-                    colors[row][column] = foreground
-                column += 1
-    return '\n'.join(''.join(line).rstrip() for line in cells), colors
+                if 0 <= self.row < self.rows and 0 <= self.column < self.columns:
+                    self.cells[self.row][self.column] = character
+                    self.colors[self.row][self.column] = self.foreground
+                self.column += 1
+            index += 1
+        self.pending = self.pending[index:]
+
+    def command(self, command, parameters):
+        if command == 'l' and parameters == '?25':
+            self.published = ('\n'.join(''.join(line).rstrip() for line in self.cells),
+                              [line.copy() for line in self.colors])
+        elif command in 'Hf':
+            position = parameters.split(';')
+            self.row = int(position[0] or 1) - 1
+            self.column = int(position[1] or 1) - 1 if len(position) > 1 else 0
+        elif command == 'J' and parameters in ('2', '3'):
+            self.cells = [[' '] * self.columns for _ in range(self.rows)]
+            self.colors = [[None] * self.columns for _ in range(self.rows)]
+        elif command == 'K' and 0 <= self.row < self.rows:
+            beginning = max(0, min(self.column, self.columns))
+            self.cells[self.row][beginning:] = [' '] * (self.columns - beginning)
+            self.colors[self.row][beginning:] = [None] * (self.columns - beginning)
+        elif command == 'C':
+            self.column += int(parameters or 1)
+        elif command == 'G':
+            self.column = int(parameters or 1) - 1
+        elif command == 'm':
+            attributes = [int(value or 0) for value in parameters.split(';')]
+            index = 0
+            while index < len(attributes):
+                attribute = attributes[index]
+                if attribute in (0, 39):
+                    self.foreground = None
+                elif 30 <= attribute <= 37 or 90 <= attribute <= 97:
+                    self.foreground = (attribute,)
+                elif attribute in (38, 48) and index + 1 < len(attributes):
+                    count = 3 if attributes[index + 1] == 2 else 1
+                    if attribute == 38:
+                        self.foreground = tuple(attributes[index + 1:index + 2 + count])
+                    index += 1 + count
+                index += 1
+
+terminal_frames = CompletedTerminalFrames()
+
+def terminal_snapshot():
+    terminal_frames.resize(terminal_rows, terminal_columns)
+    terminal_frames.feed(transcript[terminal_frames.offset:])
+    terminal_frames.offset = len(transcript)
+    return terminal_frames.published
 
 def screen():
     return terminal_snapshot()[0]
@@ -790,8 +770,7 @@ def summary_row_is_unobscured(rendered, marker, following_marker):
     return False
 
 def assert_registered_row(rendered, writer):
-    commands = (summary_pane(rendered) if scenario == 'fallback-summary'
-                else fixture_pane(rendered, (writer[1].name,)))
+    commands = fixture_pane(rendered, (writer[1].name,))
     rows = [line for line in commands if writer[1].name in line]
     assert len(rows) == 1, 'registration duplicates its invocation\n' + rendered
     assert 'cargo ' + writer[3][8].decode() + ' ' + writer[1].name in rows[0], rendered
@@ -814,6 +793,8 @@ def unavailable_measurements(row):
     # A border delimits that cell just as whitespace delimits the inner cells.
     return row.replace('│', ' ').split().count('--')
 
+rows_readout = re.compile(r'content rows: (\d+)(?: @ \d+)?  r/c: (\d+)/(\d+)')
+
 def carrier_source_is_rendered(writer, source):
     global terminal_rows
     read_terminal(0.1)
@@ -824,9 +805,9 @@ def carrier_source_is_rendered(writer, source):
         # Resize only an observed clipped pane, not the reader's startup frame.
         panes = fixture_panes(rendered, (first[1].name,))
         if len(panes) == 1:
-            # The readout pads its cell size label and may carry a measured width first.
-            sizes = [re.search(r'content rows: (\d+).*?r/c: (\d+)/', line) for line in panes[0]]
-            if any(size and int(size[1]) > int(size[2]) for size in sizes):
+            # The final interior row belongs to the readout, not the content.
+            sizes = [rows_readout.search(line) for line in panes[0]]
+            if any(size and int(size[1]) > int(size[2]) - 1 for size in sizes):
                 terminal_rows *= 2
                 fcntl.ioctl(terminal, termios.TIOCSWINSZ,
                             struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
@@ -920,19 +901,6 @@ def settings_screen():
     wait_for(settings_are_closed, 'settings do not close')
     return rendered
 
-def popup_lines(rendered, title):
-    lines = rendered.splitlines()
-    header_index = next(index for index, line in enumerate(lines) if title in line)
-    header = lines[header_index]
-    left = header.rindex('┌', 0, header.index(title))
-    right = header.index('┐', left)
-    body = []
-    for line in lines[header_index + 1:]:
-        if line[left:left + 1] == '└':
-            return body
-        body.append(line[left + 1:right])
-    raise AssertionError('popup has no lower border\n' + rendered)
-
 def assert_settings_scroll():
     global terminal_rows, terminal_columns
     # Keep every account below the initial viewport without cleanup rows.
@@ -1024,94 +992,83 @@ def assert_settings_scroll():
     os.write(terminal, b'\x1b')
     read_terminal(0.1)
 
-def assert_fixture_pane_readiness():
-    markers = ('probe-parent', 'probe-nested-check', 'probe-nested-test')
-    header, border = '│ pid parent command\n', '└────\n'
-    rows = [f'│ cargo {command} {marker}\n'
-            for command, marker in zip(('build', 'check', 'test'), markers)]
-    complete = header + ''.join(rows) + border
-    summary = '┌ summary\n' + ''.join(rows) + border
-    incomplete = summary + header + rows[0] + border
-    split = header + rows[0] + border + header + ''.join(rows[1:]) + border
-    duplicate = complete + complete
-    ready = header + '│ unrelated-earlier-pane\n' + border + complete
-    cases = ([(incomplete, split, duplicate, ready)] if scenario == 'pane-readiness-delayed'
-             else [(incomplete, split), (incomplete, duplicate)])
-    for frames in cases:
-        elapsed = 0
-        reads = 0
-        snapshots = 0
-        transcript.clear()
-        def advance(duration):
-            nonlocal elapsed
-            elapsed += duration
-        def receive_frame(duration):
-            nonlocal reads
-            assert duration == 0.1, 'readiness must keep the PTY read cadence'
-            frame = frames[min(reads, len(frames) - 1)]
-            label = 'earlier-readiness-screen' if reads == 0 else 'final-readiness-screen'
-            transcript.extend(('\x1b[2J\x1b[H' + frame + label).replace('\n', '\r\n').encode() + frame_end)
-            reads += 1
-            advance(duration)
-        snapshot = terminal_snapshot
-        def observe_snapshot():
-            nonlocal snapshots
-            snapshots += 1
-            return snapshot()
-        with patch.object(time, 'monotonic', lambda: elapsed), patch.object(time, 'sleep', advance), \
-                patch.dict(globals(), read_terminal=receive_frame, terminal_snapshot=observe_snapshot):
-            if scenario == 'pane-readiness-delayed':
-                rendered = wait_for_fixture_pane(markers)
-                assert reads == len(frames), 'readiness accepts markers before one pane contains them'
-                assert fixture_pane(rendered, markers) == [row.rstrip() for row in rows], rendered
-            else:
-                try:
-                    wait_for_fixture_pane(markers)
-                except AssertionError as error:
-                    expected_count = 0 if frames[-1] == split else 2
-                    message = str(error)
-                    assert f'observed {expected_count} matching panes\n' in message, message
-                    assert 'final-readiness-screen' in message, message
-                    assert 'earlier-readiness-screen' not in message, message
-                    assert frames[-1].rstrip() in message, message
-                    assert elapsed >= 10, 'pane readiness fails before the existing deadline'
-                else:
-                    raise AssertionError('pane readiness accepts a screen without exactly one fixture pane')
-            assert snapshots == reads, 'each readiness poll must reconstruct exactly one snapshot'
-
 def assert_completed_terminal_frames():
-    # Moving rows upward repeats their previous positions until the rest of the
-    # same draw clears those cells. Split every byte, including UTF-8 and CSI.
+    global terminal_rows, terminal_columns
+    # The readout comes from draw_cell_for_test, including the reserved footer.
+    readout = os.environ['CARGO_TILE_TEST_ROWS_READOUT']
+    size = rows_readout.search(readout)
+    assert size is not None, 'resize-on-clip regex misses production output: ' + readout
+    assert tuple(map(int, size.groups())) == (11, 10, 80), readout
+    assert int(size[1]) > int(size[2]) - 1, 'clipped content must trigger a resize'
+    assert rows_readout.search('content rows: 11 @ 60  r/c: 10/80').groups() == size.groups()
+
+    def split_frame(frame):
+        previous = terminal_snapshot()
+        for byte in frame[:-1]:
+            transcript.append(byte)
+            assert terminal_snapshot() == previous, 'snapshot exposes an unfinished redraw'
+        transcript.append(frame[-1])
+        return terminal_snapshot()
+
     first = ('\x1b[2J\x1b[H│ pid parent command\r\n'
              '│ earlier row\r\n│ cargo check probe-nested\r\n'
              '│ cargo test probe-child\r\n└────').encode() + frame_end
-    transcript.extend(first)
-    initial = terminal_snapshot()
+    split_frame(first)
     redraw = ('\x1b[2;1H\x1b[32m│ cargo check probe-nested\x1b[0m'
               '\x1b[3;1H│ cargo test probe-child\x1b[K'
               '\x1b[4;1H└────\x1b[K\x1b[5;1H\x1b[K').encode() + frame_end
-    for byte in redraw[:-1]:
-        transcript.append(byte)
-        assert terminal_snapshot() == initial, 'snapshot exposes an unfinished redraw'
-    transcript.append(redraw[-1])
-    rendered, colors = terminal_snapshot()
-    assert rendered.count('probe-nested') == rendered.count('probe-child') == 1, rendered
-    assert colors[1][0] == (32,), 'completed redraw loses foreground colors'
-    assert colors[2][0] is None, 'foreground reset does not survive frame completion'
-    # A completed duplicate must remain visible to the row-count assertions.
-    transcript.extend(b'\x1b[4;1Hcargo check probe-nested' + frame_end)
-    assert screen().count('probe-nested') == 2, 'snapshot removes a real duplicate'
+    for _ in range(3):
+        rendered, colors = split_frame(redraw)
+        assert rendered.count('probe-nested') == rendered.count('probe-child') == 1, rendered
+        assert colors[1][0] == (32,), 'completed redraw loses foreground colors'
+        assert colors[2][0] is None, 'foreground reset does not survive frame completion'
+
+    previous = terminal_snapshot()
+    transcript.extend(b'\x1b[2J\x1b[')
+    assert terminal_snapshot() == previous, 'unfinished clear discards the completed screen'
+    terminal_rows, terminal_columns = 12, 80
+    assert terminal_snapshot() == previous, 'resize publishes an incomplete frame'
+    redraw = ('H\x1b[38;2;12;34;56m│ resized-é\x1b[39m'
+              '\x1b[2;1H\x1b[38;5;123mindexed\x1b[48;2;4;5;6m background'
+              '\x1b[0m reset').encode() + frame_end
+    rendered, colors = split_frame(redraw)
+    assert 'resized-é' in rendered and 'probe-nested' not in rendered, rendered
+    assert len(colors) == terminal_rows and len(colors[0]) == terminal_columns
+    assert colors[0][0] == (2, 12, 34, 56), 'RGB foreground does not survive the resize'
+    assert colors[1][0] == colors[1][8] == (5, 123), 'background SGR changes foreground'
+    assert colors[1][18] is None, 'SGR reset retains a foreground'
+    for _ in range(3):
+        rendered, colors = split_frame(b'\x1b[3;1Hcargo check probe-nested' + frame_end)
+        assert rendered.count('probe-nested') == 1 and 'resized-é' in rendered
+        assert colors[0][0] == (2, 12, 34, 56), 'redraw loses unchanged cell colors'
+    terminal_rows, terminal_columns = 6, 40
+    rendered, colors = split_frame(b'\x1b[4;1Hcargo check probe-nested' + frame_end)
+    assert len(colors) == 6 and len(colors[0]) == 40, 'shrinking keeps stale geometry'
+    assert rendered.count('probe-nested') == 2, 'snapshot removes a real duplicate'
+    offset = terminal_frames.offset
+    assert terminal_snapshot() == (rendered, colors) and terminal_frames.offset == offset
+
+    for index, abandoned in enumerate((b'\x1b[', b'\x1b[?25', b'\x1b]unfinished title', b'\x1b')):
+        marker = f'recovered {index}'
+        redraw = b'\x1b[2J\x1b[H' + marker.encode() + frame_end
+        rendered, colors = split_frame(abandoned + redraw)
+        assert rendered.rstrip() == marker, ('abandoned escape stalls redraw', abandoned, rendered)
+        # Cancellation must also work when both escapes arrive in the same read.
+        transcript.extend(abandoned + b'\x1b[2J\x1b[Hwhole read ' + marker.encode() + frame_end)
+        assert terminal_snapshot()[0].rstrip() == 'whole read ' + marker
+
+    for terminator in (b'\x07', b'\x1b\\'):
+        rendered, colors = split_frame(b'\x1b[2J\x1b[H\x1b]hidden title' + terminator
+                                       + b'visible text' + frame_end)
+        assert rendered.rstrip() == 'visible text', 'split OSC leaks its contents into the frame'
+
+    rendered, colors = split_frame(b'\x1b[2J\x1b[Hdiscard\x1b[\rkept\x1b[K' + frame_end)
+    assert rendered.rstrip() == 'kept', 'invalid CSI consumes its cancelling carriage return'
+    rendered, colors = split_frame('\x1b[2J\x1b[H\x1b[é visible'.encode() + frame_end)
+    assert rendered.rstrip() == 'é visible', 'invalid CSI consumes its cancelling UTF-8 character'
 
 if scenario == 'terminal-frame-completion':
     assert_completed_terminal_frames()
-    sys.exit(0)
-
-if scenario in ('pane-readiness-delayed', 'pane-readiness-never'):
-    assert_fixture_pane_readiness()
-    sys.exit(0)
-
-if scenario in ('cache-readiness-delayed', 'cache-readiness-never'):
-    assert_cache_server_readiness()
     sys.exit(0)
 
 try:
@@ -1154,40 +1111,32 @@ try:
     if scenario.startswith('version-'):
         assert first[3][0] == b'cargo-tile-v3', first[3]
         carrier = start_registration_carrier(first)
-        if scenario == 'version-mixed':
-            legacy = list(carrier[3])
-            legacy[0] = b'cargo-tile-v2'
-            carrier[2].write_bytes(b'\0'.join(legacy))
-            retained.extend((first[2], first[4], carrier[2], carrier[4]))
-        else:
-            # Recreate this ended sibling for each scan, proving cleanup runs
-            # while the unsupported or malformed publication remains untouched.
-            sweep_probe = start_writer('probe-sweep', home)
-            sweep_bytes = sweep_probe[2].read_bytes()
-            end_writer(sweep_probe)
-            if scenario in ('version-newer-ended', 'version-newer-oversized'):
-                (carrier[1] / 'release').touch()
-                assert carrier[0].wait(timeout=5) == 0
-                try:
-                    os.kill(carrier[0].pid, 0)
-                except ProcessLookupError:
-                    pass
-                else:
-                    raise AssertionError('unsupported fixture pid remains present')
-            supported_version = int(first[3][0].removeprefix(b'cargo-tile-v'))
-            newer_version = supported_version + 1
-            if scenario == 'version-malformed':
-                contents = first[3][0] + b'\0partial\0'
+        sweep_probe = start_writer('probe-sweep', home)
+        sweep_bytes = sweep_probe[2].read_bytes()
+        end_writer(sweep_probe)
+        if scenario in ('version-newer-ended', 'version-newer-oversized'):
+            (carrier[1] / 'release').touch()
+            assert carrier[0].wait(timeout=5) == 0
+            try:
+                os.kill(carrier[0].pid, 0)
+            except ProcessLookupError:
+                pass
             else:
-                # A future payload need not have today's field count, UTF-8,
-                # generation, birth, or log positions.
-                contents = ('cargo-tile-v' + str(newer_version)).encode() + b'\0\xfffuture-layout\0'
-                if scenario == 'version-newer-oversized':
-                    contents += b'x' * (registration_limit + 1 - len(contents))
-                    assert len(contents) > registration_limit
-            carrier[2].write_bytes(contents)
-            preserved = {path: path.read_bytes() for path in (carrier[2], carrier[4])}
-            retained.extend(preserved)
+                raise AssertionError('unsupported fixture pid remains present')
+        supported_version = int(first[3][0].removeprefix(b'cargo-tile-v'))
+        newer_version = supported_version + 1
+        if scenario == 'version-malformed':
+            contents = first[3][0] + b'\0partial\0'
+        else:
+            # A future payload need not have today's field count, UTF-8,
+            # generation, birth, or log positions.
+            contents = ('cargo-tile-v' + str(newer_version)).encode() + b'\0\xfffuture-layout\0'
+            if scenario == 'version-newer-oversized':
+                contents += b'x' * (registration_limit + 1 - len(contents))
+                assert len(contents) > registration_limit
+        carrier[2].write_bytes(contents)
+        preserved = {path: path.read_bytes() for path in (carrier[2], carrier[4])}
+        retained.extend(preserved)
     elif scenario.startswith('quiet-json'):
         quiet = '--quiet' if scenario == 'quiet-json-long' else '-q'
         json_format = (('--message-format', 'json') if scenario == 'quiet-json-separate'
@@ -1228,59 +1177,21 @@ try:
     elif scenario == 'child-source-switch':
         carrier = start_registration_carrier(first)
         retained.extend((carrier[2], carrier[4]))
-    elif scenario.startswith('fallback'):
-        command = 'clippy' if scenario == 'fallback-excluded' else 'build'
-        writer_home = root / 'writer-home' if scenario == 'fallback-other-home' else home
-        carrier = start_registration_carrier(first, command, writer_home)
+    elif scenario in registration_fallback_scenarios:
+        carrier = start_registration_carrier(first)
         retained.extend((carrier[2], carrier[4]))
-        if scenario == 'fallback-summary':
-            # A newer live row in the same directory keeps the carrier above
-            # the footer without relying on unrelated host processes.
-            sentinel = start_writer('probe-summary-tail', home,
-                                    directory=Path(os.fsdecode(carrier[3][5])))
-            retained.extend((sentinel[2], sentinel[4]))
-            started = first[2].stat().st_mtime - 60
-            os.utime(carrier[2], (started, started))
-            os.utime(sentinel[2], (started + 60, started + 60))
-        if scenario == 'fallback-foreign-owned':
-            foreign_registration = other_capture / 'state/pids' / carrier[2].name
-            foreign_log = other_capture / carrier[4].name
-            retained.remove(carrier[2])
-            retained.remove(carrier[4])
-            carrier[2].rename(foreign_registration)
-            carrier[4].rename(foreign_log)
-            retained.extend((foreign_registration, foreign_log))
         if scenario == 'fallback-selected-unknown':
             publish_other_root(carrier)
-        if scenario in ('fallback-unknown', 'fallback-selected-unknown'):
+        if scenario == 'fallback-selected-unknown':
             fields = list(carrier[3])
             fields[3] = b''
             carrier[2].write_bytes(b'\0'.join(fields))
-        elif scenario == 'fallback-unreadable-log':
-            carrier[4].unlink()
-            carrier[4].mkdir()  # Non-regular log is unreadable even for a privileged test user.
         elif scenario == 'fallback-root-duplicate':
             publish_other_root(carrier)
-        elif scenario == 'fallback-ambiguous':
-            competing = list(carrier[3])
-            competing[1] += b'-competing'
-            competing[4] = b'run-' + competing[1] + b'-' + str(carrier[0].pid).encode() + b'.log'
-            competing_name = pids / (str(carrier[0].pid) + '.' + competing[1].decode())
-            competing_log = capture / os.fsdecode(competing[4])
-            competing_log.write_bytes(b'PASS [0.010s] (7/13) competing-test\n')
-            competing_name.write_bytes(b'\0'.join(competing))
-            retained.extend((competing_name, competing_log))
     elif scenario in ('root-headings', 'summary-root-headings'):
         second = start_writer('probe-second', home, capture_root=other_capture)
     elif scenario == 'root-duplicate':
         publish_other_root(first)
-    elif scenario == 'two-directories':
-        other_directory = home / ('other-directory-' + root.name)
-        other_directory.mkdir()
-        shutil.copyfile(work / 'build', other_directory / 'build')
-        second = start_writer('probe-second', home, directory=other_directory)
-    elif scenario in ('grouping', 'grouping-earlier-pane'):
-        second = start_writer('probe-second', root / 'custom-home')
     elif scenario in ('nested', 'excluded', 'exec-nested', 'exec-excluded'):
         nested_directory = home / ('nested-directory-' + root.name)
         enclosing_command = {'nested': 'build', 'excluded': 'clippy',
@@ -1298,31 +1209,6 @@ try:
             ended[2].write_bytes(contents)
             ended[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
             removed.extend((ended[2], ended[4]))
-    elif scenario == 'staging':
-        live = start_writer('probe-live', home)
-        child, observations, registration, fields, log = first
-        contents = registration.read_bytes()
-        ended_staging = Path(str(registration) + '.tmp')
-        end_writer(first)
-        assert not registration.exists(), 'writer cleanup should finish first'
-        ended_staging.write_bytes(contents)
-        log.write_bytes(b'Blocking waiting for file lock on build directory\n')
-        removed.extend((ended_staging, log))
-        # A complete record with unavailable identity and an incomplete record
-        # both remain; neither may prevent the ended sibling from being swept.
-        for suffix, birth in (('unknown', b''), ('malformed', b'bad')):
-            generation = fields[1] + b'-' + suffix.encode()
-            name = pids / (str(child.pid) + '.' + generation.decode() + '.tmp')
-            sibling = list(fields)
-            sibling[1], sibling[3] = generation, birth
-            sibling[4] = b'run-' + generation + b'-' + str(child.pid).encode() + b'.log'
-            sibling_log = capture / os.fsdecode(sibling[4])
-            name.write_bytes(b'\0'.join(sibling) if suffix == 'unknown' else b'incomplete\0')
-            sibling_log.write_bytes(b'preserve unknown writer\n')
-            retained.extend((name, sibling_log))
-        live_staging = Path(str(live[2]) + '.tmp')
-        live[2].rename(live_staging)
-        retained.extend((live_staging, live[4]))
     elif scenario == 'forged':
         # A matching record under a different live pid has no kernel identity
         # authority. This exercises the external record boundary of the identity check.
@@ -1379,103 +1265,21 @@ try:
     if reader == 0:
         fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
-        if scenario.startswith('settings-scroll'):
+        if scenario == 'settings-scroll-burst':
             (root / 'reader-terminal').write_text(os.ttyname(0))
         reader_environment['CARGO_TILE_TEST_READER'] = '1'
         os.execve(binary, [binary, '--exact', 'shim_registration::reader_child', '--nocapture'], reader_environment)
     def reader_has_scanned():
         read_terminal(0.1)
         rendered = screen()
-        marker = live[1].name if scenario == 'staging' else first[1].name
+        marker = first[1].name
         return marker in rendered and 'summary' in rendered
     wait_for(reader_has_scanned, 'production reader does not display the live cargo row')
-    read_terminal(1)
     rendered = screen()
     assert 'summary' in rendered, rendered
     if scenario.startswith('cpu-'):
         rendered = assert_cpu_workload(first, unrelated if scenario.startswith('cpu-cache-') else None)
-    if scenario == 'startup-truncated':
-        refusal = 'a-newer: not installed: incomplete shim version line'
-        def incomplete_notice_is_visible():
-            read_terminal(0.1)
-            return refusal in ' '.join(screen().split())
-        wait_for(incomplete_notice_is_visible, 'startup accepts the truncated shim version')
-        normalized = ' '.join(' '.join(popup_lines(screen(), 'Capture shim')).split())
-        assert refusal in normalized, normalized
-        settings = settings_screen()
-        normalized = ' '.join(' '.join(popup_lines(settings, 'Settings')).split())
-        assert refusal in normalized, normalized
-        for path, (contents, before) in installed_before.items():
-            assert path.read_bytes() == contents, 'startup changes installed bytes: ' + str(path)
-            after = path.stat()
-            assert (after.st_ino, after.st_mode, after.st_mtime_ns) == \
-                   (before.st_ino, before.st_mode, before.st_mtime_ns), str(path)
-        assert not (newer_bin / 'cargo-tile-shim.lock').exists()
-        assert not (newer_bin / 'cargo-tile-shim.staging').exists()
-    elif scenario.startswith('startup-newer'):
-        def newer_notice_is_visible():
-            read_terminal(0.1)
-            return 'Newer capture shim kept' in screen()
-        wait_for(newer_notice_is_visible, 'startup omits the kept-newer-shim toast')
-        rendered = screen()
-        normalized = ' '.join(' '.join(popup_lines(rendered, 'Newer capture shim kept')).split())
-        assert 'a-newer' in normalized, normalized
-        assert f'newer shim v{newer_version} kept' in normalized, normalized
-        assert f'this reader is older and supports v{supported_version}' in normalized, normalized
-        assert 'upgrade and restart the reader' in normalized, normalized
-        assert 'a-newer: not installed' not in normalized, normalized
-        if scenario == 'startup-newer':
-            assert 'not installed' not in normalized.lower(), normalized
-        else:
-            failure = ' '.join(' '.join(popup_lines(rendered, 'Capture shim')).split())
-            assert 'z-broken: not installed' in failure, failure
-            assert 'a-newer' not in failure, failure
-        def newer_toast_expires():
-            read_terminal(0.1)
-            return 'Newer capture shim kept' not in screen()
-        wait_for(newer_toast_expires, 'newer-shim toast does not expire')
-        for visit in range(2):
-            settings = settings_screen()
-            settings_lines = popup_lines(settings, 'Settings')
-            normalized = ' '.join(' '.join(settings_lines).split())
-            assert 'Notices:' in settings, settings
-            assert 'a-newer' in normalized, normalized
-            assert f'newer shim v{newer_version} kept' in normalized, normalized
-            assert f'this reader is older and supports v{supported_version}' in normalized, normalized
-            assert 'upgrade and restart the reader' in normalized, normalized
-            assert 'a-newer: not installed' not in normalized, normalized
-            if scenario == 'startup-newer':
-                assert 'not installed' not in normalized.lower(), normalized
-            else:
-                assert 'z-broken: not installed' in normalized, normalized
-                kept_rows = [line for line in settings_lines if 'a-newer' in line]
-                failed_rows = [line for line in settings_lines if 'z-broken' in line]
-                assert len(kept_rows) == len(failed_rows) == 1, settings
-                assert kept_rows[0] != failed_rows[0], 'startup outcomes share one Settings row\n' + settings
-        assert (newer_bin / 'cargo').read_bytes() == newer_bytes, 'startup replaces the newer shim'
-        assert (newer_bin / 'cargo-tile-real').read_bytes() == saved_cargo
-        after = (newer_bin / 'cargo').stat()
-        assert (after.st_ino, after.st_mode, after.st_mtime_ns) == \
-               (newer_metadata.st_ino, newer_metadata.st_mode, newer_metadata.st_mtime_ns)
-        assert not (newer_bin / 'cargo-tile-shim.lock').exists()
-        assert not (newer_bin / 'cargo-tile-shim.staging').exists()
-        if scenario == 'startup-newer-failure':
-            assert (failed_bin / 'cargo').read_bytes() == saved_cargo
-            assert (failed_bin / 'cargo-tile-shim.lock').is_dir()
-            assert not (failed_bin / 'cargo-tile-real').exists()
-    elif scenario == 'version-mixed':
-        rendered = wait_for_fixture_pane((first[1].name, carrier[1].name))
-        row, heading = assert_registered_row(rendered, carrier)
-        assert 'blocked' in row and unavailable_measurements(row) == 3, rendered
-        commands = fixture_pane(rendered, (first[1].name, carrier[1].name))
-        current = [line for line in commands if first[1].name in line]
-        assert len(current) == 1 and 'blocked' in current[0], rendered
-        assert re.match(r'^\s*│\s*' + (first[1] / 'cargo-pid').read_text() + r'\s', current[0]), rendered
-        settings = settings_screen().lower()
-        assert 'invalid registration' not in settings and 'unsupported' not in settings, settings
-        assert first[2].read_bytes().startswith(b'cargo-tile-v3\0')
-        assert carrier[2].read_bytes().startswith(b'cargo-tile-v2\0')
-    elif scenario.startswith('version-'):
+    if scenario.startswith('version-'):
         for scan in range(3):
             sweep_probe[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
             sweep_probe[2].write_bytes(sweep_bytes)
@@ -1499,7 +1303,7 @@ try:
                 assert f'v{newer_version}' in settings and f'v{supported_version}' in settings, settings
                 assert 'upgrade' in settings.lower() and 'restart' in settings.lower(), settings
                 assert 'invalid registration' not in settings.lower(), settings
-    if scenario.startswith('settings-scroll'):
+    if scenario == 'settings-scroll-burst':
         assert_settings_scroll()
     if scenario.startswith('quiet-json'):
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
@@ -1543,17 +1347,18 @@ try:
             assert observed == initial, \
                 ('child source change alters family color, start, or headings: '
                  + repr(initial) + ' became ' + repr(observed) + '\n' + screen())
-    if scenario.startswith('fallback'):
-        if scenario in ('fallback-unknown', 'fallback-excluded', 'fallback-ambiguous',
-                        'fallback-selected-unknown', 'fallback-foreign-owned'):
+    if scenario in registration_fallback_scenarios:
+        if scenario == 'fallback-selected-unknown':
             assert carrier[1].name not in rendered, 'ineligible registration sources a row\n' + rendered
         else:
             def carrier_is_visible():
                 read_terminal(0.1)
                 rendered = screen()
-                if scenario == 'fallback-summary':
-                    return summary_row_is_unobscured(rendered, carrier[1].name,
-                                                     sentinel[1].name)
+                if scenario == 'fallback-nested-source-switch':
+                    # A completed frame can precede the first draw of both children.
+                    markers = [carrier[1].name, *('probe-nested-' + root.name + '-' + command
+                                                  for command in ('check', 'test'))]
+                    return len(fixture_panes(rendered, markers)) == 1
                 return carrier[1].name in rendered
             wait_for(carrier_is_visible,
                      'verified registration does not supply an unobscured command row')
@@ -1562,9 +1367,8 @@ try:
             expected_unavailable = 2 if scenario == 'fallback-nested-source-switch' else 3
             assert unavailable_measurements(row) == expected_unavailable, \
                 'registration invents CPU, compiler, or managed measurements: ' + repr(row) + '\n' + rendered
-            if scenario != 'fallback-unreadable-log':
-                assert 'blocked' in row, rendered
-            if scenario in ('fallback-source-switch', 'fallback-nested-source-switch'):
+            assert 'blocked' in row, rendered
+            if scenario == 'fallback-nested-source-switch':
                 if scenario == 'fallback-nested-source-switch':
                     assert_carrier_children(rendered, carrier)
                 initial_heading = heading
@@ -1589,13 +1393,7 @@ try:
                 assert unavailable_measurements(row) == expected_unavailable, repr(row) + '\n' + rendered
                 if scenario == 'fallback-nested-source-switch':
                     assert_carrier_children(rendered, carrier)
-        if scenario == 'fallback-excluded':
-            (carrier[1] / 'activate').touch()
-            wait_for(lambda: (carrier[1] / 'source').read_text() == 'process', 'excluded cargo does not start')
-            read_terminal(1)
-            rendered = screen()
-            assert carrier[1].name not in rendered, 'excluded process sources a row\n' + rendered
-    if scenario in ('root-headings', 'two-directories', 'root-duplicate'):
+    if scenario in ('root-headings', 'root-duplicate'):
         markers = (first[1].name,) if scenario == 'root-duplicate' else (first[1].name, second[1].name)
         commands = fixture_pane(rendered, markers)
         for marker in markers:
@@ -1616,9 +1414,6 @@ try:
             assert ignored in settings, settings
             assert 'configured' not in settings.lower(), settings
 
-        if scenario == 'two-directories':
-            assert sum('[' + account + '] ~/' + other_directory.name in line
-                       for line in commands) == 1, rendered
     if scenario == 'summary-root-headings':
         def summary_writers_are_visible():
             read_terminal(0.1)
@@ -1639,45 +1434,16 @@ try:
         ignored = str(other_capture) + ': owned by ' + owner + ', not by ' + str(other_uid) + ' — ignored'
         assert ignored in settings, settings
         assert 'unused directory' not in settings, settings
-        publication = carrier[2] if scenario.startswith('fallback') else first[2]
+        publication = carrier[2] if scenario in registration_fallback_scenarios else first[2]
         assert publication.exists() and (other_capture / 'state/pids' / publication.name).exists()
         diagnostics = ' '.join(settings.replace('│', ' ').split())
         assert ': ' + publication.name + ')' in diagnostics, 'selected basename differs from file\n' + settings
         assert '(' + publication.name + '; ' not in diagnostics, 'ignored account supplies competing proof\n' + settings
-    if scenario == 'fallback-foreign-owned':
-        settings = settings_screen()
-        owner = pwd.getpwuid(other_capture.stat().st_uid).pw_name
-        assert str(other_capture) + ': owned by ' + owner + ', not by ' + str(other_uid) + ' — ignored' in settings, settings
-        assert foreign_registration.exists() and foreign_log.exists(), 'reader cleans rejected account'
-        assert carrier[1].name not in rendered, 'foreign-owned registration contributes a row\n' + rendered
-    if scenario == 'fallback-unreadable-log':
-        settings = settings_screen()
-        assert carrier[4].name in settings and 'unreadable' in settings, settings
-        assert '1 capture' in settings and '2 captures' not in settings, settings
-    if scenario == 'fallback-ambiguous':
-        settings = settings_screen()
-        assert 'ambiguous' in settings.lower(), settings
-        assert carrier[2].name in settings and competing_name.name in settings, \
-            'ambiguous diagnostics omit the actual publication basenames\n' + settings
-    if scenario in ('locale', 'grouping', 'grouping-earlier-pane', 'forged'):
+    if scenario in ('locale', 'forged'):
         assert first[1].name in rendered, rendered
         assert any(first[1].name in line and 'blocked' in line
                    for line in rendered.splitlines()), rendered
         assert first[2].exists() and first[4].exists(), 'live record is removed by reader'
-    if scenario in ('grouping', 'grouping-earlier-pane'):
-        # Count this directory only inside the command pane, which is the one
-        # that lists these writers: they run under the test binary, and the
-        # summary pane carries the outermost invocation of each directory
-        # rather than the nested ones. Other panes can choose a different
-        # display label for the same directory identity.
-        if scenario == 'grouping-earlier-pane':
-            # Prepend a separate pane to the actual production screen so this
-            # parser regression never depends on the host's live command order.
-            rendered = ('│ pid parent command\n│ unrelated-earlier-pane\n└────\n'
-                        + rendered)
-            assert 'unrelated-earlier-pane' in '\n'.join(next(command_panes(rendered)))
-        commands = fixture_pane(rendered, (first[1].name, second[1].name))
-        assert sum(work.name in line for line in commands) == 1, rendered
     if scenario in ('nested', 'excluded', 'exec-nested', 'exec-excluded'):
         markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
         rendered = wait_for_fixture_pane((first[1].name, *markers))
@@ -1702,10 +1468,6 @@ try:
             wait_for(lambda: enclosing[4].exists()
                      and b'writer remains captured after reader scan' in enclosing[4].read_bytes(),
                      'excluded live command loses its capture after the sweep')
-    if scenario == 'staging':
-        assert live[1].name in rendered, rendered
-        assert not any(live[1].name in line and 'blocked' in line
-                       for line in rendered.splitlines()), rendered
     if scenario in ('ambiguous-generation', 'unverifiable-generation'):
         commands = fixture_pane(rendered, (first[1].name,))
         rows = [line for line in commands if first[1].name in line]
@@ -1720,17 +1482,6 @@ try:
         assert not path.exists(), 'reader retains ended artifact: ' + str(path) + '\n' + rendered
     for path in retained:
         assert path.exists(), 'reader removes unknown or live artifact: ' + str(path)
-    if scenario == 'fallback-ambiguous':
-        competing_name.unlink()
-        competing_log.unlink()
-        def fallback_recovers():
-            read_terminal(0.1)
-            return any(carrier[1].name in line and 'blocked' in line
-                       for line in screen().splitlines())
-        wait_for(fallback_recovers, 'resolved ambiguity does not redraw the registration row')
-        rendered = screen()
-        assert_registered_row(rendered, carrier)
-        assert 'ambiguous' not in settings_screen().lower(), 'resolved ambiguity remains in settings'
     if scenario in ('ambiguous-generation', 'unverifiable-generation'):
         competing_name.unlink()
         competing_log.unlink()

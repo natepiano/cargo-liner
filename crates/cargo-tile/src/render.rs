@@ -3601,6 +3601,7 @@ mod tests {
     fn account_root_and_raw_directory_independently_separate_headings() {
         let context = capture_context();
         let mut first = same_second("/workspace/project", 40);
+        first.process.command = CommandText::of("cargo", &["build", "first-project"]);
         first.process.provenance = RowProvenance::Direct(context.clone());
         let mut other_account = same_second("/workspace/project", 41);
         let mut account_context = context.clone();
@@ -3613,12 +3614,44 @@ mod tests {
         let mut other_directory = same_second("/workspace/other", 43);
         other_directory.process.provenance = RowProvenance::Direct(context);
 
-        for other in [&other_account, &other_root, &other_directory] {
+        for other in [&mut other_account, &mut other_root, &mut other_directory] {
+            other.process.command = CommandText::of("cargo", &["test", "second-project"]);
             let rows = [&first, other];
             assert_eq!(group_by_path(&rows, PinnedGroup::Unpinned).len(), 2);
             for kind in [TableKind::Command, TableKind::Summary] {
                 let text = grouped_table_text(&rows, kind, PinnedGroup::Unpinned);
                 assert_eq!(text.matches("[runner-one]").count(), 2, "{kind:?}: {text}");
+                for command in ["cargo build first-project", "cargo test second-project"] {
+                    assert_eq!(text.matches(command).count(), 1, "{kind:?}: {text}");
+                }
+                for pid in [first.process.pid, other.process.pid] {
+                    assert_eq!(
+                        text.split_whitespace()
+                            .filter(|word| *word == pid.to_string())
+                            .count(),
+                        1,
+                        "{kind:?}: {text}"
+                    );
+                }
+                let expected_project_headings = if other.process.path == "/workspace/other" {
+                    1
+                } else {
+                    2
+                };
+                assert_eq!(
+                    text.lines()
+                        .filter(|line| line.trim() == "[runner-one] /workspace/project")
+                        .count(),
+                    expected_project_headings,
+                    "{kind:?}: {text}"
+                );
+                assert_eq!(
+                    text.lines()
+                        .filter(|line| line.trim() == "[runner-one] /workspace/other")
+                        .count(),
+                    2 - expected_project_headings,
+                    "{kind:?}: {text}"
+                );
             }
         }
     }
@@ -3895,6 +3928,22 @@ mod tests {
                 .count(),
             1
         );
+        ordinary.process.command = CommandText::of("cargo", &["build", "first-project"]);
+        custom_home.process.command = CommandText::of("cargo", &["test", "second-project"]);
+        for row in [&mut ordinary, &mut custom_home] {
+            row.process.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
+        }
+        let text = grouped_table_text(
+            &[&ordinary, &custom_home],
+            TableKind::Command,
+            PinnedGroup::Unpinned,
+        );
+        assert_eq!(text.matches("~/project").count(), 1, "{text}");
+        assert_eq!(text.matches("/writer/project").count(), 0, "{text}");
+        for command in ["cargo build first-project", "cargo test second-project"] {
+            assert_eq!(text.matches(command).count(), 1, "{text}");
+        }
+        assert_eq!(text.matches("blocked").count(), 2, "{text}");
     }
 
     #[test]

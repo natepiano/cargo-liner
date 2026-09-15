@@ -29,6 +29,8 @@ use super::process_identity::ProcessIdentity;
 use super::scan;
 use super::scan::Census;
 use super::scan::CompilerObservation;
+use super::scan::ProcessObservation;
+use super::scan::WorkingDirectoryObservation;
 use crate::birth_stamp;
 #[cfg(target_os = "linux")]
 use crate::birth_stamp::BirthStamp;
@@ -398,14 +400,19 @@ fn argument_path(argv: &[OsString], flag: &str) -> Result<PathBuf, CompilePathAb
 }
 
 /// Canonical paths compare directory components and resolve relative paths in the owner.
-fn process_path(process: &Process, path: &Path) -> Result<PathBuf, CompilePathAbsence> {
+fn process_path(
+    process: &ProcessObservation<'_>,
+    path: &Path,
+) -> Result<PathBuf, CompilePathAbsence> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        process
-            .cwd()
-            .ok_or(CompilePathAbsence::Unavailable)?
-            .join(path)
+        match process.cwd() {
+            WorkingDirectoryObservation::Observed(directory) => directory.join(path),
+            WorkingDirectoryObservation::Unavailable => {
+                return Err(CompilePathAbsence::Unavailable);
+            },
+        }
     };
     path.canonicalize()
         .map_err(|_| CompilePathAbsence::Unavailable)
@@ -413,7 +420,7 @@ fn process_path(process: &Process, path: &Path) -> Result<PathBuf, CompilePathAb
 
 /// Compiler clients and rustc use the same output flag spelling.
 pub(super) fn process_argument_path(
-    process: &Process,
+    process: &ProcessObservation<'_>,
     flag: &str,
 ) -> Result<PathBuf, CompilePathAbsence> {
     process_path(process, &argument_path(process.cmd(), flag)?)
@@ -421,7 +428,9 @@ pub(super) fn process_argument_path(
 
 /// Explicit target paths win over the environment. Defaults and Cargo configuration
 /// are learned from observed compiler clients, whose output paths reflect both.
-pub(super) fn cargo_target_directory(process: &Process) -> Result<PathBuf, CompilePathAbsence> {
+pub(super) fn cargo_target_directory(
+    process: &ProcessObservation<'_>,
+) -> Result<PathBuf, CompilePathAbsence> {
     let arguments =
         command_text::cargo_split(process.cmd()).map_err(|_| CompilePathAbsence::Unavailable)?;
     let argv = &process.cmd()[arguments.start..];

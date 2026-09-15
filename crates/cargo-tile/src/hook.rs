@@ -458,6 +458,33 @@ pub(crate) struct NewerShim {
     pub(crate) supported: u64,
 }
 
+#[cfg(test)]
+enum StartupSource {
+    Discover,
+    Injected(Startup),
+}
+
+#[cfg(test)]
+thread_local! {
+    static STARTUP_SOURCE: std::cell::RefCell<StartupSource> =
+        const { std::cell::RefCell::new(StartupSource::Discover) };
+}
+
+/// Supply one startup result on this thread, restoring discovery even after a panic.
+#[cfg(test)]
+pub(crate) fn with_startup_for_test(startup: Startup, run: impl FnOnce()) {
+    struct RestoreStartup(StartupSource);
+
+    impl Drop for RestoreStartup {
+        fn drop(&mut self) {
+            STARTUP_SOURCE.set(std::mem::replace(&mut self.0, StartupSource::Discover));
+        }
+    }
+
+    let _restore = RestoreStartup(STARTUP_SOURCE.replace(StartupSource::Injected(startup)));
+    run();
+}
+
 /// Stand the shim up in front of every toolchain that lacks one, and
 /// bring every installed shim up to date with this binary's copy.
 ///
@@ -466,6 +493,11 @@ pub(crate) struct NewerShim {
 /// the others: each is its own file system operation, and one refusing
 /// says nothing about the next.
 pub(crate) fn at_startup() -> io::Result<Startup> {
+    #[cfg(test)]
+    if let StartupSource::Injected(startup) = STARTUP_SOURCE.replace(StartupSource::Discover) {
+        return Ok(startup);
+    }
+
     let mut hooks = Vec::new();
     let mut failed = Vec::new();
     for discovery in Hook::all()? {
@@ -1245,6 +1277,7 @@ fn inspect_shim(path: &Path) -> io::Result<CargoContents> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::os::unix::fs::MetadataExt;
     use std::process::Command;
     use std::sync::Barrier;
     use std::time::SystemTime;
@@ -2422,6 +2455,78 @@ mod tests {
                 .iter()
                 .all(|hook| hook.state().unwrap() == HookState::Installed)
         );
+    }
+
+    /// Preserve the filesystem assertions from the three startup reader scenarios.
+    #[test]
+    fn startup_preserves_newer_and_truncated_shims_with_separate_failures() {
+        let newer = SUPPORTED_REGISTRATION_VERSION + 1;
+        let header = format!("#!/bin/sh\n# {SHIM_MARKER}\n{SHIM_VERSION_PREFIX}{newer}");
+        for (contents, failures) in [
+            (format!("{header}\n"), Vec::new()),
+            (format!("{header}\n"), vec![("z-broken", CARGO_NAME)]),
+            (header, Vec::new()),
+        ] {
+            let mut entries = vec![("a-newer", CARGO_NAME)];
+            entries.extend(failures);
+            let (_home, hooks) = toolchains(&entries);
+            hooks[0].install().unwrap();
+            fs::write(&hooks[0].cargo, &contents).unwrap();
+            let paths = [&hooks[0].cargo, &hooks[0].real];
+            for path in paths {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o751)).unwrap();
+                mark_old_mtime(path);
+            }
+            let snapshot = || {
+                paths.map(|path| {
+                    let metadata = fs::metadata(path).unwrap();
+                    (
+                        fs::read(path).unwrap(),
+                        metadata.ino(),
+                        metadata.mode(),
+                        metadata.modified().unwrap(),
+                    )
+                })
+            };
+            let before = snapshot();
+            for hook in &hooks[1..] {
+                fs::create_dir(hook.cargo.with_file_name(SHIM_LOCK_NAME)).unwrap();
+            }
+
+            let startup = stand_up(&hooks);
+
+            if contents.ends_with('\n') {
+                assert_eq!(
+                    startup.kept_newer,
+                    vec![NewerShim {
+                        toolchain: "a-newer".into(),
+                        installed: newer,
+                        supported: SUPPORTED_REGISTRATION_VERSION,
+                    }]
+                );
+                assert_eq!(startup.failed.len(), hooks.len() - 1);
+                for (name, _) in &startup.failed {
+                    assert_eq!(name, "z-broken");
+                }
+            } else {
+                assert!(startup.kept_newer.is_empty());
+                assert_eq!(
+                    startup.failed,
+                    vec![("a-newer".into(), "incomplete shim version line".into())]
+                );
+            }
+            assert!(startup.installed.is_empty());
+            assert!(startup.refreshed.is_empty());
+            assert_eq!(snapshot(), before);
+            assert!(!hooks[0].cargo.with_file_name(SHIM_LOCK_NAME).exists());
+            assert!(!hooks[0].staging.exists());
+            for hook in &hooks[1..] {
+                assert_eq!(fs::read_to_string(&hook.cargo).unwrap(), CARGO_NAME);
+                assert!(hook.cargo.with_file_name(SHIM_LOCK_NAME).is_dir());
+                assert!(!hook.real.exists());
+                assert!(!hook.staging.exists());
+            }
+        }
     }
 
     /// Startup must include a repaired toolchain in its existing
