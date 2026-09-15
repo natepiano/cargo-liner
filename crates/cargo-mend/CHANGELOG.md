@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.21.3] - 2026-09-15
 
 ### Fixed
 - Two different cargo-mend builds sharing one `target/` directory no longer fail each other with "no analysis was produced". Both wrote their reports to the same `target/mend-findings/<hash>.json` files, so after one build ran, the other found its compiled output fresh, rejected the reports the first build left there, and had nothing to show. Each crate's report is now stored beside cargo's compiled output under the unit's id (`deps/lib<crate>-<id>.mend.json`), and a run reads exactly the reports for the units cargo lists, so each build keeps its own reports and reports from a different feature set or scope are no longer merged in. `target/mend-findings` is no longer used and can be deleted.
