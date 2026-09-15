@@ -849,6 +849,7 @@ mod tests {
     use crate::reservation::AbandonmentReason;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
+    use crate::reservation::IntegrationWitness;
     use crate::reservation::OrphanRetirementReason;
     use crate::reservation::ProtectedReservationTip;
     use crate::reservation::ReleaseDisposition;
@@ -928,6 +929,7 @@ mod tests {
             IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk.clone(),
                 proof:     IntegrationProof::ProtectedTipAncestor,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             },
         )?;
         fixture.release(
@@ -949,6 +951,7 @@ mod tests {
             IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk.clone(),
                 proof:     IntegrationProof::ProtectedTipAncestor,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             },
         )?;
         fixture.release(
@@ -1084,6 +1087,7 @@ mod tests {
             IntegrationEvidenceStatus::Integrated {
                 trunk_oid: rewritten_tip,
                 proof:     IntegrationProof::ProtectedTipAncestor,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             },
         )?;
         rewritten.board.release(

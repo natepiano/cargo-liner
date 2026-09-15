@@ -937,7 +937,38 @@ fn witness_survives_pruning_and_controls_successors() {
 
     let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert_witness_evidence(&revalidated, &fixture.predecessor_id, "integrated", false);
-    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated");
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
+
+    git(
+        root,
+        &[
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "advance beyond witness",
+        ],
+    );
+    let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(evaluated_trunk, witness);
+    let advanced = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(&advanced, &fixture.predecessor_id, "integrated", false);
+    let advanced_board = json_output(&advanced.output);
+    let predecessor = witness_reservation_snapshot(&advanced_board, &fixture.predecessor_id);
+    assert_eq!(
+        predecessor["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": witness})
+    );
+    assert_eq!(
+        predecessor["integration_evidence"]["status"],
+        serde_json::json!({
+            "status": "integrated",
+            "trunk_oid": evaluated_trunk,
+            "proof": "rewritten_witness_ancestor",
+            "witness": {"kind": "historical", "commit": witness},
+        })
+    );
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
 
     let holding = run_berth_with_git_trace(
         root,
@@ -970,7 +1001,7 @@ fn witness_survives_pruning_and_controls_successors() {
     git(root, &["reset", "--hard", &fixture.successor_head]);
     let lost = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert_witness_evidence(&lost, &fixture.predecessor_id, "trunk_rewritten", true);
-    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "trunk_rewritten");
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "trunk_rewritten", &witness);
     git(root, &["reset", "--hard", &witness]);
     let recovered = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert_witness_evidence(&recovered, &fixture.predecessor_id, "integrated", false);
@@ -983,13 +1014,29 @@ fn witness_survives_pruning_and_controls_successors() {
 }
 
 /// Explicit release revalidates the same surviving witness without consulting the old phase.
-fn assert_explicit_witness_evidence(root: &Path, reservation_id: &str, status: &str) {
+fn assert_explicit_witness_evidence(
+    root: &Path,
+    reservation_id: &str,
+    status: &str,
+    witness: &str,
+) {
     let released = run_berth_with_git_trace(root, &["release", reservation_id, "--json"], "");
     assert!(released.output.status.success());
     assert_eq!(scoped_patch_comparison_count(&released), 0);
     let output = json_output(&released.output);
     assert_eq!(output["payload"]["data"]["status"], "already_settled");
     assert_eq!(output["payload"]["data"]["evidence"]["status"], status);
+    if status == "integrated" {
+        assert_eq!(
+            output["payload"]["data"]["evidence"],
+            serde_json::json!({
+                "status": "integrated",
+                "trunk_oid": git_stdout(root, &["rev-parse", "HEAD"]),
+                "proof": "rewritten_witness_ancestor",
+                "witness": {"kind": "historical", "commit": witness},
+            })
+        );
+    }
 }
 
 /// Rebase the holder, settle against its trunk witness, and collect the original protected tip.
@@ -1136,6 +1183,19 @@ fn assert_witness_evidence(
     let snapshot = witness_reservation_snapshot(&board, reservation_id);
     assert_eq!(snapshot["lifecycle"]["stage"], "released");
     assert_eq!(snapshot["integration_evidence"]["status"]["status"], status);
+    if status == "integrated" {
+        assert_eq!(
+            snapshot["integration_evidence"]["status"]["proof"],
+            "rewritten_witness_ancestor"
+        );
+        assert_eq!(
+            snapshot["integration_evidence"]["status"]["witness"],
+            serde_json::json!({
+                "kind": "historical",
+                "commit": snapshot["lifecycle"]["disposition"]["evidence"],
+            })
+        );
+    }
     let alerts = board["payload"]["data"]["alerts"]["entries"]
         .as_array()
         .expect("board alerts should exist");

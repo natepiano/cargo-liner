@@ -28,6 +28,8 @@ declare_wire_enum! {
         /// Current trunk contains the protected commit itself.
         #[default]
         ProtectedTipAncestor => "protected_tip_ancestor";
+        /// Current trunk contains the verified rewritten-integration witness.
+        RewrittenWitnessAncestor => "rewritten_witness_ancestor";
         /// Current trunk contains every protected scoped patch under an equivalent commit identity.
         ScopedPatchEquivalent => "scoped_patch_equivalent";
     }
@@ -140,6 +142,32 @@ impl ReservationLifecycle {
     }
 }
 
+/// Which trunk commit witnesses the protected work within an evaluated trunk.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "integration_witness")]
+#[serde(tag = "kind", content = "commit", rename_all = "snake_case")]
+pub(crate) enum IntegrationWitness {
+    /// The evaluated trunk itself witnesses integration.
+    #[default]
+    EvaluatedTrunk,
+    /// An earlier verified trunk commit witnesses rewritten integration.
+    Historical(
+        #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
+        RewrittenIntegrationTrunkCommit,
+    ),
+}
+
+impl IntegrationWitness {
+    /// Resolve the witness identity against the trunk used for this evaluation.
+    pub(crate) fn resolve(&self, evaluated_trunk: &GitObjectId) -> RewrittenIntegrationTrunkCommit {
+        match self {
+            Self::EvaluatedTrunk => RewrittenIntegrationTrunkCommit::from(evaluated_trunk.clone()),
+            Self::Historical(commit) => commit.clone(),
+        }
+    }
+}
+
 /// What the current trunk proves about retained reservation evidence.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "integration_evidence_status")]
@@ -156,6 +184,9 @@ pub(crate) enum IntegrationEvidenceStatus {
         /// The git fact that established integration.
         #[serde(default)]
         proof:     IntegrationProof,
+        /// The commit witnessing integration within the evaluated trunk.
+        #[serde(default)]
+        witness:   IntegrationWitness,
     },
     /// Trunk no longer contains evidence that was previously verified.
     TrunkRewritten,
@@ -330,7 +361,8 @@ impl RewrittenIntegrationTrunkCommit {
         match reachability(self.as_ref()) {
             Reachability::Ancestor => IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk.clone(),
-                proof:     IntegrationProof::ProtectedTipAncestor,
+                proof:     IntegrationProof::RewrittenWitnessAncestor,
+                witness:   IntegrationWitness::Historical(self.clone()),
             },
             Reachability::NotAncestor => IntegrationEvidenceStatus::TrunkRewritten,
             Reachability::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
@@ -398,6 +430,7 @@ impl Error for LifecycleTransitionError {}
 mod tests {
     use super::IntegrationEvidenceStatus;
     use super::IntegrationProof;
+    use super::IntegrationWitness;
     use super::ReleaseDisposition;
     use super::ReleaseRevalidationSubject;
     use super::RewrittenIntegrationTrunkCommit;
@@ -425,7 +458,8 @@ mod tests {
                 Reachability::Ancestor,
                 IntegrationEvidenceStatus::Integrated {
                     trunk_oid: trunk.clone(),
-                    proof:     IntegrationProof::ProtectedTipAncestor,
+                    proof:     IntegrationProof::RewrittenWitnessAncestor,
+                    witness:   IntegrationWitness::Historical(subject.clone()),
                 },
             ),
             (

@@ -1019,6 +1019,7 @@ mod tests {
     use crate::reservation;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
+    use crate::reservation::IntegrationWitness;
     use crate::reservation::PriorIntegrationStatus;
     use crate::reservation::ProtectedReservationTip;
 
@@ -1681,6 +1682,7 @@ mod tests {
             IntegrationEvidenceStatus::Integrated {
                 trunk_oid: target,
                 proof:     IntegrationProof::ScopedPatchEquivalent,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             }
         );
         Ok(())
@@ -1705,6 +1707,7 @@ mod tests {
             IntegrationEvidenceStatus::Integrated {
                 trunk_oid: fixture.phase_start_head,
                 proof:     IntegrationProof::ProtectedTipAncestor,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             }
         );
         Ok(())

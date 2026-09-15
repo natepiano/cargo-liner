@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use super::constants::SCOPED_PATCH_TARGET_RETENTION_LIMIT;
 use super::constants::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
+use super::lifecycle::IntegrationWitness;
 use crate::ids::GitObjectId;
 use crate::ids::ProjectionGeneration;
 
@@ -64,6 +65,7 @@ struct RetainedScopedPatchTargetVerdict {
     subject: IntegrationProofSubjectRevision,
     target:  GitObjectId,
     verdict: ScopedPatchEquivalenceVerdict,
+    witness: IntegrationWitness,
 }
 
 /// Durable scoped patch verdicts retained for the most recently recorded reconciliation targets.
@@ -73,10 +75,15 @@ pub(crate) struct RetainedScopedPatchTargetVerdicts {
 }
 
 /// Whether a retained scoped patch verdict applies to one requested subject and target.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ScopedPatchTargetVerdictAvailability {
     /// The stored subject and target match the request.
-    Hit(DurableScopedPatchComparison),
+    Hit {
+        /// The durable content comparison against the evaluated target.
+        comparison: DurableScopedPatchComparison,
+        /// The commit witnessing integration when the comparison is equivalent.
+        witness:    IntegrationWitness,
+    },
     /// No stored verdict applies to the request.
     Miss,
 }
@@ -224,7 +231,10 @@ impl RetainedScopedPatchTargetVerdicts {
     ) -> ScopedPatchTargetVerdictAvailability {
         for entry in &self.entries {
             if entry.subject == subject && entry.target == *target {
-                return ScopedPatchTargetVerdictAvailability::Hit(entry.verdict.into());
+                return ScopedPatchTargetVerdictAvailability::Hit {
+                    comparison: entry.verdict.into(),
+                    witness:    entry.witness.clone(),
+                };
             }
         }
         ScopedPatchTargetVerdictAvailability::Miss
@@ -235,6 +245,7 @@ impl RetainedScopedPatchTargetVerdicts {
         subject: IntegrationProofSubjectRevision,
         target: &GitObjectId,
         verdict: ScopedPatchEquivalenceVerdict,
+        witness: &IntegrationWitness,
     ) {
         self.entries
             .retain(|entry| entry.subject != subject || entry.target != *target);
@@ -245,6 +256,7 @@ impl RetainedScopedPatchTargetVerdicts {
             subject,
             target: target.clone(),
             verdict,
+            witness: witness.clone(),
         });
     }
 }

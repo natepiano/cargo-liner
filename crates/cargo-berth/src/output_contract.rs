@@ -22,6 +22,7 @@ use crate::output::ReservationLifecycleQueryPayload;
 use crate::output::ResolvePayload;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
+use crate::reservation::IntegrationWitness;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationLifecycleSnapshot;
@@ -79,6 +80,10 @@ fn generated_schemas<LifecycleSchema: JsonSchema>() -> Result<GeneratedSchemas, 
     schemas.insert(
         "integration_proof".to_owned(),
         schema_value::<IntegrationProof>()?,
+    );
+    schemas.insert(
+        "integration_witness".to_owned(),
+        schema_value::<IntegrationWitness>()?,
     );
     schemas.insert(
         "lost_integration_evidence_alert".to_owned(),

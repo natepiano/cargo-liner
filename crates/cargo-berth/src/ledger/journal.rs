@@ -49,6 +49,7 @@ use crate::ids::WorktreeId;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProofSubjectRevision;
+use crate::reservation::IntegrationWitness;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
@@ -437,6 +438,9 @@ pub(crate) enum JournalOperation {
         target:         GitObjectId,
         /// The definitive content verdict produced by the check.
         verdict:        ScopedPatchEquivalenceVerdict,
+        /// The integration commit, defaulting to the evaluated target for older records.
+        #[serde(default)]
+        witness:        IntegrationWitness,
     },
     /// Record a scoped comparison that produced no durable cache verdict.
     ScopedPatchComparisonAttempted {
@@ -1974,6 +1978,55 @@ mod tests {
     use crate::ids::WorktreeId;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
+
+    #[test]
+    fn legacy_evidence_revalidated_defaults_to_evaluated_trunk_witness()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::reservation::IntegrationEvidenceStatus;
+        use crate::reservation::IntegrationProof;
+        use crate::reservation::IntegrationWitness;
+
+        let trunk = "1111111111111111111111111111111111111111";
+        for proof in [
+            None,
+            Some("protected_tip_ancestor"),
+            Some("scoped_patch_equivalent"),
+        ] {
+            let mut status = serde_json::json!({"status": "integrated", "trunk_oid": trunk});
+            if let Some(proof) = proof {
+                status["proof"] = serde_json::json!(proof);
+            }
+            let operation: JournalOperation = serde_json::from_value(serde_json::json!({
+                "op": "evidence_revalidated",
+                "reservation_id": HOLDER_RESERVATION_ID,
+                "status": status,
+                "edit_blocking_status": "clear",
+            }))?;
+            let JournalOperation::EvidenceRevalidated {
+                status:
+                    IntegrationEvidenceStatus::Integrated {
+                        trunk_oid,
+                        proof: actual_proof,
+                        witness,
+                    },
+                ..
+            } = operation
+            else {
+                return Err("legacy record must decode as integrated evidence".into());
+            };
+            assert_eq!(trunk_oid, trunk.parse::<GitObjectId>()?);
+            assert_eq!(witness, IntegrationWitness::EvaluatedTrunk);
+            assert_eq!(witness.resolve(&trunk_oid).as_ref(), &trunk_oid);
+            assert_eq!(
+                actual_proof,
+                match proof {
+                    Some("scoped_patch_equivalent") => IntegrationProof::ScopedPatchEquivalent,
+                    _ => IntegrationProof::ProtectedTipAncestor,
+                }
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn trunk_observation_inventory_uses_the_exhaustive_wire_match() {

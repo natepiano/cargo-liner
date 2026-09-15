@@ -12,6 +12,7 @@ use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
 use super::lifecycle::IntegrationProof;
+use super::lifecycle::IntegrationWitness;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
@@ -886,11 +887,13 @@ impl RetainedReservationSet {
                 subject,
                 target,
                 verdict,
+                witness,
             } => self.apply_scoped_patch_equivalence_check(
                 *reservation_id,
                 *subject,
                 target,
                 *verdict,
+                witness,
                 event.projection_generation(),
             ),
             JournalOperation::ScopedPatchComparisonAttempted {
@@ -1247,7 +1250,8 @@ impl RetainedReservationSet {
             ) {
                 reservation.integration_status = IntegrationEvidenceStatus::Integrated {
                     trunk_oid: trunk_commit.as_ref().clone(),
-                    proof:     IntegrationProof::ProtectedTipAncestor,
+                    proof:     IntegrationProof::RewrittenWitnessAncestor,
+                    witness:   IntegrationWitness::Historical(trunk_commit.clone()),
                 };
             }
             reservation.advance_integration_proof_subject_revision()?;
@@ -1305,12 +1309,13 @@ impl RetainedReservationSet {
         subject: IntegrationProofSubjectRevision,
         target: &GitObjectId,
         verdict: ScopedPatchEquivalenceVerdict,
+        witness: &IntegrationWitness,
         generation: ProjectionGeneration,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.scoped_patch_comparison_subject_mut(reservation_id, subject)?;
         reservation
             .retained_scoped_patch_target_verdicts
-            .record(subject, target, verdict);
+            .record(subject, target, verdict, witness);
         reservation
             .scoped_patch_target_evaluation_schedule
             .record(subject, target, generation);
@@ -1420,7 +1425,8 @@ impl RetainedReservationSet {
         if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = replacement {
             reservation.integration_status = IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk_commit.as_ref().clone(),
-                proof:     IntegrationProof::ProtectedTipAncestor,
+                proof:     IntegrationProof::RewrittenWitnessAncestor,
+                witness:   IntegrationWitness::Historical(trunk_commit.clone()),
             };
         }
         reservation.advance_integration_proof_subject_revision()?;
@@ -1609,6 +1615,7 @@ mod tests {
     use super::IncursionIncidentStatus;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
+    use super::IntegrationWitness;
     use super::RetainedReservationSet;
     use super::WorktreeOccupancy;
     use crate::coordination_identity::CoordinationIdentityProvenance;
@@ -1860,8 +1867,73 @@ mod tests {
                 reservation
                     .retained_scoped_patch_target_verdicts()
                     .lookup(reservation.integration_proof_subject_revision(), &target,),
-                ScopedPatchTargetVerdictAvailability::Hit(expected)
+                ScopedPatchTargetVerdictAvailability::Hit {
+                    comparison: expected,
+                    witness:    IntegrationWitness::EvaluatedTrunk,
+                }
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn replay_preserves_historical_witness_and_resolves_legacy_witness_to_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let target = TRUNK_OID.parse::<GitObjectId>()?;
+        let historical_witness = SECOND_TRUNK_OID.parse()?;
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+
+        for (wire_witness, expected_witness) in [
+            (
+                Some(json!({"kind": "historical", "commit": SECOND_TRUNK_OID})),
+                IntegrationWitness::Historical(historical_witness),
+            ),
+            (None, IntegrationWitness::EvaluatedTrunk),
+        ] {
+            let mut operation = json!({
+                "op": "scoped_patch_equivalence_checked",
+                "reservation_id": RESERVATION_ID,
+                "subject": 1,
+                "target": TRUNK_OID,
+                "verdict": "integrated"
+            });
+            if let Some(witness) = wire_witness {
+                operation["witness"] = witness;
+            }
+            let checked = journal_event(3, &operation)?;
+            let reservations =
+                RetainedReservationSet::replay(&[claim.clone(), checkpoint.clone(), checked])?;
+            let reservation = reservations.reservation(reservation_id)?;
+            let lookup = reservation
+                .retained_scoped_patch_target_verdicts()
+                .lookup(reservation.integration_proof_subject_revision(), &target);
+            assert_eq!(
+                lookup,
+                ScopedPatchTargetVerdictAvailability::Hit {
+                    comparison: DurableScopedPatchComparison::Equivalent,
+                    witness:    expected_witness.clone(),
+                }
+            );
+            let ScopedPatchTargetVerdictAvailability::Hit { witness, .. } = lookup else {
+                return Err("replayed verdict must remain available".into());
+            };
+            let expected_commit = match expected_witness {
+                IntegrationWitness::EvaluatedTrunk => &target,
+                IntegrationWitness::Historical(ref commit) => commit.as_ref(),
+            };
+            assert_eq!(witness.resolve(&target).as_ref(), expected_commit);
+            assert_eq!(
+                reservation.scoped_patch_evaluation_priority(&target),
+                ScopedPatchEvaluationPriority::LastAttemptedAt(ProjectionGeneration::from(3))
+            );
+            assert!(matches!(
+                reservation.evidence_state()?,
+                ReservationEvidenceState::Outstanding {
+                    integration_status: IntegrationEvidenceStatus::NotIntegrated,
+                    ..
+                }
+            ));
         }
         Ok(())
     }
@@ -1889,14 +1961,20 @@ mod tests {
                 reservation.integration_proof_subject_revision(),
                 &first_target
             ),
-            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Equivalent)
+            ScopedPatchTargetVerdictAvailability::Hit {
+                comparison: DurableScopedPatchComparison::Equivalent,
+                witness:    IntegrationWitness::EvaluatedTrunk,
+            }
         );
         assert_eq!(
             reservation.retained_scoped_patch_target_verdicts().lookup(
                 reservation.integration_proof_subject_revision(),
                 &second_target,
             ),
-            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Different)
+            ScopedPatchTargetVerdictAvailability::Hit {
+                comparison: DurableScopedPatchComparison::Different,
+                witness:    IntegrationWitness::EvaluatedTrunk,
+            }
         );
 
         let third = scoped_patch_equivalence_checked_at(5, THIRD_TRUNK_OID, "integrated")?;
@@ -1909,14 +1987,20 @@ mod tests {
                 reservation.integration_proof_subject_revision(),
                 &second_target,
             ),
-            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Different)
+            ScopedPatchTargetVerdictAvailability::Hit {
+                comparison: DurableScopedPatchComparison::Different,
+                witness:    IntegrationWitness::EvaluatedTrunk,
+            }
         );
         assert_eq!(
             reservation.retained_scoped_patch_target_verdicts().lookup(
                 reservation.integration_proof_subject_revision(),
                 &third_target,
             ),
-            ScopedPatchTargetVerdictAvailability::Hit(DurableScopedPatchComparison::Equivalent)
+            ScopedPatchTargetVerdictAvailability::Hit {
+                comparison: DurableScopedPatchComparison::Equivalent,
+                witness:    IntegrationWitness::EvaluatedTrunk,
+            }
         );
         assert_eq!(
             reservation.scoped_patch_evaluation_priority(&first_target),

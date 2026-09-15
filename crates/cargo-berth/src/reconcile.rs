@@ -85,6 +85,7 @@ use crate::reservation::IntegrationEvidenceObservation;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProof;
 use crate::reservation::IntegrationProofSubjectRevision;
+use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::MergeExtentKey;
 use crate::reservation::PriorIntegrationStatus;
@@ -470,6 +471,7 @@ enum ScopedPatchComparisonJournalUpdate {
         subject: IntegrationProofSubjectRevision,
         target:  GitObjectId,
         verdict: ScopedPatchEquivalenceVerdict,
+        witness: IntegrationWitness,
     },
 }
 
@@ -2557,17 +2559,19 @@ fn integration_status_with_retained_verdict(
         .retained_scoped_patch_target_verdicts()
         .lookup(subject, target)
     {
-        ScopedPatchTargetVerdictAvailability::Hit(scoped_patch_comparison) => {
-            IntegrationStatusObservation {
-                status:                  integration_status_from_retained_scoped_patch_comparison(
-                    scoped_patch_comparison,
-                    target,
-                    &scoped_patch_evaluation_context,
-                    target_evidence_context.integration_reachability,
-                ),
-                revalidation:            EvidenceRevalidationObservation::Apply,
-                scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-            }
+        ScopedPatchTargetVerdictAvailability::Hit {
+            comparison,
+            witness,
+        } => IntegrationStatusObservation {
+            status:                  integration_status_from_retained_scoped_patch_comparison(
+                comparison,
+                witness,
+                target,
+                &scoped_patch_evaluation_context,
+                target_evidence_context.integration_reachability,
+            ),
+            revalidation:            EvidenceRevalidationObservation::Apply,
+            scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
         },
         ScopedPatchTargetVerdictAvailability::Miss => {
             let repository_root = target_evidence_context.repository_root;
@@ -2658,28 +2662,33 @@ fn scoped_patch_journal_update(
     match status {
         IntegrationEvidenceStatus::Integrated {
             proof: IntegrationProof::ScopedPatchEquivalent,
+            witness,
             ..
         } => ScopedPatchComparisonJournalUpdate::Checked {
             subject,
             target: target.clone(),
             verdict: ScopedPatchEquivalenceVerdict::Integrated,
+            witness: witness.clone(),
         },
         IntegrationEvidenceStatus::TrunkRewritten => ScopedPatchComparisonJournalUpdate::Checked {
             subject,
             target: target.clone(),
             verdict: ScopedPatchEquivalenceVerdict::TrunkRewritten,
+            witness: IntegrationWitness::EvaluatedTrunk,
         },
         IntegrationEvidenceStatus::NotIntegrated => ScopedPatchComparisonJournalUpdate::Checked {
             subject,
             target: target.clone(),
             verdict: ScopedPatchEquivalenceVerdict::NotIntegrated,
+            witness: IntegrationWitness::EvaluatedTrunk,
         },
         IntegrationEvidenceStatus::ObjectUnknown => ScopedPatchComparisonJournalUpdate::Attempted {
             subject,
             target: target.clone(),
         },
         IntegrationEvidenceStatus::Integrated {
-            proof: IntegrationProof::ProtectedTipAncestor,
+            proof:
+                IntegrationProof::ProtectedTipAncestor | IntegrationProof::RewrittenWitnessAncestor,
             ..
         } => ScopedPatchComparisonJournalUpdate::Unchanged,
     }
@@ -2687,6 +2696,7 @@ fn scoped_patch_journal_update(
 
 fn integration_status_from_retained_scoped_patch_comparison(
     scoped_patch_comparison: DurableScopedPatchComparison,
+    witness: IntegrationWitness,
     target: &GitObjectId,
     scoped_patch_evaluation_context: &ScopedPatchEvaluationContext,
     integration_reachability: &BatchedIntegrationReachability,
@@ -2694,7 +2704,8 @@ fn integration_status_from_retained_scoped_patch_comparison(
     match scoped_patch_comparison {
         DurableScopedPatchComparison::Equivalent => IntegrationEvidenceStatus::Integrated {
             trunk_oid: target.clone(),
-            proof:     IntegrationProof::ScopedPatchEquivalent,
+            proof: IntegrationProof::ScopedPatchEquivalent,
+            witness,
         },
         DurableScopedPatchComparison::Different => match scoped_patch_evaluation_context {
             ScopedPatchEvaluationContext::PriorIntegrationProven => {
@@ -2829,7 +2840,11 @@ fn settlement_selection(
         return SettlementSelection::Unchanged;
     }
     let (
-        IntegrationEvidenceStatus::Integrated { trunk_oid, proof },
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid,
+            proof,
+            witness,
+        },
         RepositoryTrunk::Resolved(actual),
     ) = (evidence, actual_trunk)
     else {
@@ -2840,9 +2855,9 @@ fn settlement_selection(
     }
     SettlementSelection::Release(match proof {
         IntegrationProof::ProtectedTipAncestor => ReleaseDisposition::Integrated,
-        IntegrationProof::ScopedPatchEquivalent => ReleaseDisposition::RewrittenIntegration(
-            RewrittenIntegrationTrunkCommit::from(trunk_oid.clone()),
-        ),
+        IntegrationProof::ScopedPatchEquivalent | IntegrationProof::RewrittenWitnessAncestor => {
+            ReleaseDisposition::RewrittenIntegration(witness.resolve(trunk_oid))
+        },
     })
 }
 
@@ -3048,11 +3063,13 @@ fn append_scoped_patch_journal_update(
             subject,
             target,
             verdict,
+            witness,
         } => operations.push(JournalOperation::ScopedPatchEquivalenceChecked {
             reservation_id: reservation.id(),
             subject:        *subject,
             target:         target.clone(),
             verdict:        *verdict,
+            witness:        witness.clone(),
         }),
     }
 }
@@ -3687,6 +3704,7 @@ mod tests {
     use crate::ledger::JournalEvent;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
+    use crate::reservation::IntegrationWitness;
     use crate::reservation::MergeExtent;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationEvidenceState;
@@ -3711,6 +3729,7 @@ mod tests {
             let status = IntegrationEvidenceStatus::Integrated {
                 trunk_oid: TRUNK.parse()?,
                 proof,
+                witness: IntegrationWitness::EvaluatedTrunk,
             };
             let integrated = integrated_evidence_event(&status)?;
             let events = [claim.clone(), checkpoint.clone(), integrated.clone()];
@@ -3724,7 +3743,8 @@ mod tests {
             };
             let disposition = match proof {
                 IntegrationProof::ProtectedTipAncestor => ReleaseDisposition::Integrated,
-                IntegrationProof::ScopedPatchEquivalent => {
+                IntegrationProof::ScopedPatchEquivalent
+                | IntegrationProof::RewrittenWitnessAncestor => {
                     ReleaseDisposition::RewrittenIntegration(RewrittenIntegrationTrunkCommit::from(
                         TRUNK.parse::<crate::ids::GitObjectId>()?,
                     ))
@@ -3793,6 +3813,40 @@ mod tests {
                 matches!(reservation.evidence_state()?, ReservationEvidenceState::Released {
                 integration_status: retained_status, ..
             } if retained_status == status)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settlement_preserves_historical_witness_only_for_actual_trunk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let retained = RetainedReservationSet::replay(&checkpoint_events()?)?;
+        let reservation = retained.reservation(RESERVATION_ID.parse()?)?;
+        let witness = RewrittenIntegrationTrunkCommit::from(
+            "3333333333333333333333333333333333333333".parse::<crate::ids::GitObjectId>()?,
+        );
+        let evidence = IntegrationEvidenceStatus::Integrated {
+            trunk_oid: TRUNK.parse()?,
+            proof:     IntegrationProof::ScopedPatchEquivalent,
+            witness:   IntegrationWitness::Historical(witness.clone()),
+        };
+        for (trunk, expected) in [
+            (
+                TRUNK,
+                SettlementSelection::Release(ReleaseDisposition::RewrittenIntegration(witness)),
+            ),
+            (TIP, SettlementSelection::Unchanged),
+        ] {
+            assert_eq!(
+                super::settlement_selection(
+                    reservation,
+                    &evidence,
+                    &RepositoryTrunk::Resolved(trunk.parse()?),
+                    reservation.merge_extent(),
+                    &super::CommittedMergeEvidence::Unavailable,
+                ),
+                expected,
             );
         }
         Ok(())

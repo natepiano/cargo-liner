@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use super::lifecycle::IntegrationEvidenceStatus;
 use super::lifecycle::IntegrationProof;
+use super::lifecycle::IntegrationWitness;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
@@ -87,10 +88,13 @@ impl DeferredScopedPatchIntegrationStatus {
             IntegrationEvidenceStatus::Integrated {
                 trunk_oid,
                 proof: IntegrationProof::ScopedPatchEquivalent,
+                ..
             } if trunk_oid == observed_trunk_oid => Self::StillValid(materialized.clone()),
             IntegrationEvidenceStatus::Integrated {
                 proof:
-                    IntegrationProof::ProtectedTipAncestor | IntegrationProof::ScopedPatchEquivalent,
+                    IntegrationProof::ProtectedTipAncestor
+                    | IntegrationProof::RewrittenWitnessAncestor
+                    | IntegrationProof::ScopedPatchEquivalent,
                 ..
             } => Self::Degraded(IntegrationEvidenceStatus::NotIntegrated),
             IntegrationEvidenceStatus::NotIntegrated
@@ -134,6 +138,7 @@ pub(crate) fn integration_status(
         Reachability::Ancestor => Ok(IntegrationEvidenceStatus::Integrated {
             trunk_oid: trunk_oid.clone(),
             proof:     IntegrationProof::ProtectedTipAncestor,
+            witness:   IntegrationWitness::EvaluatedTrunk,
         }),
         Reachability::NotAncestor => match git::scoped_patch_equivalence(
             repository_root,
@@ -145,6 +150,7 @@ pub(crate) fn integration_status(
             ScopedPatchComparison::Equivalent => Ok(IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk_oid.clone(),
                 proof:     IntegrationProof::ScopedPatchEquivalent,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             }),
             ScopedPatchComparison::Different => match prior_integration_status {
                 PriorIntegrationStatus::Unproven => Ok(IntegrationEvidenceStatus::NotIntegrated),
@@ -196,6 +202,7 @@ pub(crate) fn observe_integration_status(
             IntegrationEvidenceObservation::Reachability(IntegrationEvidenceStatus::Integrated {
                 trunk_oid: trunk_oid.clone(),
                 proof:     IntegrationProof::ProtectedTipAncestor,
+                witness:   IntegrationWitness::EvaluatedTrunk,
             })
         },
         Reachability::NotAncestor => match observe_scoped_patch_comparison() {
@@ -261,6 +268,7 @@ fn status_from_scoped_patch_comparison(
         ScopedPatchComparison::Equivalent => IntegrationEvidenceStatus::Integrated {
             trunk_oid: trunk_oid.clone(),
             proof:     IntegrationProof::ScopedPatchEquivalent,
+            witness:   IntegrationWitness::EvaluatedTrunk,
         },
         ScopedPatchComparison::Different => match prior_integration_status {
             PriorIntegrationStatus::Unproven => IntegrationEvidenceStatus::NotIntegrated,

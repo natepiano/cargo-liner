@@ -236,9 +236,13 @@ of generations or offsets. Reservation rows occur at
 - `integration_evidence.kind`: `active_work`; `released_without_checkpoint`; or
   `current` with a nested `status`. That nested value has its own `status`
   discriminator: `integration_evidence.status.status` is `not_integrated`;
-  `integrated` with `trunk_oid` and `proof`; `trunk_rewritten`; or
-  `object_unknown`. Integrated `proof` is `protected_tip_ancestor` or
-  `scoped_patch_equivalent`.
+  `integrated` with `trunk_oid`, `proof`, and `witness`; `trunk_rewritten`; or
+  `object_unknown`. Integrated `proof` is `protected_tip_ancestor`,
+  `scoped_patch_equivalent`, or `rewritten_witness_ancestor`. `trunk_oid` is the
+  evaluated trunk. The witness is `{ "kind": "evaluated_trunk" }` or
+  `{ "kind": "historical", "commit": "<oid>" }`; an absent witness defaults
+  to the evaluated trunk. Witness ancestry proves that trunk contains the
+  rewritten integration commit, without claiming checkpoint ancestry.
 - `freshness.status`: `fresh` or `stale`, both with `last_activity_at`.
 - `ahead_behind_main.status`: `counts` with `ahead` and `behind`; `unrelated`;
   or `unavailable`.
@@ -634,7 +638,7 @@ The operation union is:
 | `release` | `reservation_id`, `disposition` |
 | `replace_release_disposition` | `reservation_id`, `superseded`, `replacement` |
 | `evidence_revalidated` | `reservation_id`, `status`, `edit_blocking_status` |
-| `scoped_patch_equivalence_checked` | `reservation_id`, `subject`, `target`, `verdict` |
+| `scoped_patch_equivalence_checked` | `reservation_id`, `subject`, `target`, `verdict`, optional `witness` |
 | `scoped_patch_comparison_attempted` | `reservation_id`, `subject`, `target` |
 | `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict` |
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
@@ -689,13 +693,25 @@ These operation fields use the following tagged values:
   `evidence` field containing the commit or reason. `superseded` and
   `replacement` use the same format.
 - Integration evidence `status.status` is `not_integrated`; `integrated` with
-  `trunk_oid` and `proof`; `trunk_rewritten`; or `object_unknown`. Integrated
-  `proof` is `protected_tip_ancestor` or `scoped_patch_equivalent`. Records
-  written before `proof` was added decode as `protected_tip_ancestor`.
+  `trunk_oid`, `proof`, and `witness`; `trunk_rewritten`; or `object_unknown`.
+  Integrated `proof` is `protected_tip_ancestor`, `scoped_patch_equivalent`, or
+  `rewritten_witness_ancestor`. Records written before `proof` was added decode
+  as `protected_tip_ancestor`. `trunk_oid` always identifies the evaluated
+  trunk. `witness` is `{ "kind": "evaluated_trunk" }` when that trunk is the
+  witness, or `{ "kind": "historical", "commit": "<oid>" }` for an earlier
+  integration commit. Older `evidence_revalidated` records without `witness`
+  decode as `evaluated_trunk`. Revalidating a rewritten integration retains
+  its historical commit and uses `rewritten_witness_ancestor`, even after the
+  protected checkpoint is collected.
 - `scoped_patch_equivalence_checked` records the durable content cache. Its
   positive integer `subject` identifies the reservation's current baseline,
   protected content, and scopes; `target` is the checked trunk object id; and
-  `verdict` is `integrated`, `not_integrated`, or `trunk_rewritten`. The subject
+  `verdict` is `integrated`, `not_integrated`, or `trunk_rewritten`. The optional
+  `witness` has the same tagged shape as integrated evidence and defaults to
+  `evaluated_trunk` when absent. Positive verdicts retain it across replay and
+  delayed settlement. Settlement requires evidence evaluated against actual
+  trunk, and records the resolved witness in `rewritten_integration.evidence`.
+  The subject
   starts at `1` and
   advances whenever an input to the scoped comparison changes: its baseline,
   protected or release-revalidation tip, or scopes. The advancing operations are

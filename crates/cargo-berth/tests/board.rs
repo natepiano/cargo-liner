@@ -1209,6 +1209,10 @@ fn board_json_renders_a_retained_scoped_patch_equivalence_proof() {
     assert_eq!(status["status"], "integrated");
     assert_eq!(status["trunk_oid"], trunk_oid);
     assert_eq!(status["proof"], "scoped_patch_equivalent");
+    assert_eq!(
+        status["witness"],
+        serde_json::json!({"kind": "evaluated_trunk"})
+    );
 }
 
 #[test]
@@ -2432,6 +2436,153 @@ fn board_git_cost_separates_each_scaling_dimension() {
             .count(),
         1
     );
+}
+
+#[test]
+fn retained_historical_witness_survives_dirty_settlement_and_process_restart() {
+    let (fixture, evaluated_trunk) = retained_historical_witness_fixture();
+    let root = fixture.repository.path();
+    let witness = &fixture.target;
+    let historical_witness = serde_json::json!({"kind": "historical", "commit": witness});
+    let expected_evidence = serde_json::json!({
+        "status": "integrated",
+        "trunk_oid": evaluated_trunk,
+        "proof": "scoped_patch_equivalent",
+        "witness": historical_witness,
+    });
+    dirty_source(root, "src/lib.rs");
+    invalidate_projection(root);
+
+    let dirty = run_board_with_git_trace(root);
+    assert!(dirty.output.status.success());
+    assert_eq!(
+        scoped_patch_comparison_attempts(&dirty, &fixture.phase_start_head, &evaluated_trunk),
+        0
+    );
+    let dirty_board = json_output(&dirty.output);
+    let outstanding =
+        board_reservation_snapshot(&dirty_board["payload"]["data"], &fixture.reservation_id);
+    assert_eq!(outstanding["lifecycle"]["stage"], "outstanding");
+    assert_eq!(
+        outstanding["integration_evidence"]["status"],
+        expected_evidence
+    );
+    assert_eq!(journal_operation_count(root, "release"), 0);
+    assert_eq!(git_stdout(root, &["diff", "--name-only"]), "src/lib.rs");
+
+    git(root, &["restore", "--worktree", "--", "src/lib.rs"]);
+    invalidate_projection(root);
+    let settled = run_board_with_git_trace(root);
+    assert!(settled.output.status.success());
+    assert_eq!(
+        scoped_patch_comparison_attempts(&settled, &fixture.phase_start_head, &evaluated_trunk),
+        0
+    );
+    let settled_board = json_output(&settled.output);
+    let released =
+        board_reservation_snapshot(&settled_board["payload"]["data"], &fixture.reservation_id);
+    assert_eq!(released["lifecycle"]["stage"], "released");
+    assert_eq!(
+        released["lifecycle"]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": witness})
+    );
+    assert_eq!(
+        released["integration_evidence"]["status"],
+        expected_evidence
+    );
+    assert_historical_witness_settlement_journal(&fixture, &expected_evidence);
+
+    let restarted = run_board_with_git_trace(root);
+    assert!(restarted.output.status.success());
+    assert_eq!(
+        scoped_patch_comparison_attempts(&restarted, &fixture.phase_start_head, &evaluated_trunk),
+        0
+    );
+    let restarted_board = json_output(&restarted.output);
+    let revalidated =
+        board_reservation_snapshot(&restarted_board["payload"]["data"], &fixture.reservation_id);
+    assert_eq!(revalidated["lifecycle"], released["lifecycle"]);
+    assert_eq!(
+        revalidated["integration_evidence"]["status"],
+        serde_json::json!({
+            "status": "integrated",
+            "trunk_oid": evaluated_trunk,
+            "proof": "rewritten_witness_ancestor",
+            "witness": historical_witness,
+        })
+    );
+    assert_eq!(journal_operation_count(root, "release"), 1);
+    assert_eq!(
+        journal_operation_count(root, "scoped_patch_equivalence_checked"),
+        1
+    );
+    assert_eq!(
+        journal_operation_count(root, "scoped_patch_comparison_attempted"),
+        0
+    );
+}
+
+/// Seed a historical verdict over older materialized evidence without running reconciliation.
+fn retained_historical_witness_fixture() -> (RewrittenReservationFixture, String) {
+    let fixture = rewritten_reservation_fixture(
+        TargetRewrite::Equivalent,
+        ReservationCompletion::Outstanding,
+    );
+    let root = fixture.repository.path();
+    let evaluated_trunk = commit_unprotected_target(root);
+    assert_ne!(evaluated_trunk, fixture.target);
+    assert_eq!(
+        git_stdout(root, &["rev-parse", &format!("{evaluated_trunk}^")]),
+        fixture.target
+    );
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "scoped_patch_equivalence_checked",
+            "reservation_id": fixture.reservation_id,
+            "subject": 1,
+            "target": evaluated_trunk,
+            "verdict": "integrated",
+            "witness": {"kind": "historical", "commit": fixture.target},
+        }),
+    );
+    let seeded = fs::read_to_string(root.join(JOURNAL_PATH)).expect("seeded journal should read");
+    assert!(
+        seeded.lines().all(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("event should decode");
+            event["op"] != "evidence_revalidated" || event["status"]["trunk_oid"] != evaluated_trunk
+        }),
+        "the retained verdict must supply the evidence on the first restart"
+    );
+    (fixture, evaluated_trunk)
+}
+
+/// Delayed settlement pairs the evaluated trunk evidence with the historical release witness.
+fn assert_historical_witness_settlement_journal(
+    fixture: &RewrittenReservationFixture,
+    expected_evidence: &serde_json::Value,
+) {
+    let events = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
+        .expect("settled journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .collect::<Vec<_>>();
+    let release_index = events
+        .iter()
+        .position(|event| {
+            event["op"] == "release" && event["reservation_id"] == fixture.reservation_id
+        })
+        .expect("clean reconciliation should release the reservation");
+    assert_eq!(
+        events[release_index]["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.target})
+    );
+    let evidence = &events[release_index
+        .checked_sub(1)
+        .expect("release must follow evidence")];
+    assert_eq!(evidence["op"], "evidence_revalidated");
+    assert_eq!(evidence["reservation_id"], fixture.reservation_id);
+    assert_eq!(evidence["status"], *expected_evidence);
 }
 
 #[test]

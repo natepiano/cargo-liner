@@ -121,55 +121,32 @@
 
 **Ruled out:** durable marker recovery for active reservations when the resnapshot append fails after capture (rare IO race, single-user scope); a separate capture-failure acceptance case in "Historical trunk candidate" (its no-marker settlement test covers it); reconstructing created commits at reconcile time or from transaction-wide exclusions; legacy HEAD inference; reading the reflog for a stopped apply rebase.
 
-### Phase 3 — Integration witness distinct from evaluated trunk  · status: todo
+### Phase 3 — Integration witness distinct from evaluated trunk  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Integration evidence records the trunk it was evaluated against separately from the commit that witnesses integration, so settlement, delayed settlement, and a restart all keep a witness older than trunk's tip, and witness ancestry is never reported as checkpoint ancestry.
-
-**Spec:**
-- Today `IntegrationEvidenceStatus::Integrated { trunk_oid, proof }` carries one OID and a payload-free `IntegrationProof`. `settlement_selection` (`src/reconcile.rs:2807`) releases only when `trunk_oid` equals actual trunk and records that same OID as the `RewrittenIntegration` witness. `integration_status_from_retained_scoped_patch_comparison` (`src/reconcile.rs:2688`) rebuilds evidence from retained verdicts and would discard any distinction.
-- Keep `trunk_oid` as the evaluated trunk. Extend `IntegrationEvidenceStatus` with a semantic integration-witness state distinguishing "the evaluated trunk is the witness" from a historical `RewrittenIntegrationTrunkCommit` (`src/reservation/lifecycle.rs:321`). No bare `Option`.
-- `settlement_selection` still requires the evaluated trunk to equal actual trunk, and releases `ScopedPatchEquivalent` as `RewrittenIntegration(<the witness>)`.
-- Carry the witness through `ScopedPatchEquivalenceChecked` (`src/ledger/journal.rs:431`; additive wire field, absent means the evaluated trunk is the witness), `RetainedScopedPatchTargetVerdicts` (`src/reservation/scoped_patch_evaluation.rs:71`), replay in `src/reservation/retention.rs`, and `integration_status_from_retained_scoped_patch_comparison`, so settlement delayed by reserved dirt and a process restart both preserve it.
-- `IntegrationProof::ProtectedTipAncestor` promises trunk contains the protected commit (`src/reservation/lifecycle.rs:28`), but `RewrittenIntegrationTrunkCommit::revalidate_ancestry` (:325) returns it for witness ancestry, including after the protected tip is collected. Add a distinct proof for rewritten-witness ancestry. Existing serialized values keep their names; the new value is additive.
-- `src/output_contract.rs` exports both `IntegrationEvidenceStatus` and `IntegrationProof` (:73, :81), and journal `EvidenceRevalidated` records deserialize the status directly. Default an absent `IntegrationEvidenceStatus` witness field to the semantic evaluated-trunk state, preserving legacy `EvidenceRevalidated` decoding without a domain `Option`; regenerate `docs/cargo-berth/generated/output-contract.json`, update `docs/cargo-berth/json-contract.md`, and require artifact reproducibility plus legacy-status decoding with frozen reader fixtures unchanged.
-- Explicit `Integrated` constructors also live in `src/board/rows.rs` (:928, :949, :1084) and `src/git/patch.rs` (:1681, :1705); update them to the new witness state.
-- This phase adds no historical-candidate discovery: ordinary ancestry and equivalence observations use the evaluated-trunk witness state, while rewritten-witness revalidation preserves the commit being revalidated and reports the distinct witness-ancestry proof. The historical trunk candidate phase produces historical witnesses.
-
-*Tests.*
-A. Unit in `src/reconcile.rs`: `settlement_selection` releases a historical witness as `RewrittenIntegration(<witness>)` when the evaluated trunk equals actual trunk, and refuses when it differs.
-B. Unit in `src/reservation/retention.rs`: replay a historical `ScopedPatchEquivalenceChecked` record and assert that retained lookup preserves its witness; a legacy record resolves its witness to the evaluated target. Replay (`apply_scoped_patch_equivalence_check`, :1302) updates the verdict cache and schedule; reconciliation constructs integration evidence from that cache.
-C. Extend `witness_survives_pruning_and_controls_successors` (`tests/edges.rs:933`): witness revalidation reports the witness-ancestry proof, not checkpoint ancestry; advance trunk beyond the witness and check that the witness and evaluated trunk keep distinct identities.
-D. In `tests/board.rs`, seed that retained historical verdict without matching materialized evidence, run board with reserved dirt present, clear the dirt, and start another process; assert settlement records the historical witness and evaluated trunk separately without repeating the scoped comparison.
+- `IntegrationWitness::{EvaluatedTrunk, Historical(RewrittenIntegrationTrunkCommit)}` (default `EvaluatedTrunk`) with `resolve(&GitObjectId) -> RewrittenIntegrationTrunkCommit`; serde is snake_case, tagged `kind` with content `commit`.
+- `IntegrationEvidenceStatus::Integrated` carries a defaulted `witness` alongside `trunk_oid`, which stays the evaluated trunk. Ordinary ancestry and equivalence observations in `evidence.rs` and the explicit constructors in `board/rows.rs` and `git/patch.rs` use `EvaluatedTrunk`.
+- `IntegrationProof::RewrittenWitnessAncestor` is a distinct, additive proof. `RewrittenIntegrationTrunkCommit::revalidate_ancestry` reports it with `Historical(self)` instead of `ProtectedTipAncestor`; synthesized rewritten release and replacement evidence in `retention.rs` uses the same witness ancestry with the explicit rewritten commit.
+- `settlement_selection` releases `ScopedPatchEquivalent | RewrittenWitnessAncestor` as `RewrittenIntegration(witness.resolve(trunk_oid))`, only when the evaluated trunk equals actual trunk.
+- Journal `ScopedPatchEquivalenceChecked` carries a defaulted `witness`; `RetainedScopedPatchTargetVerdicts` stores it per verdict, replay restores it, and `integration_status_from_retained_scoped_patch_comparison` rebuilds evidence with it, so settlement delayed by reserved dirt and a process restart keep the witness.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/lifecycle.rs` — witness state on `IntegrationEvidenceStatus` (:147); witness-ancestry proof on `IntegrationProof` (:27); `revalidate_ancestry` (:325)
-- `crates/cargo-berth/src/reservation/evidence.rs` — integration status observation (`integration_status` :125, `observe_integration_status` :187) constructs the evaluated-trunk witness
-- `crates/cargo-berth/src/reservation/scoped_patch_evaluation.rs` — retained verdicts carry the witness
-- `crates/cargo-berth/src/reservation/retention.rs` — replay; unit test B
-- `crates/cargo-berth/src/reconcile.rs` — `settlement_selection`, `integration_status_from_retained_scoped_patch_comparison`; unit test A
-- `crates/cargo-berth/src/ledger/journal.rs` — additive witness field on `ScopedPatchEquivalenceChecked`
-- `crates/cargo-berth/src/board/rows.rs` — `Integrated` constructors (:928, :949, :1084)
-- `crates/cargo-berth/src/git/patch.rs` — `Integrated` constructors in unit fixtures (:1681, :1705)
-- `crates/cargo-berth/src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json`, `docs/cargo-berth/json-contract.md` — witness state and witness-ancestry proof in the schema; legacy-status decoding
-- `crates/cargo-berth/tests/edges.rs` — test C
-- `crates/cargo-berth/tests/board.rs` — test D
+- `crates/cargo-berth/src/reservation/lifecycle.rs` — `IntegrationWitness`, `RewrittenWitnessAncestor`, witness revalidation
+- `crates/cargo-berth/src/reservation/evidence.rs` — observations construct `EvaluatedTrunk`; deferred evidence handles the new proof
+- `crates/cargo-berth/src/reservation/scoped_patch_evaluation.rs` — witness retained per verdict
+- `crates/cargo-berth/src/reservation/retention.rs` — journal replay of the witness; rewritten release evidence uses witness ancestry
+- `crates/cargo-berth/src/reconcile.rs` — witness carried into evidence, journal, and settlement
+- `crates/cargo-berth/src/ledger/journal.rs` — `witness` field with legacy default
+- `crates/cargo-berth/src/output_contract.rs`, `docs/cargo-berth/generated/output-contract.json`, `docs/cargo-berth/json-contract.md` — witness and proof in the schema
+- `crates/cargo-berth/tests/edges.rs` — `witness_survives_pruning_and_controls_successors` checks witness-ancestry proof and distinct identities
+- `crates/cargo-berth/tests/board.rs` — `retained_historical_witness_survives_dirty_settlement_and_process_restart`
 
-**Seats:** 2 writers + 1 tester — evidence types and replay split from reconciliation and the journal wire.
-- `impl` — `src/reservation/{evidence,lifecycle,scoped_patch_evaluation,retention,mod}.rs`, `src/board/rows.rs`, `src/git/patch.rs`; evidence types, replay, unit test B, affected source fixtures; hub: `src/reservation/mod.rs` (re-exports)
-- `review` — opens as impl: `src/reconcile.rs`, `src/ledger/journal.rs`, `src/output_contract.rs`, the generated contract, `docs/cargo-berth/json-contract.md`; reconciliation, wire conversion, unit test A; hub: `src/reconcile.rs`
-- `test` — `tests/*.rs` and `tests/support/**`, excluding frozen `tests/fixtures/reader_compat` bytes; tests C and D and affected integration fixtures
+**Binds later work:** the historical trunk candidate records its commit as `IntegrationWitness::Historical` and settlement obtains the released commit through `resolve()`; no historical-candidate discovery exists yet, so every non-revalidation observation produces `EvaluatedTrunk`.
 
-**Constraints from prior phases:**
-- Phase 1: actual-trunk settlement is selected in `complete_reconciliation_plan`; prepared decisions project it before proposed-trunk constraints, committed audits preserve lifecycles for forced-permit consumption, and proposed-trunk evidence never settles.
-- Phase 1: witness revalidation is ancestry-only through `RewrittenIntegrationTrunkCommit::revalidate_ancestry` in `src/reconcile.rs` and `src/verb/release.rs`; `RetentionCommitResolution::IncludeSettlementWitness` (`src/reconcile.rs:839`) retains a newly settled witness in the same pass; `SuccessorIncorporationSubject::RewrittenIntegrationWitness` (:572) never enters scoped comparison.
-- Phase 2: re-anchored reservations settle through the same selection and produce no historical witness.
-- Phase 2: consume stored per-branch pairs and created_commits without reconstructing them from current refs or assuming hook stdin contains the previous tip; apply rebases can supply a zero previous OID.
-- Phase 2: project accepted resnapshots before repository observation, preserve deferred rewrite destinations in ordering decisions, and perform retention and marker changes only after append; keep the lifecycle re-anchoring suite and the `pending_rebase_checkpoint_obeys_ordering_*` and `budget_deferred_rewrite_obeys_ordering_*` gate tests (`tests/gate.rs:2320`, `:2416`) green. The committed-hook entry point is `GateReconciliation::into_committed_hook_action` (`src/reconcile.rs:2241`).
-- Audit surfaces: outstanding markers remain internal because board/check, reservation intervals, ordering denials, and orphan recovery expose their consequences; zero-previous non-rebase branch creation creates no reservation outcome and needs no additional surface, with coverage retained in `zero_previous_without_an_apply_map_keeps_skipping_capture` and `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture`.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `verify.sh test cargo-berth edges` green with test C; `verify.sh test cargo-berth board` green with test D; unit tests A and B pass; the generated output contract reproduces; frozen reader fixture bytes unchanged. Behavior: a retained equivalence verdict carrying a witness older than trunk's tip survives a restart and settles with that witness.
+**Gotchas:**
+- Changing the witness or proof shape requires regenerating the output contract with `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1`, or the reproducibility test fails.
+- An absent `witness` in legacy journals and `EvidenceRevalidated` records decodes as `EvaluatedTrunk`; frozen `tests/fixtures/reader_compat` bytes stay unchanged.
 
 ### Phase 4 — Historical trunk candidate  · status: todo
 
@@ -241,6 +218,6 @@ D. In `tests/board.rs`, seed that retained historical verdict without matching m
 - Phase 2: project accepted resnapshots before repository observation, preserve deferred rewrite destinations in ordering decisions, and perform retention and marker changes only after append; keep the lifecycle re-anchoring suite and the `pending_rebase_checkpoint_obeys_ordering_*` and `budget_deferred_rewrite_obeys_ordering_*` gate tests (`tests/gate.rs:2320`, `:2416`) green. The committed-hook entry point is `GateReconciliation::into_committed_hook_action` (`src/reconcile.rs:2241`).
 - Audit surfaces: outstanding markers remain internal because board/check, reservation intervals, ordering denials, and orphan recovery expose their consequences; zero-previous non-rebase branch creation creates no reservation outcome and needs no additional surface, with coverage retained in `zero_previous_without_an_apply_map_keeps_skipping_capture` and `side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture`.
 - Phase 2: mapped acceptance charges the observed trunk's shared subject budget and keeps the comparison destination separate; candidate discovery joins that same budget.
-- Phase 3: `IntegrationEvidenceStatus::Integrated` keeps `trunk_oid` as the evaluated trunk and carries a separate integration-witness state; `settlement_selection` releases `ScopedPatchEquivalent` as `RewrittenIntegration(<witness>)` when the evaluated trunk equals actual trunk. `ScopedPatchEquivalenceChecked` and the retained verdicts carry the witness, absent meaning the evaluated trunk, and witness ancestry has its own `IntegrationProof` value. The candidate is recorded through that witness state.
+- Phase 3: `IntegrationEvidenceStatus::Integrated { trunk_oid, proof, witness: IntegrationWitness }` (`src/reservation/lifecycle.rs`) keeps `trunk_oid` as the evaluated trunk; `IntegrationWitness::{EvaluatedTrunk (default), Historical(RewrittenIntegrationTrunkCommit)}` serializes as `{"kind":"evaluated_trunk"}` / `{"kind":"historical","commit":"<oid>"}` and `IntegrationWitness::resolve(&GitObjectId) -> RewrittenIntegrationTrunkCommit` yields the commit to settle on. Witness ancestry records `IntegrationProof::RewrittenWitnessAncestor`. `settlement_selection` (`src/reconcile.rs`) releases `ScopedPatchEquivalent | RewrittenWitnessAncestor` as `RewrittenIntegration(witness.resolve(trunk_oid))` only when the evaluated trunk equals actual trunk. The journal `ScopedPatchEquivalenceChecked` carries a defaulted `witness` field, and `scoped_patch_evaluation.rs` retains the witness with each verdict and returns it on lookup, replayed by `retention.rs`. Record the historical candidate as `IntegrationWitness::Historical(candidate)`; keep the output contract regenerated (`CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1`) when the witness shape changes.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`, and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` green; `verify.sh test cargo-berth board` and `verify.sh test cargo-berth edges` green with tests 13 to 16; unit tests 12, 14, and the call-order test pass; frozen reader fixture bytes unchanged. Behavior: a phase whose rewrite map was never captured settles once a trunk commit contains every match and the replay certifies it, with that commit recorded as the witness.

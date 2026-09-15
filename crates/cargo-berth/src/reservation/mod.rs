@@ -36,6 +36,7 @@ pub(crate) use lifecycle::AbandonmentReason;
 pub(crate) use lifecycle::EditBlockingStatus;
 pub(crate) use lifecycle::IntegrationEvidenceStatus;
 pub(crate) use lifecycle::IntegrationProof;
+pub(crate) use lifecycle::IntegrationWitness;
 pub(crate) use lifecycle::LifecycleTransitionError;
 pub(crate) use lifecycle::OrphanRetirementReason;
 pub(crate) use lifecycle::ReleaseDisposition;
