@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 import codecs
+from collections.abc import Callable, Iterator
 import errno
 import fcntl
 import os
@@ -16,10 +19,19 @@ import subprocess
 import sys
 import termios
 import time
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
+
+if TYPE_CHECKING:
+    # A started writer is (child, observations, registration, fields, log).
+    StartedWriter = tuple[subprocess.Popen[bytes], Path, Path, list[bytes], Path]
+    RegistrationCarrier = tuple['ParentOwnedChild', Path, Path, list[bytes], Path]
+    # A cell foreground holds its SGR color parameters, or None for the default color.
+    Foreground = tuple[int, ...] | None
+    Snapshot = tuple[str, list[list[Foreground]]]
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario, cpu_scans = sys.argv[2:]
-cpu_scans = int(cpu_scans)
+binary, source, scenario, cpu_scans_argument = sys.argv[2:]
+cpu_scans = int(cpu_scans_argument)
 READER_SCENARIOS = (
     'child-source-switch', 'locale', 'root-headings', 'settings-scroll-burst',
     'cpu-cache-server', 'quiet-json-long', 'excluded',
@@ -42,15 +54,24 @@ for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
                   home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
     directory.mkdir(parents=True)
 
-def copy_named_shell(path):
+T = TypeVar('T')
+
+def required(value: T | None, description: str) -> T:
+    # Fail with the description instead of a TypeError where None is first used.
+    if value is None:
+        raise AssertionError(description)
+    return value
+
+def copy_named_shell(path: Path) -> None:
     # Darwin's /bin/sh re-execs another shell, losing the fixture process name.
-    shutil.copyfile('/bin/bash' if sys.platform == 'darwin' else shutil.which('sh'), path)
+    shell = '/bin/bash' if sys.platform == 'darwin' else required(shutil.which('sh'), 'sh is not on PATH')
+    _ = shutil.copyfile(shell, path)
     path.chmod(0o755)
     if sys.platform == 'darwin':
         # A relocated platform shell is killed before exec completes. Sign only
         # the owned fixture copy so it can run under its cargo/compiler name.
-        subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)],
-                       check=True, capture_output=True, text=True)
+        _ = subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)],
+                           check=True, capture_output=True, text=True)
 
 if scenario == 'settings-scroll-burst':
     account_directories = [capture_parent / str(other_uid - index) for index in range(24)]
@@ -68,13 +89,13 @@ if scenario == 'child-source-switch':
     # the outer test driver, using the operator's ordinary configuration surface.
     configuration += '[commands]\nexcluded = ["nextest"]\n'
 for directory in (root / 'config/cargo-tile', home / 'Library/Application Support/cargo-tile'):
-    (directory / 'config.toml').write_text(configuration)
+    _ = (directory / 'config.toml').write_text(configuration)
 shim_source = Path(source).read_text()
 assignment = 'capture_parent=/tmp/cargo-tile'
 assert shim_source.splitlines().count(assignment) == 1
-(bin_directory / 'cargo').write_text(shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
+_ = (bin_directory / 'cargo').write_text(shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
 copy_named_shell(bin_directory / 'cargo-tile-real')
-(work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
+_ = (work / 'build').write_text('''printf '%s\\0' "$LC_ALL" "$TZ" "$LANG" "$HOME" > "$OBSERVED/environment"
 printf '%s' "$$" > "$OBSERVED/cargo-pid"
 printf '%s' "${CARGOTILE_NESTED-}" > "$OBSERVED/enclosing-pid"
 printf '%s\\0' "$@" > "$OBSERVED/arguments"
@@ -117,8 +138,8 @@ done
 wait
 exit 37
 ''')
-shutil.copyfile(work / 'build', work / 'clippy')
-shutil.copyfile(work / 'build', work / 'check')
+_ = shutil.copyfile(work / 'build', work / 'clippy')
+_ = shutil.copyfile(work / 'build', work / 'check')
 
 environment = dict(os.environ)
 locales = subprocess.run(['locale', '-a'], check=True, capture_output=True, text=True).stdout.split()
@@ -126,22 +147,30 @@ writer_locale = next((name for name in locales if name not in ('C', 'POSIX')
                       and not name.lower().startswith('c.')), 'POSIX')
 for key in ('CARGOTILE_NESTED', 'CARGO_TILE_FRAME_LOG', 'CARGO_TERM_PROGRESS_WHEN',
             'CARGO_TERM_PROGRESS_WIDTH', 'ITERM_SESSION_ID', 'NESTED_WORK', 'NESTED_MARKER'):
-    environment.pop(key, None)
+    _ = environment.pop(key, None)
 environment.update(HOME=str(home), XDG_CONFIG_HOME=str(root / 'config'),
                    XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'),
                    RUSTUP_HOME=str(root / 'rustup'),
                    PYTHONUTF8='1',
                    LC_ALL=writer_locale, LANG=writer_locale,
                    TZ='EST5EDT,M3.2.0,M11.1.0', TERM='xterm-256color')
-writers = []
-parent_owned_children = []
+writers: list[tuple[subprocess.Popen[bytes], Path]] = []
+parent_owned_children: list[Path] = []
+# prepare_cpu_workload assigns this through global; an annotation narrows it to None at module scope.
 cache_server = None
-scan_reader = None
-reader = None
-terminal = None
+scan_reader: subprocess.Popen[bytes] | None = None
+reader: int | None = None
+terminal: int | None = None
 transcript = bytearray()
 
-def wait_for(predicate, description, diagnostics=None):
+def reader_pid() -> int:
+    return required(reader, 'reader process is used before pty.fork')
+
+def reader_terminal() -> int:
+    return required(terminal, 'reader terminal is used before pty.fork')
+
+def wait_for(predicate: Callable[[], object], description: str,
+             diagnostics: Callable[[], str] | None = None) -> None:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if predicate():
@@ -150,8 +179,9 @@ def wait_for(predicate, description, diagnostics=None):
     details = diagnostics() if diagnostics is not None else ('\n' + screen() if transcript else '')
     raise AssertionError(description + details)
 
-def start_writer(name, writer_home, command='build', nested_directory=None,
-                 capture_root=capture, directory=work, arguments=()):
+def start_writer(name: str, writer_home: Path, command: str = 'build',
+                 nested_directory: Path | None = None, capture_root: Path = capture,
+                 directory: Path = work, arguments: tuple[str, ...] = ()) -> StartedWriter:
     name += '-' + root.name
     observations = root / name
     observations.mkdir()
@@ -160,7 +190,7 @@ def start_writer(name, writer_home, command='build', nested_directory=None,
         nested_directory.mkdir()
         for nested_command in ('check', 'test'):
             (observations / nested_command).mkdir()
-            shutil.copyfile(work / 'build', nested_directory / nested_command)
+            _ = shutil.copyfile(work / 'build', nested_directory / nested_command)
         child_environment.update(NESTED_WORK=str(nested_directory),
                                  NESTED_MARKER='probe-nested-' + root.name)
     with (observations / 'output').open('wb') as output:
@@ -180,10 +210,10 @@ def start_writer(name, writer_home, command='build', nested_directory=None,
         # The directory claims a different uid but still belongs to this process.
         # Its valid publication must be ignored; process census can still see cargo.
         destination = capture_root / 'state/pids' / registration.name
-        registration.rename(destination)
+        _ = registration.rename(destination)
         registration = destination
         destination = capture_root / log.name
-        log.rename(destination)
+        _ = log.rename(destination)
         log = destination
     inherited = (observations / 'environment').read_bytes().split(b'\0')
     assert inherited == [writer_locale.encode(), environment['TZ'].encode(),
@@ -200,19 +230,19 @@ def start_writer(name, writer_home, command='build', nested_directory=None,
 
 class ParentOwnedChild:
     # The enclosing writer owns wait and process-group cleanup for this child.
-    def __init__(self, pid):
-        self.pid = pid
+    def __init__(self, pid: int) -> None:
+        self.pid: int = pid
 
-def start_registration_carrier(template):
+def start_registration_carrier(template: StartedWriter) -> RegistrationCarrier:
     # A live Python process has kernel identity but no cargo argv. Publish the
     # shim's wire format for that lifetime, then exec cargo without changing pid.
     observations = root / ('probe-carrier-' + root.name)
     observations.mkdir()
     directory = home / ('registered-directory-' + root.name)
     directory.mkdir(parents=True)
-    shutil.copyfile(work / 'build', directory / 'build')
+    _ = shutil.copyfile(work / 'build', directory / 'build')
     carrier_script = observations / 'carrier.py'
-    carrier_script.write_text('''import os
+    _ = carrier_script.write_text('''import os
 from pathlib import Path
 import time
 observations = Path(os.environ['OBSERVED'])
@@ -231,9 +261,9 @@ while not (observations / 'release').exists():
     launch = ['env', *(key + '=' + value for key, value in child_environment.items()
                       if environment.get(key) != value), sys.executable, str(carrier_script)]
     launch_file = template[1] / 'spawn-child.tmp'
-    launch_file.write_text(
+    _ = launch_file.write_text(
         'cd ' + shlex.quote(str(directory)) + '\nexec ' + shlex.join(launch) + '\n')
-    launch_file.rename(template[1] / 'spawn-child')
+    _ = launch_file.rename(template[1] / 'spawn-child')
     observed_pid = template[1] / 'child-started'
     wait_for(lambda: observed_pid.exists() and observed_pid.read_text().isdigit(),
              'readable parent does not spawn its only child')
@@ -254,11 +284,11 @@ while not (observations / 'release').exists():
     fields[8:] = [b'build', observations.name.encode(), b'']
     registration = pids / (str(child.pid) + '.' + fields[1].decode())
     log = capture / os.fsdecode(fields[4])
-    log.write_bytes(b'Blocking waiting for file lock on build directory\n')
-    registration.write_bytes(b'\0'.join(fields))
+    _ = log.write_bytes(b'Blocking waiting for file lock on build directory\n')
+    _ = registration.write_bytes(b'\0'.join(fields))
     return child, observations, registration, fields, log
 
-def end_writer(writer):
+def end_writer(writer: StartedWriter) -> None:
     child, observations = writer[:2]
     for nested_command in ('check', 'test'):
         if (observations / nested_command).is_dir():
@@ -266,7 +296,7 @@ def end_writer(writer):
     (observations / 'release').touch()
     assert child.wait(timeout=5) == 37, (observations / 'output').read_text()
 
-def prepare_cpu_workload():
+def prepare_cpu_workload() -> None:
     global cache_server
     workload = root / 'cpu-workload.sh'
     environment['CPU_WORKLOAD'] = str(workload)
@@ -280,21 +310,21 @@ def prepare_cpu_workload():
         copy_named_shell(bin_directory / name)
     environment['RUSTC_WRAPPER'] = str(bin_directory / 'sccache')
     compiler = server / 'compile.sh'
-    compiler.write_text('''printf '%s' "$$" > "$CPU_SERVER/compiler-pid"
+    _ = compiler.write_text('''printf '%s' "$$" > "$CPU_SERVER/compiler-pid"
 while [ ! -f "$CPU_SERVER/release" ]; do :; done
 ''')
     service = server / 'serve.sh'
-    service.write_text('''printf '%s' "$$" > "$CPU_SERVER/server-pid"
+    _ = service.write_text('''printf '%s' "$$" > "$CPU_SERVER/server-pid"
 while [ ! -f "$CPU_SERVER/request" ]; do sleep 0.02; done
 "$CPU_RUSTC" "$CPU_COMPILE" --crate-name cache_fixture --out-dir "$CPU_TARGET/debug/deps" &
 wait
 ''')
     client = server / 'client.sh'
-    client.write_text('''printf '%s' "$$" > "$OBSERVED/client-pid"
+    _ = client.write_text('''printf '%s' "$$" > "$OBSERVED/client-pid"
 printf 'compile' > "$CPU_SERVER/request"
 while [ ! -f "$OBSERVED/release" ]; do sleep 0.2; done
 ''')
-    workload.write_text('exec "$RUSTC_WRAPPER" ' + shlex.quote(str(client)) + '\n')
+    _ = workload.write_text('exec "$RUSTC_WRAPPER" ' + shlex.quote(str(client)) + '\n')
     server_environment = dict(environment, CPU_RUSTC=str(bin_directory / 'rustc'),
                               CPU_COMPILE=str(compiler))
     # Reparent the server before cargo starts. A process supervisor can adopt
@@ -314,13 +344,13 @@ os.execve(sys.argv[1], sys.argv[1:], dict(os.environ))
     cache_server = int((server / 'server-pid').read_text())
     wait_for_cache_server_parent(cache_server, launcher.pid, server)
 
-def process_parent(pid):
+def process_parent(pid: int) -> int:
     return int(subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='], check=True,
                               capture_output=True, text=True).stdout.strip())
 
-def wait_for_cache_server_parent(pid, launcher_pid, server):
-    observations = []
-    def reparented():
+def wait_for_cache_server_parent(pid: int, launcher_pid: int, server: Path) -> None:
+    observations: list[tuple[int, str, str]] = []
+    def reparented() -> bool:
         result = subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='],
                                 capture_output=True, text=True)
         observations[:] = [(result.returncode, result.stdout, result.stderr)]
@@ -333,8 +363,8 @@ def wait_for_cache_server_parent(pid, launcher_pid, server):
              lambda: '\nlast ps observation: ' + repr(observations)
              + '\nserver output: ' + (server / 'output').read_text())
 
-def process_ancestry(pid):
-    ancestry = []
+def process_ancestry(pid: int) -> list[int]:
+    ancestry: list[int] = []
     while pid > 1:
         assert pid not in ancestry, ancestry
         ancestry.append(pid)
@@ -342,7 +372,7 @@ def process_ancestry(pid):
     return ancestry
 
 
-def rendered_cpu(rendered, writer, markers):
+def rendered_cpu(rendered: str, writer: StartedWriter, markers: tuple[str, ...]) -> int:
     commands = fixture_pane(rendered, markers)
     pid = (writer[1] / 'cargo-pid').read_text()
     rows = [line for line in commands if writer[1].name in line
@@ -360,14 +390,14 @@ def rendered_cpu(rendered, writer, markers):
     assert len(percentages) == 1, 'CPU must be one numeric reading after the first scan\n' + rows[0]
     return int(percentages[0][:-1])
 
-def assert_cpu_workload(writer, unrelated):
+def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter) -> str:
     markers = (writer[1].name, unrelated[1].name)
     rendered = wait_for_fixture_pane(markers)
-    readings = []
-    other_readings = []
+    readings: list[tuple[float, int]] = []
+    other_readings: list[int] = []
     started = time.monotonic()
     deadline = started + 4
-    def observe_cpu():
+    def observe_cpu() -> bool:
         nonlocal rendered
         readings.append((time.monotonic() - started, rendered_cpu(rendered, writer, markers)))
         other_readings.append(rendered_cpu(rendered, unrelated, markers))
@@ -379,24 +409,25 @@ def assert_cpu_workload(writer, unrelated):
     assert len(sustained) >= 3 and min(sustained) >= 10, (
         'compile CPU must remain charged across reporting windows', readings)
     assert max(other_readings) < min(sustained) / 2, (readings, other_readings)
-    finish_cpu_scans()
+    _ = finish_cpu_scans()
     return rendered
 
-def finish_cpu_scans():
-    assert scan_reader.wait(timeout=10) == 0, (root / 'cpu-scanner-output').read_text()
+def finish_cpu_scans() -> list[list[str]]:
+    scanner = required(scan_reader, 'cpu-cache-server setup does not assign scan_reader')
+    assert scanner.wait(timeout=10) == 0, (root / 'cpu-scanner-output').read_text()
     observations = [line.split('\t') for line in (root / 'cpu-scans').read_text().splitlines()]
-    assert [int(index) for index, cpu in observations] == list(range(cpu_scans)), observations
-    assert all(re.fullmatch(r'\d+%', cpu) for index, cpu in observations[1:]), (
+    assert [int(index) for index, _ in observations] == list(range(cpu_scans)), observations
+    assert all(re.fullmatch(r'\d+%', cpu) for _, cpu in observations[1:]), (
         'each completed scan after the first must publish a measurement', observations)
     return observations
 
 
-def read_terminal(duration):
+def read_terminal(duration: float) -> None:
     deadline = time.monotonic() + duration
     while time.monotonic() < deadline:
-        if select.select([terminal], [], [], min(0.05, max(0, deadline - time.monotonic())))[0]:
+        if select.select([reader_terminal()], [], [], min(0.05, max(0, deadline - time.monotonic())))[0]:
             try:
-                data = os.read(terminal, 65536)
+                data = os.read(reader_terminal(), 65536)
             except OSError as error:
                 if error.errno == errno.EIO:
                     break
@@ -409,21 +440,23 @@ class CompletedTerminalFrames:
     """Keep the mutable draw separate from the last completed screen."""
 
     # Match the valid prefix even when its terminator has not arrived.
-    csi = re.compile(r'\x1b\[[0-?]*[ -/]*([@-~]?)')
-    osc = re.compile(r'\x1b\][^\x07\x1b]*(\x07|\x1b\\)?')
+    csi: ClassVar[re.Pattern[str]] = re.compile(r'\x1b\[[0-?]*[ -/]*([@-~]?)')
+    osc: ClassVar[re.Pattern[str]] = re.compile(r'\x1b\][^\x07\x1b]*(\x07|\x1b\\)?')
 
-    def __init__(self):
-        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
-        self.pending = ''
-        self.offset = 0
-        self.row = self.column = 0
-        self.foreground = None
-        self.cells = []
-        self.colors = []
-        self.rows = self.columns = 0
-        self.published = ('', [])
+    def __init__(self) -> None:
+        self.decoder: codecs.IncrementalDecoder = codecs.getincrementaldecoder('utf-8')('replace')
+        self.pending: str = ''
+        self.offset: int = 0
+        self.row: int = 0
+        self.column: int = 0
+        self.foreground: Foreground = None
+        self.cells: list[list[str]] = []
+        self.colors: list[list[Foreground]] = []
+        self.rows: int = 0
+        self.columns: int = 0
+        self.published: Snapshot = ('', [])
 
-    def resize(self, rows, columns):
+    def resize(self, rows: int, columns: int) -> None:
         if (rows, columns) == (self.rows, self.columns):
             return
         self.cells = [(line[:columns] + [' '] * max(0, columns - len(line)))
@@ -434,7 +467,7 @@ class CompletedTerminalFrames:
         self.colors.extend([[None] * columns for _ in range(rows - len(self.colors))])
         self.rows, self.columns = rows, columns
 
-    def feed(self, data):
+    def feed(self, data: bytearray) -> None:
         self.pending += self.decoder.decode(data)
         index = 0
         while index < len(self.pending):
@@ -444,7 +477,7 @@ class CompletedTerminalFrames:
                     break
                 introducer = self.pending[index + 1]
                 if introducer == '[':
-                    match = self.csi.match(self.pending, index)
+                    match = required(self.csi.match(self.pending, index), 'CSI pattern rejects its introducer')
                     if not match[1] and match.end() == len(self.pending):
                         break
                     if match[1]:
@@ -454,7 +487,7 @@ class CompletedTerminalFrames:
                     index = match.end()
                     continue
                 if introducer == ']':
-                    match = self.osc.match(self.pending, index)
+                    match = required(self.osc.match(self.pending, index), 'OSC pattern rejects its introducer')
                     # A trailing ESC may be the first byte of the OSC terminator.
                     if not match[1] and self.pending[match.end():] in ('', '\x1b'):
                         break
@@ -474,7 +507,7 @@ class CompletedTerminalFrames:
             index += 1
         self.pending = self.pending[index:]
 
-    def command(self, command, parameters):
+    def command(self, command: str, parameters: str) -> None:
         if command == 'l' and parameters == '?25':
             self.published = ('\n'.join(''.join(line).rstrip() for line in self.cells),
                               [line.copy() for line in self.colors])
@@ -511,40 +544,40 @@ class CompletedTerminalFrames:
 
 terminal_frames = CompletedTerminalFrames()
 
-def terminal_snapshot():
+def terminal_snapshot() -> Snapshot:
     terminal_frames.resize(terminal_rows, terminal_columns)
     terminal_frames.feed(transcript[terminal_frames.offset:])
     terminal_frames.offset = len(transcript)
     return terminal_frames.published
 
-def screen():
+def screen() -> str:
     return terminal_snapshot()[0]
 
-def command_panes(rendered):
+def command_panes(rendered: str) -> Iterator[list[str]]:
     lines = rendered.splitlines()
     for beginning, line in enumerate(lines):
         if 'parent' not in line or 'command' not in line:
             continue
-        commands = []
+        commands: list[str] = []
         for line in lines[beginning + 1:]:
             if re.match(r'^\s*[└├╰╞╘].*[─━═]{3}', line):
                 break
             commands.append(line)
         yield commands
 
-def fixture_panes(rendered, markers):
+def fixture_panes(rendered: str, markers: tuple[str, ...]) -> list[list[str]]:
     return [commands for commands in command_panes(rendered)
             if all(any(marker in line for line in commands) for marker in markers)]
 
-def fixture_pane(rendered, markers):
+def fixture_pane(rendered: str, markers: tuple[str, ...]) -> list[str]:
     matches = fixture_panes(rendered, markers)
     assert len(matches) == 1, 'fixture must occupy one command pane\n' + rendered
     return matches[0]
 
-def wait_for_fixture_pane(markers):
+def wait_for_fixture_pane(markers: tuple[str, ...]) -> str:
     rendered = ''
-    matches = []
-    def pane_is_ready():
+    matches: list[list[str]] = []
+    def pane_is_ready() -> bool:
         nonlocal rendered, matches
         read_terminal(0.1)
         rendered = screen()
@@ -555,14 +588,14 @@ def wait_for_fixture_pane(markers):
     return rendered
 
 
-def unavailable_measurements(row):
+def unavailable_measurements(row: str) -> int:
     # The final runs cell can touch the pane border without trailing padding.
     # A border delimits that cell just as whitespace delimits the inner cells.
     return row.replace('│', ' ').split().count('--')
 
 rows_readout = re.compile(r'content rows: (\d+)(?: @ \d+)?  r/c: (\d+)/(\d+)')
 
-def carrier_source_is_rendered(writer, source):
+def carrier_source_is_rendered(writer: RegistrationCarrier, source: str) -> bool:
     global terminal_rows
     read_terminal(0.1)
     rendered = screen()
@@ -576,8 +609,8 @@ def carrier_source_is_rendered(writer, source):
             sizes = [rows_readout.search(line) for line in panes[0]]
             if any(size and int(size[1]) > int(size[2]) - 1 for size in sizes):
                 terminal_rows *= 2
-                fcntl.ioctl(terminal, termios.TIOCSWINSZ,
-                            struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+                _ = fcntl.ioctl(reader_terminal(), termios.TIOCSWINSZ,
+                                struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
     if len(rows) != 1:
         return False
     # A sleeping process may never earn a CPU baseline. Its observed compiler
@@ -586,12 +619,13 @@ def carrier_source_is_rendered(writer, source):
     expected = 3
     return unavailable == expected if source == 'registration' else unavailable < expected
 
-def assert_child_family(parent, child):
+def assert_child_family(parent: StartedWriter,
+                        child: RegistrationCarrier) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...]]:
     rendered = wait_for_fixture_pane((parent[1].name, child[1].name))
     # No PTY read separates the ready screen from its matching color snapshot.
     colors = terminal_snapshot()[1]
     commands = fixture_pane(rendered, (parent[1].name, child[1].name))
-    rows = {}
+    rows: dict[int, str] = {}
     for writer in (parent, child):
         matching = [line for line in commands if writer[1].name in line]
         assert len(matching) == 1, 'source change duplicates an invocation\n' + rendered
@@ -622,10 +656,25 @@ def assert_child_family(parent, child):
     assert len(headings) == 2, 'source change loses a directory heading\n' + rendered
     return family, starts, headings
 
+def assert_child_source_switch(carrier: RegistrationCarrier) -> None:
+    wait_for(lambda: carrier_source_is_rendered(carrier, 'registration'),
+             'parent does not display its registration-only child')
+    initial = assert_child_family(first, carrier)
+    for source, trigger in (('process', 'activate'), ('registration', 'retire')):
+        (carrier[1] / trigger).touch()
+        wait_for(lambda: (carrier[1] / 'source').read_text() == source,
+                 'child does not switch to ' + source)
+        wait_for(lambda: carrier_source_is_rendered(carrier, source),
+                 'reader does not observe child source ' + source)
+        observed = assert_child_family(first, carrier)
+        assert observed == initial, \
+            ('child source change alters family color, start, or headings: '
+             + repr(initial) + ' became ' + repr(observed) + '\n' + screen())
 
-def expand_arguments(expected_rows):
-    os.write(terminal, b'p')
-    def arguments_are_rendered():
+
+def expand_arguments(expected_rows: list[tuple[str, str]]) -> str:
+    _ = os.write(reader_terminal(), b'p')
+    def arguments_are_rendered() -> bool:
         read_terminal(0.1)
         rows = [line for commands in command_panes(screen()) for line in commands]
         return all(any(re.match(r'^\s*│\s*' + str(pid) + r'\s', line) and command in line
@@ -633,40 +682,40 @@ def expand_arguments(expected_rows):
     wait_for(arguments_are_rendered, 'full command arguments do not finish rendering')
     return screen()
 
-def settings_screen():
-    os.write(terminal, b's')
-    def settings_are_visible():
+def settings_screen() -> str:
+    _ = os.write(reader_terminal(), b's')
+    def settings_are_visible() -> bool:
         read_terminal(0.1)
         rendered = screen()
         return 'Capture:' in rendered and 'auto install' in rendered and 'Commands:' in rendered
     wait_for(settings_are_visible, 'settings do not open')
     rendered = screen()
-    os.write(terminal, b'\x1b')
-    def settings_are_closed():
+    _ = os.write(reader_terminal(), b'\x1b')
+    def settings_are_closed() -> bool:
         read_terminal(0.1)
         return 'Capture:' not in screen()
     wait_for(settings_are_closed, 'settings do not close')
     return rendered
 
-def assert_settings_scroll():
+def assert_settings_scroll() -> None:
     global terminal_rows, terminal_columns
     # Keep every account below the initial viewport without cleanup rows.
     terminal_rows = 10
     transcript_start = len(transcript)
-    input_attributes = termios.tcgetattr(terminal)
+    input_attributes = termios.tcgetattr(reader_terminal())
     if scenario == 'settings-scroll-burst':
         # Queue both events while the already-rendering reader is descheduled.
-        os.kill(reader, signal.SIGSTOP)
-        stopped, status = os.waitpid(reader, os.WUNTRACED)
+        os.kill(reader_pid(), signal.SIGSTOP)
+        stopped, status = os.waitpid(reader_pid(), os.WUNTRACED)
         assert stopped == reader and os.WIFSTOPPED(status), (stopped, status)
     try:
-        fcntl.ioctl(terminal, termios.TIOCSWINSZ,
-                    struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
-        written = os.write(terminal, b's')
+        _ = fcntl.ioctl(reader_terminal(), termios.TIOCSWINSZ,
+                        struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+        written = os.write(reader_terminal(), b's')
     finally:
         if scenario == 'settings-scroll-burst':
-            os.kill(reader, signal.SIGCONT)
-    def popup_diagnostics():
+            os.kill(reader_pid(), signal.SIGCONT)
+    def popup_diagnostics() -> str:
         received = bytes(transcript[transcript_start:])
         # Inspect queued input only after timeout; successful runs never read it.
         try:
@@ -680,17 +729,18 @@ def assert_settings_scroll():
                 os.close(slave)
         except OSError as error:
             unread = repr(error)
+        # termios types tcgetattr as list[Any]; index 3 holds the local mode flags.
         return ('\nsettings input: ' + repr({
             'written': written,
-            'canonical': bool(input_attributes[3] & termios.ICANON),
-            'echo': bool(input_attributes[3] & termios.ECHO),
+            'canonical': bool(cast(int, input_attributes[3]) & termios.ICANON),
+            'echo': bool(cast(int, input_attributes[3]) & termios.ECHO),
             'unread_input': unread,
             'received_bytes': len(received),
             'settings_in_raw_output': b'Settings' in received,
             'completed_frames': received.count(frame_end),
             'raw_tail': received[-2048:],
         }) + '\n' + screen())
-    def settings_are_visible():
+    def settings_are_visible() -> bool:
         read_terminal(0.1)
         rendered = screen()
         return 'Settings' in rendered and any('▶' in line and 'mode' in line
@@ -699,10 +749,18 @@ def assert_settings_scroll():
     initial = screen()
     assert all(str(directory) not in initial for directory in account_directories), initial
     pending = {str(directory) for directory in account_directories}
-    selected_accounts = set()
-    def accounts_are_selected():
-        os.write(terminal, b'\x1b[B')
-        read_terminal(0.1)
+    selected_accounts: set[str] = set()
+    def selected_rows() -> str:
+        return '\n'.join(line for line in screen().splitlines() if '▶' in line)
+    def press_down() -> None:
+        # Each arrow redraws the selection; read until that frame lands instead of a fixed delay.
+        previous = selected_rows()
+        _ = os.write(reader_terminal(), b'\x1b[B')
+        deadline = time.monotonic() + 1
+        while selected_rows() == previous and time.monotonic() < deadline:
+            read_terminal(0.01)
+    def accounts_are_selected() -> bool:
+        press_down()
         rendered = screen()
         selected = '\n'.join(line for line in rendered.splitlines() if '▶' in line)
         selected_accounts.update(directory for directory in pending if directory in selected)
@@ -714,32 +772,54 @@ def assert_settings_scroll():
     configurations = {path: path.read_bytes() for path in
                       (root / 'config/cargo-tile/config.toml',
                        home / 'Library/Application Support/cargo-tile/config.toml')}
-    os.write(terminal, b'\r\x1b[C\x1b[D')
+    _ = os.write(reader_terminal(), b'\r\x1b[C\x1b[D')
     read_terminal(0.2)
     assert any('▶' in line and account in line for line in screen().splitlines()), screen()
     assert all(path.read_bytes() == contents for path, contents in configurations.items()), \
         'account navigation edits configuration'
     terminal_rows, terminal_columns = 9, 240
-    fcntl.ioctl(terminal, termios.TIOCSWINSZ,
-                struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
-    def selection_survives_resize():
+    _ = fcntl.ioctl(reader_terminal(), termios.TIOCSWINSZ,
+                    struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+    def selection_survives_resize() -> bool:
         read_terminal(0.1)
         return any('▶' in line and account in line for line in screen().splitlines())
     wait_for(selection_survives_resize, 'selected account disappears after terminal resize')
     remaining_settings = {'excluded', 'hidden when idle', 'config', 'themes', 'keymap'}
-    def later_settings_are_selected():
-        os.write(terminal, b'\x1b[B')
-        read_terminal(0.1)
-        selected = '\n'.join(line for line in screen().splitlines() if '▶' in line)
+    def later_settings_are_selected() -> bool:
+        press_down()
+        selected = selected_rows()
         remaining_settings.difference_update(label for label in tuple(remaining_settings)
                                              if re.search('▶\\s+' + re.escape(label) + '\\s', selected))
         return not remaining_settings
     wait_for(later_settings_are_selected, 'settings below account directories cannot be reached',
              lambda: '\nmissing: ' + repr(sorted(remaining_settings)) + '\n' + screen())
-    os.write(terminal, b'\x1b')
+    _ = os.write(reader_terminal(), b'\x1b')
     read_terminal(0.1)
 
-def assert_completed_terminal_frames():
+def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path) -> str:
+    markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
+    rendered = wait_for_fixture_pane((first[1].name, *markers))
+    commands = fixture_pane(rendered, (first[1].name, *markers))
+    assert any(nested_directory.name in line for line in commands), rendered
+    for marker, command in zip(markers, ('check', 'test')):
+        rows = [line for line in commands if marker in line]
+        assert len(rows) == 1, 'nested invocation does not retain one row\n' + rendered
+        assert 'blocked' in rows[0] and 'cargo ' + command + ' ' + marker in rows[0], rendered
+        nested_pid = (enclosing[1] / command / 'cargo-pid').read_text()
+        assert re.match(r'^\s*│\s*' + nested_pid + r'\s', rows[0]), rendered
+    assert not any(enclosing[1].name in line for pane in command_panes(rendered)
+                   for line in pane), 'excluded command becomes a row\n' + rendered
+    assert enclosing[0].poll() is None, 'excluded writer ends before cleanup assertions'
+    # Observe another captured write after the reader has pruned the ended
+    # sibling; a mere retained empty filename would not prove live capture.
+    assert all(not path.exists() for path in removed), 'reader has not swept the sibling'
+    (enclosing[1] / 'pulse').touch()
+    wait_for(lambda: enclosing[4].exists()
+             and b'writer remains captured after reader scan' in enclosing[4].read_bytes(),
+             'excluded live command loses its capture after the sweep')
+    return rendered
+
+def assert_completed_terminal_frames() -> None:
     global terminal_rows, terminal_columns
     # The readout comes from draw_cell_for_test, including the reserved footer.
     readout = os.environ['CARGO_TILE_TEST_ROWS_READOUT']
@@ -747,9 +827,11 @@ def assert_completed_terminal_frames():
     assert size is not None, 'resize-on-clip regex misses production output: ' + readout
     assert tuple(map(int, size.groups())) == (11, 10, 80), readout
     assert int(size[1]) > int(size[2]) - 1, 'clipped content must trigger a resize'
-    assert rows_readout.search('content rows: 11 @ 60  r/c: 10/80').groups() == size.groups()
+    suffixed = rows_readout.search('content rows: 11 @ 60  r/c: 10/80')
+    assert suffixed is not None, 'resize-on-clip regex misses a readout with its optional @ field'
+    assert suffixed.groups() == size.groups()
 
-    def split_frame(frame):
+    def split_frame(frame: bytes) -> Snapshot:
         previous = terminal_snapshot()
         for byte in frame[:-1]:
             transcript.append(byte)
@@ -760,7 +842,7 @@ def assert_completed_terminal_frames():
     first = ('\x1b[2J\x1b[H│ pid parent command\r\n'
              '│ earlier row\r\n│ cargo check probe-nested\r\n'
              '│ cargo test probe-child\r\n└────').encode() + frame_end
-    split_frame(first)
+    _ = split_frame(first)
     redraw = ('\x1b[2;1H\x1b[32m│ cargo check probe-nested\x1b[0m'
               '\x1b[3;1H│ cargo test probe-child\x1b[K'
               '\x1b[4;1H└────\x1b[K\x1b[5;1H\x1b[K').encode() + frame_end
@@ -823,12 +905,21 @@ try:
         prepare_cpu_workload()
     first_arguments = ('--target-dir', str(work / 'target')) if scenario == 'cpu-cache-server' else ()
     first = start_writer('probe-first', home, arguments=first_arguments)
-    retained = []
-    removed = []
+    retained: list[Path] = []
+    removed: list[Path] = []
+    # Scenario setup assigns these; the same scenario reads them again after the reader scans.
+    unrelated: StartedWriter | None = None
+    quiet_writer: StartedWriter | None = None
+    arguments: tuple[str, ...] = ()
+    carrier: RegistrationCarrier | None = None
+    second: StartedWriter | None = None
+    nested_directory: Path | None = None
+    enclosing: StartedWriter | None = None
     if scenario == 'cpu-cache-server':
         wait_for(lambda: (first[1] / 'cpu-ready').exists(), 'invocation baseline is not established')
     if scenario == 'cpu-cache-server':
-        assert int((first[1] / 'cargo-pid').read_text()) not in process_ancestry(cache_server)
+        assert int((first[1] / 'cargo-pid').read_text()) not in process_ancestry(
+            required(cache_server, 'prepare_cpu_workload does not assign cache_server'))
         wait_for(lambda: (root / 'cpu-server/compiler-pid').exists()
                  and (root / 'cpu-server/compiler-pid').read_text(), 'server does not start rustc')
         compiler_pid = int((root / 'cpu-server/compiler-pid').read_text())
@@ -836,16 +927,17 @@ try:
         client_pid = int((first[1] / 'client-pid').read_text())
         assert process_parent(client_pid) == int((first[1] / 'cargo-pid').read_text())
         idle = root / 'idle-workload.sh'
-        idle.write_text('while [ ! -f "$OBSERVED/release" ]; do sleep 0.2; done\n')
+        _ = idle.write_text('while [ ! -f "$OBSERVED/release" ]; do sleep 0.2; done\n')
         environment['CPU_WORKLOAD'] = str(idle)
         unrelated_directory = home / ('unrelated-cpu-' + root.name)
         unrelated_directory.mkdir()
-        shutil.copyfile(work / 'build', unrelated_directory / 'build')
+        _ = shutil.copyfile(work / 'build', unrelated_directory / 'build')
         other_target = unrelated_directory / 'target'
         unrelated = start_writer('probe-unrelated', home, directory=unrelated_directory,
                                  command='build',
                                  arguments=('--target-dir', str(other_target)))
-        wait_for(lambda: (unrelated[1] / 'cpu-ready').exists(), 'second invocation baseline is not established')
+        unrelated_ready = unrelated[1] / 'cpu-ready'
+        wait_for(lambda: unrelated_ready.exists(), 'second invocation baseline is not established')
     if scenario == 'quiet-json-long':
         quiet = '--quiet'
         json_format = ('--message-format=json',)
@@ -872,8 +964,8 @@ try:
         ended = start_writer('probe-ended', home)
         contents = ended[2].read_bytes()
         end_writer(ended)
-        ended[2].write_bytes(contents)
-        ended[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
+        _ = ended[2].write_bytes(contents)
+        _ = ended[4].write_bytes(b'Blocking waiting for file lock on build directory\n')
         removed.extend((ended[2], ended[4]))
 
     if scenario == 'cpu-cache-server':
@@ -884,13 +976,13 @@ try:
                                            stdout=output, stderr=output)
     reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
     # Family assertions observe ANSI foregrounds even when the outer test runner is uncolored.
-    reader_environment.pop('NO_COLOR', None)
+    _ = reader_environment.pop('NO_COLOR', None)
     reader, terminal = pty.fork()
     if reader == 0:
-        fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+        _ = fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         os.chdir(root)
         if scenario == 'settings-scroll-burst':
-            (root / 'reader-terminal').write_text(os.ttyname(0))
+            _ = (root / 'reader-terminal').write_text(os.ttyname(0))
         reader_environment['CARGO_TILE_TEST_READER'] = '1'
         os.execve(binary, [binary, '--exact', 'shim_registration::reader_scenarios::reader_child', '--nocapture'], reader_environment)
     def reader_has_scanned():
@@ -902,10 +994,11 @@ try:
     rendered = screen()
     assert 'summary' in rendered, rendered
     if scenario == 'cpu-cache-server':
-        rendered = assert_cpu_workload(first, unrelated)
+        rendered = assert_cpu_workload(first, required(unrelated, 'cpu-cache-server setup does not assign unrelated'))
     if scenario == 'settings-scroll-burst':
         assert_settings_scroll()
     if scenario == 'quiet-json-long':
+        quiet_writer = required(quiet_writer, 'quiet-json-long setup does not assign quiet_writer')
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
         rendered = expand_arguments([(cargo_pid, 'cargo check ' + quiet_writer[1].name + ' ' + ' '.join(arguments))])
         commands = fixture_pane(rendered, (first[1].name, quiet_writer[1].name))
@@ -919,21 +1012,9 @@ try:
         association = 'capture association: pid ' + cargo_pid + ' via registration ' + str(quiet_writer[0].pid)
         assert association in ' '.join(settings.replace('│', ' ').split()), settings
     if scenario == 'child-source-switch':
-        wait_for(lambda: carrier_source_is_rendered(carrier, 'registration'),
-                 'parent does not display its registration-only child')
-        initial = assert_child_family(first, carrier)
-        for source, trigger in (('process', 'activate'), ('registration', 'retire')):
-            (carrier[1] / trigger).touch()
-            wait_for(lambda: (carrier[1] / 'source').read_text() == source,
-                     'child does not switch to ' + source)
-            wait_for(lambda: carrier_source_is_rendered(carrier, source),
-                     'reader does not observe child source ' + source)
-            observed = assert_child_family(first, carrier)
-            assert observed == initial, \
-                ('child source change alters family color, start, or headings: '
-                 + repr(initial) + ' became ' + repr(observed) + '\n' + screen())
+        assert_child_source_switch(required(carrier, 'child-source-switch setup does not assign carrier'))
     if scenario == 'root-headings':
-        markers = (first[1].name, second[1].name)
+        markers = (first[1].name, required(second, 'root-headings setup does not assign second')[1].name)
         # The reader has shown the first writer; the second can arrive in a later scan.
         rendered = wait_for_fixture_pane(markers)
         commands = fixture_pane(rendered, markers)
@@ -960,26 +1041,8 @@ try:
                    for line in rendered.splitlines()), rendered
         assert first[2].exists() and first[4].exists(), 'live record is removed by reader'
     if scenario == 'excluded':
-        markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
-        rendered = wait_for_fixture_pane((first[1].name, *markers))
-        commands = fixture_pane(rendered, (first[1].name, *markers))
-        assert any(nested_directory.name in line for line in commands), rendered
-        for marker, command in zip(markers, ('check', 'test')):
-            rows = [line for line in commands if marker in line]
-            assert len(rows) == 1, 'nested invocation does not retain one row\n' + rendered
-            assert 'blocked' in rows[0] and 'cargo ' + command + ' ' + marker in rows[0], rendered
-            nested_pid = (enclosing[1] / command / 'cargo-pid').read_text()
-            assert re.match(r'^\s*│\s*' + nested_pid + r'\s', rows[0]), rendered
-        assert not any(enclosing[1].name in line for pane in command_panes(rendered)
-                       for line in pane), 'excluded command becomes a row\n' + rendered
-        assert enclosing[0].poll() is None, 'excluded writer ends before cleanup assertions'
-        # Observe another captured write after the reader has pruned the ended
-        # sibling; a mere retained empty filename would not prove live capture.
-        assert all(not path.exists() for path in removed), 'reader has not swept the sibling'
-        (enclosing[1] / 'pulse').touch()
-        wait_for(lambda: enclosing[4].exists()
-                 and b'writer remains captured after reader scan' in enclosing[4].read_bytes(),
-                 'excluded live command loses its capture after the sweep')
+        rendered = assert_excluded_command(required(enclosing, 'excluded setup does not assign enclosing'),
+                                           required(nested_directory, 'excluded setup does not assign nested_directory'))
     for path in removed:
         assert not path.exists(), 'reader retains ended artifact: ' + str(path) + '\n' + rendered
     for path in retained:
@@ -998,13 +1061,13 @@ finally:
         if reader is not None and reader != 0:
             finished, status = os.waitpid(reader, os.WNOHANG)
             if not finished:
-                os.write(terminal, b'q')
+                _ = os.write(reader_terminal(), b'q')
                 read_terminal(0.3)
                 finished, status = os.waitpid(reader, os.WNOHANG)
                 if not finished:
                     os.kill(reader, signal.SIGTERM)
-                    os.waitpid(reader, 0)
-            os.close(terminal)
+                    _ = os.waitpid(reader, 0)
+            os.close(reader_terminal())
     finally:
         if cache_server is not None:
             (root / 'cpu-server/release').touch()
@@ -1015,7 +1078,7 @@ finally:
         if scan_reader is not None:
             if scan_reader.poll() is None:
                 scan_reader.terminate()
-            scan_reader.wait(timeout=5)
+            _ = scan_reader.wait(timeout=5)
         for observations in parent_owned_children:
             (observations / 'release').touch()
         for child, observations in writers:
@@ -1024,7 +1087,7 @@ finally:
                     (observations / nested_command / 'release').touch()
             (observations / 'release').touch()
             try:
-                child.wait(timeout=5)
+                _ = child.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
+                _ = child.wait()
