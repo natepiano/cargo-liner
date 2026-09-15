@@ -281,6 +281,35 @@ mod tests {
     }
 
     #[test]
+    fn zero_entrance_duration_shows_the_full_toast_at_creation() {
+        const MIN_INTERIOR_LINES: usize = 1;
+
+        let mut settings = ToastSettings::default();
+        settings.animation.entrance_duration =
+            ToastDuration::try_from_secs("entrance_duration", 0.0).expect("zero entrance duration");
+        let body = "x".repeat(crate::toast_body_width(&settings) * 4);
+        let mut toasts = Toasts::<TestApp>::with_settings(settings);
+        let id = toasts.push_timed(
+            "Favorite not saved",
+            body,
+            Duration::from_secs(5),
+            MIN_INTERIOR_LINES,
+        );
+        let toast = toasts
+            .entries
+            .iter()
+            .find(|toast| toast.id == id)
+            .expect("pushed toast should be stored");
+        let created_at = toast.created_at;
+        let at_creation = toasts.active_views(created_at);
+        let settled = toasts.active_views(created_at + Duration::from_secs(1));
+
+        assert!(matches!(toast.phase, ToastPhase::Static));
+        assert!(at_creation[0].desired_height() > at_creation[0].min_height());
+        assert_eq!(at_creation[0].desired_height(), settled[0].desired_height());
+    }
+
+    #[test]
     fn new_tracked_items_refresh_a_task_toasts_entrance_schedule() {
         let settings = ToastSettings::default();
         let entrance_line = settings.animation.entrance_duration.get();

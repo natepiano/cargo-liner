@@ -296,10 +296,11 @@ impl<Ctx: AppContext> Toast<Ctx> {
     fn entrance_schedule(&self, settings: &ToastSettings) -> ToastEntranceSchedule {
         let min_height = self.min_height();
         let target_height = self.target_height(settings);
-        if target_height <= min_height {
+        let entrance_duration = settings.animation.entrance_duration.get();
+        if target_height <= min_height || entrance_duration.is_zero() {
             return ToastEntranceSchedule::Absent;
         }
-        let line_duration = animation_line_duration(settings.animation.entrance_duration.get());
+        let line_duration = animation_line_duration(entrance_duration);
         ToastEntranceSchedule::Scheduled {
             starts_at: self.created_at + line_duration.saturating_mul(u32::from(min_height)),
             ends_at:   self.created_at
