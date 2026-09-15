@@ -20,6 +20,7 @@ use super::answers::RecordedAnswer;
 use super::error::BoardError;
 use super::report::CompleteBoardReport;
 use crate::answer::OverlapAuthorizationReason;
+use crate::edge::DeferralOrigin;
 use crate::edge::EdgeDeclaration;
 use crate::edge::EdgeHold;
 use crate::edge::EdgeReadiness;
@@ -275,6 +276,7 @@ pub(super) struct UnresolvedOverlap {
     blocker:              ReservationId,
     scopes:               ReservationScopeSet,
     reason:               OverlapAuthorizationReason,
+    origin:               DeferralOrigin,
     consequence:          SymmetricDeferralConsequence,
 }
 
@@ -633,6 +635,7 @@ fn unresolved_overlaps(constraints: &IntegrationConstraintProjection) -> Vec<Unr
             blocker:              deferral.blocker,
             scopes:               deferral.scopes.clone(),
             reason:               deferral.reason.clone(),
+            origin:               deferral.origin,
             consequence:          SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence,
         })
         .collect()
@@ -833,17 +836,22 @@ mod tests {
 
     use super::BoardIntegrationEvidence;
     use super::BoardModel;
+    use super::SymmetricDeferralConsequence;
     use super::WaitingAction;
+    use crate::answer::AuthorizedOverlap;
     use crate::answer::ConflictAuthorization;
+    use crate::answer::OverlapScopeRevision;
     use crate::board::alerts::BypassAuditEntry;
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
     use crate::board::test_support::OrderedBoardFixture;
     use crate::config::Enrollment;
+    use crate::edge::DeferralOrigin;
     use crate::ids::GitObjectId;
     use crate::ledger::JournalOperation;
     use crate::ledger::ReservationSnapshot;
+    use crate::ledger::ScopeKind;
     use crate::reconcile;
     use crate::reconcile::RecoveredBypassReporting;
     use crate::reservation::AbandonmentReason;
@@ -855,10 +863,71 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationLifecycle;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
+    use crate::scope::ReservationScope;
+    use crate::scope::ReservationScopeSet;
 
     const PENDING_BYPASS_NAME: &str =
         "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
     const UNKNOWN_OBJECT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn unresolved_overlaps_distinguish_enrollment_from_user_answers() -> FixtureResult<()> {
+        let fixture = BoardFixture::new()?;
+        let actor = fixture.main_actor();
+        let blocker = fixture.claim(&actor, "shared.rs", ConflictAuthorization::NoConflict)?;
+        let scopes = ReservationScopeSet::try_from(vec![ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        }])?;
+        let overlaps = AuthorizedOverlap {
+            reservation_id: blocker.reservation_id,
+            scope_revision: OverlapScopeRevision::from(&scopes),
+            scopes:         scopes.into(),
+        };
+        let enrolled = fixture.claim(
+            &actor,
+            "shared.rs",
+            ConflictAuthorization::Enrollment {
+                overlaps: overlaps.clone().into(),
+            },
+        )?;
+        let model = fixture.model()?;
+        let [enrollment] = model.unresolved_overlaps.entries.as_slice() else {
+            return Err(
+                io::Error::other("enrollment should project one unresolved overlap").into(),
+            );
+        };
+        assert_eq!(enrollment.origin, DeferralOrigin::Enrollment);
+        assert_eq!(enrollment.deferred, enrolled.reservation_id);
+        assert_eq!(enrollment.blocker, blocker.reservation_id);
+        assert_eq!(
+            enrollment.consequence,
+            SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence
+        );
+        assert_eq!(serde_json::to_value(enrollment)?["origin"], "enrollment");
+
+        let user = fixture.claim(
+            &actor,
+            "shared.rs",
+            ConflictAuthorization::Defer {
+                overlaps: overlaps.into(),
+                blocker:  blocker.reservation_id,
+                reason:   enrollment.reason.clone(),
+            },
+        )?;
+        let model = fixture.model()?;
+        let user_overlap = model
+            .unresolved_overlaps
+            .entries
+            .iter()
+            .find(|overlap| overlap.deferred == user.reservation_id)
+            .ok_or_else(|| {
+                io::Error::other("user deferral should project an unresolved overlap")
+            })?;
+        assert_eq!(user_overlap.origin, DeferralOrigin::UserAnswer);
+        assert_eq!(serde_json::to_value(user_overlap)?["origin"], "user_answer");
+        Ok(())
+    }
 
     #[test]
     fn deferring_reconciliation_leaves_recovery_for_one_reporting_board() -> FixtureResult<()> {

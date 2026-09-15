@@ -21,6 +21,11 @@ use crate::scope::ReservationScope;
 pub(crate) enum ConflictAuthorization {
     /// No foreign overlap existed when the transaction acquired these scopes.
     NoConflict,
+    /// Enrollment preserves editing while shared work awaits an integration order.
+    Enrollment {
+        /// The counterpart reservations and shared scopes observed at enrollment.
+        overlaps: AuthorizedOverlapSet,
+    },
     /// An ordering edge authorizes this exact observed overlap set.
     Sequence {
         /// The exact holder bindings shown to the user.
@@ -88,7 +93,8 @@ impl ConflictAuthorization {
     pub(crate) fn authorized_overlaps(&self) -> &[AuthorizedOverlap] {
         match self {
             Self::NoConflict => &[],
-            Self::Sequence { overlaps, .. }
+            Self::Enrollment { overlaps }
+            | Self::Sequence { overlaps, .. }
             | Self::Defer { overlaps, .. }
             | Self::Override { overlaps, .. }
             | Self::ExistingAnswersCoverEveryOverlap { overlaps } => overlaps.as_slice(),
@@ -103,7 +109,13 @@ impl ConflictAuthorization {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        self.authorized_overlaps().iter().any(|authorized_overlap| {
+        let overlaps = self.authorized_overlaps();
+        if let Self::Enrollment { .. } = self {
+            return overlaps.iter().any(|authorized_overlap| {
+                authorized_overlap.covers_shared_scope(counterpart_id, overlap_scope, path_case)
+            });
+        }
+        overlaps.iter().any(|authorized_overlap| {
             authorized_overlap.covers(
                 counterpart_id,
                 counterpart_scope_revision,
@@ -111,5 +123,70 @@ impl ConflictAuthorization {
                 path_case,
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use super::ConflictAuthorization;
+    use crate::answer::AuthorizedOverlap;
+    use crate::answer::AuthorizedOverlapSet;
+    use crate::answer::OverlapScopeRevision;
+    use crate::ids::ReservationId;
+    use crate::scope::PathCase;
+    use crate::scope::ReservationScope;
+    use crate::scope::ReservationScopeSet;
+    use crate::scope::ScopeKind;
+
+    #[test]
+    fn enrollment_covers_shared_scopes_after_unrelated_widen() -> Result<(), Box<dyn Error>> {
+        let counterpart = ReservationId::new();
+        let shared = ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        };
+        let added = ReservationScope {
+            path: "other.rs".parse()?,
+            kind: ScopeKind::File,
+        };
+        let original_scopes = ReservationScopeSet::try_from(vec![shared.clone()])?;
+        let original_revision = OverlapScopeRevision::from(&original_scopes);
+        let widened_revision = OverlapScopeRevision::from(&ReservationScopeSet::try_from(vec![
+            shared.clone(),
+            added.clone(),
+        ])?);
+        let overlaps = AuthorizedOverlapSet::from(AuthorizedOverlap {
+            reservation_id: counterpart,
+            scope_revision: original_revision.clone(),
+            scopes:         original_scopes.into(),
+        });
+        let enrollment = ConflictAuthorization::Enrollment {
+            overlaps: overlaps.clone(),
+        };
+        for revision in [&original_revision, &widened_revision] {
+            assert!(enrollment.covers(counterpart, revision, &shared, PathCase::Sensitive));
+            assert!(!enrollment.covers(counterpart, revision, &added, PathCase::Sensitive));
+            assert!(!enrollment.covers(
+                ReservationId::new(),
+                revision,
+                &shared,
+                PathCase::Sensitive,
+            ));
+        }
+        let existing = ConflictAuthorization::Defer {
+            overlaps,
+            blocker: counterpart,
+            reason: "decide the order later".parse()?,
+        };
+        assert!(existing.covers(
+            counterpart,
+            &original_revision,
+            &shared,
+            PathCase::Sensitive,
+        ));
+        assert!(!existing.covers(counterpart, &widened_revision, &shared, PathCase::Sensitive,));
+        Ok(())
     }
 }

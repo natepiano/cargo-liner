@@ -581,6 +581,8 @@ pub(crate) enum ClaimSource {
     FirstTouch,
     /// A direct caller-specified reservation.
     Explicit,
+    /// A reservation enrolled from a worktree's existing changes.
+    Enrolled,
 }
 
 macro_rules! git_commit_role {
@@ -2163,6 +2165,17 @@ mod tests {
             .expect("first-touch source should decode");
 
         assert_eq!(decoded, ClaimSource::FirstTouch);
+    }
+
+    #[test]
+    fn enrolled_source_round_trips_in_the_current_schema() {
+        let encoded =
+            serde_json::to_string(&ClaimSource::Enrolled).expect("enrolled source should encode");
+        let decoded =
+            serde_json::from_str::<ClaimSource>(&encoded).expect("enrolled source should decode");
+
+        assert_eq!(encoded, r#"{"kind":"enrolled"}"#);
+        assert_eq!(decoded, ClaimSource::Enrolled);
     }
 
     #[test]

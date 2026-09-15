@@ -533,7 +533,9 @@ fn acquire(
         resolved_edit_authorization.journal_mutation_actor_for(actor_run_id);
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let scopes = match &source {
-        ClaimSource::FirstTouch => declared_scopes.into_exact_file_antichain(path_case),
+        ClaimSource::FirstTouch | ClaimSource::Enrolled => {
+            declared_scopes.into_exact_file_antichain(path_case)
+        },
         ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
             declared_scopes.into_minimal_antichain(path_case)
         },

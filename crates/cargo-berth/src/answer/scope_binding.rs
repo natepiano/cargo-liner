@@ -88,9 +88,18 @@ impl AuthorizedOverlap {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        self.reservation_id == counterpart_id
-            && self.scope_revision == *counterpart_scope_revision
-            && self.scopes.covers(overlap_scope, path_case)
+        self.scope_revision == *counterpart_scope_revision
+            && self.covers_shared_scope(counterpart_id, overlap_scope, path_case)
+    }
+
+    /// Match recorded shared work independently of unrelated holder scope changes.
+    pub(super) fn covers_shared_scope(
+        &self,
+        counterpart_id: ReservationId,
+        overlap_scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> bool {
+        self.reservation_id == counterpart_id && self.scopes.covers(overlap_scope, path_case)
     }
 }
 

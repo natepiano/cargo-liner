@@ -186,6 +186,16 @@ pub(crate) struct IntegrationOrderingConstraint {
     pub(crate) declaration_event_id: EventId,
 }
 
+/// How an overlap became a deferred integration decision.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeferralOrigin {
+    /// A user explicitly deferred the ordering decision.
+    UserAnswer,
+    /// Enrollment preserved shared edits pending an ordering decision.
+    Enrollment,
+}
+
 /// One durable symmetric deferral retained for current constraints and answer audit.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct IntegrationDeferralConstraint {
@@ -199,6 +209,8 @@ pub(crate) struct IntegrationDeferralConstraint {
     pub(crate) scopes:               ReservationScopeSet,
     /// Why direction was deferred.
     pub(crate) reason:               OverlapAuthorizationReason,
+    /// How the deferral entered the journal.
+    pub(crate) origin:               DeferralOrigin,
     /// Whether the symmetric hold still applies.
     pub(crate) status:               IntegrationDeferralStatus,
 }

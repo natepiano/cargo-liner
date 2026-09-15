@@ -7,6 +7,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use super::DeferralOrigin;
 use super::EdgeDeclaration;
 use super::IntegrationConstraintProjection;
 use super::IntegrationDeferralConstraint;
@@ -43,6 +44,7 @@ struct DeferredOverlap {
     blocker:              ReservationId,
     scopes:               OrderingOverlapScopeSet,
     reason:               OverlapAuthorizationReason,
+    origin:               DeferralOrigin,
     resolved:             DeferralResolution,
 }
 
@@ -238,6 +240,7 @@ impl OrderingGraph {
                 blocker:              deferral.blocker,
                 scopes:               deferral.scopes.0.clone(),
                 reason:               deferral.reason.clone(),
+                origin:               deferral.origin,
                 status:               match deferral.resolved {
                     DeferralResolution::Pending => IntegrationDeferralStatus::Unresolved,
                     DeferralResolution::Resolved => IntegrationDeferralStatus::Resolved,
@@ -356,25 +359,40 @@ impl OrderingGraph {
             ConflictAuthorization::NoConflict
             | ConflictAuthorization::Override { .. }
             | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => Ok(()),
+            ConflictAuthorization::Enrollment { overlaps } => {
+                let reason = OverlapAuthorizationReason::enrollment();
+                let mut counterparts = HashSet::new();
+                for overlap in overlaps.as_slice() {
+                    let blocker = overlap.reservation_id;
+                    if counterparts.insert(blocker) {
+                        let scopes =
+                            OrderingOverlapScopeSet::from_authorized_overlaps(blocker, overlaps)?;
+                        self.add_deferral(
+                            requester,
+                            blocker,
+                            scopes,
+                            reason.clone(),
+                            event_id,
+                            DeferralOrigin::Enrollment,
+                        );
+                    }
+                }
+                Ok(())
+            },
             ConflictAuthorization::Defer {
                 overlaps,
                 blocker,
                 reason,
             } => {
                 let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(*blocker, overlaps)?;
-                let deferral_index = self.deferrals.len();
-                self.deferrals.push(DeferredOverlap {
-                    declaration_event_id: event_id,
-                    deferred: requester,
-                    blocker: *blocker,
+                self.add_deferral(
+                    requester,
+                    *blocker,
                     scopes,
-                    reason: reason.clone(),
-                    resolved: DeferralResolution::Pending,
-                });
-                self.deferral_indices
-                    .entry((requester, *blocker))
-                    .or_default()
-                    .push(deferral_index);
+                    reason.clone(),
+                    event_id,
+                    DeferralOrigin::UserAnswer,
+                );
                 Ok(())
             },
             ConflictAuthorization::Sequence {
@@ -397,6 +415,31 @@ impl OrderingGraph {
                 })
             },
         }
+    }
+
+    fn add_deferral(
+        &mut self,
+        deferred: ReservationId,
+        blocker: ReservationId,
+        scopes: OrderingOverlapScopeSet,
+        reason: OverlapAuthorizationReason,
+        event_id: EventId,
+        origin: DeferralOrigin,
+    ) {
+        let deferral_index = self.deferrals.len();
+        self.deferrals.push(DeferredOverlap {
+            declaration_event_id: event_id,
+            deferred,
+            blocker,
+            scopes,
+            reason,
+            origin,
+            resolved: DeferralResolution::Pending,
+        });
+        self.deferral_indices
+            .entry((deferred, blocker))
+            .or_default()
+            .push(deferral_index);
     }
 
     fn apply_resolution(
@@ -657,5 +700,177 @@ const fn directed_endpoints(
     match direction {
         OrderingDirection::RequesterBeforeHolder => (requester, blocker),
         OrderingDirection::HolderBeforeRequester => (blocker, requester),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::io;
+
+    use super::DeferralResolution;
+    use super::OrderingGraph;
+    use crate::answer::AuthorizedOverlap;
+    use crate::answer::AuthorizedOverlapSet;
+    use crate::answer::ConflictAuthorization;
+    use crate::answer::OverlapScopeRevision;
+    use crate::edge::DeferralOrigin;
+    use crate::edge::EdgeDeclaration;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::EventId;
+    use crate::ids::RepoInstanceId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger::ClaimSource;
+    use crate::ledger::JournalEvent;
+    use crate::ledger::JournalOperation;
+    use crate::scope::ReservationScope;
+    use crate::scope::ReservationScopeSet;
+    use crate::scope::ScopeKind;
+
+    #[test]
+    fn enrolled_claim_replay_defers_each_counterpart_once() -> Result<(), Box<dyn Error>> {
+        let first = ReservationId::new();
+        let second = ReservationId::new();
+        let third = ReservationId::new();
+        let events = [
+            enrolled_claim(first, &ConflictAuthorization::NoConflict)?,
+            enrolled_claim(second, &enrollment(&[first])?)?,
+            enrolled_claim(third, &enrollment(&[first, second])?)?,
+        ];
+
+        let graph = OrderingGraph::replay(&events)?;
+
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.vertices.len(), 3);
+        assert_eq!(graph.deferrals.len(), 3);
+        for (deferred, blocker, declaration_event_id) in [
+            (second, first, events[1].event_id()),
+            (third, first, events[2].event_id()),
+            (third, second, events[2].event_id()),
+        ] {
+            let matching = graph
+                .deferrals
+                .iter()
+                .filter(|deferral| deferral.deferred == deferred && deferral.blocker == blocker)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1);
+            let deferral = matching[0];
+            assert_eq!(deferral.declaration_event_id, declaration_event_id);
+            assert_eq!(deferral.origin, DeferralOrigin::Enrollment);
+            assert_eq!(deferral.resolved, DeferralResolution::Pending);
+            assert_eq!(deferral.scopes.0, shared_scopes()?);
+            assert!(deferral.reason.to_string().starts_with("Enrollment"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn enrollment_deferral_resolves_with_either_integration_order() -> Result<(), Box<dyn Error>> {
+        let counterpart = ReservationId::new();
+        let enrolled = ReservationId::new();
+        let other_counterpart = ReservationId::new();
+        let events = [
+            enrolled_claim(counterpart, &ConflictAuthorization::NoConflict)?,
+            enrolled_claim(other_counterpart, &ConflictAuthorization::NoConflict)?,
+            enrolled_claim(enrolled, &enrollment(&[counterpart, other_counterpart])?)?,
+        ];
+        for (before, after) in [(enrolled, counterpart), (counterpart, enrolled)] {
+            let mut graph = OrderingGraph::replay(&events)?;
+            let prepared = graph
+                .prepare_deferred_edge(before, after, "land in this order".parse()?)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            let JournalOperation::ResolveDefer {
+                deferred_reservation_id,
+                blocker_reservation_id,
+                edge_id,
+                direction,
+                reason,
+            } = prepared.operation()
+            else {
+                return Err(io::Error::other("expected a deferral resolution").into());
+            };
+            let resolution_event_id = EventId::new();
+
+            graph.apply_resolution(
+                deferred_reservation_id,
+                blocker_reservation_id,
+                edge_id,
+                direction,
+                reason,
+                resolution_event_id,
+            )?;
+
+            assert_eq!(graph.edge_count(), 1);
+            let edge = &graph.edges[0];
+            assert_eq!((edge.before, edge.after), (before, after));
+            assert_eq!(edge.scopes.0, shared_scopes()?);
+            assert_eq!(edge.declaration, EdgeDeclaration::DeferredResolution);
+            assert_eq!(edge.declaration_event_id, resolution_event_id);
+            assert_eq!(graph.deferrals[0].resolved, DeferralResolution::Resolved);
+            assert_eq!(graph.deferrals[1].resolved, DeferralResolution::Pending);
+            assert!(graph.deferred_overlap_between(before, after).is_err());
+            assert!(
+                graph
+                    .deferred_overlap_between(enrolled, other_counterpart)
+                    .is_ok()
+            );
+        }
+        Ok(())
+    }
+
+    fn shared_scopes() -> Result<ReservationScopeSet, Box<dyn Error>> {
+        Ok(ReservationScopeSet::try_from(vec![ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        }])?)
+    }
+
+    fn enrollment(counterparts: &[ReservationId]) -> Result<ConflictAuthorization, Box<dyn Error>> {
+        let scopes = shared_scopes()?;
+        let overlaps = counterparts
+            .iter()
+            .map(|counterpart| AuthorizedOverlap {
+                reservation_id: *counterpart,
+                scope_revision: OverlapScopeRevision::from(&scopes),
+                scopes:         scopes.clone().into(),
+            })
+            .collect::<Vec<_>>();
+        Ok(ConflictAuthorization::Enrollment {
+            overlaps: AuthorizedOverlapSet::try_from(overlaps)?,
+        })
+    }
+
+    fn enrolled_claim(
+        reservation_id: ReservationId,
+        authorization: &ConflictAuthorization,
+    ) -> Result<JournalEvent, Box<dyn Error>> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "event_id": EventId::new(),
+            "actor": {
+                "repository": RepoInstanceId::new(),
+                "worktree": WorktreeId::new(),
+                "run": CoordinationRunId::new(),
+            },
+            "at": "2026-09-15T15:46:38.647Z",
+            "projection_generation": 1,
+            "op": "claim",
+            "reservation_id": reservation_id,
+            "scopes": shared_scopes()?,
+            "source": ClaimSource::Enrolled,
+            "purpose": { "kind": "not_provided_by_caller" },
+            "trunk_at_claim": "1111111111111111111111111111111111111111",
+            "head_snapshot": {
+                "kind": "branch",
+                "full_ref": "refs/heads/enrolled",
+                "head": "1111111111111111111111111111111111111111",
+            },
+            "phase_start_head": "1111111111111111111111111111111111111111",
+            "worktree_root": "/tmp/enrolled",
+            "worktree_administrative_locator": "worktrees/enrolled",
+            "authorization": authorization,
+            "coordination_identity_provenance": "not_presented",
+        }))?)
     }
 }

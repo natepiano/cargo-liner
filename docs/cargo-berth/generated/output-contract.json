@@ -559,6 +559,19 @@
                 "kind"
               ],
               "type": "object"
+            },
+            {
+              "description": "A reservation enrolled from a worktree's existing changes.",
+              "properties": {
+                "kind": {
+                  "const": "enrolled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -2023,6 +2036,18 @@
             },
             {
               "properties": {
+                "origin": {
+                  "const": "enrollment",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "added_scopes": {
                   "items": {
                     "$ref": "#/$defs/ReservationScope"
@@ -3163,6 +3188,19 @@
                 "kind"
               ],
               "type": "object"
+            },
+            {
+              "description": "A reservation enrolled from a worktree's existing changes.",
+              "properties": {
+                "kind": {
+                  "const": "enrolled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -3173,6 +3211,21 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "DeferralOrigin": {
+          "description": "How an overlap became a deferred integration decision.",
+          "oneOf": [
+            {
+              "const": "user_answer",
+              "description": "A user explicitly deferred the ordering decision.",
+              "type": "string"
+            },
+            {
+              "const": "enrollment",
+              "description": "Enrollment preserved shared edits pending an ordering decision.",
+              "type": "string"
+            }
+          ]
         },
         "DriftAttributionCandidateSet": {
           "description": "The non-empty reservation candidates for one ambiguous widening attribution.",
@@ -4741,6 +4794,34 @@
                   "$ref": "#/$defs/AnswerAcquisition"
                 },
                 "answer": {
+                  "const": "enrollment",
+                  "type": "string"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/SymmetricDeferralConsequence"
+                },
+                "exact_approved_scopes": {
+                  "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "answer",
+                "reservation_id",
+                "exact_approved_scopes",
+                "acquisition",
+                "consequence"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/AnswerAcquisition"
+                },
+                "answer": {
                   "const": "sequence",
                   "type": "string"
                 },
@@ -5915,6 +5996,9 @@
             "deferred": {
               "$ref": "#/$defs/uuid_v7_identifier"
             },
+            "origin": {
+              "$ref": "#/$defs/DeferralOrigin"
+            },
             "reason": {
               "$ref": "#/$defs/OverlapAuthorizationReason"
             },
@@ -5928,6 +6012,7 @@
             "blocker",
             "scopes",
             "reason",
+            "origin",
             "consequence"
           ],
           "type": "object"
@@ -9231,6 +9316,18 @@
             },
             {
               "properties": {
+                "origin": {
+                  "const": "enrollment",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "added_scopes": {
                   "items": {
                     "$ref": "#/$defs/ReservationScope"
@@ -10313,6 +10410,19 @@
                 "kind"
               ],
               "type": "object"
+            },
+            {
+              "description": "A reservation enrolled from a worktree's existing changes.",
+              "properties": {
+                "kind": {
+                  "const": "enrolled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -10323,6 +10433,21 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "DeferralOrigin": {
+          "description": "How an overlap became a deferred integration decision.",
+          "oneOf": [
+            {
+              "const": "user_answer",
+              "description": "A user explicitly deferred the ordering decision.",
+              "type": "string"
+            },
+            {
+              "const": "enrollment",
+              "description": "Enrollment preserved shared edits pending an ordering decision.",
+              "type": "string"
+            }
+          ]
         },
         "DriftAttributionCandidateSet": {
           "description": "The non-empty reservation candidates for one ambiguous widening attribution.",
@@ -11853,6 +11978,34 @@
                   "$ref": "#/$defs/AnswerAcquisition"
                 },
                 "answer": {
+                  "const": "enrollment",
+                  "type": "string"
+                },
+                "consequence": {
+                  "$ref": "#/$defs/SymmetricDeferralConsequence"
+                },
+                "exact_approved_scopes": {
+                  "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "answer",
+                "reservation_id",
+                "exact_approved_scopes",
+                "acquisition",
+                "consequence"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/AnswerAcquisition"
+                },
+                "answer": {
                   "const": "sequence",
                   "type": "string"
                 },
@@ -12965,6 +13118,9 @@
             "deferred": {
               "$ref": "#/$defs/uuid_v7_identifier"
             },
+            "origin": {
+              "$ref": "#/$defs/DeferralOrigin"
+            },
             "reason": {
               "$ref": "#/$defs/OverlapAuthorizationReason"
             },
@@ -12978,6 +13134,7 @@
             "blocker",
             "scopes",
             "reason",
+            "origin",
             "consequence"
           ],
           "type": "object"

@@ -154,6 +154,16 @@ pub(crate) enum OverlapAnswerConsequence {
     IntegrationUnconstrained,
 }
 
+impl OverlapAuthorizationReason {
+    /// The engine's explanation for a deferral recorded by enrollment.
+    pub(crate) fn enrollment() -> Self {
+        Self(
+            "Enrollment preserves shared edits; sequence these reservations before integration"
+                .to_owned(),
+        )
+    }
+}
+
 impl Display for OverlapAuthorizationReason {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
 }

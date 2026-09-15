@@ -4199,6 +4199,7 @@ fn source_description(claim_source: &ClaimSource) -> String {
         ClaimSource::WorkPlan { plan, phase } => format!("plan {plan}, phase {phase}"),
         ClaimSource::FirstTouch => "first-touch edit".to_owned(),
         ClaimSource::Explicit => "explicit claim".to_owned(),
+        ClaimSource::Enrolled => "enrolled worktree changes".to_owned(),
     }
 }
 
