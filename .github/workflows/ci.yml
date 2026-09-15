@@ -381,7 +381,7 @@ jobs:
         run: cargo build -p cargo-tile --bins
 
       - name: Build test targets
-        run: cargo nextest run --no-fail-fast -p cargo-tile --bins --tests --no-run
+        run: cargo nextest run -p cargo-tile --bins --tests --no-run
 
       - name: Test cargo-tile
         run: cargo nextest run --no-fail-fast -p cargo-tile --bins --tests
