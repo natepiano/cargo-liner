@@ -173,12 +173,13 @@ pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
 }
 
 impl Ledger {
-    /// Resolve the shared ledger and create its journal, projection, and default config.
+    /// Resolve the shared ledger and initialize its journal, projection, and repository policy.
     pub(crate) fn initialize(repository_root: &Path) -> Result<LedgerInitialization, LedgerError> {
+        let worktree_context = WorktreeContext::discover(repository_root)?;
         let ledger = Self::locate(repository_root)?;
         fs::create_dir_all(&ledger.paths.directory)?;
         let transaction = ledger.begin_initialization()?;
-        let configuration = BerthConfig::initialize(repository_root)?;
+        let configuration = BerthConfig::initialize(&worktree_context.configuration_lookup())?;
         transaction.publish(&ledger.paths)?;
         Ok(LedgerInitialization {
             ledger: transaction.journal_initialization,

@@ -69,6 +69,15 @@ pub(crate) struct BerthConfig {
     pub(crate) gate_mode:              GateMode,
 }
 
+/// Whether a configuration file exists and contains validated repository policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ConfigurationFilePresence {
+    /// No configuration file exists at the requested path.
+    Missing,
+    /// The file exists and its policy is valid.
+    Present(BerthConfig),
+}
+
 /// The repository's selected trunk-gate policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GateMode {
@@ -107,9 +116,30 @@ impl BerthConfig {
             .join(CONFIGURATION_FILE)
     }
 
-    /// Create the default configuration or validate an existing file without replacing it.
-    pub(crate) fn initialize(repository_root: &Path) -> Result<InitializationState, ConfigError> {
+    /// Initialize the main worktree's configuration, carrying over linked policy when absent.
+    pub(crate) fn initialize(
+        lookup: &ConfigurationLookup<'_>,
+    ) -> Result<InitializationState, ConfigError> {
+        let repository_root = match *lookup {
+            ConfigurationLookup::Own { repository_root } => repository_root,
+            ConfigurationLookup::OwnThenMain {
+                main_repository_root,
+                ..
+            } => main_repository_root,
+        };
         let configuration_path = Self::path(repository_root);
+        if let ConfigurationFilePresence::Present(_) = Self::read_file(&configuration_path)? {
+            return Ok(InitializationState::Existing);
+        }
+        let configuration = match *lookup {
+            ConfigurationLookup::Own { .. } => Self::default(),
+            ConfigurationLookup::OwnThenMain {
+                repository_root, ..
+            } => match Self::read_file(&Self::path(repository_root))? {
+                ConfigurationFilePresence::Missing => Self::default(),
+                ConfigurationFilePresence::Present(configuration) => configuration,
+            },
+        };
         let configuration_parent = configuration_path
             .parent()
             .ok_or_else(|| ConfigError::InvalidPath(configuration_path.clone()))?;
@@ -128,7 +158,7 @@ impl BerthConfig {
             },
             Err(error) => return Err(ConfigError::Io(error)),
         };
-        configuration_file.write_all(Self::default().to_toml().as_bytes())?;
+        configuration_file.write_all(configuration.to_toml().as_bytes())?;
         configuration_file.sync_all()?;
         Ok(InitializationState::Created)
     }
@@ -140,36 +170,36 @@ impl BerthConfig {
     /// there serves every worktree while one written in the linked worktree serves only
     /// itself.
     pub(crate) fn read(lookup: &ConfigurationLookup<'_>) -> Result<Enrollment<Self>, ConfigError> {
-        let (repository_root, main_repository_root) = match *lookup {
-            ConfigurationLookup::Own { repository_root } => (repository_root, None),
-            ConfigurationLookup::OwnThenMain {
-                repository_root,
-                main_repository_root,
-            } => (repository_root, Some(main_repository_root)),
+        let repository_root = match *lookup {
+            ConfigurationLookup::Own { repository_root }
+            | ConfigurationLookup::OwnThenMain {
+                repository_root, ..
+            } => repository_root,
         };
         let own_path = Self::path(repository_root);
-        if let Some(configuration) = Self::read_file(&own_path)? {
+        if let ConfigurationFilePresence::Present(configuration) = Self::read_file(&own_path)? {
             return Ok(Enrollment::Enrolled(configuration));
         }
-        let Some(main_repository_root) = main_repository_root else {
-            return Ok(Enrollment::Unconfigured {
+        match *lookup {
+            ConfigurationLookup::Own { .. } => Ok(Enrollment::Unconfigured {
                 expected_configuration_path: own_path,
-            });
-        };
-        let main_path = Self::path(main_repository_root);
-        if let Some(configuration) = Self::read_file(&main_path)? {
-            return Ok(Enrollment::Enrolled(configuration));
+            }),
+            ConfigurationLookup::OwnThenMain {
+                main_repository_root,
+                ..
+            } => Self::read(&ConfigurationLookup::Own {
+                repository_root: main_repository_root,
+            }),
         }
-        Ok(Enrollment::Unconfigured {
-            expected_configuration_path: main_path,
-        })
     }
 
     /// Read and validate one configuration file, or report that it does not exist.
-    fn read_file(configuration_path: &Path) -> Result<Option<Self>, ConfigError> {
+    fn read_file(configuration_path: &Path) -> Result<ConfigurationFilePresence, ConfigError> {
         match fs::read_to_string(configuration_path) {
-            Ok(contents) => Self::from_toml(&contents).map(Some),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Ok(contents) => Self::from_toml(&contents).map(ConfigurationFilePresence::Present),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Ok(ConfigurationFilePresence::Missing)
+            },
             Err(error) => Err(ConfigError::Io(error)),
         }
     }
@@ -389,9 +419,11 @@ mod tests {
 
     use super::BerthConfig;
     use super::ConfigError;
+    use super::ConfigurationFilePresence;
     use super::ConfigurationLookup;
     use super::Enrollment;
     use super::GateMode;
+    use super::InitializationState;
 
     #[test]
     fn default_configuration_round_trips() {
@@ -462,6 +494,150 @@ mod tests {
             .ok_or_else(|| ConfigError::InvalidPath(configuration_path.clone()))?;
         fs::create_dir_all(parent)?;
         fs::write(configuration_path, format!("trunk = \"{trunk}\"\n"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn configuration_file_presence_distinguishes_missing_and_valid_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = tempdir()?;
+        let path = BerthConfig::path(repository.path());
+        assert_eq!(
+            BerthConfig::read_file(&path)?,
+            ConfigurationFilePresence::Missing
+        );
+
+        write_configuration(repository.path(), "release")?;
+        assert_eq!(
+            BerthConfig::read_file(&path)?,
+            ConfigurationFilePresence::Present(BerthConfig {
+                trunk: "release".to_owned(),
+                ..BerthConfig::default()
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configuration_file_presence_rejects_invalid_files_and_io_errors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let repository = tempdir()?;
+        let path = BerthConfig::path(repository.path());
+        write_configuration(repository.path(), "release")?;
+        fs::write(&path, "unknown = 1\n")?;
+        assert!(matches!(
+            BerthConfig::read_file(&path),
+            Err(ConfigError::UnknownKey(_))
+        ));
+        fs::remove_file(&path)?;
+        fs::create_dir(&path)?;
+        assert!(matches!(
+            BerthConfig::read_file(&path),
+            Err(ConfigError::Io(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn initialization_carries_linked_policy_and_preserves_the_linked_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        let policy = BerthConfig {
+            trunk:                  "release".to_owned(),
+            maximum_reservations:   17,
+            maximum_ordering_edges: 29,
+            gate_mode:              GateMode::Enforce,
+        };
+        write_configuration(linked.path(), &policy.trunk)?;
+        let linked_contents = format!("# Linked policy\n{}", policy.to_toml());
+        fs::write(BerthConfig::path(linked.path()), &linked_contents)?;
+
+        assert_eq!(
+            BerthConfig::initialize(&ConfigurationLookup::OwnThenMain {
+                repository_root:      linked.path(),
+                main_repository_root: main.path(),
+            })?,
+            InitializationState::Created
+        );
+        assert_eq!(
+            BerthConfig::read_file(&BerthConfig::path(main.path()))?,
+            ConfigurationFilePresence::Present(policy)
+        );
+        assert_eq!(
+            fs::read_to_string(BerthConfig::path(linked.path()))?,
+            linked_contents
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initialization_without_linked_policy_creates_main_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        assert_eq!(
+            BerthConfig::initialize(&ConfigurationLookup::OwnThenMain {
+                repository_root:      linked.path(),
+                main_repository_root: main.path(),
+            })?,
+            InitializationState::Created
+        );
+        assert_eq!(
+            BerthConfig::read_file(&BerthConfig::path(main.path()))?,
+            ConfigurationFilePresence::Present(BerthConfig::default())
+        );
+        assert_eq!(
+            BerthConfig::read_file(&BerthConfig::path(linked.path()))?,
+            ConfigurationFilePresence::Missing
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_linked_policy_leaves_the_main_configuration_missing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        write_configuration(linked.path(), "release")?;
+        fs::write(
+            BerthConfig::path(linked.path()),
+            "gate_mode = \"invalid\"\n",
+        )?;
+
+        assert!(matches!(
+            BerthConfig::initialize(&ConfigurationLookup::OwnThenMain {
+                repository_root:      linked.path(),
+                main_repository_root: main.path(),
+            }),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+        assert_eq!(
+            BerthConfig::read_file(&BerthConfig::path(main.path()))?,
+            ConfigurationFilePresence::Missing
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initialization_preserves_main_policy_without_reading_linked_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        write_configuration(main.path(), "release")?;
+        let main_path = BerthConfig::path(main.path());
+        let main_contents = fs::read_to_string(&main_path)?;
+        write_configuration(linked.path(), "develop")?;
+        fs::write(BerthConfig::path(linked.path()), "unknown = 1\n")?;
+
+        assert_eq!(
+            BerthConfig::initialize(&ConfigurationLookup::OwnThenMain {
+                repository_root:      linked.path(),
+                main_repository_root: main.path(),
+            })?,
+            InitializationState::Existing
+        );
+        assert_eq!(fs::read_to_string(main_path)?, main_contents);
         Ok(())
     }
 

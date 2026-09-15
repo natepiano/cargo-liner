@@ -705,6 +705,109 @@ fn session_identity_recoveries_preserve_the_frozen_corpus_text(repository: &Temp
     )
 }
 
+#[test]
+fn init_from_a_linked_worktree_writes_the_main_root_configuration() -> TestResult {
+    let repository = git_repository()?;
+    let (_invoking_directory, invoking_root) =
+        add_worktree_without_configuration(&repository, "initializing-worktree")?;
+
+    let initialized = run_berth(&invoking_root, &["init", "--json"])?;
+    require_success(&initialized, "init from linked worktree")?;
+    assert!(repository.path().join(CONFIGURATION_PATH).is_file());
+    assert!(!invoking_root.join(CONFIGURATION_PATH).exists());
+
+    let holder = run_berth(
+        &invoking_root,
+        &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
+    )?;
+    require_success(&holder, "linked worktree holder claim")?;
+    dirty_source(&invoking_root, "src/lib.rs")?;
+    let (_sibling_directory, sibling_root) =
+        add_worktree_without_configuration(&repository, "initialization-sibling")?;
+    assert!(!sibling_root.join(CONFIGURATION_PATH).exists());
+    let output = run_pre_tool_use(
+        &sibling_root,
+        &edit_payload(
+            &sibling_root,
+            "src/lib.rs",
+            Some("initialization-sibling-session"),
+        ),
+    )?;
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let refusal = String::from_utf8(output.stderr)?;
+    assert!(
+        refusal.starts_with(
+            "cargo-berth refused this edit because another reservation holds the requested paths."
+        ),
+        "the sibling should coordinate through the main-root configuration: {refusal}"
+    );
+    Ok(())
+}
+
+#[test]
+fn init_carries_a_linked_configuration_policy_to_the_main_root() -> TestResult {
+    let repository = git_repository()?;
+    run_git(repository.path(), &["branch", "integration"])?;
+    let linked_policy = "# Linked-worktree policy\ntrunk = \"integration\"\ngate_mode = \"enforce\"\nmaximum_reservations = 7\nmaximum_ordering_edges = 13\n";
+    let main_configuration_path = repository.path().join(CONFIGURATION_PATH);
+    fs::create_dir_all(repository.path().join(".claude/config"))?;
+    fs::write(&main_configuration_path, linked_policy)?;
+    let (_invoking_directory, invoking_root) = add_worktree(&repository, "policy-worktree")?;
+    fs::remove_file(&main_configuration_path)?;
+
+    let initialized = run_berth(&invoking_root, &["init", "--json"])?;
+    require_success(&initialized, "init with linked-only policy")?;
+
+    let main_policy = fs::read_to_string(&main_configuration_path)?;
+    for (key, expected) in [
+        ("trunk", "\"integration\""),
+        ("gate_mode", "\"enforce\""),
+        ("maximum_reservations", "7"),
+        ("maximum_ordering_edges", "13"),
+    ] {
+        let carried_value = main_policy.lines().find_map(|line| {
+            let (candidate, value) = line.split_once('=')?;
+            (candidate.trim() == key).then(|| value.trim())
+        });
+        assert_eq!(
+            carried_value,
+            Some(expected),
+            "carry linked policy key {key}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(invoking_root.join(CONFIGURATION_PATH))?,
+        linked_policy
+    );
+    Ok(())
+}
+
+#[test]
+fn init_keeps_a_present_main_root_configuration() -> TestResult {
+    let repository = git_repository()?;
+    let main_policy = "# Keep this repository policy and its formatting.\ntrunk = \"main\"\ngate_mode = \"observe\"\nmaximum_reservations = 9\nmaximum_ordering_edges = 17\n";
+    let main_configuration_path = repository.path().join(CONFIGURATION_PATH);
+    fs::create_dir_all(repository.path().join(".claude/config"))?;
+    fs::write(&main_configuration_path, main_policy)?;
+    let (_invoking_directory, invoking_root) =
+        add_worktree(&repository, "existing-policy-worktree")?;
+    run_git(repository.path(), &["branch", "integration"])?;
+    let linked_policy = "trunk = \"integration\"\ngate_mode = \"enforce\"\nmaximum_reservations = 7\nmaximum_ordering_edges = 13\n";
+    fs::write(invoking_root.join(CONFIGURATION_PATH), linked_policy)?;
+
+    let initialized = run_berth(&invoking_root, &["init", "--json"])?;
+    require_success(&initialized, "init with existing main-root policy")?;
+
+    assert_eq!(fs::read_to_string(main_configuration_path)?, main_policy);
+    assert_eq!(
+        fs::read_to_string(invoking_root.join(CONFIGURATION_PATH))?,
+        linked_policy
+    );
+    Ok(())
+}
+
 /// A worktree added after `init` carries no configuration file, and used to answer exit 0
 /// with nothing said, so its edits were uncoordinated without a word about it. It reads
 /// the main worktree's configuration now and refuses like any other requester.

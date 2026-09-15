@@ -30,6 +30,8 @@ $ cargo berth release <reservation-id>     # records the integrated disposition
 available: a `reference-transaction` trunk gate and a non-blocking `post-commit`
 drift warning.
 
+`init` creates the configuration at the main worktree root, and linked worktrees read it when they have no configuration of their own.
+
 **`release` is a lifecycle walk, not a single act**, which is why it appears
 more than once above. Called on an active reservation it *checkpoints* — pinning
 the commit that later evidence is judged against — and leaves the reservation
