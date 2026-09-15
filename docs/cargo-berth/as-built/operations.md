@@ -4,19 +4,24 @@ Identity resolution, bypass auditing, and recovery from a damaged ledger.
 Reach for this when something has gone wrong or when wiring `cargo-berth` into
 a harness.
 
-For what the tool is and how to use it, see the [README](../../crates/cargo-berth/README.md).
+For what the tool is and how to use it, see the [README](../../../crates/cargo-berth/README.md).
 
 ## Worktree enrollment
 
 Run `cargo berth init` from any worktree to set up the ledger and hooks, then
 enroll live worktrees with existing work and no reservation history. The
 configuration lives at the main worktree's `.claude/config/berth.toml`; a linked
-worktree reads that file unless it has its own. An untracked configuration file
+worktree reads that file unless it has its own. An existing main file is kept.
+When the main file is missing and `init` runs in a linked worktree with its own
+valid file, that file's `trunk`, `gate_mode`, `maximum_reservations`, and
+`maximum_ordering_edges` seed the new main file; otherwise defaults are
+written. An invalid linked file makes `init` from that worktree fail before the
+main file is written. An untracked configuration file
 at that path is excluded from enrollment and merge-extent observations; tracked
 changes still count.
 
-Enrollment reserves exact paths changed relative to trunk or present in the
-working tree. Locked worktrees are eligible. Existing reservations, including
+Enrollment reserves the exact file paths the branch changed since its
+merge-base with trunk, plus its staged, unstaged, and untracked paths. Locked worktrees are eligible. Existing reservations, including
 ended ones, prevent a worktree from being enrolled again. Re-run `init` after
 adding a worktree with commits, before its first edit, or after fixing a failed
 candidate. Enrollment at later hook contacts is not automatic.
@@ -135,8 +140,10 @@ way when it is invoked directly.
 
 `init` has three branches:
 
-- Plain `cargo berth init` creates a missing ledger and default config and
-  installs or refreshes each managed hook without replacing an unmanaged hook.
+- Plain `cargo berth init` creates a missing ledger and main-worktree config,
+  installs or refreshes each managed hook without replacing an unmanaged hook,
+  and enrolls existing worktree work as described under
+  [Worktree enrollment](#worktree-enrollment).
 - `cargo berth init --repair-projection` rebuilds only `reservations.json` from
   journal truth. It changes no journal record and loses nothing.
 - `cargo berth init --reinitialize-after-review` is the confirmed recovery for

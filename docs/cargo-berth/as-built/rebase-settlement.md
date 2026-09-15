@@ -180,7 +180,7 @@ fn evaluate_historical_then_current_trunk(
 
 `ScopedPatchEvaluatorVersion::{Legacy (default), HistoricalCandidate}` (`src/reservation/scoped_patch_evaluation.rs`) is `Ord`, and `evaluator_version` is omitted from serialization when it is `Legacy`. Every new verdict writes `HistoricalCandidate`. `RetainedScopedPatchTargetVerdicts` and `RetainedSuccessorScopedPatchTargetVerdicts` store the witness (targets only) and version per entry. Lookup ignores a `Legacy` negative, so the subject is reevaluated under the current rules, while a `Legacy` positive still hits. Insertion never replaces an entry with a newer version, so replay order does not matter. `integration_status_from_retained_scoped_patch_comparison` rebuilds evidence with the stored witness, so a settlement delayed by reserved dirt, or a process restart, still releases at the historical commit.
 
-Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinned in `docs/cargo-berth/generated/output-contract.json`, and `docs/cargo-berth/json-contract.md` documents them.
+Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinned in `docs/cargo-berth/generated/output-contract.json`, and `docs/cargo-berth/as-built/json-contract.md` documents them.
 
 ### Orphan notice
 

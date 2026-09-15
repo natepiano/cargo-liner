@@ -30,8 +30,11 @@ $ cargo berth release <reservation-id>     # records the integrated disposition
 available: a `reference-transaction` trunk gate and a non-blocking `post-commit`
 drift warning.
 
-`init` creates the configuration at the main worktree root, and linked worktrees
-read it when they have no configuration of their own.
+`init` writes the configuration at the main worktree root from whichever
+worktree runs it, and linked worktrees read it when they have no configuration
+of their own. An existing main configuration is kept. When it is missing and
+the linked worktree running `init` has its own valid configuration, those
+settings seed the main file.
 
 You can initialize a repository with work already in flight. `init` inspects
 every live worktree and reserves its committed changes relative to trunk plus
@@ -52,7 +55,7 @@ enrollment overlaps again, including pairs with an ended reservation. After
 adding a worktree that already has commits, run `init` again before its first
 edit to enroll that work. Fix any reported enrollment failure and retry `init`;
 other eligible worktrees are still enrolled. See
-[enrollment operations](../../docs/cargo-berth/operations.md#worktree-enrollment)
+[enrollment operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/operations.md#worktree-enrollment)
 for recovery steps.
 
 **`release` is a lifecycle walk, not a single act**, which is why it appears
@@ -94,8 +97,8 @@ $ cargo berth board --json | jq -c '{status, lifecycle: .payload.data.resolved.e
 
 The full verb set is:
 
-- `init`: initialize the ledger and hooks, repair the projection, or perform a
-  confirmed reinitialization.
+- `init`: initialize the ledger and hooks and enroll existing worktree work,
+  repair the projection, or perform a confirmed reinitialization.
 - `claim`: reserve paths and, when needed, propose one answer for an overlap.
 - `check`: ask whether proposed file paths collide with a foreign reservation.
 - `hook pre-tool-use`: read a raw Claude Code `PreToolUse` payload from standard
@@ -367,11 +370,12 @@ terminal and emitted no line. The corresponding `--json` run emitted the facts
 below.
 
 The full envelope schema — every payload variant and every journal record type —
-is in [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md).
+is in [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/json-contract.md).
 
 ## Configuration
 
-`cargo berth init` writes `.claude/config/berth.toml` with these fields:
+`cargo berth init` writes `.claude/config/berth.toml` at the main worktree root
+with these fields:
 
 ```toml
 trunk = "main"
@@ -392,7 +396,7 @@ and an unreadable file are configuration errors.
 ## Recovery and identity
 
 How edit authorization resolves, how bypasses are audited, and how to recover a
-damaged ledger are in [Operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/operations.md).
+damaged ledger are in [Operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/operations.md).
 
 ## Process exit codes
 
@@ -416,7 +420,7 @@ response object and never in the process status.
 Every JSON response has the common envelope fields `output_contract_version`,
 `verb`, `status`, `exit_code`, `reservations`, `blocked_by`, `message`, and
 `presentation`, followed by a typed `payload`. The payload variants are in
-[JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md).
+[JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/json-contract.md).
 
 ## Where the rest of the documentation lives
 
@@ -424,9 +428,9 @@ This crate is one member of a workspace, and the longer references sit in the
 repository at `docs/cargo-berth/` rather than inside the published package. The
 links below are absolute so they resolve from crates.io as well as a checkout.
 
-- [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/json-contract.md) — the envelope `--json`
+- [JSON and journal contract](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/json-contract.md) — the envelope `--json`
   emits, every payload variant, and every journal record type.
-- [Operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/operations.md) — how edit authorization resolves, how
+- [Operations](https://github.com/natepiano/cargo-liner/blob/main/docs/cargo-berth/as-built/operations.md) — how edit authorization resolves, how
   bypasses are audited, and how to recover a damaged ledger.
 
 ## Deliberate omissions
