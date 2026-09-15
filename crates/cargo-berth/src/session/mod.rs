@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
+use crate::ledger::ClaimSource;
 use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -290,7 +291,7 @@ pub(crate) fn apply_journal_event(
     let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
     let publication = match &event.operation {
         JournalOperation::Claim {
-            source: crate::ledger::ClaimSource::Enrolled,
+            source: ClaimSource::Enrolled,
             ..
         } => Ok(()),
         JournalOperation::Claim { reservation_id, .. }

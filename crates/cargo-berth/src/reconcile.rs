@@ -64,6 +64,7 @@ use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::BypassOccurrenceTime;
+use crate::ledger::ClaimSource;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
@@ -3109,7 +3110,7 @@ fn append_merged_run_endings(
         };
         // Enrollment requires a nonempty observed footprint. Its immutable source preserves
         // that evidence even if a preceding drift or gate already recorded an empty extent.
-        let did_work = matches!(reservation.source(), crate::ledger::ClaimSource::Enrolled)
+        let did_work = matches!(reservation.source(), ClaimSource::Enrolled)
             || reservation.merge_extent().observed_unmerged_work()
             || key.head != *reservation.phase_start_head().as_ref();
         if !did_work {

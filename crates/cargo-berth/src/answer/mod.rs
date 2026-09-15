@@ -1,6 +1,7 @@
 //! Proposal-bound answers to reservation overlap conflicts.
 
 mod conflict_authorization;
+mod constants;
 mod proposal;
 mod scope_binding;
 

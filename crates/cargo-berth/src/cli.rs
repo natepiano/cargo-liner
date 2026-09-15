@@ -114,6 +114,7 @@ use crate::verb::release;
 use crate::verb::release::ReleaseRequest;
 use crate::verb::sequence;
 use crate::verb::sequence::SequenceRequest;
+use crate::worktree;
 
 const ABANDON_ARGUMENT: &str = "abandon";
 const ABOUT: &str = "Reserve git-worktree paths before they overlap";
@@ -1457,13 +1458,11 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                             worktree_context.repository_root(),
                             &trunk_reference,
                         );
-                        let enrollment = match crate::worktree::enroll_worktrees(
-                            &worktree_context,
-                            &berth_config,
-                        ) {
-                            Ok(enrollment) => enrollment,
-                            Err(error) => return initialization_error(error),
-                        };
+                        let enrollment =
+                            match worktree::enroll_worktrees(&worktree_context, &berth_config) {
+                                Ok(enrollment) => enrollment,
+                                Err(error) => return initialization_error(error),
+                            };
                         OutputEnvelope::initialized(initialization, &hook_installations, enrollment)
                     },
                     Err(error) => initialization_error(error),

@@ -22,6 +22,7 @@ use super::git_output::WorkingTreeChangePartition;
 use super::ordering;
 use super::report::DriftComparisonMode;
 use super::selection::DriftComparisonChoice;
+use crate::config::BerthConfig;
 use crate::git;
 use crate::git::CommitCandidateReachability;
 use crate::git::CommitTargetReachability;
@@ -524,9 +525,10 @@ pub(crate) fn observe_merge_working_tree(
 ) -> Result<WorkingTreeFingerprint, String> {
     let mut status =
         observe_working_tree_status(repository_root).map_err(|error| error.to_string())?;
+    let configuration_path = BerthConfig::relative_path();
     status
         .untracked
-        .retain(|path| path.to_string() != ".claude/config/berth.toml");
+        .retain(|path| Path::new(&path.to_string()) != configuration_path);
     Ok(WorkingTreeFingerprint {
         tracked_paths:   status.tracked(),
         untracked_paths: status.untracked,

@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::constants::ENROLLMENT_AUTHORIZATION_REASON;
 use super::scope_binding::AuthorizedOverlap;
 use super::scope_binding::AuthorizedOverlapSet;
 use crate::ids::CoordinationRunId;
@@ -156,12 +157,7 @@ pub(crate) enum OverlapAnswerConsequence {
 
 impl OverlapAuthorizationReason {
     /// The engine's explanation for a deferral recorded by enrollment.
-    pub(crate) fn enrollment() -> Self {
-        Self(
-            "Enrollment preserves shared edits; sequence these reservations before integration"
-                .to_owned(),
-        )
-    }
+    pub(crate) fn enrollment() -> Self { Self(ENROLLMENT_AUTHORIZATION_REASON.to_owned()) }
 }
 
 impl Display for OverlapAuthorizationReason {

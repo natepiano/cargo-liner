@@ -108,13 +108,15 @@ impl Default for BerthConfig {
 }
 
 impl BerthConfig {
-    /// Return this repository's configuration location.
-    fn path(repository_root: &Path) -> PathBuf {
-        repository_root
-            .join(CLAUDE_DIRECTORY)
+    /// Return the configuration location relative to a worktree root.
+    pub(crate) fn relative_path() -> PathBuf {
+        Path::new(CLAUDE_DIRECTORY)
             .join(CONFIGURATION_DIRECTORY)
             .join(CONFIGURATION_FILE)
     }
+
+    /// Return this repository's configuration location.
+    fn path(repository_root: &Path) -> PathBuf { repository_root.join(Self::relative_path()) }
 
     /// Initialize the main worktree's configuration, carrying over linked policy when absent.
     pub(crate) fn initialize(

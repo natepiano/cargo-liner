@@ -9,6 +9,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::WorktreeRegistry;
+use super::constants::ENROLLMENT_SEQUENCE_REASON;
+use super::constants::MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE;
+use super::constants::OPERATION_IN_PROGRESS_MARKERS;
 use super::liveness::WorktreeEnrollmentCandidate;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
@@ -26,6 +29,7 @@ use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
+use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
@@ -38,7 +42,6 @@ use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
-use crate::ledger::worktree_identity;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
@@ -161,6 +164,30 @@ struct MutualWorkRemainder {
     holder_paths:    Vec<ReservationScopePath>,
 }
 
+impl MutualWorkRemainder {
+    fn contains(&self, scope: &ReservationScope, path_case: PathCase) -> bool {
+        [&self.candidate_paths, &self.holder_paths]
+            .iter()
+            .all(|paths| {
+                paths.iter().any(|path| {
+                    scope.overlaps(
+                        &ReservationScope {
+                            path: path.clone(),
+                            kind: ScopeKind::File,
+                        },
+                        path_case,
+                    )
+                })
+            })
+    }
+}
+
+/// A history race is an ordinary skip, distinct from a committed acquisition.
+enum EnrollmentOutcome {
+    AlreadyReserved,
+    Enrolled(EnrolledWorktree),
+}
+
 /// Enroll never-reserved registered worktrees after configuration and hook installation.
 pub(crate) fn enroll_worktrees(
     context: &WorktreeContext,
@@ -194,7 +221,7 @@ pub(crate) fn enroll_worktrees(
                 ));
             },
             WorktreeEnrollmentCandidate::Eligible(candidate_context) => {
-                let identity = match worktree_identity(
+                let identity = match ledger::worktree_identity(
                     candidate_context.administrative_directory(),
                     candidate_context.worktree_kind(),
                 ) {
@@ -253,13 +280,7 @@ fn observe_footprint(
     path_case: PathCase,
 ) -> Result<FootprintObservation, WorktreeEnrollmentFailure> {
     let root = context.repository_root();
-    for marker in [
-        "rebase-merge",
-        "rebase-apply",
-        "MERGE_HEAD",
-        "CHERRY_PICK_HEAD",
-        "REVERT_HEAD",
-    ] {
+    for marker in OPERATION_IN_PROGRESS_MARKERS {
         if context.administrative_directory().join(marker).exists() {
             return Err(failure(
                 root,
@@ -362,7 +383,7 @@ fn observe_merge_base(
                 })
         },
         GitCommandOutputAvailability::Available(output) => {
-            let reason = if output.status.code() == Some(1) {
+            let reason = if output.status.code() == Some(MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE) {
                 WorktreeEnrollmentFailureReason::NoMergeBase
             } else {
                 WorktreeEnrollmentFailureReason::GitFailure
@@ -443,30 +464,6 @@ fn remaining_work(
     paths.extend(worktree.working_tree.tracked_paths.iter().cloned());
     paths.extend(worktree.working_tree.untracked_paths.iter().cloned());
     Ok(paths)
-}
-
-impl MutualWorkRemainder {
-    fn contains(&self, scope: &ReservationScope, path_case: PathCase) -> bool {
-        [&self.candidate_paths, &self.holder_paths]
-            .iter()
-            .all(|paths| {
-                paths.iter().any(|path| {
-                    scope.overlaps(
-                        &ReservationScope {
-                            path: path.clone(),
-                            kind: ScopeKind::File,
-                        },
-                        path_case,
-                    )
-                })
-            })
-    }
-}
-
-/// A history race is an ordinary skip, distinct from a committed acquisition.
-enum EnrollmentOutcome {
-    AlreadyReserved,
-    Enrolled(EnrolledWorktree),
 }
 
 fn enroll_candidate(
@@ -630,10 +627,10 @@ fn unresolved_enrollment_overlaps(events: &[JournalEvent]) -> Vec<EnrollmentOver
                         shared_scopes,
                         sequence_commands: [
                             format!(
-                                "cargo berth sequence {first} {second} --why 'Order enrolled work'"
+                                "cargo berth sequence {first} {second} --why '{ENROLLMENT_SEQUENCE_REASON}'"
                             ),
                             format!(
-                                "cargo berth sequence {second} {first} --why 'Order enrolled work'"
+                                "cargo berth sequence {second} {first} --why '{ENROLLMENT_SEQUENCE_REASON}'"
                             ),
                         ],
                     });
