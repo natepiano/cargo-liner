@@ -235,7 +235,7 @@ fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
     fixture.upstream_conflict();
     fixture.stop_rebase();
     fixture.resolve_rebase();
-    drain_markers(&fixture, &[&first], false);
+    drain_markers(&fixture, &[&first], CheckpointPlacement::BesideTrunk);
     let first_rebased_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
     assert_ne!(first_old_tip, first_rebased_tip);
     assert_latest_anchors(&fixture, &first, &first_rebased_tip);
@@ -261,7 +261,11 @@ fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
             "amended second checkpoint",
         ],
     );
-    drain_markers(&fixture, &[&first, &second], false);
+    drain_markers(
+        &fixture,
+        &[&first, &second],
+        CheckpointPlacement::BesideTrunk,
+    );
     assert_latest_anchors(&fixture, &second, &fixture.head());
 
     commit_file(
@@ -276,14 +280,18 @@ fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
     assert_ne!(earlier_tip, final_tip);
     assert_ne!(first_rebased_tip, earlier_tip);
     if matches!(timing, ReconciliationTiming::BeforeFastForward) {
-        drain_markers(&fixture, &[&first, &second], false);
+        drain_markers(
+            &fixture,
+            &[&first, &second],
+            CheckpointPlacement::BesideTrunk,
+        );
         assert_latest_anchors(&fixture, &first, &earlier_tip);
         assert_latest_anchors(&fixture, &second, &final_tip);
     }
     // The prepared gate and drift hooks may already consume some markers or settle
     // subjects. Every board pass must settle each accepted subject already on trunk.
     GIT.run(fixture.root(), ["merge", "--quiet", "--ff-only", "holder"]);
-    drain_markers(&fixture, &[&first, &second], true);
+    drain_markers(&fixture, &[&first, &second], CheckpointPlacement::OnTrunk);
     assert_final_checkpoint(&fixture, &first, &earlier_tip, &final_tip);
     assert_final_checkpoint(&fixture, &second, &final_tip, &final_tip);
     GIT.run(&fixture.holder, ["switch", "--quiet", "--detach"]);
@@ -413,7 +421,7 @@ pub(super) fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpo
             {"old": old_tip, "new": rewritten_tip}
         ])
     );
-    drain_markers(&fixture, &[&id], false);
+    drain_markers(&fixture, &[&id], CheckpointPlacement::BesideTrunk);
     let events = journal_events(fixture.root());
     let accepted = events
         .iter()
@@ -592,7 +600,7 @@ fn apply_rebase_reanchors_checkpoint(progress: ApplyRebaseProgress) {
         serde_json::json!([rewritten_tip]),
         "the unrelated trunk commit must not widen the protected interval"
     );
-    drain_markers(&fixture, &[&id], false);
+    drain_markers(&fixture, &[&id], CheckpointPlacement::BesideTrunk);
     assert_latest_anchors(&fixture, &id, &rewritten_tip);
     assert_eq!(retained_tip(&fixture, &id), rewritten_tip);
     assert_eq!(
@@ -770,7 +778,7 @@ fn rebase_onto_another_reservation(stage: SplitReservationStage) {
         other_tip
     );
     assert_eq!(GIT.stdout(fixture.root(), ["rev-parse", "main"]), trunk);
-    drain_markers(&fixture, &[&id], false);
+    drain_markers(&fixture, &[&id], CheckpointPlacement::BesideTrunk);
     assert_split_anchors(&fixture, &id, &other_tip, &rewritten_tip, &trunk, stage);
     let protected_commits = GIT.stdout(
         fixture.root(),
@@ -1158,7 +1166,7 @@ fn assert_split_keeps_both_hunks(workflow: SplitWorkflow, stage: SplitReservatio
         marker["pairs"],
         serde_json::json!([{"old": old_tip, "new": split_tip}])
     );
-    drain_markers(&fixture, &[&id], false);
+    drain_markers(&fixture, &[&id], CheckpointPlacement::BesideTrunk);
     assert_split_anchors(
         &fixture,
         &id,
@@ -1274,7 +1282,7 @@ fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder
         &split_tip,
         &new_upper,
     );
-    drain_markers(&fixture, &[&upper], false);
+    drain_markers(&fixture, &[&upper], CheckpointPlacement::BesideTrunk);
     assert_split_anchors(
         &fixture,
         &upper,
@@ -1382,7 +1390,7 @@ fn assert_split_survives_ref_change(change: SplitRefChange) {
         );
         assert_eq!(retained_tip(&fixture, &lower), old_lower);
     }
-    drain_markers(&fixture, &[&lower], false);
+    drain_markers(&fixture, &[&lower], CheckpointPlacement::BesideTrunk);
     assert_split_anchors(
         &fixture,
         &lower,
@@ -2104,8 +2112,15 @@ fn assert_final_checkpoint(fixture: &RewriteFixture, id: &str, tip: &str, trunk:
     }
 }
 
+/// Whether the drained checkpoints already sit on trunk and must settle as they are accepted.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CheckpointPlacement {
+    BesideTrunk,
+    OnTrunk,
+}
+
 /// A cold pass may accept one distinct subject; deferred markers must make progress.
-fn drain_markers(fixture: &RewriteFixture, ids: &[&str], on_trunk: bool) {
+fn drain_markers(fixture: &RewriteFixture, ids: &[&str], placement: CheckpointPlacement) {
     for _ in 0..=ids.len() {
         let previous_events = journal_events(fixture.root()).len();
         let observed = board_with_rewrite_trace(fixture.root());
@@ -2120,7 +2135,7 @@ fn drain_markers(fixture: &RewriteFixture, ids: &[&str], on_trunk: bool) {
             accepted_count <= 1,
             "distinct checkpoints must share the actual trunk acceptance budget: {events:?}"
         );
-        if on_trunk {
+        if placement == CheckpointPlacement::OnTrunk {
             for id in ids {
                 let events = journal_events(fixture.root());
                 let accepted = events.iter().rev().find(|event| {
@@ -2147,7 +2162,7 @@ fn drain_markers(fixture: &RewriteFixture, ids: &[&str], on_trunk: bool) {
             }
         }
         if pending_markers(fixture.root()).is_empty() {
-            if on_trunk {
+            if placement == CheckpointPlacement::OnTrunk {
                 for id in ids {
                     assert_eq!(
                         snapshot(&observed, id)["lifecycle"]["stage"],

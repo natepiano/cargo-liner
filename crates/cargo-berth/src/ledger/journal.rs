@@ -1983,16 +1983,15 @@ mod tests {
     use crate::ids::SchemaVersion;
     use crate::ids::WorkPlanPhase;
     use crate::ids::WorktreeId;
+    use crate::reservation::IntegrationEvidenceStatus;
+    use crate::reservation::IntegrationProof;
+    use crate::reservation::IntegrationWitness;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
 
     #[test]
     fn legacy_evidence_revalidated_defaults_to_evaluated_trunk_witness()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::reservation::IntegrationEvidenceStatus;
-        use crate::reservation::IntegrationProof;
-        use crate::reservation::IntegrationWitness;
-
         let trunk = "1111111111111111111111111111111111111111";
         for proof in [
             None,

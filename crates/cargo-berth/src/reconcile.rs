@@ -29,12 +29,14 @@ use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
 use crate::edge::SuccessorIncorporationEvidence;
 use crate::gate;
+use crate::gate::RewriteCreatedCommits;
 use crate::gate::permit;
 use crate::gate::permit::CompletedRewriteSubject;
 use crate::gate::permit::PendingBranchRewriteMarker;
 use crate::gate::permit::PendingBypassMarkerImport;
 use crate::gate::permit::RecoveredPendingBypassMarker;
 use crate::gate::rewrite_map;
+use crate::gate::rewrite_map::MappedPhaseInterval;
 use crate::gate::rewrite_map::PhaseRewriteMapping;
 use crate::git;
 use crate::git::CandidateHeadReachability;
@@ -1253,7 +1255,7 @@ struct RewrittenTipHistory {
     /// Complete first-parent history from the root through the rewritten tip.
     first_parent_commits: Vec<GitObjectId>,
     /// Commits introduced by this branch's rewrite, fixed when the event was recorded.
-    created:              gate::RewriteCreatedCommits,
+    created:              RewriteCreatedCommits,
 }
 
 /// Read ready maps and check protected contents while no ledger mutation lock is held.
@@ -1349,7 +1351,7 @@ enum OutstandingRewriteCandidate {
     /// Missing history leaves these destinations subject to conservative ordering holds.
     HistoryUnavailable(Vec<GitObjectId>),
     /// Located anchors still need a scoped content comparison before acceptance.
-    Mapped(rewrite_map::MappedPhaseInterval),
+    Mapped(MappedPhaseInterval),
 }
 
 /// Locate the phase while keeping unavailable Git facts distinct from a refused mapping.
@@ -1517,7 +1519,7 @@ fn compare_mapped_phase(
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
     trunk: &GitObjectId,
-    interval: &rewrite_map::MappedPhaseInterval,
+    interval: &MappedPhaseInterval,
     budget: &mut ReconciliationScopedPatchEvaluationBudget,
 ) -> ScopedPatchComparisonObservation {
     let key = ScopedPatchEvaluationKey {
@@ -3786,21 +3788,40 @@ impl From<ReconciliationPlanningError> for ReconcileError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use serde_json::Value;
     use serde_json::json;
 
+    use super::HistoricalIntegrationCandidateDiscovery;
+    use super::HistoricalIntegrationCandidateDiscovery as Discovery;
+    use super::ReconciliationScopedPatchEvaluationBudget;
+    use super::ScopedPatchComparisonDestination;
+    use super::ScopedPatchEvaluationContext;
+    use super::ScopedPatchEvaluationKey;
     use super::SettlementSelection;
     use crate::edge::RepositoryTrunk;
+    use crate::gate::permit::PendingBranchRewriteMarker;
+    use crate::git::Reachability;
+    use crate::git::ScopedPatchComparison;
+    use crate::git::ScopedPatchComparison as Comparison;
+    use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
     use crate::ledger::JournalEvent;
+    use crate::output::CommandVerb;
+    use crate::reservation::IntegrationEvidenceObservation;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
     use crate::reservation::MergeExtent;
+    use crate::reservation::PriorIntegrationStatus;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationEvidenceState;
     use crate::reservation::RetainedReservationSet;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
+    use crate::reservation::ScopedPatchComparisonObservation;
+    use crate::reservation::ScopedPatchIntegrationEvaluation;
+    use crate::reservation::ScopedPatchIntegrationEvaluation as Evaluation;
 
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
@@ -3809,21 +3830,8 @@ mod tests {
     #[test]
     fn ancestry_precedes_candidate_and_current_trunk_inside_one_admitted_evaluation()
     -> Result<(), Box<dyn std::error::Error>> {
-        use std::cell::RefCell;
-
-        use super::HistoricalIntegrationCandidateDiscovery;
-        use super::ReconciliationScopedPatchEvaluationBudget;
-        use super::ScopedPatchComparisonDestination;
-        use super::ScopedPatchEvaluationContext;
-        use super::ScopedPatchEvaluationKey;
-        use crate::git::Reachability;
-        use crate::git::ScopedPatchComparison;
-        use crate::reservation::IntegrationEvidenceObservation;
-        use crate::reservation::PriorIntegrationStatus;
-        use crate::reservation::ScopedPatchComparisonObservation;
-        use crate::reservation::ScopedPatchIntegrationEvaluation;
-        let target = TRUNK.parse::<crate::ids::GitObjectId>()?;
-        let candidate = TIP.parse::<crate::ids::GitObjectId>()?;
+        let target = TRUNK.parse::<GitObjectId>()?;
+        let candidate = TIP.parse::<GitObjectId>()?;
         let key = || ScopedPatchEvaluationKey {
             phase_start_head: candidate.clone(),
             protected_tip:    candidate.clone(),
@@ -3906,11 +3914,8 @@ mod tests {
     #[test]
     fn historical_witness_is_cached_and_unavailable_history_keeps_negatives_retryable()
     -> Result<(), Box<dyn std::error::Error>> {
-        use super::HistoricalIntegrationCandidateDiscovery as Discovery;
-        use crate::git::ScopedPatchComparison as Comparison;
-        use crate::reservation::ScopedPatchIntegrationEvaluation as Evaluation;
         let target = TRUNK.parse()?;
-        let candidate: crate::ids::GitObjectId = TIP.parse()?;
+        let candidate: GitObjectId = TIP.parse()?;
         let certified = super::evaluate_historical_then_current_trunk(
             &target,
             || Discovery::Nominated(candidate.clone()),
@@ -3928,8 +3933,8 @@ mod tests {
             protected_tip:    target.clone(),
             target_trunk:     target.clone(),
             scopes:           Vec::new(),
-            context:          super::ScopedPatchEvaluationContext::PriorIntegrationProven,
-            destination:      super::ScopedPatchComparisonDestination::Trunk,
+            context:          ScopedPatchEvaluationContext::PriorIntegrationProven,
+            destination:      ScopedPatchComparisonDestination::Trunk,
         };
         let mut budget = super::ReconciliationScopedPatchEvaluationBudget::default();
         let first = budget.evaluate(key(), || certified.clone());
@@ -3980,7 +3985,7 @@ mod tests {
                 IntegrationProof::ScopedPatchEquivalent
                 | IntegrationProof::RewrittenWitnessAncestor => {
                     ReleaseDisposition::RewrittenIntegration(RewrittenIntegrationTrunkCommit::from(
-                        TRUNK.parse::<crate::ids::GitObjectId>()?,
+                        TRUNK.parse::<GitObjectId>()?,
                     ))
                 },
             };
@@ -4058,7 +4063,7 @@ mod tests {
         let retained = RetainedReservationSet::replay(&checkpoint_events()?)?;
         let reservation = retained.reservation(RESERVATION_ID.parse()?)?;
         let witness = RewrittenIntegrationTrunkCommit::from(
-            "3333333333333333333333333333333333333333".parse::<crate::ids::GitObjectId>()?,
+            "3333333333333333333333333333333333333333".parse::<GitObjectId>()?,
         );
         let evidence = IntegrationEvidenceStatus::Integrated {
             trunk_oid: TRUNK.parse()?,
@@ -4138,7 +4143,7 @@ mod tests {
         let Err(error) = result else {
             return Err("persistent subject changes must remain retryable errors".into());
         };
-        let output = serde_json::to_value(error.into_output(crate::output::CommandVerb::Board))?;
+        let output = serde_json::to_value(error.into_output(CommandVerb::Board))?;
         assert_eq!(output["status"], "contention");
         assert!(
             output["message"]
@@ -4165,7 +4170,7 @@ mod tests {
             (first, second, Vec::new()),
             (second, third, vec![branch_tip]),
         ] {
-            let marker = crate::gate::permit::PendingBranchRewriteMarker {
+            let marker = PendingBranchRewriteMarker {
                 path:    std::path::PathBuf::from("pending-rewrite.json"),
                 rewrite: serde_json::from_value(json!({
                     "kind": "branch_rewrite",
@@ -4204,7 +4209,7 @@ mod tests {
             validation:     super::RewriteSubjectValidation::capture(outstanding.reservation(id)?),
             rewritten_tips: original_tips.clone(),
         };
-        let marker = crate::gate::permit::PendingBranchRewriteMarker {
+        let marker = PendingBranchRewriteMarker {
             path:    std::path::PathBuf::from("independent-branch-rewrite.json"),
             rewrite: serde_json::from_value(json!({
                 "kind": "branch_rewrite",

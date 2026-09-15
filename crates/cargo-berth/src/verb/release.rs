@@ -12,6 +12,7 @@ use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
 use crate::git;
 use crate::git::GitError;
+use crate::git::Reachability;
 use crate::git::ReservationCheckpointCommits;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -600,7 +601,7 @@ fn revalidate_proven_integration(
                 witness,
                 current_trunk,
             )
-            .unwrap_or(git::Reachability::ObjectUnknown)
+            .unwrap_or(Reachability::ObjectUnknown)
         },
         || {
             reservation::integration_status(
@@ -620,7 +621,7 @@ fn revalidate_proven_integration(
 fn revalidate_integrated_evidence(
     materialized_status: &IntegrationEvidenceStatus,
     current_trunk: &GitObjectId,
-    witness_reachability: impl FnOnce(&GitObjectId) -> git::Reachability,
+    witness_reachability: impl FnOnce(&GitObjectId) -> Reachability,
     evaluate_current_trunk: impl FnOnce() -> IntegrationEvidenceStatus,
 ) -> IntegrationEvidenceStatus {
     if let IntegrationEvidenceStatus::Integrated {
@@ -702,7 +703,7 @@ fn released_evidence_operation(
                     witness,
                     &current_trunk,
                 )
-                .unwrap_or(git::Reachability::ObjectUnknown)
+                .unwrap_or(Reachability::ObjectUnknown)
             }),
         ReleaseRevalidationSubject::None => return Err(ReleaseRejection::AlreadyReleased),
     };

@@ -931,8 +931,8 @@ fn rewritten_successor_content_is_cached_for_fulfilled_and_holding_edges() {
 
 #[test]
 fn legacy_negative_successor_verdict_retries_once_under_scoped_contiguity() {
-    for protected_gap in [false, true] {
-        let fixture = successor_with_separated_matches(protected_gap);
+    for successor_gap in [SuccessorGap::Unrelated, SuccessorGap::Protected] {
+        let fixture = successor_with_separated_matches(successor_gap);
         let root = fixture.repository.path();
         retain_protected_tip_release(&fixture);
         append_edge_fixture_event(
@@ -961,10 +961,11 @@ fn legacy_negative_successor_verdict_retries_once_under_scoped_contiguity() {
             "{}",
             json_output(&first.output)
         );
-        let expected = if protected_gap {
-            serde_json::json!({"state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}})
-        } else {
-            serde_json::json!({"state": "fulfilled"})
+        let expected = match successor_gap {
+            SuccessorGap::Protected => {
+                serde_json::json!({"state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}})
+            },
+            SuccessorGap::Unrelated => serde_json::json!({"state": "fulfilled"}),
         };
         assert_eq!(
             json_output(&first.output)["payload"]["data"]["readiness"],
@@ -976,10 +977,9 @@ fn legacy_negative_successor_verdict_retries_once_under_scoped_contiguity() {
         assert!(verdicts[0].get("evaluator_version").is_none());
         assert_eq!(
             verdicts[1]["verdict"],
-            if protected_gap {
-                "different"
-            } else {
-                "equivalent"
+            match successor_gap {
+                SuccessorGap::Protected => "different",
+                SuccessorGap::Unrelated => "equivalent",
             }
         );
         assert_eq!(verdicts[1]["evaluator_version"], "historical_candidate");
@@ -996,8 +996,15 @@ fn legacy_negative_successor_verdict_retries_once_under_scoped_contiguity() {
     }
 }
 
+/// The work a successor inserts between its two equivalent commits.
+#[derive(Clone, Copy)]
+enum SuccessorGap {
+    Unrelated,
+    Protected,
+}
+
 /// A two-commit phase whose successor inserts either unrelated or protected work between matches.
-fn successor_with_separated_matches(protected_gap: bool) -> RewrittenSuccessorFixture {
+fn successor_with_separated_matches(successor_gap: SuccessorGap) -> RewrittenSuccessorFixture {
     let mut fixture = rewritten_successor_fixture(true);
     let root = fixture.repository.path();
     git(root, &["config", "core.hooksPath", "/dev/null"]);
@@ -1011,13 +1018,12 @@ fn successor_with_separated_matches(protected_gap: bool) -> RewrittenSuccessorFi
         "second phase commit",
     );
     fixture.protected_tip = git_stdout(&predecessor_root, &["rev-parse", "HEAD"]);
-    let (gap, gap_content) = if protected_gap {
-        (
+    let (gap, gap_content) = match successor_gap {
+        SuccessorGap::Protected => (
             "src/lib.rs",
             "pub fn rewritten_predecessor() {}\npub fn intervening() {}\n",
-        )
-    } else {
-        ("tests/gap.rs", "// intervening work\n")
+        ),
+        SuccessorGap::Unrelated => ("tests/gap.rs", "// intervening work\n"),
     };
     commit_successor_fixture_file(&successor_root, gap, gap_content, "gap between equivalents");
     commit_successor_fixture_file(
@@ -1126,7 +1132,12 @@ fn witness_survives_pruning_and_controls_successors() {
     let witness = prepare_pruned_witness(&fixture);
 
     let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(&revalidated, &fixture.predecessor_id, "integrated", false);
+    assert_witness_evidence(
+        &revalidated,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
     assert_explicit_witness_evidence(root, &fixture.predecessor_id, "integrated", &witness);
 
     git(
@@ -1142,7 +1153,12 @@ fn witness_survives_pruning_and_controls_successors() {
     let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
     assert_ne!(evaluated_trunk, witness);
     let advanced = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(&advanced, &fixture.predecessor_id, "integrated", false);
+    assert_witness_evidence(
+        &advanced,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
     let advanced_board = json_output(&advanced.output);
     let predecessor = witness_reservation_snapshot(&advanced_board, &fixture.predecessor_id);
     assert_eq!(
@@ -1173,17 +1189,32 @@ fn witness_survives_pruning_and_controls_successors() {
     let successor_root = fixture.worktrees.path().join("successor");
     git(&successor_root, &["reset", "--hard", &witness]);
     let fulfilled = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(&fulfilled, &fixture.predecessor_id, "integrated", false);
+    assert_witness_evidence(
+        &fulfilled,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
     assert_successor_round_robin_progress(&fulfilled.output, 1, 1);
 
     // Equivalent replacement content cannot reaffirm a witness removed from actual trunk.
     git(root, &["reset", "--hard", &fixture.successor_head]);
     let lost = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(&lost, &fixture.predecessor_id, "trunk_rewritten", true);
+    assert_witness_evidence(
+        &lost,
+        &fixture.predecessor_id,
+        "trunk_rewritten",
+        LostEvidenceAlert::Raised,
+    );
     assert_explicit_witness_evidence(root, &fixture.predecessor_id, "trunk_rewritten", &witness);
     git(root, &["reset", "--hard", &witness]);
     let recovered = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert_witness_evidence(&recovered, &fixture.predecessor_id, "integrated", false);
+    assert_witness_evidence(
+        &recovered,
+        &fixture.predecessor_id,
+        "integrated",
+        LostEvidenceAlert::Absent,
+    );
     assert_successor_round_robin_progress(&recovered.output, 1, 1);
     assert!(!git_status(
         root,
@@ -1379,12 +1410,19 @@ fn witness_reservation_snapshot<'board>(
         .expect("predecessor should have a board snapshot")
 }
 
+/// Whether the board must report a lost-integration-evidence alert for the reservation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LostEvidenceAlert {
+    Absent,
+    Raised,
+}
+
 /// Revalidation remains ancestry-only even when the original protected object is absent.
 fn assert_witness_evidence(
     traced: &TracedBerth,
     reservation_id: &str,
     status: &str,
-    lost_evidence: bool,
+    lost_evidence_alert: LostEvidenceAlert,
 ) {
     assert!(
         traced.output.status.success(),
@@ -1422,7 +1460,7 @@ fn assert_witness_evidence(
             alert["kind"] == "lost_integration_evidence"
                 && alert["reservation_id"] == reservation_id
         }),
-        lost_evidence
+        lost_evidence_alert == LostEvidenceAlert::Raised
     );
     assert!(alerts.iter().all(|alert| {
         alert["kind"] != "orphaned_outstanding" || alert["reservation_id"] != reservation_id

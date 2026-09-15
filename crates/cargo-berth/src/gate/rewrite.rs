@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fs;
 use std::io;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use super::RewriteCreatedCommits;
@@ -16,7 +17,11 @@ use super::reference_transaction::ReferenceUpdate;
 use super::rewrite_map::PhaseRewriteMapping;
 use super::rewrite_map::RewriteMapPair;
 use crate::git;
+use crate::git::GitCommandOutputAvailability;
+use crate::git::GitError;
 use crate::git::Reachability;
+use crate::git::ScopedPatchComparison;
+use crate::git::ScopedPatchTargetHistory;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
 use crate::ledger;
@@ -26,6 +31,7 @@ use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
+use crate::ledger::LedgerError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::WorktreeContext;
@@ -102,19 +108,17 @@ fn apply_rebase_previous_tip(
     let directory = context.administrative_directory().join("rebase-apply");
     let contents = match fs::read_to_string(directory.join("rewritten")) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(ApplyRebasePreviousTip::NotApplyBranch);
         },
-        Err(error) => return Err(crate::ledger::LedgerError::Io(error).into()),
+        Err(error) => return Err(LedgerError::Io(error).into()),
     };
     let previous = if directory
         .join("onto")
         .try_exists()
-        .map_err(crate::ledger::LedgerError::Io)?
+        .map_err(LedgerError::Io)?
     {
-        match stopped_apply_rebase_previous_tip(&directory, reference)
-            .map_err(crate::ledger::LedgerError::Io)?
-        {
+        match stopped_apply_rebase_previous_tip(&directory, reference).map_err(LedgerError::Io)? {
             ApplyRebasePreviousTip::Verified(previous) => previous,
             ApplyRebasePreviousTip::NotApplyBranch => {
                 return Ok(ApplyRebasePreviousTip::NotApplyBranch);
@@ -123,14 +127,14 @@ fn apply_rebase_previous_tip(
     } else {
         uninterrupted_apply_rebase_previous_tip(context.repository_root(), reference, proposed)?
     };
-    let pairs = decode_rewrite_map(&contents).map_err(crate::ledger::LedgerError::Io)?;
+    let pairs = decode_rewrite_map(&contents).map_err(LedgerError::Io)?;
     for pair in pairs {
         if git::reachability(context.repository_root(), &pair.old, &previous)
             .map_err(GateError::Git)?
             != Reachability::Ancestor
         {
-            return Err(crate::ledger::LedgerError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
+            return Err(LedgerError::Io(io::Error::new(
+                ErrorKind::InvalidData,
                 "apply rebase previous tip does not contain every old map commit",
             ))
             .into());
@@ -153,7 +157,7 @@ fn stopped_apply_rebase_previous_tip(
     }
     if !head_name.starts_with("refs/heads/") {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+            ErrorKind::InvalidData,
             "stopped apply rebase head-name is not a local branch",
         ));
     }
@@ -180,8 +184,8 @@ fn uninterrupted_apply_rebase_previous_tip(
 ) -> Result<GitObjectId, GateError> {
     let current = branch_reflog_tip(repository_root, reference, 0).map_err(GateError::Git)?;
     if &current != proposed {
-        return Err(crate::ledger::LedgerError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(LedgerError::Io(io::Error::new(
+            ErrorKind::InvalidData,
             "apply rebase branch reflog does not end at the proposed tip",
         ))
         .into());
@@ -194,27 +198,27 @@ fn branch_reflog_tip(
     repository_root: &Path,
     reference: &FullRefName,
     entry: usize,
-) -> Result<GitObjectId, git::GitError> {
+) -> Result<GitObjectId, GitError> {
     let output = match git::execute_read_only_git(
         repository_root,
         &["rev-parse", "--verify", &format!("{reference}@{{{entry}}}")],
     ) {
-        git::GitCommandOutputAvailability::Available(output) => output,
-        git::GitCommandOutputAvailability::Unavailable(error) => {
-            return Err(git::GitError::Io(error));
+        GitCommandOutputAvailability::Available(output) => output,
+        GitCommandOutputAvailability::Unavailable(error) => {
+            return Err(GitError::Io(error));
         },
     };
     if !output.status.success() {
-        return Err(git::GitError::CommandFailed {
+        return Err(GitError::CommandFailed {
             command: "rev-parse",
             stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
     String::from_utf8(output.stdout)
-        .map_err(git::GitError::InvalidOutput)?
+        .map_err(GitError::InvalidOutput)?
         .trim()
         .parse()
-        .map_err(git::GitError::InvalidObjectId)
+        .map_err(GitError::InvalidObjectId)
 }
 
 /// One branch's immutable rewrite facts, shared by marker persistence and active re-anchoring.
@@ -255,8 +259,8 @@ pub(super) fn capture_branch_rewrites(
         return Ok(Vec::new());
     }
     let context = WorktreeContext::discover(issuing_directory)?;
-    let operation = read_rewrite_map(context.administrative_directory(), rewrites)
-        .map_err(crate::ledger::LedgerError::Io)?;
+    let operation =
+        read_rewrite_map(context.administrative_directory(), rewrites).map_err(LedgerError::Io)?;
     let events = rewrites
         .iter()
         .map(|rewrite| {
@@ -285,7 +289,7 @@ pub(super) fn capture_branch_rewrites(
             vec![event.branch.proposed.clone()],
             event.created_commits.clone(),
         )
-        .map_err(crate::ledger::LedgerError::Io)?;
+        .map_err(LedgerError::Io)?;
     }
     Ok(events)
 }
@@ -295,7 +299,7 @@ pub(crate) fn rewrite_phase_commits(
     repository_root: &Path,
     phase_start: &GitObjectId,
     protected_tip: &GitObjectId,
-) -> Result<Vec<GitObjectId>, git::GitError> {
+) -> Result<Vec<GitObjectId>, GitError> {
     read_rewrite_history(
         repository_root,
         &[
@@ -310,7 +314,7 @@ pub(crate) fn rewrite_phase_commits(
 pub(crate) fn rewritten_first_parent_history(
     repository_root: &Path,
     tip: &GitObjectId,
-) -> Result<Vec<GitObjectId>, git::GitError> {
+) -> Result<Vec<GitObjectId>, GitError> {
     read_rewrite_history(
         repository_root,
         &["--reverse", "--first-parent", &tip.to_string()],
@@ -325,14 +329,13 @@ pub(crate) fn capture_rewrite_created_commits(
     previous_tip: &GitObjectId,
     pairs: &[RewriteMapPair],
     base: &RewriteBase,
-) -> Result<Vec<GitObjectId>, git::GitError> {
+) -> Result<Vec<GitObjectId>, GitError> {
     // An explicit absolute git directory makes Git recognize the issuing worktree;
     // discovering Git from inside its administrative directory can count its HEAD twice.
-    let directory =
-        fs::canonicalize(worktree_administrative_directory).map_err(git::GitError::Io)?;
+    let directory = fs::canonicalize(worktree_administrative_directory).map_err(GitError::Io)?;
     let directory = directory.to_str().ok_or_else(|| {
-        git::GitError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
+        GitError::Io(io::Error::new(
+            ErrorKind::InvalidInput,
             "rewrite administrative directory is not UTF-8",
         ))
     })?;
@@ -363,31 +366,31 @@ pub(crate) fn capture_rewrite_created_commits(
 fn read_rewrite_history(
     repository_root: &Path,
     revisions: &[&str],
-) -> Result<Vec<GitObjectId>, git::GitError> {
+) -> Result<Vec<GitObjectId>, GitError> {
     let arguments = [&["rev-list"], revisions].concat();
     decode_rewrite_history(git::execute_read_only_git(repository_root, &arguments))
 }
 
 /// Decode complete commit ids while preserving unavailable or failed Git reads.
 fn decode_rewrite_history(
-    output: git::GitCommandOutputAvailability,
-) -> Result<Vec<GitObjectId>, git::GitError> {
+    output: GitCommandOutputAvailability,
+) -> Result<Vec<GitObjectId>, GitError> {
     let output = match output {
-        git::GitCommandOutputAvailability::Available(output) => output,
-        git::GitCommandOutputAvailability::Unavailable(error) => {
-            return Err(git::GitError::Io(error));
+        GitCommandOutputAvailability::Available(output) => output,
+        GitCommandOutputAvailability::Unavailable(error) => {
+            return Err(GitError::Io(error));
         },
     };
     if !output.status.success() {
-        return Err(git::GitError::CommandFailed {
+        return Err(GitError::CommandFailed {
             command: "rev-list",
             stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
     String::from_utf8(output.stdout)
-        .map_err(git::GitError::InvalidOutput)?
+        .map_err(GitError::InvalidOutput)?
         .lines()
-        .map(|line| line.parse().map_err(git::GitError::InvalidObjectId))
+        .map(|line| line.parse().map_err(GitError::InvalidObjectId))
         .collect()
 }
 
@@ -403,12 +406,12 @@ fn read_rewrite_map(
         let directory = administrative_directory.join(backend);
         let contents = match fs::read_to_string(directory.join(map_name)) {
             Ok(contents) => contents,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
         let base = match fs::read_to_string(directory.join("onto")) {
             Ok(onto) => RewriteBase::RebaseOnto(onto.trim().parse().map_err(io::Error::other)?),
-            Err(error) if backend == "rebase-apply" && error.kind() == io::ErrorKind::NotFound => {
+            Err(error) if backend == "rebase-apply" && error.kind() == ErrorKind::NotFound => {
                 RewriteBase::RecordedDestinations
             },
             Err(error) => return Err(error),
@@ -437,7 +440,7 @@ fn decode_rewrite_map(contents: &str) -> io::Result<Vec<RewriteMapPair>> {
             let mut fields = line.split_whitespace();
             let (Some(old), Some(new), None) = (fields.next(), fields.next(), fields.next()) else {
                 return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
+                    ErrorKind::InvalidData,
                     "invalid Git rewrite map pair",
                 ));
             };
@@ -596,15 +599,16 @@ fn active_phase_anchor(
         reservation.scopes(),
         &rewrite.previous,
         &interval.protected_tip,
-        git::ScopedPatchTargetHistory::MappedDestinations {
+        ScopedPatchTargetHistory::MappedDestinations {
             commits: &interval.destinations,
         },
     ) {
-        Ok(git::ScopedPatchComparison::Equivalent) => {
+        Ok(ScopedPatchComparison::Equivalent) => {
             ActivePhaseAnchor::Replace(interval.phase_start_head)
         },
-        Ok(git::ScopedPatchComparison::Different | git::ScopedPatchComparison::Unavailable)
-        | Err(_) => ActivePhaseAnchor::Preserve,
+        Ok(ScopedPatchComparison::Different | ScopedPatchComparison::Unavailable) | Err(_) => {
+            ActivePhaseAnchor::Preserve
+        },
     }
 }
 
@@ -613,6 +617,7 @@ mod tests {
     use std::error::Error;
     use std::fmt::Write;
     use std::fs;
+    use std::path::Path;
 
     use tempfile::TempDir;
     use tempfile::tempdir;
@@ -1438,7 +1443,7 @@ mod tests {
     }
 
     /// Run a fixture Git command, keeping failures visible to the unit test.
-    fn git_output(root: &std::path::Path, arguments: &[&str]) -> Result<String, Box<dyn Error>> {
+    fn git_output(root: &Path, arguments: &[&str]) -> Result<String, Box<dyn Error>> {
         let output = std::process::Command::new("git")
             .args(arguments)
             .current_dir(root)

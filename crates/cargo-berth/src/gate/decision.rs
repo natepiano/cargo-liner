@@ -45,13 +45,18 @@ use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
+use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::SkippedOrderingEdge;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
+use crate::reconcile::GateReconciliation;
+use crate::reconcile::GateReconciliationError;
+use crate::reconcile::GateReconciliationPurpose;
 use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedReservationSet;
 
 /// The typed integration request produced from clap's force and reason primitives.
 #[derive(Clone)]
@@ -200,7 +205,7 @@ pub(super) fn evaluate_locked(
                         ledger_repository,
                         &berth_config,
                         update.proposed.clone(),
-                        reconcile::GateReconciliationPurpose::PreparedDecision,
+                        GateReconciliationPurpose::PreparedDecision,
                         rewrite_preflight,
                     ) {
                         Ok(prepared) => prepared,
@@ -272,8 +277,8 @@ pub(super) fn retry_rewrite_reconciliation<Output>(
         )
     })
     .map_err(|error| match error {
-        GateError::Planning(reconcile::GateReconciliationError::RewriteSubjectChanged(_)) => {
-            GateError::Transaction(crate::ledger::LedgerTransactionError::LockContention)
+        GateError::Planning(GateReconciliationError::RewriteSubjectChanged(_)) => {
+            GateError::Transaction(LedgerTransactionError::LockContention)
         },
         error => error,
     })
@@ -281,7 +286,7 @@ pub(super) fn retry_rewrite_reconciliation<Output>(
 
 /// Preserve typed identity rejections before authorizing any gate records.
 fn validate_gate_identity(
-    reservations: &crate::reservation::RetainedReservationSet,
+    reservations: &RetainedReservationSet,
     identity_validation: &CoordinationIdentityValidationContext,
 ) -> Result<(), GateTransactionRejection> {
     coordination_identity::validate_coordination_identity(reservations, identity_validation)
@@ -296,7 +301,7 @@ fn validate_gate_identity(
 }
 
 pub(super) fn entering_reservations(
-    reconciliation: &reconcile::GateReconciliation,
+    reconciliation: &GateReconciliation,
     newly_reachable: &[GitObjectId],
 ) -> Vec<ReservationId> {
     reconciliation

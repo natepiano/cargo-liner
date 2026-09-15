@@ -17,6 +17,7 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
+use crate::reconcile::GateReconciliationPurpose;
 
 pub(super) fn commit_forced_permit_audits(
     invocation_directory: &Path,
@@ -49,7 +50,7 @@ pub(super) fn commit_forced_permit_audits(
                         ledger_repository,
                         berth_config,
                         update.proposed.clone(),
-                        reconcile::GateReconciliationPurpose::CommittedAudit,
+                        GateReconciliationPurpose::CommittedAudit,
                         rewrite_preflight,
                     ) {
                         Ok(prepared) => prepared,

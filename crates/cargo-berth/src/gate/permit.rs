@@ -77,7 +77,7 @@ pub(crate) enum EnvironmentBypassRetentionOutcome {
 
 /// The shared marker schema used when an environment bypass cannot reach the journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct PendingEnvironmentBypass {
+struct PendingEnvironmentBypass {
     /// The operation the bypass allowed; markers written before edits could be bypassed
     /// name no action and were always left by a trunk update.
     #[serde(default = "integration_bypass")]
@@ -91,7 +91,7 @@ pub(crate) struct PendingEnvironmentBypass {
 /// Durable facts awaiting reconciliation, including legacy untagged bypass payloads.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
-pub(crate) enum PendingReconciliationMarker {
+enum PendingReconciliationMarker {
     /// A branch rewrite whose map must survive Git removing its rebase state.
     BranchRewrite(PendingBranchRewrite),
     /// An environment override whose audit record still needs to be appended.

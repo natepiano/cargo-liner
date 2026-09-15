@@ -1021,6 +1021,7 @@ mod tests {
     use std::error::Error;
     use std::fs;
     use std::io;
+    use std::path::Path;
     use std::process::Command;
 
     use super::HistoricalIntegrationCandidateDiscovery;
@@ -1033,6 +1034,8 @@ mod tests {
     use super::scoped_patch_equivalence;
     use super::scoped_patch_equivalence_with_target_history;
     use crate::gate;
+    use crate::gate::RewriteBase;
+    use crate::gate::RewriteCreatedCommits;
     use crate::gate::rewrite_map::MappedPhaseInterval;
     use crate::gate::rewrite_map::PhaseRewriteMapping;
     use crate::gate::rewrite_map::RewriteMapPair;
@@ -1198,20 +1201,20 @@ mod tests {
 
     /// Capture the branch history beyond the base recorded by its rebase operation.
     fn capture_created_commits(
-        repository_root: &std::path::Path,
-        administrative_directory: &std::path::Path,
+        repository_root: &Path,
+        administrative_directory: &Path,
         proposed: &GitObjectId,
         previous: &GitObjectId,
         pairs: &[RewriteMapPair],
         onto: &GitObjectId,
-    ) -> FixtureResult<gate::RewriteCreatedCommits> {
+    ) -> FixtureResult<RewriteCreatedCommits> {
         let commits = gate::capture_rewrite_created_commits(
             repository_root,
             administrative_directory,
             proposed,
             previous,
             pairs,
-            &gate::RewriteBase::RebaseOnto(onto.clone()),
+            &RewriteBase::RebaseOnto(onto.clone()),
         )?;
         Ok(gate::RewriteCreatedCommits::from_commits(commits))
     }
@@ -1343,7 +1346,7 @@ mod tests {
             &target,
             &old_tip,
             &pairs,
-            &gate::RewriteBase::RebaseOnto(fixture.phase_start_head.clone()),
+            &RewriteBase::RebaseOnto(fixture.phase_start_head.clone()),
         )?;
         let stored = serde_json::to_vec(&captured)?;
         fixture.git(&["switch", "--detach", &fixture.phase_start_head.to_string()])?;
