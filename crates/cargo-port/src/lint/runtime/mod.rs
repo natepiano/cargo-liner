@@ -60,6 +60,7 @@ use crate::scan::BackgroundMsg;
 mod command;
 mod handle;
 mod request;
+mod run_lock;
 mod supervisor;
 
 use command::RunCommandsConfig;

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::time::SystemTime;
 
 use tui_pane::PERF_LOG_TARGET;
 
@@ -254,7 +255,7 @@ impl App {
         };
         let on_discovery = self.config.current().lint.on_discovery;
 
-        let mut pending: Vec<AbsolutePath> = Vec::new();
+        let mut pending: Vec<(AbsolutePath, Option<SystemTime>)> = Vec::new();
         for request in self.lint_runtime_projects() {
             if !lint::project_is_eligible(
                 &self.config.current().lint,
@@ -275,7 +276,7 @@ impl App {
             let last_started_at = runs.last_started_at();
             let max_source_mtime = self.startup.source_mtimes.get(&request.abs_path).copied();
             if cached.should_lint_on_startup(last_started_at, max_source_mtime, on_discovery) {
-                pending.push(request.abs_path);
+                pending.push((request.abs_path, max_source_mtime));
             }
         }
 
@@ -284,8 +285,8 @@ impl App {
             return;
         }
 
-        for path in &pending {
-            runtime.request_startup_lint(path.clone());
+        for (path, max_source_mtime) in pending.iter().cloned() {
+            runtime.request_startup_lint(path, max_source_mtime);
         }
         tracing::trace!(
             target: PERF_LOG_TARGET,

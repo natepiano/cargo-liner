@@ -133,6 +133,9 @@ pub(crate) const LINTS_HISTORY_JSONL: &str = "history.jsonl";
 /// Marker file at the lint cache root. Present iff the user paused lint work;
 /// read at startup to resume a paused session paused after a restart.
 pub(crate) const LINTS_PAUSED_MARKER: &str = "paused";
+/// Per-project lock file that lets only one cargo-port instance run a
+/// project's lint commands at a time.
+pub(crate) const LINTS_RUN_LOCK: &str = "run.lock";
 
 /// A `started` entry older than this is considered stale (crashed watcher).
 pub(crate) const STALE_TIMEOUT: Duration = Duration::from_mins(30);

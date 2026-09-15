@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use super::AbsolutePath;
 use super::Arc;
 use super::Child;
@@ -9,6 +11,7 @@ use super::LintTriggerKind;
 use super::Mutex;
 use super::RegisterProjectRequest;
 use super::StdSender;
+use super::supervisor::DispatchedTrigger;
 use super::supervisor::PauseState;
 
 #[derive(Clone)]
@@ -37,9 +40,9 @@ impl RuntimeHandle {
     }
 
     pub fn lint_trigger(&self, event: LintTriggerEvent) {
-        let _ = self
-            .supervisor_sender
-            .send(SupervisorMsg::LintTriggered { event });
+        let _ = self.supervisor_sender.send(SupervisorMsg::LintTriggered {
+            trigger: DispatchedTrigger::now(event),
+        });
     }
 
     /// Pause all lint work: kill every in-flight run and hold new runs until
@@ -85,13 +88,23 @@ impl RuntimeHandle {
     /// check flagged (source newer than the last run, or never linted under
     /// immediate discovery). Routed through the same `LintTriggered` path as
     /// watcher events so the worker debounces and coalesces it normally.
-    pub fn request_startup_lint(&self, project_root: AbsolutePath) {
+    ///
+    /// `source_changed_at` is the newest source mtime the check found. Another
+    /// cargo-port instance's in-flight run that started after it already lints
+    /// the change, so a worker waiting on that run adopts its result instead of
+    /// linting again. `None` requests the lint as of now.
+    pub fn request_startup_lint(
+        &self,
+        project_root: AbsolutePath,
+        source_changed_at: Option<SystemTime>,
+    ) {
+        let event = LintTriggerEvent {
+            project_root,
+            trigger: LintTriggerKind::Startup,
+            event_kind: LintEventKind::CreateOrModify,
+        };
         let _ = self.supervisor_sender.send(SupervisorMsg::LintTriggered {
-            event: LintTriggerEvent {
-                project_root,
-                trigger: LintTriggerKind::Startup,
-                event_kind: LintEventKind::CreateOrModify,
-            },
+            trigger: DispatchedTrigger::changed_at(event, source_changed_at),
         });
     }
 }
@@ -114,7 +127,7 @@ pub(super) enum SupervisorMsg {
         abs_path: AbsolutePath,
     },
     LintTriggered {
-        event: LintTriggerEvent,
+        trigger: DispatchedTrigger,
     },
     Pause,
     Resume,

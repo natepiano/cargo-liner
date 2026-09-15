@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::sync::Condvar;
+use std::time::SystemTime;
 
 use tui_pane::PERF_LOG_TARGET;
 
@@ -12,7 +13,9 @@ use super::CachedLintStatus;
 use super::CargoPortConfig;
 use super::Child;
 use super::ChildSlot;
+use super::DateTime;
 use super::DiscoveryLint;
+use super::FixedOffset;
 use super::HashMap;
 use super::HashSet;
 use super::Instant;
@@ -27,6 +30,7 @@ use super::LintRunStatus;
 use super::LintStatus;
 use super::LintTriggerEvent;
 use super::LintTriggerKind;
+use super::Local;
 use super::Mutex;
 use super::Ordering;
 use super::Path;
@@ -47,6 +51,8 @@ use super::project;
 use super::publish_status;
 use super::read_write;
 use super::run_commands_for_project;
+use super::run_lock;
+use super::run_lock::RunLock;
 use super::status;
 use super::thread;
 use crate::lint;
@@ -55,7 +61,7 @@ use crate::support;
 
 pub(super) struct ProjectWorker {
     pub(super) stop:       Arc<AtomicBool>,
-    pub(super) trigger_tx: StdSender<LintTriggerEvent>,
+    pub(super) trigger_tx: StdSender<DispatchedTrigger>,
     pub(super) child:      ChildSlot,
     pub(super) handle:     JoinHandle<()>,
 }
@@ -224,27 +230,7 @@ fn supervisor_loop(
                     });
                 }
             },
-            Ok(SupervisorMsg::LintTriggered { event }) => {
-                if let Some(worker) = workers.get(&event.project_root) {
-                    tracing::debug!(
-                        project_root = %event.project_root.display(),
-                        trigger = ?event.trigger,
-                        event_kind = ?event.event_kind,
-                        removal = event.is_removal(),
-                        "lint_supervisor_trigger_dispatch"
-                    );
-                    let _ = worker.trigger_tx.send(event);
-                } else {
-                    tracing::warn!(
-                        project_root = %event.project_root.display(),
-                        trigger = ?event.trigger,
-                        event_kind = ?event.event_kind,
-                        removal = event.is_removal(),
-                        workers = workers.len(),
-                        "lint_supervisor_trigger_dropped_no_worker"
-                    );
-                }
-            },
+            Ok(SupervisorMsg::LintTriggered { trigger }) => dispatch_trigger(&workers, trigger),
             Ok(SupervisorMsg::Pause) => pause_all_workers(pause_state, &workers),
             Ok(SupervisorMsg::Resume) => resume_all_workers(pause_state, &catch_up, &workers),
             Ok(SupervisorMsg::PauseProject { project_root }) => {
@@ -260,6 +246,29 @@ fn supervisor_loop(
                 return;
             },
         }
+    }
+}
+
+fn dispatch_trigger(workers: &HashMap<AbsolutePath, ProjectWorker>, trigger: DispatchedTrigger) {
+    let event = &trigger.event;
+    if let Some(worker) = workers.get(&event.project_root) {
+        tracing::debug!(
+            project_root = %event.project_root.display(),
+            trigger = ?event.trigger,
+            event_kind = ?event.event_kind,
+            removal = event.is_removal(),
+            "lint_supervisor_trigger_dispatch"
+        );
+        let _ = worker.trigger_tx.send(trigger);
+    } else {
+        tracing::warn!(
+            project_root = %event.project_root.display(),
+            trigger = ?event.trigger,
+            event_kind = ?event.event_kind,
+            removal = event.is_removal(),
+            workers = workers.len(),
+            "lint_supervisor_trigger_dropped_no_worker"
+        );
     }
 }
 
@@ -331,16 +340,19 @@ fn cached_status_for_project(
 
 /// Read a project's most recent terminal lint status from disk. Tries
 /// `latest.json` first, then falls back to the newest non-`Running` line
-/// from `history.jsonl`. A `Running` `latest.json` is always stale on
-/// hydration (the active runtime tracks its own run in memory), so it is
-/// cleared from disk and the history fallback fires. Clearing — rather than
-/// only ignoring it in memory — stops external readers (the `/clippy` cache
-/// check) from waiting on a run a dead app left behind.
+/// from `history.jsonl`. A `Running` `latest.json` never counts as a terminal
+/// status, so the history fallback fires. When no process holds the project's
+/// run lock the marker belongs to a dead app and is cleared from disk, which
+/// stops external readers (the `/clippy` cache check) from waiting on a run
+/// that will never finish. A held lock means another cargo-port instance is
+/// running that lint now, so its marker stays.
 pub(crate) fn read_status_from_disk(cache_root: &Path, project_root: &Path) -> CachedLintStatus {
     let project_dir = paths::project_dir_under(cache_root, project_root);
     let terminal_latest = match read_write::read_latest_file(&project_dir.join(LINTS_LATEST_JSON)) {
         Some(run) if matches!(run.status, LintRunStatus::Running) => {
-            let _ = read_write::clear_latest_under(cache_root, project_root);
+            if !run_lock::is_held(cache_root, project_root) {
+                let _ = read_write::clear_latest_under(cache_root, project_root);
+            }
             None
         },
         other => other,
@@ -405,37 +417,76 @@ impl WorkerStart {
         match self {
             Self::Idle => None,
             Self::RunNow => Some(ScheduledLintRun {
-                deadline: Instant::now(),
-                origin:   LintRunOrigin::Normal,
+                deadline:     Instant::now(),
+                origin:       LintRunOrigin::Normal,
+                requested_at: Local::now().fixed_offset(),
             }),
+        }
+    }
+}
+
+/// A trigger stamped with the wall-clock time of the change it asks to lint.
+/// Any run — this instance's or another cargo-port instance's — that started
+/// at or after `requested_at` has already linted that change.
+pub(super) struct DispatchedTrigger {
+    pub(super) event:        LintTriggerEvent,
+    pub(super) requested_at: DateTime<FixedOffset>,
+}
+
+impl DispatchedTrigger {
+    /// Stamp a trigger when it is sent. A watcher event is sent after the
+    /// change it reports, so the send time never predates the change. The
+    /// stamp is taken before the worker dequeues the trigger: a worker busy
+    /// with a run leaves triggers queued behind it.
+    pub(super) fn now(event: LintTriggerEvent) -> Self {
+        Self {
+            event,
+            requested_at: Local::now().fixed_offset(),
+        }
+    }
+
+    /// Stamp a trigger with a known change time, such as a source mtime, or
+    /// with the send time when the change time is unknown.
+    pub(super) fn changed_at(event: LintTriggerEvent, changed_at: Option<SystemTime>) -> Self {
+        let Some(changed_at) = changed_at else {
+            return Self::now(event);
+        };
+        Self {
+            event,
+            requested_at: DateTime::<Local>::from(changed_at).fixed_offset(),
         }
     }
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ScheduledLintRun {
-    pub(super) deadline: Instant,
-    pub(super) origin:   LintRunOrigin,
+    pub(super) deadline:     Instant,
+    pub(super) origin:       LintRunOrigin,
+    /// Change time of the newest coalesced trigger. A run that started at or
+    /// after it saw every change this run was scheduled for.
+    pub(super) requested_at: DateTime<FixedOffset>,
 }
 
 impl ScheduledLintRun {
-    fn coalesce(self, deadline: Instant, origin: LintRunOrigin) -> Self {
+    fn coalesce(self, next: Self) -> Self {
         Self {
-            deadline: self.deadline.max(deadline),
-            origin:   self.origin.merged_with(origin),
+            deadline:     self.deadline.max(next.deadline),
+            origin:       self.origin.merged_with(next.origin),
+            requested_at: self.requested_at.max(next.requested_at),
         }
     }
 }
 
 pub(super) fn schedule_lint_run(
     scheduled: Option<ScheduledLintRun>,
-    trigger: &LintTriggerEvent,
+    trigger: &DispatchedTrigger,
 ) -> ScheduledLintRun {
-    let deadline = Instant::now() + trigger.debounce();
-    let origin = lint_run_origin_for_trigger(trigger);
-    scheduled.map_or(ScheduledLintRun { deadline, origin }, |current| {
-        current.coalesce(deadline, origin)
-    })
+    let next = ScheduledLintRun {
+        deadline:     Instant::now() + trigger.event.debounce(),
+        origin:       lint_run_origin_for_trigger(&trigger.event),
+        requested_at: trigger.requested_at,
+    };
+    scheduled.map_or(next, |current| current.coalesce(next))
 }
 
 const fn lint_run_origin_for_trigger(trigger: &LintTriggerEvent) -> LintRunOrigin {
@@ -586,11 +637,13 @@ fn resume_catch_up_workers(
             continue;
         }
         if let Some(worker) = workers.get(&project_root) {
-            let _ = worker.trigger_tx.send(LintTriggerEvent {
-                project_root,
-                trigger: LintTriggerKind::Startup,
-                event_kind: LintEventKind::CreateOrModify,
-            });
+            let _ = worker
+                .trigger_tx
+                .send(DispatchedTrigger::now(LintTriggerEvent {
+                    project_root,
+                    trigger: LintTriggerKind::Startup,
+                    event_kind: LintEventKind::CreateOrModify,
+                }));
         }
     }
 }
@@ -610,7 +663,7 @@ struct WorkerContext {
     pause_state:      Arc<PauseState>,
     catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
     stop:             Arc<AtomicBool>,
-    trigger_rx:       StdReceiver<LintTriggerEvent>,
+    trigger_rx:       StdReceiver<DispatchedTrigger>,
     start:            WorkerStart,
 }
 
@@ -642,13 +695,13 @@ impl WorkerContext {
             });
 
             if let Ok(trigger) = self.trigger_rx.try_recv() {
-                self.log_trigger(&trigger);
+                self.log_trigger(&trigger.event);
                 scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
             }
 
             match self.trigger_rx.recv_timeout(timeout) {
                 Ok(trigger) => {
-                    self.log_trigger(&trigger);
+                    self.log_trigger(&trigger.event);
                     scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
                 },
                 Err(RecvTimeoutError::Timeout) => {},
@@ -658,7 +711,7 @@ impl WorkerContext {
             if let Some(scheduled) = scheduled_run
                 && Instant::now() >= scheduled.deadline
             {
-                self.run_due(scheduled.origin);
+                self.run_due(scheduled);
                 scheduled_run = None;
             }
         }
@@ -674,26 +727,104 @@ impl WorkerContext {
         );
     }
 
-    fn run_due(&self, origin: LintRunOrigin) {
-        if self.pause_state.is_project_paused(&self.project_root) {
-            // Hold the run back while paused; remember the project so resume
-            // re-lints it under the same catch-up policy as the startup
-            // staleness sweep. Publish `Stale` so a trigger that arrives while
-            // paused shows the same cancelled marker as a run the pause killed
-            // mid-flight, rather than keeping its prior terminal dot.
-            remember_catch_up(&self.catch_up, &self.project_root);
+    /// Hold a run back while paused; remember the project so resume re-lints
+    /// it under the same catch-up policy as the startup staleness sweep.
+    /// Publish `Stale` so a trigger that arrives while paused shows the same
+    /// cancelled marker as a run the pause killed mid-flight, rather than
+    /// keeping its prior terminal dot.
+    fn hold_for_pause(&self, origin: LintRunOrigin) {
+        remember_catch_up(&self.catch_up, &self.project_root);
+        publish_status(
+            &self.status_cache,
+            &self.project_root,
+            LintStatus::Stale,
+            &self.background_tx,
+            origin,
+        );
+    }
+
+    /// Take the project's run lock, waiting out a run another cargo-port
+    /// instance holds it for. Returns `None` when this worker must not run:
+    /// it was stopped or paused while waiting, or the other instance's run
+    /// started after this request and so already linted the change — that
+    /// run's result is published in place of a second run.
+    fn claim_run(&self, scheduled: ScheduledLintRun) -> Option<RunLock> {
+        let mut waited = false;
+        loop {
+            match run_lock::try_acquire(&self.cache_root, &self.project_root) {
+                Ok(Some(lock)) => {
+                    if waited
+                        && let Some(status) = covering_status(
+                            &self.cache_root,
+                            &self.project_root,
+                            scheduled.requested_at,
+                        )
+                    {
+                        publish_status(
+                            &self.status_cache,
+                            &self.project_root,
+                            status,
+                            &self.background_tx,
+                            scheduled.origin,
+                        );
+                        return None;
+                    }
+                    return Some(lock);
+                },
+                Ok(None) => {
+                    if !waited {
+                        waited = true;
+                        self.publish_foreign_run(scheduled.origin);
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        path = %self.project_root.display(),
+                        error = %err,
+                        "lint_run_lock_unavailable"
+                    );
+                    return Some(RunLock::unlocked());
+                },
+            }
+            thread::sleep(STOP_POLL);
+            if self.stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            if self.pause_state.is_project_paused(&self.project_root) {
+                self.hold_for_pause(scheduled.origin);
+                return None;
+            }
+        }
+    }
+
+    /// Show another instance's in-flight run on this instance's spinner while
+    /// waiting for it. Nothing is published unless `latest.json` reads as
+    /// `Running`.
+    fn publish_foreign_run(&self, origin: LintRunOrigin) {
+        let status = status::read_status_under(&self.cache_root, &self.project_root);
+        if matches!(status, LintStatus::Running(..)) {
             publish_status(
                 &self.status_cache,
                 &self.project_root,
-                LintStatus::Stale,
+                status,
                 &self.background_tx,
                 origin,
             );
+        }
+    }
+
+    fn run_due(&self, scheduled: ScheduledLintRun) {
+        let origin = scheduled.origin;
+        if self.pause_state.is_project_paused(&self.project_root) {
+            self.hold_for_pause(origin);
             return;
         }
         if self.stop.load(Ordering::Relaxed) || !project_still_runnable(&self.project_root) {
             return;
         }
+        let Some(_run_lock) = self.claim_run(scheduled) else {
+            return;
+        };
         tracing::trace!(
             target: PERF_LOG_TARGET,
             path = %self.project_root.display(),
@@ -739,7 +870,7 @@ fn spawn_project_worker(
 ) -> ProjectWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let child: ChildSlot = Arc::new(Mutex::new(None));
-    let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
+    let (trigger_tx, trigger_rx) = mpsc::channel::<DispatchedTrigger>();
     let context = WorkerContext {
         project_root,
         project_label,
@@ -813,6 +944,23 @@ fn matches_prefixes(
     })
 }
 
+/// The terminal status of a run that started at or after `requested_at`, and
+/// so saw every change the request was scheduled for. A `Running` or missing
+/// `latest.json` once the lock frees means its holder died or was paused
+/// mid-run, which covers nothing.
+fn covering_status(
+    cache_root: &Path,
+    project_root: &Path,
+    requested_at: DateTime<FixedOffset>,
+) -> Option<LintStatus> {
+    let run = read_write::read_latest_file(&paths::latest_path_under(cache_root, project_root))?;
+    if matches!(run.status, LintRunStatus::Running) {
+        return None;
+    }
+    let started_at = status::parse_timestamp(&run.started_at)?;
+    (started_at >= requested_at).then(|| status::parse_run(&run))
+}
+
 pub(super) fn project_still_runnable(project_root: &Path) -> bool {
     project_root.is_dir() && project_root.join(CARGO_TOML).is_file()
 }
@@ -828,9 +976,11 @@ mod tests {
 
     use chrono::Local;
     use crossbeam_channel::RecvTimeoutError;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::channel;
+    use crate::channel::Receiver;
     use crate::config::CargoPortConfig;
     use crate::config::LintIndicator;
     use crate::lint::LintRun;
@@ -893,10 +1043,298 @@ mod tests {
             event_kind: CreateOrModify,
         };
 
+        let startup = DispatchedTrigger::now(startup);
+        let source = DispatchedTrigger::now(source);
         let scheduled = schedule_lint_run(None, &startup);
         assert_eq!(scheduled.origin, LintRunOrigin::CatchUp);
         let scheduled = schedule_lint_run(Some(scheduled), &source);
         assert_eq!(scheduled.origin, LintRunOrigin::Normal);
+        assert_eq!(
+            scheduled.requested_at, source.requested_at,
+            "a coalesced run is requested as of its newest trigger"
+        );
+    }
+
+    /// A project, a temp cache root, and a config that lints the project with
+    /// one `echo` command.
+    fn single_project_fixture() -> (TempDir, TempDir, CargoPortConfig) {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        cargo_port_config.lint.enabled = LintIndicator::Enabled;
+        cargo_port_config.lint.include = vec![project_dir.path().to_string_lossy().to_string()];
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        }];
+        (project_dir, cache_dir, cargo_port_config)
+    }
+
+    fn foreign_run(status: LintRunStatus, started_at: DateTime<FixedOffset>) -> LintRun {
+        LintRun {
+            run_id: "foreign-run".to_string(),
+            started_at: started_at.to_rfc3339(),
+            finished_at: (!matches!(status, LintRunStatus::Running))
+                .then(|| Local::now().to_rfc3339()),
+            duration_ms: None,
+            status,
+            commands: Vec::new(),
+            archive_bytes: 0,
+        }
+    }
+
+    fn wait_for_status(
+        background_rx: &Receiver<BackgroundMsg>,
+        project_root: &Path,
+        matches_status: impl Fn(&LintStatus) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match background_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status, .. })
+                    if path.as_path() == project_root && matches_status(&status) =>
+                {
+                    return true;
+                },
+                Ok(_) => {},
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+        false
+    }
+
+    fn spawn_registered(
+        cargo_port_config: &CargoPortConfig,
+        project_root: &Path,
+    ) -> (RuntimeHandle, Receiver<BackgroundMsg>) {
+        let (background_tx, background_rx) = channel::unbounded();
+        let runtime = spawn(cargo_port_config, background_tx)
+            .handle
+            .expect("runtime handle");
+        let request = request("~/rust/demo", project_root);
+        runtime.sync_projects(vec![request.clone()]);
+        runtime.register_project(request);
+        (runtime, background_rx)
+    }
+
+    fn source_trigger(runtime: &RuntimeHandle, project_root: &Path) {
+        runtime.lint_trigger(LintTriggerEvent {
+            project_root: AbsolutePath::from(project_root),
+            trigger:      RustSource,
+            event_kind:   CreateOrModify,
+        });
+    }
+
+    /// Simulate another cargo-port instance mid-run: it holds the run lock and
+    /// its `Running` marker is on disk. `trigger` then asks this instance for a
+    /// lint. Returns once this instance's worker is waiting on the foreign run.
+    fn trigger_behind_foreign_run(
+        cargo_port_config: &CargoPortConfig,
+        project_root: &Path,
+        foreign_started_at: DateTime<FixedOffset>,
+        trigger: impl FnOnce(&RuntimeHandle, &Path),
+    ) -> (RunLock, RuntimeHandle, Receiver<BackgroundMsg>) {
+        let cache_root = cache_paths::lint_runs_root_for(cargo_port_config);
+        let foreign_lock = run_lock::try_acquire(cache_root.as_path(), project_root)
+            .expect("lock io")
+            .expect("lock is free");
+        read_write::write_latest_under(
+            cache_root.as_path(),
+            project_root,
+            &foreign_run(LintRunStatus::Running, foreign_started_at),
+        )
+        .expect("write foreign running marker");
+
+        let (runtime, background_rx) = spawn_registered(cargo_port_config, project_root);
+        trigger(&runtime, project_root);
+        assert!(
+            wait_for_status(&background_rx, project_root, |status| matches!(
+                status,
+                LintStatus::Running(..)
+            )),
+            "a worker waiting on a foreign run should show it as running"
+        );
+        (foreign_lock, runtime, background_rx)
+    }
+
+    #[test]
+    fn waiting_worker_adopts_a_foreign_run_that_started_after_its_trigger() {
+        let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let (foreign_lock, _runtime, background_rx) = trigger_behind_foreign_run(
+            &cargo_port_config,
+            project_dir.path(),
+            Local::now().fixed_offset(),
+            source_trigger,
+        );
+
+        read_write::write_latest_under(
+            cache_root.as_path(),
+            project_dir.path(),
+            &foreign_run(LintRunStatus::Passed, Local::now().fixed_offset()),
+        )
+        .expect("write foreign terminal run");
+        drop(foreign_lock);
+
+        assert!(
+            wait_for_status(&background_rx, project_dir.path(), |status| matches!(
+                status,
+                LintStatus::Passed(_)
+            )),
+            "the waiting worker should publish the foreign result"
+        );
+        let history = history::read_history_under(cache_root.as_path(), project_dir.path());
+        assert!(
+            history.iter().all(|run| run.run_id == "foreign-run"),
+            "adopting a foreign run must not run the lint commands again: {history:?}"
+        );
+    }
+
+    #[test]
+    fn waiting_worker_runs_when_the_foreign_run_predates_its_trigger() {
+        let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let foreign_started_at = Local::now().fixed_offset() - chrono::Duration::seconds(5);
+        let (foreign_lock, _runtime, background_rx) = trigger_behind_foreign_run(
+            &cargo_port_config,
+            project_dir.path(),
+            foreign_started_at,
+            source_trigger,
+        );
+
+        read_write::write_latest_under(
+            cache_root.as_path(),
+            project_dir.path(),
+            &foreign_run(LintRunStatus::Passed, foreign_started_at),
+        )
+        .expect("write foreign terminal run");
+        drop(foreign_lock);
+
+        assert!(
+            wait_for_status(&background_rx, project_dir.path(), |status| matches!(
+                status,
+                LintStatus::Passed(_)
+            )),
+            "the waiting worker should finish its own run"
+        );
+        let history = history::read_history_under(cache_root.as_path(), project_dir.path());
+        assert_eq!(
+            history.len(),
+            1,
+            "a foreign run that started before the trigger does not cover it"
+        );
+        assert_ne!(history[0].run_id, "foreign-run");
+    }
+
+    #[test]
+    fn startup_lint_adopts_a_foreign_run_that_started_after_the_source_change() {
+        // Another instance began linting after the edit; this instance then
+        // restarts and its staleness check requests the same lint.
+        let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let source_changed_at = SystemTime::now() - Duration::from_secs(10);
+        let foreign_started_at = Local::now().fixed_offset() - chrono::Duration::seconds(5);
+        let (foreign_lock, _runtime, background_rx) = trigger_behind_foreign_run(
+            &cargo_port_config,
+            project_dir.path(),
+            foreign_started_at,
+            |runtime, project_root| {
+                runtime.request_startup_lint(
+                    AbsolutePath::from(project_root),
+                    Some(source_changed_at),
+                );
+            },
+        );
+
+        read_write::write_latest_under(
+            cache_root.as_path(),
+            project_dir.path(),
+            &foreign_run(LintRunStatus::Passed, foreign_started_at),
+        )
+        .expect("write foreign terminal run");
+        drop(foreign_lock);
+
+        assert!(
+            wait_for_status(&background_rx, project_dir.path(), |status| matches!(
+                status,
+                LintStatus::Passed(_)
+            )),
+            "the waiting worker should publish the foreign result"
+        );
+        let history = history::read_history_under(cache_root.as_path(), project_dir.path());
+        assert!(
+            history.iter().all(|run| run.run_id == "foreign-run"),
+            "a foreign run that started after the source change covers the startup lint: \
+             {history:?}"
+        );
+    }
+
+    #[test]
+    fn restart_relints_a_run_interrupted_by_exit() {
+        // The previous process exited mid-run: its `Running` marker is on disk
+        // and its run lock went away with the process.
+        let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        read_write::write_latest_under(
+            cache_root.as_path(),
+            project_dir.path(),
+            &foreign_run(
+                LintRunStatus::Running,
+                Local::now().fixed_offset() - chrono::Duration::seconds(5),
+            ),
+        )
+        .expect("write stranded running marker");
+
+        let (runtime, background_rx) = spawn_registered(&cargo_port_config, project_dir.path());
+        runtime.request_startup_lint(
+            AbsolutePath::from(project_dir.path()),
+            Some(SystemTime::now() - Duration::from_secs(10)),
+        );
+
+        assert!(
+            wait_for_status(&background_rx, project_dir.path(), |status| matches!(
+                status,
+                LintStatus::Passed(_)
+            )),
+            "the restarted instance should finish the interrupted lint"
+        );
+        let history = history::read_history_under(cache_root.as_path(), project_dir.path());
+        assert!(
+            history
+                .iter()
+                .any(|run| run.run_id != "foreign-run"
+                    && matches!(run.status, LintRunStatus::Passed)),
+            "the interrupted lint must run again, not be adopted: {history:?}"
+        );
+    }
+
+    #[test]
+    fn hydration_keeps_the_running_marker_of_a_held_run() {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let _foreign_lock = run_lock::try_acquire(cache_dir.path(), project_dir.path())
+            .expect("lock io")
+            .expect("lock is free");
+        read_write::write_latest_under(
+            cache_dir.path(),
+            project_dir.path(),
+            &run(LintRunStatus::Running),
+        )
+        .expect("write latest");
+
+        let _ = read_status_from_disk(cache_dir.path(), project_dir.path());
+
+        assert!(
+            paths::latest_path_under(cache_dir.path(), project_dir.path()).exists(),
+            "another instance's in-flight marker must survive hydration"
+        );
     }
 
     #[test]
@@ -1416,7 +1854,7 @@ mod tests {
         let stop_flag = Arc::clone(&stop);
         let exited = Arc::new(AtomicBool::new(false));
         let exited_flag = Arc::clone(&exited);
-        let (trigger_tx, trigger_rx) = mpsc::channel::<LintTriggerEvent>();
+        let (trigger_tx, trigger_rx) = mpsc::channel::<DispatchedTrigger>();
         let handle = thread::spawn(move || {
             drop(trigger_rx);
             while !stop_flag.load(Ordering::Relaxed) {
