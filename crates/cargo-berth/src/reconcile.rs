@@ -28,9 +28,14 @@ use crate::edge::RepositoryReservationSnapshot;
 use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
 use crate::edge::SuccessorIncorporationEvidence;
+use crate::gate;
 use crate::gate::permit;
+use crate::gate::permit::CompletedRewriteSubject;
+use crate::gate::permit::PendingBranchRewriteMarker;
 use crate::gate::permit::PendingBypassMarkerImport;
 use crate::gate::permit::RecoveredPendingBypassMarker;
+use crate::gate::rewrite_map;
+use crate::gate::rewrite_map::PhaseRewriteMapping;
 use crate::git;
 use crate::git::CandidateHeadReachability;
 use crate::git::CommitCandidateReachability;
@@ -64,9 +69,11 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
+use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
 use crate::ledger::ReplayedLedgerState;
+use crate::ledger::ReservationSnapshot;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -473,6 +480,20 @@ struct ScopedPatchEvaluationKey {
     target_trunk:     GitObjectId,
     scopes:           Vec<ScopedPatchEvaluationScope>,
     context:          ScopedPatchEvaluationContext,
+    /// The comparison destination and location source, distinct from trunk admission.
+    destination:      ScopedPatchComparisonDestination,
+}
+
+/// The immutable history and location evidence used by one scoped comparison.
+#[derive(Eq, Hash, PartialEq)]
+enum ScopedPatchComparisonDestination {
+    /// Ordinary integration evidence compares to the admission trunk itself.
+    Trunk,
+    /// Rewrite acceptance compares to this mapped tip with explicitly located commits.
+    Mapped {
+        tip:          GitObjectId,
+        destinations: Vec<GitObjectId>,
+    },
 }
 
 struct ProposedTrunkObservation {
@@ -770,9 +791,11 @@ pub(crate) enum GateReconciliationPurpose {
 
 /// Actual-trunk reconciliation plus proposed-trunk constraints prepared under one lock.
 pub(crate) struct GateReconciliation {
-    reconciliation: ReconciliationPlan,
-    constraints:    IntegrationConstraintProjection,
-    reservations:   RetainedReservationSet,
+    reconciliation:            ReconciliationPlan,
+    constraints:               IntegrationConstraintProjection,
+    reservations:              RetainedReservationSet,
+    /// Unaccepted rewrite destinations still subject to the reservation's ordering holds.
+    deferred_rewrite_subjects: Vec<DeferredRewriteIntegrationSubject>,
 }
 
 /// A gate decision committed together with any reconciliation and permit records.
@@ -802,6 +825,10 @@ struct ReconciliationAction {
     recovered_bypass_reporting:    RecoveredBypassReporting,
     recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
     pending_bypass_imports:        Vec<PendingBypassMarkerImport>,
+    /// Rewrite markers fully handled by the appended reconciliation.
+    completed_rewrite_markers:     Vec<PendingBranchRewriteMarker>,
+    /// Deferred markers whose definitive refusals must not consume future budgets.
+    updated_rewrite_markers:       Vec<PendingBranchRewriteMarker>,
     unrecorded_bypass_occurrences: Vec<BypassOccurrenceTime>,
     trunk_resolution_calls:        u64,
     merge_extent_git_cost:         MergeExtentGitCost,
@@ -1015,41 +1042,506 @@ fn reconcile_with_open_ledger(
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
-    let outcome = ledger
-        .transact_reconciliation(
-            journal_mutation_actor.worktree_id,
-            journal_mutation_actor.coordination_run_id,
-            |state| match prepare_reconciliation_transaction(
-                &state,
-                berth_config,
-                repository_observation_scope,
-                ledger_repository,
-                worktree_context,
-                recovered_bypass_reporting,
-            ) {
-                Ok(prepared) => ReconciliationValidation::Apply {
-                    operations:             prepared.operations,
-                    recoverable_operations: prepared.recoverable_operations,
-                    action:                 prepared.action,
+    retry_rewrite_reconciliation(
+        || {
+            let rewrite_preflight =
+                prepare_rewrite_reconciliation(worktree_context, ledger, berth_config)?;
+            let outcome = ledger
+                .transact_reconciliation(
+                    journal_mutation_actor.worktree_id,
+                    journal_mutation_actor.coordination_run_id,
+                    |state| match prepare_reconciliation_transaction(
+                        &state,
+                        berth_config,
+                        repository_observation_scope,
+                        ledger_repository,
+                        worktree_context,
+                        recovered_bypass_reporting,
+                        rewrite_preflight,
+                    ) {
+                        Ok(prepared) => ReconciliationValidation::Apply {
+                            operations:             prepared.operations,
+                            recoverable_operations: prepared.recoverable_operations,
+                            action:                 prepared.action,
+                        },
+                        Err(error) => ReconciliationValidation::Reject(error),
+                    },
+                    ReconciliationAction::commit,
+                )
+                .map_err(|error| match error {
+                    LedgerCommittedActionError::Transaction(error) => {
+                        ReconcileError::Transaction(error)
+                    },
+                    LedgerCommittedActionError::Action(error) => error,
+                })?;
+            match outcome {
+                LedgerCommittedActionOutcome::Appended {
+                    output: mut report,
+                    session_mapping_publication,
+                } => {
+                    report.session_mapping_publication = session_mapping_publication;
+                    Ok(report)
                 },
-                Err(error) => ReconciliationValidation::Reject(error),
-            },
-            ReconciliationAction::commit,
-        )
-        .map_err(|error| match error {
-            LedgerCommittedActionError::Transaction(error) => ReconcileError::Transaction(error),
-            LedgerCommittedActionError::Action(error) => error,
-        })?;
-    match outcome {
-        LedgerCommittedActionOutcome::Appended {
-            output: mut report,
-            session_mapping_publication,
-        } => {
-            report.session_mapping_publication = session_mapping_publication;
-            Ok(report)
+                LedgerCommittedActionOutcome::Rejected(error) => Err(error.into()),
+            }
         },
-        LedgerCommittedActionOutcome::Rejected(error) => Err(error.into()),
+        |error| matches!(error, ReconcileError::RewriteSubjectChanged(_)),
+    )
+}
+
+/// Retry a preflight invalidated by a concurrent transaction, at most three times.
+/// The caller classifies only rejected validation; committed actions must never be repeated.
+pub(crate) fn retry_rewrite_reconciliation<Output, Failure>(
+    mut attempt: impl FnMut() -> Result<Output, Failure>,
+    subject_changed: impl Fn(&Failure) -> bool,
+) -> Result<Output, Failure> {
+    let mut result = attempt();
+    for _ in 1..3 {
+        if !result.as_ref().is_err_and(&subject_changed) {
+            break;
+        }
+        result = attempt();
     }
+    result
+}
+
+/// The outstanding phase revision a rewrite candidate must still describe under the lock.
+struct RewriteSubjectValidation {
+    /// Reservation nominated by the rewrite map.
+    reservation_id: ReservationId,
+    /// The baseline, protected tip, and scopes used to nominate or accept the rewrite.
+    subject:        IntegrationProofSubjectRevision,
+}
+
+impl RewriteSubjectValidation {
+    /// Capture the phase revision used by a rewrite candidate.
+    const fn capture(reservation: &Reservation) -> Self {
+        Self {
+            reservation_id: reservation.id(),
+            subject:        reservation.integration_proof_subject_revision(),
+        }
+    }
+
+    /// A replayed lifecycle and revision must still describe the nominated outstanding phase.
+    fn accepts(&self, reservations: &RetainedReservationSet) -> bool {
+        reservations
+            .reservation(self.reservation_id)
+            .is_ok_and(|reservation| {
+                matches!(
+                    reservation.lifecycle(),
+                    ReservationLifecycle::Outstanding { .. }
+                ) && reservation.integration_proof_subject_revision() == self.subject
+            })
+    }
+}
+
+/// Rewrite destinations that must retain ordering holds until their content check completes.
+struct DeferredRewriteIntegrationSubject {
+    /// The outstanding phase expected after all accepted preflight resnapshots.
+    validation:     RewriteSubjectValidation,
+    /// Candidate commits identify entry only; they never certify protected contents.
+    rewritten_tips: Vec<GitObjectId>,
+}
+
+impl DeferredRewriteIntegrationSubject {
+    /// Follow a later rewrite even while the reservation retains its original anchors.
+    fn follow_rewrite(&mut self, marker: &PendingBranchRewriteMarker) {
+        let destinations = marker
+            .rewrite
+            .pairs
+            .iter()
+            .filter(|pair| self.rewritten_tips.contains(&pair.old))
+            .map(|pair| pair.new.clone())
+            .collect::<Vec<_>>();
+        if destinations.is_empty() {
+            return;
+        }
+        for tip in destinations
+            .into_iter()
+            .chain(marker.rewrite.new_tips.iter().cloned())
+        {
+            if !self.rewritten_tips.contains(&tip) {
+                self.rewritten_tips.push(tip);
+            }
+        }
+    }
+}
+
+/// Accepted rewrite proofs, deferred entry candidates, and their shared comparison budget.
+#[derive(Default)]
+pub(crate) struct RewriteReconciliationPreflight {
+    /// Sequential expected subjects; multiple maps may advance the same reservation.
+    validations:            Vec<RewriteSubjectValidation>,
+    /// Accepted replacements, in the same order as their expected subjects.
+    operations:             Vec<JournalOperation>,
+    /// Markers with no deferred candidates, retired only after append.
+    completed_markers:      Vec<PendingBranchRewriteMarker>,
+    /// Partial marker progress published by the committed action.
+    updated_markers:        Vec<PendingBranchRewriteMarker>,
+    /// Pending destinations conservatively included in the gate's entry decision.
+    deferred_subjects:      Vec<DeferredRewriteIntegrationSubject>,
+    /// Shared admission and comparison cache for this reconciliation pass.
+    budget:                 ReconciliationScopedPatchEvaluationBudget,
+    /// Extra trunk reads used to admit mapped acceptance before the locked observation.
+    trunk_resolution_calls: u64,
+}
+
+/// Why a rewrite proof cannot be projected onto the locked reservation replay.
+#[derive(Debug)]
+enum RewriteProjectionError {
+    /// A concurrent transaction changed the phase that was checked.
+    RewriteSubjectChanged(ReservationId),
+    /// The accepted replacement does not form a valid reservation state.
+    Reservation(ReservationReplayError),
+}
+
+impl RewriteReconciliationPreflight {
+    /// Retain nominated destinations without claiming that their protected contents match.
+    fn defer_subject(
+        &mut self,
+        reservation: &Reservation,
+        marker: &PendingBranchRewriteMarker,
+        destinations: impl Iterator<Item = GitObjectId>,
+    ) {
+        self.deferred_subjects
+            .push(DeferredRewriteIntegrationSubject {
+                validation:     RewriteSubjectValidation::capture(reservation),
+                rewritten_tips: marker
+                    .rewrite
+                    .new_tips
+                    .iter()
+                    .cloned()
+                    .chain(destinations)
+                    .collect(),
+            });
+    }
+
+    /// Check each preflight proof under the lock before projecting any repository facts.
+    fn project(
+        &self,
+        reservations: &RetainedReservationSet,
+    ) -> Result<RetainedReservationSet, RewriteProjectionError> {
+        let mut projected = reservations.clone();
+        for (validation, operation) in self.validations.iter().zip(&self.operations) {
+            if !validation.accepts(&projected) {
+                return Err(RewriteProjectionError::RewriteSubjectChanged(
+                    validation.reservation_id,
+                ));
+            }
+            projected = projected
+                .with_pending_resnapshots(std::slice::from_ref(operation))
+                .map_err(RewriteProjectionError::Reservation)?;
+        }
+        for subject in &self.deferred_subjects {
+            if !subject.validation.accepts(&projected) {
+                return Err(RewriteProjectionError::RewriteSubjectChanged(
+                    subject.validation.reservation_id,
+                ));
+            }
+        }
+        Ok(projected)
+    }
+}
+
+/// The ordered history and introduced commits belonging to one rewritten tip.
+struct RewrittenTipHistory {
+    /// Complete first-parent history from the root through the rewritten tip.
+    first_parent_commits: Vec<GitObjectId>,
+    /// Commits introduced by this branch's rewrite, fixed when the event was recorded.
+    created:              gate::RewriteCreatedCommits,
+}
+
+/// Read ready maps and check protected contents while no ledger mutation lock is held.
+pub(crate) fn prepare_rewrite_reconciliation(
+    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
+    berth_config: &BerthConfig,
+) -> Result<RewriteReconciliationPreflight, ReconcileError> {
+    let markers = permit::pending_branch_rewrite_markers(worktree_context.common_git_directory())
+        .map_err(LedgerError::Io)?
+        .into_iter()
+        .filter(|marker| {
+            !git::rewrite_in_progress(&marker.rewrite.worktree_administrative_directory)
+        })
+        .collect::<Vec<_>>();
+    let mut preflight = RewriteReconciliationPreflight::default();
+    if markers.is_empty() {
+        return Ok(preflight);
+    }
+    let mut reservations = RetainedReservationSet::replay(&ledger.read_validated_events()?)
+        .map_err(ReconcileError::Replay)?;
+    preflight.trunk_resolution_calls = 1;
+    let Ok(trunk) = git::branch_object_id(worktree_context.repository_root(), &berth_config.trunk)
+    else {
+        return Ok(preflight);
+    };
+    let mut earlier_map_deferred = false;
+    for mut marker in markers {
+        for subject in &mut preflight.deferred_subjects {
+            subject.follow_rewrite(&marker);
+        }
+        let mut tips = if marker.rewrite.new_tips.is_empty() {
+            marker
+                .rewrite
+                .pairs
+                .iter()
+                .map(|pair| pair.new.clone())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect()
+        } else {
+            marker.rewrite.new_tips.clone()
+        };
+        let mut distinct_tips = HashSet::new();
+        tips.retain(|tip| distinct_tips.insert(tip.clone()));
+        let histories = tips
+            .iter()
+            .map(|tip| {
+                Ok(RewrittenTipHistory {
+                    first_parent_commits: gate::rewritten_first_parent_history(
+                        worktree_context.repository_root(),
+                        tip,
+                    )?,
+                    created:              gate::RewriteCreatedCommits::from_commits(
+                        marker.rewrite.created_commits.iter().cloned(),
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, GitError>>();
+        // Unavailable first-parent histories defer affected subjects, not unrelated markers.
+        let histories = histories.unwrap_or_default();
+        let mut deferred = earlier_map_deferred;
+        deferred |= import_rewrite_candidates(
+            worktree_context.repository_root(),
+            &mut marker,
+            &histories,
+            &mut reservations,
+            &trunk,
+            &mut preflight,
+        )?;
+        if deferred {
+            earlier_map_deferred = true;
+            preflight.updated_markers.push(marker);
+        } else {
+            preflight.completed_markers.push(marker);
+        }
+    }
+    for subject in &mut preflight.deferred_subjects {
+        // A later map may accept another replacement for this same outstanding phase.
+        subject.validation = RewriteSubjectValidation::capture(
+            reservations
+                .reservation(subject.validation.reservation_id)
+                .map_err(ReconcileError::Replay)?,
+        );
+    }
+    Ok(preflight)
+}
+
+/// Whether a pending marker locates an outstanding phase or must retain its entry candidates.
+enum OutstandingRewriteCandidate {
+    /// The map does not nominate a replacement interval for this phase.
+    NotMapped,
+    /// Missing history leaves these destinations subject to conservative ordering holds.
+    HistoryUnavailable(Vec<GitObjectId>),
+    /// Located anchors still need a scoped content comparison before acceptance.
+    Mapped(rewrite_map::MappedPhaseInterval),
+}
+
+/// Locate the phase while keeping unavailable Git facts distinct from a refused mapping.
+fn outstanding_rewrite_candidate(
+    repository_root: &Path,
+    reservation: &Reservation,
+    protected_tip: &ProtectedReservationTip,
+    marker: &PendingBranchRewriteMarker,
+    histories: &[RewrittenTipHistory],
+) -> OutstandingRewriteCandidate {
+    let Ok(old_phase) = gate::rewrite_phase_commits(
+        repository_root,
+        reservation.phase_start_head().as_ref(),
+        protected_tip.as_ref(),
+    ) else {
+        return OutstandingRewriteCandidate::HistoryUnavailable(
+            marker
+                .rewrite
+                .pairs
+                .iter()
+                .map(|pair| pair.new.clone())
+                .collect(),
+        );
+    };
+    let destinations = marker
+        .rewrite
+        .pairs
+        .iter()
+        .filter(|pair| old_phase.contains(&pair.old))
+        .map(|pair| &pair.new)
+        .collect::<Vec<_>>();
+    if destinations.is_empty() {
+        return OutstandingRewriteCandidate::NotMapped;
+    }
+    if histories.is_empty() {
+        return OutstandingRewriteCandidate::HistoryUnavailable(
+            destinations.into_iter().cloned().collect(),
+        );
+    }
+    histories
+        .iter()
+        .filter(|history| {
+            destinations
+                .iter()
+                .all(|tip| history.first_parent_commits.contains(tip))
+        })
+        .find_map(|history| {
+            match rewrite_map::map_phase_interval(
+                &marker.rewrite.pairs,
+                &old_phase,
+                &history.first_parent_commits,
+                &history.created,
+            ) {
+                PhaseRewriteMapping::Mapped(interval) => Some(interval),
+                PhaseRewriteMapping::Refused => None,
+            }
+        })
+        .map_or(
+            OutstandingRewriteCandidate::NotMapped,
+            OutstandingRewriteCandidate::Mapped,
+        )
+}
+
+/// Compare this marker's outstanding phases and retain deferred work for a later pass.
+fn import_rewrite_candidates(
+    repository_root: &Path,
+    marker: &mut PendingBranchRewriteMarker,
+    histories: &[RewrittenTipHistory],
+    reservations: &mut RetainedReservationSet,
+    trunk: &GitObjectId,
+    preflight: &mut RewriteReconciliationPreflight,
+) -> Result<bool, ReconcileError> {
+    let mut deferred = false;
+    let candidates = reservations.iter().map(Reservation::id).collect::<Vec<_>>();
+    for reservation_id in candidates {
+        let reservation = reservations
+            .reservation(reservation_id)
+            .map_err(ReconcileError::Replay)?;
+        let ReservationLifecycle::Outstanding { protected_tip } = reservation.lifecycle() else {
+            continue;
+        };
+        if marker.rewrite.completed_subjects.iter().any(|completed| {
+            completed.reservation_id == reservation_id
+                && completed.subject == reservation.integration_proof_subject_revision()
+        }) {
+            continue;
+        }
+        let interval = match outstanding_rewrite_candidate(
+            repository_root,
+            reservation,
+            protected_tip,
+            marker,
+            histories,
+        ) {
+            OutstandingRewriteCandidate::NotMapped => continue,
+            OutstandingRewriteCandidate::HistoryUnavailable(destinations) => {
+                deferred = true;
+                preflight.defer_subject(reservation, marker, destinations.into_iter());
+                continue;
+            },
+            OutstandingRewriteCandidate::Mapped(interval) => interval,
+        };
+        if &interval.phase_start_head == reservation.phase_start_head().as_ref()
+            && &interval.protected_tip == protected_tip.as_ref()
+        {
+            continue;
+        }
+        let comparison = compare_mapped_phase(
+            repository_root,
+            reservation,
+            protected_tip,
+            trunk,
+            &interval,
+            &mut preflight.budget,
+        );
+        match comparison {
+            ScopedPatchComparisonObservation::Observed(ScopedPatchComparison::Equivalent) => {
+                let operation = JournalOperation::Resnapshot {
+                    reservation_id,
+                    snapshot: ReservationSnapshot::Outstanding {
+                        phase_start_head: Some(ProtectedPhaseStartHead::from(
+                            interval.phase_start_head,
+                        )),
+                        protected_tip:    ProtectedReservationTip::from(interval.protected_tip),
+                        trunk_oid:        trunk.clone(),
+                    },
+                };
+                preflight
+                    .validations
+                    .push(RewriteSubjectValidation::capture(reservation));
+                *reservations = reservations
+                    .with_pending_resnapshots(std::slice::from_ref(&operation))
+                    .map_err(ReconcileError::Replay)?;
+                preflight.operations.push(operation);
+            },
+            ScopedPatchComparisonObservation::Observed(ScopedPatchComparison::Different) => {
+                marker
+                    .rewrite
+                    .completed_subjects
+                    .push(CompletedRewriteSubject {
+                        reservation_id,
+                        subject: reservation.integration_proof_subject_revision(),
+                    });
+            },
+            ScopedPatchComparisonObservation::Observed(ScopedPatchComparison::Unavailable)
+            | ScopedPatchComparisonObservation::Deferred => {
+                deferred = true;
+                preflight.defer_subject(reservation, marker, interval.destinations.into_iter());
+            },
+        }
+    }
+    Ok(deferred)
+}
+
+/// Charge rewrite acceptance to actual trunk while comparing the mapped destination.
+fn compare_mapped_phase(
+    repository_root: &Path,
+    reservation: &Reservation,
+    protected_tip: &ProtectedReservationTip,
+    trunk: &GitObjectId,
+    interval: &rewrite_map::MappedPhaseInterval,
+    budget: &mut ReconciliationScopedPatchEvaluationBudget,
+) -> ScopedPatchComparisonObservation {
+    let key = ScopedPatchEvaluationKey {
+        phase_start_head: reservation.phase_start_head().as_ref().clone(),
+        protected_tip:    protected_tip.as_ref().clone(),
+        target_trunk:     trunk.clone(),
+        scopes:           reservation
+            .scopes()
+            .as_slice()
+            .iter()
+            .map(|scope| ScopedPatchEvaluationScope {
+                path:       scope.path.clone(),
+                scope_kind: scope.kind.into(),
+            })
+            .collect(),
+        context:          ScopedPatchEvaluationContext::Outstanding {
+            previous_trunk: trunk.clone(),
+        },
+        destination:      ScopedPatchComparisonDestination::Mapped {
+            tip:          interval.protected_tip.clone(),
+            destinations: interval.destinations.clone(),
+        },
+    };
+    budget.evaluate(key, || {
+        git::scoped_patch_equivalence_with_target_history(
+            repository_root,
+            reservation.phase_start_head().as_ref(),
+            reservation.scopes(),
+            protected_tip.as_ref(),
+            &interval.protected_tip,
+            ScopedPatchTargetHistory::MappedDestinations {
+                commits: &interval.destinations,
+            },
+        )
+        .unwrap_or(ScopedPatchComparison::Unavailable)
+    })
 }
 
 struct PreparedReconciliationTransaction {
@@ -1065,12 +1557,14 @@ fn prepare_reconciliation_transaction(
     ledger_repository: RepoInstanceId,
     worktree_context: &WorktreeContext,
     recovered_bypass_reporting: RecoveredBypassReporting,
+    rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<PreparedReconciliationTransaction, ReconciliationPlanningError> {
     let reservations = RetainedReservationSet::replay(state.events())
         .map_err(ReconciliationPlanningError::Reservation)?;
+    let reservations = rewrite_preflight.project(&reservations)?;
     let ordering_graph =
         OrderingGraph::replay(state.events()).map_err(ReconciliationPlanningError::Edge)?;
-    let mut scoped_patch_evaluation_budget = ReconciliationScopedPatchEvaluationBudget::default();
+    let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
@@ -1094,6 +1588,12 @@ fn prepare_reconciliation_transaction(
             ReconciliationPlanningError::WorktreeRegistry(error)
         },
     })?;
+    let mut operations = rewrite_preflight.operations;
+    operations.append(&mut reconciliation_plan.operations);
+    reconciliation_plan.operations = operations;
+    reconciliation_plan.action.completed_rewrite_markers = rewrite_preflight.completed_markers;
+    reconciliation_plan.action.updated_rewrite_markers = rewrite_preflight.updated_markers;
+    reconciliation_plan.action.trunk_resolution_calls += rewrite_preflight.trunk_resolution_calls;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
         worktree_context.common_git_directory(),
         state.events(),
@@ -1359,6 +1859,8 @@ fn build_plan(
             recovered_bypass_reporting: RecoveredBypassReporting::Defer,
             recovered_bypass_markers: Vec::new(),
             pending_bypass_imports: Vec::new(),
+            completed_rewrite_markers: Vec::new(),
+            updated_rewrite_markers: Vec::new(),
             unrecorded_bypass_occurrences: Vec::new(),
             trunk_resolution_calls,
             merge_extent_git_cost: MergeExtentGitCost::default(),
@@ -1564,18 +2066,20 @@ fn scoped_patch_evaluation_order<'reservation>(
 /// comparisons reuse identical proof inputs and evaluate at most one distinct proof subject for
 /// each observed trunk target.
 pub(crate) fn prepare_gate_reconciliation(
-    events: &[JournalEvent],
-    generation: ProjectionGeneration,
+    state: &ReplayedLedgerState<'_>,
     worktree_context: &WorktreeContext,
     ledger_repository: RepoInstanceId,
     berth_config: &BerthConfig,
     proposed_trunk: GitObjectId,
     purpose: GateReconciliationPurpose,
+    rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<GateReconciliation, GateReconciliationError> {
-    let reservations =
-        RetainedReservationSet::replay(events).map_err(GateReconciliationError::Reservation)?;
-    let ordering_graph = OrderingGraph::replay(events).map_err(GateReconciliationError::Edge)?;
-    let mut scoped_patch_evaluation_budget = ReconciliationScopedPatchEvaluationBudget::default();
+    let reservations = RetainedReservationSet::replay(state.events())
+        .map_err(GateReconciliationError::Reservation)?;
+    let reservations = rewrite_preflight.project(&reservations)?;
+    let ordering_graph =
+        OrderingGraph::replay(state.events()).map_err(GateReconciliationError::Edge)?;
+    let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
     let mut reconciliation_evidence_context = ReconciliationEvidenceContext {
@@ -1597,6 +2101,12 @@ pub(crate) fn prepare_gate_reconciliation(
             GateReconciliationError::WorktreeRegistry(error)
         },
     })?;
+    let mut operations = rewrite_preflight.operations;
+    operations.append(&mut reconciliation.operations);
+    reconciliation.operations = operations;
+    reconciliation.action.completed_rewrite_markers = rewrite_preflight.completed_markers;
+    reconciliation.action.updated_rewrite_markers = rewrite_preflight.updated_markers;
+    reconciliation.action.trunk_resolution_calls += rewrite_preflight.trunk_resolution_calls;
     let reservations = match purpose {
         GateReconciliationPurpose::PreparedDecision => reservations
             .with_pending_settlements(&reconciliation.operations)
@@ -1618,12 +2128,17 @@ pub(crate) fn prepare_gate_reconciliation(
         }
     }
     let constraints = ordering_graph
-        .integration_constraints(&reservations, &proposed_observation.snapshot, generation)
+        .integration_constraints(
+            &reservations,
+            &proposed_observation.snapshot,
+            state.generation(),
+        )
         .map_err(GateReconciliationError::MissingReadinessFact)?;
     Ok(GateReconciliation {
         reconciliation,
         constraints,
         reservations,
+        deferred_rewrite_subjects: rewrite_preflight.deferred_subjects,
     })
 }
 
@@ -1707,31 +2222,67 @@ impl GateReconciliation {
     /// Borrow reservations when a stateful caller validates its marker-derived actor.
     pub(crate) const fn reservations(&self) -> &RetainedReservationSet { &self.reservations }
 
+    /// Keep an unaccepted rewrite subject entering when any nominated destination enters trunk.
+    pub(crate) fn deferred_rewrite_enters(
+        &self,
+        reservation_id: ReservationId,
+        newly_reachable: &[GitObjectId],
+    ) -> bool {
+        self.deferred_rewrite_subjects.iter().any(|subject| {
+            subject.validation.reservation_id == reservation_id
+                && subject
+                    .rewritten_tips
+                    .iter()
+                    .any(|tip| newly_reachable.contains(tip))
+        })
+    }
+
     /// Retain durable content checks while leaving actual-trunk lifecycle updates to commands.
-    pub(crate) fn into_committed_hook_operations(
+    pub(crate) fn into_committed_hook_action(
         self,
         additional_operations: Vec<JournalOperation>,
-    ) -> Vec<JournalOperation> {
+    ) -> (Vec<JournalOperation>, CommittedHookReconciliationAction) {
         let mut operations = self
             .reconciliation
             .operations
             .into_iter()
             .filter(|operation| {
-                // These records contain immutable subject/target facts or comparison ordering
-                // only. Applying them without `EvidenceRevalidated` cannot affirm integration or
-                // change lifecycle state, while retaining them prevents the committed hook from
-                // repeating the same bounded comparison.
+                // Accepted resnapshots move outstanding anchors without releasing them.
+                // The remaining records retain immutable content checks and comparison ordering.
+                // Evidence and lifecycle changes remain the responsibility of commands.
                 matches!(
                     operation,
-                    JournalOperation::ScopedPatchEquivalenceChecked { .. }
+                    JournalOperation::Resnapshot { .. }
+                        | JournalOperation::ScopedPatchEquivalenceChecked { .. }
                         | JournalOperation::ScopedPatchComparisonAttempted { .. }
                         | JournalOperation::SuccessorScopedPatchEquivalenceChecked { .. }
                         | JournalOperation::SuccessorScopedPatchComparisonAttempted { .. }
                 )
             })
             .collect::<Vec<_>>();
+        let retention_repairs = operations
+            .iter()
+            .filter_map(|operation| match operation {
+                JournalOperation::Resnapshot {
+                    reservation_id,
+                    snapshot: ReservationSnapshot::Outstanding { protected_tip, .. },
+                } => Some((*reservation_id, protected_tip.as_ref().clone())),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>()
+            .into_iter()
+            .map(|(id, tip)| ReservationRetentionRefRepair::new(id, tip))
+            .collect();
         operations.extend(additional_operations);
-        operations
+        (
+            operations,
+            CommittedHookReconciliationAction {
+                repository_root: self.reconciliation.action.repository_root,
+                retention_repairs,
+                completed_markers: self.reconciliation.action.completed_rewrite_markers,
+                updated_markers: self.reconciliation.action.updated_rewrite_markers,
+            },
+        )
     }
 
     /// Join a gate decision and its journal records to the prepared reconciliation.
@@ -1748,6 +2299,38 @@ impl GateReconciliation {
                 decision,
             },
         )
+    }
+}
+
+/// Post-append repairs for an audit that preserves reservation lifecycles.
+pub(crate) struct CommittedHookReconciliationAction {
+    /// Repository containing the accepted rewritten commits.
+    repository_root:   PathBuf,
+    /// Final accepted tip for each rewritten outstanding reservation.
+    retention_repairs: Vec<ReservationRetentionRefRepair>,
+    /// Fully imported maps retired after their resnapshots commit.
+    completed_markers: Vec<PendingBranchRewriteMarker>,
+    /// Partial import progress retained for the next pass.
+    updated_markers:   Vec<PendingBranchRewriteMarker>,
+}
+
+impl CommittedHookReconciliationAction {
+    /// Apply only side effects supported by the filtered committed-hook records.
+    pub(crate) fn commit(
+        self,
+        _state: &ReplayedLedgerState<'_>,
+        _recoverable_failures: &RecoverableReconciliationAppendFailures,
+    ) -> Result<(), ReconcileError> {
+        if !self.retention_repairs.is_empty() {
+            git::update_reservation_retention_refs(
+                &self.repository_root,
+                &self.retention_repairs,
+                &[],
+            )?;
+        }
+        permit::update_branch_rewrite_markers(&self.updated_markers).map_err(LedgerError::Io)?;
+        permit::delete_branch_rewrite_markers(&self.completed_markers).map_err(LedgerError::Io)?;
+        Ok(())
     }
 }
 
@@ -1774,15 +2357,30 @@ pub(crate) enum GateReconciliationError {
     WorktreeRegistry(WorktreeRegistryError),
     /// A derived readiness value lacked a required repository fact.
     MissingReadinessFact(MissingReadinessFact),
+    /// A concurrent transaction changed an accepted rewrite subject.
+    RewriteSubjectChanged(ReservationId),
 }
 
 impl Display for GateReconciliationError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RewriteSubjectChanged(id) => write!(
+                formatter,
+                "reservation {id} changed during rewrite acceptance; retry reconciliation"
+            ),
             Self::Reservation(error) => error.fmt(formatter),
             Self::Edge(error) => error.fmt(formatter),
             Self::WorktreeRegistry(error) => error.fmt(formatter),
             Self::MissingReadinessFact(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl From<RewriteProjectionError> for GateReconciliationError {
+    fn from(error: RewriteProjectionError) -> Self {
+        match error {
+            RewriteProjectionError::Reservation(error) => Self::Reservation(error),
+            RewriteProjectionError::RewriteSubjectChanged(id) => Self::RewriteSubjectChanged(id),
         }
     }
 }
@@ -1990,6 +2588,7 @@ fn integration_status_with_retained_verdict(
                     })
                     .collect(),
                 context:          scoped_patch_evaluation_context.clone(),
+                destination:      ScopedPatchComparisonDestination::Trunk,
             };
             let observe_scoped_patch_comparison = || {
                 scoped_patch_evaluation_budget.evaluate(scoped_patch_evaluation_key, || {
@@ -2840,6 +3439,10 @@ impl ReconciliationAction {
             &self.retention_repairs,
             &self.retention_deletions,
         )?;
+        permit::update_branch_rewrite_markers(&self.updated_rewrite_markers)
+            .map_err(LedgerError::Io)?;
+        permit::delete_branch_rewrite_markers(&self.completed_rewrite_markers)
+            .map_err(LedgerError::Io)?;
         for marker_context in self.marker_contexts {
             marker_context.sweep_coordination_run_marker(|worktree_id, coordination_run_id| {
                 self.active_holders.iter().any(|active_holder| {
@@ -2922,6 +3525,17 @@ enum ReconciliationPlanningError {
     Edge(EdgeReplayError),
     WorktreeRegistry(WorktreeRegistryError),
     PendingBypass(std::io::Error),
+    /// A concurrent mutation invalidated a preflight rewrite proof.
+    RewriteSubjectChanged(ReservationId),
+}
+
+impl From<RewriteProjectionError> for ReconciliationPlanningError {
+    fn from(error: RewriteProjectionError) -> Self {
+        match error {
+            RewriteProjectionError::Reservation(error) => Self::Reservation(error),
+            RewriteProjectionError::RewriteSubjectChanged(id) => Self::RewriteSubjectChanged(id),
+        }
+    }
 }
 
 enum ReconciliationBuildError {
@@ -2950,6 +3564,8 @@ pub(crate) enum ReconcileError {
     WorktreeRegistry(WorktreeRegistryError),
     ConcurrentObservationWorkerPanicked,
     UnexpectedDriftPreflightMutation,
+    /// A concurrent mutation requires rewrite acceptance to be evaluated again.
+    RewriteSubjectChanged(ReservationId),
 }
 
 impl ReconcileError {
@@ -2987,6 +3603,12 @@ impl ReconcileError {
                 command_verb,
                 "concurrent drift observation worker panicked",
             ),
+            Self::RewriteSubjectChanged(reservation_id) => OutputEnvelope::contention(
+                command_verb,
+                &format!(
+                    "reservation {reservation_id} changed during rewrite acceptance; retry reconciliation"
+                ),
+            ),
             Self::UnexpectedDriftPreflightMutation => OutputEnvelope::ledger_unreadable(
                 command_verb,
                 "drift marker preflight unexpectedly appended a journal event",
@@ -3009,6 +3631,10 @@ impl Display for ReconcileError {
             Self::ConcurrentObservationWorkerPanicked => {
                 formatter.write_str("concurrent drift observation worker panicked")
             },
+            Self::RewriteSubjectChanged(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} changed during rewrite acceptance; retry reconciliation"
+            ),
             Self::UnexpectedDriftPreflightMutation => {
                 formatter.write_str("drift marker preflight unexpectedly mutated the journal")
             },
@@ -3040,6 +3666,9 @@ impl From<ReconciliationPlanningError> for ReconcileError {
             ReconciliationPlanningError::Reservation(error) => Self::Replay(error),
             ReconciliationPlanningError::Edge(error) => Self::EdgeReplay(error),
             ReconciliationPlanningError::WorktreeRegistry(error) => Self::WorktreeRegistry(error),
+            ReconciliationPlanningError::RewriteSubjectChanged(reservation_id) => {
+                Self::RewriteSubjectChanged(reservation_id)
+            },
             ReconciliationPlanningError::PendingBypass(error) => {
                 Self::Ledger(LedgerError::Io(error))
             },
@@ -3166,6 +3795,226 @@ mod tests {
             } if retained_status == status)
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_subject_races_retry_but_other_failures_do_not()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let id = RESERVATION_ID.parse::<ReservationId>()?;
+        let changed = |error: &super::ReconcileError| {
+            matches!(error, super::ReconcileError::RewriteSubjectChanged(_))
+        };
+        let mut attempts = 0;
+        super::retry_rewrite_reconciliation(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(super::ReconcileError::RewriteSubjectChanged(id))
+                } else {
+                    Ok(())
+                }
+            },
+            changed,
+        )?;
+        assert_eq!(attempts, 3);
+        attempts = 0;
+        let result = super::retry_rewrite_reconciliation::<(), _>(
+            || {
+                attempts += 1;
+                Err(super::ReconcileError::UnexpectedDriftPreflightMutation)
+            },
+            changed,
+        );
+        assert_eq!(attempts, 1);
+        assert!(matches!(
+            result,
+            Err(super::ReconcileError::UnexpectedDriftPreflightMutation)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn persistent_rewrite_subject_races_report_contention() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let id = RESERVATION_ID.parse::<ReservationId>()?;
+        let mut attempts = 0;
+        let result = super::retry_rewrite_reconciliation::<(), _>(
+            || {
+                attempts += 1;
+                Err(super::ReconcileError::RewriteSubjectChanged(id))
+            },
+            |error| matches!(error, super::ReconcileError::RewriteSubjectChanged(_)),
+        );
+        assert_eq!(attempts, 3);
+        let Err(error) = result else {
+            return Err("persistent subject changes must remain retryable errors".into());
+        };
+        let output = serde_json::to_value(error.into_output(crate::output::CommandVerb::Board))?;
+        assert_eq!(output["status"], "contention");
+        assert!(
+            output["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("retry"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_rewrite_entry_follows_later_markers() -> Result<(), Box<dyn std::error::Error>> {
+        let outstanding = RetainedReservationSet::replay(&checkpoint_events()?)?;
+        let id = RESERVATION_ID.parse::<ReservationId>()?;
+        let first = "3333333333333333333333333333333333333333";
+        let second = "4444444444444444444444444444444444444444";
+        let third = "5555555555555555555555555555555555555555";
+        let branch_tip = "6666666666666666666666666666666666666666";
+        let mut subject = super::DeferredRewriteIntegrationSubject {
+            validation:     super::RewriteSubjectValidation::capture(outstanding.reservation(id)?),
+            rewritten_tips: vec![first.parse()?],
+        };
+        for (old, new, new_tips) in [
+            (TRUNK, TIP, Vec::new()),
+            (first, second, Vec::new()),
+            (second, third, vec![branch_tip]),
+        ] {
+            let marker = crate::gate::permit::PendingBranchRewriteMarker {
+                path:    std::path::PathBuf::from("pending-rewrite.json"),
+                rewrite: serde_json::from_value(json!({
+                    "kind": "branch_rewrite",
+                    "pairs": [{"old": old, "new": new}],
+                    "new_tips": new_tips,
+                    "created_commits": [new],
+                    "worktree_administrative_directory": ".git",
+                }))?,
+            };
+            subject.follow_rewrite(&marker);
+        }
+        assert_eq!(
+            subject.rewritten_tips,
+            vec![
+                first.parse()?,
+                second.parse()?,
+                third.parse()?,
+                branch_tip.parse()?,
+            ]
+        );
+        assert!(subject.validation.accepts(&outstanding));
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_rewrite_entry_ignores_an_independent_branch_marker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let outstanding = RetainedReservationSet::replay(&checkpoint_events()?)?;
+        let id = RESERVATION_ID.parse::<ReservationId>()?;
+        let deferred_tip = "3333333333333333333333333333333333333333".parse()?;
+        let independent_old = "4444444444444444444444444444444444444444";
+        let independent_new = "5555555555555555555555555555555555555555";
+        let independent_tip = "6666666666666666666666666666666666666666";
+        let original_tips = vec![deferred_tip];
+        let mut subject = super::DeferredRewriteIntegrationSubject {
+            validation:     super::RewriteSubjectValidation::capture(outstanding.reservation(id)?),
+            rewritten_tips: original_tips.clone(),
+        };
+        let marker = crate::gate::permit::PendingBranchRewriteMarker {
+            path:    std::path::PathBuf::from("independent-branch-rewrite.json"),
+            rewrite: serde_json::from_value(json!({
+                "kind": "branch_rewrite",
+                "pairs": [{"old": independent_old, "new": independent_new}],
+                "new_tips": [independent_tip],
+                "created_commits": [independent_new, independent_tip],
+                "worktree_administrative_directory": ".git",
+            }))?,
+        };
+        subject.follow_rewrite(&marker);
+        assert_eq!(subject.rewritten_tips, original_tips);
+        assert!(subject.validation.accepts(&outstanding));
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_rewrite_subject_validation() -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, checkpoint] = checkpoint_events()?;
+        let id = RESERVATION_ID.parse::<ReservationId>()?;
+        let outstanding = RetainedReservationSet::replay(&[claim.clone(), checkpoint.clone()])?;
+        let validation = super::RewriteSubjectValidation::capture(outstanding.reservation(id)?);
+        let preflight = super::RewriteReconciliationPreflight {
+            deferred_subjects: vec![super::DeferredRewriteIntegrationSubject {
+                validation,
+                rewritten_tips: vec![TRUNK.parse()?],
+            }],
+            ..super::RewriteReconciliationPreflight::default()
+        };
+        assert!(preflight.project(&outstanding).is_ok());
+        for operation in [
+            json!({
+                "op": "resnapshot", "reservation_id": RESERVATION_ID,
+                "snapshot": {"stage": "outstanding", "protected_tip": TIP, "trunk_oid": TRUNK,
+                    "phase_start_head": "3333333333333333333333333333333333333333"}
+            }),
+            json!({
+                "op": "release", "reservation_id": RESERVATION_ID,
+                "disposition": {"kind": "abandoned", "evidence": "concurrent phase change"}
+            }),
+        ] {
+            let changed = RetainedReservationSet::replay(&[
+                claim.clone(),
+                checkpoint.clone(),
+                journal_event(3, &operation)?,
+            ])?;
+            assert!(matches!(
+                preflight.project(&changed),
+                Err(super::RewriteProjectionError::RewriteSubjectChanged(changed)) if changed == id
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn resnapshot_validation() -> Result<(), Box<dyn std::error::Error>> {
+        let [claim, checkpoint] = checkpoint_events()?;
+        let id = RESERVATION_ID.parse::<ReservationId>()?;
+        let outstanding = RetainedReservationSet::replay(&[claim.clone(), checkpoint.clone()])?;
+        let validation = super::RewriteSubjectValidation::capture(outstanding.reservation(id)?);
+        assert!(validation.accepts(&outstanding));
+
+        let resnapshot = journal_event(
+            3,
+            &json!({
+                "op": "resnapshot", "reservation_id": RESERVATION_ID,
+                "snapshot": {"stage": "outstanding", "protected_tip": TIP, "trunk_oid": TRUNK,
+                    "phase_start_head": "3333333333333333333333333333333333333333"}
+            }),
+        )?;
+        let advanced = RetainedReservationSet::replay(&[
+            claim.clone(),
+            checkpoint.clone(),
+            resnapshot.clone(),
+        ])?;
+        assert!(!validation.accepts(&advanced));
+        let preflight = super::RewriteReconciliationPreflight {
+            validations: vec![validation],
+            operations: vec![resnapshot.operation],
+            ..super::RewriteReconciliationPreflight::default()
+        };
+        assert!(preflight.project(&outstanding).is_ok());
+        assert!(
+            matches!(preflight.project(&advanced), Err(super::RewriteProjectionError::RewriteSubjectChanged(changed)) if changed == id)
+        );
+
+        let released = RetainedReservationSet::replay(&[
+            claim,
+            checkpoint,
+            journal_event(
+                3,
+                &json!({"op": "release", "reservation_id": RESERVATION_ID,
+                "disposition": {"kind": "abandoned", "evidence": "discarded during concurrent decision"}}),
+            )?,
+        ])?;
+        assert!(!preflight.validations[0].accepts(&released));
+        assert!(
+            matches!(preflight.project(&released), Err(super::RewriteProjectionError::RewriteSubjectChanged(changed)) if changed == id)
+        );
         Ok(())
     }
 

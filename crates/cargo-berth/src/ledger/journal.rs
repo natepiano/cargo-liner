@@ -1365,9 +1365,12 @@ pub(crate) enum ReservationSnapshot {
     /// Fresh outstanding-work integration evidence.
     Outstanding {
         /// The reservation's current protected commit.
-        protected_tip: ProtectedReservationTip,
+        protected_tip:    ProtectedReservationTip,
         /// The current trunk comparison point.
-        trunk_oid:     GitObjectId,
+        trunk_oid:        GitObjectId,
+        /// A replacement phase baseline; legacy records preserve the existing baseline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase_start_head: Option<ProtectedPhaseStartHead>,
     },
 }
 

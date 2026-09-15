@@ -8,6 +8,9 @@
 #[path = "support/timing.rs"]
 mod timing;
 
+#[path = "support/split_rebase.rs"]
+mod split_rebase;
+
 use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
@@ -131,6 +134,193 @@ if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_target
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
+
+#[test]
+fn uninterrupted_apply_rebase_reanchors_active_reservation_above_unrelated_trunk_work() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let phase_start = git_stdout(root, &["rev-parse", "HEAD"]);
+    let worktrees = tempdir().expect("linked checkout parent should exist");
+    let holder = add_worktree(root, worktrees.path(), "holder");
+    assert!(root.join(HOOK_PATH).is_file());
+    let claimed = claim(
+        &holder,
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "docs/apply-rebase-plan.md",
+        "active-apply-rebase",
+    );
+    assert!(claimed.status.success(), "{}", json_output(&claimed));
+    let id = reservation_id(&claimed);
+    let original_tip = commit_work(
+        &holder,
+        "src/lib.rs",
+        "pub fn holder_work() {}\n",
+        "active holder work",
+    );
+    let trunk = commit_work(root, "unrelated.txt", "upstream\n", "unrelated trunk work");
+    assert_ne!(trunk, phase_start);
+
+    git(&holder, &["rebase", "--apply", "main"]);
+    let rewritten_tip = git_stdout(&holder, &["rev-parse", "HEAD"]);
+    assert_ne!(rewritten_tip, original_tip);
+    assert_ne!(rewritten_tip, trunk);
+
+    // Read before any berth command can reconcile: the managed hook must already
+    // anchor this still-active phase after the unrelated upstream commit.
+    let events = journal_text(root)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("journal should decode"))
+        .collect::<Vec<_>>();
+    let reanchor = events
+        .iter()
+        .rev()
+        .find(|event| event["op"] == "resnapshot" && event["reservation_id"] == id)
+        .expect("uninterrupted apply rebase should reanchor the active reservation in its hook");
+    assert_eq!(reanchor["snapshot"]["stage"], "active", "{reanchor}");
+    assert_eq!(reanchor["snapshot"]["claim_snapshot"], trunk, "{reanchor}");
+    assert!(!events.iter().any(|event| {
+        event["reservation_id"] == id
+            && matches!(event["op"].as_str(), Some("checkpoint" | "release"))
+    }));
+
+    let checkpointed = run_berth(&holder, &["release", &id, "--json"]);
+    assert!(
+        checkpointed.status.success(),
+        "{}",
+        json_output(&checkpointed)
+    );
+    assert_eq!(json_output(&checkpointed)["status"], "outstanding");
+    let checkpoint = journal_text(root)
+        .lines()
+        .rev()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("journal should decode"))
+        .find(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+        .expect("rebased active work should have an outstanding checkpoint");
+    assert_eq!(checkpoint["protected_tip"], rewritten_tip, "{checkpoint}");
+    let protected_range = git_stdout(
+        root,
+        &[
+            "rev-list",
+            "--reverse",
+            &format!("{trunk}..{rewritten_tip}"),
+        ],
+    );
+    assert_eq!(protected_range, rewritten_tip);
+    assert_eq!(
+        git_stdout(
+            root,
+            &["rev-parse", &format!("refs/cargo-berth/reservations/{id}")]
+        ),
+        rewritten_tip
+    );
+}
+
+#[test]
+fn active_lower_reservation_keeps_both_split_commits_after_update_refs() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let base_contents = "base\na\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nbase\n";
+    let first_contents = base_contents.replacen("base", "one", 1);
+    let full_contents = first_contents.replace("base", "two");
+    let trunk = commit_work(root, "phase.txt", base_contents, "phase base");
+    let worktrees = tempdir().expect("linked checkout parent should exist");
+    let holder = add_worktree(root, worktrees.path(), "lower");
+    let claimed = claim(
+        &holder,
+        "file:phase.txt",
+        FIRST_RUN,
+        "docs/split-plan.md",
+        "lower",
+    );
+    assert!(claimed.status.success(), "{}", json_output(&claimed));
+    let id = reservation_id(&claimed);
+    let old_lower = commit_work(&holder, "phase.txt", &full_contents, "both lower hunks");
+    git(&holder, &["switch", "--quiet", "-c", "upper"]);
+    let old_upper = commit_work(&holder, "upper.txt", "upper\n", "stacked upper work");
+
+    let editor = worktrees.path().join("split-editor");
+    split_rebase::stop_for_split(&holder, &editor, &trunk);
+    let first_split = commit_work(&holder, "phase.txt", &first_contents, "first split hunk");
+    let second_split = commit_work(&holder, "phase.txt", &full_contents, "second split hunk");
+    split_rebase::continue_rebase(&holder);
+    assert_ne!(git_stdout(&holder, &["rev-parse", "upper"]), old_upper);
+    assert_eq!(git_stdout(&holder, &["rev-parse", "lower"]), second_split);
+    assert_ne!(second_split, old_lower);
+
+    // Git updates checked-out upper first, then lower in a separate transaction.
+    // Lower's active phase must still include the split hidden by upper's new ref.
+    assert_lower_phase_start(root, &id, &trunk, &second_split);
+
+    git(&holder, &["switch", "--quiet", "lower"]);
+    let checkpoint = run_berth(&holder, &["release", &id, "--json"]);
+    assert!(checkpoint.status.success(), "{}", json_output(&checkpoint));
+    assert_eq!(json_output(&checkpoint)["status"], "outstanding");
+    assert_split_checkpoint_interval(root, &id, &trunk, &first_split, &second_split);
+}
+
+/// Reconstruct the phase start retained by claim or its latest active reanchor.
+fn assert_lower_phase_start(root: &Path, id: &str, trunk: &str, second_split: &str) {
+    let events = journal_text(root)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("journal should decode"))
+        .collect::<Vec<_>>();
+    let latest = events
+        .iter()
+        .rev()
+        .find(|event| {
+            event["reservation_id"] == id
+                && matches!(event["op"].as_str(), Some("claim" | "resnapshot"))
+        })
+        .expect("active reservation should retain its anchor");
+    let anchor = if latest["op"] == "claim" {
+        &latest["phase_start_head"]
+    } else {
+        assert_eq!(latest["snapshot"]["stage"], "active", "{latest}");
+        &latest["snapshot"]["claim_snapshot"]
+    };
+    assert_eq!(
+        anchor, trunk,
+        "both split commits must remain protected: {latest}"
+    );
+    assert_ne!(anchor, second_split);
+}
+
+/// The checkpoint must cover the whole split and retain its final commit.
+fn assert_split_checkpoint_interval(
+    root: &Path,
+    id: &str,
+    trunk: &str,
+    first_split: &str,
+    second_split: &str,
+) {
+    let events = journal_text(root)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("journal should decode"))
+        .collect::<Vec<_>>();
+    let checkpoint = events
+        .iter()
+        .rev()
+        .find(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+        .expect("lower should have an outstanding checkpoint");
+    assert_lower_phase_start(root, id, trunk, second_split);
+    assert_eq!(checkpoint["protected_tip"], second_split, "{checkpoint}");
+    let protected_range = git_stdout(
+        root,
+        &["rev-list", "--reverse", &format!("{trunk}..{second_split}")],
+    );
+    assert_eq!(
+        protected_range.lines().collect::<Vec<_>>(),
+        [first_split, second_split]
+    );
+    assert_eq!(
+        git_stdout(
+            root,
+            &["rev-parse", &format!("refs/cargo-berth/reservations/{id}")]
+        ),
+        second_split
+    );
+}
 
 #[test]
 fn init_manages_the_common_hook_without_overwriting_an_unmanaged_owner() {
@@ -2127,6 +2317,301 @@ fn permit_consumption_waits_for_committed_and_aborted_does_not_spend_it() {
 }
 
 #[test]
+fn pending_rebase_checkpoint_obeys_ordering_in_direct_integration() {
+    let fixture = pending_rebase_checkpoint_with_ordering_hold();
+    let root = fixture.repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let rebased_tip = git_stdout(&fixture.blocked_root, &["rev-parse", "HEAD"]);
+    let direct = propose_trunk(root, &base, &rebased_tip);
+    assert!(
+        !direct.status.success(),
+        "the ordering hold must reject the fast-forward"
+    );
+    let denial = String::from_utf8_lossy(&direct.stderr);
+    assert!(denial.contains(&fixture.holder_id), "{denial}");
+    assert!(denial.contains(&fixture.blocked_id), "{denial}");
+    assert!(denial.contains("Ordering edge"), "{denial}");
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+}
+
+#[test]
+fn pending_rebase_checkpoint_obeys_ordering_in_explicit_integration() {
+    let fixture = pending_rebase_checkpoint_with_ordering_hold();
+    let root = fixture.repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let rebased_tip = git_stdout(&fixture.blocked_root, &["rev-parse", "HEAD"]);
+    let explicit = run_berth(
+        &fixture.blocked_root,
+        &["integrate", &fixture.blocked_id, "--json"],
+    );
+    let decision = json_output(&explicit);
+    assert_eq!(explicit.status.code(), Some(2), "{decision}");
+    assert_eq!(decision["status"], "blocked_by_ordering", "{decision}");
+    assert_eq!(
+        decision["blocked_by"],
+        serde_json::json!([fixture.holder_id])
+    );
+    let violation = &decision["payload"]["data"]["violations"][0];
+    assert_eq!(
+        violation["reservation"]["reservation_id"],
+        fixture.blocked_id
+    );
+    assert_eq!(
+        violation["reservation"]["lifecycle"]["protected_tip"],
+        rebased_tip
+    );
+    assert_eq!(violation["holds"][0]["kind"], "ordering_edge");
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+}
+
+/// Leave the real rebase marker untouched until the caller enters one gate path.
+fn pending_rebase_checkpoint_with_ordering_hold() -> DeferredPair {
+    let fixture = deferred_pair(initialized_repository());
+    let root = fixture.repository.path();
+    let sequenced = run_berth(
+        root,
+        &[
+            "sequence",
+            &fixture.holder_id,
+            &fixture.blocked_id,
+            "--why",
+            "predecessor must integrate before the rebased checkpoint",
+            "--json",
+        ],
+    );
+    assert!(sequenced.status.success(), "{}", json_output(&sequenced));
+    let old_tip = commit_work(
+        &fixture.blocked_root,
+        "src/lib.rs",
+        "pub fn rebased_successor() {}\n",
+        "checkpoint successor before rebase",
+    );
+    let checkpoint = run_berth(
+        &fixture.blocked_root,
+        &["release", &fixture.blocked_id, "--json"],
+    );
+    assert!(checkpoint.status.success(), "{}", json_output(&checkpoint));
+    assert_eq!(
+        json_output(&checkpoint)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    commit_work(root, "upstream.txt", "upstream advance\n", "advance trunk");
+    set_gate_mode(root, "enforce");
+    git(&fixture.blocked_root, &["rebase", "main"]);
+    set_gate_mode(&fixture.blocked_root, "enforce");
+    let rebased_tip = git_stdout(&fixture.blocked_root, &["rev-parse", "HEAD"]);
+    assert_ne!(rebased_tip, old_tip);
+    assert_eq!(pending_bypass_count(root), 1);
+    let marker = pending_bypass_marker(root);
+    assert_eq!(marker["kind"], "branch_rewrite");
+    assert_eq!(
+        marker["pairs"],
+        serde_json::json!([{"old": old_tip, "new": rebased_tip}])
+    );
+
+    fixture
+}
+
+#[test]
+fn budget_deferred_rewrite_obeys_ordering_in_direct_integration() {
+    let fixture = two_pending_rewrites_with_ordering_hold();
+    let root = fixture.pair.repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let rewritten_tip = git_stdout(&fixture.pair.blocked_root, &["rev-parse", "HEAD"]);
+    git(
+        root,
+        &["merge-base", "--is-ancestor", &base, &rewritten_tip],
+    );
+    let direct = propose_trunk(root, &base, &rewritten_tip);
+    assert!(
+        !direct.status.success(),
+        "a deferred rewrite must retain its ordering hold"
+    );
+    let denial = String::from_utf8_lossy(&direct.stderr);
+    assert!(denial.contains("Ordering edge"), "{denial}");
+    assert!(denial.contains(&fixture.pair.holder_id), "{denial}");
+    assert!(denial.contains(&fixture.pair.blocked_id), "{denial}");
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+    assert_second_rewrite_remains_deferred(&fixture);
+}
+
+#[test]
+fn budget_deferred_rewrite_obeys_ordering_in_explicit_integration() {
+    let fixture = two_pending_rewrites_with_ordering_hold();
+    let root = fixture.pair.repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let explicit = run_berth(
+        &fixture.pair.blocked_root,
+        &["integrate", &fixture.pair.blocked_id, "--json"],
+    );
+    let decision = json_output(&explicit);
+    assert_eq!(explicit.status.code(), Some(2), "{decision}");
+    assert_eq!(decision["status"], "blocked_by_ordering", "{decision}");
+    assert_eq!(
+        decision["blocked_by"],
+        serde_json::json!([fixture.pair.holder_id])
+    );
+    let violation = &decision["payload"]["data"]["violations"][0];
+    assert_eq!(
+        violation["reservation"]["reservation_id"],
+        fixture.pair.blocked_id
+    );
+    assert_eq!(violation["holds"][0]["kind"], "ordering_edge");
+    assert_eq!(git_stdout(root, &["rev-parse", "main"]), base);
+    assert_second_rewrite_remains_deferred(&fixture);
+}
+
+/// Two distinct cold subjects share one trunk target, with the ordered subject second.
+struct DeferredRewriteGateFixture {
+    pair:            DeferredPair,
+    first_id:        String,
+    blocked_old_tip: String,
+}
+
+fn two_pending_rewrites_with_ordering_hold() -> DeferredRewriteGateFixture {
+    let pair = pending_rebase_checkpoint_with_ordering_hold();
+    let root = pair.repository.path();
+    let blocked_marker = pending_bypass_marker(root);
+    let blocked_old_tip = blocked_marker["pairs"][0]["old"]
+        .as_str()
+        .expect("blocked rewrite should identify its old tip")
+        .to_owned();
+    assert_rewritten_tip_enters_without_old_tip(&pair, &blocked_old_tip);
+    let marker_path = fs::read_dir(root.join(".git"))
+        .expect("common Git directory should read")
+        .map(|entry| entry.expect("marker entry should read").path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(PENDING_BYPASS_PREFIX))
+        })
+        .expect("blocked marker should exist");
+    let held_marker = pair.worktrees.path().join("blocked-marker.json");
+    fs::rename(&marker_path, &held_marker)
+        .expect("hold the second marker while preparing the first");
+    let first_root = add_worktree(root, pair.worktrees.path(), "budget-first");
+    let claimed = claim(
+        &first_root,
+        "file:tests/base.rs",
+        THIRD_RUN,
+        "docs/budget-first.md",
+        "consume the first rewrite comparison",
+    );
+    assert!(claimed.status.success(), "{}", json_output(&claimed));
+    let first_id = reservation_id(&claimed);
+    commit_work(
+        &first_root,
+        "tests/base.rs",
+        "// first protected phase\n",
+        "first checkpoint",
+    );
+    let checkpoint = run_berth(&first_root, &["release", &first_id, "--json"]);
+    assert!(checkpoint.status.success(), "{}", json_output(&checkpoint));
+    assert_eq!(json_output(&checkpoint)["status"], "outstanding");
+    let journal = root.join(JOURNAL_PATH);
+    let permissions = fs::metadata(&journal)
+        .expect("journal metadata should read")
+        .permissions();
+    fs::set_permissions(
+        &journal,
+        fs::Permissions::from_mode(permissions.mode() & !0o222),
+    )
+    .expect("journal should reject amend reconciliation");
+    let amended = GIT.output(
+        &first_root,
+        [
+            "commit",
+            "--amend",
+            "--quiet",
+            "-m",
+            "rewritten first checkpoint",
+        ],
+    );
+    fs::set_permissions(&journal, permissions).expect("journal permissions should restore");
+    assert!(
+        amended.status.success(),
+        "{}",
+        String::from_utf8_lossy(&amended.stderr)
+    );
+    assert_eq!(pending_bypass_count(root), 1);
+    let first_marker = pending_bypass_marker(root);
+    assert_eq!(first_marker["kind"], "branch_rewrite");
+    let first_path = root
+        .join(".git")
+        .join(format!("{PENDING_BYPASS_PREFIX}000-budget-first.json"));
+    // Preserve the real hook payload while arranging deterministic importer order.
+    for entry in fs::read_dir(root.join(".git")).expect("common Git directory should read") {
+        let entry = entry.expect("marker entry should read");
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(PENDING_BYPASS_PREFIX)
+        {
+            fs::rename(entry.path(), &first_path)
+                .expect("first marker should sort before the blocked marker");
+        }
+    }
+    fs::rename(held_marker, marker_path).expect("restore the untouched blocked marker");
+    assert_eq!(pending_bypass_count(root), 2);
+    DeferredRewriteGateFixture {
+        pair,
+        first_id,
+        blocked_old_tip,
+    }
+}
+
+/// Only the rewritten destination can identify this reservation in the proposed update.
+fn assert_rewritten_tip_enters_without_old_tip(pair: &DeferredPair, old_tip: &str) {
+    for target in ["main", "HEAD"] {
+        let contains_old = GIT.output(
+            &pair.blocked_root,
+            ["merge-base", "--is-ancestor", old_tip, target],
+        );
+        assert_eq!(
+            contains_old.status.code(),
+            Some(1),
+            "old protected tip must be absent from {target}: {}",
+            String::from_utf8_lossy(&contains_old.stderr)
+        );
+    }
+    let already_on_trunk = GIT.output(
+        &pair.blocked_root,
+        ["merge-base", "--is-ancestor", "HEAD", "main"],
+    );
+    assert_eq!(already_on_trunk.status.code(), Some(1));
+    git(
+        &pair.blocked_root,
+        &["merge-base", "--is-ancestor", "main", "HEAD"],
+    );
+}
+
+fn assert_second_rewrite_remains_deferred(fixture: &DeferredRewriteGateFixture) {
+    let operations = journal_text(fixture.pair.repository.path())
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).expect("journal event should decode")
+        })
+        .collect::<Vec<_>>();
+    assert!(operations.iter().any(|event| event["op"] == "resnapshot" && event["reservation_id"] == fixture.first_id),
+        "first distinct subject must consume the acceptance budget: {operations:?}");
+    assert!(
+        !operations.iter().any(|event| event["op"] == "resnapshot"
+            && event["reservation_id"] == fixture.pair.blocked_id),
+        "second subject must remain deferred so this tests partial projection: {operations:?}"
+    );
+    assert_eq!(
+        git_stdout(
+            fixture.pair.repository.path(),
+            &[
+                "rev-parse",
+                &format!("refs/cargo-berth/reservations/{}", fixture.pair.blocked_id)
+            ]
+        ),
+        fixture.blocked_old_tip
+    );
+    assert_eq!(pending_bypass_count(fixture.pair.repository.path()), 1);
+}
+
+#[test]
 fn forced_checkpoint_consumes_its_permit_before_ordinary_reconciliation_settles_it() {
     let fixture = deferred_pair(initialized_repository());
     let root = fixture.repository.path();
@@ -2247,6 +2732,7 @@ fn assert_checkpoint_permit_audit(repository_root: &Path, reservation_id: &str) 
 #[test]
 fn committed_hook_persists_one_scoped_patch_evaluation_record() {
     let repository = initialized_repository();
+    let previous_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let claimed = claim(
         repository.path(),
         "file:src/lib.rs",
@@ -2291,12 +2777,15 @@ fn committed_hook_persists_one_scoped_patch_evaluation_record() {
         ],
     );
     let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(protected_tip, target);
     assert!(!journal_text(repository.path()).contains("scoped_patch_equivalence_checked"));
 
+    // A fast-forward to equivalent work exercises scoped evidence; an amend
+    // transaction now accepts the rewrite map before ordinary gate evidence.
     let committed = run_private_hook(
         repository.path(),
         "committed",
-        &format!("{protected_tip} {target} refs/heads/main\n"),
+        &format!("{previous_trunk} {target} refs/heads/main\n"),
     );
     assert!(
         committed.status.success(),
@@ -3737,12 +4226,16 @@ fn run_hook_at_path(
         },
     }
     let mut child = command.spawn().expect("managed hook should start");
-    child
+    let input_result = child
         .stdin
         .take()
         .expect("managed hook stdin should exist")
-        .write_all(input)
-        .expect("managed hook stdin should write");
+        .write_all(input);
+    if let Err(error) = input_result {
+        // Ignored phases exit before reading stdin. The caller still checks
+        // the hook's exit status and whether its worker was dispatched.
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     child
         .wait_with_output()
         .expect("managed hook should finish")

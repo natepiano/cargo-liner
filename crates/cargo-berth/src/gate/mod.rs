@@ -7,6 +7,7 @@ pub(crate) mod install;
 pub(crate) mod permit;
 mod reference_transaction;
 mod rewrite;
+pub(crate) mod rewrite_map;
 
 pub(crate) use decision::GateDecision;
 pub(crate) use decision::GateResult;
@@ -22,3 +23,11 @@ pub(crate) use reference_transaction::ReferenceTransactionPhase;
 pub(crate) use reference_transaction::TrunkReferencePresence;
 pub(crate) use reference_transaction::evaluate_reference_transaction;
 pub(crate) use reference_transaction::parse_reference_transaction;
+#[cfg(test)]
+pub(crate) use rewrite::RewriteBase;
+#[cfg(test)]
+pub(crate) use rewrite::capture_rewrite_created_commits;
+pub(crate) use rewrite::rewrite_phase_commits;
+pub(crate) use rewrite::rewritten_first_parent_history;
+pub(crate) use rewrite_map::RewriteCreatedCommits;
+pub(crate) use rewrite_map::map_phase_interval;

@@ -1132,8 +1132,9 @@ mod tests {
             JournalOperation::Resnapshot {
                 reservation_id: unknown.predecessor.reservation_id,
                 snapshot:       ReservationSnapshot::Outstanding {
-                    protected_tip: ProtectedReservationTip::from(unknown_tip),
-                    trunk_oid:     checkpoint_trunk,
+                    phase_start_head: None,
+                    protected_tip:    ProtectedReservationTip::from(unknown_tip),
+                    trunk_oid:        checkpoint_trunk,
                 },
             },
         )?;

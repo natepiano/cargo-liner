@@ -185,97 +185,133 @@ pub(super) fn evaluate_locked(
     let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
     let journal_mutation_actor = resolved_edit_authorization
         .journal_mutation_actor_for(purpose.coordination_run_id(&identity_validation));
-    let outcome = ledger
-        .transact_reconciliation(
-            journal_mutation_actor.worktree_id,
-            journal_mutation_actor.coordination_run_id,
-            |state| {
-                let prepared = match reconcile::prepare_gate_reconciliation(
-                    state.events(),
-                    state.generation(),
-                    &worktree_context,
-                    ledger_repository,
-                    &berth_config,
-                    update.proposed.clone(),
-                    reconcile::GateReconciliationPurpose::PreparedDecision,
-                ) {
-                    Ok(prepared) => prepared,
-                    Err(error) => {
-                        return ReconciliationValidation::Reject(
-                            GateTransactionRejection::Reconciliation(error),
-                        );
-                    },
-                };
-                if let Err(error) = coordination_identity::validate_coordination_identity(
-                    prepared.reservations(),
-                    &identity_validation,
-                ) {
-                    let rejection = match error {
-                        CoordinationIdentityValidationError::Rejected(rejection) => {
-                            GateTransactionRejection::CoordinationIdentity(rejection)
-                        },
-                        CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
-                            GateTransactionRejection::InvalidCanonicalWorktreeRoot
-                        },
-                    };
-                    return ReconciliationValidation::Reject(rejection);
-                }
-                let newly_reachable =
-                    match newly_reachable_commits(worktree_context.repository_root(), update) {
-                        Ok(newly_reachable) => newly_reachable,
+    retry_rewrite_reconciliation(|| {
+        let rewrite_preflight =
+            reconcile::prepare_rewrite_reconciliation(&worktree_context, &ledger, &berth_config)
+                .map_err(GateError::Reconciliation)?;
+        let outcome = ledger
+            .transact_reconciliation(
+                journal_mutation_actor.worktree_id,
+                journal_mutation_actor.coordination_run_id,
+                |state| {
+                    let prepared = match reconcile::prepare_gate_reconciliation(
+                        &state,
+                        &worktree_context,
+                        ledger_repository,
+                        &berth_config,
+                        update.proposed.clone(),
+                        reconcile::GateReconciliationPurpose::PreparedDecision,
+                        rewrite_preflight,
+                    ) {
+                        Ok(prepared) => prepared,
                         Err(error) => {
                             return ReconciliationValidation::Reject(
-                                GateTransactionRejection::Git(error),
+                                GateTransactionRejection::Reconciliation(error),
                             );
                         },
                     };
-                let entering = entering_reservations(prepared.constraints(), &newly_reachable);
-                let (decision, operations) = match decide(
-                    state.events(),
-                    prepared.constraints(),
-                    &entering,
-                    purpose,
-                    berth_config.gate_mode,
-                ) {
-                    Ok(decision) => decision,
-                    Err(error) => return ReconciliationValidation::Reject(error),
-                };
-                let (operations, action) = prepared.into_action(operations, decision);
-                ReconciliationValidation::Apply {
-                    operations,
-                    recoverable_operations: Vec::new(),
-                    action,
-                }
-            },
-            reconcile::GateReconciliationAction::commit,
+                    if let Err(rejection) =
+                        validate_gate_identity(prepared.reservations(), &identity_validation)
+                    {
+                        return ReconciliationValidation::Reject(rejection);
+                    }
+                    let newly_reachable =
+                        match newly_reachable_commits(worktree_context.repository_root(), update) {
+                            Ok(newly_reachable) => newly_reachable,
+                            Err(error) => {
+                                return ReconciliationValidation::Reject(
+                                    GateTransactionRejection::Git(error),
+                                );
+                            },
+                        };
+                    let entering = entering_reservations(&prepared, &newly_reachable);
+                    let (decision, operations) = match decide(
+                        state.events(),
+                        prepared.constraints(),
+                        &entering,
+                        purpose,
+                        berth_config.gate_mode,
+                    ) {
+                        Ok(decision) => decision,
+                        Err(error) => return ReconciliationValidation::Reject(error),
+                    };
+                    let (operations, action) = prepared.into_action(operations, decision);
+                    ReconciliationValidation::Apply {
+                        operations,
+                        recoverable_operations: Vec::new(),
+                        action,
+                    }
+                },
+                reconcile::GateReconciliationAction::commit,
+            )
+            .map_err(|error| match error {
+                LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
+                LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
+            })?;
+        match outcome {
+            LedgerCommittedActionOutcome::Appended {
+                output: (report, decision),
+                ..
+            } => Ok(Enrollment::Enrolled(GateResult {
+                decision,
+                alerts: report.alerts,
+            })),
+            LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
+        }
+    })
+}
+
+/// Retry only rejected rewrite validation and report persistent races as contention.
+pub(super) fn retry_rewrite_reconciliation<Output>(
+    attempt: impl FnMut() -> Result<Output, GateError>,
+) -> Result<Output, GateError> {
+    reconcile::retry_rewrite_reconciliation(attempt, |error| {
+        matches!(
+            error,
+            GateError::Planning(reconcile::GateReconciliationError::RewriteSubjectChanged(_))
         )
+    })
+    .map_err(|error| match error {
+        GateError::Planning(reconcile::GateReconciliationError::RewriteSubjectChanged(_)) => {
+            GateError::Transaction(crate::ledger::LedgerTransactionError::LockContention)
+        },
+        error => error,
+    })
+}
+
+/// Preserve typed identity rejections before authorizing any gate records.
+fn validate_gate_identity(
+    reservations: &crate::reservation::RetainedReservationSet,
+    identity_validation: &CoordinationIdentityValidationContext,
+) -> Result<(), GateTransactionRejection> {
+    coordination_identity::validate_coordination_identity(reservations, identity_validation)
         .map_err(|error| match error {
-            LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
-            LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
-        })?;
-    match outcome {
-        LedgerCommittedActionOutcome::Appended {
-            output: (report, decision),
-            ..
-        } => Ok(Enrollment::Enrolled(GateResult {
-            decision,
-            alerts: report.alerts,
-        })),
-        LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
-    }
+            CoordinationIdentityValidationError::Rejected(rejection) => {
+                GateTransactionRejection::CoordinationIdentity(rejection)
+            },
+            CoordinationIdentityValidationError::InvalidCanonicalWorktreeRoot => {
+                GateTransactionRejection::InvalidCanonicalWorktreeRoot
+            },
+        })
 }
 
 pub(super) fn entering_reservations(
-    constraints: &IntegrationConstraintProjection,
+    reconciliation: &reconcile::GateReconciliation,
     newly_reachable: &[GitObjectId],
 ) -> Vec<ReservationId> {
-    constraints
+    reconciliation
+        .constraints()
         .reservations
         .iter()
         .filter(|reservation| {
             !matches!(reservation.lifecycle, ReservationLifecycle::Released { .. })
         })
         .filter_map(|reservation| match &reservation.subject {
+            _ if reconciliation
+                .deferred_rewrite_enters(reservation.reservation_id, newly_reachable) =>
+            {
+                Some(reservation.reservation_id)
+            },
             IntegrationSubject::Commit { object_id } if newly_reachable.contains(object_id) => {
                 Some(reservation.reservation_id)
             },
@@ -613,5 +649,60 @@ impl GatePurpose {
                     .coordination_run_id
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GateError;
+    use crate::ids::ReservationId;
+    use crate::ledger::LedgerTransactionError;
+    use crate::reconcile::GateReconciliationError;
+    use crate::reconcile::ReconcileError;
+
+    #[test]
+    fn gate_retries_rejected_subjects_and_reports_persistent_contention() {
+        let id = ReservationId::new();
+        let mut attempts = 0;
+        let result = super::retry_rewrite_reconciliation::<()>(|| {
+            attempts += 1;
+            Err(GateError::Planning(
+                GateReconciliationError::RewriteSubjectChanged(id),
+            ))
+        });
+        assert_eq!(attempts, 3);
+        assert!(matches!(
+            result,
+            Err(GateError::Transaction(
+                LedgerTransactionError::LockContention
+            ))
+        ));
+
+        attempts = 0;
+        let result = super::retry_rewrite_reconciliation(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(GateError::Planning(
+                    GateReconciliationError::RewriteSubjectChanged(id),
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn gate_never_retries_a_committed_action_failure() {
+        let mut attempts = 0;
+        let result = super::retry_rewrite_reconciliation::<()>(|| {
+            attempts += 1;
+            Err(GateError::Reconciliation(
+                ReconcileError::RewriteSubjectChanged(ReservationId::new()),
+            ))
+        });
+        assert_eq!(attempts, 1);
+        assert!(matches!(result, Err(GateError::Reconciliation(_))));
     }
 }

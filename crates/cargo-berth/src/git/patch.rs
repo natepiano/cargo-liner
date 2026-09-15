@@ -116,6 +116,8 @@ enum HistoryRelationship {
 pub(crate) enum ScopedPatchTargetHistory<'history> {
     /// The admitted graph proved shared history and supplied the exact target interval.
     ProvenFirstParentInterval { commits: &'history [GitObjectId] },
+    /// Git's rewrite map located these phase destinations; ancestry and replay still need proof.
+    MappedDestinations { commits: &'history [GitObjectId] },
     /// Existing evidence did not prove shared history, so Git must read both facts.
     NeedsGitQueries,
 }
@@ -384,6 +386,13 @@ fn compare_scoped_patch(
     };
 
     let locate_target_scoped_commits = || {
+        if let ScopedPatchTargetHistory::MappedDestinations { commits } = target_history {
+            return Ok(if commits.is_empty() {
+                TargetScopedChangePosition::Unproven
+            } else {
+                TargetScopedChangePosition::Contiguous
+            });
+        }
         target_scoped_change_position(
             repository_root,
             phase_start_head,
@@ -488,7 +497,8 @@ fn initial_scoped_patch_evidence(
                 ),
             }
         },
-        ScopedPatchTargetHistory::NeedsGitQueries => {
+        ScopedPatchTargetHistory::NeedsGitQueries
+        | ScopedPatchTargetHistory::MappedDestinations { .. } => {
             let (history_relationship, protected_scoped_changes) = concurrent_scoped_patch_reads(
                 || history_relationship(repository_root, phase_start_head, target),
                 "compare scoped history",
@@ -989,6 +999,10 @@ mod tests {
     use super::scoped_patch_command_output;
     use super::scoped_patch_equivalence;
     use super::scoped_patch_equivalence_with_target_history;
+    use crate::gate;
+    use crate::gate::rewrite_map::MappedPhaseInterval;
+    use crate::gate::rewrite_map::PhaseRewriteMapping;
+    use crate::gate::rewrite_map::RewriteMapPair;
     use crate::git::command::GitCommandOutputAvailability;
     use crate::git::error::GitError;
     use crate::git::fixture;
@@ -1007,6 +1021,551 @@ mod tests {
     use crate::reservation::IntegrationProof;
     use crate::reservation::PriorIntegrationStatus;
     use crate::reservation::ProtectedReservationTip;
+
+    /// Spaced edits let replay distinguish protected changes from resolution additions.
+    const MAPPED_BASE: &str =
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n";
+
+    fn mapped_fixture() -> FixtureResult<PatchEquivalenceFixture> {
+        let mut fixture = PatchEquivalenceFixture::new()?;
+        fixture.write(PRIMARY_PATH, MAPPED_BASE)?;
+        fixture.phase_start_head = fixture.commit("spaced baseline")?;
+        Ok(fixture)
+    }
+
+    fn mapped_equivalence(
+        fixture: &PatchEquivalenceFixture,
+        phase_start: &GitObjectId,
+        protected_tip: &GitObjectId,
+        target: &GitObjectId,
+        destinations: &[GitObjectId],
+    ) -> Result<ScopedPatchComparison, Box<dyn Error>> {
+        Ok(scoped_patch_equivalence_with_target_history(
+            fixture.root(),
+            phase_start,
+            &fixture::file_scopes(&[PRIMARY_PATH])?,
+            protected_tip,
+            target,
+            ScopedPatchTargetHistory::MappedDestinations {
+                commits: destinations,
+            },
+        )?)
+    }
+
+    #[test]
+    fn mapped_destinations_do_not_certify_unrelated_history() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+        let protected_tip = fixture.commit("protected edit")?;
+        fixture.git(&["checkout", "--orphan", "unrelated"])?;
+        let unrelated = fixture.commit("same contents without shared ancestry")?;
+        assert_eq!(
+            mapped_equivalence(
+                &fixture,
+                &fixture.phase_start_head,
+                &protected_tip,
+                &unrelated,
+                std::slice::from_ref(&unrelated)
+            )?,
+            ScopedPatchComparison::Different
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_destinations_preserve_scoped_replay_conflict_refusal() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        fixture.write(
+            PRIMARY_PATH,
+            &MAPPED_BASE.replace("twelve\n", "protected\n"),
+        )?;
+        let protected_tip = fixture.commit("protected final hunk")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(
+            PRIMARY_PATH,
+            &MAPPED_BASE.replace("twelve\n", "protected\nadjacent resolution edit\n"),
+        )?;
+        let target = fixture.commit("overlapping resolution edit")?;
+        // Git's explicit-base replay conflicts on overlapping replacements even when
+        // the target retains the old line. A map supplies no authority to ignore that.
+        assert_eq!(
+            mapped_equivalence(
+                &fixture,
+                &fixture.phase_start_head,
+                &protected_tip,
+                &target,
+                std::slice::from_ref(&target)
+            )?,
+            ScopedPatchComparison::Different
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_acceptance_keeps_the_protected_hunk_after_a_conflict() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        let protected = MAPPED_BASE.replace("one\n", "protected\n");
+        fixture.write(PRIMARY_PATH, &protected)?;
+        let old_tip = fixture.commit("protected edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "upstream\n"))?;
+        fixture.commit("conflicting upstream edit")?;
+        assert!(fixture.git(&["cherry-pick", &old_tip.to_string()]).is_err());
+        fixture.write(
+            PRIMARY_PATH,
+            &protected.replace("twelve\n", "resolution addition\n"),
+        )?;
+        fixture.git(&["add", "--all"])?;
+        fixture.git(&["cherry-pick", "--continue"])?;
+        let target = refs::head_object_id(fixture.root())?;
+        assert_eq!(
+            mapped_equivalence(
+                &fixture,
+                &fixture.phase_start_head,
+                &old_tip,
+                &target,
+                std::slice::from_ref(&target)
+            )?,
+            ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    /// Capture the branch history beyond the base recorded by its rebase operation.
+    fn capture_created_commits(
+        repository_root: &std::path::Path,
+        administrative_directory: &std::path::Path,
+        proposed: &GitObjectId,
+        previous: &GitObjectId,
+        pairs: &[RewriteMapPair],
+        onto: &GitObjectId,
+    ) -> FixtureResult<gate::RewriteCreatedCommits> {
+        let commits = gate::capture_rewrite_created_commits(
+            repository_root,
+            administrative_directory,
+            proposed,
+            previous,
+            pairs,
+            &gate::RewriteBase::RebaseOnto(onto.clone()),
+        )?;
+        Ok(gate::RewriteCreatedCommits::from_commits(commits))
+    }
+
+    #[test]
+    fn rewrite_mapping_stops_at_onto_independently_of_other_refs() -> FixtureResult {
+        for reference_kind in ["branch", "tag", "remote", "detached_worktree", "no_ref"] {
+            let fixture = mapped_fixture()?;
+            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+            let old_tip = fixture.commit("old protected edit")?;
+            fixture.reset_to_phase_start()?;
+            fixture.write(SECONDARY_PATH, "other reservation's work\n")?;
+            let other_base = fixture.commit("other reservation")?;
+            match reference_kind {
+                "branch" => fixture.git(&["branch", "other", &other_base.to_string()])?,
+                "tag" => fixture.git(&["tag", "-a", "other", "-m", "other base"])?,
+                "remote" => fixture.git(&[
+                    "update-ref",
+                    "refs/remotes/origin/other",
+                    &other_base.to_string(),
+                ])?,
+                "detached_worktree" => fixture.git(&[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    "other-checkout",
+                    &other_base.to_string(),
+                ])?,
+                _ => {},
+            }
+            // Stage only the protected path when an untracked linked checkout exists.
+            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+            fixture.git(&["add", PRIMARY_PATH])?;
+            fixture.git(&["commit", "--quiet", "-m", "rewritten protected edit"])?;
+            let target = refs::head_object_id(fixture.root())?;
+            let pairs = [RewriteMapPair {
+                old: old_tip.clone(),
+                new: target.clone(),
+            }];
+            let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
+            let created = capture_created_commits(
+                fixture.root(),
+                &fixture.root().join(".git"),
+                &target,
+                &old_tip,
+                &pairs,
+                &other_base,
+            )?;
+            assert_eq!(
+                gate::map_phase_interval(&pairs, &[old_tip], &history, &created),
+                PhaseRewriteMapping::Mapped(MappedPhaseInterval {
+                    phase_start_head: other_base,
+                    protected_tip:    target.clone(),
+                    destinations:     vec![target],
+                }),
+                "onto must establish the phase base with {reference_kind}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn split_capture_survives_retention_and_sibling_refs_at_the_new_tip() -> FixtureResult {
+        for retention_updated_before_capture in [false, true] {
+            let fixture = mapped_fixture()?;
+            let first = MAPPED_BASE.replace("one\n", "first protected\n");
+            let complete = first.replace("twelve\n", "second protected\n");
+            fixture.write(PRIMARY_PATH, &complete)?;
+            let old_tip = fixture.commit("combined protected edit")?;
+            let retention_ref = "refs/cargo-berth/reservations/split";
+            fixture.git(&["update-ref", retention_ref, &old_tip.to_string()])?;
+            fixture.reset_to_phase_start()?;
+            fixture.write(PRIMARY_PATH, &first)?;
+            let split_first = fixture.commit("first split edit")?;
+            fixture.write(PRIMARY_PATH, &complete)?;
+            let target = fixture.commit("second split edit")?;
+            fixture.git(&["branch", "sibling", &target.to_string()])?;
+            if retention_updated_before_capture {
+                fixture.git(&["update-ref", retention_ref, &target.to_string()])?;
+            }
+            let pairs = [RewriteMapPair {
+                old: old_tip.clone(),
+                new: target.clone(),
+            }];
+            let created = capture_created_commits(
+                fixture.root(),
+                &fixture.root().join(".git"),
+                &target,
+                &old_tip,
+                &pairs,
+                &fixture.phase_start_head,
+            )?;
+            // Another reservation may re-anchor before this event's interval is consumed.
+            fixture.git(&["update-ref", retention_ref, &target.to_string()])?;
+            let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
+            assert_eq!(
+                gate::map_phase_interval(&pairs, &[old_tip], &history, &created),
+                PhaseRewriteMapping::Mapped(MappedPhaseInterval {
+                    phase_start_head: fixture.phase_start_head,
+                    protected_tip:    target.clone(),
+                    destinations:     vec![split_first, target],
+                }),
+                "retention updated before capture: {retention_updated_before_capture}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stored_rewrite_commits_survive_the_issuing_checkout_switching() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        let first = MAPPED_BASE.replace("one\n", "first protected\n");
+        let complete = first.replace("twelve\n", "second protected\n");
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let old_tip = fixture.commit("combined protected edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, &first)?;
+        let split_first = fixture.commit("first split edit")?;
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let target = fixture.commit("second split edit")?;
+        let pairs = [RewriteMapPair {
+            old: old_tip.clone(),
+            new: target.clone(),
+        }];
+        let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
+        let captured = gate::capture_rewrite_created_commits(
+            fixture.root(),
+            &fixture.root().join(".git"),
+            &target,
+            &old_tip,
+            &pairs,
+            &gate::RewriteBase::RebaseOnto(fixture.phase_start_head.clone()),
+        )?;
+        let stored = serde_json::to_vec(&captured)?;
+        fixture.git(&["switch", "--detach", &fixture.phase_start_head.to_string()])?;
+        let restored = serde_json::from_slice::<Vec<GitObjectId>>(&stored)?;
+        assert_eq!(restored, captured);
+        let created = gate::RewriteCreatedCommits::from_commits(restored);
+        assert_eq!(
+            gate::map_phase_interval(&pairs, &[old_tip], &history, &created),
+            PhaseRewriteMapping::Mapped(MappedPhaseInterval {
+                phase_start_head: fixture.phase_start_head,
+                protected_tip:    target.clone(),
+                destinations:     vec![split_first, target],
+            }),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn linked_rewrite_uses_onto_with_a_detached_main_worktree() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        let first = MAPPED_BASE.replace("one\n", "first protected\n");
+        let complete = first.replace("twelve\n", "second protected\n");
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let old_tip = fixture.commit("combined protected edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.git(&["switch", "--detach"])?;
+        fixture.write(SECONDARY_PATH, "other reservation's work\n")?;
+        let other_base = fixture.commit("detached main base")?;
+        fixture.git(&["worktree", "add", "-b", "topic", "issuing"])?;
+        let issuing = fixture.root().join("issuing");
+        fs::write(issuing.join(PRIMARY_PATH), first)?;
+        fixture.git(&["-C", "issuing", "commit", "--quiet", "-am", "first split"])?;
+        let split_first = refs::head_object_id(&issuing)?;
+        fs::write(issuing.join(PRIMARY_PATH), complete)?;
+        fixture.git(&["-C", "issuing", "commit", "--quiet", "-am", "second split"])?;
+        let target = refs::head_object_id(&issuing)?;
+        let pairs = [RewriteMapPair {
+            old: old_tip.clone(),
+            new: target.clone(),
+        }];
+        let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
+        let created = capture_created_commits(
+            fixture.root(),
+            &fixture.root().join(".git/worktrees/issuing"),
+            &target,
+            &old_tip,
+            &pairs,
+            &other_base,
+        )?;
+        assert_eq!(
+            gate::map_phase_interval(&pairs, &[old_tip], &history, &created),
+            PhaseRewriteMapping::Mapped(MappedPhaseInterval {
+                phase_start_head: other_base,
+                protected_tip:    target.clone(),
+                destinations:     vec![split_first, target],
+            }),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_mapping_ignores_a_missing_old_exclusion() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("one\n", "protected\n"))?;
+        let target = fixture.commit("rewritten protected edit")?;
+        let missing_old = UNAVAILABLE_OBJECT_ID.parse::<GitObjectId>()?;
+        let pairs = [RewriteMapPair {
+            old: missing_old.clone(),
+            new: target.clone(),
+        }];
+        let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
+        let created = capture_created_commits(
+            fixture.root(),
+            &fixture.root().join(".git"),
+            &target,
+            &fixture.phase_start_head,
+            &pairs,
+            &fixture.phase_start_head,
+        )?;
+        assert_eq!(
+            gate::map_phase_interval(&pairs, &[missing_old], &history, &created),
+            PhaseRewriteMapping::Mapped(MappedPhaseInterval {
+                phase_start_head: fixture.phase_start_head,
+                protected_tip:    target.clone(),
+                destinations:     vec![target],
+            }),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_acceptance_contains_a_split_phase() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        let first = MAPPED_BASE.replace("one\n", "first protected\n");
+        let complete = first.replace("twelve\n", "second protected\n");
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let old_tip = fixture.commit("combined protected edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, &first)?;
+        let split_first = fixture.commit("first split edit")?;
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let target = fixture.commit("second split edit")?;
+        let pairs = [RewriteMapPair {
+            old: old_tip.clone(),
+            new: target.clone(),
+        }];
+        let history = gate::rewritten_first_parent_history(fixture.root(), &target)?;
+        let created = capture_created_commits(
+            fixture.root(),
+            &fixture.root().join(".git"),
+            &target,
+            &old_tip,
+            &pairs,
+            &fixture.phase_start_head,
+        )?;
+        let mapped = MappedPhaseInterval {
+            phase_start_head: fixture.phase_start_head.clone(),
+            protected_tip:    target.clone(),
+            destinations:     vec![split_first.clone(), target.clone()],
+        };
+        assert_eq!(
+            gate::map_phase_interval(&pairs, std::slice::from_ref(&old_tip), &history, &created),
+            PhaseRewriteMapping::Mapped(mapped.clone())
+        );
+        assert_eq!(
+            mapped_equivalence(
+                &fixture,
+                &fixture.phase_start_head,
+                &old_tip,
+                &target,
+                &mapped.destinations
+            )?,
+            ScopedPatchComparison::Equivalent
+        );
+
+        // A rebase onto the first split records that commit as the phase base.
+        let created = capture_created_commits(
+            fixture.root(),
+            &fixture.root().join(".git"),
+            &target,
+            &old_tip,
+            &pairs,
+            &split_first,
+        )?;
+        assert_eq!(
+            gate::map_phase_interval(&pairs, std::slice::from_ref(&old_tip), &history, &created),
+            PhaseRewriteMapping::Mapped(MappedPhaseInterval {
+                phase_start_head: split_first,
+                protected_tip:    target.clone(),
+                destinations:     vec![target],
+            })
+        );
+
+        // A later rewrite that drops the first split must still fail the retained interval.
+        fixture.reset_to_phase_start()?;
+        fixture.write(
+            PRIMARY_PATH,
+            &MAPPED_BASE.replace("twelve\n", "second protected\n"),
+        )?;
+        let dropped_first = fixture.commit("drop first split edit")?;
+        assert_eq!(
+            mapped_equivalence(
+                &fixture,
+                &mapped.phase_start_head,
+                &mapped.protected_tip,
+                &dropped_first,
+                std::slice::from_ref(&dropped_first),
+            )?,
+            ScopedPatchComparison::Different
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_acceptance_preserves_two_checkpoints_with_resolution_edits() -> FixtureResult {
+        for resolve_first in [false, true] {
+            let fixture = mapped_fixture()?;
+            let first = MAPPED_BASE.replace("one\n", "first protected\n");
+            let second = first.replace("twelve\n", "second protected\n");
+            fixture.write(PRIMARY_PATH, &first)?;
+            let old_first = fixture.commit("first checkpoint")?;
+            fixture.write(PRIMARY_PATH, &second)?;
+            let old_second = fixture.commit("second checkpoint")?;
+            fixture.reset_to_phase_start()?;
+            fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("six\n", "upstream\n"))?;
+            fixture.commit("upstream same-path change")?;
+            let resolved_first = first.replace(
+                "six\n",
+                if resolve_first {
+                    "first resolution\n"
+                } else {
+                    "upstream\n"
+                },
+            );
+            fixture.write(PRIMARY_PATH, &resolved_first)?;
+            let new_first = fixture.commit("rewritten first checkpoint")?;
+            let resolved_second = resolved_first
+                .replace("twelve\n", "second protected\n")
+                .replace("nine\n", "second resolution\n");
+            fixture.write(PRIMARY_PATH, &resolved_second)?;
+            let new_second = fixture.commit("rewritten second checkpoint with resolution")?;
+            assert_eq!(
+                mapped_equivalence(
+                    &fixture,
+                    &fixture.phase_start_head,
+                    &old_first,
+                    &new_first,
+                    std::slice::from_ref(&new_first)
+                )?,
+                ScopedPatchComparison::Equivalent
+            );
+            assert_eq!(
+                mapped_equivalence(
+                    &fixture,
+                    &old_first,
+                    &old_second,
+                    &new_second,
+                    std::slice::from_ref(&new_second)
+                )?,
+                ScopedPatchComparison::Equivalent
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_acceptance_keeps_a_commit_skipped_into_the_base() -> FixtureResult {
+        let fixture = mapped_fixture()?;
+        let first = MAPPED_BASE.replace("one\n", "already upstream\n");
+        let complete = first.replace("twelve\n", "remaining protected\n");
+        fixture.write(PRIMARY_PATH, &first)?;
+        fixture.commit("phase edit later skipped")?;
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let old_tip = fixture.commit("remaining phase edit")?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, &first)?;
+        fixture.commit("base already carries first edit")?;
+        fixture.write(PRIMARY_PATH, &complete)?;
+        let target = fixture.commit("replayed remaining phase edit")?;
+        assert_eq!(
+            mapped_equivalence(
+                &fixture,
+                &fixture.phase_start_head,
+                &old_tip,
+                &target,
+                std::slice::from_ref(&target)
+            )?,
+            ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_acceptance_refuses_discarded_hunks_and_deliberate_drops() -> FixtureResult {
+        for discard_hunk in [true, false] {
+            let fixture = mapped_fixture()?;
+            let first = MAPPED_BASE.replace("one\n", "first protected\n");
+            fixture.write(PRIMARY_PATH, &first)?;
+            fixture.commit("first protected edit")?;
+            fixture.write(
+                PRIMARY_PATH,
+                &first.replace("twelve\n", "second protected\n"),
+            )?;
+            let old_tip = fixture.commit("second protected edit")?;
+            fixture.reset_to_phase_start()?;
+            let target_content = if discard_hunk {
+                MAPPED_BASE
+                    .replace("one\n", "resolution discards protected hunk\n")
+                    .replace("twelve\n", "second protected\n")
+            } else {
+                first
+            };
+            fixture.write(PRIMARY_PATH, &target_content)?;
+            let target = fixture.commit("incomplete rewrite")?;
+            assert_eq!(
+                mapped_equivalence(
+                    &fixture,
+                    &fixture.phase_start_head,
+                    &old_tip,
+                    &target,
+                    std::slice::from_ref(&target)
+                )?,
+                ScopedPatchComparison::Different
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn concurrent_scoped_patch_read_maps_a_worker_panic_to_git_error() {

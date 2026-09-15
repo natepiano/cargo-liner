@@ -8,6 +8,12 @@
 #[path = "support/timing.rs"]
 mod timing;
 
+#[path = "support/reanchoring.rs"]
+mod reanchoring;
+
+#[path = "support/split_rebase.rs"]
+mod split_rebase;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::git_command;
@@ -559,6 +565,137 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
         git_stdout(repository.path(), &["rev-parse", &retention_ref]),
         retained_tip_before
     );
+    reanchoring::failed_append_preserves_rewrite_marker_and_retention();
+}
+
+#[test]
+fn checkpoint_ranges_survive_two_rebases() { reanchoring::checkpoint_ranges_survive_two_rebases(); }
+
+#[test]
+fn uninterrupted_apply_rebase_reanchors_only_the_checkpoint_commit() {
+    reanchoring::uninterrupted_apply_rebase_reanchors_only_the_checkpoint_commit();
+}
+
+#[test]
+fn conflicted_apply_rebase_reanchors_only_the_checkpoint_commit() {
+    reanchoring::conflicted_apply_rebase_reanchors_only_the_checkpoint_commit();
+}
+
+#[test]
+fn side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture() {
+    reanchoring::side_branch_creation_during_stopped_apply_rebase_preserves_checkpoint_capture();
+}
+
+#[test]
+fn rebase_onto_another_reservation_keeps_its_work_outside_the_active_phase() {
+    reanchoring::rebase_onto_another_reservation_keeps_its_work_outside_the_active_phase();
+}
+
+#[test]
+fn rebase_onto_another_reservation_keeps_its_work_outside_the_checkpoint() {
+    reanchoring::rebase_onto_another_reservation_keeps_its_work_outside_the_checkpoint();
+}
+
+#[test]
+fn pruned_unneeded_rewrite_pair_does_not_prevent_marker_retirement() {
+    reanchoring::pruned_unneeded_rewrite_pair_does_not_prevent_marker_retirement();
+}
+
+#[test]
+fn interactive_split_keeps_both_protected_hunks_in_the_checkpoint() {
+    reanchoring::interactive_split_keeps_both_protected_hunks_in_the_checkpoint();
+}
+
+#[test]
+fn soft_reset_split_keeps_both_protected_hunks_in_the_checkpoint() {
+    reanchoring::soft_reset_split_keeps_both_protected_hunks_in_the_checkpoint();
+}
+
+#[test]
+fn interactive_split_keeps_both_protected_hunks_in_the_active_phase() {
+    reanchoring::interactive_split_keeps_both_protected_hunks_in_the_active_phase();
+}
+
+#[test]
+fn soft_reset_split_keeps_both_protected_hunks_in_the_active_phase() {
+    reanchoring::soft_reset_split_keeps_both_protected_hunks_in_the_active_phase();
+}
+
+#[test]
+fn unreadable_bypass_marker_does_not_block_rewrite_reconciliation() {
+    reanchoring::unreadable_bypass_marker_does_not_block_rewrite_reconciliation();
+}
+
+#[test]
+fn transient_mapped_comparison_failure_preserves_the_rewrite_for_retry() {
+    reanchoring::transient_mapped_comparison_failure_preserves_the_rewrite_for_retry();
+}
+
+#[test]
+fn transient_old_phase_read_failure_preserves_the_rewrite_for_retry() {
+    reanchoring::transient_old_phase_read_failure_preserves_the_rewrite_for_retry();
+}
+
+#[test]
+fn created_commit_read_failure_errors_capture_without_writing_a_marker() {
+    reanchoring::created_commit_read_failure_errors_capture_without_writing_a_marker();
+}
+
+#[test]
+fn split_checkpoint_survives_an_active_phases_rewritten_retention_ref() {
+    reanchoring::split_checkpoint_survives_an_active_phases_rewritten_retention_ref();
+}
+
+#[test]
+fn split_checkpoint_survives_stacked_branches_rewritten_with_update_refs() {
+    reanchoring::split_checkpoint_survives_stacked_branches_rewritten_with_update_refs();
+}
+
+#[test]
+fn upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first() {
+    reanchoring::upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first(
+    );
+}
+
+#[test]
+fn upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first() {
+    reanchoring::upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first(
+    );
+}
+
+#[test]
+fn unreadable_rebase_onto_errors_capture_without_writing_a_marker() {
+    reanchoring::unreadable_rebase_onto_errors_capture_without_writing_a_marker();
+}
+
+#[test]
+fn split_checkpoint_survives_switching_the_issuing_checkout_before_board() {
+    reanchoring::split_checkpoint_survives_switching_the_issuing_checkout_before_board();
+}
+
+#[test]
+fn aborted_rebase_does_not_leave_a_rewrite_marker() {
+    reanchoring::aborted_rebase_does_not_leave_a_rewrite_marker();
+}
+
+#[test]
+fn stopped_rebase_defers_a_pending_reanchor() {
+    reanchoring::stopped_rebase_defers_a_pending_reanchor();
+}
+
+#[test]
+fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() {
+    reanchoring::refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors();
+}
+
+#[test]
+fn mixed_rewrite_and_bypass_markers_report_only_the_bypass() {
+    reanchoring::mixed_rewrite_and_bypass_markers_report_only_the_bypass();
+}
+
+#[test]
+fn drift_cleans_up_rewrite_markers_without_reporting_bypasses() {
+    reanchoring::drift_cleans_up_rewrite_markers_without_reporting_bypasses();
 }
 
 #[test]

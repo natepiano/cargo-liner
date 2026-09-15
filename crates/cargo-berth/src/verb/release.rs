@@ -570,8 +570,9 @@ fn resnapshot_operation(
         JournalOperation::Resnapshot {
             reservation_id,
             snapshot: ReservationSnapshot::Outstanding {
-                protected_tip: replacement_tip.clone(),
-                trunk_oid:     current_trunk.clone(),
+                phase_start_head: None,
+                protected_tip:    replacement_tip.clone(),
+                trunk_oid:        current_trunk.clone(),
             },
         },
         ReleasePayloadSeed::Resnapshotted {

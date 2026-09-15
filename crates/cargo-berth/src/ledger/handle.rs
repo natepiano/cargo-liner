@@ -27,6 +27,7 @@ use super::journal::JournalReplay;
 use super::lock::MutationLock;
 use super::projection;
 use super::projection::Projection;
+use super::projection::ProjectionError;
 use super::projection::ProjectionSynchronization;
 use super::worktree_context::WorktreeContext;
 use crate::config::BerthConfig;
@@ -243,13 +244,15 @@ impl Ledger {
     }
 
     /// Read validated journal truth without holding the mutation lock.
-    fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
+    pub(crate) fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
         self.require_existing()?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
-        let replay = Journal::replay_read_only(&self.paths.journal)?;
-        identity::validate_journal_repository(repo_instance_id, &replay)?;
-        projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
-        Ok(replay.events)
+        retry_concurrent_projection_publication(|| {
+            let replay = Journal::replay_read_only(&self.paths.journal)?;
+            identity::validate_journal_repository(repo_instance_id, &replay)?;
+            projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
+            Ok(replay.events)
+        })
     }
 
     /// Validate against one locked replay and append only the approved operation.
@@ -771,6 +774,23 @@ struct LedgerPaths {
     repo_instance_id: PathBuf,
 }
 
+/// A projection published after a lock-free journal read requires a fresh pair of reads.
+fn retry_concurrent_projection_publication<Read>(
+    mut read: impl FnMut() -> Result<Read, LedgerError>,
+) -> Result<Read, LedgerError> {
+    let mut result = read();
+    for _ in 1..3 {
+        if !matches!(
+            result,
+            Err(LedgerError::Projection(ProjectionError::CacheAhead))
+        ) {
+            break;
+        }
+        result = read();
+    }
+    result
+}
+
 fn next_projection_generation(
     current_generation: ProjectionGeneration,
 ) -> Result<ProjectionGeneration, LedgerError> {
@@ -817,6 +837,90 @@ mod tests {
     use crate::ledger::ForcedIntegrationReason;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
+
+    #[test]
+    fn rejected_reconciliation_does_not_append_or_run_its_committed_action() {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+        let before = fs::read(&ledger.paths.journal).expect("journal should read");
+        let mut committed = false;
+        let result = ledger
+            .transact_reconciliation(
+                WorktreeId::new(),
+                CoordinationRunId::new(),
+                |_| super::ReconciliationValidation::Reject("rewrite subject changed"),
+                |(): (), _, _| {
+                    committed = true;
+                    Ok::<(), std::convert::Infallible>(())
+                },
+            )
+            .expect("rejected validation should return without mutation");
+        assert!(matches!(
+            result,
+            LedgerCommittedActionOutcome::Rejected("rewrite subject changed")
+        ));
+        assert!(!committed);
+        assert_eq!(
+            fs::read(&ledger.paths.journal).expect("journal should read"),
+            before
+        );
+    }
+
+    #[test]
+    fn lock_free_read_retries_a_projection_published_after_journal_replay() {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+        let repository_id = ledger.repository_identity().expect("identity should read");
+        let operation = renewal_operation();
+        let mut attempts = 0;
+        let events = super::retry_concurrent_projection_publication(|| {
+            attempts += 1;
+            let replay = super::Journal::replay_read_only(&ledger.paths.journal)?;
+            if attempts == 1 {
+                ledger
+                    .transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+                        TransactionValidation::<()>::Append(Box::new(operation.clone()))
+                    })
+                    .expect("concurrent publication should append");
+            }
+            super::projection::read_validated(&ledger.paths.projection, repository_id, &replay)?;
+            Ok(replay.events)
+        })
+        .expect("fresh journal and projection should agree");
+        assert_eq!(attempts, 2);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].operation, operation);
+    }
+
+    #[test]
+    fn lock_free_read_bounds_cache_ahead_retries_and_preserves_other_failures() {
+        let mut attempts = 0;
+        let result = super::retry_concurrent_projection_publication::<()>(|| {
+            attempts += 1;
+            Err(LedgerError::Projection(ProjectionError::CacheAhead))
+        });
+        assert_eq!(attempts, 3);
+        assert!(matches!(
+            result,
+            Err(LedgerError::Projection(ProjectionError::CacheAhead))
+        ));
+        attempts = 0;
+        let result = super::retry_concurrent_projection_publication::<()>(|| {
+            attempts += 1;
+            Err(LedgerError::Projection(
+                ProjectionError::JournalFingerprintMismatch,
+            ))
+        });
+        assert_eq!(attempts, 1);
+        assert!(matches!(
+            result,
+            Err(LedgerError::Projection(
+                ProjectionError::JournalFingerprintMismatch
+            ))
+        ));
+    }
 
     #[test]
     fn concurrent_mutations_append_without_losing_either_record() {

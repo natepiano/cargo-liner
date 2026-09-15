@@ -237,6 +237,29 @@ pub(crate) enum WorktreeOccupancy<'reservations> {
     Incumbent(&'reservations Reservation),
 }
 
+/// How a resnapshot changes the baseline of the protected phase.
+enum PhaseStartHeadUpdate {
+    /// Older outstanding snapshots keep the phase baseline already retained.
+    Preserve,
+    /// An accepted rewrite or active resnapshot installs this baseline.
+    Replace(ProtectedPhaseStartHead),
+}
+
+impl From<&ReservationSnapshot> for PhaseStartHeadUpdate {
+    fn from(snapshot: &ReservationSnapshot) -> Self {
+        match snapshot {
+            ReservationSnapshot::Active { claim_snapshot } => {
+                Self::Replace(ProtectedPhaseStartHead::from(claim_snapshot.clone()))
+            },
+            ReservationSnapshot::Outstanding {
+                phase_start_head, ..
+            } => phase_start_head
+                .clone()
+                .map_or(Self::Preserve, Self::Replace),
+        }
+    }
+}
+
 impl RetainedReservationSet {
     /// Replay journal operations into the current retained reservation set.
     pub(crate) fn replay(events: &[JournalEvent]) -> Result<Self, ReservationReplayError> {
@@ -269,6 +292,24 @@ impl RetainedReservationSet {
             }
         }
         Ok(settled)
+    }
+
+    /// Project accepted rewrite anchors before constructing repository observations.
+    pub(crate) fn with_pending_resnapshots(
+        &self,
+        operations: &[JournalOperation],
+    ) -> Result<Self, ReservationReplayError> {
+        let mut projected = self.clone();
+        for operation in operations {
+            if let JournalOperation::Resnapshot {
+                reservation_id,
+                snapshot,
+            } = operation
+            {
+                projected.apply_resnapshot(*reservation_id, snapshot, snapshot.into())?;
+            }
+        }
+        Ok(projected)
     }
 
     /// Evaluate claim acquisition for one acting worktree.
@@ -834,7 +875,7 @@ impl RetainedReservationSet {
             JournalOperation::Resnapshot {
                 reservation_id,
                 snapshot,
-            } => self.apply_resnapshot(*reservation_id, snapshot),
+            } => self.apply_resnapshot(*reservation_id, snapshot, snapshot.into()),
             JournalOperation::EvidenceRevalidated {
                 reservation_id,
                 status,
@@ -1147,21 +1188,21 @@ impl RetainedReservationSet {
         &mut self,
         reservation_id: ReservationId,
         snapshot: &ReservationSnapshot,
+        phase_start_head: PhaseStartHeadUpdate,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         match snapshot {
-            ReservationSnapshot::Active { claim_snapshot } => {
+            ReservationSnapshot::Active { .. } => {
                 if !matches!(reservation.lifecycle, ReservationLifecycle::Active) {
                     return Err(ReservationReplayError::SnapshotStateMismatch(
                         reservation_id,
                     ));
                 }
-                reservation.phase_start_head =
-                    ProtectedPhaseStartHead::from(claim_snapshot.clone());
             },
             ReservationSnapshot::Outstanding {
                 protected_tip,
                 trunk_oid,
+                ..
             } => {
                 reservation
                     .lifecycle
@@ -1175,6 +1216,9 @@ impl RetainedReservationSet {
                     IntegrationTrunkSnapshot::AtCheckpoint(trunk_oid.clone());
                 reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
             },
+        }
+        if let PhaseStartHeadUpdate::Replace(phase_start_head) = phase_start_head {
+            reservation.phase_start_head = phase_start_head;
         }
         reservation.advance_integration_proof_subject_revision()?;
         reservation.advance_revision()
@@ -1941,6 +1985,15 @@ mod tests {
             &target,
         );
 
+        assert_eq!(
+            resnapshotted
+                .reservation(reservation_id)?
+                .phase_start_head()
+                .as_ref(),
+            &target,
+        );
+        assert_reanchored_verdicts_cleared(&claim, &checkpoint, &checked, reservation_id, &target)?;
+
         let replacement = journal_event(
             6,
             &json!({
@@ -1965,6 +2018,43 @@ mod tests {
             replaced.reservation(reservation_id)?,
             &target,
         );
+        Ok(())
+    }
+
+    /// An explicit baseline replacement invalidates retained comparisons together with the tip.
+    fn assert_reanchored_verdicts_cleared(
+        claim: &JournalEvent,
+        checkpoint: &JournalEvent,
+        checked: &JournalEvent,
+        reservation_id: ReservationId,
+        target: &GitObjectId,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let reanchor = journal_event(
+            4,
+            &json!({
+                "op": "resnapshot",
+                "reservation_id": RESERVATION_ID,
+                "snapshot": {
+                    "stage": "outstanding",
+                    "protected_tip": REPLACEMENT_TIP,
+                    "trunk_oid": TRUNK_OID,
+                    "phase_start_head": SECOND_TRUNK_OID
+                }
+            }),
+        )?;
+        let reanchored = RetainedReservationSet::replay(&[
+            claim.clone(),
+            checkpoint.clone(),
+            checked.clone(),
+            reanchor,
+        ])?;
+        let reservation = reanchored.reservation(reservation_id)?;
+        assert_eq!(
+            reservation.phase_start_head().as_ref(),
+            &SECOND_TRUNK_OID.parse::<GitObjectId>()?
+        );
+        assert_no_retained_scoped_patch_target_verdict(reservation, target);
+
         Ok(())
     }
 

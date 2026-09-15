@@ -17,10 +17,12 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::rewrite_map::RewriteMapPair;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::ids::CoordinationRunId;
 use crate::ids::ForcedIntegrationPermitId;
+use crate::ids::GitObjectId;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ledger;
@@ -39,6 +41,7 @@ use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
+use crate::reservation::IntegrationProofSubjectRevision;
 
 const BYPASS_ENVIRONMENT: &str = "CARGO_BERTH_BYPASS";
 const BYPASS_ENVIRONMENT_ENABLED_VALUE: &str = "1";
@@ -74,7 +77,7 @@ pub(crate) enum EnvironmentBypassRetentionOutcome {
 
 /// The shared marker schema used when an environment bypass cannot reach the journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct PendingEnvironmentBypass {
+pub(crate) struct PendingEnvironmentBypass {
     /// The operation the bypass allowed; markers written before edits could be bypassed
     /// name no action and were always left by a trunk update.
     #[serde(default = "integration_bypass")]
@@ -83,6 +86,61 @@ struct PendingEnvironmentBypass {
     cause:           BypassCause,
     /// Whether the marker writer retained the override's occurrence time.
     occurrence_time: PendingEnvironmentBypassOccurrenceTime,
+}
+
+/// Durable facts awaiting reconciliation, including legacy untagged bypass payloads.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum PendingReconciliationMarker {
+    /// A branch rewrite whose map must survive Git removing its rebase state.
+    BranchRewrite(PendingBranchRewrite),
+    /// An environment override whose audit record still needs to be appended.
+    EnvironmentBypass(PendingEnvironmentBypass),
+}
+
+/// The discriminator separating rewrite markers from legacy bypass payloads.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BranchRewriteMarkerKind {
+    /// A rewrite map, which never produces an environment-bypass audit or notice.
+    BranchRewrite,
+}
+
+/// Rewrite facts retained before any committed hook path takes the ledger lock.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct PendingBranchRewrite {
+    /// The marker's wire discriminator.
+    kind:                                         BranchRewriteMarkerKind,
+    /// Old-to-new pairs whose destinations this branch's rewrite created.
+    pub(crate) pairs:                             Vec<RewriteMapPair>,
+    /// The issuing checkout's administrative directory, including linked checkouts.
+    pub(crate) worktree_administrative_directory: PathBuf,
+    /// Committed branch destinations, independent of rewrite-pair order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) new_tips:                          Vec<GitObjectId>,
+    /// Commits introduced by this branch's rewrite, fixed before any reconciliation.
+    pub(crate) created_commits:                   Vec<GitObjectId>,
+    /// Definitively evaluated subjects, so a deferred marker can advance on later passes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) completed_subjects:                Vec<CompletedRewriteSubject>,
+}
+
+/// A proof subject whose definitive rewrite verdict already consumed its turn.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct CompletedRewriteSubject {
+    /// The reservation whose candidate was evaluated.
+    pub(crate) reservation_id: ReservationId,
+    /// The immutable proof revision used for that evaluation.
+    pub(crate) subject:        IntegrationProofSubjectRevision,
+}
+
+/// A decoded rewrite marker and its deletion destination after successful reconciliation.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingBranchRewriteMarker {
+    /// The durable marker removed only after the journal append succeeds.
+    pub(crate) path:    PathBuf,
+    /// The rewrite map and the checkout whose rebase must finish before importing it.
+    pub(crate) rewrite: PendingBranchRewrite,
 }
 
 const fn integration_bypass() -> BypassedAction { BypassedAction::Integration }
@@ -250,10 +308,6 @@ fn write_pending_marker(
     action: BypassedAction,
     cause: BypassCause,
 ) -> Result<(), std::io::Error> {
-    let marker_path = common_git_directory.join(format!(
-        "{PENDING_BYPASS_FILE_PREFIX}{}{PENDING_BYPASS_FILE_SUFFIX}",
-        Uuid::now_v7()
-    ));
     let marker = PendingEnvironmentBypass {
         action,
         cause,
@@ -261,6 +315,42 @@ fn write_pending_marker(
             at: RecordedAt::now(),
         },
     };
+    write_reconciliation_marker(
+        common_git_directory,
+        &PendingReconciliationMarker::EnvironmentBypass(marker),
+    )
+}
+
+/// Persist the issuing checkout's rewrite map without acquiring the ledger lock.
+pub(super) fn write_branch_rewrite_marker(
+    common_git_directory: &Path,
+    worktree_administrative_directory: &Path,
+    pairs: Vec<RewriteMapPair>,
+    new_tips: Vec<GitObjectId>,
+    created_commits: Vec<GitObjectId>,
+) -> Result<(), std::io::Error> {
+    write_reconciliation_marker(
+        common_git_directory,
+        &PendingReconciliationMarker::BranchRewrite(PendingBranchRewrite {
+            kind: BranchRewriteMarkerKind::BranchRewrite,
+            pairs,
+            worktree_administrative_directory: worktree_administrative_directory.to_path_buf(),
+            new_tips,
+            created_commits,
+            completed_subjects: Vec::new(),
+        }),
+    )
+}
+
+/// Share the create-and-sync durability protocol across both marker kinds.
+fn write_reconciliation_marker(
+    common_git_directory: &Path,
+    marker: &PendingReconciliationMarker,
+) -> Result<(), std::io::Error> {
+    let marker_path = common_git_directory.join(format!(
+        "{PENDING_BYPASS_FILE_PREFIX}{}{PENDING_BYPASS_FILE_SUFFIX}",
+        Uuid::now_v7()
+    ));
     let encoded = serde_json::to_vec(&marker).map_err(std::io::Error::other)?;
     let mut marker_file = OpenOptions::new()
         .write(true)
@@ -273,16 +363,109 @@ fn write_pending_marker(
     Ok(())
 }
 
+/// List decoded rewrite markers independently of environment-bypass reporting.
+pub(crate) fn pending_branch_rewrite_markers(
+    common_git_directory: &Path,
+) -> Result<Vec<PendingBranchRewriteMarker>, std::io::Error> {
+    let mut markers = Vec::new();
+    for entry in fs::read_dir(common_git_directory)? {
+        let entry = entry?;
+        if !is_pending_marker_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        // A concurrent importer may have removed this file; other unreadable shared
+        // markers remain the bypass importer's responsibility to report.
+        let Ok(contents) = fs::read(entry.path()) else {
+            continue;
+        };
+        if let Ok(PendingReconciliationMarker::BranchRewrite(rewrite)) =
+            serde_json::from_slice(&contents)
+        {
+            markers.push(PendingBranchRewriteMarker {
+                path: entry.path(),
+                rewrite,
+            });
+        }
+    }
+    markers.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(markers)
+}
+
+/// Delete rewrite markers only after their accepted resnapshots are durable.
+pub(crate) fn delete_branch_rewrite_markers(
+    markers: &[PendingBranchRewriteMarker],
+) -> Result<(), std::io::Error> {
+    delete_marker_paths(markers.iter().map(|marker| marker.path.as_path()))
+}
+
+/// Persist completed candidates atomically after the reconciliation append succeeds.
+pub(crate) fn update_branch_rewrite_markers(
+    markers: &[PendingBranchRewriteMarker],
+) -> Result<(), std::io::Error> {
+    for marker in markers {
+        let contents = match fs::read(&marker.path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let mut rewrite: PendingBranchRewrite =
+            serde_json::from_slice(&contents).map_err(std::io::Error::other)?;
+        for subject in &marker.rewrite.completed_subjects {
+            if !rewrite.completed_subjects.contains(subject) {
+                rewrite.completed_subjects.push(subject.clone());
+            }
+        }
+        let directory = marker.path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "rewrite marker has no parent directory",
+            )
+        })?;
+        let temporary_path =
+            directory.join(format!(".cargo-berth-rewrite-progress-{}", Uuid::now_v7()));
+        let encoded = serde_json::to_vec(&PendingReconciliationMarker::BranchRewrite(rewrite))
+            .map_err(std::io::Error::other)?;
+        let outcome = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)?;
+            file.write_all(&encoded)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            fs::rename(&temporary_path, &marker.path)?;
+            fs::File::open(directory)?.sync_all()
+        })();
+        if outcome.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        outcome?;
+    }
+    Ok(())
+}
+
+/// Recognize the shared pending-marker filename contract.
+fn is_pending_marker_name(name: &str) -> bool {
+    name.starts_with(PENDING_BYPASS_FILE_PREFIX) && name.ends_with(PENDING_BYPASS_FILE_SUFFIX)
+}
+
+/// Recognize rewrite payloads even when their facts cannot be decoded for import.
+fn is_branch_rewrite_payload(contents: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(contents).is_ok_and(|value| {
+        value.get("kind").and_then(serde_json::Value::as_str) == Some("branch_rewrite")
+    })
+}
+
 /// Count durable bypass markers left because the journal could not accept the event.
 pub(crate) fn pending_environment_bypass_count(
     common_git_directory: &Path,
 ) -> Result<u64, std::io::Error> {
     let count = fs::read_dir(common_git_directory)?
         .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| {
-            name.starts_with(PENDING_BYPASS_FILE_PREFIX)
-                && name.ends_with(PENDING_BYPASS_FILE_SUFFIX)
+        .filter(|entry| {
+            is_pending_marker_name(&entry.file_name().to_string_lossy())
+                && !fs::read(entry.path())
+                    .is_ok_and(|contents| is_branch_rewrite_payload(&contents))
         })
         .count();
     u64::try_from(count).map_err(std::io::Error::other)
@@ -307,9 +490,16 @@ pub(crate) fn prepare_pending_bypass_recovery(
             continue;
         }
         let marker_path = entry.path();
-        let marker_result = fs::read(&marker_path)
+        let contents = fs::read(&marker_path);
+        if contents
+            .as_ref()
+            .is_ok_and(|contents| is_branch_rewrite_payload(contents))
+        {
+            continue;
+        }
+        let marker_result = contents
             .and_then(|contents| serde_json::from_slice(&contents).map_err(std::io::Error::other));
-        let Ok(marker): Result<PendingEnvironmentBypass, _> = marker_result else {
+        let Ok(PendingReconciliationMarker::EnvironmentBypass(marker)) = marker_result else {
             unrecorded_occurrences.push(BypassOccurrenceTime::Unavailable);
             continue;
         };
@@ -359,9 +549,19 @@ pub(crate) fn prepare_pending_bypass_recovery(
 pub(crate) fn delete_recovered_bypass_markers(
     recovered_markers: &[RecoveredPendingBypassMarker],
 ) -> Result<(), std::io::Error> {
+    delete_marker_paths(
+        recovered_markers
+            .iter()
+            .map(RecoveredPendingBypassMarker::path),
+    )
+}
+
+/// Remove completed markers idempotently and sync each affected directory once.
+fn delete_marker_paths<'path>(
+    marker_paths: impl Iterator<Item = &'path Path>,
+) -> Result<(), std::io::Error> {
     let mut changed_directories = HashSet::new();
-    for recovered_marker in recovered_markers {
-        let marker_path = recovered_marker.path();
+    for marker_path in marker_paths {
         match fs::remove_file(marker_path) {
             Ok(()) => {
                 if let Some(parent) = marker_path.parent() {
@@ -486,7 +686,9 @@ impl std::error::Error for ForcedIntegrationPermitReplayError {}
 mod tests {
     use std::ffi::OsStr;
     use std::fs;
+    use std::io::ErrorKind;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::process::Command;
 
@@ -503,6 +705,191 @@ mod tests {
     use crate::ledger::BypassCause;
     use crate::ledger::BypassedAction;
     use crate::ledger::BypassedMergeIdentity;
+
+    #[test]
+    fn rewrite_scan_leaves_unreadable_markers_to_bypass_recovery() {
+        let directory = tempdir().expect("marker directory should exist");
+        let marker_path = |name| {
+            directory.path().join(format!(
+                "{PENDING_BYPASS_FILE_PREFIX}{name}{PENDING_BYPASS_FILE_SUFFIX}"
+            ))
+        };
+        let missing_marker = marker_path("vanished");
+        symlink(directory.path().join("missing-target"), &missing_marker)
+            .expect("dangling marker should simulate a vanished read");
+        assert_eq!(
+            fs::read(&missing_marker)
+                .expect_err("dangling marker should fail to read")
+                .kind(),
+            ErrorKind::NotFound
+        );
+        let unreadable_marker = marker_path("unreadable");
+        fs::create_dir(&unreadable_marker).expect("unreadable marker should exist");
+        assert!(fs::read(&unreadable_marker).is_err());
+        let undecodable_marker = marker_path("undecodable");
+        fs::write(&undecodable_marker, b"invalid marker").expect("undecodable marker should exist");
+        super::write_branch_rewrite_marker(
+            directory.path(),
+            directory.path(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("valid rewrite should write");
+        write_pending_marker(
+            directory.path(),
+            BypassedAction::Integration,
+            environment_bypass_cause("read-errors"),
+        )
+        .expect("valid bypass should write");
+
+        let rewrites = super::pending_branch_rewrite_markers(directory.path())
+            .expect("unreadable and undecodable markers should not abort the rewrite scan");
+        assert_eq!(rewrites.len(), 1);
+        let mut recovery = super::prepare_pending_bypass_recovery(directory.path(), &[])
+            .expect("bypass recovery should still report unreadable markers");
+        assert_eq!(recovery.take_imports().len(), 1);
+        assert_eq!(recovery.take_unrecorded_occurrences().len(), 3);
+        assert!(fs::symlink_metadata(missing_marker).is_ok());
+        assert!(unreadable_marker.is_dir());
+        assert!(undecodable_marker.is_file());
+        assert!(super::pending_branch_rewrite_markers(&directory.path().join("absent")).is_err());
+    }
+
+    #[test]
+    fn rewrite_markers_never_become_bypass_counts_audits_or_notices() {
+        let directory = tempdir().expect("marker directory should exist");
+        let administrative_directory = directory.path().join("worktrees/linked");
+        super::write_branch_rewrite_marker(
+            directory.path(),
+            &administrative_directory,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("rewrite marker should write");
+        write_pending_marker(
+            directory.path(),
+            BypassedAction::Integration,
+            environment_bypass_cause("mixed"),
+        )
+        .expect("bypass marker should write");
+        assert_eq!(
+            super::pending_environment_bypass_count(directory.path())
+                .expect("markers should count"),
+            1
+        );
+        let mut bypass = super::prepare_pending_bypass_recovery(directory.path(), &[])
+            .expect("recovery should prepare");
+        assert_eq!(bypass.take_imports().len(), 1);
+        assert!(bypass.take_unrecorded_occurrences().is_empty());
+        let rewrites = super::pending_branch_rewrite_markers(directory.path())
+            .expect("rewrite markers should decode");
+        assert_eq!(rewrites.len(), 1);
+        assert_eq!(
+            rewrites[0].rewrite.worktree_administrative_directory,
+            administrative_directory
+        );
+        super::delete_branch_rewrite_markers(&rewrites)
+            .expect("rewrite cleanup should succeed without bypass reporting");
+        super::delete_branch_rewrite_markers(&rewrites)
+            .expect("rewrite cleanup should be idempotent");
+        assert!(
+            super::pending_branch_rewrite_markers(directory.path())
+                .expect("markers should list")
+                .is_empty()
+        );
+        assert_eq!(
+            super::pending_environment_bypass_count(directory.path())
+                .expect("bypass should remain"),
+            1
+        );
+    }
+
+    #[test]
+    fn rewrite_markers_require_the_created_commits_observed_at_capture() {
+        let directory = tempdir().expect("marker directory should exist");
+        let commit = "1111111111111111111111111111111111111111"
+            .parse()
+            .expect("commit should parse");
+        super::write_branch_rewrite_marker(
+            directory.path(),
+            directory.path(),
+            Vec::new(),
+            Vec::new(),
+            vec![commit],
+        )
+        .expect("rewrite marker should write");
+        let markers = super::pending_branch_rewrite_markers(directory.path())
+            .expect("rewrite marker should decode");
+        assert_eq!(markers[0].rewrite.created_commits.len(), 1);
+        let mut missing = serde_json::to_value(&markers[0].rewrite).expect("marker should encode");
+        missing
+            .as_object_mut()
+            .expect("marker should be an object")
+            .remove("created_commits");
+        assert!(serde_json::from_value::<super::PendingBranchRewrite>(missing.clone()).is_err());
+        fs::write(
+            &markers[0].path,
+            serde_json::to_vec(&missing).expect("marker should encode"),
+        )
+        .expect("unreleased marker should write");
+        assert!(
+            super::pending_branch_rewrite_markers(directory.path())
+                .expect("markers should list")
+                .is_empty()
+        );
+        let mut recovery = super::prepare_pending_bypass_recovery(directory.path(), &[])
+            .expect("undecodable rewrite should remain separate from bypass reporting");
+        assert!(recovery.take_imports().is_empty());
+        assert!(recovery.take_unrecorded_occurrences().is_empty());
+        assert!(markers[0].path.is_file());
+    }
+
+    #[test]
+    fn rewrite_marker_progress_preserves_completed_subjects_across_stale_preflights() {
+        let directory = tempdir().expect("marker directory should exist");
+        super::write_branch_rewrite_marker(
+            directory.path(),
+            directory.path(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("rewrite marker should write");
+        let original =
+            super::pending_branch_rewrite_markers(directory.path()).expect("marker should decode");
+        let mut first = original.clone();
+        let mut second = original;
+        for markers in [&mut first, &mut second] {
+            markers[0]
+                .rewrite
+                .completed_subjects
+                .push(super::CompletedRewriteSubject {
+                    reservation_id: crate::ids::ReservationId::new(),
+                    subject:        serde_json::from_str("1")
+                        .expect("initial revision should decode"),
+                });
+            super::update_branch_rewrite_markers(markers)
+                .expect("completed subject should persist");
+        }
+        let merged = super::pending_branch_rewrite_markers(directory.path())
+            .expect("updated marker should decode");
+        assert_eq!(merged[0].rewrite.completed_subjects.len(), 2);
+        assert_eq!(
+            super::pending_environment_bypass_count(directory.path())
+                .expect("markers should count"),
+            0
+        );
+        super::delete_branch_rewrite_markers(&merged).expect("completed marker should delete");
+        super::update_branch_rewrite_markers(&first)
+            .expect("stale progress should not recreate a deleted marker");
+        assert!(
+            super::pending_branch_rewrite_markers(directory.path())
+                .expect("markers should list")
+                .is_empty()
+        );
+    }
 
     #[test]
     fn both_marker_writers_share_the_typed_occurrence_time_schema() {

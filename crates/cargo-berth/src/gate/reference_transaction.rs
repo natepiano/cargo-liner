@@ -281,7 +281,7 @@ pub(crate) fn evaluate_reference_transaction(
     // fast-forward, so the common case pays one `merge-base --is-ancestor` and stops.
     let rewrites = match transaction.phase {
         ReferenceTransactionPhase::Committed => {
-            rewrite::branch_rewrites(invocation_directory, &local_branch_updates)?
+            rewrite::branch_rewrites(issuing_directory, &local_branch_updates)?
         },
         ReferenceTransactionPhase::Prepared
         | ReferenceTransactionPhase::Preparing
@@ -296,6 +296,7 @@ pub(crate) fn evaluate_reference_transaction(
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
     };
+    let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
     let mut results = Vec::new();
     for update in trunk_updates {
         match update.gate_subject() {
@@ -338,8 +339,12 @@ pub(crate) fn evaluate_reference_transaction(
             },
         }
     }
-    if !rewrites.is_empty() {
-        rewrite::reanchor_rewritten_phases(invocation_directory, &worktree_context, &rewrites)?;
+    if !rewrite_events.is_empty() {
+        rewrite::reanchor_rewritten_phases(
+            invocation_directory,
+            &worktree_context,
+            &rewrite_events,
+        )?;
     }
     Ok(results)
 }
