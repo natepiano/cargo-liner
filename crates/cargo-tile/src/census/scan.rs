@@ -870,9 +870,26 @@ impl Census {
         smoothing: &mut InvocationCpuAccounting,
         now: Instant,
     ) -> InvocationMeasurements {
+        self.attribute_with(system, smoothing, now, |pid| {
+            let measurement = self.process_cpu_time(pid);
+            system.records.get(&pid).map_or(measurement, |record| {
+                record.native_cpu.set(measurement);
+                record.native_cpu.get()
+            })
+        })
+    }
+
+    /// Kernel and fixture counters share invocation smoothing and published PID readings.
+    fn attribute_with(
+        &self,
+        system: &ProcessObservations<'_>,
+        smoothing: &mut InvocationCpuAccounting,
+        now: Instant,
+        read: impl FnMut(Pid) -> Measurement<Duration>,
+    ) -> InvocationMeasurements {
         smoothing.observed.clone_from(&self.lifetimes);
         let sampled: HashMap<_, _> = self
-            .attribute_cpu(system, smoothing, now)
+            .attribute_cpu_with(system, smoothing, now, read)
             .into_iter()
             .filter_map(|(pid, cpu)| {
                 self.identities
@@ -903,21 +920,6 @@ impl Census {
 
     /// Measure accumulated invocation work between scans, validating only its own counter.
     /// Direct descendants take precedence over output-based cache attribution.
-    fn attribute_cpu(
-        &self,
-        system: &ProcessObservations<'_>,
-        smoothing: &mut InvocationCpuAccounting,
-        now: Instant,
-    ) -> HashMap<Pid, Measurement<f32>> {
-        self.attribute_cpu_with(system, smoothing, now, |pid| {
-            let measurement = self.process_cpu_time(pid);
-            system.records.get(&pid).map_or(measurement, |record| {
-                record.native_cpu.set(measurement);
-                record.native_cpu.get()
-            })
-        })
-    }
-
     /// Counter reads share the same ordered accounting pass for kernel and fixture samples.
     fn attribute_cpu_with(
         &self,
@@ -2690,6 +2692,17 @@ impl CensusSequence {
         records: &mut ProcessObservations<'_>,
         now: Instant,
     ) -> Vec<CargoGroup> {
+        self.sample_counters_with_capture(records, now, &Capture::default(), &[])
+    }
+
+    /// Retained CPU accounting sees the same captures and exclusions as row selection.
+    fn sample_counters_with_capture(
+        &mut self,
+        records: &mut ProcessObservations<'_>,
+        now: Instant,
+        capture: &Capture,
+        excluded: &[String],
+    ) -> Vec<CargoGroup> {
         for (&pid, record) in &mut records.records {
             let baseline = CpuBaseline {
                 lifetime:    record.lifetime.as_ref().clone(),
@@ -2702,18 +2715,15 @@ impl CensusSequence {
             .retain(|pid, _| records.records.contains_key(pid));
         let mut census = Census::take(records.records.values());
         census.identities = self.smoothing.identities.observe(&census.lifetimes);
-        let capture = Capture::default();
-        census.prepare(records, &capture, &[]);
-        let attributed = InvocationMeasurements {
-            compilers: census.attribute_compilers(),
-            cpu:       census.attribute_cpu_with(records, &mut self.smoothing, now, |pid| {
-                records.process(pid).map_or(
-                    Measurement::Unavailable(MeasurementAbsence::ReadFailed),
-                    |record| record.native_cpu.get(),
-                )
-            }),
-        };
-        census.groups(records, &attributed, ScannerHome::Unavailable, &capture)
+        census.registration_rows.clone_from(&self.registration_rows);
+        census.prepare(records, capture, excluded);
+        let attributed = census.attribute_with(records, &mut self.smoothing, now, |pid| {
+            records.process(pid).map_or(
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                |record| record.native_cpu.get(),
+            )
+        });
+        census.groups(records, &attributed, ScannerHome::Unavailable, capture)
     }
 
     /// Capture tests can retain deliberately partial ancestry while sharing row assembly.
@@ -2742,7 +2752,11 @@ impl CensusSequence {
     clippy::panic,
     reason = "tests should panic on unexpected values"
 )]
+#[path = "."]
 mod tests {
+    #[path = "scan_cpu_scenario_tests.rs"]
+    mod scan_cpu_scenario_tests;
+
     use std::fs;
     use std::io::BufRead;
     use std::io::BufReader;
@@ -3198,6 +3212,161 @@ mod tests {
     }
 
     #[test]
+    fn foreign_owned_duplicate_cannot_add_or_relabel_a_process_row() {
+        let argv = [OsString::from("cargo"), "build".into()];
+        let mut process = ProcessObservation::cargo(11, &argv);
+        process.parent = ProcessField::Observed(Pid::from_u32(10));
+        process.directory = ProcessField::Observed(Path::new("/writer/project"));
+        assert_foreign_owned_duplicate(&ProcessObservations::new([process]), "100", &[11]);
+    }
+
+    #[test]
+    fn foreign_owned_duplicate_cannot_add_or_relabel_a_registration_row() {
+        assert_foreign_owned_duplicate(&ProcessObservations::default(), "100", &[10]);
+    }
+
+    #[test]
+    fn foreign_owned_duplicate_cannot_confirm_an_unknown_selected_registration() {
+        assert_foreign_owned_duplicate(&ProcessObservations::default(), "", &[]);
+    }
+
+    fn assert_foreign_owned_duplicate(
+        records: &ProcessObservations<'_>,
+        birth: &str,
+        expected_pids: &[u32],
+    ) {
+        let parent = tempdir().expect("shared capture parent");
+        let roots = CaptureRoots::from_parent(parent.path());
+        let crate::root_scan::EffectiveUser::Known(uid) = crate::root_scan::effective_user() else {
+            panic!("fixture owner");
+        };
+        let users = Users::new_with_refreshed_list();
+        let foreign_uid = (0..=u32::MAX)
+            .rev()
+            .find(|candidate| {
+                *candidate != uid && users.iter().all(|user| **user.id() != *candidate)
+            })
+            .expect("unassigned uid");
+        let own = parent.path().join(uid.to_string());
+        let foreign = parent.path().join(foreign_uid.to_string());
+        write_versioned_capture(
+            &own,
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "build",
+            "Blocking waiting for file lock on build directory\n",
+        );
+        write_versioned_capture(
+            &foreign,
+            10,
+            "generation",
+            "/unused-directory",
+            "/writer",
+            "test",
+            "PASS [0.010s] (7/13) unused\n",
+        );
+        let publication = own.join("state/pids/10.generation");
+        if birth.is_empty() {
+            let bytes = String::from_utf8(directory_record_bytes("/writer"))
+                .expect("fixture UTF-8")
+                .replace("\0boot\x00100\0", "\0boot\0\0");
+            fs::write(&publication, bytes).expect("unverifiable selected proof");
+        }
+        let IdentityEvidence::Available(stamp) = directory_record("/writer").identity().clone()
+        else {
+            panic!("fixture birth");
+        };
+        let mut capture = Capture::take_roots(&roots, &|pid| {
+            KernelObservation::for_test(pid, Observation::Present(stamp.clone()))
+        });
+        assert_eq!(capture.root_status.len(), 2);
+        let rejected = &capture.root_status[1];
+        assert_eq!(rejected.owner, RootOwner::Uid(uid));
+        assert_eq!(rejected.root.uid, foreign_uid);
+        assert!(matches!(
+            rejected.state,
+            crate::progress::capture_roots::RootReadStatus::ForeignOwned { .. }
+        ));
+        assert_eq!(rejected.confirmed, 0);
+        assert!(rejected.associations.is_empty());
+        let mut census = Census::take(records.records.values());
+        let groups = CensusSequence::assemble(&mut census, records, &capture, &[]);
+        assert_eq!(
+            groups
+                .iter()
+                .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+                .map(|row| row.pid)
+                .collect::<Vec<_>>(),
+            expected_pids
+        );
+        if birth.is_empty() {
+            assert!(groups.is_empty());
+            assert!(capture.confirmed().is_empty());
+        } else {
+            assert_eq!(groups.len(), 1);
+            assert!(groups[0].rest.is_empty());
+            let row = &groups[0].lead;
+            assert_eq!(row.command, CommandText::of("cargo", &["build"]));
+            assert_eq!(row.path, "~/project");
+            assert_eq!(
+                row.state,
+                CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+            );
+            let RowProvenance::Direct(context) = &row.provenance else {
+                panic!("selected row keeps its accepted-root provenance");
+            };
+            assert_eq!(context.root, CaptureRootIndex(0));
+            assert_eq!(context.account.uid, uid);
+            assert_eq!(context.account.name, capture.root_status[0].account);
+            if records.records.is_empty() {
+                assert_registration_display(&groups, &capture);
+            } else {
+                assert_single_captured_group_display(&groups, &capture);
+            }
+        }
+        census.associate_status(&mut capture, &groups);
+        assert_eq!(capture.root_status[0].associations.len(), 1);
+        assert!(matches!(&capture.root_status[0].associations[0].selection,
+            AssociationSelection::Selected { key, unused, .. }
+                if key.pid == 10 && key.root == CaptureRootIndex(0) && unused.is_empty()));
+        assert!(publication.exists());
+        assert!(own.join("run-generation-10.log").exists());
+        assert!(foreign.join("state/pids/10.generation").exists());
+        assert_ignored_duplicate_settings(&capture, &foreign, uid, foreign_uid);
+    }
+
+    fn assert_ignored_duplicate_settings(
+        capture: &Capture,
+        foreign: &Path,
+        uid: u32,
+        foreign_uid: u32,
+    ) {
+        let mut app = crate::app::App::new_for_test().expect("settings app");
+        app.root_status.clone_from(&capture.root_status);
+        let settings = crate::settings::rows(&app)
+            .rows
+            .into_iter()
+            .map(|row| row.value)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let owner = match &capture.root_status[0].account {
+            AccountName::Resolved(name) => name.clone(),
+            AccountName::Unavailable => uid.to_string(),
+        };
+        let ignored = format!(
+            "{}: owned by {owner}, not by {foreign_uid} — ignored",
+            foreign.canonicalize().expect("foreign path").display()
+        );
+        assert!(settings.contains(&ignored), "{settings}");
+        assert!(!settings.contains("unused directory"), "{settings}");
+        assert!(!settings.contains("/unused-directory"), "{settings}");
+        assert!(settings.contains(": 10.generation)"), "{settings}");
+        assert!(!settings.contains("(10.generation; "), "{settings}");
+    }
+
+    #[test]
     fn two_confirmed_roots_select_one_fallback_and_report_the_unused_proof() {
         let first = tempdir().expect("first root");
         let second = tempdir().expect("second root");
@@ -3345,33 +3514,8 @@ mod tests {
             row.managed,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
-        let mut roster = crate::roster::Roster::new();
-        roster.observe(groups.to_vec(), Instant::now());
-        assert_eq!(roster.groups()[0].rows().count(), 1);
-        let area = ratatui::layout::Rect::new(0, 0, 160, 12);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        crate::render::draw_cell_for_test(
-            &mut buffer,
-            &roster,
-            &crate::tiles::TileContent::Group(groups[0].id()),
-            area,
-            4,
-        );
-        let lines: Vec<String> = (0..area.height)
-            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
-            .collect();
+        let lines = assert_single_captured_group_display(groups, capture);
         let text = lines.join("\n");
-        let account = match &capture.root_status[0].account {
-            AccountName::Resolved(name) => name.clone(),
-            AccountName::Unavailable => capture.root_status[0].root.uid.to_string(),
-        };
-        assert_eq!(
-            text.matches(&format!("[{account}] ~/project")).count(),
-            1,
-            "{text}"
-        );
-        assert_eq!(text.matches("~/project").count(), 1, "{text}");
-        assert_eq!(text.matches("cargo build").count(), 1, "{text}");
         let header = lines
             .iter()
             .find(|line| line.contains(TABLE_HEADERS[CPU_COLUMN]))
@@ -3404,6 +3548,48 @@ mod tests {
             );
         }
         text
+    }
+
+    fn assert_single_captured_group_display(
+        groups: &[CargoGroup],
+        capture: &Capture,
+    ) -> Vec<String> {
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].rest.is_empty());
+        let lines = render_group_lines(&groups[0]);
+        let text = lines.join("\n");
+        let account = match &capture.root_status[0].account {
+            AccountName::Resolved(name) => name.clone(),
+            AccountName::Unavailable => capture.root_status[0].root.uid.to_string(),
+        };
+        assert_eq!(
+            text.matches(&format!("[{account}] ~/project")).count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(text.matches("~/project").count(), 1, "{text}");
+        assert_eq!(text.matches("cargo build").count(), 1, "{text}");
+        lines
+    }
+
+    fn render_group_lines(group: &CargoGroup) -> Vec<String> {
+        let mut roster = crate::roster::Roster::new();
+        roster.observe(vec![group.clone()], Instant::now());
+        assert_eq!(roster.groups().len(), 1);
+        assert_eq!(roster.groups()[0].rows().count(), 1 + group.rest.len());
+        assert_eq!(roster.tiled_ids(&[]), [group.id()]);
+        let area = ratatui::layout::Rect::new(0, 0, 160, 24);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        crate::render::draw_cell_for_test(
+            &mut buffer,
+            &roster,
+            &crate::tiles::TileContent::Group(group.id()),
+            area,
+            4,
+        );
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
     }
 
     #[test]
@@ -4444,6 +4630,382 @@ mod tests {
     }
 
     #[test]
+    fn nested_selected_rows_keep_commands_pids_directories_and_enclosing_progress() {
+        assert_nested_selected_rows("build", &[]);
+    }
+
+    #[test]
+    fn exec_nested_selected_rows_keep_commands_pids_directories_and_enclosing_progress() {
+        assert_nested_selected_rows("run", &[]);
+    }
+
+    #[test]
+    fn exec_excluded_nested_rows_keep_progress_and_writes_continue_after_sweep() {
+        assert_nested_selected_rows("run", &["run".into()]);
+    }
+
+    fn assert_nested_selected_rows(command: &str, excluded: &[String]) {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "enclosing",
+            "/writer/project",
+            "/writer",
+            command,
+            "Blocking waiting for file lock on build directory\n",
+        );
+        write_versioned_capture(
+            root.path(),
+            20,
+            "ended",
+            "/writer/project",
+            "/writer",
+            "build",
+            "ended\n",
+        );
+        let enclosing = root.path().join("state/pids/10.enclosing");
+        let log = root.path().join("run-enclosing-10.log");
+        let mut writer = fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("live writer descriptor");
+        let IdentityEvidence::Available(stamp) = directory_record("/writer").identity().clone()
+        else {
+            panic!("fixture birth");
+        };
+        let capture = Capture::take_from(root.path(), |pid| {
+            KernelObservation::for_test(
+                pid,
+                if pid == 20 {
+                    Observation::Ended
+                } else {
+                    Observation::Present(stamp.clone())
+                },
+            )
+        });
+        assert!(!root.path().join("state/pids/20.ended").exists());
+        assert!(!root.path().join("run-ended-20.log").exists());
+        assert!(enclosing.exists() && log.exists());
+        let outer_argv = if command == "build" {
+            vec!["cargo".into(), command.into()]
+        } else {
+            vec!["/writer/application".into()]
+        };
+        let check_argv = ["cargo".into(), "check".into(), "probe-nested-check".into()];
+        let test_argv = ["cargo".into(), "test".into(), "probe-nested-test".into()];
+        let ancestor_argv = [
+            "cargo".into(),
+            "test".into(),
+            "probe-common-ancestor".into(),
+        ];
+        let mut ancestor = ProcessObservation::cargo(9, &ancestor_argv);
+        ancestor.directory = ProcessField::Observed(Path::new("/writer/ancestor-directory"));
+        let shim_argv = ["cargo".into(), command.into()];
+        let mut shim = ProcessObservation::cargo(10, &shim_argv);
+        shim.parent = ProcessField::Observed(Pid::from_u32(9));
+        shim.directory = ProcessField::Observed(Path::new("/writer/project"));
+        let mut outer = ProcessObservation::cargo(11, &outer_argv);
+        outer.parent = ProcessField::Observed(Pid::from_u32(10));
+        outer.directory = ProcessField::Observed(Path::new("/writer/project"));
+        if command == "run" {
+            outer.name = ProcessField::Observed(OsStr::new("application"));
+        }
+        let nested = [(12, &check_argv), (13, &test_argv)].map(|(pid, argv)| {
+            let mut record = ProcessObservation::cargo(pid, argv);
+            record.parent = ProcessField::Observed(Pid::from_u32(11));
+            record.directory = ProcessField::Observed(Path::new("/writer/nested-directory"));
+            record
+        });
+        let records =
+            ProcessObservations::new([ancestor, shim, outer, nested[0].clone(), nested[1].clone()]);
+        let mut sequence = CensusSequence::default();
+        let groups = sequence.sample_with_capture(
+            &records,
+            &capture,
+            excluded,
+            ScannerHome::Known(Path::new("/writer")),
+        );
+        assert_nested_rows(&groups, command, excluded);
+        writeln!(writer, "writer remains captured after reader scan")
+            .expect("continued capture write");
+        assert!(
+            fs::read_to_string(&log)
+                .expect("retained log")
+                .contains("writer remains captured after reader scan")
+        );
+        assert!(enclosing.exists());
+        assert_eq!(verified_capture(root.path()).confirmed().len(), 1);
+    }
+
+    fn assert_nested_rows(groups: &[CargoGroup], command: &str, excluded: &[String]) {
+        assert_eq!(groups.len(), 1, "nested invocations share one group");
+        let group = &groups[0];
+        assert_eq!(group.lead.pid, 9);
+        assert_eq!(
+            group.lead.command,
+            CommandText::of("cargo", &["test", "probe-common-ancestor"])
+        );
+        let rows: Vec<_> = group.rest.iter().collect();
+        assert_eq!(rows.len(), if excluded.is_empty() { 3 } else { 2 });
+        for (pid, command, marker) in [
+            (12, "check", "probe-nested-check"),
+            (13, "test", "probe-nested-test"),
+        ] {
+            let matching: Vec<_> = rows.iter().filter(|row| row.pid == pid).collect();
+            assert_eq!(matching.len(), 1);
+            let row = matching[0];
+            assert_eq!(row.command, CommandText::of("cargo", &[command, marker]));
+            assert_eq!(row.path, "~/nested-directory");
+            assert_eq!(
+                row.state,
+                CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+            );
+            assert!(matches!(
+                row.capture_membership,
+                CaptureMembership::Enclosing(_)
+            ));
+        }
+        assert_ne!(
+            rows.iter()
+                .find(|row| row.pid == 12)
+                .expect("check")
+                .invocation_id,
+            rows.iter()
+                .find(|row| row.pid == 13)
+                .expect("test")
+                .invocation_id
+        );
+        if excluded.is_empty() {
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.command == CommandText::of("cargo", &[command]))
+                    .count(),
+                1
+            );
+        } else {
+            assert!(
+                rows.iter()
+                    .all(|row| row.command != CommandText::of("cargo", &[command]))
+            );
+        }
+        let lines = render_group_lines(group);
+        let text = lines.join("\n");
+        for row in std::iter::once(&group.lead).chain(&group.rest) {
+            let command = format!(
+                "{} {}",
+                row.command.program,
+                row.command.line(crate::render::SummaryDetail::Full)
+            );
+            let matching: Vec<_> = lines
+                .iter()
+                .filter(|line| line.contains(&command))
+                .collect();
+            assert_eq!(matching.len(), 1, "{text}");
+            assert_eq!(
+                matching[0]
+                    .split_whitespace()
+                    .filter(|word| *word == row.pid.to_string())
+                    .count(),
+                1,
+                "{text}"
+            );
+        }
+        assert_eq!(text.matches("probe-common-ancestor").count(), 1, "{text}");
+        assert_eq!(text.matches("probe-nested-check").count(), 1, "{text}");
+        assert_eq!(text.matches("probe-nested-test").count(), 1, "{text}");
+        assert_eq!(text.matches("blocked").count(), rows.len(), "{text}");
+        if !excluded.is_empty() {
+            assert!(!text.contains(&format!("cargo {command}")), "{text}");
+        }
+    }
+
+    #[test]
+    fn quiet_json_short_selects_one_direct_row_with_original_arguments() {
+        assert_accepted_rewrite_rows(
+            &[
+                "check",
+                "probe-json",
+                "-q",
+                "--message-format=json",
+                "-q",
+                "--",
+                "--quiet",
+                "-q",
+            ],
+            &[
+                "check",
+                "probe-json",
+                "--message-format=json",
+                "--",
+                "--quiet",
+                "-q",
+            ],
+        );
+    }
+
+    #[test]
+    fn quiet_json_separate_selects_one_direct_row_with_original_arguments() {
+        assert_accepted_rewrite_rows(
+            &[
+                "check",
+                "probe-json",
+                "-q",
+                "--message-format",
+                "json",
+                "-q",
+                "--",
+                "--quiet",
+                "-q",
+            ],
+            &[
+                "check",
+                "probe-json",
+                "--message-format",
+                "json",
+                "--",
+                "--quiet",
+                "-q",
+            ],
+        );
+    }
+
+    fn assert_accepted_rewrite_rows(registered: &[&str], executed: &[&str]) {
+        let (root, records_argv) = rewrite_capture(registered, executed);
+        let mut record = ProcessObservation::cargo(11, &records_argv);
+        record.parent = ProcessField::Observed(Pid::from_u32(10));
+        record.directory = ProcessField::Observed(Path::new("/writer/project"));
+        let records = ProcessObservations::new([record]);
+        let mut capture = verified_capture(root.path());
+        let mut census = Census::take(records.records.values());
+        let groups = CensusSequence::assemble(&mut census, &records, &capture, &[]);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].rest.is_empty());
+        let row = &groups[0].lead;
+        assert_eq!(row.pid, 11);
+        assert_eq!(row.command, CommandText::of("cargo", registered));
+        assert_eq!(
+            row.state,
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+        );
+        assert!(matches!(
+            census.direct_capture(&capture, Pid::from_u32(11)),
+            DirectAssociation::Direct(_)
+        ));
+        census.associate_status(&mut capture, &groups);
+        let mut app = crate::app::App::new_for_test().expect("settings app");
+        app.root_status.clone_from(&capture.root_status);
+        let settings = account_settings_text(&app);
+        assert!(
+            settings.contains("capture association: pid 11 via registration 10"),
+            "{settings}"
+        );
+        assert!(root.path().join("state/pids/10.generation").exists());
+        assert!(root.path().join("run-generation-10.log").exists());
+    }
+
+    #[test]
+    fn rejected_non_json_quiet_rewrites_keep_process_and_registration_rows() {
+        for quiet in ["--quiet", "-q"] {
+            assert_rejected_rewrite_rows(
+                &["check", "probe-mismatch", quiet],
+                &["check", "probe-mismatch"],
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_post_separator_quiet_rewrites_keep_process_and_registration_rows() {
+        for quiet in ["--quiet", "-q"] {
+            assert_rejected_rewrite_rows(
+                &[
+                    "check",
+                    "probe-mismatch",
+                    quiet,
+                    "--message-format=json",
+                    "--",
+                    quiet,
+                ],
+                &["check", "probe-mismatch", "--message-format=json", "--"],
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_unrelated_rewrite_keeps_process_and_registration_rows() {
+        assert_rejected_rewrite_rows(
+            &[
+                "check",
+                "probe-mismatch",
+                "--quiet",
+                "--message-format=json",
+                "--workspace",
+            ],
+            &[
+                "check",
+                "probe-mismatch",
+                "--message-format=json",
+                "--release",
+            ],
+        );
+    }
+
+    fn assert_rejected_rewrite_rows(registered: &[&str], executed: &[&str]) {
+        let (root, records_argv) = rewrite_capture(registered, executed);
+        let mut record = ProcessObservation::cargo(11, &records_argv);
+        record.parent = ProcessField::Observed(Pid::from_u32(10));
+        record.directory = ProcessField::Observed(Path::new("/writer/project"));
+        let records = ProcessObservations::new([record]);
+        let capture = verified_capture(root.path());
+        let groups = CensusSequence::default().sample_capture(&records, &capture);
+        let rows: Vec<_> = groups
+            .iter()
+            .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        for (pid, arguments) in [(10, registered), (11, executed)] {
+            let matching: Vec<_> = rows.iter().filter(|row| row.pid == pid).collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].command, CommandText::of("cargo", arguments));
+        }
+        assert_ne!(rows[0].invocation_id, rows[1].invocation_id);
+        assert!(root.path().join("state/pids/10.generation").exists());
+        assert!(root.path().join("run-generation-10.log").exists());
+    }
+
+    fn rewrite_capture(registered: &[&str], executed: &[&str]) -> (TempDir, Vec<OsString>) {
+        let root = tempdir().expect("capture root");
+        write_versioned_capture(
+            root.path(),
+            10,
+            "generation",
+            "/writer/project",
+            "/writer",
+            "check",
+            "Blocking waiting for file lock on build directory\n",
+        );
+        let bytes = directory_record_bytes("/writer");
+        let fields = bytes.split(|byte| *byte == 0).take(7).collect::<Vec<_>>();
+        let mut bytes = fields.join(&0);
+        bytes.push(0);
+        bytes.extend_from_slice(registered.len().to_string().as_bytes());
+        bytes.push(0);
+        for argument in registered {
+            bytes.extend_from_slice(argument.as_bytes());
+            bytes.push(0);
+        }
+        fs::write(root.path().join("state/pids/10.generation"), bytes)
+            .expect("registered arguments");
+        (
+            root,
+            std::iter::once("cargo")
+                .chain(executed.iter().copied())
+                .map(OsString::from)
+                .collect(),
+        )
+    }
+
+    #[test]
     fn json_capture_forwarding_removes_all_quiet_flags_only_before_the_separator() {
         for format in [
             vec!["--message-format=json"],
@@ -5375,7 +5937,7 @@ mod tests {
             .cache_owners
             .insert(compiler.clone(), owner.clone());
         let mut census = census_of(&[]);
-        census.attribute_cpu(
+        census.attribute(
             &ProcessObservations::default(),
             &mut smoothing,
             Instant::now(),
@@ -5384,7 +5946,7 @@ mod tests {
         census
             .lifetimes
             .insert(Pid::from_u32(pid), LifetimeEvidence::Unavailable);
-        census.attribute_cpu(
+        census.attribute(
             &ProcessObservations::default(),
             &mut smoothing,
             Instant::now(),
@@ -5407,7 +5969,7 @@ mod tests {
             Pid::from_u32(123),
             LifetimeEvidence::Available(ProcessLifetime::for_test(2)),
         );
-        census.attribute_cpu(
+        census.attribute(
             &ProcessObservations::default(),
             &mut smoothing,
             Instant::now(),

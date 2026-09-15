@@ -542,9 +542,15 @@ mod tests {
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::Observation;
     use crate::census::DirectAssociation;
+    use crate::census::command_text::CommandText;
+    use crate::census::scan::CensusSequence;
+    use crate::census::scan::ProcessObservation;
+    use crate::census::scan::ProcessObservations;
     use crate::constants::CAPTURE_INVENTORY_LIMIT;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
+    use crate::constants::CAPTURE_REGISTRATION_BYTES;
     use crate::constants::CAPTURE_SWEEP_LIMIT;
+    use crate::constants::SUPPORTED_REGISTRATION_VERSION;
     use crate::progress::Progress;
     use crate::progress::capture_read::Phase;
     use crate::progress::capture_read::RunState;
@@ -1441,6 +1447,218 @@ mod tests {
         assert!(!registration.exists());
         assert!(!log.exists());
         assert!(orphan.exists());
+    }
+
+    #[test]
+    fn unsupported_live_registration_survives_repeated_sibling_sweeps() {
+        assert_ineligible_registration_survives_sweeps(
+            &future_record(),
+            &present("100"),
+            CaptureDiagnostic::UnsupportedRegistrationVersion {
+                path:        PathBuf::new(),
+                encountered: SUPPORTED_REGISTRATION_VERSION + 1,
+                supported:   SUPPORTED_REGISTRATION_VERSION,
+            },
+        );
+    }
+
+    #[test]
+    fn unsupported_ended_registration_survives_repeated_sibling_sweeps() {
+        assert_ineligible_registration_survives_sweeps(
+            &future_record(),
+            &Observation::Ended,
+            CaptureDiagnostic::UnsupportedRegistrationVersion {
+                path:        PathBuf::new(),
+                encountered: SUPPORTED_REGISTRATION_VERSION + 1,
+                supported:   SUPPORTED_REGISTRATION_VERSION,
+            },
+        );
+    }
+
+    #[test]
+    fn oversized_future_registration_survives_repeated_sibling_sweeps() {
+        let mut bytes = future_record();
+        bytes.resize(
+            usize::try_from(CAPTURE_REGISTRATION_BYTES).unwrap() + 1,
+            b'x',
+        );
+        assert_ineligible_registration_survives_sweeps(
+            &bytes,
+            &Observation::Ended,
+            CaptureDiagnostic::UnsupportedRegistrationVersion {
+                path:        PathBuf::new(),
+                encountered: SUPPORTED_REGISTRATION_VERSION + 1,
+                supported:   SUPPORTED_REGISTRATION_VERSION,
+            },
+        );
+    }
+
+    #[test]
+    fn malformed_registration_survives_repeated_sweeps_with_readable_sibling() {
+        let bytes = format!("cargo-tile-v{SUPPORTED_REGISTRATION_VERSION}\0partial\0").into_bytes();
+        assert_ineligible_registration_survives_sweeps(
+            &bytes,
+            &present("100"),
+            CaptureDiagnostic::RegistrationInvalid(PathBuf::new()),
+        );
+    }
+
+    fn future_record() -> Vec<u8> {
+        let mut bytes =
+            format!("cargo-tile-v{}\0", SUPPORTED_REGISTRATION_VERSION + 1).into_bytes();
+        bytes.extend_from_slice(b"\xfffuture-layout\0");
+        bytes
+    }
+
+    fn assert_ineligible_registration_survives_sweeps(
+        bytes: &[u8],
+        observation: &Observation,
+        mut diagnostic: CaptureDiagnostic,
+    ) {
+        let root = capture_root();
+        let (registration, log) = publish(root.path(), 10, "retained", "100", CAPTURED_WAIT);
+        fs::write(&registration, bytes).unwrap();
+        let registration = registration.canonicalize().unwrap();
+        match &mut diagnostic {
+            CaptureDiagnostic::UnsupportedRegistrationVersion { path, .. }
+            | CaptureDiagnostic::RegistrationInvalid(path) => path.clone_from(&registration),
+            _ => panic!("fixture requires a framing diagnostic"),
+        }
+        let readable = publish(root.path(), 11, "readable", "100", CAPTURED_REDRAW);
+        for _ in 0..3 {
+            let ended = publish(root.path(), 12, "ended", "100", CAPTURED_WAIT);
+            let capture = Capture::take_with_observations(root.path(), |pid| match pid {
+                10 => observation.clone(),
+                12 => Observation::Ended,
+                _ => present("100"),
+            });
+            assert!(!ended.0.exists());
+            assert!(!ended.1.exists());
+            assert_eq!(fs::read(&registration).unwrap(), bytes);
+            assert_eq!(fs::read(&log).unwrap(), CAPTURED_WAIT.as_bytes());
+            assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
+            assert_eq!(capture.row_source(10), DirectAssociation::None);
+            assert_eq!(capture.root_status[0].diagnostics, vec![diagnostic.clone()]);
+            assert_eq!(capture.confirmed().len(), 1);
+            assert_eq!(
+                capture.lookup(0, 11),
+                CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403))),
+            );
+            assert!(readable.0.exists() && readable.1.exists());
+            let mut app = crate::app::App::new_for_test().unwrap();
+            app.root_status.clone_from(&capture.root_status);
+            let settings = crate::settings::rows(&app)
+                .rows
+                .into_iter()
+                .map(|row| row.value)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                settings.contains(registration.to_str().unwrap()),
+                "{settings}"
+            );
+            match &diagnostic {
+                CaptureDiagnostic::UnsupportedRegistrationVersion {
+                    encountered,
+                    supported,
+                    ..
+                } => {
+                    assert!(settings.contains("unsupported"), "{settings}");
+                    assert!(settings.contains(&format!("v{encountered}")), "{settings}");
+                    assert!(settings.contains(&format!("v{supported}")), "{settings}");
+                    assert!(
+                        settings.contains("upgrade") && settings.contains("restart"),
+                        "{settings}"
+                    );
+                    assert!(!settings.contains("invalid registration"), "{settings}");
+                },
+                CaptureDiagnostic::RegistrationInvalid(_) => {
+                    assert!(settings.contains("invalid registration"), "{settings}");
+                    assert!(!settings.contains("unsupported"), "{settings}");
+                },
+                _ => panic!("fixture requires a framing diagnostic"),
+            }
+        }
+    }
+
+    #[test]
+    fn forged_live_process_identity_is_swept_without_removing_either_live_capture() {
+        let root = capture_root();
+        let first = publish(root.path(), 10, "first", "100", CAPTURED_WAIT);
+        let victim = publish(root.path(), 11, "victim", "101", CAPTURED_WAIT);
+        let forged = publish(root.path(), 11, "first-forged", "100", CAPTURED_WAIT);
+        let capture = Capture::take_with_observations(root.path(), |pid| {
+            present(if pid == 10 { "100" } else { "101" })
+        });
+        assert!(!forged.0.exists() && !forged.1.exists());
+        for (pid, pair) in [(10, first), (11, victim)] {
+            assert!(pair.0.exists() && pair.1.exists());
+            assert_eq!(
+                capture.lookup(0, pid),
+                CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)),
+            );
+            assert!(matches!(
+                capture.row_source(pid),
+                DirectAssociation::Direct(_)
+            ));
+        }
+        assert_eq!(capture.confirmed().len(), 2);
+    }
+
+    #[test]
+    fn competing_generation_suppresses_metadata_and_progress_until_removed() {
+        assert_competing_generation_recovers("100");
+    }
+
+    #[test]
+    fn unverifiable_generation_suppresses_metadata_and_progress_until_removed() {
+        assert_competing_generation_recovers("");
+    }
+
+    fn assert_competing_generation_recovers(competing_birth: &str) {
+        let root = capture_root();
+        let live = publish(root.path(), 10, "z-live", "100", CAPTURED_WAIT);
+        let competing = publish(
+            root.path(),
+            10,
+            "a-competing",
+            competing_birth,
+            CAPTURED_TALLY,
+        );
+        let bytes = String::from_utf8(record("a-competing", 10, competing_birth))
+            .unwrap()
+            .replace("/writer/project", "/competing-directory")
+            .replace("\0build\0", "\0test\0");
+        fs::write(&competing.0, bytes).unwrap();
+        let argv = ["cargo".into(), "build".into()];
+        let records = ProcessObservations::new([ProcessObservation::cargo(10, &argv)]);
+        let mut sequence = CensusSequence::default();
+        let capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        assert!(matches!(capture.select(10), CaptureSelection::Ambiguous(_)));
+        assert_eq!(capture.row_source(10), DirectAssociation::None);
+        let groups = sequence.sample_capture(&records, &capture);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].lead.pid, 10);
+        assert_eq!(groups[0].lead.command, CommandText::of("cargo", &["build"]));
+        assert_eq!(groups[0].lead.path, "/work");
+        assert_eq!(groups[0].lead.state, CaptureLookup::Unregistered);
+        for path in [&live.0, &live.1, &competing.0, &competing.1] {
+            assert!(path.exists());
+        }
+        fs::remove_file(competing.0).unwrap();
+        fs::remove_file(competing.1).unwrap();
+        let capture = Capture::take_with_observations(root.path(), |_| present("100"));
+        let groups = sequence.sample_capture(&records, &capture);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].lead.pid, 10);
+        assert_eq!(groups[0].lead.command, CommandText::of("cargo", &["build"]));
+        assert_eq!(
+            groups[0].lead.state,
+            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
+        );
+        assert!(live.0.exists() && live.1.exists());
     }
 
     #[test]

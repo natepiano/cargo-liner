@@ -548,7 +548,7 @@ none.
 - macOS nextest and clippy green, or recorded unreachable.
 - Measurements and ledger rows present.
 
-### Phase 5 — cargo-tile: remaining reader scenarios become unit tests  · status: todo
+### Phase 5 — cargo-tile: remaining reader scenarios become unit tests  · status: done
 
 #### Work Order
 

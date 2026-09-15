@@ -59,13 +59,10 @@ mod tests {
     use tui_pane::SettingsRowPayload;
 
     use crate::app::App;
-    use crate::census::InvocationId;
     use crate::census::Measurement;
     use crate::census::spawn_with_resolver;
     use crate::config::Config;
-    use crate::constants::CAPTURE_REGISTRATION_BYTES;
     use crate::constants::POPUP_CHROME_HEIGHT;
-    use crate::constants::PROCESS_POLL_MILLIS;
     use crate::interaction;
     use crate::navigation::AppNavigation;
     use crate::progress::capture_roots::CaptureRoots;
@@ -80,40 +77,16 @@ mod tests {
     /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
     const READER_SCENARIO_SCRIPT: &str = include_str!("reader_scenario.py");
 
-    /// Reaped children remain measurable while fresh descendants appear between scans.
-    #[test]
-    fn reader_reports_cpu_on_every_scan_while_descendants_turn_over() {
-        reader_regression("cpu-turnover");
-    }
-
     /// PTY read boundaries cannot expose a partly redrawn invocation twice.
     #[test]
     fn reader_snapshots_publish_only_completed_terminal_frames() {
-        reader_regression("terminal-frame-completion");
+        run_reader_script("--terminal-frame-self-check");
     }
 
     /// A compiler outside cargo's ancestry charges only its requesting target directory.
     #[test]
     fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
         reader_regression("cpu-cache-server");
-    }
-
-    /// Two live wrapper clients sharing a target cannot establish one external compile owner.
-    #[test]
-    fn reader_refuses_compiler_cache_cpu_when_invocations_share_the_target_directory() {
-        reader_regression("cpu-cache-ambiguous");
-    }
-
-    /// A hidden requester still prevents another command from claiming its compiler.
-    #[test]
-    fn reader_refuses_compiler_cache_cpu_when_an_excluded_invocation_shares_the_target() {
-        reader_regression("cpu-cache-excluded");
-    }
-
-    /// Recovered registration proof preserves the live compiler's rate and prior credit.
-    #[test]
-    fn reader_keeps_compiler_cache_cpu_when_registration_identity_recovers() {
-        reader_regression("cpu-cache-identity-recovery");
     }
 
     /// Consume every production scan so PTY polling cannot miss a brief unavailable row.
@@ -139,11 +112,7 @@ mod tests {
         }
         let parent = std::env::current_dir()?.join("capture");
         let mut output = fs::File::create("cpu-scans")?;
-        let mut identities = fs::File::create("cpu-identities")?;
-        let mut config = Config::default();
-        if let Ok(excluded) = std::env::var("CARGO_TILE_TEST_CPU_EXCLUDED") {
-            config.commands.excluded.push(excluded);
-        }
+        let config = Config::default();
         let (receiver, worker) =
             spawn_with_resolver(&config, move || CaptureRoots::from_parent(&parent));
         let result = (|| {
@@ -163,12 +132,6 @@ mod tests {
                         rows.len()
                     )));
                 }
-                let identity = match &rows[0].invocation_id {
-                    InvocationId::Captured(_) => "captured",
-                    InvocationId::Process(_) => "process",
-                };
-                writeln!(identities, "{identity}")?;
-                identities.flush()?;
                 match &rows[0].cpu {
                     Measurement::Reading(cpu) => writeln!(output, "{index}\t{cpu}")?,
                     Measurement::Unavailable(reason) => writeln!(output, "{index}\t{reason:?}")?,
@@ -184,10 +147,13 @@ mod tests {
 
     /// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
     /// The reader receives the shim's actual records, with no copied Rust implementation.
-    fn reader_regression(scenario: &str) {
+    fn reader_regression(scenario: &str) { run_reader_script(scenario); }
+
+    /// The parser self-check uses the same script without starting a reader.
+    fn run_reader_script(scenario: &str) {
         let directory = tempfile::tempdir().expect("isolate writer and reader processes");
         let mut command = Command::new("python3");
-        if scenario == "terminal-frame-completion" {
+        if scenario == "--terminal-frame-self-check" {
             let inner = Rect::new(0, 0, 80, 10);
             let mut buffer = Buffer::empty(inner);
             render::draw_cell_for_test(
@@ -211,8 +177,6 @@ mod tests {
                 "/src/cargo-capture-shim.sh"
             ))
             .arg(scenario)
-            .arg(CAPTURE_REGISTRATION_BYTES.to_string())
-            .arg(PROCESS_POLL_MILLIS.to_string())
             .arg(CPU_OBSERVATION_SCANS.to_string())
             .output()
             .expect("run isolated production reader regression");
@@ -303,74 +267,9 @@ mod tests {
         assert_eq!(app.framework.settings_pane.viewport().pos(), excluded);
     }
 
-    /// A future layout is diagnosed before its fields can supply identity or cleanup evidence.
-    #[test]
-    fn reader_retains_a_newer_registration_and_log_while_the_writer_is_alive() {
-        reader_regression("version-newer-live");
-    }
-
-    /// Repeated completed sweeps preserve unsupported records even after the writer exits.
-    #[test]
-    fn reader_retains_a_newer_registration_and_log_after_the_writer_exits() {
-        reader_regression("version-newer-ended");
-    }
-
-    /// The read cap must preserve the version diagnostic and both artifacts during cleanup.
-    #[test]
-    fn reader_diagnoses_and_retains_an_oversized_newer_registration_after_cleanup() {
-        reader_regression("version-newer-oversized");
-    }
-
-    /// Supported framing errors remain distinct from a request to upgrade the reader.
-    #[test]
-    fn reader_reports_a_malformed_supported_registration_separately() {
-        reader_regression("version-malformed");
-    }
-
-    /// Nested invocations keep their own rows and their parent's tile through both source changes.
-    #[test]
-    fn reader_keeps_process_children_with_a_parent_that_changes_row_source() {
-        reader_regression("fallback-nested-source-switch");
-    }
-
     /// The shim's quiet rewrite still produces one directly registered JSON invocation.
     #[test]
     fn reader_keeps_one_direct_row_for_quiet_json() { reader_regression("quiet-json-long"); }
-
-    /// Short quiet options are removed only before the argument passthrough boundary.
-    #[test]
-    fn reader_keeps_one_direct_row_for_short_quiet_json() { reader_regression("quiet-json-short"); }
-
-    /// Separate message-format arguments authorize the same exact quiet rewrite.
-    #[test]
-    fn reader_keeps_one_direct_row_for_separate_json_format() {
-        reader_regression("quiet-json-separate");
-    }
-
-    /// Quiet removal without a JSON registration cannot acquire direct ownership.
-    #[test]
-    fn reader_rejects_quiet_removal_from_non_json_registrations() {
-        for scenario in [
-            "rejected-rewrite-non-json-long",
-            "rejected-rewrite-non-json-short",
-        ] {
-            reader_regression(scenario);
-        }
-    }
-
-    /// Quiet arguments after -- belong to the invoked program and must match exactly.
-    #[test]
-    fn reader_rejects_quiet_removal_after_the_passthrough_separator() {
-        for scenario in ["rejected-rewrite-post-long", "rejected-rewrite-post-short"] {
-            reader_regression(scenario);
-        }
-    }
-
-    /// JSON quiet normalization never authorizes another argument to change.
-    #[test]
-    fn reader_rejects_unrelated_argument_changes_during_quiet_removal() {
-        reader_regression("rejected-rewrite-unrelated");
-    }
 
     /// A readable parent retains its family when its only child changes row source.
     #[test]
@@ -385,70 +284,10 @@ mod tests {
         reader_regression("root-headings");
     }
 
-    /// The summary keeps real process ownership when a capture directory claims another uid.
-    #[test]
-    fn reader_summary_ignores_foreign_owned_account_attribution() {
-        reader_regression("summary-root-headings");
-    }
-
-    /// A forged account directory never adds a second view of the process invocation.
-    #[test]
-    fn reader_keeps_one_process_row_when_a_foreign_owned_directory_copies_its_proof() {
-        reader_regression("root-duplicate");
-    }
-
-    /// Selection also prevents duplication without any eligible process row.
-    #[test]
-    fn reader_keeps_one_registration_row_when_a_foreign_owned_directory_copies_its_proof() {
-        reader_regression("fallback-root-duplicate");
-    }
-
-    /// A foreign-owned directory cannot supply confirmation for an unconfirmed account capture.
-    #[test]
-    fn reader_does_not_borrow_confirmation_from_a_foreign_owned_directory() {
-        reader_regression("fallback-selected-unknown");
-    }
-
-    /// One enclosing capture supplies progress without replacing nested commands or pids.
-    #[test]
-    fn reader_keeps_nested_invocations_distinct_with_one_enclosing_capture() {
-        reader_regression("nested");
-    }
-
-    /// An exec replaces cargo with an application without making its cargo children direct owners.
-    #[test]
-    fn reader_keeps_application_spawned_cargo_invocations_distinct() {
-        reader_regression("exec-nested");
-    }
-
-    /// Excluding the captured run cannot hide cargo children launched by its application.
-    #[test]
-    fn reader_keeps_application_spawned_cargo_when_run_is_excluded() {
-        reader_regression("exec-excluded");
-    }
-
-    /// Same-birth publications cannot select an old generation by its filename order.
-    #[test]
-    fn reader_rejects_competing_generations_until_one_publication_remains() {
-        reader_regression("ambiguous-generation");
-    }
-
-    /// Missing birth evidence cannot prove a competing publication belongs to another lifetime.
-    #[test]
-    fn reader_rejects_an_unverifiable_competing_generation() {
-        reader_regression("unverifiable-generation");
-    }
-
     /// Excluded writers remain live for cleanup and nested capture membership.
     #[test]
     fn reader_excludes_a_live_command_without_sweeping_its_capture() {
         reader_regression("excluded");
-    }
-
-    /// Another live pid cannot adopt the identity copied from a published record.
-    #[test]
-    fn reader_rejects_another_live_processes_registration_identity() {
-        reader_regression("forged");
     }
 
     /// Production parsing and kernel verification accept the actual writer's bytes.

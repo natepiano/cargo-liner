@@ -2354,15 +2354,21 @@ pub(crate) fn summary_cpu_for_test(
 mod tests {
     use std::collections::HashMap;
     use std::ffi::OsStr;
+    use std::ffi::OsString;
+    use std::fs;
     use std::io::ErrorKind;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
     use std::time::Instant;
 
     use sysinfo::Pid;
 
     use super::*;
+    use crate::birth_stamp::BirthStamp;
     use crate::birth_stamp::IdentityEvidence;
+    use crate::birth_stamp::KernelObservation;
+    use crate::birth_stamp::Observation;
     use crate::census;
     use crate::census::CargoGroup;
     use crate::census::CargoProcess;
@@ -2372,12 +2378,21 @@ mod tests {
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::RunId;
+    use crate::census::scan::CensusSequence;
     use crate::census::scan::Compiler;
+    use crate::census::scan::ProcessField;
+    use crate::census::scan::ProcessObservation;
+    use crate::census::scan::ProcessObservations;
     use crate::constants::COMPILER_PROCESS_NAMES;
+    use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::PHASE_TESTING;
+    use crate::constants::REGISTRATION_MAGIC;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::UNRESOLVED_TIME;
+    use crate::progress::capture::Capture;
     use crate::progress::capture_read::Phase;
+    use crate::progress::capture_roots::CaptureRoots;
+    use crate::progress::capture_roots::RootReadStatus;
 
     /// The state of a command compiling `done` of `total` units.
     fn compiling(done: usize, total: usize) -> RunState {
@@ -3692,6 +3707,122 @@ mod tests {
             assert!(text.contains("[runner-one] ~/x"), "{text}");
             assert!(text.contains("[runner-two] ~/x"), "{text}");
         }
+    }
+
+    /// Discovery rejects a false account claim before its metadata reaches the summary.
+    #[test]
+    fn summary_rejects_foreign_owned_capture_attribution() {
+        let parent = tempfile::tempdir().expect("shared capture parent");
+        let uid = fs::metadata(parent.path()).expect("fixture owner").uid();
+        let foreign_uid = uid.checked_add(1).expect("another account uid");
+        let capture = summary_capture_accounts(parent.path(), uid, foreign_uid);
+        let first_argv = ["cargo", "build", "first-writer"].map(OsString::from);
+        let second_argv = ["cargo", "build", "second-writer"].map(OsString::from);
+        let records = ProcessObservations::new(
+            [(41, 40, &first_argv), (51, 50, &second_argv)].map(|(pid, shim_pid, argv)| {
+                let mut process = ProcessObservation::cargo(pid, argv);
+                process.parent = ProcessField::Observed(Pid::from_u32(shim_pid));
+                process.directory = ProcessField::Observed(Path::new("/writer/project"));
+                process.uid = ProcessField::Observed(uid);
+                process
+            }),
+        );
+        let mut groups = CensusSequence::default().sample_capture(&records, &capture);
+        // The reader scenario launches the first writer before the second writer.
+        // Give both render inputs the same clock instead of the fixture's process epoch
+        // and registration discovery time, which describe unrelated instants.
+        for group in &mut groups {
+            group.lead.started = RunStart::Known(u64::from(group.lead.pid));
+        }
+        assert_eq!(groups.len(), 2);
+        let own_row = &groups
+            .iter()
+            .find(|group| group.lead.pid == 41)
+            .expect("own writer")
+            .lead;
+        let RowProvenance::Direct(context) = &own_row.provenance else {
+            panic!("own writer has verified capture attribution");
+        };
+        assert_eq!(context.account.uid, uid);
+        let account = match &context.account.name {
+            AccountName::Resolved(name) => name.clone(),
+            AccountName::Unavailable => uid.to_string(),
+        };
+        let heading = format!("[{account}] {}", own_row.path);
+        let other = &groups
+            .iter()
+            .find(|group| group.lead.pid == 51)
+            .expect("foreign writer process")
+            .lead;
+        assert_eq!(other.provenance, RowProvenance::Uncaptured);
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        let area = Rect::new(0, 0, 180, 16);
+        let mut buffer = Buffer::empty(area);
+        draw_cell_for_test(&mut buffer, &roster, &TileContent::Summary, area, 4);
+        let text = (0..area.height)
+            .map(|y| buffer_line(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text.matches(&heading).count(), 1, "{text}");
+        assert!(!text.contains(&format!("[{foreign_uid}]")), "{text}");
+        for marker in ["first-writer", "second-writer"] {
+            assert_eq!(text.matches(marker).count(), 1, "{text}");
+        }
+        let first = text
+            .lines()
+            .position(|line| line.contains("first-writer"))
+            .expect("first summary writer");
+        let second = text
+            .lines()
+            .position(|line| line.contains("second-writer"))
+            .expect("second summary writer");
+        assert!(first < second, "{text}");
+        assert!(second < usize::from(area.height - 1), "{text}");
+        for (account, pid) in [(uid, 40), (foreign_uid, 50)] {
+            let root = parent.path().join(account.to_string());
+            assert!(root.join(format!("state/pids/{pid}.generation")).exists());
+            assert!(root.join("run.log").exists());
+        }
+    }
+
+    /// Publish one accepted account and one directory owned by the wrong account.
+    fn summary_capture_accounts(parent: &Path, uid: u32, foreign_uid: u32) -> Capture {
+        let own = parent.join(uid.to_string());
+        let foreign = parent.join(foreign_uid.to_string());
+        for (directory, pid, marker) in
+            [(&own, 40, "first-writer"), (&foreign, 50, "second-writer")]
+        {
+            fs::create_dir_all(directory.join("state/pids")).expect("publication directory");
+            let magic = std::str::from_utf8(REGISTRATION_MAGIC).expect("registration magic");
+            let bytes = format!(
+                "{magic}\0generation\0boot\x00100\0run.log\0/writer/project\0/writer\x002\0build\0{marker}\0"
+            );
+            fs::write(
+                directory.join(format!("state/pids/{pid}.generation")),
+                bytes,
+            )
+            .expect("publish writer");
+            fs::write(directory.join("run.log"), format!("{LOCK_WAIT_MARKER}\n"))
+                .expect("writer progress");
+        }
+        let IdentityEvidence::Available(birth) = BirthStamp::from_fields("boot", "100") else {
+            panic!("fixture birth stamp");
+        };
+        let capture = Capture::take_roots(&CaptureRoots::from_parent(parent), &|pid| {
+            KernelObservation::for_test(pid, Observation::Present(birth.clone()))
+        });
+        assert_eq!(capture.confirmed().len(), 1);
+        let rejected = capture
+            .root_status
+            .iter()
+            .find(|status| status.root.uid == foreign_uid)
+            .expect("foreign-owned account diagnostic");
+        assert!(matches!(
+            rejected.state,
+            RootReadStatus::ForeignOwned { .. }
+        ));
+        capture
     }
 
     /// Missing passwd entries display the same numeric identity that settings reports.

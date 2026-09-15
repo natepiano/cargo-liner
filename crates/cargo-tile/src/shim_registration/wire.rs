@@ -539,6 +539,138 @@ fn versioned_fields_preserve_original_argument_bytes() {
     assert_eq!(nul_fields(&observed), &fields[8..]);
 }
 
+/// Check the executed argv separately from the original argv published by the shim.
+fn assert_executed_arguments(arguments: &[&str], executed: &[&str]) {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+    assert_cargo_result(&fixture.run(arguments));
+    let observed = fs::read(fixture.path("observations/arguments")).expect("read executed argv");
+    assert_eq!(
+        nul_fields(&observed),
+        executed
+            .iter()
+            .map(|word| word.as_bytes())
+            .collect::<Vec<_>>()
+    );
+    let registration = fixture.registration();
+    assert_eq!(
+        &registration.fields()[8..],
+        arguments
+            .iter()
+            .map(|word| word.as_bytes())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn short_quiet_json_removes_repeated_quiet_only_before_separator() {
+    assert_executed_arguments(
+        &[
+            "check",
+            "probe-json",
+            "-q",
+            "--message-format=json",
+            "-q",
+            "--",
+            "--quiet",
+            "-q",
+        ],
+        &[
+            "check",
+            "probe-json",
+            "--message-format=json",
+            "--",
+            "--quiet",
+            "-q",
+        ],
+    );
+}
+
+#[test]
+fn separate_json_format_removes_repeated_quiet_only_before_separator() {
+    assert_executed_arguments(
+        &[
+            "check",
+            "probe-json",
+            "-q",
+            "--message-format",
+            "json",
+            "-q",
+            "--",
+            "--quiet",
+            "-q",
+        ],
+        &[
+            "check",
+            "probe-json",
+            "--message-format",
+            "json",
+            "--",
+            "--quiet",
+            "-q",
+        ],
+    );
+}
+
+#[test]
+fn non_json_arguments_preserve_both_quiet_spellings() {
+    assert_executed_arguments(&["check", "probe-mismatch"], &["check", "probe-mismatch"]);
+    for quiet in ["--quiet", "-q"] {
+        let arguments = ["check", "probe-mismatch", quiet];
+        assert_executed_arguments(&arguments, &arguments);
+    }
+}
+
+#[test]
+fn json_arguments_preserve_both_quiet_spellings_after_separator() {
+    let executed = ["check", "probe-mismatch", "--message-format=json", "--"];
+    assert_executed_arguments(&executed, &executed);
+    for quiet in ["--quiet", "-q"] {
+        assert_executed_arguments(
+            &[
+                "check",
+                "probe-mismatch",
+                quiet,
+                "--message-format=json",
+                "--",
+                quiet,
+            ],
+            &[
+                "check",
+                "probe-mismatch",
+                "--message-format=json",
+                "--",
+                quiet,
+            ],
+        );
+    }
+}
+
+#[test]
+fn quiet_json_rewrite_preserves_unrelated_arguments() {
+    let executed = [
+        "check",
+        "probe-mismatch",
+        "--message-format=json",
+        "--release",
+    ];
+    assert_executed_arguments(&executed, &executed);
+    assert_executed_arguments(
+        &[
+            "check",
+            "probe-mismatch",
+            "--quiet",
+            "--message-format=json",
+            "--workspace",
+        ],
+        &[
+            "check",
+            "probe-mismatch",
+            "--message-format=json",
+            "--workspace",
+        ],
+    );
+}
+
 /// The old whitespace-joined representation could not distinguish these invocations.
 #[test]
 fn one_argument_with_a_space_differs_from_two_arguments() {
