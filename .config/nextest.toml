@@ -5,6 +5,8 @@
 [[profile.default.overrides]]
 filter           = 'package(cargo-tile) & kind(bin) & test(=shim_registration::reader_scenarios::reader_keeps_parent_family_across_its_only_childs_source_switch)'
 threads-required = "num-cpus"
+# First in the run, it takes every slot before any other test holds one.
+priority = 100
 
 # Tests outside this group are unaffected by its limit, so the exclusive slot
 # above stays for the pane-capacity-sensitive child-source-switch reader.
@@ -23,3 +25,6 @@ package(cargo-tile) & kind(bin) & (
 )
 """
 test-group = "cargo-tile-readers"
+# The group runs one test at a time. Started in binary order, its chain of
+# about 16s ended the run; started first, it finishes alongside everything else.
+priority = 90
