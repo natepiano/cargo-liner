@@ -40,6 +40,7 @@ use crate::coordination_identity::IssuingWorktreeRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::edge::RepositoryTrunk;
 use crate::git;
+use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::JournalEvent;
@@ -55,6 +56,7 @@ use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::ReconciledDriftPreflight;
+use crate::reservation::ActingHeadContainment;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
@@ -105,6 +107,7 @@ struct DriftMutationContext<'observation> {
     path_case:                            PathCase,
     observation:                          &'observation FingerprintObservation,
     pre_lock_foreign_path_classification: &'observation PreLockForeignPathClassification,
+    acting_head_containment:              &'observation ActingHeadContainment,
 }
 
 /// Execute one cheap or full drift observation and reconcile any changed paths.
@@ -323,26 +326,22 @@ fn execute_inner(
         return Ok(Enrollment::Enrolled(report));
     }
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    let pre_lock_foreign_path_classification = PreLockForeignPathClassification::build(
+    // Git is read here, before the lock; the locked replay reuses this observation.
+    let acting_head_containment = ActingHeadContainment::observe(
+        &initial_reservations,
+        worktree_context.repository_root(),
+        resolved_edit_authorization.worktree_id,
+    );
+    let initial_reservations =
+        initial_reservations.with_acting_head_containment(acting_head_containment.clone());
+    let pre_lock_foreign_path_classification = classify_foreign_paths_before_lock(
+        worktree_context,
         &initial_reservations,
         initial_subjects.reporting.as_slice(),
-        &observation.changes,
+        &observation,
+        repository_trunk,
         path_case,
     )?;
-    // The pre-lock pass names the paths a phase committed into a present foreign holder's
-    // scope; their commits are read here, outside the lock, so the locked pass judges each
-    // such path against the holders in force when it was committed and the report naming
-    // below reuses the same batch. The lock holds no git, and nothing is read when there is
-    // no such path.
-    let committed_history = provenance::read_committed_foreign_paths(
-        worktree_context.repository_root(),
-        &initial_reservations,
-        &observation.changes,
-        repository_trunk,
-        &pre_lock_foreign_path_classification.committed_foreign_paths(),
-    )?;
-    let pre_lock_foreign_path_classification =
-        pre_lock_foreign_path_classification.with_committed_history(committed_history);
     let mutation_context = DriftMutationContext {
         request,
         ledger,
@@ -353,6 +352,7 @@ fn execute_inner(
         path_case,
         observation: &observation,
         pre_lock_foreign_path_classification: &pre_lock_foreign_path_classification,
+        acting_head_containment: &acting_head_containment,
     };
     let mut report = transact_classification(&mutation_context)?;
     provenance::name_incursion_commits(
@@ -400,6 +400,37 @@ fn execute_inner(
 /// answering it here aborts the invocation before [`observation::observe`] runs, which would
 /// leave a second presented run's commits with no incursion record against any foreign holder
 /// in the repository.
+/// Classify changed foreign paths before the lock, reading any commits they name.
+///
+/// The pre-lock pass names the paths a phase committed into a present foreign holder's
+/// scope; their commits are read here, outside the lock, so the locked pass judges each
+/// such path against the holders in force when it was committed and the report naming
+/// reuses the same batch. The lock holds no git, and nothing is read when there is
+/// no such path.
+fn classify_foreign_paths_before_lock(
+    worktree_context: &WorktreeContext,
+    reservations: &RetainedReservationSet,
+    reporting: &[ReservationId],
+    observation: &FingerprintObservation,
+    repository_trunk: &RepositoryTrunk,
+    path_case: PathCase,
+) -> Result<PreLockForeignPathClassification, DriftExecutionError> {
+    let classification = PreLockForeignPathClassification::build(
+        reservations,
+        reporting,
+        &observation.changes,
+        path_case,
+    )?;
+    let committed_history = provenance::read_committed_foreign_paths(
+        worktree_context.repository_root(),
+        reservations,
+        &observation.changes,
+        repository_trunk,
+        &classification.committed_foreign_paths(),
+    )?;
+    Ok(classification.with_committed_history(committed_history))
+}
+
 fn validated_drift_identity(
     worktree_id: WorktreeId,
     reservations: &RetainedReservationSet,
@@ -600,7 +631,8 @@ fn transact_classification(
         journal_mutation_actor.coordination_run_id,
         |state| {
             let reservations = match RetainedReservationSet::replay(state.events()) {
-                Ok(reservations) => reservations,
+                Ok(reservations) => reservations
+                    .with_acting_head_containment(context.acting_head_containment.clone()),
                 Err(error) => {
                     return ReconciliationValidation::Reject(DriftTransactionRejection::Replay(
                         error,

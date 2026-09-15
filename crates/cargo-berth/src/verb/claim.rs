@@ -74,6 +74,7 @@ use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
+use crate::reservation::ActingHeadContainment;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
@@ -895,6 +896,12 @@ fn validate_claim_transaction(
         Ok(reservations) => reservations,
         Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
     };
+    let acting_head_containment = ActingHeadContainment::observe(
+        &reservations,
+        worktree_context.repository_root(),
+        worktree_id,
+    );
+    let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(error) = run_validation.validate(
         &reservations,
         &worktree_context,
@@ -959,6 +966,12 @@ fn validate_first_touch_transaction(
             return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
         },
     };
+    let acting_head_containment = ActingHeadContainment::observe(
+        &reservations,
+        worktree_context.repository_root(),
+        worktree_id,
+    );
+    let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(rejection) = validate_first_touch_run(
         run_validation,
         &reservations,

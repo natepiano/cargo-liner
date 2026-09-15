@@ -25,6 +25,7 @@ use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
+use crate::reservation::ActingHeadContainment;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -288,6 +289,12 @@ fn decide(
         .map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization = ledger::resolve_identity(snapshot.worktree_context())
         .map_err(CheckDecisionError::Ledger)?;
+    let acting_head_containment = ActingHeadContainment::observe(
+        &reservations,
+        snapshot.worktree_context().repository_root(),
+        resolved_edit_authorization.worktree_id,
+    );
+    let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
         resolved_edit_authorization,
         snapshot.worktree_context(),

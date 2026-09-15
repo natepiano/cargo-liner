@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use super::conflict::ReservationConflict;
+use super::containment::ActingHeadContainment;
 use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
@@ -146,8 +147,10 @@ impl Reservation {
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RetainedReservationSet {
-    reservations:        Vec<Reservation>,
-    incursion_incidents: Vec<IncursionIncident>,
+    reservations:            Vec<Reservation>,
+    incursion_incidents:     Vec<IncursionIncident>,
+    /// Foreign work the acting HEAD already contains; absent, every foreign extent protects fully.
+    acting_head_containment: Option<ActingHeadContainment>,
 }
 
 /// Whether replay has recorded a protected tip for this reservation.
@@ -270,6 +273,15 @@ impl RetainedReservationSet {
             reservations.apply(event)?;
         }
         Ok(reservations)
+    }
+
+    /// Narrow foreign protection to work the acting HEAD does not already contain.
+    pub(crate) fn with_acting_head_containment(
+        mut self,
+        acting_head_containment: ActingHeadContainment,
+    ) -> Self {
+        self.acting_head_containment = Some(acting_head_containment);
+        self
     }
 
     /// Project actual-trunk evidence and releases before the prepared gate observes a proposal.
@@ -1497,22 +1509,31 @@ impl RetainedReservationSet {
             }
             match reservation.protection_in_worktree(acting_worktree) {
                 ReservationProtection::Clear => None,
-                ReservationProtection::Protected(scopes) => Some((reservation, scopes)),
+                ReservationProtection::Protected(scopes) => {
+                    let remaining = self.acting_head_containment.as_ref().map_or_else(
+                        || scopes.as_slice().to_vec(),
+                        |containment| {
+                            containment.remaining_protection(reservation, acting_worktree, scopes)
+                        },
+                    );
+                    (!remaining.is_empty()).then_some((reservation, remaining))
+                },
             }
         });
         let Some((representative, first_scopes)) = protected_holders.next() else {
             return ConflictProtection::Clear;
         };
         let mut contributors = vec![representative];
-        let mut scopes = first_scopes.as_slice().to_vec();
+        let mut scopes = first_scopes;
         for (contributor, contributor_scopes) in protected_holders {
             contributors.push(contributor);
-            scopes.extend(contributor_scopes.as_slice().iter().cloned());
+            scopes.extend(contributor_scopes);
         }
         // The first contributor guarantees the collection is nonempty.
-        let scopes = ReservationScopeSet::try_from(scopes)
-            .unwrap_or_else(|_| first_scopes.clone())
-            .minimal_antichain(path_case);
+        let Ok(scopes) = ReservationScopeSet::try_from(scopes) else {
+            return ConflictProtection::Clear;
+        };
+        let scopes = scopes.minimal_antichain(path_case);
         ConflictProtection::Protected {
             representative,
             contributors,

@@ -10,6 +10,7 @@
 
 mod conflict;
 mod constants;
+mod containment;
 mod evidence;
 mod lifecycle;
 mod merge_extent;
@@ -20,6 +21,7 @@ mod retention;
 mod scoped_patch_evaluation;
 
 pub(crate) use conflict::ReservationConflict;
+pub(crate) use containment::ActingHeadContainment;
 pub(crate) use evidence::DeferredScopedPatchIntegrationStatus;
 pub(crate) use evidence::IntegrationEvidenceObservation;
 pub(crate) use evidence::PriorIntegrationStatus;

@@ -1777,6 +1777,39 @@ mod merge_extent {
     }
 
     #[test]
+    fn a_worktree_stacked_on_a_holder_edits_the_work_it_already_contains() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "branch work\n");
+        write(&fixture.holder, "staged.rs", "uncommitted holder work\n");
+        board(fixture.trunk());
+        let stacked = fixture.worktrees.path().join("stacked");
+        GIT.run(
+            fixture.trunk(),
+            [
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "stacked",
+                stacked.to_str().expect("worktree path should be UTF-8"),
+                "holder",
+            ],
+        );
+
+        assert_allowed(&stacked, "file:branch.rs", SECOND_RUN);
+        assert_refused(&stacked, "file:staged.rs", SECOND_RUN, &id);
+        assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
+
+        // Commits the holder makes after the stack was taken still protect their paths.
+        commit(&fixture.holder, "later.rs", "later holder work\n");
+        board(fixture.trunk());
+        assert_refused(&stacked, "file:later.rs", SECOND_RUN, &id);
+        assert_allowed(&stacked, "file:branch.rs", SECOND_RUN);
+        claim(&stacked, "file:branch.rs", SECOND_RUN);
+    }
+
+    #[test]
     fn a_clean_claim_that_has_not_written_keeps_running() {
         let fixture = Repository::new();
         let id = claim(fixture.trunk(), "file:tracked.rs", FIRST_RUN);
