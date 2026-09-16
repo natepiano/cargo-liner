@@ -870,12 +870,24 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
     );
     let blocked_envelope = json_output(&blocked);
 
-    assert_eq!(blocked.status.code(), Some(1));
+    // The refusal belongs to the command line, not to an overlap. Reporting it as
+    // `blocked_by_overlap` published an exit-1 block whose `blocked_by` was derived from the
+    // empty conflict list, so the caller was refused an overlap the engine could not name and
+    // told to reduce scopes that nothing held.
+    assert_eq!(blocked.status.code(), Some(5));
+    assert_eq!(blocked_envelope["status"], "invalid_input");
     assert_eq!(blocked_envelope["blocked_by"], serde_json::json!([]));
     assert!(
         blocked_envelope
             .pointer("/payload/data/proposal_token")
             .is_none()
+    );
+    assert!(
+        blocked_envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(&holder_id)),
+        "the refusal must name the reservation the answer bound to: {}",
+        blocked_envelope["message"]
     );
     let journal_after = journal_bytes(repository.path());
     let appended = journal_after
@@ -885,6 +897,18 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
         .expect("the only appended record must be one merge observation");
     assert_eq!(observation["op"], "merge_extent_observed");
     assert_eq!(observation["reservation_id"], holder_id);
+
+    // The recovery the refusal names must work: the same paths claim with no answer at all.
+    assert!(
+        claim_explicit(
+            repository.path(),
+            "file:src/unrelated.rs",
+            FIRST_RUN,
+            "claim the unheld path the answer could not bind",
+        )
+        .status
+        .success()
+    );
 }
 
 #[test]
@@ -937,7 +961,11 @@ fn proposal_is_blocked_when_its_sole_holder_is_released() {
     );
     let blocked_envelope = json_output(&blocked);
 
-    assert_eq!(blocked.status.code(), Some(1));
+    // A released holder leaves the requested scopes unheld, so the answer binds nothing. The
+    // refusal is the command line's, not an overlap's: reporting `blocked_by_overlap` here
+    // published an exit-1 block whose `blocked_by` could name no reservation at all.
+    assert_eq!(blocked.status.code(), Some(5));
+    assert_eq!(blocked_envelope["status"], "invalid_input");
     assert_eq!(blocked_envelope["blocked_by"], serde_json::json!([]));
     assert!(
         blocked_envelope
@@ -1517,6 +1545,48 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
         check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
             .status
             .success()
+    );
+}
+
+/// A foreign holder growing onto a path the run already holds must not freeze the whole run.
+///
+/// A merge extent grows while its worktree works, so it reaches paths other runs acquired
+/// cleanly before it covered them. `bind_widened_scopes` re-binds the subject's complete
+/// widened scope set, and refusing on that whole set meant one unanswered overlap on an
+/// already-held path refused every later widening the run attempted --- the pre-edit hook
+/// reporting the requested path as blocked while the holder's shared scope named a path the
+/// edit never touched. Only the scopes a widening adds may refuse it.
+#[test]
+fn a_foreign_holder_reaching_an_already_held_path_still_permits_widening_elsewhere() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+
+    // The subject acquires `src/shared.rs` by first touch while nothing foreign covers it.
+    assert!(
+        check(repository.path(), &["file:src/shared.rs"], FIRST_RUN)
+            .status
+            .success()
+    );
+
+    // The holder's merge extent then grows onto that same path, unanswered by anyone.
+    dirty_source(&second_root, "src/holder.rs");
+    claim(
+        &second_root,
+        "file:src/holder.rs",
+        SECOND_RUN,
+        "docs/holder.md",
+        "phase-a",
+        "protect the holder file",
+    );
+    dirty_source(&second_root, "src/shared.rs");
+    reconcile_fixture(&second_root);
+
+    // An unrelated new path must still widen the subject's reservation.
+    let widened = check(repository.path(), &["file:src/fresh.rs"], FIRST_RUN);
+    let envelope = json_output(&widened);
+    assert!(
+        widened.status.success(),
+        "a stale overlap on src/shared.rs must not refuse src/fresh.rs: {envelope}"
     );
 }
 

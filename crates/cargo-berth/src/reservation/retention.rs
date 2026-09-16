@@ -419,6 +419,17 @@ impl RetainedReservationSet {
     /// Widening once tested the run and the worktree by hand, with no lifecycle and no
     /// provenance term, and so demanded an answer for a same-worktree holder the hook had
     /// already decided this identity may edit.
+    ///
+    /// The complete set decides the recorded [`ConflictAuthorization`], so a widening still
+    /// audits every overlap the reservation carries. Only `added_scopes` decide refusal: a
+    /// foreign holder's [`MergeExtent`] grows while the subject works, so a scope the subject
+    /// acquired cleanly can fall inside that holder's protection later. Refusing on the
+    /// complete set then froze the whole run --- one unanswered overlap on `Cargo.toml`
+    /// refusing a first-touch widening for an unrelated new file, with
+    /// [`crate::verb::claim`] reporting the requested path as blocked while the holder's
+    /// shared scope named a path the edit never touched. Refusing a widening cannot retract a
+    /// scope the subject already holds, so an overlap that grew onto one is
+    /// [`IncursionIncident`] work, recorded against the path that actually overlaps.
     pub(crate) fn bind_widened_scopes(
         &self,
         subject: &Reservation,
@@ -446,9 +457,13 @@ impl RetainedReservationSet {
             .iter()
             .filter(|(holder, conflict)| {
                 conflict.overlapping_scopes.as_slice().iter().any(|scope| {
-                    !partition::reservations_authorize_scope(
-                        self, subject, holder, scope, path_case,
-                    )
+                    added_scopes
+                        .as_slice()
+                        .iter()
+                        .any(|added_scope| added_scope.overlaps(scope, path_case))
+                        && !partition::reservations_authorize_scope(
+                            self, subject, holder, scope, path_case,
+                        )
                 })
             })
             .map(|(_, conflict)| conflict.clone())

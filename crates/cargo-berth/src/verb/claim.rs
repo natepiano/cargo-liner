@@ -239,6 +239,14 @@ pub(crate) fn execute(
         Ok(Enrollment::Enrolled(ClaimExecution::Blocked { conflicts })) => {
             OutputEnvelope::blocked_claim(conflicts)
         },
+        Ok(Enrollment::Enrolled(ClaimExecution::AnsweredWithoutOverlap(blocker))) => {
+            OutputEnvelope::invalid_input(
+                CommandVerb::Claim,
+                &format!(
+                    "No foreign reservation overlaps the requested paths, so the overlap answer naming reservation {blocker} has nothing to authorize. Claim the same paths again with no overlap answer."
+                ),
+            )
+        },
         Ok(Enrollment::Enrolled(ClaimExecution::AuthorizationRequired(escalation))) => {
             OutputEnvelope::claim_authorization_required(*escalation)
         },
@@ -267,6 +275,7 @@ enum ClaimExecution {
     Blocked {
         conflicts: Vec<ReservationConflict>,
     },
+    AnsweredWithoutOverlap(ReservationId),
     AuthorizationRequired(Box<OverlapEscalationPayload>),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
@@ -854,6 +863,9 @@ fn claim_execution_from_outcome(
         LedgerTransactionOutcome::Rejected(ClaimRejection::Conflict(conflicts)) => {
             Ok(ClaimExecution::Blocked { conflicts })
         },
+        LedgerTransactionOutcome::Rejected(ClaimRejection::AnsweredWithoutOverlap(blocker)) => {
+            Ok(ClaimExecution::AnsweredWithoutOverlap(blocker))
+        },
         LedgerTransactionOutcome::Rejected(ClaimRejection::AuthorizationRequired(escalation)) => {
             Ok(ClaimExecution::AuthorizationRequired(escalation))
         },
@@ -1344,6 +1356,15 @@ fn validate_first_touch_run(
     }
 }
 
+/// Bind one overlap answer to the single conflict it names, or say why it binds nothing.
+///
+/// An answer reaches here because the caller supplied `--before`, `--after`, `--defer`, or
+/// `--override`, which the pre-edit refusal asks for by name. By the time the caller runs the
+/// answered claim, `conflicts_for_claim` can return nothing at all: the holder may have
+/// released, or a refreshed [`crate::reservation::MergeExtent`] may no longer cover the
+/// requested scopes. `ClaimRejection::AnsweredWithoutOverlap` reports that as its own outcome,
+/// because handing the empty conflict list to [`OutputEnvelope::blocked_claim`] would derive
+/// `blocked_by` from it and refuse an overlap it could not name.
 fn validate_authorization(
     request: PermissiveOverlapAuthorizationRequest,
     conflicts: Vec<ReservationConflict>,
@@ -1357,6 +1378,11 @@ fn validate_authorization(
         reason,
         proposal_submission,
     } = request;
+    if conflicts.is_empty() {
+        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(
+            answer.blocker(),
+        ));
+    }
     let [conflict] = conflicts.as_slice() else {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
     };
@@ -1776,6 +1802,8 @@ fn read_packed_reference(
 
 enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
+    /// An overlap answer named this blocker while nothing overlapped the requested scopes.
+    AnsweredWithoutOverlap(ReservationId),
     AuthorizationRequired(Box<OverlapEscalationPayload>),
     Replay(ReservationReplayError),
     CoordinationIdentity(CoordinationIdentityRejection),
