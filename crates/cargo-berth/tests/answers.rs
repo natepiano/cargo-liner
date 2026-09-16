@@ -390,6 +390,49 @@ fn checkpointed_first_touch_reservation_is_neither_reused_nor_widened() {
     );
 }
 
+/// `check` documents that an unprefixed path is one exact file, and `claim` recorded it as a tree,
+/// so `claim crates/hana_liminal/src` reserved every descendant of a path the command line never
+/// marked `tree:`. `src` is a directory prefix here, which is what makes the two readings differ,
+/// and a holder of `src/lib.rs` is what makes the difference observable: a file scope on `src`
+/// shares nothing with that holder, while the tree scope this used to record covers the held file
+/// and stops for authorization.
+#[test]
+fn an_unprefixed_claim_reserves_one_exact_file_rather_than_its_subtree() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
+    claim_explicit(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect one held file",
+    );
+
+    let requested = run_berth(
+        &second_root,
+        [
+            "claim",
+            "src",
+            "--run",
+            SECOND_RUN,
+            "--why",
+            "reserve one directory entry",
+            "--json",
+        ],
+    );
+
+    let envelope = json_output(&requested);
+    assert!(
+        requested.status.success(),
+        "an unprefixed claim on src shares nothing with a holder of src/lib.rs: {envelope:#}"
+    );
+    assert_eq!(
+        envelope["payload"]["data"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src"}]),
+        "an unprefixed claim should record the convention check states"
+    );
+}
+
 #[test]
 fn unidentified_caller_can_issue_and_spend_its_proposal() {
     let repository = initialized_repository();

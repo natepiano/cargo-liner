@@ -165,6 +165,7 @@ const WHY_VALUE_NAME: &str = "WHY";
 const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is intentionally discarded. It records an irreversible abandonment and releases its coordination hold; choosing it for recoverable work loses the trail that identifies where the work went. --why is required so later readers can distinguish a deliberate decision from a lost worktree.";
 const BOARD_LONG_ABOUT: &str = "Inspect current reservations and integration constraints. With both standard input and standard output attached to terminals, bare board opens the full-screen view; otherwise it prints a pointer to board --json. Use --json to emit board facts.";
 const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservations. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants.";
+const CLAIM_LONG_ABOUT: &str = "Reserve repository paths for a reservation. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants. This is the spelling check reports against, so a path that reads clear from check reserves the same extent here.";
 const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached trunk through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied trunk commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
 const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded. It records a distinct orphan-retirement disposition and requires --why so later readers can audit that decision.";
@@ -205,6 +206,7 @@ enum Command {
     /// Run one public harness hook entry point.
     Hook(HookArguments),
     /// Claim paths for a reservation.
+    #[command(long_about = CLAIM_LONG_ABOUT)]
     Claim(ClaimArguments),
     /// Compare observed worktree changes with an active reservation.
     Drift(DriftArguments),
@@ -461,7 +463,8 @@ struct CheckArguments {
         .multiple(false)
 ))]
 struct ClaimArguments {
-    /// The repository paths to reserve.
+    /// The repository paths to reserve; unprefixed paths are files, while `tree:` includes
+    /// descendants.
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
     paths:                Vec<PathBuf>,
     /// Sequence this reservation before the blocking reservation.
@@ -1014,7 +1017,14 @@ impl ClaimArguments {
             head,
             json_output: _,
         } = self;
-        let declared_scopes = DeclaredReservationScopeSet::parse(paths, ScopeKind::Tree)
+        // An unprefixed path is one exact file, the convention `CHECK_LONG_ABOUT` states and
+        // `CheckArguments::into_check_request` already applies. Defaulting to `ScopeKind::Tree`
+        // here reserved every descendant of a path the command line never marked `tree:`, so
+        // `claim crates/hana_liminal/src` took the whole subtree while `check` on the same
+        // spelling reported one file. `hook::pre_tool_use::check_request` agrees on `File`, which
+        // is why one path acquired by first touch recorded `file` and the same path acquired by an
+        // explicit claim recorded `tree`.
+        let declared_scopes = DeclaredReservationScopeSet::parse(paths, ScopeKind::File)
             .map_err(|error| error.to_string())?;
         let source = match (plan, phase) {
             (Some(plan), Some(phase)) => ClaimSource::WorkPlan { plan, phase },
