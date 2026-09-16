@@ -391,8 +391,12 @@ impl BackdropMonitor {
         // A capture whose placement cannot be read is one whose window
         // has closed or moved to another display, and either way a
         // fresh one is what answers.
-        let placement = match (self.last_successful_desktop.available(), self.frame) {
-            (Some(desktop), Some(frame)) => desktop.placement(frame),
+        let placement = match (
+            self.last_successful_desktop.available(),
+            self.frame,
+            metrics,
+        ) {
+            (Some(desktop), Some(frame), Some(metrics)) => desktop.placement(frame, metrics),
             _ => None,
         };
         if let (Some(desktop), Some(placement)) =

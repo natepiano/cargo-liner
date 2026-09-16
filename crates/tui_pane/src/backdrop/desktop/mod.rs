@@ -199,13 +199,25 @@ impl Desktop {
     /// are kept apart: the frame arrives from elsewhere and this turns
     /// it into a column and a row.
     ///
+    /// `metrics` is what the terminal reports *now*, and the cell count
+    /// has to come from there rather than from `self.metrics`. The
+    /// capture's cell count describes the grid it was reduced to, which
+    /// is a different question from where the window stands: read from
+    /// the capture, a window resized since it was taken has the old
+    /// text area subtracted from the current frame, and the padding
+    /// comes out negative. A window taken full width and then halved
+    /// lands 86 columns to the left of the display, and half of it
+    /// falls outside [`color_at`](Self::color_at) and draws nothing.
+    /// The cell *size* stays the capture's, because that is the size
+    /// the grid was reduced at.
+    ///
     /// A window carried onto a *different* display still answers, with
     /// an offset that runs off the end of this one -- every cell of it
     /// then falls outside [`color_at`](Self::color_at) and the drawing
     /// thins away to nothing while the next capture, of the display the
     /// window has arrived on, is on its way.
-    pub(super) fn placement(&self, frame: Frame) -> Option<Placement> {
-        let (columns, rows) = self.metrics.cells;
+    pub(super) fn placement(&self, frame: Frame, metrics: Metrics) -> Option<Placement> {
+        let (columns, rows) = metrics.cells;
         let text_area = (
             self.cell.0 * f64::from(columns),
             self.cell.1 * f64::from(rows),
@@ -423,7 +435,7 @@ mod tests {
             colors: Vec::new(),
         };
         let placement = desktop
-            .placement(FRAME)
+            .placement(FRAME, RETINA)
             .expect("the window is on the display");
         let last_column = placement.column + i32::from(RETINA.cells.0);
         let last_row = placement.row + i32::from(RETINA.cells.1);
@@ -444,6 +456,104 @@ mod tests {
              the display into 35 rows where the window alone needs 67, \
              which is the backdrop covering the full width and dying \
              just under halfway down"
+        );
+    }
+
+    /// One monitor's grid at the cell size the tiled window implies,
+    /// left half red and right half blue, so which half a placement
+    /// reads is visible in what it samples.
+    const TILED_CELL: (f64, f64) = (10.0, 20.0);
+    /// Cells across and down that monitor.
+    const TILED_GRID: (u16, u16) = (344, 72);
+    /// The window filling the monitor's left half.
+    const TILED_FRAME: Frame = Frame {
+        origin: (0.0, 0.0),
+        size:   (1720.0, 1394.0),
+    };
+    /// What the terminal reports while it stands there.
+    const TILED: Metrics = Metrics {
+        text_area: (1720, 1380),
+        cells:     (172, 69),
+    };
+    /// What it reported before it was resized down from the whole
+    /// monitor, which is what a capture taken a moment earlier carries.
+    const MAXIMIZED: Metrics = Metrics {
+        text_area: (3440, 1380),
+        cells:     (344, 69),
+    };
+
+    /// That monitor, reduced by a capture taken while the terminal
+    /// reported `captured`.
+    fn tiled_desktop(captured: Metrics) -> Desktop {
+        let half = TILED_GRID.0 / 2;
+        let colors = (0..TILED_GRID.1)
+            .flat_map(|_| {
+                (0..TILED_GRID.0).map(move |column| {
+                    if column < half {
+                        Color::Rgb(255, 0, 0)
+                    } else {
+                        Color::Rgb(0, 0, 255)
+                    }
+                })
+            })
+            .collect();
+        Desktop {
+            window_id: 1,
+            metrics: captured,
+            origin: (0.0, 0.0),
+            cell: TILED_CELL,
+            columns: TILED_GRID.0,
+            rows: TILED_GRID.1,
+            colors,
+        }
+    }
+
+    /// How many of the window's own top-row cells fall on the red half,
+    /// the blue half, and off the grid entirely.
+    fn sampled(desktop: &Desktop, placement: Placement, width: u16) -> (usize, usize, usize) {
+        let mut counts = (0, 0, 0);
+        for column in 0..width {
+            match desktop.color_at(placement, column, 0) {
+                Some(Color::Rgb(255, 0, 0)) => counts.0 += 1,
+                Some(Color::Rgb(0, 0, 255)) => counts.1 += 1,
+                _ => counts.2 += 1,
+            }
+        }
+        counts
+    }
+
+    /// A capture is reduced at the cell size the terminal reported when
+    /// it was taken, and that is the one thing about it placement may
+    /// read. Its *cell count* belongs to the grid it produced, not to
+    /// where the window stands now -- and a window resized since then
+    /// leaves the two disagreeing. Read from the capture, the padding
+    /// comes out as half of 1720 minus 3440, and the window is placed
+    /// 86 columns off the left of the display.
+    #[test]
+    fn a_capture_whose_metrics_predate_a_resize_still_places_the_window() {
+        let fresh = tiled_desktop(TILED).placement(TILED_FRAME, TILED);
+        let stale = tiled_desktop(MAXIMIZED).placement(TILED_FRAME, TILED);
+
+        let fresh = fresh.expect("the window is on the display");
+        let stale = stale.expect("a stale capture still answers");
+
+        assert_eq!(
+            fresh,
+            Placement {
+                column: 0,
+                row:    1,
+            }
+        );
+        assert_eq!(
+            stale, fresh,
+            "the terminal stands in the same place whatever the capture \
+             was reduced at, so both have to answer alike"
+        );
+        assert_eq!(
+            sampled(&tiled_desktop(MAXIMIZED), stale, TILED.cells.0),
+            (172, 0, 0),
+            "every cell of a window filling the left half reads the red \
+             half; the defect read 86 red and 86 off the grid"
         );
     }
 }
