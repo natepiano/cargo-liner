@@ -28,6 +28,7 @@ use super::constants::KSCREEN_LOADER_PATH;
 use super::constants::KSCREEN_PATH;
 use super::constants::KSCREEN_REQUEST_BACKEND;
 use super::constants::KSCREEN_SERVICE;
+use super::constants::TOPOLOGY_READ_DEADLINE;
 use super::constants::TOPOLOGY_SIGNAL_CAPACITY;
 use super::read_desktop_command;
 use super::session_connection;
@@ -48,7 +49,7 @@ pub(super) struct Output {
 
 impl Output {
     /// The output's logical width and height.
-    fn logical_size(&self) -> (f64, f64) {
+    pub(super) fn logical_size(&self) -> (f64, f64) {
         (
             f64::from(self.size.0) / self.scale,
             f64::from(self.size.1) / self.scale,
@@ -311,8 +312,11 @@ fn refresh_topology(
 
 /// Read a layout once; failures are distinct from a successfully decoded empty layout.
 fn read_outputs() -> TopologyRead {
-    read_desktop_command(Command::new(KSCREEN_COMMAND).arg(KSCREEN_JSON_ARGUMENT))
-        .map_or(TopologyRead::Unreadable, |bytes| parse_outputs(&bytes))
+    read_desktop_command(
+        Command::new(KSCREEN_COMMAND).arg(KSCREEN_JSON_ARGUMENT),
+        TOPOLOGY_READ_DEADLINE,
+    )
+    .map_or(TopologyRead::Unreadable, |bytes| parse_outputs(&bytes))
 }
 
 /// Decode active output geometry at the external JSON boundary.

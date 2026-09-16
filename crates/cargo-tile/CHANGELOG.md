@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- On KDE Plasma the attract screen animates over what is really behind the window -- the other windows standing there, over the actual wallpaper -- instead of a reconstruction of the wallpaper. This needs a desktop entry granting `cargo-tile` the `org.kde.KWin.ScreenShot2` interface, because `KWin` grants it by executable path and nothing prompts for it. `scripts/install-desktop-entry.sh` installs one, and the entry it writes carries the whole explanation in its own comments, so a machine set up months ago still says what the file is for. Without the entry the attract screen behaves exactly as it did before.
 - The grid puts the capture shim in front of cargo itself as it opens, so progress bars work from the first launch and come back on their own after `rustup update`. A toast names the toolchains and `cargo tile uninstall`; a shim left by an earlier version is brought up to date, quietly. `[capture] auto_install = false` in `config.toml` leaves the shim to the subcommands. Taking it out is never automatic.
 - The shim is written beside `cargo` and renamed across, never over the file already there, so a run part way through it keeps the script it opened.
 - A saved favorite whose parameters match the running attract screen is marked with `●`, and the popup's title says how many rows are saved and what the mark means.

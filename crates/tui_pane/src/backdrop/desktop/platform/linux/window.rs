@@ -23,6 +23,7 @@ use super::constants::KDO_TOOL_SEARCH_ARGUMENT;
 use super::constants::KWIN_INTERFACE;
 use super::constants::KWIN_PATH;
 use super::constants::KWIN_SERVICE;
+use super::constants::TOPOLOGY_READ_DEADLINE;
 use super::display;
 use super::display::Output;
 use super::display::OutputSelection;
@@ -404,6 +405,11 @@ pub(super) fn frame(handle: u32) -> Option<Frame> {
     }
 }
 
+/// `KWin`'s own identifier for a previously registered window handle.
+pub(super) fn uuid_of(handle: u32) -> Option<String> {
+    TERMINAL_WINDOWS.lock().ok()?.registry.uuid(handle)
+}
+
 /// Titles of every current terminal window.
 pub(super) fn titles() -> Vec<TitledWindow> {
     inventory_windows(WindowInventoryUse::MarkerIdentification)
@@ -460,8 +466,11 @@ fn search_uuids() -> Result<Vec<String>, WindowSearchFailure> {
     let _access = KDO_TOOL_ACCESS
         .lock()
         .map_err(|_| WindowSearchFailure::AccessPoisoned)?;
-    let bytes = read_desktop_command(Command::new(KDO_TOOL_COMMAND).args(search_arguments()))
-        .map_err(WindowSearchFailure::Command)?;
+    let bytes = read_desktop_command(
+        Command::new(KDO_TOOL_COMMAND).args(search_arguments()),
+        TOPOLOGY_READ_DEADLINE,
+    )
+    .map_err(WindowSearchFailure::Command)?;
     Ok(String::from_utf8_lossy(&bytes)
         .lines()
         .map(str::trim)

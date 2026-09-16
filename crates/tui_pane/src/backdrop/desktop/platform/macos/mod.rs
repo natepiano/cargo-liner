@@ -133,6 +133,9 @@ fn active_displays() -> Vec<Display> {
 fn screen_capture_access_is_granted() -> bool { CGPreflightScreenCaptureAccess() }
 
 /// See [`Desktop::capture`].
+///
+/// The capture excludes this terminal's own windows, so it never
+/// photographs the animation, whatever is on screen when it is taken.
 pub(in crate::backdrop::desktop) fn capture(
     metrics: Metrics,
     capture_window_target: CaptureWindowTarget,

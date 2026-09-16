@@ -24,6 +24,50 @@ pub(super) const XDG_CONFIG_DEFAULT: &str = ".config";
 pub(super) const XDG_DATA_DEFAULT: &str = ".local/share";
 pub(super) const XDG_DATA_DIRS_DEFAULT: &str = "/usr/local/share:/usr/share";
 
+// display composite
+/// How long `KWin` has to run the stacking script and call back.
+///
+/// Measured at well under a second for a stack of twenty-nine windows, so five seconds leaves room
+/// for a busy compositor while still returning inside the monitor's own attempt deadline.
+pub(super) const COMPOSITE_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
+/// How far a window's frame may stand from a display's own rectangle and still be the desktop
+/// covering it.
+pub(super) const COMPOSITE_COVERAGE_TOLERANCE: f64 = 0.01;
+/// How long one composite stands before another is assembled.
+///
+/// Assembling one reads the whole window stack and captures every window standing under this one,
+/// which costs far more than a frame, so the picture is held rather than retaken. The key it is
+/// held under carries the display and this terminal's own metrics, so a display that changes
+/// replaces the picture at once and this only governs how soon a window opening underneath shows
+/// through.
+pub(super) const COMPOSITE_HOLD: Duration = Duration::from_secs(20);
+/// How far the picture's two axes may disagree about pixels per logical coordinate.
+pub(super) const COMPOSITE_RATIO_TOLERANCE: f64 = 0.01;
+/// Keeps one process's scripts apart from another's in a shared directory, and names the plugin
+/// `KWin` unloads each one by.
+pub(super) const COMPOSITE_SCRIPT_PREFIX: &str = "tui-pane-backdrop-";
+/// Where the stacking sink answers on this process's own bus connection.
+pub(super) const SINK_PATH: &str = "/";
+/// Replaced with the bus name the script calls back on, which is only known once connected.
+pub(super) const SINK_PLACEHOLDER: &str = "SINK_NAME";
+/// Reads `KWin`'s stacking order, bottom window first, one window to the line.
+///
+/// `KWin` runs this in its own process and gives it no way to return a value, so it calls the
+/// waiting connection back instead. `workspace.windowList()` is deliberately not used: it reports
+/// creation order, not stacking order, and everything here turns on which windows stand below ours.
+pub(super) const STACKING_SCRIPT: &str = r#"
+const rows = workspace.stackingOrder.map(w => [
+    w.internalId,
+    w.output ? w.output.name : "",
+    w.minimized,
+    w.onAllDesktops,
+    (w.desktops || []).map(d => d.id).join(","),
+    w.frameGeometry.x, w.frameGeometry.y, w.frameGeometry.width, w.frameGeometry.height,
+    w.bufferGeometry.x, w.bufferGeometry.y, w.bufferGeometry.width, w.bufferGeometry.height,
+].join("\t")).join("\n");
+callDBus("SINK_NAME", "/", "dev.tui_pane.Backdrop", "result", rows);
+"#;
+
 // display topology
 pub(super) const DBUS_OWNER_CHANGED_SIGNAL: &str = "NameOwnerChanged";
 pub(super) const DBUS_SERVICE: &str = "org.freedesktop.DBus";
@@ -48,6 +92,30 @@ pub(super) const QGRAY_DIVISOR: u32 = 32;
 pub(super) const QGRAY_GREEN_WEIGHT: u32 = 16;
 pub(super) const QGRAY_RED_WEIGHT: u32 = 11;
 pub(super) const UPSCALE_DISTANCE_MULTIPLIER: f64 = 2.0;
+
+// KWin screenshots
+/// Capture the shadow with the window, so what comes back covers the buffer `KWin` reports.
+pub(super) const SCREENSHOT_DECORATION_OPTION: &str = "include-decoration";
+pub(super) const SCREENSHOT_HEIGHT_RESULT: &str = "height";
+/// `KWin` answers this interface only for a process whose desktop entry declares it in
+/// `X-KDE-DBUS-Restricted-Interfaces`; without one every call returns `NoAuthorized` and the
+/// backend reconstructs Plasma's wallpaper instead.
+pub(super) const SCREENSHOT_INTERFACE: &str = "org.kde.KWin.ScreenShot2";
+pub(super) const SCREENSHOT_PATH: &str = "/org/kde/KWin/ScreenShot2";
+/// Bytes from one row of the picture to the next, which is not always the row's own width.
+pub(super) const SCREENSHOT_STRIDE_RESULT: &str = "stride";
+pub(super) const SCREENSHOT_WIDTH_RESULT: &str = "width";
+pub(super) const SCREENSHOT_WINDOW_METHOD: &str = "CaptureWindow";
+
+// KWin scripting
+pub(super) const KWIN_LOAD_SCRIPT_METHOD: &str = "loadScript";
+pub(super) const KWIN_RUN_SCRIPT_METHOD: &str = "run";
+pub(super) const KWIN_SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
+pub(super) const KWIN_SCRIPTING_PATH: &str = "/Scripting";
+pub(super) const KWIN_SCRIPT_INTERFACE: &str = "org.kde.kwin.Script";
+/// Each loaded script answers at this path followed by the number `loadScript` returned.
+pub(super) const KWIN_SCRIPT_PATH_PREFIX: &str = "/Scripting/Script";
+pub(super) const KWIN_UNLOAD_SCRIPT_METHOD: &str = "unloadScript";
 
 // Plasma D-Bus
 pub(super) const IMAGE_PLUGIN: &str = "org.kde.image";

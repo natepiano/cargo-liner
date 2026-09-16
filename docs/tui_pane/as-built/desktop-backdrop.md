@@ -117,7 +117,55 @@ microseconds.
 - `screen_capture_access_is_granted()` is a direct `CGPreflightScreenCaptureAccess` — it
   never prompts and cannot distinguish "never asked" from "refused".
 
-The non-macOS backend (`platform/fallback.rs`) returns `CaptureFailure::UnsupportedPlatform`.
+KDE Plasma on Wayland has its own backend (below). Every other platform
+(`platform/fallback.rs`) returns `CaptureFailure::UnsupportedPlatform`.
+
+### The KDE Wayland backend — `backdrop/desktop/platform/linux/{mod,compose,display,wallpaper,window}.rs`
+
+Same entry point as macOS: `capture(metrics, capture_window_target, sequence)`. What
+differs is that KWin offers no z-order-limited capture — every call it exposes is a whole
+screen, a whole workspace, or one named window — so the picture macOS gets from
+`CGWindowListCreateImage` with `kCGWindowListOptionOnScreenBelowWindow` is **assembled**
+here instead.
+
+`compose::below_window(uuid, output)` does the assembly:
+
+- `stacking_order()` reads `workspace.stackingOrder` (bottom-to-top) through
+  `org.kde.kwin.Scripting`, which is unrestricted. KWin scripts cannot return a value, so
+  the script is handed the bus name this connection owns and calls a `Sink` back with one
+  tab-separated row per window. `workspace.windowList()` is deliberately not used: it is
+  creation order, not stacking order.
+- The base of the composite is the lowest window below ours that covers the whole output —
+  the plasmashell desktop window, which is where the real wallpaper and its icons live.
+- Every window above that base and below ours, on the same output and sharing a virtual
+  desktop, is captured with `org.kde.KWin.ScreenShot2.CaptureWindow` and drawn over the
+  base at its `bufferGeometry` (the frame grown by its shadow, which is what a capture
+  actually covers).
+- Our own window is absent by construction, which is the whole point: the animation can
+  never photograph itself, so no capture has to wait for a frame that draws nothing.
+
+A composite is held for `COMPOSITE_HOLD` (20s). `CompositeKey` carries the terminal's
+metrics and the output's geometry, so a resize or a display change replaces it at once
+rather than waiting out the hold.
+
+**Every failure falls back to `wallpaper::snapshot` + `render`**, which reconstructs
+Plasma's configured wallpaper for the output. That is deliberate, and it is also what
+makes this backend hard to debug: a total loss of the feature renders as a plausible
+wallpaper with nothing on screen to say so. To see the truth, load a `print()` script into
+KWin (scripting needs no permission) and read `journalctl --user`.
+
+#### The desktop entry is a hard prerequisite
+
+KWin answers `org.kde.KWin.ScreenShot2` only for a process whose desktop entry names that
+interface in `X-KDE-DBUS-Restricted-Interfaces`, matched by the `Exec` path. Without one,
+every capture returns `NoAuthorized` and the backdrop is the wallpaper reconstruction
+forever. There is no prompt and no error.
+
+`crates/cargo-tile/assets/cargo-tile.desktop.in` is the entry, and carries that
+explanation in its own comments. `scripts/install-desktop-entry.sh [binary] [entry-name]`
+installs it and rebuilds KDE's cache. Because the match is on the exact path, a moved or
+reinstalled binary needs the script run again, and a second build (a worktree release
+binary, say) needs its own entry.
 
 ### Window selection — `backdrop/desktop/candidate.rs`
 
@@ -366,6 +414,24 @@ indexes `AttractMode::ALL` directly, so a mode added to `ALL` is drawable by con
   — fine at the backdrop's ~1Hz refresh.
 - `BYTES_PER_PIXEL = 4` (BGRA in; converted to RGBA by `bgra_rows_to_rgba`, which drops
   any per-row `CoreVideo` padding beyond `width*4`).
+
+**KWin geometry is not always whole (`platform/linux/compose.rs`).** KWin reports a
+window the user has *dragged* with a fraction on the end — a live window measured
+`frameGeometry.x = 298.80934941192993`. `Rectangle` holds `i32`, and a `str::parse::<i32>`
+on that fraction fails, which inside `filter_map` silently dropped the whole row. Our own
+window was then missing from the stack, `below_window` returned `None`, and every capture
+took the wallpaper fallback — but only for a window that had been moved by hand, so it
+presented as intermittent. `whole_coordinate` cuts the fraction before parsing. Anything
+reading KWin geometry should assume fractions.
+
+**Composite constants (`platform/linux/constants.rs`).**
+- `COMPOSITE_HOLD = 20s` — how long one composite stands before another is assembled.
+  Bypassed at once when the key changes (metrics or display geometry).
+- `COMPOSITE_ANSWER_DEADLINE = 5s` — how long KWin has to run the stacking script and call
+  back. Measured well under a second for a stack of twenty-nine windows.
+- `COMPOSITE_COVERAGE_TOLERANCE = 0.01`, `COMPOSITE_RATIO_TOLERANCE = 0.01` — how far a
+  frame may stand from the output rectangle and still be the desktop, and how far the
+  picture's two axes may disagree about pixels per logical coordinate.
 
 **Monitor constants (`backdrop/constants.rs`).**
 - `CAPTURE_ATTEMPT_DEADLINE = 5s`, `MAX_CAPTURE_WORKER_REPLACEMENTS = 3`,

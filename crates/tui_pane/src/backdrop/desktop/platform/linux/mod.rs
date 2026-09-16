@@ -1,9 +1,17 @@
-//! The KDE Wayland wallpaper backend.
+//! The KDE Wayland backend.
 //!
 //! `kdotool` supplies `KWin` window UUIDs, `KWin` supplies current window geometry over D-Bus, and
-//! `kscreen-doctor` supplies the logical output layout. Plasma's wallpaper configuration is read
-//! over D-Bus and rendered at the selected output's coordinates.
+//! `kscreen-doctor` supplies the logical output layout.
+//!
+//! What stands underneath the terminal is assembled rather than photographed: [`compose`] reads
+//! `KWin`'s stacking order and draws every window below this one over the display's own desktop
+//! window, so what the animation is drawn from is the monitor as it stands, other windows and all,
+//! without this terminal in it. Where no picture can be taken -- `KWin` refusing the screenshot
+//! interface, a layout that moved under the read, a stack this window is not in -- Plasma's
+//! wallpaper configuration is read over D-Bus and rendered at the selected output's coordinates
+//! instead, which is what this backend did for every capture before.
 
+mod compose;
 mod constants;
 mod display;
 mod wallpaper;
@@ -33,10 +41,10 @@ use ratatui::style::Color;
 use window::ListedWindow;
 use zbus::blocking::Connection;
 
+use self::constants::COMPOSITE_HOLD;
 use self::constants::DESKTOP_READ_POLL_INTERVAL;
 use self::constants::DESKTOP_RETRY_INTERVAL;
 use self::constants::DESKTOP_STDOUT_CHUNK_BYTES;
-use self::constants::TOPOLOGY_READ_DEADLINE;
 use self::wallpaper::WallpaperSnapshot;
 use crate::backdrop::desktop::CaptureAttemptResult;
 use crate::backdrop::desktop::CaptureAttemptSequence;
@@ -56,6 +64,9 @@ static SESSION_CONNECTION: Mutex<SessionConnection<Connection>> =
     Mutex::new(SessionConnection::Unconnected);
 /// The last reduced wallpaper grid, reused while its inputs remain unchanged.
 static WALLPAPER_CACHE: Mutex<Option<CachedWallpaper>> = Mutex::new(None);
+/// The composite the animation is being drawn from, held until a frame that draws nothing over
+/// the grid may replace it.
+static HELD_COMPOSITE: Mutex<Option<HeldComposite>> = Mutex::new(None);
 
 /// Inputs that determine the reduced wallpaper grid.
 #[derive(Clone, Eq, PartialEq)]
@@ -80,7 +91,47 @@ struct CachedWallpaper {
     colors: Vec<Color>,
 }
 
+/// Inputs that decide whether a held composite still describes the display.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CompositeKey {
+    /// Terminal geometry used to size each colour cell.
+    metrics:     Metrics,
+    /// The output's top-left logical coordinate, encoded without floating-point equality.
+    origin_bits: (u64, u64),
+    /// Physical dimensions of the output.
+    output:      (u32, u32),
+    /// The output scale encoded without floating-point equality.
+    scale_bits:  u64,
+}
+
+impl CompositeKey {
+    /// The key one output answers to.
+    const fn of(metrics: Metrics, output: &Output) -> Self {
+        Self {
+            metrics,
+            origin_bits: (output.origin.0.to_bits(), output.origin.1.to_bits()),
+            output: output.size,
+            scale_bits: output.scale.to_bits(),
+        }
+    }
+}
+
+/// One composite of the display, already reduced to terminal-sized colour cells.
+struct HeldComposite {
+    /// Inputs that produced this grid.
+    key:      CompositeKey,
+    /// Cells across and down.
+    grid:     (u16, u16),
+    /// Row-major colours for the grid.
+    colors:   Vec<Color>,
+    /// When the picture was assembled.
+    taken_at: Instant,
+}
+
 /// See [`Desktop::capture`].
+///
+/// What is assembled is only the windows standing below this terminal's own, so it never captures
+/// the animation, whatever is on screen when it is taken.
 pub(in crate::backdrop::desktop) fn capture(
     metrics: Metrics,
     capture_window_target: CaptureWindowTarget,
@@ -116,7 +167,8 @@ pub(in crate::backdrop::desktop) fn capture(
     CaptureAttemptResult::from_desktop_result(sequence, window_selection, desktop_result)
 }
 
-/// Reconstruct the wallpaper for the output holding `chosen`.
+/// Assemble what stands under `chosen` on its output, or reconstruct that output's wallpaper where
+/// no picture can be taken.
 fn capture_selected_window(
     metrics: Metrics,
     chosen: &ListedWindow,
@@ -126,11 +178,11 @@ fn capture_selected_window(
         OutputSelection::Containing(output) | OutputSelection::Nearest(output) => output,
         OutputSelection::NoActiveOutputs => return Err(CaptureFailure::DisplayNotFound),
     };
-    let wallpaper = wallpaper::snapshot(output.screen_index, output.size)
-        .ok_or(CaptureFailure::DisplayCaptureFailed)?;
     let cell = metrics.cell_points(output.scale);
-    let reduction_cell = metrics.cell_points(1.0);
-    let (columns, rows, colors) = reduced_wallpaper(metrics, output, wallpaper, reduction_cell)?;
+    let (columns, rows, colors) = match composited_display(metrics, chosen.handle, output) {
+        Some(reduced) => reduced,
+        None => reconstructed_wallpaper(metrics, output)?,
+    };
     Ok(Desktop {
         window_id: chosen.handle,
         metrics,
@@ -140,6 +192,59 @@ fn capture_selected_window(
         rows,
         colors,
     })
+}
+
+/// Return the composite already held, or assemble and reduce a new one.
+///
+/// [`None`] wherever nothing can be captured, which leaves the caller reconstructing the
+/// wallpaper.
+fn composited_display(
+    metrics: Metrics,
+    handle: u32,
+    output: &Output,
+) -> Option<(u16, u16, Vec<Color>)> {
+    let key = CompositeKey::of(metrics, output);
+    let now = Instant::now();
+    if let Ok(held) = HELD_COMPOSITE.lock()
+        && let Some(held) = held.as_ref()
+        && !composite_due(held, key, now)
+    {
+        return Some((held.grid.0, held.grid.1, held.colors.clone()));
+    }
+    let uuid = window::uuid_of(handle)?;
+    let composite = compose::below_window(&uuid, output)?;
+    let cell = metrics.cell_points(output.scale / composite.ratio);
+    let reduced =
+        reduction::reduce_capture(composite.image.as_raw(), composite.image.dimensions(), cell)
+            .ok()?;
+    if let Ok(mut held) = HELD_COMPOSITE.lock() {
+        *held = Some(HeldComposite {
+            key,
+            grid: (reduced.0, reduced.1),
+            colors: reduced.2.clone(),
+            taken_at: now,
+        });
+    }
+    Some(reduced)
+}
+
+/// Whether a new composite is due.
+///
+/// Assembling one costs a read of the whole window stack and a capture of every window standing
+/// under this one, so it is not done per frame: a composite stands for [`COMPOSITE_HOLD`] unless
+/// the display or the terminal's own geometry has changed under it, which the key carries.
+fn composite_due(held: &HeldComposite, key: CompositeKey, now: Instant) -> bool {
+    held.key != key || now.duration_since(held.taken_at) >= COMPOSITE_HOLD
+}
+
+/// Render Plasma's configured wallpaper for one output and reduce it.
+fn reconstructed_wallpaper(
+    metrics: Metrics,
+    output: &Output,
+) -> Result<(u16, u16, Vec<Color>), CaptureFailure> {
+    let wallpaper = wallpaper::snapshot(output.screen_index, output.size)
+        .ok_or(CaptureFailure::DisplayCaptureFailed)?;
+    reduced_wallpaper(metrics, output, wallpaper, metrics.cell_points(1.0))
 }
 
 /// Return a cached color grid or render and reduce a new one.
@@ -308,9 +413,12 @@ enum DesktopReadFailure {
     Failed(String),
 }
 
-/// Read one desktop command with the same deadline and cleanup for both backends.
-fn read_desktop_command(command: &mut Command) -> Result<Vec<u8>, DesktopReadFailure> {
-    let deadline = Instant::now() + TOPOLOGY_READ_DEADLINE;
+/// Read one desktop command with the same cleanup for every backend, bounded by `deadline`.
+fn read_desktop_command(
+    command: &mut Command,
+    deadline: Duration,
+) -> Result<Vec<u8>, DesktopReadFailure> {
+    let deadline = Instant::now() + deadline;
     let mut process = DesktopSubprocess::spawn(command)
         .map_err(|error| DesktopReadFailure::Failed(error.to_string()))?;
     read_desktop_process(&mut process, |delay| wait_for_desktop_read(deadline, delay))

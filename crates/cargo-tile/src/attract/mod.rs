@@ -1093,11 +1093,16 @@ impl Attract {
             AttractGridPresentation::OverGrid
         };
         if self.faded == u8::MAX {
+            probe::timed(Phase::Refresh, || {
+                self.refresh_backdrop(area, probe::note);
+            });
             self.size_current_animation();
             return self.grid();
         }
 
-        probe::timed(Phase::Refresh, || self.refresh_backdrop(area, probe::note));
+        probe::timed(Phase::Refresh, || {
+            self.refresh_backdrop(area, probe::note);
+        });
         // A capture takes a few frames to arrive and is re-taken on a
         // timer, so having none for a moment is ordinary. Having none
         // for longer than that is the animation drawing nothing at all,
@@ -1286,7 +1291,9 @@ mod tests {
             Ok(()),
         );
 
-        attract.refresh_backdrop(AREA, |record| records.push(record.to_owned()));
+        attract.refresh_backdrop(AREA, |record| {
+            records.push(record.to_owned());
+        });
 
         assert_eq!(
             records,
