@@ -1435,7 +1435,14 @@ fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf 
             "main",
         ],
     );
-    root
+    // `git worktree add` registers the resolved path, and `WorktreeEnrollmentFailure` reports
+    // whatever git registered, so a failure row names the resolved form. On macOS the tempdir
+    // parent is reached through a symlink -- `/tmp` resolves to `/private/tmp` -- and the
+    // unresolved `parent.join(branch)` never equals the row `assert_enrollment_failure` looks
+    // for. Resolve it here, while the directory still exists:
+    // `init_reports_unavailable_worktrees_and_enrolls_locked_worktrees` removes the checkout
+    // before it asserts, and nothing could resolve the path afterwards.
+    fs::canonicalize(&root).expect("new worktree should canonicalize")
 }
 
 fn worktree_administrative_directory(worktree_root: &Path) -> PathBuf {

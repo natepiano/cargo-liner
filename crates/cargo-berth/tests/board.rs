@@ -4093,9 +4093,14 @@ fn append_pending_mapped_subject(fixture: &HistoricalIntegrationFixture) -> Stri
     mapped_claim["head_snapshot"]["head"] = serde_json::json!(reservation.protected_tip);
     mapped_claim["head_snapshot"]["full_ref"] = serde_json::json!("refs/heads/mapped-holder");
     mapped_claim["worktree_root"] = serde_json::json!(mapped_root);
+    // `git rev-parse --absolute-git-dir` resolves symlinks before printing, so on macOS
+    // `administrative` arrives under `/private/tmp` while `root` is still the unresolved tempdir.
+    // Resolve the common git directory the same way, or `strip_prefix` fails on that prefix alone.
+    let common_git_directory =
+        fs::canonicalize(root.join(".git")).expect("common git directory should canonicalize");
     mapped_claim["worktree_administrative_locator"] = serde_json::json!(
         administrative
-            .strip_prefix(root.join(".git"))
+            .strip_prefix(&common_git_directory)
             .expect("linked administrative locator should be relative")
     );
     append_journal_operation_with_actor(
@@ -5682,7 +5687,10 @@ fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::pat
             "main",
         ],
     );
-    root
+    // `git worktree add` registers the resolved path, so every claim this fixture writes to the
+    // journal must carry the same form the engine parses into `CanonicalWorktreeRoot`. On macOS
+    // `/tmp` resolves to `/private/tmp`, which the unresolved `parent.join(branch)` would not.
+    fs::canonicalize(&root).expect("new worktree should canonicalize")
 }
 
 fn worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
