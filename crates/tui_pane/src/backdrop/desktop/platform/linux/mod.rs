@@ -34,6 +34,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use compose::Layout;
 use display::Output;
 use display::OutputSelection;
 use display::TopologyRead;
@@ -92,7 +93,7 @@ struct CachedWallpaper {
 }
 
 /// Inputs that decide whether a held composite still describes the display.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 struct CompositeKey {
     /// Terminal geometry used to size each colour cell.
     metrics:     Metrics,
@@ -102,16 +103,19 @@ struct CompositeKey {
     output:      (u32, u32),
     /// The output scale encoded without floating-point equality.
     scale_bits:  u64,
+    /// The windows the picture was assembled from, and where they stood.
+    layout:      Layout,
 }
 
 impl CompositeKey {
-    /// The key one output answers to.
-    const fn of(metrics: Metrics, output: &Output) -> Self {
+    /// The key one output and one arrangement of windows answer to.
+    fn of(metrics: Metrics, output: &Output, layout: Layout) -> Self {
         Self {
             metrics,
             origin_bits: (output.origin.0.to_bits(), output.origin.1.to_bits()),
             output: output.size,
             scale_bits: output.scale.to_bits(),
+            layout,
         }
     }
 }
@@ -196,6 +200,10 @@ fn capture_selected_window(
 
 /// Return the composite already held, or assemble and reduce a new one.
 ///
+/// The stacking order is read every time, because it is what says whether the picture already
+/// held still describes the display and it costs a few milliseconds against the round trip per
+/// window a picture costs.
+///
 /// [`None`] wherever nothing can be captured, which leaves the caller reconstructing the
 /// wallpaper.
 fn composited_display(
@@ -203,16 +211,17 @@ fn composited_display(
     handle: u32,
     output: &Output,
 ) -> Option<(u16, u16, Vec<Color>)> {
-    let key = CompositeKey::of(metrics, output);
+    let uuid = window::uuid_of(handle)?;
+    let layout = compose::layout_below(&uuid, output)?;
+    let key = CompositeKey::of(metrics, output, layout.clone());
     let now = Instant::now();
     if let Ok(held) = HELD_COMPOSITE.lock()
         && let Some(held) = held.as_ref()
-        && !composite_due(held, key, now)
+        && !composite_due(held, &key, now)
     {
         return Some((held.grid.0, held.grid.1, held.colors.clone()));
     }
-    let uuid = window::uuid_of(handle)?;
-    let composite = compose::below_window(&uuid, output)?;
+    let composite = layout.capture()?;
     let cell = metrics.cell_points(output.scale / composite.ratio);
     let reduced =
         reduction::reduce_capture(composite.image.as_raw(), composite.image.dimensions(), cell)
@@ -230,11 +239,12 @@ fn composited_display(
 
 /// Whether a new composite is due.
 ///
-/// Assembling one costs a read of the whole window stack and a capture of every window standing
-/// under this one, so it is not done per frame: a composite stands for [`COMPOSITE_HOLD`] unless
-/// the display or the terminal's own geometry has changed under it, which the key carries.
-fn composite_due(held: &HeldComposite, key: CompositeKey, now: Instant) -> bool {
-    held.key != key || now.duration_since(held.taken_at) >= COMPOSITE_HOLD
+/// Assembling one costs a capture of every window standing under this one, so it is not done per
+/// frame: a composite stands for [`COMPOSITE_HOLD`] unless the display, the terminal's own
+/// geometry, or the arrangement of the windows it was drawn from has changed under it, all of
+/// which the key carries.
+fn composite_due(held: &HeldComposite, key: &CompositeKey, now: Instant) -> bool {
+    held.key != *key || now.duration_since(held.taken_at) >= COMPOSITE_HOLD
 }
 
 /// Render Plasma's configured wallpaper for one output and reduce it.

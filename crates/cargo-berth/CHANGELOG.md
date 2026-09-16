@@ -24,44 +24,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A linked worktree added after `cargo-berth init` reads the main worktree's
-  `.claude/config/berth.toml` when it has none of its own. The file is untracked,
-  so `git worktree add` never carried it, and the new worktree reported
-  `unconfigured`: every verb stopped there, and the edit hook allowed every write
-  in silence. A file the linked worktree does have still wins, and a worktree with
-  no file anywhere names the main worktree's path as the one `init` should create.
-- The pre-edit hook honors `CARGO_BERTH_BYPASS=1`. The wrapper only checked that
-  the engine was on `PATH` and then replaced itself with it, so a hung or crashed
-  engine blocked every write with no escape hatch. The wrapper now allows the
-  edit before any engine invocation and leaves a pending-bypass marker whose
-  `action` is `editing`; the engine honors the variable the same way when
-  invoked directly, and marker recovery records the action a marker names.
-- A post-commit drift check names only the paths the commit under observation
-  introduced or the working tree holds open. The full comparison ranges from
-  each reservation's phase start, so a path one commit left unclaimed was
-  reported again, as ambiguous drift, at every later commit on the branch
-  whether or not that commit touched it.
-- The recovery command an ambiguous first touch prints resolves that ambiguity
-  when run verbatim. The printed `cargo-berth check --reservation <id> <path>`
-  had no session, so from a plain shell it selected the reservation for that one
-  invocation, published no mapping, and the next edit was refused identically.
-  The command now carries `CARGO_BERTH_SESSION_ID=<session>` for the session
-  that was refused.
-- An incursion observation pairs each entered path with the holders that block
-  it. The observation and the retained incident carried paths and holders as two
-  independent sets, so a caller could report every path under the union of all
-  their holders; an answered path then stopped matching its own incident as soon
-  as an unrelated path added a holder, and was raised again. The `incursion`
-  journal record now writes `blocked_paths`; records already written in the
-  two-array layout replay unchanged.
-- The batched-attribution benchmark no longer sits in the test suite. It timed
-  two hand-copied git command lines against each other with a 25ms margin, so
-  it went red whenever the machine was busy and never ran cargo-berth at all.
-  The property it meant to pin, one `git log` for any number of paths and
-  commits, is already asserted by the post-commit cardinality matrix through
-  the real engine.
+  untracked `.claude/config/berth.toml` when it has none of its own, rather than
+  reporting `unconfigured` and letting the edit hook allow every write in silence.
+- The pre-edit hook honors `CARGO_BERTH_BYPASS=1`: it allows the edit before any
+  engine invocation and leaves a pending-bypass marker, so a hung engine no longer
+  blocks every write with no escape hatch.
+- A post-commit drift check names only the paths the commit introduced or the
+  working tree holds open, rather than re-reporting a path left unclaimed at every
+  later commit on the branch.
+- The recovery command an ambiguous first touch prints now carries
+  `CARGO_BERTH_SESSION_ID=<session>`, so running it verbatim resolves the
+  ambiguity instead of publishing no mapping and refusing the next edit.
+- An incursion observation pairs each entered path with the holders that block it.
+  Carried as two independent sets, an answered path stopped matching its own
+  incident as soon as an unrelated path added a holder. The `incursion` record now
+  writes `blocked_paths`; records in the two-array layout replay unchanged.
+- The batched-attribution benchmark no longer sits in the test suite: it timed two
+  hand-copied git command lines against each other with a 25ms margin and never
+  ran cargo-berth at all.
 
 ### Notes
 
 - The initial release coordinates one repository at a time. It does not select
   integration order, track project phases, or provide an editor write hook.
 - The trunk gate ships in observe mode. Rejection is enabled per repository.
+

@@ -56,6 +56,7 @@ use super::constants::SCREENSHOT_DECORATION_OPTION;
 use super::constants::SCREENSHOT_HEIGHT_RESULT;
 use super::constants::SCREENSHOT_INTERFACE;
 use super::constants::SCREENSHOT_PATH;
+use super::constants::SCREENSHOT_SHADOW_OPTION;
 use super::constants::SCREENSHOT_STRIDE_RESULT;
 use super::constants::SCREENSHOT_WIDTH_RESULT;
 use super::constants::SCREENSHOT_WINDOW_METHOD;
@@ -73,6 +74,26 @@ pub(super) struct Composite {
     pub(super) ratio: f64,
 }
 
+/// What one display's picture is assembled from: the display's own
+/// desktop window, and standing over it every window below this
+/// terminal's that shows beside it.
+///
+/// Read on its own, ahead of any picture, because it is cheap where the
+/// picture is not -- the stack read measures at five milliseconds, and a
+/// capture is a round trip and a pipe of pixels for every window in the
+/// list. Kept beside the picture it produced, it is also what says
+/// whether that picture still describes the display: a window that has
+/// moved, opened, closed, or been raised over another reads back as a
+/// different layout, and the picture is assembled again.
+#[derive(Clone, Eq, PartialEq)]
+pub(super) struct Layout {
+    /// The display's own desktop window, which everything else is drawn
+    /// over.
+    desktop: StackedWindow,
+    /// The windows standing over it, in the order `KWin` stacks them.
+    over:    Vec<StackedWindow>,
+}
+
 /// One window in `KWin`'s stacking order.
 #[derive(Clone, Eq, PartialEq)]
 struct StackedWindow {
@@ -87,11 +108,9 @@ struct StackedWindow {
     on_all:    bool,
     /// The virtual desktops the window shows on.
     desktops:  String,
-    /// The window's frame, in `KWin`'s logical coordinates.
+    /// The window's frame, in `KWin`'s logical coordinates, which is
+    /// what a capture of the window covers.
     frame:     Rectangle,
-    /// The window's buffer -- the frame grown by its shadow, and what a
-    /// capture of this window actually covers.
-    buffer:    Rectangle,
 }
 
 /// A rectangle in `KWin`'s logical coordinates.
@@ -124,79 +143,71 @@ impl Sink {
     fn result(&self, rows: String) { let _ = self.sender.send(rows); }
 }
 
-/// Draw everything below `uuid` on `output` over that display's desktop.
+/// What stands below `uuid` on `output`, ready to be drawn.
 ///
 /// [`None`] wherever the stack cannot be read, the window is no longer
-/// in it, or the display's own desktop cannot be captured -- each of
-/// which leaves the caller reconstructing Plasma's wallpaper instead.
-pub(super) fn below_window(uuid: &str, output: &Output) -> Option<Composite> {
+/// in it, or nothing below it covers the display -- each of which leaves
+/// the caller reconstructing Plasma's wallpaper instead.
+pub(super) fn layout_below(uuid: &str, output: &Output) -> Option<Layout> {
     let stack = stacking_order()?;
     let ours = stack.iter().position(|window| window.uuid == uuid)?;
-    let below = &stack[..ours];
-    let (desktop, over) = desktop_and_windows(below, &stack[ours], output)?;
-
-    let connection = Connection::session().ok()?;
-    let screenshot = Proxy::new(
-        &connection,
-        KWIN_SERVICE,
-        SCREENSHOT_PATH,
-        SCREENSHOT_INTERFACE,
-    )
-    .ok()?;
-
-    let mut image = capture_window(&screenshot, &desktop.uuid)?;
-    let ratio = pixels_per_coordinate(&image, desktop.buffer)?;
-    let covered = desktop.buffer;
-    let across = image.width();
-    let down = image.height();
-    for window in over {
-        let Some(captured) = capture_window(&screenshot, &window.uuid) else {
-            continue;
-        };
-        imageops::overlay(
-            &mut image,
-            &captured,
-            scaled(
-                window.buffer.origin.0,
-                covered.origin.0,
-                across,
-                covered.size.0,
-            ),
-            scaled(
-                window.buffer.origin.1,
-                covered.origin.1,
-                down,
-                covered.size.1,
-            ),
-        );
-    }
-    Some(Composite { image, ratio })
+    Layout::of(&stack[..ours], &stack[ours], output)
 }
 
-/// Split the windows below ours into the display's desktop and the
-/// windows standing over it.
-///
-/// The desktop is the lowest window covering the whole of `output`,
-/// which is the one Plasma paints the wallpaper and its icons onto.
-/// [`None`] where nothing below ours covers the display, which is what
-/// a window on another display or a stack read mid-layout leaves.
-fn desktop_and_windows<'a>(
-    below: &'a [StackedWindow],
-    ours: &StackedWindow,
-    output: &Output,
-) -> Option<(
-    &'a StackedWindow,
-    impl Iterator<Item = &'a StackedWindow> + use<'a>,
-)> {
-    let at = below
-        .iter()
-        .position(|window| window.output == ours.output && window.covers(output))?;
-    let ours = ours.clone();
-    let desktop = &below[at];
-    let over = below[at.saturating_add(1)..]
-        .iter()
-        .filter(move |window| window.shows_beside(&ours));
-    Some((desktop, over))
+impl Layout {
+    /// Split the windows below ours into the display's desktop and the
+    /// windows standing over it.
+    ///
+    /// The desktop is the lowest window covering the whole of `output`,
+    /// which is the one Plasma paints the wallpaper and its icons onto.
+    /// [`None`] where nothing below ours covers the display, which is
+    /// what a window on another display or a stack read mid-layout
+    /// leaves.
+    fn of(below: &[StackedWindow], ours: &StackedWindow, output: &Output) -> Option<Self> {
+        let at = below
+            .iter()
+            .position(|window| window.output == ours.output && window.covers(output))?;
+        Some(Self {
+            desktop: below[at].clone(),
+            over:    below[at.saturating_add(1)..]
+                .iter()
+                .filter(|window| window.shows_beside(ours))
+                .cloned()
+                .collect(),
+        })
+    }
+
+    /// Draw every window of this layout over the display's desktop.
+    ///
+    /// [`None`] where the display's own desktop cannot be captured,
+    /// which is what `KWin` refusing the screenshot interface leaves. A
+    /// window that cannot be captured on its own is left out rather than
+    /// abandoning the picture: one window missing from the backdrop is a
+    /// smaller loss than all of them.
+    pub(super) fn capture(&self) -> Option<Composite> {
+        let connection = Connection::session().ok()?;
+        let screenshot = Proxy::new(
+            &connection,
+            KWIN_SERVICE,
+            SCREENSHOT_PATH,
+            SCREENSHOT_INTERFACE,
+        )
+        .ok()?;
+
+        let mut image = capture_window(&screenshot, &self.desktop.uuid)?;
+        let covered = self.desktop.frame;
+        let ratio = pixels_per_coordinate(&image, covered)?;
+        let across = image.width();
+        let down = image.height();
+        for window in &self.over {
+            let Some(captured) = capture_window(&screenshot, &window.uuid) else {
+                continue;
+            };
+            let (left, top) = placed(window.frame.origin, covered, (across, down));
+            imageops::overlay(&mut image, &captured, left, top);
+        }
+        Some(Composite { image, ratio })
+    }
 }
 
 impl StackedWindow {
@@ -210,15 +221,11 @@ impl StackedWindow {
         let minimized = next()? == "true";
         let on_all = next()? == "true";
         let desktops = next()?;
-        let mut rectangle = || {
-            let mut edge = || whole_coordinate(fields.next()?);
-            Some(Rectangle {
-                origin: (edge()?, edge()?),
-                size:   (edge()?, edge()?),
-            })
+        let mut edge = || whole_coordinate(fields.next()?);
+        let frame = Rectangle {
+            origin: (edge()?, edge()?),
+            size:   (edge()?, edge()?),
         };
-        let frame = rectangle()?;
-        let buffer = rectangle()?;
         Some(Self {
             uuid,
             output,
@@ -226,7 +233,6 @@ impl StackedWindow {
             on_all,
             desktops,
             frame,
-            buffer,
         })
     }
 
@@ -321,14 +327,21 @@ fn script_path() -> PathBuf {
 
 /// Capture one window, or [`None`] where `KWin` will not answer for it.
 ///
+/// What comes back covers the window's frame exactly: the decoration is
+/// asked for and the shadow is refused, which is the pair that leaves
+/// `KWin` taking its picture of `frameGeometry` -- see
+/// [`SCREENSHOT_SHADOW_OPTION`] for the rectangle each option moves.
+///
 /// `KWin` writes the pixels into a pipe as premultiplied ARGB and
 /// describes them in its reply, so the bytes are read out of the pipe
 /// and turned back into the straight alpha [`RgbaImage`] compositing
 /// wants.
 fn capture_window(screenshot: &Proxy<'_>, uuid: &str) -> Option<RgbaImage> {
     let (mut reader, writer) = UnixStream::pair().ok()?;
-    let options: HashMap<&str, Value<'_>> =
-        HashMap::from([(SCREENSHOT_DECORATION_OPTION, Value::Bool(true))]);
+    let options: HashMap<&str, Value<'_>> = HashMap::from([
+        (SCREENSHOT_DECORATION_OPTION, Value::Bool(true)),
+        (SCREENSHOT_SHADOW_OPTION, Value::Bool(false)),
+    ]);
     let described: HashMap<String, OwnedValue> = screenshot
         .call(
             SCREENSHOT_WINDOW_METHOD,
@@ -411,6 +424,20 @@ fn whole_coordinate(edge: &str) -> Option<i32> {
     units.parse().ok()
 }
 
+/// Where a window's own corner falls inside the display's picture.
+///
+/// The corner is the frame's, because the frame is what the capture
+/// covers. Read from any other rectangle `KWin` reports the window is
+/// drawn beside itself: the client area inside a title bar stands 28
+/// logical coordinates below the frame, and the buffer of a window that
+/// draws its own decoration stands 10 outside it.
+fn placed(origin: (i32, i32), covered: Rectangle, picture: (u32, u32)) -> (i64, i64) {
+    (
+        scaled(origin.0, covered.origin.0, picture.0, covered.size.0),
+        scaled(origin.1, covered.origin.1, picture.1, covered.size.1),
+    )
+}
+
 /// Where a window's own edge falls inside the display's picture.
 ///
 /// The picture's density is `pixels` over `covered`, both of which `KWin`
@@ -444,20 +471,13 @@ mod tests {
     /// One row as the script writes it.
     fn row(uuid: &str, output: &str, desktops: &str, frame: (i64, i64, i64, i64)) -> String {
         format!(
-            "{uuid}\t{output}\tfalse\tfalse\t{desktops}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            frame.0,
-            frame.1,
-            frame.2,
-            frame.3,
-            frame.0 - 10,
-            frame.1 - 10,
-            frame.2 + 20,
-            frame.3 + 20,
+            "{uuid}\t{output}\tfalse\tfalse\t{desktops}\t{}\t{}\t{}\t{}",
+            frame.0, frame.1, frame.2, frame.3,
         )
     }
 
     #[test]
-    fn a_row_carries_the_frame_and_the_shadow_around_it() {
+    fn a_row_carries_the_window_and_its_frame() {
         let parsed =
             StackedWindow::parse(&row("{window-one}", "DP-3", "desk", (3440, 0, 1720, 1440)))
                 .expect("the script's own row parses");
@@ -465,8 +485,7 @@ mod tests {
         assert_eq!(parsed.uuid, "{window-one}");
         assert_eq!(parsed.output, "DP-3");
         assert_eq!(parsed.frame.origin, (3440, 0));
-        assert_eq!(parsed.buffer.origin, (3430, -10));
-        assert_eq!(parsed.buffer.size, (1740, 1460));
+        assert_eq!(parsed.frame.size, (1720, 1440));
     }
 
     /// What `KWin` reported for a window the user had dragged rather
@@ -477,14 +496,46 @@ mod tests {
     #[test]
     fn a_dragged_window_reported_with_a_fraction_still_parses() {
         let dragged = "{window-dragged}\tHDMI-A-2\tfalse\tfalse\tdesk\t\
-                       298.80934941192993\t116.28557054879525\t1637\t941\t\
-                       298.80934941192993\t144.28557054879525\t1637\t913";
+                       298.80934941192993\t116.28557054879525\t1637\t941";
 
         let parsed = StackedWindow::parse(dragged).expect("a dragged window's row parses");
 
         assert_eq!(parsed.frame.origin, (298, 116));
         assert_eq!(parsed.frame.size, (1637, 941));
-        assert_eq!(parsed.buffer.origin, (298, 144));
+    }
+
+    /// A capture covers the window's frame, so the frame's corner is
+    /// where it is drawn. Measured off the running compositor: a
+    /// terminal filling the right half of a 3440 by 1440 display has a
+    /// frame at 1720, 0 and a client area at 1720, 28 -- the title bar
+    /// `KWin` drew above it -- and its picture with the shadow left in
+    /// reached tens of coordinates further out again. Drawn at anything
+    /// but the frame the window stands beside itself, which is the
+    /// backdrop lining up with the wallpaper and with nothing on it.
+    #[test]
+    fn a_window_is_drawn_at_the_corner_of_its_frame() {
+        let display = Rectangle {
+            origin: (0, 0),
+            size:   (3440, 1440),
+        };
+        let window = StackedWindow::parse(&row(
+            "{terminal}",
+            "HDMI-A-2",
+            "desk",
+            (1720, 0, 1720, 1394),
+        ))
+        .expect("a row parses");
+
+        assert_eq!(
+            placed(window.frame.origin, display, (3440, 1440)),
+            (1720, 0)
+        );
+        assert_eq!(
+            placed(window.frame.origin, display, (6880, 2880)),
+            (3440, 0),
+            "a display composited at two pixels to the coordinate places \
+             the same window at twice the distance in"
+        );
     }
 
     #[test]
@@ -510,12 +561,42 @@ mod tests {
         let ours = StackedWindow::parse(&row("{window-ours}", "DP-3", "desk", (0, 0, 1720, 1440)))
             .expect("a row parses");
 
-        let (desktop, over) =
-            desktop_and_windows(&below, &ours, &display()).expect("the desktop is below ours");
-        let over: Vec<&str> = over.map(|window| window.uuid.as_str()).collect();
+        let layout = Layout::of(&below, &ours, &display()).expect("the desktop is below ours");
+        let over: Vec<&str> = layout
+            .over
+            .iter()
+            .map(|window| window.uuid.as_str())
+            .collect();
 
-        assert_eq!(desktop.uuid, "{desktop-window}");
+        assert_eq!(layout.desktop.uuid, "{desktop-window}");
         assert_eq!(over, ["{window-over}"]);
+    }
+
+    /// The layout is what says whether a picture already assembled still
+    /// describes the display, so a window that has moved has to read
+    /// back as a different one -- a picture held across the move is the
+    /// backdrop showing a window where there is no longer one.
+    #[test]
+    fn a_window_that_moves_reads_back_as_a_different_layout() {
+        let desktop =
+            StackedWindow::parse(&row("{desktop-window}", "DP-3", "desk", (0, 0, 3440, 1440)))
+                .expect("a row parses");
+        let ours = StackedWindow::parse(&row("{window-ours}", "DP-3", "desk", (0, 0, 1720, 1440)))
+            .expect("a row parses");
+        let standing = |frame| {
+            let over = StackedWindow::parse(&row("{window-over}", "DP-3", "desk", frame))
+                .expect("a row parses");
+            Layout::of(&[desktop.clone(), over], &ours, &display()).expect("the desktop is below")
+        };
+
+        assert_eq!(
+            standing((100, 100, 800, 600)),
+            standing((100, 100, 800, 600))
+        );
+        assert_ne!(
+            standing((100, 100, 800, 600)),
+            standing((900, 100, 800, 600))
+        );
     }
 
     /// Nothing below ours covering the display leaves nothing to draw
@@ -530,7 +611,7 @@ mod tests {
         let ours = StackedWindow::parse(&row("{window-ours}", "DP-3", "desk", (0, 0, 1720, 1440)))
             .expect("a row parses");
 
-        assert!(desktop_and_windows(&below, &ours, &display()).is_none());
+        assert!(Layout::of(&below, &ours, &display()).is_none());
     }
 
     #[test]

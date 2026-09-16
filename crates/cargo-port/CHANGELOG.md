@@ -8,17 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- A project whose `direnv` environment cannot be loaded no longer reports every lint command as a failure. Lints in a project with an `.envrc` run through `direnv exec`, and a direnv that refuses — a blocked `.envrc`, a flake that fails to evaluate, a missing input, direnv not installed — exits nonzero before the shell starts, which is the same exit Clippy uses for findings, so the whole project turned red with logs that never mentioned Cargo. Such a run is now marked `no env` in the Lint runs pane and shown yellow (🟡) rather than red in the project tree, the configured commands are recorded as skipped instead of run, and direnv's own error is in the run's `direnv` log.
-- The settings overlay now moves with `j`/`k` when `navigation_keys` enables vim keys. It was handed the untranslated key, so only the arrows ever reached it, while the keymap and global-shortcuts overlays already received the translated one.
-- While a framework overlay is open, `h`/`l` always mean left/right. They were being folded into up/down whenever the pane underneath the overlay was one of the panes that fold horizontal keys, so `h`/`l` scrolled settings instead of adjusting the selected value.
-- A settings key that arrives in the same input batch as the key that opened the overlay is no longer dropped. The overlay's row count was only known after its first frame, and the event loop drains every queued key before it draws.
+- A project whose `direnv` environment cannot be loaded no longer reports every lint command as a failure. direnv exits nonzero before the shell starts -- the same exit Clippy uses for findings -- so the whole project turned red. Such a run is marked `no env` and shown yellow, the commands are recorded as skipped, and direnv's error is in the run's `direnv` log.
+- The settings overlay moves with `j`/`k` when `navigation_keys` enables vim keys; it was handed the untranslated key, so only the arrows reached it.
+- While a framework overlay is open, `h`/`l` always mean left/right rather than being folded into up/down by the pane underneath.
+- A settings key arriving in the same input batch as the key that opened the overlay is no longer dropped.
 
 ### Removed
-- **Breaking:** Remove the build monitor from the Output pane. The opt-in view of running Cargo builds (`C`), its per-session columns and compile-activity rows, and the build termination it offered (`alt-k` for the selected build, `alt-shift-k` for every build in scope) are all gone, along with the process-termination machinery behind them. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead: it shows the output of running Cargo commands, and does it better than this ever did. The Output pane itself stays — it still shows the captured output of a target Cargo Port launched from the Targets pane, and `Esc` still stops that run.
+- **Breaking:** Remove the build monitor from the Output pane -- the opt-in view of running Cargo builds (`C`), its columns and activity rows, and the build termination behind `alt-k`/`alt-shift-k`. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead. The Output pane stays: it still shows a target launched from the Targets pane, and `Esc` still stops that run.
 
 ### Changed
-- Restore the pane borders 0.7.0 changed: each pane draws its own box again, and the focused one lights its border. Both of those went in 0.7.0 as fallout from work on cargo-tile, whose tiles genuinely are one grid; Cargo Port's four panes are four separate things to look at, and reading them as a single lattice with focus carried only by a background tint was never the intent. The `active_border` theme key is read again, and the shipped theme TOMLs set it once more; a theme file written while the key was ignored still loads, and takes the focused title's colour until it names its own.
-- Section headers and the items under them now start one space in from the pane border rather than two and four, following `tui_pane`'s narrower indents.
+- Restore the pane borders 0.7.0 changed: each pane draws its own box again and the focused one lights its border. Cargo Port's four panes are four separate things to look at, not one lattice. The `active_border` theme key is read again, and a theme written while it was ignored takes the focused title's colour until it names its own.
+- Section headers and the items under them start one space in from the pane border rather than two and four, following `tui_pane`'s narrower indents.
 
 ## [0.7.0] - 2026-08-21
 

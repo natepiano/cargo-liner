@@ -128,7 +128,8 @@ screen, a whole workspace, or one named window — so the picture macOS gets fro
 `CGWindowListCreateImage` with `kCGWindowListOptionOnScreenBelowWindow` is **assembled**
 here instead.
 
-`compose::below_window(uuid, output)` does the assembly:
+`compose::layout_below(uuid, output)` reads what the picture is to be made of, and
+`Layout::capture()` makes it:
 
 - `stacking_order()` reads `workspace.stackingOrder` (bottom-to-top) through
   `org.kde.kwin.Scripting`, which is unrestricted. KWin scripts cannot return a value, so
@@ -139,14 +140,28 @@ here instead.
   the plasmashell desktop window, which is where the real wallpaper and its icons live.
 - Every window above that base and below ours, on the same output and sharing a virtual
   desktop, is captured with `org.kde.KWin.ScreenShot2.CaptureWindow` and drawn over the
-  base at its `bufferGeometry` (the frame grown by its shadow, which is what a capture
-  actually covers).
+  base at its `frameGeometry`.
 - Our own window is absent by construction, which is the whole point: the animation can
   never photograph itself, so no capture has to wait for a frame that draws nothing.
 
-A composite is held for `COMPOSITE_HOLD` (20s). `CompositeKey` carries the terminal's
-metrics and the output's geometry, so a resize or a display change replaces it at once
-rather than waiting out the hold.
+**`frameGeometry` is the only rectangle the script reads, and the capture options are what
+make it the right one.** KWin takes a window's picture of `visibleGeometry` — the frame
+grown by however far its shadow reaches — unless `include-shadow` is passed `false`; it
+defaults that option to `true`, and `visibleGeometry` is exposed under no name in the
+scripting API. `include-decoration: true` with `include-shadow: false` is the pair that
+leaves the picture covering exactly `frameGeometry`. `bufferGeometry` is not that
+rectangle in either direction: on a window KWin decorates it is the client area inside
+the title bar (28 logical coordinates down, measured), and on one that draws its own
+decoration it is the frame grown by the client's shadow (10 out, measured). Placing a
+picture by it drew every window tens of pixels right of and below where it stood, while
+the wallpaper — whose desktop window has neither decoration nor shadow — lined up exactly.
+
+A composite is held for `COMPOSITE_HOLD` (20s), but the `Layout` is re-read on **every**
+capture (a 5ms round trip, against one round trip and a pipe of pixels per window for a
+picture). `CompositeKey` carries the terminal's metrics, the output's geometry, and that
+layout, so a resize, a display change, or any window underneath moving, opening, closing
+or changing stacking order replaces the picture at once. The hold now governs only how
+soon changed *contents* of a window that has not moved show through.
 
 **Every failure falls back to `wallpaper::snapshot` + `render`**, which reconstructs
 Plasma's configured wallpaper for the output. That is deliberate, and it is also what

@@ -35,10 +35,11 @@ pub(super) const COMPOSITE_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
 pub(super) const COMPOSITE_COVERAGE_TOLERANCE: f64 = 0.01;
 /// How long one composite stands before another is assembled.
 ///
-/// Assembling one reads the whole window stack and captures every window standing under this one,
-/// which costs far more than a frame, so the picture is held rather than retaken. The key it is
-/// held under carries the display and this terminal's own metrics, so a display that changes
-/// replaces the picture at once and this only governs how soon a window opening underneath shows
+/// Capturing every window standing under this one costs far more than a frame, so the picture is
+/// held rather than retaken. What the picture is assembled *from* is read every capture instead --
+/// the stack read measures at five milliseconds -- and the key the picture is held under carries
+/// it, so a window that moves, opens, closes, or is raised over another replaces the picture at
+/// once. This governs only how soon changed *contents* of a window that has not moved show
 /// through.
 pub(super) const COMPOSITE_HOLD: Duration = Duration::from_secs(20);
 /// How far the picture's two axes may disagree about pixels per logical coordinate.
@@ -55,6 +56,12 @@ pub(super) const SINK_PLACEHOLDER: &str = "SINK_NAME";
 /// `KWin` runs this in its own process and gives it no way to return a value, so it calls the
 /// waiting connection back instead. `workspace.windowList()` is deliberately not used: it reports
 /// creation order, not stacking order, and everything here turns on which windows stand below ours.
+///
+/// The frame is the one rectangle read of each window, because it is the one a capture covers --
+/// see [`SCREENSHOT_SHADOW_OPTION`]. `bufferGeometry` is a different rectangle in each direction
+/// depending on who draws the decoration, and matches the capture in neither: on a window `KWin`
+/// decorates it is the client area inside the title bar, and on one that decorates itself it is
+/// the frame grown by the shadow the client drew.
 pub(super) const STACKING_SCRIPT: &str = r#"
 const rows = workspace.stackingOrder.map(w => [
     w.internalId,
@@ -63,7 +70,6 @@ const rows = workspace.stackingOrder.map(w => [
     w.onAllDesktops,
     (w.desktops || []).map(d => d.id).join(","),
     w.frameGeometry.x, w.frameGeometry.y, w.frameGeometry.width, w.frameGeometry.height,
-    w.bufferGeometry.x, w.bufferGeometry.y, w.bufferGeometry.width, w.bufferGeometry.height,
 ].join("\t")).join("\n");
 callDBus("SINK_NAME", "/", "dev.tui_pane.Backdrop", "result", rows);
 "#;
@@ -94,8 +100,18 @@ pub(super) const QGRAY_RED_WEIGHT: u32 = 11;
 pub(super) const UPSCALE_DISTANCE_MULTIPLIER: f64 = 2.0;
 
 // KWin screenshots
-/// Capture the shadow with the window, so what comes back covers the buffer `KWin` reports.
+/// Capture the title bar and borders with the window, so what comes back covers the whole frame
+/// rather than the client area inside it.
 pub(super) const SCREENSHOT_DECORATION_OPTION: &str = "include-decoration";
+/// Leave the shadow out of the capture, which is what fixes the rectangle it covers.
+///
+/// `KWin` takes the picture of `visibleGeometry` -- the frame grown by however far the shadow
+/// reaches -- unless this is passed, and it defaults it to true. `visibleGeometry` is not in the
+/// scripting API, so a picture that carried the shadow could not be placed: it was drawn at the
+/// frame's corner and stood a shadow's width right of and below where the window really is, which
+/// on Breeze is tens of pixels. Turned off, the picture covers exactly `frameGeometry`, which the
+/// stacking script reads.
+pub(super) const SCREENSHOT_SHADOW_OPTION: &str = "include-shadow";
 pub(super) const SCREENSHOT_HEIGHT_RESULT: &str = "height";
 /// `KWin` answers this interface only for a process whose desktop entry declares it in
 /// `X-KDE-DBUS-Restricted-Interfaces`; without one every call returns `NoAuthorized` and the
