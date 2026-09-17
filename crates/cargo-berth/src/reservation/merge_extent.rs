@@ -156,4 +156,14 @@ impl MergeExtent {
             } => ReservationProtection::Protected(scopes),
         }
     }
+
+    /// Whether "retains its previous merge protection" is true of this ground.
+    ///
+    /// [`Self::protection`] owns the mapping from evidence to refusal, so this asks it rather than
+    /// reading the variants a second time. A failure over `RetainedMergeEvidence::Empty` retains a
+    /// completed observation that the branch held no unmerged paths, which is retained emptiness
+    /// and not retained protection, so `Alert::MergeExtentUnavailable` must not be raised for it.
+    pub(crate) const fn retains_protection(&self) -> bool {
+        matches!(self.protection(), ReservationProtection::Protected(_))
+    }
 }

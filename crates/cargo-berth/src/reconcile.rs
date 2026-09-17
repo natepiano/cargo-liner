@@ -3718,7 +3718,17 @@ impl ReconciliationAction {
             ) {
                 continue;
             }
-            if let MergeExtent::Unavailable { failure, .. } = reservation.merge_extent() {
+            // A failed observation is worth reporting only while the evidence it retained still
+            // refuses something, which is what `MergeExtent::retains_protection` asks. Matching
+            // the variant alone raised the alert over `RetainedMergeEvidence::Empty` too, where
+            // `MergeExtent::protection` answers `Clear` -- so the message claimed retained
+            // protection for a reservation that holds none. A holder whose worktree is deleted
+            // stays in that state permanently, since no later observation can succeed, so the
+            // alert also had no condition under which it would ever stop.
+            let merge_extent = reservation.merge_extent();
+            if let MergeExtent::Unavailable { failure, .. } = merge_extent
+                && merge_extent.retains_protection()
+            {
                 alerts.push(Alert::MergeExtentUnavailable {
                     reservation_id: reservation.id(),
                     failure:        failure.clone(),

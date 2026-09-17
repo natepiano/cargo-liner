@@ -3422,6 +3422,42 @@ mod merge_extent {
         );
     }
 
+    /// A completed observation that proved emptiness stays proof after a later observation fails,
+    /// so the reservation refuses nothing and `MergeExtent::protection` answers `Clear`.
+    /// Alerting that it "retains its previous merge protection" states the opposite of what
+    /// that same field says. The holder worktree is gone here, which is what makes the
+    /// distinction matter rather than merely embarrassing: no later observation can succeed, so
+    /// an alert raised on this state has no terminal condition and repeats on every invocation.
+    #[test]
+    fn an_unavailable_extent_retaining_proved_emptiness_raises_no_alert() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&observed, &id)["merge_extent"]["status"],
+            "empty",
+            "a holder with no unmerged work should observe an empty extent: {observed}"
+        );
+
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("holder should become unavailable");
+
+        let unavailable = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&unavailable, &id)["merge_extent"]["retained_evidence"]["status"],
+            "empty",
+            "the failure should retain the emptiness already proved: {unavailable}"
+        );
+        assert_eq!(
+            unavailable["payload"]["data"]["alerts"]["entries"],
+            serde_json::json!([]),
+            "an extent that protects nothing should raise no alert: {unavailable}"
+        );
+    }
+
     fn real_git() -> String {
         let output = Command::new("sh")
             .args(["-c", "command -v git"])
