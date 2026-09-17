@@ -3458,6 +3458,76 @@ mod merge_extent {
         );
     }
 
+    /// `ReservationLifecycle` leaves `Active` only at a checkpoint or a disposition, so a holder
+    /// whose worktree git has stopped registering has no transition available and its row stays an
+    /// active constraint permanently. `Reservation::is_terminal` cannot reach it either, because
+    /// that test requires `!is_active()`. `append_orphan_retirements` supplies the missing ending
+    /// from the evidence already on the record, so nobody has to run `resolve --abandon` for a
+    /// case berth can prove for itself.
+    #[test]
+    fn an_orphaned_holder_that_proved_emptiness_retires_itself() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&observed, &id)["merge_extent"]["status"],
+            "empty",
+            "a holder with no unmerged work should observe an empty extent: {observed}"
+        );
+
+        orphan_holder(&fixture);
+
+        let retired = board(fixture.trunk());
+        let reservation = snapshot(&retired, &id);
+        assert_eq!(
+            reservation["lifecycle"]["stage"], "released",
+            "an orphaned holder proved empty should retire: {retired}"
+        );
+        assert_eq!(
+            reservation["lifecycle"]["disposition"]["kind"], "retired_orphan",
+            "the ending should record why berth could retire it: {retired}"
+        );
+    }
+
+    /// The guard is a strict conjunction because the two errors are not symmetric: a retained dead
+    /// row costs a reader one puzzled look, while retiring a live holder stops protecting that
+    /// holder's work in every session at once. Committed unmerged work leaves
+    /// `RetainedMergeEvidence::Protected` rather than `Empty`, so this holder is as orphaned as
+    /// the one above and must still be retained -- its branch holds work no worktree can reach.
+    #[test]
+    fn an_orphaned_holder_with_unmerged_work_is_retained() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "unmerged work\n");
+        board(fixture.trunk());
+
+        orphan_holder(&fixture);
+
+        let retained = board(fixture.trunk());
+        let reservation = snapshot(&retained, &id);
+        assert_eq!(
+            reservation["merge_extent"]["retained_evidence"]["status"], "protected",
+            "the failure should retain the unmerged work already proved: {retained}"
+        );
+        assert_eq!(
+            reservation["lifecycle"]["stage"], "active",
+            "a holder whose branch still holds work must not retire: {retained}"
+        );
+    }
+
+    /// Move the holder checkout away and prune its registration, which is what leaves
+    /// `WorktreeRegistry::classify` with no record to match and makes it answer
+    /// `WorktreeLiveness::Orphaned`. Renaming alone leaves the registration prunable, which
+    /// classifies as `OrphanCandidate` and is deliberately not enough to retire anything.
+    fn orphan_holder(fixture: &Repository) {
+        fs::rename(
+            &fixture.holder,
+            fixture.worktrees.path().join("unavailable-holder"),
+        )
+        .expect("holder should become unavailable");
+        GIT.run(fixture.trunk(), ["worktree", "prune"]);
+    }
+
     fn real_git() -> String {
         let output = Command::new("sh")
             .args(["-c", "command -v git"])

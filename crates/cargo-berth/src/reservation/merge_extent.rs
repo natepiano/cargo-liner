@@ -22,6 +22,21 @@ pub(crate) struct MergeExtentKey {
     pub(crate) working_tree: WorkingTreeFingerprint,
 }
 
+impl MergeExtentKey {
+    /// Whether the observation taken under this key found nothing at all left to integrate.
+    ///
+    /// An empty derivation already means `git::unmerged_branch_paths` returned no path, but that
+    /// is a statement about paths. This is the stronger statement the key itself carries: the
+    /// branch tip was trunk, and [`WorkingTreeFingerprint`] held no tracked and no untracked path.
+    /// A holder proved that and then lost its worktree has no work anywhere for a later
+    /// observation to find.
+    pub(crate) fn proves_nothing_outstanding(&self) -> bool {
+        self.head == self.trunk
+            && self.working_tree.tracked_paths.is_empty()
+            && self.working_tree.untracked_paths.is_empty()
+    }
+}
+
 /// Evidence retained through failure, distinguishing an initial declaration from a successful
 /// observation.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -154,6 +169,22 @@ impl MergeExtent {
                 retained_evidence: RetainedMergeEvidence::Protected { scopes, .. },
                 ..
             } => ReservationProtection::Protected(scopes),
+        }
+    }
+
+    /// The key of a completed observation that proved emptiness, including through a later failure.
+    ///
+    /// `NotDerived` has no key because no observation has succeeded, and a `Protected` ground
+    /// proved the opposite, so both answer `None` and no caller can read a key that did not come
+    /// from a proof of emptiness.
+    pub(crate) const fn proved_empty_key(&self) -> Option<&MergeExtentKey> {
+        match self {
+            Self::Empty { key }
+            | Self::Unavailable {
+                retained_evidence: RetainedMergeEvidence::Empty { key },
+                ..
+            } => Some(key),
+            Self::NotDerived { .. } | Self::Protected { .. } | Self::Unavailable { .. } => None,
         }
     }
 

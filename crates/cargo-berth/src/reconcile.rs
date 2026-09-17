@@ -93,6 +93,7 @@ use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::MergeExtentKey;
+use crate::reservation::OrphanRetirementReason;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -1946,6 +1947,7 @@ fn complete_reconciliation_plan(
         MergedRunEndings::End => append_merged_run_endings(reservations, plan),
         MergedRunEndings::Defer => Vec::new(),
     };
+    append_orphan_retirements(reservations, plan);
     for snapshot in &mut snapshots {
         if let Some(merged_run) = merged_runs
             .iter()
@@ -3166,6 +3168,95 @@ fn append_merged_run_endings(
         });
     }
     merged_runs
+}
+
+/// End an `Active` run whose worktree git no longer registers and whose last completed observation
+/// proved its branch had nothing left to integrate.
+///
+/// `Reservation::is_terminal` cannot reach such a reservation: it requires `!is_active()`, and
+/// `ReservationLifecycle` leaves `Active` only at a checkpoint or a disposition, so an orphaned
+/// `Active` holder has no transition available and its row stays on the board permanently. The
+/// retirement is journaled rather than filtered during replay because its evidence does not exist
+/// at replay time -- liveness, the trunk the key was taken against, and the working-tree
+/// fingerprint all come from the repository observation this plan is built on.
+///
+/// Every condition is required and doubt retains, because the two errors are not symmetric: a
+/// retained dead row costs a reader one puzzled look, while retiring a live holder stops
+/// protecting that holder's work in every session at once. So `WorktreeLiveness::Orphaned` is the
+/// only liveness accepted -- a locked registration reads `Unavailable`, a prunable one
+/// `OrphanCandidate`, an unestablished identity `Unknown`, and each of those keeps the
+/// reservation, since a worktree that cannot be read now is not a worktree that is gone. An
+/// `Outstanding` orphan is kept as well: it checkpointed a commit, and
+/// `alert::for_orphaned_outstanding` reports it with a recoverability verdict, so retiring it here
+/// would end the reservation that alert exists to recover.
+fn append_orphan_retirements(
+    reservations: &RetainedReservationSet,
+    reconciliation: &mut ReconciliationPlan,
+) {
+    let mut retired = Vec::new();
+    for reservation in reservations.iter() {
+        if !matches!(reservation.lifecycle(), ReservationLifecycle::Active) {
+            continue;
+        }
+        let Ok(holder) = reconciliation
+            .action
+            .repository_snapshot
+            .reservation(reservation.id())
+        else {
+            continue;
+        };
+        if holder.worktree_liveness != WorktreeLiveness::Orphaned {
+            continue;
+        }
+        // `append_merged_run_endings` runs first and releases a holder whose work reached trunk.
+        // That disposition records the integration this one cannot, so never write a second
+        // ending over it.
+        if planned_release(reservation.id(), &reconciliation.operations).is_some() {
+            continue;
+        }
+        // Read the extent this pass will commit rather than the one replay produced: observation
+        // fails for an orphaned holder, and `derive_merge_extents` has already planned the
+        // `MergeExtent::Unavailable` that retains the proof.
+        let extent = reconciliation
+            .operations
+            .iter()
+            .rev()
+            .find_map(|operation| match operation {
+                JournalOperation::MergeExtentObserved {
+                    reservation_id,
+                    extent,
+                    ..
+                } if *reservation_id == reservation.id() => Some(extent),
+                _ => None,
+            })
+            .unwrap_or_else(|| reservation.merge_extent());
+        if extent
+            .proved_empty_key()
+            .is_some_and(MergeExtentKey::proves_nothing_outstanding)
+        {
+            retired.push(reservation.id());
+        }
+    }
+    for reservation_id in retired {
+        reconciliation.operations.push(JournalOperation::Release {
+            reservation_id,
+            disposition: ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived()),
+        });
+    }
+}
+
+/// The disposition this plan already records for a reservation, if it ends one.
+fn planned_release(
+    reservation_id: ReservationId,
+    operations: &[JournalOperation],
+) -> Option<&ReleaseDisposition> {
+    operations.iter().find_map(|operation| match operation {
+        JournalOperation::Release {
+            reservation_id: released,
+            disposition,
+        } if *released == reservation_id => Some(disposition),
+        _ => None,
+    })
 }
 
 /// Choose one final ref action per reservation after this pass selects its settlements.

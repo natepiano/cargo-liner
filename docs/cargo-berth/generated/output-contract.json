@@ -1583,7 +1583,7 @@
               "type": "object"
             },
             {
-              "description": "The user confirmed an orphaned reservation can retire.",
+              "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -8472,7 +8472,7 @@
               "type": "object"
             },
             {
-              "description": "The user confirmed an orphaned reservation can retire.",
+              "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -15039,7 +15039,7 @@
               "type": "object"
             },
             {
-              "description": "The user confirmed an orphaned reservation can retire.",
+              "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -16245,7 +16245,7 @@
           "type": "object"
         },
         {
-          "description": "The user confirmed an orphaned reservation can retire.",
+          "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
           "properties": {
             "evidence": {
               "minLength": 1,
@@ -16454,7 +16454,7 @@
               "type": "object"
             },
             {
-              "description": "The user confirmed an orphaned reservation can retire.",
+              "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -16924,7 +16924,7 @@
               "type": "object"
             },
             {
-              "description": "The user confirmed an orphaned reservation can retire.",
+              "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -17183,7 +17183,7 @@
               "type": "object"
             },
             {
-              "description": "The user confirmed an orphaned reservation can retire.",
+              "description": "The user confirmed, or reconciliation proved, that an orphaned reservation can retire.",
               "properties": {
                 "evidence": {
                   "minLength": 1,

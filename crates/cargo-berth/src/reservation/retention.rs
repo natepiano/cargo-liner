@@ -1304,7 +1304,7 @@ impl RetainedReservationSet {
         match disposition {
             ReleaseDisposition::Abandoned(_) | ReleaseDisposition::RetiredOrphan(_) => reservation
                 .lifecycle
-                .release_after_user_confirmation(disposition.clone())
+                .release_without_checkpoint(disposition.clone())
                 .map_err(|error| {
                     ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
                 })?,

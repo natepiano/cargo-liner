@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::evidence::ProtectedReservationTip;
+use crate::constants::DERIVED_ORPHAN_RETIREMENT_REASON;
 use crate::git::Reachability;
 use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
@@ -104,8 +105,13 @@ impl ReservationLifecycle {
         }
     }
 
-    /// Record an abandonment or orphan retirement after explicit user confirmation.
-    pub(crate) fn release_after_user_confirmation(
+    /// Record an abandonment or orphan retirement, neither of which checkpoints first.
+    ///
+    /// [`Self::release`] requires `Outstanding` because an integration disposition rests on the
+    /// protected tip a checkpoint fixed. `Abandoned` and `RetiredOrphan` rest on a decision
+    /// instead -- the user's for an abandonment, reconciliation's proved-empty evidence for a
+    /// derived retirement -- so they are the two dispositions that may end an `Active` run.
+    pub(crate) fn release_without_checkpoint(
         &mut self,
         disposition: ReleaseDisposition,
     ) -> Result<(), LifecycleTransitionError> {
@@ -239,7 +245,7 @@ pub(crate) enum ReleaseDisposition {
         #[schemars(length(min = 1))]
         AbandonmentReason,
     ),
-    /// The user confirmed an orphaned reservation can retire.
+    /// The user confirmed, or reconciliation proved, that an orphaned reservation can retire.
     RetiredOrphan(
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
@@ -343,9 +349,18 @@ nonempty_release_reason!(
 nonempty_release_reason!(
     OrphanRetirementReason,
     EmptyOrphanRetirementReason,
-    "The required explanation for a user-confirmed orphan retirement.",
+    "The required explanation for an orphan retirement, whoever decided it.",
     "an orphan-retirement reason cannot be empty"
 );
+
+impl OrphanRetirementReason {
+    /// The explanation reconciliation records when it retires an orphan from its own evidence.
+    ///
+    /// `FromStr` is the user's entry point and rejects an empty reason. This one is authored in
+    /// [`DERIVED_ORPHAN_RETIREMENT_REASON`], so there is no empty case to report and no error for
+    /// a caller to handle.
+    pub(crate) fn derived() -> Self { Self(DERIVED_ORPHAN_RETIREMENT_REASON.to_owned()) }
+}
 
 /// The verified trunk commit witnessing rewritten integration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
