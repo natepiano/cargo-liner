@@ -406,7 +406,9 @@ fn compare_scoped_patch(
     }
 
     let (affected_paths, scoped_replay_rename_detection) = match protected_scoped_changes? {
-        ProtectedScopedChanges::NoChanges => return Ok(ScopedPatchComparison::Different),
+        ProtectedScopedChanges::NoChanges => {
+            return scoped_content_comparison(repository_root, protected_tip, scopes, target);
+        },
         ProtectedScopedChanges::Affected {
             paths,
             scoped_replay_rename_detection,
@@ -903,6 +905,28 @@ fn parse_target_first_parent_history(
 }
 
 const TARGET_FIRST_PARENT_RECORD_MARKER: &str = "cargo-berth-target-first-parent";
+
+/// Answer a protected phase that changed nothing inside its own scopes.
+///
+/// There is no scoped patch for the target to replay, so the question reduces to content: the
+/// target contains this phase's scoped work exactly when its scoped content already matches the
+/// protected tip's. A phase claiming paths it only read reaches here -- first-touch claiming and
+/// drift widening both produce such reservations -- and a trunk that merely rebased the tip still
+/// holds every byte it protected.
+fn scoped_content_comparison(
+    repository_root: &Path,
+    protected_tip: &GitObjectId,
+    scopes: &ReservationScopeSet,
+    target: &GitObjectId,
+) -> Result<ScopedPatchComparison, ScopedPatchComparisonError> {
+    Ok(
+        match self::protected_scoped_changes(repository_root, protected_tip, scopes, target)? {
+            ProtectedScopedChanges::NoChanges => ScopedPatchComparison::Equivalent,
+            ProtectedScopedChanges::Affected { .. } => ScopedPatchComparison::Different,
+            ProtectedScopedChanges::Unreadable => ScopedPatchComparison::Unavailable,
+        },
+    )
+}
 
 fn protected_scoped_changes(
     repository_root: &Path,

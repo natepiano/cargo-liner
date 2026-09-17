@@ -3584,7 +3584,7 @@ fn assert_ancestry_settlement_journal(fixture: &OutstandingReservationFixture) {
 fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
     let fixture = warmed_ancestor_proof_after_trunk_rewrite();
     let competing_reservations =
-        append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
+        append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
     append_scoped_patch_attempt(
         fixture.repository.path(),
         &fixture.reservation_id,
@@ -3594,7 +3594,12 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
     let traced = run_board_with_git_trace(fixture.repository.path());
     assert!(traced.output.status.success());
     assert_eq!(
-        scoped_patch_comparison_attempts(&traced, &fixture.phase_start_head, &fixture.target),
+        subject_scoped_patch_comparison_attempts(
+            &traced,
+            &fixture.phase_start_head,
+            &fixture.protected_tip,
+            &fixture.target,
+        ),
         0
     );
     let board = json_output(&traced.output);
@@ -3628,7 +3633,7 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
     );
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
 
-    append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
+    append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
     append_scoped_patch_attempt(
         fixture.repository.path(),
         &fixture.reservation_id,
@@ -3742,7 +3747,7 @@ fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
         &fixture.target,
     );
     let competing_reservations =
-        append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
+        append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
     append_scoped_patch_attempt(
         fixture.repository.path(),
         &fixture.reservation_id,
@@ -3752,7 +3757,12 @@ fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
     let deferred = run_board_with_git_trace(fixture.repository.path());
     assert!(deferred.output.status.success());
     assert_eq!(
-        scoped_patch_comparison_attempts(&deferred, &fixture.phase_start_head, &fixture.target,),
+        subject_scoped_patch_comparison_attempts(
+            &deferred,
+            &fixture.phase_start_head,
+            &fixture.protected_tip,
+            &fixture.target,
+        ),
         0
     );
     let deferred_board = json_output(&deferred.output);
@@ -3775,13 +3785,130 @@ fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
 }
 
+/// A released phase that edited nothing inside its own scopes keeps its proof across a trunk
+/// rewrite that left those scopes alone.
+///
+/// First-touch claiming and drift widening both produce reservations covering paths a tool only
+/// read. A release then amends the phase tip -- formatters and lint fixers rewrite unrelated
+/// files -- and rebases it onto trunk. Every byte the reservation protected is still in trunk, so
+/// no evidence was lost and no `resolve --integrated-as` may ever be required to say so.
+#[test]
+fn released_reservation_without_scoped_changes_survives_a_trunk_rewrite() {
+    let repository = initialized_repository();
+    fs::write(
+        repository.path().join("src/read-only.rs"),
+        "pub fn read_only() {}\n",
+    )
+    .expect("read-only source should write");
+    git(repository.path(), &["add", "src/read-only.rs"]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "source the phase only reads"],
+    );
+    let reservation_id = reservation_id(&claim(
+        repository.path(),
+        "file:src/read-only.rs",
+        FIRST_RUN,
+    ));
+    // The phase commits elsewhere: the claimed path is read, never edited.
+    fs::write(
+        repository.path().join("src/lib.rs"),
+        "pub fn protected() {}\n",
+    )
+    .expect("protected source should write");
+    git(repository.path(), &["add", "src/lib.rs"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "phase work outside the claimed scope",
+        ],
+    );
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    append_journal_operation(
+        repository.path(),
+        &serde_json::json!({
+            "op": "checkpoint",
+            "reservation_id": reservation_id,
+            "protected_tip": protected_tip,
+            "trunk_snapshot": protected_tip,
+        }),
+    );
+    append_journal_operation(
+        repository.path(),
+        &serde_json::json!({
+            "op": "evidence_revalidated",
+            "reservation_id": reservation_id,
+            "status": {
+                "status": "integrated",
+                "trunk_oid": protected_tip,
+                "proof": "protected_tip_ancestor",
+            },
+            "edit_blocking_status": "clear",
+        }),
+    );
+    append_journal_operation(
+        repository.path(),
+        &serde_json::json!({
+            "op": "release",
+            "reservation_id": reservation_id,
+            "disposition": {"kind": "integrated"},
+        }),
+    );
+    // The rewrite: trunk's tip is replaced without any scoped content changing.
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "rewritten trunk",
+        ],
+    );
+    let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+
+    let board = json_output(&run_berth(repository.path(), &["board", "--json"]));
+    let data = &board["payload"]["data"];
+    assert_integration_statuses(data, std::slice::from_ref(&reservation_id), "integrated");
+    let snapshot = board_reservation_snapshot(data, &reservation_id);
+    assert_eq!(
+        snapshot["integration_evidence"]["status"]["proof"],
+        "scoped_patch_equivalent"
+    );
+    assert_eq!(
+        snapshot["integration_evidence"]["status"]["trunk_oid"],
+        target
+    );
+    let lost_evidence_alerts: Vec<&serde_json::Value> = data["alerts"]["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|alert| alert["kind"] == "lost_integration_evidence")
+        .collect();
+    assert!(
+        lost_evidence_alerts.is_empty(),
+        "a phase that changed nothing inside its scopes must not report lost integration \
+         evidence: {lost_evidence_alerts:?}"
+    );
+}
+
 #[test]
 fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     let fixture = reverted_scoped_patch_proof_fixture();
     let reservation = &fixture.reservation;
     dirty_source(reservation.repository.path(), "src/lib.rs");
-    let competing_reservations =
-        append_released_reservations(reservation, 1, ProofSubjectSimilarity::Distinct);
+    let competing_reservations = append_released_reservations(
+        reservation,
+        1,
+        ProofSubjectSimilarity::DistinctCommittedScope,
+    );
     append_scoped_patch_attempt(
         reservation.repository.path(),
         &reservation.reservation_id,
@@ -3810,9 +3937,10 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
         String::from_utf8_lossy(&deferred.output.stdout)
     );
     assert_eq!(
-        scoped_patch_comparison_attempts(
+        subject_scoped_patch_comparison_attempts(
             &deferred,
             &reservation.phase_start_head,
+            &reservation.protected_tip,
             &reservation.target,
         ),
         0
@@ -3836,31 +3964,20 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
         ),
         evidence_before
     );
-    assert_eq!(
-        journal_operation_count_for_reservation(
-            reservation.repository.path(),
-            "scoped_patch_comparison_attempted",
-            &reservation.reservation_id,
-        ),
-        attempts_before
-    );
-    assert_eq!(
-        journal_operation_count_for_reservation(
-            reservation.repository.path(),
-            "scoped_patch_equivalence_checked",
-            &reservation.reservation_id,
-        ),
-        verdicts_before
-    );
+    assert_comparison_unrecorded(reservation, attempts_before, verdicts_before);
 
-    let replay_competitor =
-        append_released_reservations(reservation, 1, ProofSubjectSimilarity::Distinct);
+    let replay_competitor = append_released_reservations(
+        reservation,
+        1,
+        ProofSubjectSimilarity::DistinctCommittedScope,
+    );
     let replayed = run_board_with_git_trace(reservation.repository.path());
     assert!(replayed.output.status.success());
     assert_eq!(
-        scoped_patch_comparison_attempts(
+        subject_scoped_patch_comparison_attempts(
             &replayed,
             &reservation.phase_start_head,
+            &reservation.protected_tip,
             &reservation.target,
         ),
         0
@@ -3869,22 +3986,7 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     let replayed_data = &replayed_board["payload"]["data"];
     assert_not_integrated_and_blocking(replayed_data, &reservation.reservation_id);
     assert_integration_statuses(replayed_data, &replay_competitor, "trunk_rewritten");
-    assert_eq!(
-        journal_operation_count_for_reservation(
-            reservation.repository.path(),
-            "scoped_patch_comparison_attempted",
-            &reservation.reservation_id,
-        ),
-        attempts_before
-    );
-    assert_eq!(
-        journal_operation_count_for_reservation(
-            reservation.repository.path(),
-            "scoped_patch_equivalence_checked",
-            &reservation.reservation_id,
-        ),
-        verdicts_before
-    );
+    assert_comparison_unrecorded(reservation, attempts_before, verdicts_before);
 }
 
 /// Reachability refutes a proof that rests on tip ancestry; it refutes nothing about one that
@@ -4085,8 +4187,12 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
                 std::slice::from_ref(&two.reservation_id),
                 expected_first_status,
             );
+            // A competitor with scopes of its own is a second proof subject, so the budget the
+            // reservation under test spends leaves its comparison deferred whether or not its
+            // protected tip committed anything inside them.
             let additional_status = match similarity {
-                ProofSubjectSimilarity::Distinct => "not_integrated",
+                ProofSubjectSimilarity::Distinct
+                | ProofSubjectSimilarity::DistinctCommittedScope => "not_integrated",
                 ProofSubjectSimilarity::Duplicate => expected_first_status,
             };
             assert_integration_statuses(two_data, &additional_reservation_ids, additional_status);
@@ -4271,7 +4377,7 @@ fn assert_historical_candidate_subject_budget() {
                     historical_evidence(&fixture)["witness"]
                 );
             },
-            ProofSubjectSimilarity::Distinct => {
+            ProofSubjectSimilarity::Distinct | ProofSubjectSimilarity::DistinctCommittedScope => {
                 assert_ne!(
                     snapshot["integration_evidence"]["status"]["status"],
                     "integrated"
@@ -4504,7 +4610,17 @@ enum ProofSubjectChange {
 
 #[derive(Clone, Copy)]
 enum ProofSubjectSimilarity {
+    /// Scopes of its own, which no commit in the fixture ever touched.
     Distinct,
+    /// Scopes of its own, committed by a protected tip this competitor alone carries.
+    ///
+    /// A competitor whose protected tip never edited the scopes it claims has an empty scoped
+    /// patch, and `compare_scoped_patch` answers an empty patch by comparing scoped content
+    /// instead -- which for a path no commit ever created reports the competitor integrated.
+    /// Tests that need the competitor only to spend the comparison budget want a verdict that
+    /// does not turn on that, so this variant gives it a real change to protect.
+    DistinctCommittedScope,
+    /// The subject's own scopes, so both share one proof subject.
     Duplicate,
 }
 
@@ -5446,6 +5562,58 @@ fn scoped_patch_comparison_attempts(
     phase_start_head: &str,
     target: &str,
 ) -> usize {
+    scoped_patch_comparison_lines(traced_board, phase_start_head, target).len()
+}
+
+/// Assert the pass left the journal free of both an attempt and a verdict for this reservation.
+///
+/// A rejection only the deferred comparison could have reached is a conclusion nothing drew, and
+/// the next reconciliation reads such a row back as settled evidence.
+fn assert_comparison_unrecorded(
+    reservation: &RewrittenReservationFixture,
+    attempts_before: usize,
+    verdicts_before: usize,
+) {
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            reservation.repository.path(),
+            "scoped_patch_comparison_attempted",
+            &reservation.reservation_id,
+        ),
+        attempts_before
+    );
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            reservation.repository.path(),
+            "scoped_patch_equivalence_checked",
+            &reservation.reservation_id,
+        ),
+        verdicts_before
+    );
+}
+
+/// Count only the comparisons this proof subject ran.
+///
+/// A fabricated competitor copies the subject's `phase_start_head`, so its own comparison carries
+/// the same `^phase_start` exclusion and [`scoped_patch_comparison_attempts`] counts it too. The
+/// protected tip is what separates the two subjects.
+fn subject_scoped_patch_comparison_attempts(
+    traced_board: &TracedBoard,
+    phase_start_head: &str,
+    protected_tip: &str,
+    target: &str,
+) -> usize {
+    scoped_patch_comparison_lines(traced_board, phase_start_head, target)
+        .iter()
+        .filter(|line| line.contains(protected_tip))
+        .count()
+}
+
+fn scoped_patch_comparison_lines(
+    traced_board: &TracedBoard,
+    phase_start_head: &str,
+    target: &str,
+) -> Vec<String> {
     let merge_base_query = format!("merge-base {phase_start_head} {target}");
     let excluded_phase_start = format!("^{phase_start_head}");
     fs::read_to_string(&traced_board.trace_path)
@@ -5462,7 +5630,8 @@ fn scoped_patch_comparison_attempts(
                         .any(|argument| argument == excluded_phase_start)
                     && line.contains(target))
         })
-        .count()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn append_released_reservations(
@@ -5496,12 +5665,24 @@ fn append_comparison_reservations(
     for reservation_index in 0..additional_reservations {
         let reservation_id = uuid::Uuid::now_v7().to_string();
         reservation_ids.push(reservation_id.clone());
-        let scopes = match proof_subject_similarity {
-            ProofSubjectSimilarity::Distinct => serde_json::json!([{
-                "path": format!("src/distinct-{reservation_index}.rs"),
-                "kind": "file",
-            }]),
-            ProofSubjectSimilarity::Duplicate => claim["scopes"].clone(),
+        let distinct_scope_path = format!("src/distinct-{reservation_index}.rs");
+        let (scopes, protected_tip) = match proof_subject_similarity {
+            ProofSubjectSimilarity::Distinct => (
+                serde_json::json!([{"path": distinct_scope_path, "kind": "file"}]),
+                fixture.protected_tip.clone(),
+            ),
+            ProofSubjectSimilarity::DistinctCommittedScope => (
+                serde_json::json!([{"path": distinct_scope_path, "kind": "file"}]),
+                commit_competitor_scope(
+                    fixture.repository.path(),
+                    &distinct_scope_path,
+                    &fixture.phase_start_head,
+                    reservation_index,
+                ),
+            ),
+            ProofSubjectSimilarity::Duplicate => {
+                (claim["scopes"].clone(), fixture.protected_tip.clone())
+            },
         };
         append_journal_operation(
             fixture.repository.path(),
@@ -5525,10 +5706,10 @@ fn append_comparison_reservations(
             &serde_json::json!({
                 "op": "checkpoint",
                 "reservation_id": reservation_id,
-                "protected_tip": fixture.protected_tip,
+                "protected_tip": protected_tip,
                 "trunk_snapshot": match completion {
                     ReservationCompletion::Outstanding => &fixture.phase_start_head,
-                    ReservationCompletion::Released => &fixture.protected_tip,
+                    ReservationCompletion::Released => &protected_tip,
                 },
             }),
         );
@@ -5542,7 +5723,7 @@ fn append_comparison_reservations(
                 "reservation_id": reservation_id,
                 "status": {
                     "status": "integrated",
-                    "trunk_oid": fixture.protected_tip,
+                    "trunk_oid": protected_tip,
                     "proof": "protected_tip_ancestor",
                 },
                 "edit_blocking_status": "clear",
@@ -5558,6 +5739,100 @@ fn append_comparison_reservations(
         );
     }
     reservation_ids
+}
+
+/// Commit a competitor's claimed path on a branch of its own and return that commit.
+///
+/// The commit branches from the phase start, so it is no ancestor of the rewritten trunk and the
+/// content it adds is nowhere in it. `compare_scoped_patch` therefore answers `Different` for this
+/// competitor whichever reservation spends the comparison budget, which is what keeps it a
+/// competitor rather than a second subject under test.
+///
+/// Every step runs against a temporary index, so `HEAD`, the repository's own index and the
+/// working tree are all left as the caller had them -- one of these fixtures dirties a source file
+/// before appending its competitor, and a checkout would refuse to run over it.
+fn commit_competitor_scope(
+    repository_root: &Path,
+    scope_path: &str,
+    phase_start_head: &str,
+    reservation_index: usize,
+) -> String {
+    let scratch = tempdir().expect("competitor scratch directory should exist");
+    let index_path = scratch.path().join("index");
+    let source_path = scratch.path().join("competitor.rs");
+    fs::write(&source_path, "pub fn competitor() {}\n").expect("competitor source should write");
+
+    git_with_index(
+        repository_root,
+        &index_path,
+        &["read-tree", phase_start_head],
+    );
+    let blob = git_with_index(
+        repository_root,
+        &index_path,
+        &[
+            "hash-object",
+            "-w",
+            "--path",
+            scope_path,
+            source_path
+                .to_str()
+                .expect("competitor source path should be UTF-8"),
+        ],
+    );
+    git_with_index(
+        repository_root,
+        &index_path,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{blob},{scope_path}"),
+        ],
+    );
+    let tree = git_with_index(repository_root, &index_path, &["write-tree"]);
+    let protected_tip = git_with_index(
+        repository_root,
+        &index_path,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            phase_start_head,
+            "-m",
+            "competitor work inside its own scope",
+        ],
+    );
+    // A ref keeps the commit reachable for the whole run; nothing prunes it out from under the
+    // reservation whose protected tip it is.
+    git(
+        repository_root,
+        &[
+            "update-ref",
+            &format!("refs/heads/competitor-{reservation_index}"),
+            &protected_tip,
+        ],
+    );
+    protected_tip
+}
+
+/// Run one git command against a temporary index and return its trimmed output.
+fn git_with_index(repository_root: &Path, index_path: &Path, arguments: &[&str]) -> String {
+    let output = GIT.output_with_environment(
+        repository_root,
+        arguments,
+        "GIT_INDEX_FILE",
+        index_path.to_str().expect("index path should be UTF-8"),
+    );
+    assert!(
+        output.status.success(),
+        "git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("git output should be UTF-8")
+        .trim()
+        .to_owned()
 }
 
 fn append_scoped_patch_attempt(repository_root: &Path, reservation_id: &str, target: &str) {

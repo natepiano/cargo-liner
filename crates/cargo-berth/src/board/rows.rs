@@ -1143,18 +1143,22 @@ mod tests {
 
     fn assert_trunk_rewritten_action() -> FixtureResult<()> {
         let rewritten = OrderedBoardFixture::new()?;
-        let rewritten_tip = rewritten.board.trunk()?;
+        // The phase must protect real scoped work: a rewrite only costs a reservation its
+        // evidence when trunk actually loses the content that evidence rested on.
+        let protected_tip = rewritten.commit_predecessor()?;
+        rewritten.merge_predecessor()?;
+        let integrated_trunk = rewritten.board.trunk()?;
         rewritten.board.checkpoint(
             &rewritten.predecessor_actor,
             rewritten.predecessor.reservation_id,
-            rewritten_tip.clone(),
-            rewritten_tip.clone(),
+            protected_tip,
+            integrated_trunk.clone(),
         )?;
         rewritten.board.record_evidence(
             &rewritten.predecessor_actor,
             rewritten.predecessor.reservation_id,
             IntegrationEvidenceStatus::Integrated {
-                trunk_oid: rewritten_tip,
+                trunk_oid: integrated_trunk,
                 proof:     IntegrationProof::ProtectedTipAncestor,
                 witness:   IntegrationWitness::EvaluatedTrunk,
             },
@@ -1164,7 +1168,7 @@ mod tests {
             rewritten.predecessor.reservation_id,
             ReleaseDisposition::Integrated,
         )?;
-        rewritten.board.amend_trunk()?;
+        rewritten.board.discard_trunk_tip()?;
         let rewritten_model = rewritten.model()?;
         let WaitingAction::TrunkEvidenceRewritten {
             instruction,

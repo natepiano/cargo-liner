@@ -290,10 +290,15 @@ impl BoardFixture {
         )
     }
 
-    pub(super) fn amend_trunk(&self) -> FixtureResult<()> {
+    /// Rewrite trunk so it discards the content its tip carried.
+    ///
+    /// A message-only amend leaves every byte in place, so a reservation whose protected work
+    /// survives the rewrite keeps its proof. Dropping the commit is what actually costs a
+    /// released reservation the evidence it earned.
+    pub(super) fn discard_trunk_tip(&self) -> FixtureResult<()> {
         git(
             self.repository.path(),
-            &["commit", "--quiet", "--amend", "-m", "rewritten trunk"],
+            &["reset", "--hard", "--quiet", "HEAD~1"],
         )?;
         Ok(())
     }
