@@ -3881,6 +3881,66 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     );
 }
 
+/// Reachability refutes a proof that rests on tip ancestry; it refutes nothing about one that
+/// rests on content. A released reservation carrying `scoped_patch_equivalent` from an earlier
+/// trunk is therefore unevaluated for the observed trunk, not disproved, and the pass that defers
+/// its comparison must not report its evidence lost -- `/validate_and_push` amends on every push,
+/// so this shape recurs on every commit, and the comparison the next reconciliation ran restored
+/// the proof intact within seconds each time.
+#[test]
+fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() {
+    let fixture = warmed_scoped_patch_proof_after_release();
+    append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
+    append_scoped_patch_attempt(
+        fixture.repository.path(),
+        &fixture.reservation_id,
+        &fixture.target,
+    );
+
+    let deferred = run_board_with_git_trace(fixture.repository.path());
+    assert!(deferred.output.status.success());
+    assert_eq!(
+        scoped_patch_comparison_attempts(&deferred, &fixture.phase_start_head, &fixture.target),
+        0,
+        "the case under test needs this reservation's comparison deferred"
+    );
+    let deferred_board = json_output(&deferred.output);
+    let data = &deferred_board["payload"]["data"];
+    assert_integration_statuses(
+        data,
+        std::slice::from_ref(&fixture.reservation_id),
+        "not_integrated",
+    );
+    assert!(
+        lost_integration_evidence_alert(data, &fixture.reservation_id).is_none(),
+        "a pass that never ran the comparison must not name a trunk as having lost the proof: \
+         {data:#}"
+    );
+
+    // The degraded status is journaled all the same, so the following pass reads `not_integrated`
+    // as its materialized evidence and reports from there. Withholding delays the alert by one
+    // reconciliation; it never suppresses a proof that is genuinely gone.
+    append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
+    append_scoped_patch_attempt(
+        fixture.repository.path(),
+        &fixture.reservation_id,
+        &fixture.target,
+    );
+    let following = run_board_with_git_trace(fixture.repository.path());
+    assert!(following.output.status.success());
+    assert_eq!(
+        scoped_patch_comparison_attempts(&following, &fixture.phase_start_head, &fixture.target),
+        0
+    );
+    let following_board = json_output(&following.output);
+    let following_data = &following_board["payload"]["data"];
+    let alert = lost_integration_evidence_alert(following_data, &fixture.reservation_id)
+        .expect("a proof still unproven on the following pass should be reported lost");
+    assert_eq!(alert["evidence_status"]["status"], "not_integrated");
+    assert_eq!(alert["recovery"]["kind"], "verify_resolved_trunk");
+    assert_eq!(alert["recovery"]["trunk_oid"], fixture.target);
+}
+
 #[test]
 fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject() {
     let fixture = comparison_reservations_without_retained_verdicts_fixture(4);
@@ -5098,6 +5158,97 @@ fn warmed_ancestor_proof_after_trunk_rewrite() -> RewrittenReservationFixture {
         ],
     );
     let target = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    RewrittenReservationFixture {
+        repository,
+        reservation_id,
+        phase_start_head,
+        protected_tip,
+        target,
+    }
+}
+
+fn lost_integration_evidence_alert<'board>(
+    data: &'board serde_json::Value,
+    reservation_id: &str,
+) -> Option<&'board serde_json::Value> {
+    data["alerts"]["entries"].as_array().and_then(|alerts| {
+        alerts.iter().find(|alert| {
+            alert["kind"] == "lost_integration_evidence"
+                && alert["reservation_id"] == reservation_id
+        })
+    })
+}
+
+/// Release a reservation, then warm a content proof for it at a trunk its protected tip cannot
+/// reach, and leave trunk on a further rewrite that still carries the reserved content.
+fn warmed_scoped_patch_proof_after_release() -> RewrittenReservationFixture {
+    let repository = initialized_repository();
+    let phase_start_head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let reservation_id = reservation_id(&claim(repository.path(), "file:src/lib.rs", FIRST_RUN));
+    fs::write(
+        repository.path().join("src/lib.rs"),
+        "pub fn protected() {}\n",
+    )
+    .expect("protected source should write");
+    git(repository.path(), &["add", "src/lib.rs"]);
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "protected ancestor",
+        ],
+    );
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    append_journal_operation(
+        repository.path(),
+        &serde_json::json!({
+            "op": "checkpoint",
+            "reservation_id": reservation_id,
+            "protected_tip": protected_tip,
+            "trunk_snapshot": protected_tip,
+        }),
+    );
+    let released = run_board_with_git_trace(repository.path());
+    assert!(released.output.status.success());
+    let released_board = json_output(&released.output);
+    assert_eq!(
+        board_reservation_snapshot(&released_board["payload"]["data"], &reservation_id)["lifecycle"]
+            ["stage"],
+        "released",
+        "ordinary reconciliation should settle the reachable checkpoint"
+    );
+
+    // Trunk now carries the reserved content under a commit the protected tip does not reach,
+    // which is what an amending push leaves behind. The comparison runs here and materializes the
+    // content proof this fixture exists to hold.
+    let warmed_target = commit_library_target_from_base(
+        repository.path(),
+        &phase_start_head,
+        "pub fn protected() {}\n",
+        "equivalent proof target",
+    );
+    let warmed = run_board_with_git_trace(repository.path());
+    assert!(warmed.output.status.success());
+    let warmed_board = json_output(&warmed.output);
+    let warmed_status = &board_reservation_snapshot(
+        &warmed_board["payload"]["data"],
+        &reservation_id,
+    )["integration_evidence"]["status"];
+    assert_eq!(warmed_status["status"], "integrated");
+    assert_eq!(warmed_status["proof"], "scoped_patch_equivalent");
+    assert_eq!(warmed_status["trunk_oid"], warmed_target);
+
+    let target = commit_library_target_from_base(
+        repository.path(),
+        &phase_start_head,
+        "pub fn protected() {}\n",
+        "amended equivalent target",
+    );
+    assert_ne!(target, warmed_target);
     RewrittenReservationFixture {
         repository,
         reservation_id,

@@ -80,11 +80,23 @@ pub(crate) enum IntegrationEvidenceObservation {
 pub(crate) enum DeferredScopedPatchIntegrationStatus {
     /// The materialized status still applies to the observed trunk.
     StillValid(IntegrationEvidenceStatus),
-    /// A refuted or stale affirmative proof was replaced with non-affirmative evidence.
-    Degraded(IntegrationEvidenceStatus),
+    /// The reachability query that ran refuted the materialized proof.
+    Refuted(IntegrationEvidenceStatus),
+    /// A stale content proof was replaced although nothing this pass refuted it.
+    Unevaluated(IntegrationEvidenceStatus),
 }
 
 impl DeferredScopedPatchIntegrationStatus {
+    /// Separate a proof this pass refuted from one it merely could not evaluate.
+    ///
+    /// Reaching here means reachability answered `NotAncestor`, which refutes a proof resting on
+    /// tip ancestry. Scoped equivalence never rested on ancestry, so the same answer refutes
+    /// nothing about it: a `ScopedPatchEquivalent` at an earlier trunk is unevaluated for this
+    /// one, not disproved. Both still degrade to `NotIntegrated`, because the content may equally
+    /// have been reverted and only the deferred comparison can tell the two apart. The distinction
+    /// exists so a reader is told a proof was lost only once something checked it -- reporting the
+    /// unevaluated case named a trunk that no longer proved a released reservation's protected tip
+    /// while the comparison the very next reconciliation ran restored the proof intact.
     fn from_materialized(
         materialized: &IntegrationEvidenceStatus,
         observed_trunk_oid: &GitObjectId,
@@ -96,12 +108,14 @@ impl DeferredScopedPatchIntegrationStatus {
                 ..
             } if trunk_oid == observed_trunk_oid => Self::StillValid(materialized.clone()),
             IntegrationEvidenceStatus::Integrated {
-                proof:
-                    IntegrationProof::ProtectedTipAncestor
-                    | IntegrationProof::RewrittenWitnessAncestor
-                    | IntegrationProof::ScopedPatchEquivalent,
+                proof: IntegrationProof::ScopedPatchEquivalent,
                 ..
-            } => Self::Degraded(IntegrationEvidenceStatus::NotIntegrated),
+            } => Self::Unevaluated(IntegrationEvidenceStatus::NotIntegrated),
+            IntegrationEvidenceStatus::Integrated {
+                proof:
+                    IntegrationProof::ProtectedTipAncestor | IntegrationProof::RewrittenWitnessAncestor,
+                ..
+            } => Self::Refuted(IntegrationEvidenceStatus::NotIntegrated),
             IntegrationEvidenceStatus::NotIntegrated
             | IntegrationEvidenceStatus::TrunkRewritten
             | IntegrationEvidenceStatus::ObjectUnknown => Self::StillValid(materialized.clone()),

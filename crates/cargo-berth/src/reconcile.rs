@@ -280,26 +280,61 @@ struct RepositoryEvidenceObservation {
     evidence:                RepositoryReservationEvidence,
     revalidation:            EvidenceRevalidationObservation,
     scoped_patch_comparison: ScopedPatchComparisonJournalUpdate,
+    proof_standing:          ReplacedProofStanding,
+}
+
+/// Whether anything this reconciliation ran refuted the affirmative proof it replaced.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReplacedProofStanding {
+    /// A query that ran settled the proof's fate, or no affirmative proof was replaced.
+    Settled,
+    /// A content proof was replaced without the deferred comparison that could judge it.
+    Unevaluated,
 }
 
 struct IntegrationStatusObservation {
     status:                  IntegrationEvidenceStatus,
     revalidation:            EvidenceRevalidationObservation,
     scoped_patch_comparison: ScopedPatchComparisonJournalUpdate,
+    proof_standing:          ReplacedProofStanding,
+}
+
+impl IntegrationStatusObservation {
+    /// Build an observation for a status no deferred comparison bears on.
+    const fn settled(
+        status: IntegrationEvidenceStatus,
+        revalidation: EvidenceRevalidationObservation,
+        scoped_patch_comparison: ScopedPatchComparisonJournalUpdate,
+    ) -> Self {
+        Self {
+            status,
+            revalidation,
+            scoped_patch_comparison,
+            proof_standing: ReplacedProofStanding::Settled,
+        }
+    }
 }
 
 impl From<DeferredScopedPatchIntegrationStatus> for IntegrationStatusObservation {
     fn from(deferred_status: DeferredScopedPatchIntegrationStatus) -> Self {
         match deferred_status {
-            DeferredScopedPatchIntegrationStatus::StillValid(status) => Self {
+            DeferredScopedPatchIntegrationStatus::StillValid(status) => Self::settled(
                 status,
-                revalidation: EvidenceRevalidationObservation::PreserveMaterialized,
-                scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-            },
-            DeferredScopedPatchIntegrationStatus::Degraded(status) => Self {
+                EvidenceRevalidationObservation::PreserveMaterialized,
+                ScopedPatchComparisonJournalUpdate::Unchanged,
+            ),
+            DeferredScopedPatchIntegrationStatus::Refuted(status) => Self::settled(
+                status,
+                EvidenceRevalidationObservation::Apply,
+                ScopedPatchComparisonJournalUpdate::Unchanged,
+            ),
+            // The degraded status is journaled either way, so a proof the comparison later refutes
+            // is reported from the next pass onward. Only this pass's alert is withheld.
+            DeferredScopedPatchIntegrationStatus::Unevaluated(status) => Self {
                 status,
                 revalidation: EvidenceRevalidationObservation::Apply,
                 scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
+                proof_standing: ReplacedProofStanding::Unevaluated,
             },
         }
     }
@@ -822,6 +857,8 @@ struct ReconciliationChanges {
     retention_repairs:   Vec<ReservationRetentionRefRepair>,
     retention_deletions: Vec<ReservationId>,
     evidence:            Vec<ReconciledEvidence>,
+    /// Reservations whose affirmative proof this pass replaced without evaluating it.
+    unevaluated_proofs:  Vec<ReservationId>,
 }
 
 struct ReconciliationAction {
@@ -833,6 +870,13 @@ struct ReconciliationAction {
     retention_commit_resolution:   RetentionCommitResolution,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
+    /// Reservations whose replaced proof no query this pass ran had refuted.
+    ///
+    /// A proof replaced without the comparison that could judge it says nothing yet about whether
+    /// the work reached trunk, so reporting it lost names a trunk nothing checked. The degraded
+    /// status is journaled all the same, so the next reconciliation reads `NotIntegrated` as its
+    /// materialized evidence and reports from there -- delayed by one pass, never withheld.
+    unevaluated_proofs:            Vec<ReservationId>,
     repository_snapshot:           RepositorySnapshot,
     recovered_bypass_reporting:    RecoveredBypassReporting,
     recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
@@ -1898,6 +1942,7 @@ fn build_plan(
             alert_subjects,
             settlements: Vec::new(),
             evidence: changes.evidence,
+            unevaluated_proofs: changes.unevaluated_proofs,
             repository_snapshot,
             recovered_bypass_reporting: RecoveredBypassReporting::Defer,
             recovered_bypass_markers: Vec::new(),
@@ -2456,6 +2501,7 @@ fn repository_evidence(
             evidence:                RepositoryReservationEvidence::Active,
             revalidation:            EvidenceRevalidationObservation::NotApplicable,
             scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
+            proof_standing:          ReplacedProofStanding::Settled,
         }),
         ReservationEvidenceState::Outstanding {
             protected_tip,
@@ -2487,6 +2533,7 @@ fn repository_evidence(
                 },
                 revalidation:            EvidenceRevalidationObservation::NotApplicable,
                 scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
+                proof_standing:          ReplacedProofStanding::Settled,
             })
         },
     }
@@ -2518,11 +2565,11 @@ fn observe_outstanding_repository_evidence(
                 materialized,
             )
         },
-        RepositoryTrunk::ObjectUnknown => IntegrationStatusObservation {
-            status:                  IntegrationEvidenceStatus::ObjectUnknown,
-            revalidation:            EvidenceRevalidationObservation::Apply,
-            scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-        },
+        RepositoryTrunk::ObjectUnknown => IntegrationStatusObservation::settled(
+            IntegrationEvidenceStatus::ObjectUnknown,
+            EvidenceRevalidationObservation::Apply,
+            ScopedPatchComparisonJournalUpdate::Unchanged,
+        ),
     };
     RepositoryEvidenceObservation {
         evidence:                RepositoryReservationEvidence::Outstanding {
@@ -2531,6 +2578,7 @@ fn observe_outstanding_repository_evidence(
         },
         revalidation:            observation.revalidation,
         scoped_patch_comparison: observation.scoped_patch_comparison,
+        proof_standing:          observation.proof_standing,
     }
 }
 
@@ -2549,8 +2597,8 @@ fn observe_released_repository_evidence(
             &materialized,
         ),
         ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
-            IntegrationStatusObservation {
-                status:                  match target_evidence_context.repository_trunk {
+            IntegrationStatusObservation::settled(
+                match target_evidence_context.repository_trunk {
                     RepositoryTrunk::Resolved(trunk) => {
                         trunk_commit.revalidate_ancestry(trunk, |witness| {
                             target_evidence_context
@@ -2560,15 +2608,15 @@ fn observe_released_repository_evidence(
                     },
                     RepositoryTrunk::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
                 },
-                revalidation:            EvidenceRevalidationObservation::Apply,
-                scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-            }
+                EvidenceRevalidationObservation::Apply,
+                ScopedPatchComparisonJournalUpdate::Unchanged,
+            )
         },
-        ReleaseRevalidationSubject::None => IntegrationStatusObservation {
-            status:                  materialized,
-            revalidation:            EvidenceRevalidationObservation::NotApplicable,
-            scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-        },
+        ReleaseRevalidationSubject::None => IntegrationStatusObservation::settled(
+            materialized,
+            EvidenceRevalidationObservation::NotApplicable,
+            ScopedPatchComparisonJournalUpdate::Unchanged,
+        ),
     };
     RepositoryEvidenceObservation {
         evidence:                RepositoryReservationEvidence::Released {
@@ -2578,6 +2626,7 @@ fn observe_released_repository_evidence(
         },
         revalidation:            observation.revalidation,
         scoped_patch_comparison: observation.scoped_patch_comparison,
+        proof_standing:          observation.proof_standing,
     }
 }
 
@@ -2596,11 +2645,11 @@ fn revalidate_release(
             ScopedPatchEvaluationContext::PriorIntegrationProven,
             materialized,
         ),
-        RepositoryTrunk::ObjectUnknown => IntegrationStatusObservation {
-            status:                  IntegrationEvidenceStatus::ObjectUnknown,
-            revalidation:            EvidenceRevalidationObservation::Apply,
-            scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-        },
+        RepositoryTrunk::ObjectUnknown => IntegrationStatusObservation::settled(
+            IntegrationEvidenceStatus::ObjectUnknown,
+            EvidenceRevalidationObservation::Apply,
+            ScopedPatchComparisonJournalUpdate::Unchanged,
+        ),
     }
 }
 
@@ -2620,17 +2669,17 @@ fn integration_status_with_retained_verdict(
         ScopedPatchTargetVerdictAvailability::Hit {
             comparison,
             witness,
-        } => IntegrationStatusObservation {
-            status:                  integration_status_from_retained_scoped_patch_comparison(
+        } => IntegrationStatusObservation::settled(
+            integration_status_from_retained_scoped_patch_comparison(
                 comparison,
                 witness,
                 target,
                 &scoped_patch_evaluation_context,
                 target_evidence_context.integration_reachability,
             ),
-            revalidation:            EvidenceRevalidationObservation::Apply,
-            scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-        },
+            EvidenceRevalidationObservation::Apply,
+            ScopedPatchComparisonJournalUpdate::Unchanged,
+        ),
         ScopedPatchTargetVerdictAvailability::Miss => {
             let repository_root = target_evidence_context.repository_root;
             let integration_reachability = target_evidence_context.integration_reachability;
@@ -2685,20 +2734,20 @@ fn integration_status_with_retained_verdict(
             };
             match evidence_observation {
                 IntegrationEvidenceObservation::Reachability(status) => {
-                    IntegrationStatusObservation {
+                    IntegrationStatusObservation::settled(
                         status,
-                        revalidation: EvidenceRevalidationObservation::Apply,
-                        scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-                    }
+                        EvidenceRevalidationObservation::Apply,
+                        ScopedPatchComparisonJournalUpdate::Unchanged,
+                    )
                 },
                 IntegrationEvidenceObservation::ScopedPatchComparison { status, evaluation } => {
                     let scoped_patch_comparison =
                         scoped_patch_journal_update(subject, target, &status, &evaluation);
-                    IntegrationStatusObservation {
+                    IntegrationStatusObservation::settled(
                         status,
-                        revalidation: EvidenceRevalidationObservation::Apply,
+                        EvidenceRevalidationObservation::Apply,
                         scoped_patch_comparison,
-                    }
+                    )
                 },
                 IntegrationEvidenceObservation::ScopedPatchComparisonDeferred(status) => {
                     status.into()
@@ -2905,6 +2954,9 @@ fn append_evidence_and_retention(
                 ));
         },
         RetentionDecision::Delete => changes.retention_deletions.push(reservation.id()),
+    }
+    if repository_evidence_observation.proof_standing == ReplacedProofStanding::Unevaluated {
+        changes.unevaluated_proofs.push(reservation.id());
     }
     let evidence_revalidation = match repository_evidence_observation.revalidation {
         EvidenceRevalidationObservation::Apply => EvidenceRevalidation::Required(evidence),
@@ -3756,6 +3808,49 @@ fn record_successor_scoped_patch_verdict(
     }
 }
 
+/// Collect every alert the retained reservations raise against the observed repository.
+fn reservation_alerts(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &RepositoryTrunk,
+    unevaluated_proofs: &[ReservationId],
+) -> Result<Vec<Alert>, ReconcileError> {
+    let mut alerts = Vec::new();
+    for reservation in reservations.iter() {
+        if unevaluated_proofs.contains(&reservation.id()) {
+            continue;
+        }
+        alerts.extend(
+            alert::for_lost_integration_evidence(reservation, repository_trunk)
+                .map_err(ReconcileError::Replay)?,
+        );
+        // Released reservations no longer refresh merge extents, but their integration
+        // evidence must still report when the proof for released work is lost.
+        if matches!(
+            reservation.lifecycle(),
+            ReservationLifecycle::Released { .. }
+        ) {
+            continue;
+        }
+        // A failed observation is worth reporting only while the evidence it retained still
+        // refuses something, which is what `MergeExtent::retains_protection` asks. Matching
+        // the variant alone raised the alert over `RetainedMergeEvidence::Empty` too, where
+        // `MergeExtent::protection` answers `Clear` -- so the message claimed retained
+        // protection for a reservation that holds none. A holder whose worktree is deleted
+        // stays in that state permanently, since no later observation can succeed, so the
+        // alert also had no condition under which it would ever stop.
+        let merge_extent = reservation.merge_extent();
+        if let MergeExtent::Unavailable { failure, .. } = merge_extent
+            && merge_extent.retains_protection()
+        {
+            alerts.push(Alert::MergeExtentUnavailable {
+                reservation_id: reservation.id(),
+                failure:        failure.clone(),
+            });
+        }
+    }
+    Ok(alerts)
+}
+
 impl ReconciliationAction {
     fn commit(
         mut self,
@@ -3795,37 +3890,11 @@ impl ReconciliationAction {
                 })
             })?;
         }
-        let mut alerts = Vec::new();
-        for reservation in reservations.iter() {
-            alerts.extend(
-                alert::for_lost_integration_evidence(reservation, self.repository_snapshot.trunk())
-                    .map_err(ReconcileError::Replay)?,
-            );
-            // Released reservations no longer refresh merge extents, but their integration
-            // evidence must still report when the proof for released work is lost.
-            if matches!(
-                reservation.lifecycle(),
-                ReservationLifecycle::Released { .. }
-            ) {
-                continue;
-            }
-            // A failed observation is worth reporting only while the evidence it retained still
-            // refuses something, which is what `MergeExtent::retains_protection` asks. Matching
-            // the variant alone raised the alert over `RetainedMergeEvidence::Empty` too, where
-            // `MergeExtent::protection` answers `Clear` -- so the message claimed retained
-            // protection for a reservation that holds none. A holder whose worktree is deleted
-            // stays in that state permanently, since no later observation can succeed, so the
-            // alert also had no condition under which it would ever stop.
-            let merge_extent = reservation.merge_extent();
-            if let MergeExtent::Unavailable { failure, .. } = merge_extent
-                && merge_extent.retains_protection()
-            {
-                alerts.push(Alert::MergeExtentUnavailable {
-                    reservation_id: reservation.id(),
-                    failure:        failure.clone(),
-                });
-            }
-        }
+        let mut alerts = reservation_alerts(
+            &reservations,
+            self.repository_snapshot.trunk(),
+            &self.unevaluated_proofs,
+        )?;
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
                 &self.repository_root,
