@@ -3767,6 +3767,111 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
     assert_eq!(unknown_tip_alert["recovery"]["trunk_oid"], rewritten_trunk);
 }
 
+/// The monotone rule as its own contract, rather than something the deferral fixtures exercise in
+/// passing: a proof is re-derived only when the trunk commit it names leaves history. An ordinary
+/// commit moves trunk forward over that commit, so `IntegrationProofStanding::observe` answers
+/// `Holds`, `reanchored_proof` carries the recorded `scoped_patch_equivalent` onto the observed
+/// trunk, and no scoped-patch comparison runs. Re-deriving on every pass is what let a settled
+/// proof read as lost between one commit and the next.
+#[test]
+fn a_standing_proof_is_reanchored_onto_a_trunk_that_moved_forward() {
+    let fixture = warmed_scoped_patch_proof_after_release();
+    let root = fixture.repository.path();
+    let proving = run_board_with_git_trace(root);
+    assert!(proving.output.status.success());
+    assert_scoped_patch_proof_at(
+        &json_output(&proving.output)["payload"]["data"],
+        &fixture.reservation_id,
+        &fixture.target,
+    );
+    let comparisons_before = journal_operation_count(root, "scoped_patch_equivalence_checked");
+
+    // Twice, because a proof that survives one advance and is re-derived on the next would still
+    // report a loss on a repository that keeps committing.
+    for advance in ["first", "second"] {
+        let advanced_trunk = advance_trunk(root, advance);
+        let following = run_board_with_git_trace(root);
+        assert!(following.output.status.success());
+        let data = &json_output(&following.output)["payload"]["data"];
+        assert_scoped_patch_proof_at(data, &fixture.reservation_id, &advanced_trunk);
+        assert_eq!(
+            subject_scoped_patch_comparison_attempts(
+                &following,
+                &fixture.phase_start_head,
+                &fixture.protected_tip,
+                &advanced_trunk,
+            ),
+            0,
+            "a proof whose trunk commit trunk still reaches must cost no comparison: {data:#}"
+        );
+        assert_eq!(
+            journal_operation_count(root, "scoped_patch_equivalence_checked"),
+            comparisons_before,
+            "a standing proof must not record a fresh verdict"
+        );
+        assert!(
+            lost_integration_evidence_alert(data, &fixture.reservation_id).is_none(),
+            "a proof that still stands cannot be reported lost: {data:#}"
+        );
+    }
+}
+
+/// The two-pass gate as its own contract: the pass that first derives a proofless status records it
+/// and says nothing, and only a pass that reads that row and derives the same answer raises
+/// `alert::for_lost_integration_evidence`. A repository mid-rewrite produced the first answer on
+/// every push, and the directive that followed named a loss the next pass had already undone.
+#[test]
+fn the_lost_evidence_alert_waits_for_a_second_pass_to_agree() {
+    let fixture =
+        rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Released);
+    let root = fixture.repository.path();
+    let evidence_before = journal_operation_count_for_reservation(
+        root,
+        "evidence_revalidated",
+        &fixture.reservation_id,
+    );
+
+    let deriving = board_data(root);
+    assert_eq!(
+        board_reservation_snapshot(&deriving, &fixture.reservation_id)["integration_evidence"]["status"]
+            ["status"],
+        "trunk_rewritten"
+    );
+    assert!(
+        lost_integration_evidence_alert(&deriving, &fixture.reservation_id).is_none(),
+        "the pass that first derives the loss must record it and stay silent: {deriving:#}"
+    );
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            root,
+            "evidence_revalidated",
+            &fixture.reservation_id
+        ),
+        evidence_before + 1,
+        "a pass that ran the comparison must journal what it found"
+    );
+
+    let confirming = board_data(root);
+    assert_eq!(
+        board_reservation_snapshot(&confirming, &fixture.reservation_id)["integration_evidence"]["status"]
+            ["status"],
+        "trunk_rewritten"
+    );
+    assert!(
+        lost_integration_evidence_alert(&confirming, &fixture.reservation_id).is_some(),
+        "the pass that agrees with the row on file must report the proof lost: {confirming:#}"
+    );
+}
+
+/// The reported proof, and the trunk `reanchored_proof` anchored it to.
+fn assert_scoped_patch_proof_at(data: &serde_json::Value, reservation_id: &str, trunk_oid: &str) {
+    let status =
+        &board_reservation_snapshot(data, reservation_id)["integration_evidence"]["status"];
+    assert_eq!(status["status"], "integrated");
+    assert_eq!(status["proof"], "scoped_patch_equivalent");
+    assert_eq!(status["trunk_oid"], trunk_oid);
+}
+
 #[test]
 fn deferred_comparison_preserves_a_scoped_patch_equivalence_proof() {
     let fixture =
@@ -5273,6 +5378,30 @@ fn commit_library_target_from_base(
             "--quiet",
             "-m",
             message,
+        ],
+    );
+    git_stdout(repository_root, &["rev-parse", "HEAD"])
+}
+
+/// Commit outside every reserved scope, so trunk moves forward and keeps reaching what it held.
+fn advance_trunk(repository_root: &Path, marker: &str) -> String {
+    let advancing_source = format!("src/advanced-{marker}.rs");
+    let message = format!("{marker} advance past the proof");
+    fs::write(
+        repository_root.join(&advancing_source),
+        "pub fn advanced() {}\n",
+    )
+    .expect("advancing source should write");
+    git(repository_root, &["add", &advancing_source]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            &message,
         ],
     );
     git_stdout(repository_root, &["rev-parse", "HEAD"])
