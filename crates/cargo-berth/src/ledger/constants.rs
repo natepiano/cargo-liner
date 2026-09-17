@@ -16,7 +16,24 @@ pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 
 // journal limits
+/// Maximum record bytes for a fact whose size a caller chose and can reduce.
+///
+/// Exceeding this is reported as [`CorrectableTransactionInput`], so the limit may only bind
+/// content the caller supplied: a declared scope set, an explicit widen. A record the engine
+/// derived from the repository has no caller to correct it, and belongs under
+/// [`MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES`] instead.
+///
+/// [`CorrectableTransactionInput`]: super::error::CorrectableTransactionInput
 pub(super) const MAXIMUM_JOURNAL_RECORD_BYTES: usize = 16 * 1_024;
+/// Maximum record bytes for a fact the engine derived from repository shape.
+///
+/// A branch's unmerged surface and the paths drift observed both grow with the repository, not
+/// with anything a caller declared, so no reader can shorten them. Holding such a record to the
+/// caller's limit lets one branch's size stop every ref update in the repository, which is what
+/// this separate ceiling exists to prevent. It is set far above any surface a working repository
+/// produces — roughly fifty thousand paths — so that breaching it still means a runaway rather
+/// than an ordinary large branch.
+pub(super) const MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES: usize = 4 * 1_024 * 1_024;
 /// Maximum JSON-encoded string-content bytes retained for one actor identity input.
 pub(super) const MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES: usize = 256;
 

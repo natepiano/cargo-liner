@@ -3451,7 +3451,7 @@ fn engine_result_presentation(summary: &str, detail: &str) -> EnvelopePresentati
 
 fn blocked_claim_refusal_detail(conflicts: &[ReservationConflict]) -> String {
     let mut sections = vec![claim_holder_facts(conflicts)];
-    sections.push(blocked_edit_answer_guidance().to_owned());
+    sections.push(blocked_edit_answer_guidance(conflicts));
     append_first_touch_holder_recovery_guidance(
         &mut sections,
         conflicts,
@@ -3493,7 +3493,7 @@ fn blocked_edit_refusal_detail(
     conflicts: &[ReservationConflict],
 ) -> String {
     let mut sections = vec![blocked_edit_holder_facts(requested_scopes, conflicts)];
-    sections.push(blocked_edit_answer_guidance().to_owned());
+    sections.push(blocked_edit_answer_guidance(conflicts));
     append_first_touch_holder_recovery_guidance(
         &mut sections,
         conflicts,
@@ -3540,7 +3540,28 @@ fn claim_holder_facts(conflicts: &[ReservationConflict]) -> String {
         .join("\n\n")
 }
 
-pub(crate) const fn blocked_edit_answer_guidance() -> &'static str {
+/// The token standing in for a holder id in the answer-command template.
+pub(crate) const HOLDER_RESERVATION_ID_PLACEHOLDER: &str = "<holder-reservation-id>";
+
+/// The four reasoned answers, each command naming the holder it would answer.
+///
+/// A refusal that says it wants an answer "for one named holder" and then prints
+/// `<holder-reservation-id>` in every command it offers has named nobody, and the reader cannot
+/// run a single line of it. With one holder there is exactly one id those commands could carry,
+/// so it is substituted and they run as printed. With several, the placeholder stands: one answer
+/// binds one blocker, and only the reader can say which blocker they mean.
+fn blocked_edit_answer_guidance(conflicts: &[ReservationConflict]) -> String {
+    let template = blocked_edit_answer_guidance_template();
+    match conflicts {
+        [conflict] => template.replace(
+            HOLDER_RESERVATION_ID_PLACEHOLDER,
+            &conflict.reservation_id.to_string(),
+        ),
+        _ => template.to_owned(),
+    }
+}
+
+pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
     r#"Choose exactly one answer for one named holder. The first four are reasoned `cargo-berth claim` answers, and each requires a non-empty reason. Run the `cargo-berth` invocation shown for each answer from the repository:
 
 1. **Land before the holder** — `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths and integrates first; the holder remains held until the requester is on trunk. Use this when the holder will build on the requester's change.

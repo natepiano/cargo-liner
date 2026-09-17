@@ -1916,6 +1916,9 @@ impl ClaimError {
                 LedgerTransactionError::LedgerUnreadable(error) => {
                     OutputEnvelope::ledger_error(command_verb, &error)
                 },
+                error @ LedgerTransactionError::DerivedRecordTooLarge { .. } => {
+                    OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+                },
             },
             Self::CoordinationIdentity(rejection) => {
                 OutputEnvelope::coordination_identity_rejected(command_verb, rejection)

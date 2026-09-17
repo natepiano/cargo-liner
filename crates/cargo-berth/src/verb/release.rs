@@ -175,6 +175,9 @@ fn release_error_output(error: ReleaseError) -> OutputEnvelope {
             LedgerTransactionError::LedgerUnreadable(error) => {
                 OutputEnvelope::ledger_error(CommandVerb::Release, &error)
             },
+            error @ LedgerTransactionError::DerivedRecordTooLarge { .. } => {
+                OutputEnvelope::ledger_unreadable(CommandVerb::Release, &error.to_string())
+            },
         },
         ReleaseError::Config(error) => {
             OutputEnvelope::ledger_error(CommandVerb::Release, &LedgerError::Config(error))

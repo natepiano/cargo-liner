@@ -161,6 +161,17 @@ pub(crate) enum LedgerTransactionError {
     LockContention,
     /// The proposal is validly classified as caller-correctable input.
     CorrectableInput(CorrectableTransactionInput),
+    /// A record the engine derived from the repository exceeded its own ceiling.
+    ///
+    /// Kept apart from [`Self::CorrectableInput`] because there is nothing for a caller to
+    /// correct: the size came from a branch's surface, not from anything they declared. Reporting
+    /// it as correctable is what once told a blocked session to reduce scopes it never named.
+    DerivedRecordTooLarge {
+        /// The proposed record size including its newline.
+        bytes:         usize,
+        /// The ceiling that applies to engine-derived records.
+        maximum_bytes: usize,
+    },
 }
 
 impl LedgerTransactionError {
@@ -186,6 +197,13 @@ impl Display for LedgerTransactionError {
                 "another cargo-berth operation is still running; wait for it to finish, then retry",
             ),
             Self::CorrectableInput(error) => error.fmt(formatter),
+            Self::DerivedRecordTooLarge {
+                bytes,
+                maximum_bytes,
+            } => write!(
+                formatter,
+                "cargo-berth observed a branch surface too large to record: {bytes} bytes, above the {maximum_bytes}-byte limit for observations. This is not a limit on anything you declared, so there is nothing in your claim to reduce. Report it — the observed surface has outgrown the record format."
+            ),
         }
     }
 }
@@ -237,7 +255,9 @@ impl Display for CorrectableTransactionInput {
                 maximum_bytes,
             } => write!(
                 formatter,
-                "the proposed reservation record is {bytes} bytes, above the {maximum_bytes}-byte limit; reduce its scopes or shorten its provenance and purpose, then retry"
+                // Terminated, because a caller appends its own recovery clause after this one
+                // with only a space between them.
+                "the proposed reservation record is {bytes} bytes, above the {maximum_bytes}-byte limit; reduce its scopes or shorten its provenance and purpose, then retry."
             ),
         }
     }

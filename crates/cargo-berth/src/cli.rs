@@ -1427,6 +1427,9 @@ fn execute_identity_command(identity_command: &IdentityCommand) -> OutputEnvelop
                     LedgerTransactionError::CorrectableInput(error) => {
                         OutputEnvelope::invalid_input(CommandVerb::Identity, &error.to_string())
                     },
+                    error @ LedgerTransactionError::DerivedRecordTooLarge { .. } => {
+                        OutputEnvelope::ledger_unreadable(CommandVerb::Identity, &error.to_string())
+                    },
                 },
             }
         },
@@ -1958,7 +1961,10 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
             BerthExit::UsageError.into()
         },
         GateError::Ledger(_)
-        | GateError::Transaction(LedgerTransactionError::LedgerUnreadable(_))
+        | GateError::Transaction(
+            LedgerTransactionError::LedgerUnreadable(_)
+            | LedgerTransactionError::DerivedRecordTooLarge { .. },
+        )
         | GateError::Reconciliation(_)
         | GateError::Planning(_)
         | GateError::MissingConstraintFact(_)
@@ -1984,6 +1990,9 @@ fn initialization_error(error: LedgerError) -> OutputEnvelope {
         },
         LedgerTransactionError::CorrectableInput(error) => {
             OutputEnvelope::invalid_input(CommandVerb::Init, &error.to_string())
+        },
+        error @ LedgerTransactionError::DerivedRecordTooLarge { .. } => {
+            OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error.to_string())
         },
     }
 }
@@ -2597,7 +2606,7 @@ mod tests {
 
     #[test]
     fn rendered_overlap_answer_commands_select_the_documented_resolution() -> Result<(), String> {
-        let mut rendered_commands = output::blocked_edit_answer_guidance()
+        let mut rendered_commands = output::blocked_edit_answer_guidance_template()
             .lines()
             .filter(|line| {
                 line.chars()
@@ -2936,7 +2945,7 @@ mod tests {
             .into_iter()
             .map(|argument| match argument.as_str() {
                 "<paths...>" => "src/lib.rs".to_owned(),
-                "<holder-reservation-id>" => RESERVATION_ID.to_owned(),
+                output::HOLDER_RESERVATION_ID_PLACEHOLDER => RESERVATION_ID.to_owned(),
                 "<reason>" => "the overlap is coordinated".to_owned(),
                 _ => argument,
             })

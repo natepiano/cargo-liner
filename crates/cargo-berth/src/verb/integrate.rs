@@ -180,6 +180,9 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         GateError::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
             OutputEnvelope::invalid_input(CommandVerb::Integrate, &error.to_string())
         },
+        GateError::Transaction(error @ LedgerTransactionError::DerivedRecordTooLarge { .. }) => {
+            OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string())
+        },
         GateError::CoordinationIdentity(rejection) => {
             OutputEnvelope::integration_rejected(reservation_id, rejection)
         },

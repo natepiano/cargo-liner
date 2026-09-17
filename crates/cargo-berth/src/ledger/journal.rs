@@ -23,6 +23,7 @@ use super::constants::DELETE_CONTROL_BYTE;
 use super::constants::GIT_COMMON_DIRECTORY_ENVIRONMENT;
 use super::constants::GIT_DIRECTORY_ENVIRONMENT;
 use super::constants::HARNESS_SESSION_ENVIRONMENT;
+use super::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
 use crate::answer::ConflictAuthorization;
@@ -562,6 +563,74 @@ pub(crate) enum JournalOperation {
         current_root:   CanonicalWorktreeRoot,
     },
 }
+}
+
+/// Who chose a record's size, and therefore who can act on its being too large.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RecordCeiling {
+    /// The caller supplied this content and can submit a smaller proposal.
+    Declared,
+    /// The engine derived this content from the repository; no caller can shorten it.
+    Derived,
+}
+
+impl RecordCeiling {
+    /// The limit this ceiling imposes.
+    pub(super) const fn maximum_bytes(self) -> usize {
+        match self {
+            Self::Declared => MAXIMUM_JOURNAL_RECORD_BYTES,
+            Self::Derived => MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES,
+        }
+    }
+}
+
+impl JournalOperation {
+    /// Which ceiling bounds this operation's record.
+    ///
+    /// The distinction is whether anyone can make the record smaller. Three operations carry a set
+    /// the engine measured off the repository and nobody declared: the branch surface a merge
+    /// extent observes, the paths a drift widen adds, and the paths an incursion found uncovered.
+    /// Each grows with the repository rather than with a request, so holding one to the caller's
+    /// limit lets a branch's size stop every ref update — and the session it stops usually does not
+    /// own that branch, so it could not shrink the record even if told which one it was.
+    ///
+    /// Everything else stays under [`RecordCeiling::Declared`], including operations that carry
+    /// only a caller's text. That is deliberate: for a forced-integration reason and its like, the
+    /// record limit is the only bound there is, so moving them would remove a check rather than
+    /// correct one. A new operation added to this enum joins the declared group by falling into the
+    /// exhaustive arm below, which is the conservative side for anything a caller can influence.
+    pub(super) const fn record_ceiling(&self) -> RecordCeiling {
+        match self {
+            Self::MergeExtentObserved { .. }
+            | Self::Incursion { .. }
+            | Self::Widen {
+                cause: WidenCause::Drift,
+                ..
+            } => RecordCeiling::Derived,
+            Self::Claim { .. }
+            | Self::Widen {
+                cause: WidenCause::Explicit { .. },
+                ..
+            }
+            | Self::Checkpoint { .. }
+            | Self::Resnapshot { .. }
+            | Self::Renew { .. }
+            | Self::Release { .. }
+            | Self::ReplaceReleaseDisposition { .. }
+            | Self::EvidenceRevalidated { .. }
+            | Self::ScopedPatchEquivalenceChecked { .. }
+            | Self::ScopedPatchComparisonAttempted { .. }
+            | Self::SuccessorScopedPatchEquivalenceChecked { .. }
+            | Self::SuccessorScopedPatchComparisonAttempted { .. }
+            | Self::ResolveDefer { .. }
+            | Self::ResolveIncursion { .. }
+            | Self::ForcedIntegrationPermit { .. }
+            | Self::ConsumeForcedIntegrationPermit { .. }
+            | Self::Bypass { .. }
+            | Self::RebindWorktree { .. }
+            | Self::RelocateWorktree { .. } => RecordCeiling::Declared,
+        }
+    }
 }
 
 /// How a claim named the work it reserves.
@@ -1744,9 +1813,11 @@ impl Journal {
             let mut record =
                 serde_json::to_vec(event).map_err(JournalAppendError::Serialization)?;
             record.push(b'\n');
-            if record.len() > MAXIMUM_JOURNAL_RECORD_BYTES {
+            let ceiling = event.operation.record_ceiling();
+            if record.len() > ceiling.maximum_bytes() {
                 return Err(JournalAppendError::RecordTooLarge {
                     bytes: record.len(),
+                    ceiling,
                 });
             }
             records.extend(record);
@@ -1895,7 +1966,9 @@ pub(super) enum JournalAppendError {
     /// The proposed fact exceeds the bounded record format.
     RecordTooLarge {
         /// The serialized record length, including its newline.
-        bytes: usize,
+        bytes:   usize,
+        /// Which limit was exceeded, and so whether any caller can correct it.
+        ceiling: RecordCeiling,
     },
 }
 
@@ -1906,10 +1979,11 @@ impl Display for JournalAppendError {
             Self::Serialization(error) => {
                 write!(formatter, "could not serialize journal record: {error}")
             },
-            Self::RecordTooLarge { bytes } => {
+            Self::RecordTooLarge { bytes, ceiling } => {
                 write!(
                     formatter,
-                    "proposed journal record is too large: {bytes} bytes"
+                    "proposed journal record is too large: {bytes} bytes, above the {}-byte limit",
+                    ceiling.maximum_bytes()
                 )
             },
         }

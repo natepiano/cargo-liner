@@ -820,6 +820,9 @@ impl RecoveryError {
             Self::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
                 OutputEnvelope::invalid_input(command_verb, &error.to_string())
             },
+            Self::Transaction(error @ LedgerTransactionError::DerivedRecordTooLarge { .. }) => {
+                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+            },
             Self::Rejected(RecoveryRejection::Replay(error)) => {
                 OutputEnvelope::replay_failure(command_verb, &error)
             },

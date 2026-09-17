@@ -280,7 +280,8 @@ pub(crate) fn record_environment_bypass(
                 .map_err(|error| match error {
                     LedgerTransactionError::LedgerUnreadable(error) => error,
                     LedgerTransactionError::LockContention
-                    | LedgerTransactionError::CorrectableInput(_) => {
+                    | LedgerTransactionError::CorrectableInput(_)
+                    | LedgerTransactionError::DerivedRecordTooLarge { .. } => {
                         LedgerError::BypassAuditUnavailable
                     },
                 })

@@ -24,6 +24,7 @@ use super::journal::JournalAppendError;
 use super::journal::JournalEvent;
 use super::journal::JournalOperation;
 use super::journal::JournalReplay;
+use super::journal::RecordCeiling;
 use super::lock::MutationLock;
 use super::projection;
 use super::projection::Projection;
@@ -737,11 +738,21 @@ impl LedgerTransaction {
 
 fn journal_append_transaction_error(error: JournalAppendError) -> LedgerTransactionError {
     match error {
-        JournalAppendError::RecordTooLarge { bytes } => {
+        JournalAppendError::RecordTooLarge {
+            bytes,
+            ceiling: RecordCeiling::Declared,
+        } => {
             LedgerTransactionError::CorrectableInput(CorrectableTransactionInput::RecordTooLarge {
                 bytes,
                 maximum_bytes: MAXIMUM_JOURNAL_RECORD_BYTES,
             })
+        },
+        JournalAppendError::RecordTooLarge {
+            bytes,
+            ceiling: ceiling @ RecordCeiling::Derived,
+        } => LedgerTransactionError::DerivedRecordTooLarge {
+            bytes,
+            maximum_bytes: ceiling.maximum_bytes(),
         },
         JournalAppendError::Io(error) => {
             LedgerTransactionError::LedgerUnreadable(LedgerError::Io(error))
@@ -809,6 +820,7 @@ fn next_projection_generation(
 )]
 mod tests {
     use std::fs;
+    use std::str::FromStr;
     use std::sync::Arc;
     use std::thread;
     use std::thread::JoinHandle;
@@ -826,18 +838,27 @@ mod tests {
     use super::LedgerTransactionOutcome;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
     use super::TransactionValidation;
+    use crate::drift::WorkingTreeFingerprint;
     use crate::ids::CoordinationRunId;
     use crate::ids::ForcedIntegrationPermitId;
+    use crate::ids::GitObjectId;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
+    use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
     use crate::ledger::BypassCause;
     use crate::ledger::BypassOccurrenceTime;
     use crate::ledger::BypassRecording;
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
+    use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
+    use crate::reservation::MergeExtent;
+    use crate::reservation::MergeExtentKey;
+    use crate::reservation::ReservationRunStatus;
+    use crate::scope::ReservationScope;
+    use crate::scope::ScopeKind;
 
     #[test]
     fn rejected_reconciliation_does_not_append_or_run_its_committed_action() {
@@ -1128,6 +1149,95 @@ mod tests {
                 .expect("journal should read")
                 .is_empty()
         );
+    }
+
+    /// A key whose own path lists are empty, isolating the extent's scopes as what grows.
+    fn empty_merge_extent_key() -> MergeExtentKey {
+        MergeExtentKey {
+            trunk:        GitObjectId::from_str(&"a".repeat(40)).expect("trunk oid should parse"),
+            head:         GitObjectId::from_str(&"b".repeat(40)).expect("head oid should parse"),
+            working_tree: WorkingTreeFingerprint {
+                tracked_paths:   Vec::new(),
+                untracked_paths: Vec::new(),
+            },
+        }
+    }
+
+    /// Paths shaped like a real branch surface, which is what makes these records grow.
+    fn oversized_observed_scopes(count: usize) -> Vec<ReservationScope> {
+        (0..count)
+            .map(|index| ReservationScope {
+                path: ReservationScopePath::from_str(&format!(
+                    "crates/cargo-berth/src/observed/module_{index}/source.rs"
+                ))
+                .expect("generated scope path should parse"),
+                kind: ScopeKind::File,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_observed_branch_surface_records_past_the_caller_correctable_limit() {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+
+        // Wider than the reporting repository's 203-path extent, so the record this appends is
+        // well past MAXIMUM_JOURNAL_RECORD_BYTES and would once have failed the whole transaction.
+        let scopes = oversized_observed_scopes(400);
+        let extent = MergeExtent::derived(empty_merge_extent_key(), scopes.clone());
+
+        let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+            TransactionValidation::<()>::Append(Box::new(JournalOperation::MergeExtentObserved {
+                reservation_id: ReservationId::new(),
+                extent:         extent.clone(),
+                run_status:     ReservationRunStatus::default(),
+            }))
+        });
+
+        assert!(
+            result.is_ok(),
+            "a derived branch surface must record rather than stop the repository"
+        );
+        let journal = fs::read_to_string(&ledger.paths.journal).expect("journal should read");
+        assert!(
+            journal.len() > MAXIMUM_JOURNAL_RECORD_BYTES,
+            "the appended record should exceed the caller-correctable limit"
+        );
+        // Every observed path is present: a surface recorded short would protect less than it
+        // observed, which under-refuses and lets two worktrees write the same file.
+        for scope in &scopes {
+            assert!(
+                journal.contains(&scope.path.to_string()),
+                "the recorded extent dropped {scope:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_derived_record_past_its_own_ceiling_is_not_reported_as_caller_input() {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+
+        let scopes = oversized_observed_scopes(MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES / 32);
+        let extent = MergeExtent::derived(empty_merge_extent_key(), scopes);
+
+        let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+            TransactionValidation::<()>::Append(Box::new(JournalOperation::MergeExtentObserved {
+                reservation_id: ReservationId::new(),
+                extent:         extent.clone(),
+                run_status:     ReservationRunStatus::default(),
+            }))
+        });
+
+        // The ceiling still exists, so a runaway is caught -- but it is not the caller's to
+        // correct, and reporting it as correctable input is what once told a session to
+        // reduce scopes it had never declared.
+        assert!(matches!(
+            result,
+            Err(LedgerTransactionError::DerivedRecordTooLarge { .. })
+        ));
     }
 
     #[test]

@@ -889,6 +889,10 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
         &["claim", "file:shared.rs", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "overlap answer holder")?;
+    let holder_id = json_output(&holder)?["payload"]["data"]["reservation_id"]
+        .as_str()
+        .ok_or_else(|| failure("the holder claim should return a reservation id"))?
+        .to_owned();
     dirty_source(repository.path(), "shared.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "answer-requester")?;
     let output = run_pre_tool_use(
@@ -899,18 +903,25 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
     let refusal = String::from_utf8(output.stderr)?;
+    // One holder blocks this edit, so every command names it. A refusal that asks for an answer
+    // "for one named holder" and then prints `<holder-reservation-id>` four times has named
+    // nobody, and none of the four lines it offers can be run as shown.
     for expected in [
-        "cargo-berth claim <paths...> --before <holder-reservation-id>",
-        "cargo-berth claim <paths...> --after <holder-reservation-id>",
-        "cargo-berth claim <paths...> --defer <holder-reservation-id>",
-        "cargo-berth claim <paths...> --override <holder-reservation-id>",
-        "Leave it alone.",
+        format!("cargo-berth claim <paths...> --before {holder_id}"),
+        format!("cargo-berth claim <paths...> --after {holder_id}"),
+        format!("cargo-berth claim <paths...> --defer {holder_id}"),
+        format!("cargo-berth claim <paths...> --override {holder_id}"),
+        "Leave it alone.".to_owned(),
     ] {
         assert!(
-            refusal.contains(expected),
+            refusal.contains(&expected),
             "missing answer {expected:?}: {refusal}"
         );
     }
+    assert!(
+        !refusal.contains("<holder-reservation-id>"),
+        "the refusal left the holder placeholder unsubstituted: {refusal}"
+    );
     Ok(())
 }
 

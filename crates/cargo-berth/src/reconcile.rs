@@ -4008,6 +4008,9 @@ impl ReconcileError {
             Self::Transaction(LedgerTransactionError::CorrectableInput(error)) => {
                 OutputEnvelope::invalid_input(command_verb, &error.to_string())
             },
+            Self::Transaction(error @ LedgerTransactionError::DerivedRecordTooLarge { .. }) => {
+                OutputEnvelope::ledger_unreadable(command_verb, &error.to_string())
+            },
             Self::Config(error) => {
                 OutputEnvelope::ledger_error(command_verb, &LedgerError::Config(error))
             },
