@@ -93,7 +93,6 @@ use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::MergeExtentKey;
 use crate::reservation::OrphanRetirementReason;
-use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
@@ -686,11 +685,28 @@ impl SuccessorIncorporationSubject {
     }
 }
 
+/// What the predecessor's own integration evidence contributes to a successor's incorporation.
+enum PredecessorIntegrationProof {
+    /// The predecessor's work reached trunk at this commit.
+    ReachedTrunk(GitObjectId),
+    /// Nothing on file says the work reached trunk, so no successor can inherit it from there.
+    Unproven,
+}
+
+impl PredecessorIntegrationProof {
+    const fn reached_trunk(&self) -> Option<&GitObjectId> {
+        match self {
+            Self::ReachedTrunk(trunk_oid) => Some(trunk_oid),
+            Self::Unproven => None,
+        }
+    }
+}
+
 struct PredecessorSuccessorEvidenceSubject<'reservation> {
-    incorporation_subject:    SuccessorIncorporationSubject,
-    reservation:              &'reservation Reservation,
-    prior_integration_status: PriorIntegrationStatus,
-    successor_heads:          Vec<GitObjectId>,
+    incorporation_subject: SuccessorIncorporationSubject,
+    reservation:           &'reservation Reservation,
+    integration_proof:     PredecessorIntegrationProof,
+    successor_heads:       Vec<GitObjectId>,
 }
 
 struct SuccessorScopedPatchEvaluationCandidate {
@@ -725,8 +741,8 @@ impl SuccessorScopedPatchTargetHistory {
 enum PredecessorEvidenceStanding {
     /// The predecessor holds a protected tip its successors can be measured against.
     Measurable {
-        incorporation_subject:    SuccessorIncorporationSubject,
-        prior_integration_status: PriorIntegrationStatus,
+        incorporation_subject: SuccessorIncorporationSubject,
+        integration_proof:     PredecessorIntegrationProof,
     },
     /// The predecessor never reached a checkpoint, so no successor evidence applies to it.
     NoProtectedTip,
@@ -764,29 +780,47 @@ impl PredecessorEvidenceStanding {
         };
         Self::Measurable {
             incorporation_subject,
-            prior_integration_status: if matches!(
-                integration_status,
-                IntegrationEvidenceStatus::Integrated { .. }
-            ) {
-                PriorIntegrationStatus::Proven
-            } else {
-                PriorIntegrationStatus::Unproven
+            integration_proof: match integration_status {
+                IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => {
+                    PredecessorIntegrationProof::ReachedTrunk(trunk_oid.clone())
+                },
+                IntegrationEvidenceStatus::NotIntegrated
+                | IntegrationEvidenceStatus::TrunkRewritten
+                | IntegrationEvidenceStatus::ObjectUnknown => PredecessorIntegrationProof::Unproven,
             },
         }
     }
 }
 
-/// The grouped ancestry answers for the predecessor's incorporation subject and phase start.
+/// The grouped ancestry answers for the predecessor's incorporation subject, phase start, and the
+/// trunk commit its integration proof names.
 #[derive(Clone, Copy)]
 struct PredecessorSuccessorReachability<'classification> {
-    from_incorporation_subject: &'classification ProtectedTipSuccessorHeadClassification,
-    from_phase_start:           &'classification ProtectedTipSuccessorHeadClassification,
+    against_incorporation_subject: &'classification ProtectedTipSuccessorHeadClassification,
+    since_phase_start:             &'classification ProtectedTipSuccessorHeadClassification,
+    /// Absent when the predecessor holds no proof, so there is no trunk commit to ask about.
+    against_reached_trunk:         Option<&'classification ProtectedTipSuccessorHeadClassification>,
 }
 
 impl PredecessorSuccessorReachability<'_> {
+    /// Whether this successor head's history contains the commit the predecessor's proof names.
+    fn reached_trunk_is_ancestor(&self, successor_head: &GitObjectId) -> bool {
+        let Some(ProtectedTipSuccessorHeadClassification::Classified(classified_heads)) =
+            self.against_reached_trunk
+        else {
+            return false;
+        };
+        classified_heads.iter().any(|classified_head| {
+            matches!(
+                classified_head,
+                CandidateHeadReachability::Descendant { head, .. } if head == successor_head
+            )
+        })
+    }
+
     /// First-parent commits each successor head gained since the predecessor's phase start.
     fn phase_start_target_histories(&self) -> HashMap<GitObjectId, Vec<GitObjectId>> {
-        match self.from_phase_start {
+        match self.since_phase_start {
             ProtectedTipSuccessorHeadClassification::AncestorObjectUnknown => HashMap::new(),
             ProtectedTipSuccessorHeadClassification::Classified(classified_heads) => {
                 classified_heads
@@ -3611,7 +3645,7 @@ fn predecessor_successor_evidence_subjects<'reservation>(
         };
         let PredecessorEvidenceStanding::Measurable {
             incorporation_subject,
-            prior_integration_status,
+            integration_proof,
         } = PredecessorEvidenceStanding::of(&predecessor_snapshot.evidence)
         else {
             continue;
@@ -3623,7 +3657,7 @@ fn predecessor_successor_evidence_subjects<'reservation>(
         evidence_subjects.push(PredecessorSuccessorEvidenceSubject {
             incorporation_subject,
             reservation: reservations.reservation(predecessor_id)?,
-            prior_integration_status,
+            integration_proof,
             successor_heads,
         });
     }
@@ -3651,27 +3685,52 @@ fn resolved_successor_heads(
     successor_heads
 }
 
+/// Where one predecessor's grouped ancestry answers sit in the single batched query.
+///
+/// Positions rather than a fixed stride, because a predecessor holding no proof contributes no
+/// reached-trunk query and the batch is ragged.
+struct SubjectQueryPositions {
+    incorporation_subject: usize,
+    phase_start:           usize,
+    reached_trunk:         Option<usize>,
+}
+
+/// Add one ancestor-against-heads question to the batch and report where its answer will land.
+fn push_successor_head_query<'commits>(
+    queries: &mut Vec<ProtectedTipSuccessorHeads<'commits>>,
+    ancestor: &'commits GitObjectId,
+    successor_heads: &'commits [GitObjectId],
+) -> usize {
+    queries.push(ProtectedTipSuccessorHeads::new(ancestor, successor_heads));
+    queries.len() - 1
+}
+
 /// Decide every successor head reachability can settle, queueing the rest for one scoped
 /// comparison apiece.
 fn classify_successor_incorporation(
     repository_root: &Path,
     evidence_subjects: Vec<PredecessorSuccessorEvidenceSubject<'_>>,
 ) -> SuccessorIncorporationClassification {
-    let subject_successor_heads = evidence_subjects
-        .iter()
-        .flat_map(|subject| {
-            [
-                ProtectedTipSuccessorHeads::new(
-                    subject.incorporation_subject.commit(),
-                    &subject.successor_heads,
-                ),
-                ProtectedTipSuccessorHeads::new(
-                    subject.reservation.phase_start_head().as_ref(),
-                    &subject.successor_heads,
-                ),
-            ]
-        })
-        .collect::<Vec<_>>();
+    let mut subject_successor_heads = Vec::new();
+    let mut query_positions = Vec::new();
+    for subject in &evidence_subjects {
+        let successor_heads = subject.successor_heads.as_slice();
+        query_positions.push(SubjectQueryPositions {
+            incorporation_subject: push_successor_head_query(
+                &mut subject_successor_heads,
+                subject.incorporation_subject.commit(),
+                successor_heads,
+            ),
+            phase_start:           push_successor_head_query(
+                &mut subject_successor_heads,
+                subject.reservation.phase_start_head().as_ref(),
+                successor_heads,
+            ),
+            reached_trunk:         subject.integration_proof.reached_trunk().map(|trunk_oid| {
+                push_successor_head_query(&mut subject_successor_heads, trunk_oid, successor_heads)
+            }),
+        });
+    }
     let Ok(subject_successor_classifications) =
         git::descendant_commits(repository_root, &subject_successor_heads)
     else {
@@ -3688,21 +3747,20 @@ fn classify_successor_incorporation(
             pending_comparisons: Vec::new(),
         };
     };
-    let subject_classifications = subject_successor_classifications.iter().step_by(2);
-    let phase_start_classifications = subject_successor_classifications.iter().skip(1).step_by(2);
     let mut by_predecessor = Vec::new();
     let mut pending_comparisons = Vec::new();
-    for ((evidence_subject, from_incorporation_subject), from_phase_start) in evidence_subjects
-        .into_iter()
-        .zip(subject_classifications)
-        .zip(phase_start_classifications)
-    {
+    for (evidence_subject, positions) in evidence_subjects.into_iter().zip(query_positions) {
         let predecessor_id = evidence_subject.reservation.id();
         let incorporation = predecessor_successor_incorporation(
             &evidence_subject,
             PredecessorSuccessorReachability {
-                from_incorporation_subject,
-                from_phase_start,
+                against_incorporation_subject: &subject_successor_classifications
+                    [positions.incorporation_subject],
+                since_phase_start:             &subject_successor_classifications
+                    [positions.phase_start],
+                against_reached_trunk:         positions
+                    .reached_trunk
+                    .map(|position| &subject_successor_classifications[position]),
             },
             by_predecessor.len(),
             &mut pending_comparisons,
@@ -3723,7 +3781,7 @@ fn predecessor_successor_incorporation(
     pending_comparisons: &mut Vec<SuccessorScopedPatchEvaluationCandidate>,
 ) -> PredecessorSuccessorIncorporation {
     let ProtectedTipSuccessorHeadClassification::Classified(classified_heads) =
-        reachability.from_incorporation_subject
+        reachability.against_incorporation_subject
     else {
         return PredecessorSuccessorIncorporation::PredecessorObjectUnknown;
     };
@@ -3746,7 +3804,12 @@ fn predecessor_successor_incorporation(
             },
             CandidateHeadReachability::NotDescendant(head) => (
                 head,
-                unreached_successor_evidence(&candidate_context, head, pending_comparisons),
+                unreached_successor_evidence(
+                    &candidate_context,
+                    reachability,
+                    head,
+                    pending_comparisons,
+                ),
             ),
         };
         evidence_by_head.insert(head.clone(), evidence);
@@ -3756,23 +3819,33 @@ fn predecessor_successor_incorporation(
 
 /// Decide a successor head the predecessor's incorporation subject does not reach.
 ///
-/// A retained verdict settles it outright; otherwise it joins the queue competing for the one
-/// scoped comparison this reconciliation admits.
+/// The predecessor's own proof is asked first: it names the trunk commit the protected work landed
+/// as, and a successor whose history contains that commit contains the work. Nothing about the
+/// successor's current content can unmake that, so this answer is as final as an ancestry proof and
+/// costs no comparison -- the batched query already classified the commit. Reaching only for the
+/// protected tip left the branch that merged trunk indistinguishable from the branch that ignored
+/// it, because an amending push rewrites the tip away while the commit it landed as stays put, so
+/// every pass re-ran a content comparison that could only answer `Different` as the successor
+/// developed its own work on those paths -- a hold with no terminal condition.
+///
+/// Failing that, a retained verdict settles it outright; otherwise it joins the queue competing for
+/// the one scoped comparison this reconciliation admits.
 fn unreached_successor_evidence(
     candidate_context: &PendingScopedPatchCandidateContext<'_>,
+    reachability: PredecessorSuccessorReachability<'_>,
     successor_head: &GitObjectId,
     pending_comparisons: &mut Vec<SuccessorScopedPatchEvaluationCandidate>,
 ) -> SuccessorIncorporationEvidence {
+    if reachability.reached_trunk_is_ancestor(successor_head) {
+        return SuccessorIncorporationEvidence::IntegratedTrunkAncestor;
+    }
     let evidence_subject = candidate_context.evidence_subject;
     let SuccessorIncorporationSubject::CheckpointTip(protected_tip) =
         &evidence_subject.incorporation_subject
     else {
         return SuccessorIncorporationEvidence::NotIncorporated;
     };
-    if !matches!(
-        evidence_subject.prior_integration_status,
-        PriorIntegrationStatus::Proven
-    ) {
+    if evidence_subject.integration_proof.reached_trunk().is_none() {
         return SuccessorIncorporationEvidence::NotIncorporated;
     }
     match evidence_subject

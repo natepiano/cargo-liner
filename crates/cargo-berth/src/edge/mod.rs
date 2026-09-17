@@ -371,6 +371,7 @@ impl OrderingEdge {
                         .successor_incorporation_evidence(self.before, self.after)?
                     {
                         SuccessorIncorporationEvidence::ProtectedTipAncestor
+                        | SuccessorIncorporationEvidence::IntegratedTrunkAncestor
                         | SuccessorIncorporationEvidence::ScopedPatchEquivalent => {
                             Ok(EdgeReadiness::Fulfilled)
                         },

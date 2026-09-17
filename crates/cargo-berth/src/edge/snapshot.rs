@@ -69,6 +69,12 @@ pub(crate) struct RepositoryReservationSnapshot {
 pub(crate) enum SuccessorIncorporationEvidence {
     /// The successor head contains the predecessor's protected tip as an ancestor.
     ProtectedTipAncestor,
+    /// The successor head contains the trunk commit the predecessor's integration proof names.
+    ///
+    /// The predecessor's work reached trunk there, so a successor holding that commit holds the
+    /// work -- whatever became of the protected tip, which an amending push rewrites away on every
+    /// push while the commit it landed as stays in trunk forever.
+    IntegratedTrunkAncestor,
     /// The successor head contains equivalent rewritten protected content.
     ScopedPatchEquivalent,
     /// Neither ancestry nor scoped content proves incorporation.

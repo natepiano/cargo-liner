@@ -996,6 +996,110 @@ fn legacy_negative_successor_verdict_retries_once_under_scoped_contiguity() {
     }
 }
 
+/// A successor that merged the trunk commit its predecessor's proof names has the predecessor's
+/// work, whatever its own copy of those files says now.
+///
+/// The protected tip alone could not see that: an amending push rewrites the tip away while the
+/// commit the work landed as stays in trunk forever, so every pass fell through to a content
+/// comparison that answered `different` as soon as the successor developed those paths further --
+/// a hold that repeated on every reconciliation with nothing able to clear it. Measured in
+/// `~/rust/hana` on 2026-09-17: seven `successor_scoped_patch_equivalence_checked` verdicts of
+/// `different` across five hours, against a successor branch that was fully merged with main.
+#[test]
+fn a_successor_that_merged_trunk_incorporates_its_predecessor_without_a_comparison() {
+    let fixture = rewritten_successor_fixture(false);
+    let root = fixture.repository.path();
+    retain_protected_tip_release(&fixture);
+    let successor_root = fs::canonicalize(fixture.worktrees.path().join("successor"))
+        .expect("successor worktree should canonicalize");
+
+    let holding = sequence(
+        root,
+        &fixture.predecessor_id,
+        &fixture.successor_id,
+        "the predecessor's work must reach the successor",
+    );
+    assert!(holding.status.success(), "{}", json_output(&holding));
+    assert_eq!(
+        json_output(&holding)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "awaiting_successor_incorporation"}
+        }),
+        "the successor has neither the protected tip nor the trunk commit yet"
+    );
+    let verdicts_before = successor_verdicts(root);
+
+    // The successor merges trunk -- which carries the predecessor's work under a commit the
+    // protected tip never reaches -- and then keeps developing the same file, so content alone
+    // answers `different` from here on.
+    let integrated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    git(
+        &successor_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "--quiet",
+            &integrated_trunk,
+        ],
+    );
+    fs::write(
+        successor_root.join("src/lib.rs"),
+        "pub fn successor_moved_on() {}\n",
+    )
+    .expect("successor source should write");
+    git(&successor_root, &["add", "src/lib.rs"]);
+    git(
+        &successor_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "successor work after the merge",
+        ],
+    );
+    let merged_successor_head = git_stdout(&successor_root, &["rev-parse", "HEAD"]);
+
+    let fulfilled_board = run_traced_board(root);
+    let fulfilled = json_output(&fulfilled_board.output);
+    let data = &fulfilled["payload"]["data"];
+    assert_eq!(
+        data["waiting"]["entries"],
+        serde_json::json!([]),
+        "a successor holding the trunk commit the proof names has the work: {data:#}"
+    );
+    assert_eq!(
+        data["settled_ordering_constraints"]["entries"][0]["settlement"],
+        "fulfilled_successor_contains_predecessor"
+    );
+    assert_eq!(
+        successor_verdicts(root),
+        verdicts_before,
+        "ancestry settled it, so no scoped comparison may be run or recorded"
+    );
+    assert_eq!(
+        successor_cherry_queries(&fulfilled_board, &merged_successor_head),
+        0,
+        "the batched ancestry answer already settled this head"
+    );
+}
+
+/// Read the board, keeping the git trace the comparison counters are read from.
+fn run_traced_board(repository_root: &Path) -> TracedBerth {
+    let traced = run_berth_with_git_trace(repository_root, &["board", "--json"], "");
+    assert!(
+        traced.output.status.success(),
+        "{}",
+        json_output(&traced.output)
+    );
+    traced
+}
+
 /// The work a successor inserts between its two equivalent commits.
 #[derive(Clone, Copy)]
 enum SuccessorGap {
