@@ -18,6 +18,7 @@ use super::identity::DriftRunValidation;
 use super::identity::DriftScopeAcquisition;
 use super::observation;
 use super::observation::FingerprintObservation;
+use super::observation::PostWriteAuthorship;
 use super::observation::PostWriteClaimSubject;
 use super::provenance;
 use super::report::DriftPathAttributionOutcome;
@@ -530,6 +531,7 @@ fn claim_post_write_paths(
         },
         PostWriteClaimSubject::ModifiedPaths(paths) => paths,
     };
+    let authorship = observation.post_write_authorship();
     let declared_scopes = DeclaredReservationScopeSet::from_file_paths(paths)
         .map_err(PostWriteClaimRejection::InvalidDeclaredScopes)
         .map_err(DriftExecutionError::PostWriteClaimRejected)?;
@@ -555,6 +557,10 @@ fn claim_post_write_paths(
                 results: vec![ReservationDriftResult::Unchanged { reservation_id }],
             })
         },
+        // The free paths were protected either way. Whether the foreign-held remainder is also an
+        // accusation depends on whether this comparison can say who wrote it: an `Indeterminate`
+        // one reports the protection it did take and stops there, rather than telling the caller
+        // its write entered a reservation when the paths may predate the call entirely.
         Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
             acquisition,
             scopes,
@@ -565,8 +571,8 @@ fn claim_post_write_paths(
                 },
         }) => {
             let reservation_id = acquisition.reservation_id;
-            Ok(PostWritePathAttribution {
-                outcome: DriftPathAttributionOutcome::IncursionDetected {
+            let outcome = match authorship {
+                PostWriteAuthorship::ThisCall => DriftPathAttributionOutcome::IncursionDetected {
                     paths: paths_from_scopes(&conflicting_scopes)?,
                     conflicts,
                     protection: PostWriteFreePathProtection::Acquired {
@@ -574,16 +580,31 @@ fn claim_post_write_paths(
                         scopes,
                     },
                 },
+                PostWriteAuthorship::Indeterminate => {
+                    DriftPathAttributionOutcome::FirstTouchReserved {
+                        acquisition,
+                        scopes,
+                    }
+                },
+            };
+            Ok(PostWritePathAttribution {
+                outcome,
                 results: vec![ReservationDriftResult::Unchanged { reservation_id }],
             })
         },
+        // Nothing was protected here, so an `Indeterminate` comparison has neither an acquisition
+        // to report nor standing to accuse, and says nothing at all.
         Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { scopes, conflicts }) => {
-            Ok(PostWritePathAttribution {
-                outcome: DriftPathAttributionOutcome::IncursionDetected {
+            let outcome = match authorship {
+                PostWriteAuthorship::ThisCall => DriftPathAttributionOutcome::IncursionDetected {
                     paths: paths_from_scopes(&scopes)?,
                     conflicts,
                     protection: PostWriteFreePathProtection::NotAcquired,
                 },
+                PostWriteAuthorship::Indeterminate => DriftPathAttributionOutcome::NotNeeded,
+            };
+            Ok(PostWritePathAttribution {
+                outcome,
                 results: Vec::new(),
             })
         },

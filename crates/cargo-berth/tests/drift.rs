@@ -500,6 +500,75 @@ fn post_write_drift_detects_but_cannot_prevent_a_foreign_incursion() {
     assert_eq!(journal_events(repository.path()), journal_before);
 }
 
+/// A cheap comparison that fell back to a phase-start one attributes nothing, and the paths a
+/// later call does write are still caught.
+///
+/// The standing path here stands in for uncommitted work another session left behind. Before the
+/// fallback stopped claiming, the first comparison attributed it to whatever command ran the hook
+/// and the resulting incursion invalidated the fingerprint, so every following comparison fell
+/// back again and repeated the same attribution with no terminal condition.
+#[test]
+fn a_cheap_comparison_without_a_baseline_claims_nothing_and_still_catches_the_next_write() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "standing-dirt-holder");
+    // Both paths are dirtied in the holder's own worktree before it claims the tree, which is what
+    // puts each of them inside the reservation. The acting worktree then writes them on its own
+    // side: one before any comparison, one after a baseline exists.
+    dirty_source(&foreign_root, "shared/standing.rs");
+    dirty_source(&foreign_root, "shared/written.rs");
+    let foreign_id = claim(&foreign_root, "tree:shared", FIRST_RUN);
+    dirty_source(repository.path(), "shared/standing.rs");
+
+    let without_baseline = cheap_post_commit_drift(repository.path());
+    let fallback = json_output(&without_baseline);
+    assert_eq!(
+        fallback["payload"]["data"]["comparison"], "full_phase_start_fallback",
+        "no fingerprint is cached yet, so the cheap request falls back: {without_baseline:?}"
+    );
+    assert_eq!(
+        fallback["status"],
+        "clear",
+        "a phase-start comparison cannot say which call wrote the standing path, so it must \
+         attribute nothing: {}",
+        String::from_utf8_lossy(&without_baseline.stdout)
+    );
+
+    // Nothing touches the working tree here. This is the read-only command the reporter ran, and
+    // the fallback above published a fingerprint, so this one compares cheaply against it.
+    let unchanged = cheap_post_commit_drift(repository.path());
+    let repeated = json_output(&unchanged);
+    assert_eq!(
+        repeated["payload"]["data"]["comparison"], "cheap_delta",
+        "the fallback must leave a baseline behind rather than invalidate it: {unchanged:?}"
+    );
+    assert_eq!(
+        repeated["status"],
+        "clear",
+        "an unchanged working tree carries no new write to report: {}",
+        String::from_utf8_lossy(&unchanged.stdout)
+    );
+
+    dirty_source(repository.path(), "shared/written.rs");
+    let after_write = cheap_post_commit_drift(repository.path());
+    let detected = json_output(&after_write);
+
+    assert_eq!(
+        detected["status"],
+        "incursion",
+        "suppressing the baseless claim must not suppress a claim the delta can make: {}",
+        String::from_utf8_lossy(&after_write.stdout)
+    );
+    assert_eq!(detected["blocked_by"], serde_json::json!([foreign_id]));
+    assert_eq!(
+        detected["payload"]["data"]["widening"]["paths"],
+        serde_json::json!(["shared/written.rs"]),
+        "only the path this call wrote is attributable to it; the standing path predates the \
+         baseline and stays out: {}",
+        String::from_utf8_lossy(&after_write.stdout)
+    );
+}
+
 #[test]
 fn incursion_incident_round_trip_deduplicates_and_resolves() {
     let incursion_repository = initialized_repository();

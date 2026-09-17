@@ -345,6 +345,36 @@ impl FingerprintObservation {
                 .collect(),
         )
     }
+
+    /// Whether this comparison can name the call it ran for as the author of the paths it observed.
+    ///
+    /// [`DriftComparisonMode::FullPhaseStartFallback`] is recorded when a caller asked for a cheap
+    /// comparison and [`fingerprint::read_fingerprint`] had no cached fingerprint to answer it
+    /// with, so [`observe`] substituted a phase-start comparison. That reports every path
+    /// uncommitted since the phase began, whoever wrote it and however long ago, so it cannot
+    /// support the statement a post-write incursion makes: that this call entered a foreign
+    /// reservation. Protecting a free path rests on no such statement -- an unreserved path dirty
+    /// in this worktree is this worktree's to protect whenever it was written -- so the first-touch
+    /// claim still runs and only the accusation is withheld.
+    ///
+    /// [`DriftComparisonMode::FullPhaseStart`] is a deliberate `--full` request rather than a
+    /// substitution, and the post-commit hook making it is naming its own phase's commits.
+    pub(super) const fn post_write_authorship(&self) -> PostWriteAuthorship {
+        match self.comparison {
+            DriftComparisonMode::FullPhaseStartFallback => PostWriteAuthorship::Indeterminate,
+            DriftComparisonMode::CheapDelta | DriftComparisonMode::FullPhaseStart => {
+                PostWriteAuthorship::ThisCall
+            },
+        }
+    }
+}
+
+/// Whether a comparison's observed paths can be attributed to the call it ran for.
+pub(super) enum PostWriteAuthorship {
+    /// The comparison carries a baseline taken for this call, so its paths are this call's writes.
+    ThisCall,
+    /// The comparison stood in for a missing baseline, so its paths may predate this call.
+    Indeterminate,
 }
 
 /// Which observed paths a post-write first-touch claim may acquire.
