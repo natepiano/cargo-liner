@@ -85,7 +85,7 @@ pub(super) struct Composite {
 /// whether that picture still describes the display: a window that has
 /// moved, opened, closed, or been raised over another reads back as a
 /// different layout, and the picture is assembled again.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Layout {
     /// The display's own desktop window, which everything else is drawn
     /// over.
@@ -95,7 +95,7 @@ pub(super) struct Layout {
 }
 
 /// One window in `KWin`'s stacking order.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct StackedWindow {
     /// `KWin`'s stable identifier, in the braced form its capture calls
     /// expect.
@@ -118,7 +118,7 @@ struct StackedWindow {
 /// Whole coordinates, so every conversion out of them is lossless.
 /// `KWin` itself does not always report them that way -- see
 /// [`whole_coordinate`] for the fraction a dragged window carries.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Rectangle {
     /// The rectangle's top-left corner.
     origin: (i32, i32),

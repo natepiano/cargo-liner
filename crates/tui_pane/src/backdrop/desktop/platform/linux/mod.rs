@@ -109,7 +109,7 @@ struct CompositeKey {
 
 impl CompositeKey {
     /// The key one output and one arrangement of windows answer to.
-    fn of(metrics: Metrics, output: &Output, layout: Layout) -> Self {
+    const fn of(metrics: Metrics, output: &Output, layout: Layout) -> Self {
         Self {
             metrics,
             origin_bits: (output.origin.0.to_bits(), output.origin.1.to_bits()),
