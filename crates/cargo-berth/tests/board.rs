@@ -3822,13 +3822,19 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     let data = &deferred_board["payload"]["data"];
     assert_not_integrated_and_blocking(data, &reservation.reservation_id);
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
+    // The reported status is unchanged -- a proof from an earlier target is still rejected, and the
+    // reservation still blocks. What it may not do is leave that rejection on disk. Only the
+    // deferred comparison can tell a reverted scope from an intact one, so the row would be a
+    // conclusion nothing reached, and the next reconciliation reads such a row back as settled
+    // evidence and reports the proof lost. Every pass re-derives this answer from the materialized
+    // proof instead, until the budget admits the comparison and records what it actually found.
     assert_eq!(
         journal_operation_count_for_reservation(
             reservation.repository.path(),
             "evidence_revalidated",
             &reservation.reservation_id,
         ),
-        evidence_before + 1
+        evidence_before
     );
     assert_eq!(
         journal_operation_count_for_reservation(
@@ -3890,6 +3896,11 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
 #[test]
 fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() {
     let fixture = warmed_scoped_patch_proof_after_release();
+    let evidence_before = journal_operation_count_for_reservation(
+        fixture.repository.path(),
+        "evidence_revalidated",
+        &fixture.reservation_id,
+    );
     append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
     append_scoped_patch_attempt(
         fixture.repository.path(),
@@ -3917,9 +3928,19 @@ fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() 
          {data:#}"
     );
 
-    // The degraded status is journaled all the same, so the following pass reads `not_integrated`
-    // as its materialized evidence and reports from there. Withholding delays the alert by one
-    // reconciliation; it never suppresses a proof that is genuinely gone.
+    // Nothing was written down, so a further pass that also defers re-derives the same unevaluated
+    // answer rather than reading a claim off disk. Withholding for a single pass bought nothing in
+    // practice: a repository reconciles several times between a commit and its settlement, and the
+    // pass in between reported the proof lost from the row the degrading pass had just journaled.
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            fixture.repository.path(),
+            "evidence_revalidated",
+            &fixture.reservation_id,
+        ),
+        evidence_before,
+        "a status nothing evaluated must not reach the journal"
+    );
     append_released_reservations(&fixture, 1, ProofSubjectSimilarity::Distinct);
     append_scoped_patch_attempt(
         fixture.repository.path(),
@@ -3934,11 +3955,15 @@ fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() 
     );
     let following_board = json_output(&following.output);
     let following_data = &following_board["payload"]["data"];
-    let alert = lost_integration_evidence_alert(following_data, &fixture.reservation_id)
-        .expect("a proof still unproven on the following pass should be reported lost");
-    assert_eq!(alert["evidence_status"]["status"], "not_integrated");
-    assert_eq!(alert["recovery"]["kind"], "verify_resolved_trunk");
-    assert_eq!(alert["recovery"]["trunk_oid"], fixture.target);
+    assert_integration_statuses(
+        following_data,
+        std::slice::from_ref(&fixture.reservation_id),
+        "not_integrated",
+    );
+    assert!(
+        lost_integration_evidence_alert(following_data, &fixture.reservation_id).is_none(),
+        "no later pass may report the proof lost until something has examined it: {following_data:#}"
+    );
 }
 
 #[test]

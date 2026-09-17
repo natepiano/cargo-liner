@@ -328,11 +328,15 @@ impl From<DeferredScopedPatchIntegrationStatus> for IntegrationStatusObservation
                 EvidenceRevalidationObservation::Apply,
                 ScopedPatchComparisonJournalUpdate::Unchanged,
             ),
-            // The degraded status is journaled either way, so a proof the comparison later refutes
-            // is reported from the next pass onward. Only this pass's alert is withheld.
+            // Reported to this caller, but never written down. Journaling it would put a claim
+            // nothing examined on disk, where the next reconciliation reads it back as settled
+            // evidence and reports the proof lost -- which is how withholding the alert for the
+            // pass that degrades bought nothing: the passes in between closed the window before
+            // the comparison ran. The materialized proof therefore stays, and every pass re-derives
+            // this same unevaluated answer until the budget admits the comparison and settles it.
             DeferredScopedPatchIntegrationStatus::Unevaluated(status) => Self {
                 status,
-                revalidation: EvidenceRevalidationObservation::Apply,
+                revalidation: EvidenceRevalidationObservation::PreserveMaterialized,
                 scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
                 proof_standing: ReplacedProofStanding::Unevaluated,
             },
