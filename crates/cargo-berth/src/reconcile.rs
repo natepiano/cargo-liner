@@ -83,7 +83,6 @@ use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::reservation;
-use crate::reservation::DeferredScopedPatchIntegrationStatus;
 use crate::reservation::DurableScopedPatchComparison;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceObservation;
@@ -280,28 +279,16 @@ struct RepositoryEvidenceObservation {
     evidence:                RepositoryReservationEvidence,
     revalidation:            EvidenceRevalidationObservation,
     scoped_patch_comparison: ScopedPatchComparisonJournalUpdate,
-    proof_standing:          ReplacedProofStanding,
-}
-
-/// Whether anything this reconciliation ran refuted the affirmative proof it replaced.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ReplacedProofStanding {
-    /// A query that ran settled the proof's fate, or no affirmative proof was replaced.
-    Settled,
-    /// A content proof was replaced without the deferred comparison that could judge it.
-    Unevaluated,
 }
 
 struct IntegrationStatusObservation {
     status:                  IntegrationEvidenceStatus,
     revalidation:            EvidenceRevalidationObservation,
     scoped_patch_comparison: ScopedPatchComparisonJournalUpdate,
-    proof_standing:          ReplacedProofStanding,
 }
 
 impl IntegrationStatusObservation {
-    /// Build an observation for a status no deferred comparison bears on.
-    const fn settled(
+    const fn new(
         status: IntegrationEvidenceStatus,
         revalidation: EvidenceRevalidationObservation,
         scoped_patch_comparison: ScopedPatchComparisonJournalUpdate,
@@ -310,36 +297,96 @@ impl IntegrationStatusObservation {
             status,
             revalidation,
             scoped_patch_comparison,
-            proof_standing: ReplacedProofStanding::Settled,
         }
     }
 }
 
-impl From<DeferredScopedPatchIntegrationStatus> for IntegrationStatusObservation {
-    fn from(deferred_status: DeferredScopedPatchIntegrationStatus) -> Self {
-        match deferred_status {
-            DeferredScopedPatchIntegrationStatus::StillValid(status) => Self::settled(
-                status,
-                EvidenceRevalidationObservation::PreserveMaterialized,
-                ScopedPatchComparisonJournalUpdate::Unchanged,
-            ),
-            DeferredScopedPatchIntegrationStatus::Refuted(status) => Self::settled(
-                status,
-                EvidenceRevalidationObservation::Apply,
-                ScopedPatchComparisonJournalUpdate::Unchanged,
-            ),
-            // Reported to this caller, but never written down. Journaling it would put a claim
-            // nothing examined on disk, where the next reconciliation reads it back as settled
-            // evidence and reports the proof lost -- which is how withholding the alert for the
-            // pass that degrades bought nothing: the passes in between closed the window before
-            // the comparison ran. The materialized proof therefore stays, and every pass re-derives
-            // this same unevaluated answer until the budget admits the comparison and settles it.
-            DeferredScopedPatchIntegrationStatus::Unevaluated(status) => Self {
-                status,
-                revalidation: EvidenceRevalidationObservation::PreserveMaterialized,
-                scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-                proof_standing: ReplacedProofStanding::Unevaluated,
+/// What an affirmative proof already on file settles about the trunk this pass observed.
+///
+/// Every `IntegrationProof` is a statement about the one trunk commit its `trunk_oid` names:
+/// `ProtectedTipAncestor` and `RewrittenWitnessAncestor` place a commit in that trunk's history,
+/// and `ScopedPatchEquivalent` matched the reservation's scoped content against it. A trunk that
+/// still contains that commit has only added history since, so each of those statements holds in
+/// every descendant, and a proof is re-derived only when the commit that carried it is gone --
+/// a reset or a rebase. Deriving one afresh each pass could only ever disagree with what the
+/// ledger already records, which is what turned a rebased tip into a permanent lost-evidence
+/// directive.
+enum IntegrationProofStanding {
+    /// The trunk that proved integration is still in the observed trunk's history.
+    Holds,
+    /// No proof covers the observed trunk, so evidence is derived against `previous_trunk`.
+    Derive { previous_trunk: GitObjectId },
+    /// Git could not classify the trunk commit the proof names.
+    ProvingTrunkUnknown,
+}
+
+/// Carry a proof that still stands forward onto the trunk this pass observed.
+///
+/// `trunk_oid` names the trunk a proof was measured against, and `settlement_selection` releases an
+/// outstanding reservation only when that commit is the actual trunk -- so a proof left anchored to
+/// where it was first taken would keep its reservation open forever. Re-anchoring states what
+/// [`IntegrationProofStanding::Holds`] established: trunk has only added commits since, so the same
+/// `proof` and `witness` hold here too. For `IntegrationProof::ScopedPatchEquivalent` that also
+/// settles what integration means -- the work reached trunk, and a later commit reverting it does
+/// not un-reach it, exactly as an ancestry proof already treats the same revert.
+///
+/// A tip the observed trunk now contains outranks whatever was recorded, so the proof is stated as
+/// `IntegrationProof::ProtectedTipAncestor` instead. That is not a re-derivation: the tip is one of
+/// the commits `BatchedIntegrationReachability` already classified, and the stronger proof keeps
+/// `settlement_selection` releasing as `ReleaseDisposition::Integrated` rather than retaining a
+/// rewritten-integration witness the repository no longer needs.
+fn reanchored_proof(
+    materialized: IntegrationEvidenceStatus,
+    observed_trunk: &GitObjectId,
+    protected_tip_reachability: Reachability,
+) -> IntegrationEvidenceStatus {
+    let IntegrationEvidenceStatus::Integrated { proof, witness, .. } = materialized else {
+        return materialized;
+    };
+    let (proof, witness) = match protected_tip_reachability {
+        Reachability::Ancestor => (
+            IntegrationProof::ProtectedTipAncestor,
+            IntegrationWitness::EvaluatedTrunk,
+        ),
+        Reachability::NotAncestor | Reachability::ObjectUnknown => (proof, witness),
+    };
+    IntegrationEvidenceStatus::Integrated {
+        trunk_oid: observed_trunk.clone(),
+        proof,
+        witness,
+    }
+}
+
+/// The trunk commit an affirmative proof names, whose ancestry decides whether the proof stands.
+const fn proving_trunk(materialized: &IntegrationEvidenceStatus) -> Option<&GitObjectId> {
+    match materialized {
+        IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => Some(trunk_oid),
+        IntegrationEvidenceStatus::NotIntegrated
+        | IntegrationEvidenceStatus::TrunkRewritten
+        | IntegrationEvidenceStatus::ObjectUnknown => None,
+    }
+}
+
+impl IntegrationProofStanding {
+    fn observe(
+        materialized: &IntegrationEvidenceStatus,
+        trunk_snapshot: &GitObjectId,
+        integration_reachability: &BatchedIntegrationReachability,
+    ) -> Self {
+        let Some(trunk_oid) = proving_trunk(materialized) else {
+            return Self::Derive {
+                previous_trunk: trunk_snapshot.clone(),
+            };
+        };
+        match integration_reachability.for_ancestor(trunk_oid) {
+            Reachability::Ancestor => Self::Holds,
+            // The proving trunk left history, so the work has to be located again, and that same
+            // commit is the baseline the comparison measures from: trunk moved away from where
+            // this reservation was last proven, not from wherever it stood at checkpoint.
+            Reachability::NotAncestor => Self::Derive {
+                previous_trunk: trunk_oid.clone(),
             },
+            Reachability::ObjectUnknown => Self::ProvingTrunkUnknown,
         }
     }
 }
@@ -444,17 +491,20 @@ impl BatchedIntegrationReachability {
                 ReservationEvidenceState::Outstanding {
                     protected_tip,
                     trunk_snapshot,
-                    ..
+                    integration_status,
                 } => {
                     candidate_ancestors.insert(reservation.phase_start_head().as_ref().clone());
                     candidate_ancestors.insert(protected_tip.as_ref().clone());
                     candidate_ancestors.insert(trunk_snapshot);
+                    candidate_ancestors.extend(proving_trunk(&integration_status).cloned());
                 },
                 ReservationEvidenceState::Released {
                     protected_tip,
                     disposition,
+                    integration_status,
                     ..
                 } => {
+                    candidate_ancestors.extend(proving_trunk(&integration_status).cloned());
                     if !matches!(
                         disposition.revalidation_subject(),
                         ReleaseRevalidationSubject::None
@@ -530,7 +580,6 @@ struct ScopedPatchEvaluationKey {
     protected_tip:    GitObjectId,
     target_trunk:     GitObjectId,
     scopes:           Vec<ScopedPatchEvaluationScope>,
-    context:          ScopedPatchEvaluationContext,
     /// The comparison destination and location source, distinct from trunk admission.
     destination:      ScopedPatchComparisonDestination,
 }
@@ -573,13 +622,13 @@ impl From<ScopeKind> for ScopedPatchEvaluationScopeKind {
     }
 }
 
-#[derive(Clone, Eq, Hash, PartialEq)]
-enum ScopedPatchEvaluationContext {
-    PriorIntegrationProven,
-    Outstanding { previous_trunk: GitObjectId },
-}
-
 /// Reuses identical proof inputs and admits one scoped comparison per trunk target.
+///
+/// The throttle bounds git cost for reservations no proof covers, where deferring costs nothing:
+/// their materialized status already says the work is not in trunk, so a pass that skips the
+/// comparison records and reports exactly what the previous one did. A reservation whose proof
+/// still stands never reaches this budget at all -- [`IntegrationProofStanding::Holds`] answers
+/// it from the batched ancestry query -- so a deferral can no longer unseat a proof.
 #[derive(Default)]
 struct ReconciliationScopedPatchEvaluationBudget {
     evaluations:       HashMap<ScopedPatchEvaluationKey, ScopedPatchIntegrationEvaluation>,
@@ -857,12 +906,12 @@ pub(crate) struct GateReconciliationAction<Decision> {
 
 #[derive(Default)]
 struct ReconciliationChanges {
-    operations:          Vec<JournalOperation>,
-    retention_repairs:   Vec<ReservationRetentionRefRepair>,
-    retention_deletions: Vec<ReservationId>,
-    evidence:            Vec<ReconciledEvidence>,
-    /// Reservations whose affirmative proof this pass replaced without evaluating it.
-    unevaluated_proofs:  Vec<ReservationId>,
+    operations:              Vec<JournalOperation>,
+    retention_repairs:       Vec<ReservationRetentionRefRepair>,
+    retention_deletions:     Vec<ReservationId>,
+    evidence:                Vec<ReconciledEvidence>,
+    /// Reservations whose lost-evidence directive two consecutive passes have now derived.
+    confirmed_lost_evidence: Vec<ReservationId>,
 }
 
 struct ReconciliationAction {
@@ -874,13 +923,15 @@ struct ReconciliationAction {
     retention_commit_resolution:   RetentionCommitResolution,
     alert_subjects:                Vec<AlertSubject>,
     evidence:                      Vec<ReconciledEvidence>,
-    /// Reservations whose replaced proof no query this pass ran had refuted.
+    /// Reservations whose lost-evidence directive has been derived by two consecutive passes.
     ///
-    /// A proof replaced without the comparison that could judge it says nothing yet about whether
-    /// the work reached trunk, so reporting it lost names a trunk nothing checked. The degraded
-    /// status is journaled all the same, so the next reconciliation reads `NotIntegrated` as its
-    /// materialized evidence and reports from there -- delayed by one pass, never withheld.
-    unevaluated_proofs:            Vec<ReservationId>,
+    /// A single pass reads a repository that is still moving -- a push amends, a rebase lands, a
+    /// pack is written -- so a judgement it derives alone is as likely to be an artifact of the
+    /// moment as a fact about the work. `alert::for_lost_integration_evidence` therefore speaks
+    /// only when the status a previous pass recorded and the status this pass derived agree the
+    /// proof is gone. A proof genuinely lost is reported one pass late, and every transient
+    /// disagreement the next pass overturns is never reported at all.
+    confirmed_lost_evidence:       Vec<ReservationId>,
     repository_snapshot:           RepositorySnapshot,
     recovered_bypass_reporting:    RecoveredBypassReporting,
     recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
@@ -1611,9 +1662,6 @@ fn compare_mapped_phase(
                 scope_kind: scope.kind.into(),
             })
             .collect(),
-        context:          ScopedPatchEvaluationContext::Outstanding {
-            previous_trunk: trunk.clone(),
-        },
         destination:      ScopedPatchComparisonDestination::Mapped {
             tip:          interval.protected_tip.clone(),
             destinations: interval.destinations.clone(),
@@ -1946,7 +1994,7 @@ fn build_plan(
             alert_subjects,
             settlements: Vec::new(),
             evidence: changes.evidence,
-            unevaluated_proofs: changes.unevaluated_proofs,
+            confirmed_lost_evidence: changes.confirmed_lost_evidence,
             repository_snapshot,
             recovered_bypass_reporting: RecoveredBypassReporting::Defer,
             recovered_bypass_markers: Vec::new(),
@@ -2505,7 +2553,6 @@ fn repository_evidence(
             evidence:                RepositoryReservationEvidence::Active,
             revalidation:            EvidenceRevalidationObservation::NotApplicable,
             scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-            proof_standing:          ReplacedProofStanding::Settled,
         }),
         ReservationEvidenceState::Outstanding {
             protected_tip,
@@ -2516,17 +2563,18 @@ fn repository_evidence(
             reservation,
             protected_tip,
             &trunk_snapshot,
-            &materialized,
+            materialized,
         )),
         ReservationEvidenceState::Released {
             protected_tip,
+            trunk_snapshot,
             disposition,
             integration_status: materialized,
-            ..
         } => Ok(observe_released_repository_evidence(
             target_evidence_context,
             reservation,
             protected_tip,
+            &trunk_snapshot,
             disposition,
             materialized,
         )),
@@ -2537,7 +2585,6 @@ fn repository_evidence(
                 },
                 revalidation:            EvidenceRevalidationObservation::NotApplicable,
                 scoped_patch_comparison: ScopedPatchComparisonJournalUpdate::Unchanged,
-                proof_standing:          ReplacedProofStanding::Settled,
             })
         },
     }
@@ -2548,33 +2595,15 @@ fn observe_outstanding_repository_evidence(
     reservation: &Reservation,
     protected_tip: ProtectedReservationTip,
     trunk_snapshot: &GitObjectId,
-    materialized: &IntegrationEvidenceStatus,
+    materialized: IntegrationEvidenceStatus,
 ) -> RepositoryEvidenceObservation {
-    let observation = match target_evidence_context.repository_trunk {
-        RepositoryTrunk::Resolved(current_trunk_oid) => {
-            let scoped_patch_evaluation_context =
-                if matches!(materialized, IntegrationEvidenceStatus::Integrated { .. }) {
-                    ScopedPatchEvaluationContext::PriorIntegrationProven
-                } else {
-                    ScopedPatchEvaluationContext::Outstanding {
-                        previous_trunk: trunk_snapshot.clone(),
-                    }
-                };
-            integration_status_with_retained_verdict(
-                target_evidence_context,
-                reservation,
-                &protected_tip,
-                current_trunk_oid,
-                scoped_patch_evaluation_context,
-                materialized,
-            )
-        },
-        RepositoryTrunk::ObjectUnknown => IntegrationStatusObservation::settled(
-            IntegrationEvidenceStatus::ObjectUnknown,
-            EvidenceRevalidationObservation::Apply,
-            ScopedPatchComparisonJournalUpdate::Unchanged,
-        ),
-    };
+    let observation = revalidate_protected_tip(
+        target_evidence_context,
+        reservation,
+        &protected_tip,
+        trunk_snapshot,
+        materialized,
+    );
     RepositoryEvidenceObservation {
         evidence:                RepositoryReservationEvidence::Outstanding {
             protected_tip,
@@ -2582,7 +2611,6 @@ fn observe_outstanding_repository_evidence(
         },
         revalidation:            observation.revalidation,
         scoped_patch_comparison: observation.scoped_patch_comparison,
-        proof_standing:          observation.proof_standing,
     }
 }
 
@@ -2590,18 +2618,20 @@ fn observe_released_repository_evidence(
     target_evidence_context: &mut TargetIntegrationEvidenceContext<'_>,
     reservation: &Reservation,
     protected_tip: ProtectedReservationTip,
+    trunk_snapshot: &GitObjectId,
     disposition: ReleaseDisposition,
     materialized: IntegrationEvidenceStatus,
 ) -> RepositoryEvidenceObservation {
     let observation = match disposition.revalidation_subject() {
-        ReleaseRevalidationSubject::ProtectedTip => revalidate_release(
+        ReleaseRevalidationSubject::ProtectedTip => revalidate_protected_tip(
             target_evidence_context,
             reservation,
             &protected_tip,
-            &materialized,
+            trunk_snapshot,
+            materialized,
         ),
         ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
-            IntegrationStatusObservation::settled(
+            IntegrationStatusObservation::new(
                 match target_evidence_context.repository_trunk {
                     RepositoryTrunk::Resolved(trunk) => {
                         trunk_commit.revalidate_ancestry(trunk, |witness| {
@@ -2616,7 +2646,7 @@ fn observe_released_repository_evidence(
                 ScopedPatchComparisonJournalUpdate::Unchanged,
             )
         },
-        ReleaseRevalidationSubject::None => IntegrationStatusObservation::settled(
+        ReleaseRevalidationSubject::None => IntegrationStatusObservation::new(
             materialized,
             EvidenceRevalidationObservation::NotApplicable,
             ScopedPatchComparisonJournalUpdate::Unchanged,
@@ -2630,30 +2660,56 @@ fn observe_released_repository_evidence(
         },
         revalidation:            observation.revalidation,
         scoped_patch_comparison: observation.scoped_patch_comparison,
-        proof_standing:          observation.proof_standing,
     }
 }
 
-fn revalidate_release(
+/// Answer one reservation's integration against the observed trunk, re-deriving only when needed.
+fn revalidate_protected_tip(
     target_evidence_context: &mut TargetIntegrationEvidenceContext<'_>,
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
-    materialized: &IntegrationEvidenceStatus,
+    trunk_snapshot: &GitObjectId,
+    materialized: IntegrationEvidenceStatus,
 ) -> IntegrationStatusObservation {
-    match target_evidence_context.repository_trunk {
-        RepositoryTrunk::Resolved(current_trunk_oid) => integration_status_with_retained_verdict(
-            target_evidence_context,
-            reservation,
-            protected_tip,
-            current_trunk_oid,
-            ScopedPatchEvaluationContext::PriorIntegrationProven,
-            materialized,
+    let RepositoryTrunk::Resolved(current_trunk_oid) = target_evidence_context.repository_trunk
+    else {
+        return IntegrationStatusObservation::new(
+            IntegrationEvidenceStatus::ObjectUnknown,
+            EvidenceRevalidationObservation::Apply,
+            ScopedPatchComparisonJournalUpdate::Unchanged,
+        );
+    };
+    match IntegrationProofStanding::observe(
+        &materialized,
+        trunk_snapshot,
+        target_evidence_context.integration_reachability,
+    ) {
+        IntegrationProofStanding::Holds => IntegrationStatusObservation::new(
+            reanchored_proof(
+                materialized,
+                current_trunk_oid,
+                target_evidence_context
+                    .integration_reachability
+                    .for_ancestor(protected_tip.as_ref()),
+            ),
+            EvidenceRevalidationObservation::Apply,
+            ScopedPatchComparisonJournalUpdate::Unchanged,
         ),
-        RepositoryTrunk::ObjectUnknown => IntegrationStatusObservation::settled(
+        IntegrationProofStanding::ProvingTrunkUnknown => IntegrationStatusObservation::new(
             IntegrationEvidenceStatus::ObjectUnknown,
             EvidenceRevalidationObservation::Apply,
             ScopedPatchComparisonJournalUpdate::Unchanged,
         ),
+        IntegrationProofStanding::Derive { previous_trunk } => {
+            integration_status_with_retained_verdict(
+                target_evidence_context,
+                reservation,
+                protected_tip,
+                current_trunk_oid,
+                &previous_trunk,
+                materialized,
+            )
+        },
     }
 }
 
@@ -2662,8 +2718,8 @@ fn integration_status_with_retained_verdict(
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
     target: &GitObjectId,
-    scoped_patch_evaluation_context: ScopedPatchEvaluationContext,
-    materialized: &IntegrationEvidenceStatus,
+    previous_trunk: &GitObjectId,
+    materialized: IntegrationEvidenceStatus,
 ) -> IntegrationStatusObservation {
     let subject = reservation.integration_proof_subject_revision();
     match reservation
@@ -2673,12 +2729,12 @@ fn integration_status_with_retained_verdict(
         ScopedPatchTargetVerdictAvailability::Hit {
             comparison,
             witness,
-        } => IntegrationStatusObservation::settled(
+        } => IntegrationStatusObservation::new(
             integration_status_from_retained_scoped_patch_comparison(
                 comparison,
                 witness,
                 target,
-                &scoped_patch_evaluation_context,
+                previous_trunk,
                 target_evidence_context.integration_reachability,
             ),
             EvidenceRevalidationObservation::Apply,
@@ -2702,43 +2758,27 @@ fn integration_status_with_retained_verdict(
                         scope_kind: scope.kind.into(),
                     })
                     .collect(),
-                context:          scoped_patch_evaluation_context.clone(),
                 destination:      ScopedPatchComparisonDestination::Trunk,
             };
-            let observe_scoped_patch_comparison = || {
-                scoped_patch_evaluation_budget.evaluate(scoped_patch_evaluation_key, || {
-                    evaluate_reservation_scoped_integration(
-                        repository_root,
-                        reservation,
-                        protected_tip,
-                        target,
-                        integration_reachability,
-                    )
-                })
-            };
-            let evidence_observation = match scoped_patch_evaluation_context {
-                ScopedPatchEvaluationContext::PriorIntegrationProven => {
-                    reservation::observe_integration_status(
-                        integration_reachability.for_ancestor(protected_tip.as_ref()),
-                        target,
-                        PriorIntegrationStatus::Proven,
-                        materialized,
-                        observe_scoped_patch_comparison,
-                    )
+            let evidence_observation = reservation::observe_outstanding_integration_status(
+                integration_reachability.for_ancestor(protected_tip.as_ref()),
+                integration_reachability.for_ancestor(previous_trunk),
+                target,
+                || {
+                    scoped_patch_evaluation_budget.evaluate(scoped_patch_evaluation_key, || {
+                        evaluate_reservation_scoped_integration(
+                            repository_root,
+                            reservation,
+                            protected_tip,
+                            target,
+                            integration_reachability,
+                        )
+                    })
                 },
-                ScopedPatchEvaluationContext::Outstanding { previous_trunk } => {
-                    reservation::observe_outstanding_integration_status(
-                        integration_reachability.for_ancestor(protected_tip.as_ref()),
-                        integration_reachability.for_ancestor(&previous_trunk),
-                        target,
-                        materialized,
-                        observe_scoped_patch_comparison,
-                    )
-                },
-            };
+            );
             match evidence_observation {
                 IntegrationEvidenceObservation::Reachability(status) => {
-                    IntegrationStatusObservation::settled(
+                    IntegrationStatusObservation::new(
                         status,
                         EvidenceRevalidationObservation::Apply,
                         ScopedPatchComparisonJournalUpdate::Unchanged,
@@ -2747,14 +2787,26 @@ fn integration_status_with_retained_verdict(
                 IntegrationEvidenceObservation::ScopedPatchComparison { status, evaluation } => {
                     let scoped_patch_comparison =
                         scoped_patch_journal_update(subject, target, &status, &evaluation);
-                    IntegrationStatusObservation::settled(
+                    IntegrationStatusObservation::new(
                         status,
                         EvidenceRevalidationObservation::Apply,
                         scoped_patch_comparison,
                     )
                 },
-                IntegrationEvidenceObservation::ScopedPatchComparisonDeferred(status) => {
-                    status.into()
+                // Nothing this pass ran judged the content, so that answer is never written down:
+                // a journaled status reads as settled, and the next pass would report a proof lost
+                // that its own comparison was about to restore. Every pass re-derives the same
+                // answer until the budget admits the comparison and records what it found.
+                IntegrationEvidenceObservation::ScopedPatchComparisonDeferred => {
+                    IntegrationStatusObservation::new(
+                        deferred_integration_status(
+                            materialized,
+                            previous_trunk,
+                            integration_reachability,
+                        ),
+                        EvidenceRevalidationObservation::PreserveMaterialized,
+                        ScopedPatchComparisonJournalUpdate::Unchanged,
+                    )
                 },
             }
         },
@@ -2886,7 +2938,7 @@ fn integration_status_from_retained_scoped_patch_comparison(
     scoped_patch_comparison: DurableScopedPatchComparison,
     witness: IntegrationWitness,
     target: &GitObjectId,
-    scoped_patch_evaluation_context: &ScopedPatchEvaluationContext,
+    previous_trunk: &GitObjectId,
     integration_reachability: &BatchedIntegrationReachability,
 ) -> IntegrationEvidenceStatus {
     match scoped_patch_comparison {
@@ -2895,18 +2947,43 @@ fn integration_status_from_retained_scoped_patch_comparison(
             proof: IntegrationProof::ScopedPatchEquivalent,
             witness,
         },
-        DurableScopedPatchComparison::Different => match scoped_patch_evaluation_context {
-            ScopedPatchEvaluationContext::PriorIntegrationProven => {
-                IntegrationEvidenceStatus::TrunkRewritten
-            },
-            ScopedPatchEvaluationContext::Outstanding { previous_trunk } => {
-                match integration_reachability.for_ancestor(previous_trunk) {
-                    Reachability::Ancestor => IntegrationEvidenceStatus::NotIntegrated,
-                    Reachability::NotAncestor => IntegrationEvidenceStatus::TrunkRewritten,
-                    Reachability::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
-                }
-            },
+        DurableScopedPatchComparison::Different => {
+            unproven_integration_status(previous_trunk, integration_reachability)
         },
+    }
+}
+
+/// What to report when the budget admitted no comparison, so this pass judged no content.
+///
+/// A status already on file that names no proving trunk was derived by an earlier pass from the
+/// same ancestry answers this one holds, so repeating it verbatim keeps the board reading the same
+/// across every deferred pass -- and keeps an `IntegrationEvidenceStatus::ObjectUnknown` saying
+/// that git could not answer instead of degrading to a `NotIntegrated` nothing established. An
+/// affirmative proof whose trunk left history is the one thing this pass did refute, so it gives
+/// way to whatever ancestry alone now supports.
+fn deferred_integration_status(
+    materialized: IntegrationEvidenceStatus,
+    previous_trunk: &GitObjectId,
+    integration_reachability: &BatchedIntegrationReachability,
+) -> IntegrationEvidenceStatus {
+    if proving_trunk(&materialized).is_none() {
+        return materialized;
+    }
+    unproven_integration_status(previous_trunk, integration_reachability)
+}
+
+/// Separate work trunk never took from work a rewritten trunk dropped.
+///
+/// Both answers say no proof stands; they differ in whether the trunk this reservation was last
+/// measured against is still in the observed trunk's history.
+fn unproven_integration_status(
+    previous_trunk: &GitObjectId,
+    integration_reachability: &BatchedIntegrationReachability,
+) -> IntegrationEvidenceStatus {
+    match integration_reachability.for_ancestor(previous_trunk) {
+        Reachability::Ancestor => IntegrationEvidenceStatus::NotIntegrated,
+        Reachability::NotAncestor => IntegrationEvidenceStatus::TrunkRewritten,
+        Reachability::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
     }
 }
 
@@ -2959,9 +3036,6 @@ fn append_evidence_and_retention(
         },
         RetentionDecision::Delete => changes.retention_deletions.push(reservation.id()),
     }
-    if repository_evidence_observation.proof_standing == ReplacedProofStanding::Unevaluated {
-        changes.unevaluated_proofs.push(reservation.id());
-    }
     let evidence_revalidation = match repository_evidence_observation.revalidation {
         EvidenceRevalidationObservation::Apply => EvidenceRevalidation::Required(evidence),
         EvidenceRevalidationObservation::PreserveMaterialized => {
@@ -2982,6 +3056,9 @@ fn append_evidence_and_retention(
         ReservationEvidenceState::Active { .. }
         | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => return Ok(()),
     };
+    if proving_trunk(&materialized).is_none() && proving_trunk(evidence).is_none() {
+        changes.confirmed_lost_evidence.push(reservation.id());
+    }
     if materialized != *evidence {
         changes.evidence.push(ReconciledEvidence {
             reservation_id: reservation.id(),
@@ -3816,17 +3893,18 @@ fn record_successor_scoped_patch_verdict(
 fn reservation_alerts(
     reservations: &RetainedReservationSet,
     repository_trunk: &RepositoryTrunk,
-    unevaluated_proofs: &[ReservationId],
+    confirmed_lost_evidence: &[ReservationId],
 ) -> Result<Vec<Alert>, ReconcileError> {
     let mut alerts = Vec::new();
     for reservation in reservations.iter() {
-        if unevaluated_proofs.contains(&reservation.id()) {
-            continue;
+        // Only a directive two consecutive passes derived reaches a reader. See
+        // `ReconciliationAction::confirmed_lost_evidence`.
+        if confirmed_lost_evidence.contains(&reservation.id()) {
+            alerts.extend(
+                alert::for_lost_integration_evidence(reservation, repository_trunk)
+                    .map_err(ReconcileError::Replay)?,
+            );
         }
-        alerts.extend(
-            alert::for_lost_integration_evidence(reservation, repository_trunk)
-                .map_err(ReconcileError::Replay)?,
-        );
         // Released reservations no longer refresh merge extents, but their integration
         // evidence must still report when the proof for released work is lost.
         if matches!(
@@ -3897,7 +3975,7 @@ impl ReconciliationAction {
         let mut alerts = reservation_alerts(
             &reservations,
             self.repository_snapshot.trunk(),
-            &self.unevaluated_proofs,
+            &self.confirmed_lost_evidence,
         )?;
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
@@ -4117,7 +4195,6 @@ mod tests {
     use super::HistoricalIntegrationCandidateDiscovery as Discovery;
     use super::ReconciliationScopedPatchEvaluationBudget;
     use super::ScopedPatchComparisonDestination;
-    use super::ScopedPatchEvaluationContext;
     use super::ScopedPatchEvaluationKey;
     use super::SettlementSelection;
     use crate::edge::RepositoryTrunk;
@@ -4134,7 +4211,6 @@ mod tests {
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
     use crate::reservation::MergeExtent;
-    use crate::reservation::PriorIntegrationStatus;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationEvidenceState;
     use crate::reservation::RetainedReservationSet;
@@ -4157,19 +4233,17 @@ mod tests {
             protected_tip:    candidate.clone(),
             target_trunk:     target.clone(),
             scopes:           Vec::new(),
-            context:          ScopedPatchEvaluationContext::PriorIntegrationProven,
             destination:      ScopedPatchComparisonDestination::Trunk,
         };
         let mut budget = ReconciliationScopedPatchEvaluationBudget::default();
         let calls = RefCell::new(Vec::new());
-        let observation = crate::reservation::observe_integration_status(
+        let observation = crate::reservation::observe_outstanding_integration_status(
             {
                 calls.borrow_mut().push("ancestry");
                 Reachability::NotAncestor
             },
+            Reachability::Ancestor,
             &target,
-            PriorIntegrationStatus::Unproven,
-            &IntegrationEvidenceStatus::NotIntegrated,
             || {
                 budget.evaluate(key(), || {
                     calls.borrow_mut().push("admitted");
@@ -4253,7 +4327,6 @@ mod tests {
             protected_tip:    target.clone(),
             target_trunk:     target.clone(),
             scopes:           Vec::new(),
-            context:          ScopedPatchEvaluationContext::PriorIntegrationProven,
             destination:      ScopedPatchComparisonDestination::Trunk,
         };
         let mut budget = super::ReconciliationScopedPatchEvaluationBudget::default();

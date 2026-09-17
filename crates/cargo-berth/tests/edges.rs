@@ -1199,8 +1199,33 @@ fn witness_survives_pruning_and_controls_successors() {
     );
     assert_successor_round_robin_progress(&fulfilled.output, 1, 1);
 
-    // Equivalent replacement content cannot reaffirm a witness removed from actual trunk.
+    assert_witness_loss_is_reported_then_recovered(&fixture, root, &witness);
+    assert!(!git_status(
+        root,
+        &["cat-file", "-e", &fixture.protected_tip]
+    ));
+    assert_eq!(journal_operation_count(root, "release"), 1);
+}
+
+/// Take the witness out of trunk, then put it back, and watch the evidence follow both ways.
+///
+/// Equivalent replacement content cannot reaffirm a witness removed from actual trunk, so the
+/// reservation loses its proof here -- but the pass that meets the reset only records that, and the
+/// pass reading that row back is the one that reports it. See
+/// `ReconciliationAction::confirmed_lost_evidence`.
+fn assert_witness_loss_is_reported_then_recovered(
+    fixture: &RewrittenSuccessorFixture,
+    root: &Path,
+    witness: &str,
+) {
     git(root, &["reset", "--hard", &fixture.successor_head]);
+    let deriving = run_berth_with_git_trace(root, &["board", "--json"], "");
+    assert_witness_evidence(
+        &deriving,
+        &fixture.predecessor_id,
+        "trunk_rewritten",
+        LostEvidenceAlert::Absent,
+    );
     let lost = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert_witness_evidence(
         &lost,
@@ -1208,8 +1233,9 @@ fn witness_survives_pruning_and_controls_successors() {
         "trunk_rewritten",
         LostEvidenceAlert::Raised,
     );
-    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "trunk_rewritten", &witness);
-    git(root, &["reset", "--hard", &witness]);
+    assert_explicit_witness_evidence(root, &fixture.predecessor_id, "trunk_rewritten", witness);
+
+    git(root, &["reset", "--hard", witness]);
     let recovered = run_berth_with_git_trace(root, &["board", "--json"], "");
     assert_witness_evidence(
         &recovered,
@@ -1218,11 +1244,6 @@ fn witness_survives_pruning_and_controls_successors() {
         LostEvidenceAlert::Absent,
     );
     assert_successor_round_robin_progress(&recovered.output, 1, 1);
-    assert!(!git_status(
-        root,
-        &["cat-file", "-e", &fixture.protected_tip]
-    ));
-    assert_eq!(journal_operation_count(root, "release"), 1);
 }
 
 /// Explicit release revalidates the same surviving witness without consulting the old phase.

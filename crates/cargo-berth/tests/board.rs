@@ -1648,11 +1648,15 @@ fn assert_integration_statuses(
     }
 }
 
-fn assert_not_integrated_and_blocking(data: &serde_json::Value, reservation_id: &str) {
+fn assert_blocking_integration_status(
+    data: &serde_json::Value,
+    reservation_id: &str,
+    expected_status: &str,
+) {
     let reservation = board_reservation_snapshot(data, reservation_id);
     assert_eq!(
         reservation["integration_evidence"]["status"]["status"],
-        "not_integrated"
+        expected_status
     );
     assert_eq!(reservation["edit_blocking_status"], "blocking");
 }
@@ -2589,17 +2593,18 @@ fn explicit_release_preserves_discovered_historical_witness_while_reserved_dirt_
         snapshot["lifecycle"]["disposition"],
         serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
     );
+    // The release wrote `rewritten_witness_ancestor` against this same trunk, and reconciliation
+    // carries that record forward rather than deriving a second name for it. Both proofs state one
+    // fact -- the witness this disposition names is in trunk's history -- and both settle to the
+    // same `rewritten_integration` disposition, so re-deriving could only relabel what is already
+    // on file.
     assert_eq!(
         snapshot["integration_evidence"]["status"],
-        historical_evidence(&fixture)
+        expected_evidence
     );
     assert_eq!(historical_candidate_queries(&restarted), 0);
     assert_eq!(journal_operation_count(root, "release"), 1);
-    assert_historical_witness_settlement_journal(
-        reservation,
-        &historical_evidence(&fixture),
-        &fixture.witness,
-    );
+    assert_historical_witness_settlement_journal(reservation, &expected_evidence, &fixture.witness);
 }
 
 #[test]
@@ -3580,8 +3585,14 @@ fn assert_ancestry_settlement_journal(fixture: &OutstandingReservationFixture) {
     }
 }
 
+/// The companion to the content-proof case above, and the reason the two now read alike: what a
+/// deferred pass may say does not depend on which proof is on file. Ancestry refuted this
+/// reservation's `protected_tip_ancestor` proof for the observed trunk, but the trunk that proof
+/// named was rewritten away, and only the comparison this pass skipped could say whether the work
+/// survived the rewrite. So the board is told the trunk was rewritten, nothing is journaled, and
+/// no alert names the proof lost -- while the operator's own recovery stays available throughout.
 #[test]
-fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
+fn a_deferred_comparison_withholds_the_alert_for_a_rewritten_ancestor_proof() {
     let fixture = warmed_ancestor_proof_after_trunk_rewrite();
     let competing_reservations =
         append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
@@ -3589,6 +3600,11 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
         fixture.repository.path(),
         &fixture.reservation_id,
         &fixture.target,
+    );
+    let evidence_before = journal_operation_count_for_reservation(
+        fixture.repository.path(),
+        "evidence_revalidated",
+        &fixture.reservation_id,
     );
 
     let traced = run_board_with_git_trace(fixture.repository.path());
@@ -3607,73 +3623,57 @@ fn deferred_comparison_rejects_a_refuted_ancestor_proof() {
     assert_integration_statuses(
         data,
         std::slice::from_ref(&fixture.reservation_id),
-        "not_integrated",
+        "trunk_rewritten",
     );
     let reservation_snapshot = board_reservation_snapshot(data, &fixture.reservation_id);
     assert_eq!(reservation_snapshot["edit_blocking_status"], "clear");
-    let alert = data["alerts"]["entries"]
-        .as_array()
-        .and_then(|alerts| {
-            alerts.iter().find(|alert| {
-                alert["kind"] == "lost_integration_evidence"
-                    && alert["reservation_id"] == fixture.reservation_id
-            })
-        })
-        .expect("the first reconciled board should report lost integration evidence");
-    assert_eq!(alert["evidence_status"]["status"], "not_integrated");
-    assert_eq!(alert["recovery"]["kind"], "verify_resolved_trunk");
-    assert_eq!(alert["recovery"]["trunk_oid"], fixture.target);
-    assert_eq!(
-        alert["recovery"]["action"]["action"],
-        "resolve_integrated_as"
-    );
-    assert_eq!(
-        alert["recovery"]["action"]["reservation_id"],
-        fixture.reservation_id
+    assert!(
+        lost_integration_evidence_alert(data, &fixture.reservation_id).is_none(),
+        "a pass that never ran the comparison must not report the proof lost: {data:#}"
     );
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
+    assert_eq!(
+        journal_operation_count_for_reservation(
+            fixture.repository.path(),
+            "evidence_revalidated",
+            &fixture.reservation_id,
+        ),
+        evidence_before,
+        "a status nothing evaluated must not reach the journal"
+    );
 
+    // A second deferred pass reads no row off disk, because the first wrote none, so it derives the
+    // same answer from the same proof rather than reporting a loss the first pass appeared to
+    // record. `resolve --integrated-as` is deliberately not exercised here: `recovery.rs` admits it
+    // only once the ledger's own status has gone proofless, which is a pass that ran the comparison
+    // -- covered by
+    // `liveness::recovery_dispositions_validate_evidence_and_remain_distinct_after_replay`.
     append_released_reservations(&fixture, 1, ProofSubjectSimilarity::DistinctCommittedScope);
     append_scoped_patch_attempt(
         fixture.repository.path(),
         &fixture.reservation_id,
         &fixture.target,
     );
-    let recovered = run_berth(
-        fixture.repository.path(),
-        &[
-            "resolve",
-            &fixture.reservation_id,
-            "--integrated-as",
-            &fixture.target,
-            "--json",
-        ],
+    let following = run_board_with_git_trace(fixture.repository.path());
+    assert!(following.output.status.success());
+    let following_board = json_output(&following.output);
+    let following_data = &following_board["payload"]["data"];
+    assert_integration_statuses(
+        following_data,
+        std::slice::from_ref(&fixture.reservation_id),
+        "trunk_rewritten",
     );
     assert!(
-        recovered.status.success(),
-        "recovery failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&recovered.stdout),
-        String::from_utf8_lossy(&recovered.stderr)
+        lost_integration_evidence_alert(following_data, &fixture.reservation_id).is_none(),
+        "no later pass may report the proof lost until something has examined it: {following_data:#}"
     );
-    let recovered_envelope = json_output(&recovered);
-    assert_eq!(recovered_envelope["status"], "integrated");
-    let latest_evidence = fs::read_to_string(fixture.repository.path().join(JOURNAL_PATH))
-        .expect("journal should read")
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .rfind(|event| {
-            event["op"] == "evidence_revalidated"
-                && event["reservation_id"] == fixture.reservation_id
-        })
-        .expect("the recovered reservation should retain materialized evidence");
-    assert_eq!(latest_evidence["status"]["status"], "not_integrated");
     assert_eq!(
         journal_operation_count_for_reservation(
             fixture.repository.path(),
-            "replace_release_disposition",
+            "evidence_revalidated",
             &fixture.reservation_id,
         ),
-        1
+        evidence_before
     );
 }
 
@@ -3714,6 +3714,36 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
         }),
     );
 
+    // Trunk is rewritten past the commit the proof named, so nothing on file covers the observed
+    // trunk and the unavailable tip becomes the only thing left to answer from.
+    git(
+        unknown_tip_repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "trunk rewritten past the proof",
+        ],
+    );
+    let rewritten_trunk = git_stdout(unknown_tip_repository.path(), &["rev-parse", "HEAD"]);
+
+    // The pass that first derives the loss reads a repository that is still moving, so it records
+    // the status and stays silent. Only the pass that agrees with the row it left speaks. See
+    // `ReconciliationAction::confirmed_lost_evidence`.
+    let deriving_board = board_data(unknown_tip_repository.path());
+    assert_eq!(
+        board_reservation_snapshot(&deriving_board, &unknown_tip_id)["integration_evidence"]["status"]
+            ["status"],
+        "object_unknown"
+    );
+    assert!(
+        lost_integration_evidence_alert(&deriving_board, &unknown_tip_id).is_none(),
+        "one pass alone must not report integration evidence lost: {deriving_board:#}"
+    );
+
     let unknown_tip_board = board_data(unknown_tip_repository.path());
     let unknown_tip_row = board_reservation_snapshot(&unknown_tip_board, &unknown_tip_id);
     assert_eq!(unknown_tip_row["edit_blocking_status"], "clear");
@@ -3734,7 +3764,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
         unknown_tip_alert["recovery"]["kind"],
         "verify_resolved_trunk"
     );
-    assert_eq!(unknown_tip_alert["recovery"]["trunk_oid"], trunk_oid);
+    assert_eq!(unknown_tip_alert["recovery"]["trunk_oid"], rewritten_trunk);
 }
 
 #[test]
@@ -3899,8 +3929,12 @@ fn released_reservation_without_scoped_changes_survives_a_trunk_rewrite() {
     );
 }
 
+/// A reservation proven by content against a trunk that has since been rewritten away. Ancestry
+/// alone places the rewrite, and the board is told that much; only the deferred comparison could
+/// say whether the content survived it, so no pass that skipped the comparison writes or reports a
+/// verdict on the proof.
 #[test]
-fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
+fn a_deferred_comparison_reports_the_rewrite_without_discarding_a_scoped_patch_proof() {
     let fixture = reverted_scoped_patch_proof_fixture();
     let reservation = &fixture.reservation;
     dirty_source(reservation.repository.path(), "src/lib.rs");
@@ -3948,14 +3982,14 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     assert_ne!(fixture.earlier_proof_target, reservation.target);
     let deferred_board = json_output(&deferred.output);
     let data = &deferred_board["payload"]["data"];
-    assert_not_integrated_and_blocking(data, &reservation.reservation_id);
+    assert_blocking_integration_status(data, &reservation.reservation_id, "trunk_rewritten");
     assert_integration_statuses(data, &competing_reservations, "trunk_rewritten");
-    // The reported status is unchanged -- a proof from an earlier target is still rejected, and the
-    // reservation still blocks. What it may not do is leave that rejection on disk. Only the
-    // deferred comparison can tell a reverted scope from an intact one, so the row would be a
-    // conclusion nothing reached, and the next reconciliation reads such a row back as settled
-    // evidence and reports the proof lost. Every pass re-derives this answer from the materialized
-    // proof instead, until the budget admits the comparison and records what it actually found.
+    // The subject reads the same as its competitors: trunk left the commit each was last measured
+    // against. What no pass may do is leave a verdict on the content on disk. Only the deferred
+    // comparison can tell a reverted scope from an intact one, so the row would be a conclusion
+    // nothing reached, and the next reconciliation reads such a row back as settled evidence and
+    // reports the proof lost. Every pass re-derives this answer from the materialized proof
+    // instead, until the budget admits the comparison and records what it actually found.
     assert_eq!(
         journal_operation_count_for_reservation(
             reservation.repository.path(),
@@ -3984,17 +4018,20 @@ fn deferred_comparison_rejects_a_scoped_patch_proof_from_an_earlier_target() {
     );
     let replayed_board = json_output(&replayed.output);
     let replayed_data = &replayed_board["payload"]["data"];
-    assert_not_integrated_and_blocking(replayed_data, &reservation.reservation_id);
+    assert_blocking_integration_status(
+        replayed_data,
+        &reservation.reservation_id,
+        "trunk_rewritten",
+    );
     assert_integration_statuses(replayed_data, &replay_competitor, "trunk_rewritten");
     assert_comparison_unrecorded(reservation, attempts_before, verdicts_before);
 }
 
-/// Reachability refutes a proof that rests on tip ancestry; it refutes nothing about one that
-/// rests on content. A released reservation carrying `scoped_patch_equivalent` from an earlier
-/// trunk is therefore unevaluated for the observed trunk, not disproved, and the pass that defers
-/// its comparison must not report its evidence lost -- `/validate_and_push` amends on every push,
-/// so this shape recurs on every commit, and the comparison the next reconciliation ran restored
-/// the proof intact within seconds each time.
+/// A pass that ran no comparison examined nothing about the reservation's content, so it reports
+/// what its ancestry answers do support -- trunk left the commit the proof named -- and never that
+/// the proof is lost. `/validate_and_push` amends on every push, so this shape recurs on every
+/// commit, and the comparison the next reconciliation ran restored the proof intact within seconds
+/// each time.
 #[test]
 fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() {
     let fixture = warmed_scoped_patch_proof_after_release();
@@ -4022,7 +4059,7 @@ fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() 
     assert_integration_statuses(
         data,
         std::slice::from_ref(&fixture.reservation_id),
-        "not_integrated",
+        "trunk_rewritten",
     );
     assert!(
         lost_integration_evidence_alert(data, &fixture.reservation_id).is_none(),
@@ -4060,7 +4097,7 @@ fn a_deferred_comparison_withholds_the_alert_for_an_unevaluated_content_proof() 
     assert_integration_statuses(
         following_data,
         std::slice::from_ref(&fixture.reservation_id),
-        "not_integrated",
+        "trunk_rewritten",
     );
     assert!(
         lost_integration_evidence_alert(following_data, &fixture.reservation_id).is_none(),
@@ -4192,7 +4229,7 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             // protected tip committed anything inside them.
             let additional_status = match similarity {
                 ProofSubjectSimilarity::Distinct
-                | ProofSubjectSimilarity::DistinctCommittedScope => "not_integrated",
+                | ProofSubjectSimilarity::DistinctCommittedScope => "trunk_rewritten",
                 ProofSubjectSimilarity::Duplicate => expected_first_status,
             };
             assert_integration_statuses(two_data, &additional_reservation_ids, additional_status);

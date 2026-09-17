@@ -22,7 +22,6 @@ mod scoped_patch_evaluation;
 
 pub(crate) use conflict::ReservationConflict;
 pub(crate) use containment::ActingHeadContainment;
-pub(crate) use evidence::DeferredScopedPatchIntegrationStatus;
 pub(crate) use evidence::IntegrationEvidenceObservation;
 pub(crate) use evidence::PriorIntegrationStatus;
 pub(crate) use evidence::ProtectedReservationTip;
@@ -31,7 +30,6 @@ pub(crate) use evidence::ScopedPatchIntegrationEvaluation;
 pub(crate) use evidence::current_head;
 pub(crate) use evidence::current_trunk;
 pub(crate) use evidence::integration_status;
-pub(crate) use evidence::observe_integration_status;
 pub(crate) use evidence::observe_outstanding_integration_status;
 pub(crate) use evidence::outstanding_integration_status;
 pub(crate) use evidence::retain_protected_tip;

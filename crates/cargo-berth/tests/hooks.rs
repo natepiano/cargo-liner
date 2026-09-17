@@ -2284,6 +2284,11 @@ fn lose_integration_evidence(
         "integrated"
     );
     take_the_integration_proof_away(repository, &trunk_before_integration, loss)?;
+    // The pass that first meets the loss records it and stays silent, so the hooks under test --
+    // which read one board each -- need the ledger already carrying the derived status. See
+    // `ReconciliationAction::confirmed_lost_evidence`.
+    let deriving = run_berth(repository.path(), &["board", "--json"])?;
+    require_success(&deriving, "reconcile the lost integration proof")?;
     let trunk = match loss {
         IntegrationProofLoss::TrunkRewrittenPastTheTip => {
             ObservedTrunk::Resolved(git_revision(repository.path(), TRUNK_BRANCH)?)

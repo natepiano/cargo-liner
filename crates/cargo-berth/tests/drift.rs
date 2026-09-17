@@ -2998,8 +2998,10 @@ fn unchanged_full_drift_carries_reconciliation_alerts() {
     assert_eq!(orphan["data"]["reservation_id"], orphan_id);
 }
 
+/// A trunk rewrite is reported by the drift reconciliation that agrees with the one before it, not
+/// by the one that first meets the reset. See `ReconciliationAction::confirmed_lost_evidence`.
 #[test]
-fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
+fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
     let repository = initialized_repository();
     let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
     let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
@@ -3046,13 +3048,30 @@ fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
         ],
     );
 
-    let first_detection = drift(
+    let deriving_detection = drift(
         repository.path(),
         &["--full", "--reservation", &observer_id],
     );
-    let envelope = json_output(&first_detection);
+    assert!(deriving_detection.status.success());
+    assert!(
+        json_output(&deriving_detection)["payload"]["alerts"]
+            .as_array()
+            .is_none_or(|alerts| {
+                alerts
+                    .iter()
+                    .all(|alert| alert["kind"] != "lost_integration_evidence")
+            }),
+        "one reconciliation alone must not report integration evidence lost: {:#}",
+        json_output(&deriving_detection)
+    );
 
-    assert!(first_detection.status.success());
+    let confirming_detection = drift(
+        repository.path(),
+        &["--full", "--reservation", &observer_id],
+    );
+    let envelope = json_output(&confirming_detection);
+
+    assert!(confirming_detection.status.success());
     let alert = envelope["payload"]["alerts"]
         .as_array()
         .and_then(|alerts| {
@@ -3061,7 +3080,7 @@ fn first_drift_after_a_trunk_rewrite_reports_lost_released_evidence() {
                     && alert["data"]["reservation_id"] == released_id
             })
         })
-        .expect("the first drift reconciliation should report the lost evidence");
+        .expect("the confirming drift reconciliation should report the lost evidence");
     assert_eq!(
         alert["data"]["evidence_status"]["status"],
         "trunk_rewritten"

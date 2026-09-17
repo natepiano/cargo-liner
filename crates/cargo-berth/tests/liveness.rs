@@ -1285,6 +1285,23 @@ fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
         ],
     );
 
+    // Renaming the branch is the first thing a pass sees, so that pass records the unresolved
+    // trunk without speaking; every pass after it reads that row back and reports. See
+    // `ReconciliationAction::confirmed_lost_evidence`.
+    let deriving = run_berth(repository.path(), &["board", "--json"]);
+    assert!(deriving.status.success());
+    assert!(
+        json_output(&deriving)["payload"]["data"]["alerts"]["entries"]
+            .as_array()
+            .is_none_or(|alerts| {
+                alerts
+                    .iter()
+                    .all(|alert| alert["kind"] != "lost_integration_evidence")
+            }),
+        "one pass alone must not report integration evidence lost: {:#}",
+        json_output(&deriving)
+    );
+
     for _ in 0..2 {
         let board = run_berth(repository.path(), &["board", "--json"]);
         assert!(board.status.success());
@@ -1425,11 +1442,21 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     assert_eq!(json_output(&integrated)["status"], "integrated");
 
     git(repository, &["reset", "--hard", "--quiet", "HEAD^"]);
+    // The reset is the first thing this pass sees, so it records the loss and says nothing; the
+    // next pass, reading back the row it left, is the one that reports. See
+    // `ReconciliationAction::confirmed_lost_evidence`.
     let reblocked = run_berth(repository, &["release", &rewritten_id, "--json"]);
     assert_eq!(json_output(&reblocked)["status"], "trunk_rewritten");
-    assert_eq!(
-        json_output(&reblocked)["payload"]["alerts"][0]["kind"],
-        "lost_integration_evidence"
+    assert!(
+        json_output(&reblocked)["payload"]["alerts"]
+            .as_array()
+            .is_none_or(|alerts| {
+                alerts
+                    .iter()
+                    .all(|alert| alert["kind"] != "lost_integration_evidence")
+            }),
+        "one pass alone must not report integration evidence lost: {:#}",
+        json_output(&reblocked)
     );
     let persisted = run_berth(repository, &["release", &rewritten_id, "--json"]);
     assert_eq!(json_output(&persisted)["status"], "trunk_rewritten");

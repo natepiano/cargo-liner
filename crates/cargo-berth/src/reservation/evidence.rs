@@ -72,55 +72,13 @@ pub(crate) enum IntegrationEvidenceObservation {
         /// Certified witness and whether a negative remains retryable.
         evaluation: ScopedPatchIntegrationEvaluation,
     },
-    /// The bounded comparison was not run after reachability rejected the protected-tip proof.
-    ScopedPatchComparisonDeferred(DeferredScopedPatchIntegrationStatus),
-}
-
-/// The validity of materialized evidence when a scoped patch comparison is deferred.
-pub(crate) enum DeferredScopedPatchIntegrationStatus {
-    /// The materialized status still applies to the observed trunk.
-    StillValid(IntegrationEvidenceStatus),
-    /// The reachability query that ran refuted the materialized proof.
-    Refuted(IntegrationEvidenceStatus),
-    /// A stale content proof was replaced although nothing this pass refuted it.
-    Unevaluated(IntegrationEvidenceStatus),
-}
-
-impl DeferredScopedPatchIntegrationStatus {
-    /// Separate a proof this pass refuted from one it merely could not evaluate.
+    /// The bounded comparison did not run, so nothing this pass judged the materialized status.
     ///
-    /// Reaching here means reachability answered `NotAncestor`, which refutes a proof resting on
-    /// tip ancestry. Scoped equivalence never rested on ancestry, so the same answer refutes
-    /// nothing about it: a `ScopedPatchEquivalent` at an earlier trunk is unevaluated for this
-    /// one, not disproved. Both still degrade to `NotIntegrated`, because the content may equally
-    /// have been reverted and only the deferred comparison can tell the two apart. The distinction
-    /// exists so a reader is told a proof was lost only once something checked it -- reporting the
-    /// unevaluated case named a trunk that no longer proved a released reservation's protected tip
-    /// while the comparison the very next reconciliation ran restored the proof intact.
-    fn from_materialized(
-        materialized: &IntegrationEvidenceStatus,
-        observed_trunk_oid: &GitObjectId,
-    ) -> Self {
-        match materialized {
-            IntegrationEvidenceStatus::Integrated {
-                trunk_oid,
-                proof: IntegrationProof::ScopedPatchEquivalent,
-                ..
-            } if trunk_oid == observed_trunk_oid => Self::StillValid(materialized.clone()),
-            IntegrationEvidenceStatus::Integrated {
-                proof: IntegrationProof::ScopedPatchEquivalent,
-                ..
-            } => Self::Unevaluated(IntegrationEvidenceStatus::NotIntegrated),
-            IntegrationEvidenceStatus::Integrated {
-                proof:
-                    IntegrationProof::ProtectedTipAncestor | IntegrationProof::RewrittenWitnessAncestor,
-                ..
-            } => Self::Refuted(IntegrationEvidenceStatus::NotIntegrated),
-            IntegrationEvidenceStatus::NotIntegrated
-            | IntegrationEvidenceStatus::TrunkRewritten
-            | IntegrationEvidenceStatus::ObjectUnknown => Self::StillValid(materialized.clone()),
-        }
-    }
+    /// Reaching here means reachability answered `NotAncestor` for the protected tip, which is not
+    /// a verdict on the reservation's content -- only the comparison that was skipped could reach
+    /// one. The materialized status therefore stands untouched, and the reservation waits for a
+    /// pass whose budget admits its comparison.
+    ScopedPatchComparisonDeferred,
 }
 
 /// The semantic result of one admitted scoped integration evaluation.
@@ -234,11 +192,10 @@ pub(crate) fn outstanding_integration_status(
 }
 
 /// Observe integration while allowing reconciliation to defer only the scoped comparison.
-pub(crate) fn observe_integration_status(
+fn observe_integration_status(
     protected_tip_reachability: Reachability,
     trunk_oid: &GitObjectId,
     prior_integration_status: PriorIntegrationStatus,
-    materialized: &IntegrationEvidenceStatus,
     observe_scoped_patch_comparison: impl FnOnce() -> ScopedPatchComparisonObservation,
 ) -> IntegrationEvidenceObservation {
     match protected_tip_reachability {
@@ -261,12 +218,7 @@ pub(crate) fn observe_integration_status(
                 }
             },
             ScopedPatchComparisonObservation::Deferred => {
-                IntegrationEvidenceObservation::ScopedPatchComparisonDeferred(
-                    DeferredScopedPatchIntegrationStatus::from_materialized(
-                        materialized,
-                        trunk_oid,
-                    ),
-                )
+                IntegrationEvidenceObservation::ScopedPatchComparisonDeferred
             },
         },
         Reachability::ObjectUnknown => {
@@ -280,14 +232,12 @@ pub(crate) fn observe_outstanding_integration_status(
     protected_tip_reachability: Reachability,
     previous_trunk_reachability: Reachability,
     current_trunk_oid: &GitObjectId,
-    materialized: &IntegrationEvidenceStatus,
     observe_scoped_patch_comparison: impl FnOnce() -> ScopedPatchComparisonObservation,
 ) -> IntegrationEvidenceObservation {
     let observation = observe_integration_status(
         protected_tip_reachability,
         current_trunk_oid,
         PriorIntegrationStatus::Unproven,
-        materialized,
         observe_scoped_patch_comparison,
     );
     let IntegrationEvidenceObservation::ScopedPatchComparison {
