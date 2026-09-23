@@ -8,16 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `pub_use_outside_subtree` flags a re-export whose path leaves the re-exporting module's own subtree — `pub use super::sibling::item`, `pub use crate::elsewhere::item`, or `pub use super::Item` from a child. The re-export belongs in the module whose subtree owns the item, usually the parent `mod.rs`. A module named `prelude` and re-exports of other crates' items are exempt. `cargo mend --fix` rewrites it: the re-export is removed (or kept as a private `use` when its own module still names the item), callers are pointed at the owning path, and a re-export is added at the nearest common ancestor module when a caller outside the item's scope needs one. A fixable finding reports as a warning. A rename, a glob, a path through an enum or trait, an owner module reachable from outside the crate, a conflicting or narrower binding at the common ancestor, a rewrite that would need `pub(in …)`, and an unresolvable target stay errors with no fix, and the help names the reason.
+- New `pub_use_outside_subtree` check. It flags a `pub use` that reaches outside its own module's subtree, such as `pub use super::sibling::Item` or `pub use crate::elsewhere::Item`. Re-export an item from the module that contains it, usually the parent `mod.rs`. `prelude` modules and re-exports of other crates' items are exempt.
+- `cargo mend --fix` repairs most of these findings. It removes the re-export and points callers at the item's real path. Where callers still need a shorter path, it adds the re-export to the closest module above both the item and those callers. Findings it can fix show as warnings. The rest, such as renamed (`as`) or glob re-exports, stay errors, and the help text says why.
+
+**Upgrading:** the new check can report errors in code that passed on 0.21.
 
 ### Changed
-- `--fix-pub-use` shares the caller rewrite with the new `pub_use_outside_subtree` fix. It writes `crate::…` where it wrote `super::super::…`. It now also redirects callers it used to miss: leaves in nested use groups, renamed imports, paths inside macro calls, and paths written through a module import or a module alias.
+- `--fix-pub-use` now writes `crate::…` paths where it wrote `super::super::…`, and it updates callers it used to miss: nested `use` groups, renamed imports, paths inside macros, and paths through a module alias.
 
 ### Fixed
-- `prefer-module-import` leaves a function import alone when a child file module reaches the function through `use super::*`. Rewriting it broke the child's bare call (E0425), and the whole `--fix` run was rolled back.
-- `prefer-module-import` puts a blank line after the `use` it inserts into a file that had none.
-- `prefer-module-import` no longer rewrites a function re-export (`pub(crate) use super::source::do_thing;`) into a module re-export. That changed the path callers use and, when the module was private, failed with E0365. A `use` with any visibility is now left alone.
-- An in-body `use` of a function that both `imports-at-top` and `prefer-module-import` want to change no longer stops `--fix` with "overlapping fixes detected". The move applies first, and the module-import rewrite and its call-site rewrites follow in the next round of the same run.
+- `prefer-module-import` no longer breaks a function that a child module reaches through `use super::*`. Previously the rewrite failed to compile and the whole `--fix` run was undone.
+- `prefer-module-import` no longer rewrites a function re-export (`pub(crate) use super::source::do_thing;`), which changed the path callers use and could fail to compile.
+- `prefer-module-import` adds a blank line after an import it inserts into a file with no imports.
+- `--fix` no longer stops with "overlapping fixes detected" when `imports-at-top` and `prefer-module-import` both want to change the same `use` inside a function. Both fixes now apply in one run.
 
 ## [0.21.3] - 2026-09-15
 
