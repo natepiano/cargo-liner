@@ -460,7 +460,7 @@ version = "0.1.0-dev"
 
 [[package]]
 name = "cargo-mend"
-version = "0.22.0-dev"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
