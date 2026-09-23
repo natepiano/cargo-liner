@@ -16,7 +16,7 @@
 //! - **Fan-out flavor** — see [`TreeMutation`] (this module). The guard borrows `&mut ProjectList +
 //!   &mut Panes` directly so its `Drop` can fan out across both subsystems with the dependency
 //!   declared at the type level. On drop it clears [`super::panes::Panes::clear_for_tree_change`]
-//!   and rebuilds [`crate::tui::project_list::ProjectList::recompute_visibility`].
+//!   and rebuilds [`crate::tui::project_list_state::ProjectList::recompute_visibility`].
 //!   `App::mutate_tree` constructs the guard via destructuring so the two subsystem borrows are
 //!   disjoint.
 //! - **Self-only flavor** — see `SelectionMutation` in the project-list module. Visibility-changing

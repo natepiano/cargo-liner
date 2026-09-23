@@ -165,7 +165,7 @@ impl Ci {
 /// Owns a copy of every [`Ci`] field that the per-row CI status
 /// lookup needs. Built by [`Ci::status_lookup`] before the render
 /// loop runs; consumed by
-/// [`crate::tui::project_list::ProjectList::ci_status_using_lookup`].
+/// [`crate::tui::project_list_state::ProjectList::ci_status_using_lookup`].
 ///
 /// Owning the data (instead of borrowing `&Ci`) is what lets the
 /// render dispatch loop hand the CI pane's own `&mut Ci` to its
@@ -189,7 +189,7 @@ impl Ci {
     ///
     /// The returned [`CiStatusLookup`] owns its data, so the render
     /// loop can read CI status (via
-    /// [`crate::tui::project_list::ProjectList::ci_status_using_lookup`])
+    /// [`crate::tui::project_list_state::ProjectList::ci_status_using_lookup`])
     /// without holding a `&Ci` — which is what frees the CI pane's
     /// own dispatcher to hold `&mut self.ci` at the same time.
     #[must_use]
