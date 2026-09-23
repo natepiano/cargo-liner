@@ -4,6 +4,7 @@ use std::path::Path;
 use proc_macro2::LineColumn;
 use syn::ItemMod;
 use syn::ItemUse;
+use syn::Visibility;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::visit::visit_item_mod;
@@ -83,6 +84,13 @@ fn analyze_function_import(
     declared_modules: &BTreeSet<String>,
     node: &ItemUse,
 ) -> Option<RawCandidate> {
+    // A `use` with a visibility is a re-export: other modules call the function
+    // as `this_module::function`. Rewriting it to re-export the module would
+    // change that path (and fail outright when the module is private).
+    if !matches!(node.vis, Visibility::Inherited) {
+        return None;
+    }
+
     let flat = support::flatten_use_tree(&node.tree)?;
 
     if flat.rename.is_some() {
@@ -132,8 +140,7 @@ fn analyze_function_import(
     let replacement_use = if import_target == ImportTarget::ParentModule {
         String::new()
     } else {
-        let visibility_prefix = support::extract_visibility_prefix(node);
-        format!("{visibility_prefix}use {module_path};")
+        format!("use {module_path};")
     };
     let span = node.span();
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();

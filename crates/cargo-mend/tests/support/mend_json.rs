@@ -47,7 +47,9 @@ pub(super) fn strip_ansi(input: &str) -> String {
 /// [`expected_summary`] applies the rest of the rule.
 const fn severity_for_code(code: DiagnosticCode) -> &'static str {
     match code {
-        DiagnosticCode::ForbiddenPubInCrate | DiagnosticCode::ReviewPubMod => "error",
+        DiagnosticCode::ForbiddenPubInCrate
+        | DiagnosticCode::ReviewPubMod
+        | DiagnosticCode::PubUseOutsideSubtree => "error",
         _ => "warning",
     }
 }
@@ -303,6 +305,7 @@ fn code_from_str(code: &str) -> DiagnosticCode {
         "narrow_to_pub_crate" => DiagnosticCode::NarrowToPubCrate,
         "field_visibility_wider_than_type" => DiagnosticCode::FieldVisibilityWiderThanType,
         "imports_at_top" => DiagnosticCode::ImportsAtTop,
+        "pub_use_outside_subtree" => DiagnosticCode::PubUseOutsideSubtree,
         _ => panic!("unknown diagnostic code in cargo JSON output: {code}"),
     }
 }

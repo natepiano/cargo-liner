@@ -144,6 +144,7 @@ edition = "2024"
 fn fix_preserves_pub_required_by_private_module_reexport() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    allow_pub_use_outside_subtree(temp.path());
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -1716,6 +1717,7 @@ edition = "2024"
 fn fix_preserves_pub_required_by_sibling_reexport_in_nested_module() {
     let temp = tempdir().expect("create temp fixture dir");
     pin_pub_in_path(temp.path(), PubInPath::Required);
+    allow_pub_use_outside_subtree(temp.path());
 
     fs::write(
         temp.path().join("Cargo.toml"),

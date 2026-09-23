@@ -9,6 +9,7 @@ use crate::compiler::persistence::FindingsSink;
 
 mod classify;
 mod finding_params;
+mod pub_use_outside_subtree;
 mod record;
 mod visibility_context;
 mod visit;

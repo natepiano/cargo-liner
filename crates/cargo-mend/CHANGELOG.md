@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `pub_use_outside_subtree` error flags a re-export whose path leaves the re-exporting module's own subtree — `pub use super::sibling::item`, `pub use crate::elsewhere::item`, or `pub use super::Item` from a child. The re-export belongs in the module whose subtree owns the item, usually the parent `mod.rs`. A module named `prelude` and re-exports of other crates' items are exempt. It has no automatic fix and reports as an error, so a lint gate stops on it.
+
+### Fixed
+- `prefer-module-import` no longer rewrites a function re-export (`pub(crate) use super::source::do_thing;`) into a module re-export. That changed the path callers use and, when the module was private, failed with E0365. A `use` with any visibility is now left alone.
+- An in-body `use` of a function that both `imports-at-top` and `prefer-module-import` want to change no longer stops `--fix` with "overlapping fixes detected". The move applies first, and the module-import rewrite and its call-site rewrites follow in the next round of the same run.
+
 ## [0.21.3] - 2026-09-15
 
 ### Fixed

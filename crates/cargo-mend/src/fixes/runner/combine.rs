@@ -9,16 +9,30 @@ use crate::fixes::imports;
 use crate::fixes::imports::TaggedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
+use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::reporting::FixKind;
 use crate::reporting::MendFailure;
 
+/// A fix's byte range within one file: `(path, start, end)`.
+type FileRange<'a> = (&'a Path, usize, usize);
+
 impl MendRunner<'_> {
     pub(super) fn combined_fixes(fix_scans: FixScans<'_>) -> Result<ValidatedFixSet, MendFailure> {
-        let prefer_ranges: Vec<(&Path, usize, usize)> = fix_scans
+        let prefer_ranges: Vec<FileRange<'_>> = fix_scans
             .module_imports
             .iter()
             .flat_map(|scan| scan.fixes.iter())
-            .map(|fix| (fix.path.as_path(), fix.start, fix.end))
+            .map(file_range)
+            .collect();
+        // The deletion half of every imports-at-top move: the whole in-body
+        // `use` line. The insertion half is an empty range at the scope top,
+        // so `start < end` keeps only the deletions.
+        let moved_use_ranges: Vec<FileRange<'_>> = fix_scans
+            .imports_at_top
+            .iter()
+            .flat_map(|scan| scan.fixes.iter())
+            .filter(|fix| fix.start < fix.end)
+            .map(file_range)
             .collect();
 
         // Each pass tags its fixes with the notice they report under here,
@@ -31,14 +45,15 @@ impl MendRunner<'_> {
             fixes.extend(tag(
                 Some(FixKind::Import),
                 scan.fixes.iter().filter(|fix| {
-                    !prefer_ranges.iter().any(|(path, start, end)| {
-                        fix.path.as_path() == *path && fix.start < *end && *start < fix.end
-                    })
+                    !overlaps_any(fix, &prefer_ranges) && !lies_inside_any(fix, &moved_use_ranges)
                 }),
             ));
         }
         if let Some(scan) = fix_scans.module_imports {
-            fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
+            fixes.extend(tag(
+                Some(FixKind::Import),
+                module_import_fixes_outside_moved_uses(scan, &moved_use_ranges).into_iter(),
+            ));
         }
         if let Some(scan) = fix_scans.inline_types {
             fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
@@ -80,6 +95,60 @@ fn tag<'a>(
         fix_kind,
         fix: fix.clone(),
     })
+}
+
+fn file_range(fix: &UseFix) -> FileRange<'_> { (fix.path.as_path(), fix.start, fix.end) }
+
+fn overlaps_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
+    ranges.iter().any(|(path, start, end)| {
+        fix.path.as_path() == *path && fix.start < *end && *start < fix.end
+    })
+}
+
+fn lies_inside_any(fix: &UseFix, ranges: &[FileRange<'_>]) -> bool {
+    ranges.iter().any(|(path, start, end)| {
+        fix.path.as_path() == *path && *start <= fix.start && fix.end <= *end
+    })
+}
+
+/// The prefer-module-import fixes that survive an imports-at-top move of the
+/// same `use` line in the same run. A `use` rewrite whose range lies inside a
+/// moved line is dropped together with every call-site rewrite in its
+/// `ImportGroup`: keeping the `module::function()` call sites without the
+/// `use module;` they depend on would not compile. The move keeps the
+/// statement text, so the next run rewrites the line at the module top and the
+/// call sites with it.
+fn module_import_fixes_outside_moved_uses<'a>(
+    scan: &'a PreferModuleImportScan,
+    moved_use_ranges: &[FileRange<'_>],
+) -> Vec<&'a UseFix> {
+    let moved_groups: BTreeSet<(&Path, &str, &str)> = scan
+        .fixes
+        .iter()
+        .filter(|fix| lies_inside_any(fix, moved_use_ranges))
+        .filter_map(|fix| {
+            fix.import_group.as_ref().map(|group| {
+                (
+                    fix.path.as_path(),
+                    group.bare_name.as_str(),
+                    group.full_path.as_str(),
+                )
+            })
+        })
+        .collect();
+    scan.fixes
+        .iter()
+        .filter(|fix| {
+            !lies_inside_any(fix, moved_use_ranges)
+                && fix.import_group.as_ref().is_none_or(|group| {
+                    !moved_groups.contains(&(
+                        fix.path.as_path(),
+                        group.bare_name.as_str(),
+                        group.full_path.as_str(),
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Drops grouped import fixes that reserve the same bare name for different
@@ -127,6 +196,7 @@ mod tests {
     use crate::fixes::imports::ImportGroup;
     use crate::fixes::imports::ImportScan;
     use crate::fixes::imports::UseFix;
+    use crate::fixes::imports_at_top::ImportsAtTopScan;
     use crate::fixes::prefer_module_import::PreferModuleImportScan;
 
     fn tagged(path: &str, start: usize, replacement: &str, bare: &str, full: &str) -> UseFix {
@@ -209,8 +279,157 @@ mod tests {
         })
     }
 
+    fn imports_at_top_scan(fixes: Vec<UseFix>) -> anyhow::Result<ImportsAtTopScan> {
+        Ok(ImportsAtTopScan {
+            findings: Vec::new(),
+            fixes:    ValidatedFixSet::try_from(fixes)?,
+        })
+    }
+
+    fn fix_scans_with_moved_uses<'a>(
+        imports: Option<&'a ImportScan>,
+        module_imports: Option<&'a PreferModuleImportScan>,
+        imports_at_top: &'a ImportsAtTopScan,
+    ) -> FixScans<'a> {
+        FixScans {
+            imports,
+            module_imports,
+            inline_types: None,
+            unused_pub: None,
+            narrowed_pub: None,
+            restricted_annotation: None,
+            field_visibility: None,
+            imports_at_top: Some(imports_at_top),
+            pub_use: None,
+        }
+    }
+
+    /// The pair imports-at-top emits for an in-body
+    /// `use crate::tool::helper::present;` at bytes 60..93: the line inserted
+    /// at the module top and the deletion of the whole indented line.
+    fn moved_present_use() -> anyhow::Result<ImportsAtTopScan> {
+        let present_group = || {
+            Some(ImportGroup {
+                bare_name: "present".to_string(),
+                full_path: "crate::tool::helper::present".to_string(),
+            })
+        };
+        imports_at_top_scan(vec![
+            range_fix(
+                "src/lib.rs",
+                0,
+                0,
+                "use crate::tool::helper::present;\n",
+                present_group(),
+            ),
+            range_fix("src/lib.rs", 56, 94, "", present_group()),
+        ])
+    }
+
+    fn helper_module_group() -> ImportGroup {
+        ImportGroup {
+            bare_name: "helper".to_string(),
+            full_path: "crate::tool::helper".to_string(),
+        }
+    }
+
     fn combined_fix_set(fix_scans: FixScans<'_>) -> anyhow::Result<ValidatedFixSet> {
         MendRunner::combined_fixes(fix_scans).map_err(|err| anyhow::anyhow!("{err:?}"))
+    }
+
+    fn replacements(fixes: &ValidatedFixSet) -> Vec<&str> {
+        fixes.iter().map(|fix| fix.replacement.as_str()).collect()
+    }
+
+    #[test]
+    fn combined_fixes_drops_prefer_module_import_group_inside_imports_at_top_move()
+    -> anyhow::Result<()> {
+        let module_imports = module_import_scan(vec![
+            range_fix(
+                "src/lib.rs",
+                60,
+                93,
+                "use crate::tool::helper;",
+                Some(helper_module_group()),
+            ),
+            range_fix(
+                "src/lib.rs",
+                100,
+                107,
+                "helper::present",
+                Some(helper_module_group()),
+            ),
+        ])?;
+        let imports_at_top = moved_present_use()?;
+
+        let fixes = combined_fix_set(fix_scans_with_moved_uses(
+            None,
+            Some(&module_imports),
+            &imports_at_top,
+        ))?;
+
+        assert_eq!(
+            replacements(&fixes),
+            vec!["use crate::tool::helper::present;\n", ""],
+            "the use rewrite and its call-site rewrite are both deferred to the next run"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn combined_fixes_keeps_prefer_module_import_outside_imports_at_top_move() -> anyhow::Result<()>
+    {
+        let module_imports = module_import_scan(vec![range_fix(
+            "src/lib.rs",
+            10,
+            20,
+            "use crate::other;",
+            Some(ImportGroup {
+                bare_name: "other".to_string(),
+                full_path: "crate::other".to_string(),
+            }),
+        )])?;
+        let imports_at_top = moved_present_use()?;
+
+        let fixes = combined_fix_set(fix_scans_with_moved_uses(
+            None,
+            Some(&module_imports),
+            &imports_at_top,
+        ))?;
+
+        assert_eq!(
+            replacements(&fixes),
+            vec![
+                "use crate::tool::helper::present;\n",
+                "use crate::other;",
+                ""
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn combined_fixes_drops_shorten_import_inside_imports_at_top_move() -> anyhow::Result<()> {
+        let shorten_imports = import_scan(vec![range_fix(
+            "src/lib.rs",
+            60,
+            93,
+            "use super::helper::present;",
+            None,
+        )])?;
+        let imports_at_top = moved_present_use()?;
+
+        let fixes = combined_fix_set(fix_scans_with_moved_uses(
+            Some(&shorten_imports),
+            None,
+            &imports_at_top,
+        ))?;
+
+        assert_eq!(
+            replacements(&fixes),
+            vec!["use crate::tool::helper::present;\n", ""]
+        );
+        Ok(())
     }
 
     #[test]

@@ -4,7 +4,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use proc_macro2::LineColumn;
-use quote::quote;
 use syn::File;
 use syn::Item;
 use syn::ItemMod;
@@ -234,17 +233,6 @@ pub(super) fn common_prefix_len(left: &[String], right: &[String]) -> usize {
         .zip(right.iter())
         .take_while(|(left, right)| left == right)
         .count()
-}
-
-pub(super) fn extract_visibility_prefix(node: &ItemUse) -> String {
-    match &node.vis {
-        Visibility::Public(_) => "pub ".to_string(),
-        Visibility::Restricted(vis) => {
-            let path = &vis.path;
-            format!("pub({}) ", quote!(#path))
-        },
-        Visibility::Inherited => String::new(),
-    }
 }
 
 pub(super) fn flatten_use_tree(tree: &UseTree) -> Option<FlattenedImport> {

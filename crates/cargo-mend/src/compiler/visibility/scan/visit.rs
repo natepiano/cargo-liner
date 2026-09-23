@@ -8,6 +8,7 @@ use super::FindingParams;
 use super::ItemCategory;
 use super::ItemInfo;
 use super::VisibilityContext;
+use super::pub_use_outside_subtree;
 use super::record;
 use crate::compiler::persistence::FindingsSink;
 use crate::compiler::visibility::policy;
@@ -58,6 +59,10 @@ pub(super) fn visit_item(
                 exact_boundary_spelling: ExactBoundarySpelling::CratePath,
             },
         )?);
+    }
+
+    if let Some(finding) = pub_use_outside_subtree::finding(ctx.tcx, item, &file_path)? {
+        sink.findings.push(finding);
     }
 
     record::record_visibility_findings(

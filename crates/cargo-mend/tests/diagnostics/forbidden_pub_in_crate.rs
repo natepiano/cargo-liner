@@ -16,7 +16,13 @@ version = "0.1.0"
 edition = "2024"
 "#,
             ),
-            ("mend.toml", "[visibility]\npub_in_path = \"forbidden\"\n"),
+            (
+                "mend.toml",
+                // The child's `pub(in super) use super::Imported` is also a
+                // re-export from outside its subtree; that check is off so
+                // this fixture reports only the annotations.
+                "[diagnostics]\npub_use_outside_subtree = false\n\n[visibility]\npub_in_path = \"forbidden\"\n",
+            ),
             (
                 "src/lib.rs",
                 "mod fields;\nmod outer;\nmod use_line;\npub(crate) struct Imported;\npub(in crate) fn crate_wide() {}\n",

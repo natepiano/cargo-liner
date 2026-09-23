@@ -655,6 +655,47 @@ instead of:
 pub use child::*;
 ```
 
+<a id="pub-use-outside-subtree"></a>
+### `pub use` outside the module's subtree
+
+This error flags a re-export whose path leaves the re-exporting module's own subtree: a
+`pub use super::sibling::item`, a `pub use crate::elsewhere::item`, or a `pub use super::Item` of
+the parent's own item.
+
+A re-export is a facade, and only a module whose subtree holds the item owns that path. Handing
+the item out from anywhere else turns one module into a back door into another, so callers reach
+the item under a module that has nothing to do with it.
+
+Example:
+
+```rust
+// src/tool/mod.rs
+mod reset_scene;
+mod tool_staging;
+
+// src/tool/tool_staging/mod.rs
+
+// flagged — `reset_scene` is a sibling, not part of `tool_staging`
+pub(crate) use super::reset_scene::build_device_recipe;
+```
+
+Preferred — the parent that owns both children re-exports it:
+
+```rust
+// src/tool/mod.rs
+mod reset_scene;
+mod tool_staging;
+
+pub(crate) use reset_scene::build_device_recipe;
+```
+
+A private `use` of a sibling is fine; only a re-export is flagged. A module named `prelude`
+re-exporting its parent's items, and re-exports of another crate's items, are not flagged.
+
+There is no automatic fix: moving the re-export means repointing its callers, so the finding is an
+error and stops a run until the re-export moves to the parent or the callers import the item from
+its owning module.
+
 <a id="internal-parent-pub-use-facade"></a>
 ### Internal parent `pub use` facade
 

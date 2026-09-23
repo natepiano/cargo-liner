@@ -40,6 +40,7 @@ fn create_all_diagnostics_fixture() -> TempDir {
         "src/field_visibility_parent",
         "src/in_body_use",
         "src/unused_pub",
+        "src/sideways_parent",
         "src/bin",
     ] {
         fs::create_dir_all(temp.path().join(dir)).expect("create fixture dir");
@@ -72,6 +73,7 @@ mod narrow_mod;
 mod field_visibility_parent;
 mod in_body_use;
 mod unused_pub;
+mod sideways_parent;
 pub mod review_mod;
 pub use private_parent::PublicContainer;
 
@@ -102,7 +104,28 @@ pub fn entry() {
     temp
 }
 
+/// A module re-exporting its sibling's function: one `pub_use_outside_subtree`
+/// finding.
+fn write_sideways_parent_fixture(root: &Path) {
+    fs::write(
+        root.join("src/sideways_parent/mod.rs"),
+        "mod source;\nmod staging;\n\nfn run() {\n    staging::value();\n}\n",
+    )
+    .expect("write sideways_parent mod");
+    fs::write(
+        root.join("src/sideways_parent/source.rs"),
+        "pub(super) fn value() {}\n",
+    )
+    .expect("write sideways_parent source");
+    fs::write(
+        root.join("src/sideways_parent/staging.rs"),
+        "pub(super) use super::source::value;\n",
+    )
+    .expect("write sideways_parent staging");
+}
+
 fn write_diagnostic_fixture_modules(root: &Path) {
+    write_sideways_parent_fixture(root);
     fs::write(
         root.join("src/type_parent/mod.rs"),
         "mod types;\nmod consumer;\n",
@@ -423,7 +446,7 @@ fn fixture_renders_every_current_diagnostic() {
         codes, expected_codes,
         "fixture should trigger every diagnostic at least once"
     );
-    assert_eq!(report.findings.len(), 17);
+    assert_eq!(report.findings.len(), 18);
     assert_summary_matches_findings(&report);
     assert_forbidden_visibility_json(&stdout, &report);
 
@@ -648,7 +671,7 @@ fn successive_json_runs_reuse_cached_findings_for_same_scope() {
     let first_codes: BTreeSet<_> = first.findings.iter().map(|finding| finding.code).collect();
     let second_codes: BTreeSet<_> = second.findings.iter().map(|finding| finding.code).collect();
 
-    assert_eq!(first.findings.len(), 17);
+    assert_eq!(first.findings.len(), 18);
     assert_eq!(second.findings.len(), first.findings.len());
     assert_eq!(second_codes, first_codes);
     assert_eq!(second.summary.errors, first.summary.errors);

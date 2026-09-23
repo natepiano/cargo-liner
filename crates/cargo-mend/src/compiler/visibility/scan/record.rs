@@ -489,7 +489,8 @@ const fn annotation_edit_acceptance(
         | DiagnosticCode::InternalParentPubUseFacade
         | DiagnosticCode::NarrowToPubCrate
         | DiagnosticCode::FieldVisibilityWiderThanType
-        | DiagnosticCode::ImportsAtTop => false,
+        | DiagnosticCode::ImportsAtTop
+        | DiagnosticCode::PubUseOutsideSubtree => false,
     };
     if eligible {
         StoredExactBoundaryAcceptance::Eligible

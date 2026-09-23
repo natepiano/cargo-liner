@@ -75,6 +75,18 @@ pub(super) fn pin_pub_in_path(project_root: &Path, pub_in_path: PubInPath) {
     .expect("write fixture mend.toml");
 }
 
+/// Turns `pub_use_outside_subtree` off in a fixture whose sideways re-export
+/// exists to exercise a different diagnostic. Call after `pin_pub_in_path`.
+pub(super) fn allow_pub_use_outside_subtree(project_root: &Path) {
+    let config_path = project_root.join("mend.toml");
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    fs::write(
+        config_path,
+        format!("[diagnostics]\npub_use_outside_subtree = false\n\n{existing}"),
+    )
+    .expect("write fixture mend.toml");
+}
+
 /// The suffix mend gives each stored report: the unit's `.rmeta` file name with
 /// its extension replaced.
 const STORED_REPORT_SUFFIX: &str = ".mend.json";

@@ -208,6 +208,17 @@ static FIELD_VISIBILITY_WIDER_THAN_TYPE: DiagnosticSpec = DiagnosticSpec {
     detail_mode: DetailMode::MessageAndRelated,
     fix_support: FixSupport::FieldVisibility,
 };
+static PUB_USE_OUTSIDE_SUBTREE: DiagnosticSpec = DiagnosticSpec {
+    headline:    HeadlineSource::FindingMessage {
+        fallback: "re-export reaches outside this module's subtree",
+    },
+    inline_help: Some(
+        "re-export the item from the module whose subtree owns it — usually the parent `mod.rs` — and point callers at that path",
+    ),
+    help_anchor: "pub-use-outside-subtree",
+    detail_mode: DetailMode::None,
+    fix_support: FixSupport::None,
+};
 static IMPORTS_AT_TOP: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::Static(
         "`use` statement should live at the top of the file or inline module",
@@ -505,6 +516,7 @@ fn diagnostic_spec(code: DiagnosticCode) -> &'static DiagnosticSpec {
         DiagnosticCode::NarrowToPubCrate => &NARROW_TO_PUB_CRATE,
         DiagnosticCode::FieldVisibilityWiderThanType => &FIELD_VISIBILITY_WIDER_THAN_TYPE,
         DiagnosticCode::ImportsAtTop => &IMPORTS_AT_TOP,
+        DiagnosticCode::PubUseOutsideSubtree => &PUB_USE_OUTSIDE_SUBTREE,
     }
 }
 

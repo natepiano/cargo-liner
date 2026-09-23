@@ -2956,3 +2956,81 @@ mod tests {
     );
     assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
 }
+
+/// A `use` with a visibility is a re-export: `parent/child.rs` reaches
+/// `do_thing` as `super::staging::do_thing`. Rewriting the re-export to
+/// `pub(crate) use super::source;` would re-export a private module (E0365)
+/// and drop `do_thing` from `staging`'s surface, so the line stays as it is.
+#[test]
+fn function_reexport_is_left_alone() {
+    let temp = tempdir().expect("create temp fixture dir");
+    // `pub_use_outside_subtree` rejects this sibling re-export outright; it is
+    // off here so the run shows `--fix` itself leaves the line compiling.
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[diagnostics]\npub_use_outside_subtree = false\n\n[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write fixture mend.toml");
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "function_reexport_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create src/parent");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod parent;\n\nfn main() {\n    println!(\"{}\", parent::example());\n}\n",
+    )
+    .expect("write main");
+    fs::write(
+        temp.path().join("src/parent.rs"),
+        "mod child;\nmod source;\nmod staging;\n\npub(crate) fn example() -> i32 {\n    \
+         child::example() + staging::run()\n}\n",
+    )
+    .expect("write parent mod");
+    fs::write(
+        temp.path().join("src/parent/source.rs"),
+        "pub(crate) fn do_thing() -> i32 {\n    42\n}\n",
+    )
+    .expect("write source");
+    fs::write(
+        temp.path().join("src/parent/staging.rs"),
+        "pub(crate) use super::source::do_thing;\n\npub(super) fn run() -> i32 {\n    do_thing()\n}\n",
+    )
+    .expect("write staging");
+    fs::write(
+        temp.path().join("src/parent/child.rs"),
+        "pub(super) fn example() -> i32 {\n    super::staging::do_thing()\n}\n",
+    )
+    .expect("write child");
+    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let staging =
+        fs::read_to_string(temp.path().join("src/parent/staging.rs")).expect("read staging");
+    assert!(
+        staging.contains("use super::source::do_thing;"),
+        "the re-export must keep naming the function, got:\n{staging}"
+    );
+    assert!(
+        !staging.contains("use super::source;"),
+        "the re-export must not become a module re-export, got:\n{staging}"
+    );
+}

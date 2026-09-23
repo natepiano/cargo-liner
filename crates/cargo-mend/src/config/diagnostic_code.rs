@@ -19,6 +19,7 @@ pub(crate) enum DiagnosticCode {
     NarrowToPubCrate,
     FieldVisibilityWiderThanType,
     ImportsAtTop,
+    PubUseOutsideSubtree,
 }
 
 impl DiagnosticCode {
@@ -37,6 +38,7 @@ impl DiagnosticCode {
         Self::NarrowToPubCrate,
         Self::FieldVisibilityWiderThanType,
         Self::ImportsAtTop,
+        Self::PubUseOutsideSubtree,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -55,6 +57,7 @@ impl DiagnosticCode {
             Self::NarrowToPubCrate => "narrow_to_pub_crate",
             Self::FieldVisibilityWiderThanType => "field_visibility_wider_than_type",
             Self::ImportsAtTop => "imports_at_top",
+            Self::PubUseOutsideSubtree => "pub_use_outside_subtree",
         }
     }
 }

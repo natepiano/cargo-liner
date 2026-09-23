@@ -29,6 +29,7 @@ mod overbroad_pub_crate;
 mod prefer_module_import;
 mod prelude_pub_mod;
 mod pub_use_fixes;
+mod pub_use_outside_subtree;
 mod rendering;
 #[path = "../support/mod.rs"]
 mod support;

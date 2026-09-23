@@ -329,15 +329,76 @@ fn example() {
     }
 }
 
+/// An in-body `use` of a function fires both imports-at-top (move the line)
+/// and prefer-module-import (rewrite it to import the module, and rewrite the
+/// call sites). The move is applied first and the rewrite in the following
+/// scan-and-apply round of the same `--fix` run, so the converged file imports
+/// the module at the top and calls through it.
+fn moves_use_that_prefer_module_import_also_rewrites(
+    batch: &mut DiagnosticBatch,
+) -> impl FnOnce() + use<> {
+    let root = batch.add_module(
+        "moves_use_that_prefer_module_import_also_rewrites",
+        &[
+            ("mod.rs", ""),
+            (
+                "tool.rs",
+                "pub(crate) mod helper {\n    pub(crate) fn present() {}\n}\n",
+            ),
+        ],
+    );
+    fs::write(
+        root.join("mod.rs"),
+        r#"mod tool;
+
+fn example() {
+    use crate::moves_use_that_prefer_module_import_also_rewrites::tool::helper::present;
+    present();
+}
+"#,
+    )
+    .expect("write mod.rs");
+
+    move || {
+        let lib = fs::read_to_string(root.join("mod.rs")).expect("read mod.rs");
+        assert!(
+            !lib.contains("helper::present;"),
+            "the function `use` should have become a module import, got:\n{lib}"
+        );
+        let module_use_index = lib
+            .lines()
+            .position(|line| line.starts_with("use ") && line.ends_with("helper;"))
+            .expect("a module `use` should appear at the top");
+        let fn_index = lib
+            .lines()
+            .position(|line| line.starts_with("fn example()"))
+            .expect("fn should still exist");
+        assert!(
+            module_use_index < fn_index,
+            "module use should sit above fn, got:\n{lib}"
+        );
+        assert!(
+            lib.contains("    helper::present();"),
+            "call site should go through the module, got:\n{lib}"
+        );
+    }
+}
+
 #[test]
 fn moves_and_deduplicates_uses_in_independent_files() {
-    let mut batch = DiagnosticBatch::new_crate("[visibility]\npub_in_path = \"permitted\"\n");
+    // `review_pub_mod` is off for the `pub(crate) mod helper` that
+    // `moves_use_that_prefer_module_import_also_rewrites` reaches through.
+    let mut batch = DiagnosticBatch::new_crate(
+        "[diagnostics]\nreview_pub_mod = false\n\n[visibility]\npub_in_path = \"permitted\"\n",
+    );
     let moves_use_from_fn_body_to_file_top = moves_use_from_fn_body_to_file_top(&mut batch);
     let moves_use_in_inline_mod_to_top_of_inline_mod =
         moves_use_in_inline_mod_to_top_of_inline_mod(&mut batch);
     let skips_when_bare_name_collides_with_existing_top_import =
         skips_when_bare_name_collides_with_existing_top_import(&mut batch);
     let dedupes_when_use_already_at_top = dedupes_when_use_already_at_top(&mut batch);
+    let moves_use_that_prefer_module_import_also_rewrites =
+        moves_use_that_prefer_module_import_also_rewrites(&mut batch);
     let output = batch.command().arg("--fix").output().expect("fix batch");
     assert!(
         output.status.success(),
@@ -350,4 +411,5 @@ fn moves_and_deduplicates_uses_in_independent_files() {
     moves_use_in_inline_mod_to_top_of_inline_mod();
     skips_when_bare_name_collides_with_existing_top_import();
     dedupes_when_use_already_at_top();
+    moves_use_that_prefer_module_import_also_rewrites();
 }
