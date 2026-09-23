@@ -179,7 +179,9 @@ fn run() -> Result<ExitCode, MendFailure> {
 
         // Re-scan applied mend fixes so visibility cascades converge without a
         // second invocation. Stop unless another pass strictly reduces the
-        // remaining fixable set.
+        // remaining fixable set or wrote `pub_use_outside_subtree` edits: each
+        // of those removes one link of a re-export chain and makes the next
+        // link the finding, leaving the count level.
         let mut next = runner.run(operation_mode.clone())?;
         let next_total = total_fixables(&next);
         let prev_total = total_fixables(&outcome);
@@ -192,7 +194,8 @@ fn run() -> Result<ExitCode, MendFailure> {
                 accumulated_notice = Some(next_notice);
             }
         }
-        if next_total == 0 || next_total >= prev_total {
+        let progressed = next_total < prev_total || next.applied_subtree_reexport;
+        if next_total == 0 || !progressed {
             outcome = next;
             break;
         }

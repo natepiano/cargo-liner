@@ -40,6 +40,7 @@ pub(super) use self::mend_json::fix_support_for;
 pub(super) use self::mend_json::mend_command;
 pub(super) use self::mend_json::parse_mend_json_output;
 pub(super) use self::report::ExpectedFinding;
+pub(super) use self::report::Finding;
 pub(super) use self::report::Report;
 
 /// Mirrors `src/config/pub_in_path.rs`. Fixtures pin the setting explicitly

@@ -18,6 +18,7 @@ use syn::ext::IdentExt;
 use syn::parse_file;
 
 use super::file_module_path;
+use super::is_cfg_test;
 use super::parse_meta_list;
 
 /// Where a source file sits in its crate's module tree.
@@ -56,6 +57,22 @@ impl ModuleDirectories {
         Self {
             file: directory,
             module,
+        }
+    }
+
+    /// The bases a `mod` written at the top level of crate root `crate_root`
+    /// resolves against.
+    ///
+    /// Both are the root file's directory, whatever the file is named: rustc
+    /// resolves `mod helper;` in `src/bin/tool.rs` to `src/bin/helper.rs`, as
+    /// it would from a `mod.rs`.
+    fn for_crate_root(crate_root: &Path) -> Self {
+        let directory = crate_root
+            .parent()
+            .map_or_else(PathBuf::new, Path::to_path_buf);
+        Self {
+            file:   directory.clone(),
+            module: directory,
         }
     }
 
@@ -120,21 +137,58 @@ impl ModuleDirectories {
 /// compiling.
 pub(crate) struct ModuleMap {
     declarations: FxHashMap<PathBuf, Vec<Vec<String>>>,
+    /// The declared files some chain of `mod` declarations reaches with no
+    /// `#[cfg(test)]` on any link; every other declared file compiles only
+    /// under test.
+    ungated:      FxHashSet<PathBuf>,
 }
 
 impl ModuleMap {
     /// Resolve every file reachable from a crate root under `source_root`.
     pub(crate) fn resolve(source_root: &Path) -> Self {
-        let mut walk = ModuleWalk {
+        let mut merged = Self {
             declarations: FxHashMap::default(),
-            visiting:     FxHashSet::default(),
+            ungated:      FxHashSet::default(),
         };
         for crate_root in crate_root_files(source_root) {
-            walk.declare(&crate_root, Vec::new());
-            walk.walk_file(&crate_root, &[]);
+            merged.absorb(Self::for_crate_root(&crate_root));
         }
+        merged
+    }
+
+    /// Resolve every file reachable from the one crate root `crate_root`,
+    /// which may sit anywhere: `src/lib.rs`, `src/bin/tool.rs`, `tests/it.rs`.
+    pub(crate) fn for_crate_root(crate_root: &Path) -> Self {
+        let mut walk = ModuleWalk {
+            declarations: FxHashMap::default(),
+            ungated:      FxHashSet::default(),
+            visiting:     FxHashSet::default(),
+        };
+        let root = Declared {
+            module_path: Vec::new(),
+            test_only:   false,
+        };
+        walk.declare(crate_root, &root);
+        walk.walk_file(
+            crate_root,
+            &root,
+            &ModuleDirectories::for_crate_root(crate_root),
+        );
         Self {
             declarations: walk.declarations,
+            ungated:      walk.ungated,
+        }
+    }
+
+    fn absorb(&mut self, other: Self) {
+        self.ungated.extend(other.ungated);
+        for (file, module_paths) in other.declarations {
+            let declared = self.declarations.entry(file).or_default();
+            for module_path in module_paths {
+                if !declared.contains(&module_path) {
+                    declared.push(module_path);
+                }
+            }
         }
     }
 
@@ -156,6 +210,22 @@ impl ModuleMap {
         }
     }
 
+    /// Every file the walk declared, with the module path it occupies. Paths
+    /// are lexically normalized, not canonicalized.
+    pub(crate) fn declared_files(&self) -> impl Iterator<Item = (&Path, FileModulePath)> {
+        self.declarations.iter().filter_map(|(file, module_paths)| {
+            Some((file.as_path(), declared_module_path(module_paths)?))
+        })
+    }
+
+    /// Whether every `mod` declaration chain reaching `file` carries
+    /// `#[cfg(test)]` on the file's own declaration or an ancestor's, so the
+    /// file compiles only under test. `false` for a file no chain declares.
+    pub(crate) fn is_test_only(&self, file: &Path) -> bool {
+        let file = lexically_normalized(file);
+        self.declarations.contains_key(&file) && !self.ungated.contains(&file)
+    }
+
     /// The module path `file` occupies.
     ///
     /// A file no crate root declares falls back to its directory layout, which
@@ -168,72 +238,81 @@ impl ModuleMap {
         source_root: &Path,
         file: &Path,
     ) -> Option<FileModulePath> {
-        match self
-            .declarations
+        self.declarations
             .get(&lexically_normalized(file))
-            .map(Vec::as_slice)
-        {
-            Some([module_path]) => Some(FileModulePath::Known(module_path.clone())),
-            Some([_, _, ..]) => Some(FileModulePath::SeveralParents),
-            Some([]) | None => file_module_path(source_root, file).map(FileModulePath::Known),
-        }
+            .and_then(|module_paths| declared_module_path(module_paths))
+            .or_else(|| file_module_path(source_root, file).map(FileModulePath::Known))
     }
+}
+
+/// Where a file the walk declared at `module_paths` sits; `None` when no
+/// declaration recorded a path.
+fn declared_module_path(module_paths: &[Vec<String>]) -> Option<FileModulePath> {
+    match module_paths {
+        [module_path] => Some(FileModulePath::Known(module_path.clone())),
+        [_, _, ..] => Some(FileModulePath::SeveralParents),
+        [] => None,
+    }
+}
+
+/// A module the walk reached: its path, and whether a `#[cfg(test)]` on its
+/// declaration or an ancestor's limits it to test builds.
+struct Declared {
+    module_path: Vec<String>,
+    test_only:   bool,
 }
 
 struct ModuleWalk {
     declarations: FxHashMap<PathBuf, Vec<Vec<String>>>,
+    ungated:      FxHashSet<PathBuf>,
     /// The `(file, module path)` pairs already being walked, so a `#[path]`
     /// cycle terminates while a file declared at two paths still records both.
     visiting:     FxHashSet<(PathBuf, Vec<String>)>,
 }
 
 impl ModuleWalk {
-    fn declare(&mut self, file: &Path, module_path: Vec<String>) {
-        let declared = self
-            .declarations
-            .entry(lexically_normalized(file))
-            .or_default();
-        if !declared.contains(&module_path) {
-            declared.push(module_path);
+    fn declare(&mut self, file: &Path, module: &Declared) {
+        let file = lexically_normalized(file);
+        if !module.test_only {
+            self.ungated.insert(file.clone());
+        }
+        let declared = self.declarations.entry(file).or_default();
+        if !declared.contains(&module.module_path) {
+            declared.push(module.module_path.clone());
         }
     }
 
-    fn walk_file(&mut self, file: &Path, module_path: &[String]) {
-        let visit = (lexically_normalized(file), module_path.to_vec());
+    fn walk_file(&mut self, file: &Path, module: &Declared, directories: &ModuleDirectories) {
+        let visit = (lexically_normalized(file), module.module_path.clone());
         if !self.visiting.insert(visit.clone()) {
             return;
         }
         if let Ok(text) = fs::read_to_string(file)
             && let Ok(syntax) = parse_file(&text)
         {
-            self.walk_items(
-                &syntax.items,
-                &ModuleDirectories::for_file(file),
-                module_path,
-            );
+            self.walk_items(&syntax.items, directories, module);
         }
         self.visiting.remove(&visit);
     }
 
-    fn walk_items(
-        &mut self,
-        items: &[Item],
-        directories: &ModuleDirectories,
-        module_path: &[String],
-    ) {
+    fn walk_items(&mut self, items: &[Item], directories: &ModuleDirectories, module: &Declared) {
         for item in items {
             let Item::Mod(declaration) = item else {
                 continue;
             };
             let module_name = declaration.ident.unraw().to_string();
-            let mut child_path = module_path.to_vec();
-            child_path.push(module_name.clone());
+            let mut module_path = module.module_path.clone();
+            module_path.push(module_name.clone());
+            let child = Declared {
+                module_path,
+                test_only: module.test_only || is_cfg_test(&declaration.attrs),
+            };
 
             if let Some((_, inline_items)) = &declaration.content {
                 self.walk_items(
                     inline_items,
                     &directories.inside_inline_module(&module_name),
-                    &child_path,
+                    &child,
                 );
                 continue;
             }
@@ -242,8 +321,12 @@ impl ModuleWalk {
                 if !module_file.is_file() {
                     continue;
                 }
-                self.declare(&module_file, child_path.clone());
-                self.walk_file(&module_file, &child_path);
+                self.declare(&module_file, &child);
+                self.walk_file(
+                    &module_file,
+                    &child,
+                    &ModuleDirectories::for_file(&module_file),
+                );
             }
         }
     }
@@ -391,6 +474,85 @@ mod tests {
         assert_eq!(directories.module, Path::new("/repo/src/a/b/inner"));
     }
 
+    #[test]
+    fn a_crate_root_resolves_both_bases_against_its_own_directory() {
+        let directories = ModuleDirectories::for_crate_root(Path::new("/repo/src/bin/tool.rs"));
+        assert_eq!(directories.file, Path::new("/repo/src/bin"));
+        assert_eq!(directories.module, Path::new("/repo/src/bin"));
+    }
+
+    /// rustc resolves `mod helper;` in the binary root `src/bin/tool.rs`
+    /// against `src/bin`, not against `src/bin/tool` as it would for a
+    /// non-root file named `tool.rs`.
+    #[test]
+    fn a_binary_root_declares_modules_beside_it() {
+        let crate_dir = tempdir().expect("create temp crate");
+        let source_root = crate_dir.path().join("src");
+        let binary_dir = source_root.join("bin");
+        fs::create_dir_all(binary_dir.join("tool")).expect("create bin dirs");
+        fs::write(
+            binary_dir.join("tool.rs"),
+            "mod helper;
+fn main() {}
+",
+        )
+        .expect("write binary root");
+        fs::write(binary_dir.join("helper.rs"), "").expect("write sibling helper");
+        fs::write(binary_dir.join("tool/helper.rs"), "").expect("write nested helper");
+        let module_map = ModuleMap::for_crate_root(&binary_dir.join("tool.rs"));
+
+        assert_eq!(
+            module_map.file_module_path(&source_root, &binary_dir.join("helper.rs")),
+            Some(FileModulePath::Known(vec!["helper".to_string()]))
+        );
+        assert_eq!(
+            module_map.file_module_path(&source_root, &binary_dir.join("tool/helper.rs")),
+            Some(FileModulePath::Known(vec![
+                "bin".to_string(),
+                "tool".to_string(),
+                "helper".to_string()
+            ]))
+        );
+    }
+
+    /// A root outside `src`, such as an integration test, walks the same way.
+    #[test]
+    fn one_crate_root_resolves_only_its_own_modules() {
+        let crate_dir = crate_with_detached_module();
+        let tests_dir = crate_dir.path().join("tests");
+        fs::create_dir_all(tests_dir.join("common")).expect("create tests dirs");
+        fs::write(
+            tests_dir.join("it.rs"),
+            "mod common;
+",
+        )
+        .expect("write test root");
+        fs::write(
+            tests_dir.join("common/mod.rs"),
+            "mod fixtures;
+",
+        )
+        .expect("write common");
+        fs::write(tests_dir.join("common/fixtures.rs"), "").expect("write fixtures");
+        let module_map = ModuleMap::for_crate_root(&tests_dir.join("it.rs"));
+
+        assert_eq!(
+            module_map.file_module_path(&tests_dir, &tests_dir.join("common/fixtures.rs")),
+            Some(FileModulePath::Known(vec![
+                "common".to_string(),
+                "fixtures".to_string()
+            ]))
+        );
+        let source_root = crate_dir.path().join("src");
+        assert_eq!(
+            module_map.file_module_path(&source_root, &source_root.join("stream/macos.rs")),
+            Some(FileModulePath::Known(vec![
+                "stream".to_string(),
+                "macos".to_string()
+            ]))
+        );
+    }
+
     /// The layout says `crate::stream::macos`; the `mod` declarations say
     /// `crate::platform::camera_stream`, and only the declarations decide what
     /// `super` names.
@@ -445,6 +607,33 @@ mod tests {
             module_map.file_module_path(&source_root, &source_root.join("stream/macos.rs")),
             Some(FileModulePath::SeveralParents)
         );
+    }
+
+    /// A file compiles only under test when its own declaration or an
+    /// ancestor's, file or inline, carries `#[cfg(test)]`.
+    #[test]
+    fn a_cfg_test_declaration_marks_its_file_and_the_files_below_it_test_only() {
+        let crate_dir = tempdir().expect("create temp crate");
+        let source_root = crate_dir.path().join("src");
+        fs::create_dir_all(source_root.join("tests")).expect("create tests dir");
+        fs::create_dir_all(source_root.join("gated/inner")).expect("create gated dir");
+        fs::write(
+            source_root.join("lib.rs"),
+            "mod plain;\n#[cfg(test)]\nmod tests;\n\
+             #[cfg(test)]\nmod gated {\n    mod inner;\n}\n",
+        )
+        .expect("write lib root");
+        fs::write(source_root.join("plain.rs"), "").expect("write plain");
+        fs::write(source_root.join("tests/mod.rs"), "mod helper;\n").expect("write tests");
+        fs::write(source_root.join("tests/helper.rs"), "").expect("write helper");
+        fs::write(source_root.join("gated/inner.rs"), "").expect("write inner");
+        let module_map = ModuleMap::resolve(&source_root);
+
+        assert!(!module_map.is_test_only(&source_root.join("lib.rs")));
+        assert!(!module_map.is_test_only(&source_root.join("plain.rs")));
+        assert!(module_map.is_test_only(&source_root.join("tests/mod.rs")));
+        assert!(module_map.is_test_only(&source_root.join("tests/helper.rs")));
+        assert!(module_map.is_test_only(&source_root.join("gated/inner.rs")));
     }
 
     /// `src/stream/macos.rs` sits under `stream` but is declared by `platform`,

@@ -307,6 +307,8 @@ pub(crate) enum FixSupport {
     FieldVisibility,
     #[serde(rename = "fix_imports_at_top")]
     ImportsAtTop,
+    #[serde(rename = "fix_pub_use_outside_subtree")]
+    PubUseOutsideSubtree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,7 +328,8 @@ impl FixSupport {
             | Self::NarrowToPubCrate
             | Self::RestrictedAnnotation
             | Self::FieldVisibility
-            | Self::ImportsAtTop => Some(NOTE_FIXABLE_WITH_FIX),
+            | Self::ImportsAtTop
+            | Self::PubUseOutsideSubtree => Some(NOTE_FIXABLE_WITH_FIX),
             Self::PubUse => Some(NOTE_FIXABLE_WITH_FIX_PUB_USE),
         }
     }
@@ -341,7 +344,8 @@ impl FixSupport {
             | Self::NarrowToPubCrate
             | Self::RestrictedAnnotation
             | Self::FieldVisibility
-            | Self::ImportsAtTop => Some(FixSummaryBucket::Standard),
+            | Self::ImportsAtTop
+            | Self::PubUseOutsideSubtree => Some(FixSummaryBucket::Standard),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
     }

@@ -7,33 +7,39 @@ use crate::reporting::AllFeaturesCoverage;
 use crate::reporting::CompilerWarningFacts;
 use crate::reporting::ExactBoundarySpelling;
 use crate::reporting::FixSupport;
+use crate::reporting::ModuleForm;
+use crate::reporting::ReexportVisibility;
 use crate::reporting::Severity;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(in crate::compiler) struct StoredReport {
-    pub version:                u32,
+    pub version:                    u32,
     #[serde(default)]
-    pub analysis_fingerprint:   String,
+    pub analysis_fingerprint:       String,
     #[serde(default)]
-    pub scope_fingerprint:      String,
-    pub package_root:           String,
+    pub scope_fingerprint:          String,
+    pub package_root:               String,
     #[serde(default)]
-    pub crate_root_file:        String,
-    pub config_fingerprint:     String,
+    pub crate_root_file:            String,
+    pub config_fingerprint:         String,
     /// Canonical source paths containing HIR items compiled for this target.
     #[serde(default)]
-    pub source_files:           Vec<String>,
-    pub findings:               Vec<StoredFinding>,
+    pub source_files:               Vec<String>,
+    pub findings:                   Vec<StoredFinding>,
     #[serde(default)]
-    pub visibility_constraints: Vec<StoredVisibilityConstraint>,
+    pub visibility_constraints:     Vec<StoredVisibilityConstraint>,
     #[serde(default)]
-    pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,
+    pub pub_use_fix_facts:          Vec<StoredPubUseFixFact>,
     #[serde(default)]
-    pub all_features_coverage:  AllFeaturesCoverage,
+    pub all_features_coverage:      AllFeaturesCoverage,
     #[serde(default, rename = "compiler_warnings")]
-    pub compiler_warning_facts: CompilerWarningFacts,
+    pub compiler_warning_facts:     CompilerWarningFacts,
     #[serde(default)]
-    pub use_sites:              Vec<UseSite>,
+    pub use_sites:                  Vec<UseSite>,
+    #[serde(default)]
+    pub subtree_reexport_fix_facts: Vec<StoredSubtreeReexportFixFact>,
+    #[serde(default)]
+    pub module_mount_facts:         Vec<StoredModuleMountFact>,
 }
 
 /// How a caller reaches the target. A caller that writes a path to the item can
@@ -134,4 +140,52 @@ pub(in crate::compiler) struct StoredPubUseFixFact {
     pub parent_path:     String,
     pub parent_line:     usize,
     pub child_module:    String,
+}
+
+/// Stored twin of `reporting::SubtreeReexportFixFact`, with absolute paths.
+/// `use_path`, `use_line`, and `use_column` equal the `path`, `line`, and
+/// `column` of the `pub_use_outside_subtree` finding the fact belongs to;
+/// `load::discard_fix_facts_for_suppressed_findings` joins them on that.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(in crate::compiler) struct StoredSubtreeReexportFixFact {
+    pub use_path:          String,
+    pub use_line:          usize,
+    pub use_column:        usize,
+    pub exported_name:     String,
+    pub written_path:      String,
+    pub owner_module:      Vec<String>,
+    pub owner_module_form: ModuleForm,
+    pub source_module:     Vec<String>,
+    pub target_scope:      Vec<String>,
+    pub common_ancestor:   Vec<String>,
+    pub crate_root_file:   String,
+    pub ancestor_reexport: StoredAncestorReexport,
+}
+
+/// Stored twin of `reporting::AncestorReexport`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::compiler) enum StoredAncestorReexport {
+    NotRequired,
+    Insert(StoredAncestorReexportInsertion),
+}
+
+/// Stored twin of `reporting::AncestorReexportInsertion`, with an absolute
+/// `file`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(in crate::compiler) struct StoredAncestorReexportInsertion {
+    pub reexport_visibility: ReexportVisibility,
+    pub relative_path:       String,
+    pub cfg_attributes:      Vec<String>,
+    pub file:                String,
+    pub offset:              usize,
+    pub indent:              String,
+}
+
+/// Stored twin of `reporting::ModuleMountFact`, with absolute paths.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(in crate::compiler) struct StoredModuleMountFact {
+    pub crate_root_file: String,
+    pub file:            String,
+    pub module_path:     Vec<String>,
 }

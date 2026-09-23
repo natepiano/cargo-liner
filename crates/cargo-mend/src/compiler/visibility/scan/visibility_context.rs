@@ -21,6 +21,7 @@ use rustc_span::def_id::LOCAL_CRATE;
 use rustc_span::def_id::LocalDefId;
 use serde_json::to_vec_pretty;
 
+use super::module_mounts;
 use super::visit;
 use crate::compiler::cfg_excluded_references::CfgExcludedReferences;
 use crate::compiler::constants::FINDINGS_SCHEMA_VERSION;
@@ -169,6 +170,10 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
         visit::visit_foreign_item(&ctx, tcx.hir_foreign_item(item_id), &mut sink)?;
     }
 
+    if !sink.subtree_reexport_fix_facts.is_empty() {
+        sink.module_mount_facts = module_mounts::collect_module_mounts(tcx, &crate_root_file);
+    }
+
     let output_path = report_path(tcx)?;
     let stored_crate_root = if crate_root_file.is_absolute() {
         crate_root_file.clone()
@@ -178,19 +183,21 @@ pub(in crate::compiler::visibility) fn collect_and_store_findings(
     sort_and_dedupe(&mut sink);
 
     let report = StoredReport {
-        version:                FINDINGS_SCHEMA_VERSION,
-        analysis_fingerprint:   settings.analysis_fingerprint.clone(),
-        scope_fingerprint:      settings.scope_fingerprint.clone(),
-        package_root:           settings.package_root.to_string_lossy().into_owned(),
-        crate_root_file:        stored_crate_root.to_string_lossy().into_owned(),
-        config_fingerprint:     settings.config_fingerprint.clone(),
-        source_files:           source_files.into_iter().collect(),
-        findings:               sink.findings,
-        visibility_constraints: sink.visibility_constraints,
-        pub_use_fix_facts:      sink.pub_use_fix_facts,
-        all_features_coverage:  source_cache.all_features_coverage(),
-        compiler_warning_facts: CompilerWarningFacts::None,
-        use_sites:              sink.use_sites.into_use_sites(),
+        version:                    FINDINGS_SCHEMA_VERSION,
+        analysis_fingerprint:       settings.analysis_fingerprint.clone(),
+        scope_fingerprint:          settings.scope_fingerprint.clone(),
+        package_root:               settings.package_root.to_string_lossy().into_owned(),
+        crate_root_file:            stored_crate_root.to_string_lossy().into_owned(),
+        config_fingerprint:         settings.config_fingerprint.clone(),
+        source_files:               source_files.into_iter().collect(),
+        findings:                   sink.findings,
+        visibility_constraints:     sink.visibility_constraints,
+        pub_use_fix_facts:          sink.pub_use_fix_facts,
+        subtree_reexport_fix_facts: sink.subtree_reexport_fix_facts,
+        module_mount_facts:         sink.module_mount_facts,
+        all_features_coverage:      source_cache.all_features_coverage(),
+        compiler_warning_facts:     CompilerWarningFacts::None,
+        use_sites:                  sink.use_sites.into_use_sites(),
     };
     fs::write(&output_path, to_vec_pretty(&report)?)
         .with_context(|| format!("failed to write findings file {}", output_path.display()))?;

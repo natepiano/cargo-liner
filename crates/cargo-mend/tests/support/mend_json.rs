@@ -116,12 +116,17 @@ pub(super) fn expected_summary_from_findings(expected_findings: &[ExpectedFindin
     };
 
     for finding in expected_findings {
-        match severity_for_code(finding.code) {
-            "error" => summary.errors += 1,
+        let fix_support = fix_support_for(finding.code, finding.fix_support);
+
+        // Mirrors `effective_severity`: a finding mend can fix on its own is a
+        // warning whatever its code's level.
+        match (
+            fix_support.summary_bucket(),
+            severity_for_code(finding.code),
+        ) {
+            (None, "error") => summary.errors += 1,
             _ => summary.warnings += 1,
         }
-
-        let fix_support = fix_support_for(finding.code, finding.fix_support);
 
         match fix_support.summary_bucket() {
             Some(FixSummaryBucket::Standard) => summary.fixable_with_fix += 1,

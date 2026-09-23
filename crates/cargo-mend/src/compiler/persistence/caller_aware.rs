@@ -343,19 +343,21 @@ mod tests {
 
     fn report_for_test() -> StoredReport {
         StoredReport {
-            version:                FINDINGS_SCHEMA_VERSION,
-            analysis_fingerprint:   settings::current_analysis_fingerprint(),
-            scope_fingerprint:      "scope".to_string(),
-            package_root:           "/package".to_string(),
-            crate_root_file:        "/package/src/lib.rs".to_string(),
-            config_fingerprint:     CONFIG_FINGERPRINT.to_string(),
-            source_files:           Vec::new(),
-            findings:               Vec::new(),
-            visibility_constraints: Vec::new(),
-            pub_use_fix_facts:      Vec::new(),
-            all_features_coverage:  AllFeaturesCoverage::default(),
-            compiler_warning_facts: CompilerWarningFacts::None,
-            use_sites:              Vec::new(),
+            version:                    FINDINGS_SCHEMA_VERSION,
+            analysis_fingerprint:       settings::current_analysis_fingerprint(),
+            scope_fingerprint:          "scope".to_string(),
+            package_root:               "/package".to_string(),
+            crate_root_file:            "/package/src/lib.rs".to_string(),
+            config_fingerprint:         CONFIG_FINGERPRINT.to_string(),
+            source_files:               Vec::new(),
+            findings:                   Vec::new(),
+            visibility_constraints:     Vec::new(),
+            pub_use_fix_facts:          Vec::new(),
+            subtree_reexport_fix_facts: Vec::new(),
+            module_mount_facts:         Vec::new(),
+            all_features_coverage:      AllFeaturesCoverage::default(),
+            compiler_warning_facts:     CompilerWarningFacts::None,
+            use_sites:                  Vec::new(),
         }
     }
 }

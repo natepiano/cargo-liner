@@ -658,7 +658,7 @@ pub use child::*;
 <a id="pub-use-outside-subtree"></a>
 ### `pub use` outside the module's subtree
 
-This error flags a re-export whose path leaves the re-exporting module's own subtree: a
+This diagnostic flags a re-export whose path leaves the re-exporting module's own subtree: a
 `pub use super::sibling::item`, a `pub use crate::elsewhere::item`, or a `pub use super::Item` of
 the parent's own item.
 
@@ -692,9 +692,26 @@ pub(crate) use reset_scene::build_device_recipe;
 A private `use` of a sibling is fine; only a re-export is flagged. A module named `prelude`
 re-exporting its parent's items, and re-exports of another crate's items, are not flagged.
 
-There is no automatic fix: moving the re-export means repointing its callers, so the finding is an
-error and stops a run until the re-export moves to the parent or the callers import the item from
-its owning module.
+Help: re-export the item from the module whose subtree owns it — usually the parent `mod.rs` — or
+move the definition to the module that owns the concept, then point callers at that path.
+
+`cargo mend --fix` can rewrite these cases automatically. It removes the re-export (or keeps it as
+a private `use` when its own module still names the item), points every caller in the crate at the
+item's owning path, and, when a caller outside the item's own scope needs it, adds a re-export at
+the nearest module that holds both the re-exporting module and the item's module, copying the
+original's `#[cfg]` attributes. A fixable finding reports as a warning.
+
+These cases stay errors with no automatic fix, and the finding's help says which one applies:
+
+- the re-export renames the item with `as`
+- the re-export is a glob
+- the path passes through an enum or trait before its last segment
+- the re-exporting module is reachable from outside the crate, so removing the re-export would
+  change a public path
+- the common ancestor already has a different item under that name, or imports it with narrower
+  visibility
+- the rewrite would need a `pub(in …)` boundary
+- the re-exported item does not resolve to one target
 
 <a id="internal-parent-pub-use-facade"></a>
 ### Internal parent `pub use` facade

@@ -18,6 +18,11 @@ impl MendRunner<'_> {
         let compiler_fixable = planned.compiler_fixable;
         let fix_scans = planned.fix_scans();
         let applied_pub_use = fix_scans.pub_use.map_or(0, |scan| scan.applied);
+        // The subtree re-export pass wins every overlap, so its scanned fixes
+        // are the ones written.
+        let applied_subtree_reexport = fix_scans
+            .subtree_reexports
+            .is_some_and(|scan| !scan.fixes.is_empty());
         let fixes = Self::combined_fixes(fix_scans)?;
         if fixes.is_empty() {
             let notice = Self::build_fix_notice(
@@ -34,6 +39,7 @@ impl MendRunner<'_> {
                 compiler_warnings,
                 compiler_fixable,
                 applied_pub_use: 0,
+                applied_subtree_reexport: false,
                 compiler_warning_facts: warning_facts,
             });
         }
@@ -67,6 +73,7 @@ impl MendRunner<'_> {
                     compiler_warnings,
                     compiler_fixable,
                     applied_pub_use,
+                    applied_subtree_reexport,
                     compiler_warning_facts: warning_facts,
                 })
             },

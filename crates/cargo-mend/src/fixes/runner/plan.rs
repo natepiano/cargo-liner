@@ -1,6 +1,7 @@
 use super::MendRunner;
 use super::RunPlan;
 use crate::compiler::BuildOutputMode;
+use crate::compiler::SelectionResult;
 use crate::config::DiagnosticCode;
 use crate::config::DiagnosticStatus;
 use crate::config::FixKind;
@@ -13,6 +14,7 @@ use crate::fixes::narrow_pub_crate;
 use crate::fixes::prefer_module_import;
 use crate::fixes::pub_use_fixes;
 use crate::fixes::restricted_annotation;
+use crate::fixes::subtree_reexport;
 use crate::fixes::unused_pub;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
@@ -27,67 +29,77 @@ impl MendRunner<'_> {
             BuildOutputMode::Full
         };
         let selection_result = self.build_selection(output_mode)?;
+        self.scan_fixes(operation_mode, selection_result)
+    }
+
+    /// Runs every fixer `operation_mode` enables against the checked
+    /// selection.
+    fn scan_fixes(
+        &self,
+        operation_mode: OperationMode,
+        selection_result: SelectionResult,
+    ) -> Result<RunPlan, MendFailure> {
         let report = selection_result.report;
         let check_duration = selection_result.check_duration;
         let compiler_warnings = selection_result.compiler_warnings;
         let compiler_fixable = selection_result.compiler_fixable;
-        let diagnostics_config = &self.loaded_config.diagnostics_config;
-        let import_scan = (operation_mode.fixes.contains(FixKind::ShortenImport)
-            && (diagnostics_config.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
-                == DiagnosticStatus::Enabled
-                || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
-                    == DiagnosticStatus::Enabled))
-            .then(|| imports::scan_selection(self.selection))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let prefer_module_import_scan =
-            (operation_mode.fixes.contains(FixKind::PreferModuleImport)
-                && diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport)
-                    == DiagnosticStatus::Enabled)
-                .then(|| prefer_module_import::scan_selection(self.selection))
-                .transpose()
-                .map_err(MendFailure::Unexpected)?;
-        let inline_path_scan = (operation_mode
-            .fixes
-            .contains(FixKind::InlinePathQualifiedType)
-            && diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType)
-                == DiagnosticStatus::Enabled)
-            .then(|| inline_path_qualified_type::scan_selection(self.selection))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let narrow_pub_crate_scan = (operation_mode.fixes.contains(FixKind::NarrowToPubCrate)
-            && diagnostics_config.is_enabled(DiagnosticCode::NarrowToPubCrate)
-                == DiagnosticStatus::Enabled)
-            .then(|| narrow_pub_crate::scan_from_report(&report))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let restricted_annotation_scan =
-            (operation_mode.fixes.contains(FixKind::RestrictedAnnotation)
-                && [
-                    DiagnosticCode::OverbroadPubCrate,
-                    DiagnosticCode::ForbiddenPubInCrate,
-                    DiagnosticCode::SuspiciousPub,
-                ]
-                .into_iter()
-                .any(|code| diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled))
-            .then(|| restricted_annotation::scan_from_report(&report))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let unused_pub_scan = (operation_mode.fixes.contains(FixKind::UnusedPub)
-            && diagnostics_config.is_enabled(DiagnosticCode::UnusedPub)
-                == DiagnosticStatus::Enabled)
+        let enabled = |fix_kind: FixKind, codes: &[DiagnosticCode]| {
+            self.fix_enabled(&operation_mode, fix_kind, codes)
+        };
+        let import_scan = enabled(
+            FixKind::ShortenImport,
+            &[
+                DiagnosticCode::ShortenLocalCrateImport,
+                DiagnosticCode::ReplaceDeepSuperImport,
+            ],
+        )
+        .then(|| imports::scan_selection(self.selection))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let prefer_module_import_scan = enabled(
+            FixKind::PreferModuleImport,
+            &[DiagnosticCode::PreferModuleImport],
+        )
+        .then(|| prefer_module_import::scan_selection(self.selection))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let inline_path_scan = enabled(
+            FixKind::InlinePathQualifiedType,
+            &[DiagnosticCode::InlinePathQualifiedType],
+        )
+        .then(|| inline_path_qualified_type::scan_selection(self.selection))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let narrow_pub_crate_scan = enabled(
+            FixKind::NarrowToPubCrate,
+            &[DiagnosticCode::NarrowToPubCrate],
+        )
+        .then(|| narrow_pub_crate::scan_from_report(&report))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let restricted_annotation_scan = enabled(
+            FixKind::RestrictedAnnotation,
+            &[
+                DiagnosticCode::OverbroadPubCrate,
+                DiagnosticCode::ForbiddenPubInCrate,
+                DiagnosticCode::SuspiciousPub,
+            ],
+        )
+        .then(|| restricted_annotation::scan_from_report(&report))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let unused_pub_scan = enabled(FixKind::UnusedPub, &[DiagnosticCode::UnusedPub])
             .then(|| unused_pub::scan_from_report(&report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
-        let field_visibility_fix_scan = (operation_mode.fixes.contains(FixKind::FieldVisibility)
-            && diagnostics_config.is_enabled(DiagnosticCode::FieldVisibilityWiderThanType)
-                == DiagnosticStatus::Enabled)
-            .then(|| field_visibility::scan_from_report(&report))
-            .transpose()
-            .map_err(MendFailure::Unexpected)?;
-        let imports_at_top_scan = (operation_mode.fixes.contains(FixKind::ImportsAtTop)
-            && diagnostics_config.is_enabled(DiagnosticCode::ImportsAtTop)
-                == DiagnosticStatus::Enabled)
+        let field_visibility_fix_scan = enabled(
+            FixKind::FieldVisibility,
+            &[DiagnosticCode::FieldVisibilityWiderThanType],
+        )
+        .then(|| field_visibility::scan_from_report(&report))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
+        let imports_at_top_scan = enabled(FixKind::ImportsAtTop, &[DiagnosticCode::ImportsAtTop])
             .then(|| imports_at_top::scan_selection(self.selection))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
@@ -97,6 +109,13 @@ impl MendRunner<'_> {
             .then(|| pub_use_fixes::scan_selection(self.selection, &report))
             .transpose()
             .map_err(MendFailure::Unexpected)?;
+        let subtree_reexport_scan = enabled(
+            FixKind::PubUseOutsideSubtree,
+            &[DiagnosticCode::PubUseOutsideSubtree],
+        )
+        .then(|| subtree_reexport::scan_selection(self.selection, &report))
+        .transpose()
+        .map_err(MendFailure::Unexpected)?;
 
         Ok(RunPlan {
             operation_mode,
@@ -110,9 +129,24 @@ impl MendRunner<'_> {
             field_visibility_fix_scan,
             imports_at_top_scan,
             pub_use_scan,
+            subtree_reexport_scan,
             check_duration,
             compiler_warnings,
             compiler_fixable,
         })
+    }
+
+    /// Whether `fix_kind` runs this pass: the mode requests it and at least
+    /// one diagnostic it fixes is enabled.
+    fn fix_enabled(
+        &self,
+        operation_mode: &OperationMode,
+        fix_kind: FixKind,
+        codes: &[DiagnosticCode],
+    ) -> bool {
+        operation_mode.fixes.contains(fix_kind)
+            && codes.iter().any(|&code| {
+                self.loaded_config.diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled
+            })
     }
 }

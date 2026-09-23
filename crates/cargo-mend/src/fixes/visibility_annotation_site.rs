@@ -95,7 +95,7 @@ fn annotation_form_and_byte_len(text: &str) -> Option<(VisibilityAnnotationForm,
 /// A tab is the only character rustc charges more than one column that occurs
 /// in the indentation a visibility annotation sits behind, so the walk charges
 /// [`TAB_DISPLAY_WIDTH`] for a tab and one column for everything else.
-fn byte_offset_of_display_column(line_text: &str, column: usize) -> Option<usize> {
+pub(super) fn byte_offset_of_display_column(line_text: &str, column: usize) -> Option<usize> {
     let target = column.saturating_sub(1);
     let mut display_column = 0;
     for (offset, character) in line_text.char_indices() {
@@ -112,7 +112,7 @@ fn byte_offset_of_display_column(line_text: &str, column: usize) -> Option<usize
 }
 
 /// Byte offset where 1-based `line` starts in `source`.
-fn line_byte_offset(source: &str, line: usize) -> Option<usize> {
+pub(super) fn line_byte_offset(source: &str, line: usize) -> Option<usize> {
     if line == 0 {
         return None;
     }

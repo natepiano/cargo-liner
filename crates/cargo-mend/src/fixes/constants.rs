@@ -1,6 +1,10 @@
 // fix runner
 pub(crate) const FIX_CONVERGENCE_MAX_PASSES: usize = 5;
 
+// pub_use_outside_subtree fix
+/// The gate written on a private `use` that only `#[cfg(test)]` modules need.
+pub(super) const CFG_TEST_ATTRIBUTE: &str = "#[cfg(test)]";
+
 // rustc display columns
 /// Columns rustc charges a tab when it computes `SourceMap::lookup_char_pos`'s
 /// `col_display`, which is the column `Finding` carries.

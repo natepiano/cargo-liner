@@ -1,4 +1,5 @@
 mod attribute_references;
+mod descendant_globs;
 mod function_imports;
 mod inline_calls;
 mod references;

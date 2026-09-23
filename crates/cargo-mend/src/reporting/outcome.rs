@@ -13,16 +13,20 @@ use crate::config::OperationIntent;
 
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
-    pub report:                 Report,
-    pub notice:                 Option<ExecutionNotice>,
-    pub check_duration:         Duration,
-    pub compiler_warnings:      usize,
-    pub compiler_fixable:       usize,
+    pub report:                   Report,
+    pub notice:                   Option<ExecutionNotice>,
+    pub check_duration:           Duration,
+    pub compiler_warnings:        usize,
+    pub compiler_fixable:         usize,
     /// Count of `pub use` fixes actually applied (zero in dry-run / read-only).
-    pub applied_pub_use:        usize,
+    pub applied_pub_use:          usize,
+    /// Whether this pass wrote `pub_use_outside_subtree` edits. Removing one
+    /// link of a re-export chain turns the next link into a new finding, so a
+    /// pass can make progress while the fixable count stays level.
+    pub applied_subtree_reexport: bool,
     /// Post-apply validation's compiler-warning summary — `UnusedImportWarnings`
     /// signals that `cargo fix` should be chained to clean up the cascade.
-    pub compiler_warning_facts: CompilerWarningFacts,
+    pub compiler_warning_facts:   CompilerWarningFacts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +38,10 @@ pub(crate) struct ExecutionNotice {
 pub(crate) enum NoticeKind {
     Fixes(FixNotice),
     PubUseFixes(PubUseNotice),
+    /// Fixable `pub_use_outside_subtree` findings the pass left unedited. A
+    /// later convergence pass replaces the count, since each pass re-scans the
+    /// findings still standing; zero renders nothing.
+    SubtreeReexportSkipped(usize),
 }
 
 /// Which family of edits a `FixNotice` counts. Every fixer that moves no import
@@ -241,7 +249,7 @@ impl ExecutionNotice {
         let parts = self
             .kinds
             .iter()
-            .map(NoticeKind::render_part)
+            .filter_map(NoticeKind::render_part)
             .collect::<Vec<_>>();
         format!("mend: {}", parts.join("; "))
     }
@@ -261,7 +269,11 @@ impl ExecutionNotice {
                     (NoticeKind::Fixes(left), NoticeKind::Fixes(right)) => {
                         left.fix_kind == right.fix_kind
                     },
-                    (NoticeKind::PubUseFixes(_), NoticeKind::PubUseFixes(_)) => true,
+                    (NoticeKind::PubUseFixes(_), NoticeKind::PubUseFixes(_))
+                    | (
+                        NoticeKind::SubtreeReexportSkipped(_),
+                        NoticeKind::SubtreeReexportSkipped(_),
+                    ) => true,
                     _ => false,
                 });
             if let Some(existing) = existing {
@@ -295,7 +307,8 @@ impl NoticeKind {
                 outcome: FixOutcome::NoneAvailable,
                 ..
             })
-            | Self::PubUseFixes(PubUseNotice::NoneAvailable { .. }) => false,
+            | Self::PubUseFixes(PubUseNotice::NoneAvailable { .. })
+            | Self::SubtreeReexportSkipped(_) => false,
         }
     }
 
@@ -317,14 +330,21 @@ impl NoticeKind {
             (Self::PubUseFixes(current), Self::PubUseFixes(additional)) => {
                 current.merge(additional);
             },
+            (Self::SubtreeReexportSkipped(current), Self::SubtreeReexportSkipped(additional)) => {
+                *current = additional;
+            },
             _ => {},
         }
     }
 
-    fn render_part(&self) -> String {
+    fn render_part(&self) -> Option<String> {
         match self {
-            Self::Fixes(notice) => notice.render(),
-            Self::PubUseFixes(notice) => notice.render(),
+            Self::Fixes(notice) => Some(notice.render()),
+            Self::PubUseFixes(notice) => Some(notice.render()),
+            Self::SubtreeReexportSkipped(0) => None,
+            Self::SubtreeReexportSkipped(skipped) => Some(format!(
+                "skipped {skipped} `pub_use_outside_subtree` finding(s) `--fix` could not rewrite"
+            )),
         }
     }
 }
@@ -670,5 +690,35 @@ mod tests {
             notice.render(),
             "mend: applied 3 annotation rewrite(s); applied 1 `pub use` fix(es)"
         );
+    }
+
+    #[test]
+    fn subtree_reexport_skips_keep_the_latest_pass_count() {
+        let mut notice = ExecutionNotice::from(vec![
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Import,
+                3,
+            )),
+            NoticeKind::SubtreeReexportSkipped(2),
+        ]);
+        notice.merge(ExecutionNotice::from(vec![
+            NoticeKind::Fixes(FixNotice::from_intent(
+                OperationIntent::Apply,
+                FixKind::Import,
+                0,
+            )),
+            NoticeKind::SubtreeReexportSkipped(1),
+        ]));
+        assert_eq!(
+            notice.render(),
+            "mend: applied 3 import fix(es); skipped 1 `pub_use_outside_subtree` finding(s) \
+             `--fix` could not rewrite"
+        );
+
+        notice.merge(ExecutionNotice::from(vec![
+            NoticeKind::SubtreeReexportSkipped(0),
+        ]));
+        assert_eq!(notice.render(), "mend: applied 3 import fix(es)");
     }
 }

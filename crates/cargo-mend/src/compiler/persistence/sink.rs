@@ -2,17 +2,21 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use super::schema::StoredFinding;
+use super::schema::StoredModuleMountFact;
 use super::schema::StoredPubUseFixFact;
+use super::schema::StoredSubtreeReexportFixFact;
 use super::schema::UseSite;
 use super::schema::UseSiteReference;
 use super::visibility_constraint::StoredVisibilityConstraint;
 
 #[derive(Default)]
 pub(in crate::compiler) struct FindingsSink {
-    pub findings:               Vec<StoredFinding>,
-    pub visibility_constraints: Vec<StoredVisibilityConstraint>,
-    pub pub_use_fix_facts:      Vec<StoredPubUseFixFact>,
-    pub use_sites:              UseSiteIndex,
+    pub findings:                   Vec<StoredFinding>,
+    pub visibility_constraints:     Vec<StoredVisibilityConstraint>,
+    pub pub_use_fix_facts:          Vec<StoredPubUseFixFact>,
+    pub use_sites:                  UseSiteIndex,
+    pub subtree_reexport_fix_facts: Vec<StoredSubtreeReexportFixFact>,
+    pub module_mount_facts:         Vec<StoredModuleMountFact>,
 }
 
 /// The set of modules that reference each item, keyed by the referenced

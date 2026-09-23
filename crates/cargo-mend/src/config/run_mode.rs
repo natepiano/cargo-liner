@@ -14,6 +14,7 @@ pub(crate) enum FixKind {
     RestrictedAnnotation,
     FieldVisibility,
     ImportsAtTop,
+    PubUseOutsideSubtree,
     PubUse,
 }
 
@@ -33,6 +34,7 @@ impl FixSelection {
         fix_kinds.insert(FixKind::RestrictedAnnotation);
         fix_kinds.insert(FixKind::FieldVisibility);
         fix_kinds.insert(FixKind::ImportsAtTop);
+        fix_kinds.insert(FixKind::PubUseOutsideSubtree);
         fix_kinds.insert(FixKind::PubUse);
         Self { fix_kinds }
     }
@@ -56,6 +58,7 @@ impl From<&FixCli> for FixSelection {
                     fix_kinds.insert(FixKind::RestrictedAnnotation);
                     fix_kinds.insert(FixKind::FieldVisibility);
                     fix_kinds.insert(FixKind::ImportsAtTop);
+                    fix_kinds.insert(FixKind::PubUseOutsideSubtree);
                 }
                 if fix_cli.includes(FixRequest::PubUse) {
                     fix_kinds.insert(FixKind::PubUse);

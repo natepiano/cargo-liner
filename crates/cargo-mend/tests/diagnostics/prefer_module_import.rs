@@ -1555,6 +1555,10 @@ edition = "2024"
         "expected qualified call, got:\n{consumer}"
     );
     assert!(
+        consumer.contains("layout;\n\nfn example() {"),
+        "a file with no `use` gets a blank line after the inserted one, got:\n{consumer}"
+    );
+    assert!(
         !consumer.contains("crate::parent::layout::set_root_grow_height")
             && !consumer.contains("super::layout::set_root_grow_height"),
         "fully-qualified call should be rewritten, got:\n{consumer}"
@@ -2231,6 +2235,74 @@ mod tests {
         child.contains("super::super::do_thing()"),
         "reference inside `mod tests` should become `super::super::do_thing()`, got:\n{child}"
     );
+}
+
+/// A function import a `#[cfg(test)] mod tests;` file reaches through
+/// `use super::*;`. Rewriting it to a module import changes only the
+/// references in the importing file, so the bare call in `tests.rs` stopped
+/// resolving (E0425) and mend rolled the whole run back. The import stays
+/// as written and nothing is reported.
+#[test]
+fn function_import_reached_by_a_child_file_glob_is_left_alone() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "child_file_glob_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/scene")).expect("create src/scene");
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod recipe;\nmod scene;\n\npub fn touch() -> u32 { scene::stage() }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/recipe.rs"),
+        "pub(crate) fn build_recipe() -> u32 { 1 }\n",
+    )
+    .expect("write recipe");
+    let scene = "use crate::recipe::build_recipe;\n\npub(crate) fn stage() -> u32 { build_recipe() }\n\n\
+                 #[cfg(test)]\nmod tests;\n";
+    fs::write(temp.path().join("src/scene.rs"), scene).expect("write scene");
+    fs::write(
+        temp.path().join("src/scene/tests.rs"),
+        "use super::*;\n\n#[test]\nfn builds_the_recipe() {\n    assert_eq!(build_recipe(), \
+         stage());\n}\n",
+    )
+    .expect("write tests");
+    let manifest_path = temp.path().join("Cargo.toml");
+
+    let output = mend_command()
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let fixed = fs::read_to_string(temp.path().join("src/scene.rs")).expect("read scene");
+    assert_eq!(fixed, scene, "the glob-reached import must stay as written");
+    let report = run_mend_json(&manifest_path);
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == DiagnosticCode::PreferModuleImport),
+        "no prefer_module_import finding for a glob-reached import: {:#?}",
+        report.findings
+    );
+    assert_prefer_module_fixture_compiles(&manifest_path);
 }
 
 /// Two separate parent-module function imports in the same file. Both `use`

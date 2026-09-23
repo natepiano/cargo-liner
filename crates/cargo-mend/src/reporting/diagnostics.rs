@@ -6,6 +6,7 @@ use super::constants::HINT_ERROR_FIXABLE_WITH_FIX;
 use super::constants::HINT_ERROR_FIXABLE_WITH_FIX_PUB_USE;
 use super::constants::HINT_WARNING_FIXABLE_WITH_FIX;
 use super::constants::HINT_WARNING_FIXABLE_WITH_FIX_PUB_USE;
+use super::constants::PUB_USE_OUTSIDE_SUBTREE_HELP;
 use crate::config::DiagnosticCode;
 use crate::constants::HELP_URL_BASE;
 
@@ -31,6 +32,8 @@ pub(crate) enum FixSupport {
     FieldVisibility,
     #[serde(rename = "fix_imports_at_top")]
     ImportsAtTop,
+    #[serde(rename = "fix_pub_use_outside_subtree")]
+    PubUseOutsideSubtree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +74,8 @@ impl FixSupport {
             | Self::NarrowToPubCrate
             | Self::RestrictedAnnotation
             | Self::FieldVisibility
-            | Self::ImportsAtTop => Some(FixSummaryBucket::Standard),
+            | Self::ImportsAtTop
+            | Self::PubUseOutsideSubtree => Some(FixSummaryBucket::Standard),
             Self::PubUse => Some(FixSummaryBucket::PubUse),
         }
     }
@@ -212,9 +216,7 @@ static PUB_USE_OUTSIDE_SUBTREE: DiagnosticSpec = DiagnosticSpec {
     headline:    HeadlineSource::FindingMessage {
         fallback: "re-export reaches outside this module's subtree",
     },
-    inline_help: Some(
-        "re-export the item from the module whose subtree owns it — usually the parent `mod.rs` — and point callers at that path",
-    ),
+    inline_help: Some(PUB_USE_OUTSIDE_SUBTREE_HELP),
     help_anchor: "pub-use-outside-subtree",
     detail_mode: DetailMode::None,
     fix_support: FixSupport::None,
@@ -384,11 +386,15 @@ pub(crate) struct ReportSummary {
 pub(crate) struct ReportFacts {
     #[serde(default)]
     #[serde(rename = "pub_use")]
-    pub pub_use_fix_facts:      PubUseFixFacts,
+    pub pub_use_fix_facts:          PubUseFixFacts,
     #[serde(default)]
-    pub all_features_coverage:  AllFeaturesCoverage,
+    pub all_features_coverage:      AllFeaturesCoverage,
     #[serde(default, rename = "compiler_warnings")]
-    pub compiler_warning_facts: CompilerWarningFacts,
+    pub compiler_warning_facts:     CompilerWarningFacts,
+    #[serde(default, rename = "pub_use_outside_subtree")]
+    pub subtree_reexport_fix_facts: SubtreeReexportFixFacts,
+    #[serde(default)]
+    pub module_mount_facts:         ModuleMountFacts,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,6 +436,141 @@ impl PubUseFixFacts {
 
 impl From<Vec<PubUseFixFact>> for PubUseFixFacts {
     fn from(facts: Vec<PubUseFixFact>) -> Self { Self { facts } }
+}
+
+/// The visibility a `pub_use_outside_subtree` fix gives the re-export it adds
+/// to the common ancestor module: `pub use`, `pub(crate) use`, `pub(super) use`,
+/// or a private `use`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReexportVisibility {
+    Public,
+    Crate,
+    Parent,
+    Private,
+}
+
+impl ReexportVisibility {
+    /// The keywords that open the inserted re-export.
+    pub(crate) const fn use_keyword(self) -> &'static str {
+        match self {
+            Self::Public => "pub use",
+            Self::Crate => "pub(crate) use",
+            Self::Parent => "pub(super) use",
+            Self::Private => "use",
+        }
+    }
+}
+
+/// Whether a module's items live in a file of their own or in an inline
+/// `mod name { ... }` block of its parent's file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModuleForm {
+    File,
+    Inline,
+}
+
+/// A re-export the fix adds to the common ancestor module, so callers that
+/// named the item through the removed re-export still find it there.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct AncestorReexportInsertion {
+    pub reexport_visibility: ReexportVisibility,
+    /// Path from the ancestor module to the item, `child::...::Name`.
+    pub relative_path:       String,
+    /// Source text of each `#[cfg(...)]` attribute on the removed re-export,
+    /// in source order.
+    pub cfg_attributes:      Vec<String>,
+    /// The ancestor module's own file, relative to the analysis root.
+    pub file:                String,
+    /// Byte offset in `file` where whole lines are inserted. When `offset > 0`
+    /// and the byte before it is not `\n`, the insertion starts with `\n`.
+    /// Offsets index the LF-normalized, BOM-stripped text rustc reads.
+    pub offset:              usize,
+    /// Leading whitespace of the line the offset was taken from.
+    pub indent:              String,
+}
+
+/// Whether the common ancestor module needs a new re-export once the one
+/// outside the subtree is removed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AncestorReexport {
+    /// No caller outside the target scope exists, or the ancestor already
+    /// binds the name with a wide enough visibility.
+    NotRequired,
+    Insert(AncestorReexportInsertion),
+}
+
+/// Everything `--fix` needs to rewrite one fixable `pub_use_outside_subtree`
+/// finding without resolving names again.
+///
+/// Module paths are crate-relative segment lists (empty = crate root) whose
+/// segments keep a raw identifier's `r#`. File paths are relative to the
+/// analysis root, like [`Finding::path`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct SubtreeReexportFixFact {
+    /// `path`, `line`, and `column` of the finding this fact belongs to.
+    pub use_path:          String,
+    pub use_line:          usize,
+    pub use_column:        usize,
+    /// The name the re-export binds; never a rename.
+    pub exported_name:     String,
+    /// The re-exported path as written in the `use` item, segments joined by
+    /// `::`; the owner module keeps a private `use` of it.
+    pub written_path:      String,
+    /// The module holding the re-export.
+    pub owner_module:      Vec<String>,
+    pub owner_module_form: ModuleForm,
+    /// The module whose binding of `exported_name` the re-export names.
+    pub source_module:     Vec<String>,
+    /// The widest scope every caller of the item can sit in: the narrowest
+    /// visibility on the source module's chain and the item's binding.
+    pub target_scope:      Vec<String>,
+    /// The nearest ancestor of the owner module that the source module
+    /// descends from.
+    pub common_ancestor:   Vec<String>,
+    pub crate_root_file:   String,
+    pub ancestor_reexport: AncestorReexport,
+}
+
+/// One file whose items belong to a module that `rust_syntax::ModuleMap`
+/// cannot reach from the crate root: an `include!` target, or a module file
+/// outside the crate root file's directory. Recorded only for compilation units
+/// that carry a [`SubtreeReexportFixFact`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct ModuleMountFact {
+    pub crate_root_file: String,
+    pub file:            String,
+    pub module_path:     Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct SubtreeReexportFixFacts {
+    #[serde(default)]
+    facts: Vec<SubtreeReexportFixFact>,
+}
+
+impl SubtreeReexportFixFacts {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &SubtreeReexportFixFact> { self.facts.iter() }
+}
+
+impl From<Vec<SubtreeReexportFixFact>> for SubtreeReexportFixFacts {
+    fn from(facts: Vec<SubtreeReexportFixFact>) -> Self { Self { facts } }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct ModuleMountFacts {
+    #[serde(default)]
+    facts: Vec<ModuleMountFact>,
+}
+
+impl ModuleMountFacts {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &ModuleMountFact> { self.facts.iter() }
+}
+
+impl From<Vec<ModuleMountFact>> for ModuleMountFacts {
+    fn from(facts: Vec<ModuleMountFact>) -> Self { Self { facts } }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

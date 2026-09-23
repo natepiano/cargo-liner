@@ -61,9 +61,7 @@ pub(super) fn visit_item(
         )?);
     }
 
-    if let Some(finding) = pub_use_outside_subtree::finding(ctx.tcx, item, &file_path)? {
-        sink.findings.push(finding);
-    }
+    pub_use_outside_subtree::record(ctx.tcx, item, &file_path, ctx.root_module, sink)?;
 
     record::record_visibility_findings(
         ctx,

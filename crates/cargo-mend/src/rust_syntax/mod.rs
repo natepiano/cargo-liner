@@ -8,6 +8,8 @@ pub(crate) use lexical_regions::LexicalRegions;
 pub(crate) use module_map::FileModulePath;
 pub(crate) use module_map::ModuleDirectories;
 pub(crate) use module_map::ModuleMap;
+use syn::Attribute;
+use syn::Ident;
 use syn::Meta;
 use syn::MetaList;
 use syn::Token;
@@ -62,6 +64,16 @@ enum BoundaryModuleName<'a> {
 /// `cfg(...)` or `cfg_attr(...)`.
 pub(crate) fn parse_meta_list(list: &MetaList) -> syn::Result<Punctuated<Meta, Token![,]>> {
     list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+}
+
+/// Whether `attributes` hold exactly `#[cfg(test)]`.
+pub(crate) fn is_cfg_test(attributes: &[Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .parse_args::<Ident>()
+                .is_ok_and(|predicate| predicate == "test")
+    })
 }
 
 pub(crate) fn leading_super_count(segments: &[String]) -> usize {

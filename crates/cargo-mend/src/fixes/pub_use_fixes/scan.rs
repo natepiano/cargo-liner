@@ -11,6 +11,8 @@ use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
 use super::validated_plan;
 use super::validated_plan::ValidatedPubUsePlan;
+use crate::fixes::facade_redirect::SourceLines;
+use crate::fixes::facade_redirect::find_source_root;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Report;
@@ -154,7 +156,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             continue;
         };
 
-        let source_root = validated_plan::find_source_root(&fact.parent_module)
+        let source_root = find_source_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
         let module_map = module_maps
@@ -253,7 +255,8 @@ fn build_validated_plan(
 }
 
 fn child_visibility_state(source: &str, line: usize) -> Result<ChildVisibilityState> {
-    let line_span = validated_plan::line_span(source, line)
+    let line_span = SourceLines::new(source)
+        .line_span(line)
         .context("failed to compute child item line span")?;
     Ok(
         find_bare_pub_keyword(&source[line_span.0..line_span.1], line_span.0)

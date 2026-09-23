@@ -1,4 +1,5 @@
 mod constants;
+mod facade_redirect;
 mod field_visibility;
 mod imports;
 mod imports_at_top;
@@ -8,6 +9,7 @@ mod prefer_module_import;
 mod pub_use_fixes;
 mod restricted_annotation;
 mod runner;
+mod subtree_reexport;
 mod unused_pub;
 mod visibility_annotation_site;
 

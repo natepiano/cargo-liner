@@ -109,6 +109,8 @@ pub(super) fn build_inline_call_findings_and_fixes(
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut inserted_modules: BTreeSet<Vec<String>> = BTreeSet::new();
+    // Indexes into `fixes` of the file-level `use` insertions.
+    let mut insertions = Vec::new();
     let covering_gates = covering_gates(inline_inputs.candidates);
 
     for candidate in inline_inputs.candidates {
@@ -193,10 +195,12 @@ pub(super) fn build_inline_call_findings_and_fixes(
         if !inserted_modules.insert(candidate.absolute_module.clone()) {
             continue;
         }
+        let offset = inline_inputs.file_insertion.offset;
+        insertions.push(fixes.len());
         fixes.push(UseFix {
             path:         file_context.path.to_path_buf(),
-            start:        inline_inputs.file_insertion_offset,
-            end:          inline_inputs.file_insertion_offset,
+            start:        offset,
+            end:          offset,
             replacement:  format!(
                 "{}use {};\n",
                 import_attributes.render(""),
@@ -204,6 +208,17 @@ pub(super) fn build_inline_call_findings_and_fixes(
             ),
             import_group: group,
         });
+    }
+
+    // Insertions at one offset apply in ascending replacement order, each
+    // landing before the last, so the smallest lands last and its trailing
+    // blank line separates every inserted `use` from the first item.
+    if inline_inputs.file_insertion.before_first_item
+        && let Some(last) = insertions
+            .into_iter()
+            .min_by(|&left, &right| fixes[left].replacement.cmp(&fixes[right].replacement))
+    {
+        fixes[last].replacement.push('\n');
     }
 
     (findings, fixes)

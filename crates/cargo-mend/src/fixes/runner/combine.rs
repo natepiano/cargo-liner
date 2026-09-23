@@ -36,9 +36,9 @@ impl MendRunner<'_> {
             .collect();
 
         // Each pass tags its fixes with the notice they report under here,
-        // where the pass is still known. The tag rides through the conflicting-
-        // group drop and through dedup, so what the run announces is what it
-        // wrote rather than what it scanned.
+        // where the pass is still known. The tag stays on each fix through the
+        // conflicting-group drop and through dedup, so what the run announces
+        // is what it wrote rather than what it scanned.
         let mut fixes = Vec::new();
 
         if let Some(scan) = fix_scans.imports {
@@ -80,10 +80,80 @@ impl MendRunner<'_> {
             fixes.extend(tag(None, scan.fixes.iter()));
         }
 
+        // The subtree re-export pass wins every overlap: its owner edit, caller
+        // rewrites, and ancestor re-export compile only together, while a fix
+        // dropped from another pass is proposed again on the next convergence
+        // pass.
+        let mut fixes = fixes_clear_of_ranges(fixes, &subtree_reexport_ranges(fix_scans));
+        if let Some(scan) = fix_scans.subtree_reexports {
+            fixes.extend(tag(Some(FixKind::Import), scan.fixes.iter()));
+        }
+
         let fixes = drop_conflicting_import_groups(fixes);
 
         imports::ValidatedFixSet::try_from(fixes).map_err(MendFailure::Unexpected)
     }
+}
+
+impl FixScans<'_> {
+    /// Leaves `pub_use` out of this pass when any of its fixes overlaps a
+    /// subtree re-export fix. Its parent rewrite and child narrowing compile
+    /// only together, so the pass cannot lose single fixes the way the other
+    /// passes do. Its notice and applied count leave with it, and the next
+    /// convergence pass proposes it again.
+    pub(super) fn without_pub_use_overlapping_subtree_reexports(self) -> Self {
+        let subtree_ranges = subtree_reexport_ranges(self);
+        let pub_use = self.pub_use.filter(|scan| {
+            !scan
+                .fixes
+                .iter()
+                .any(|fix| overlaps_any(fix, &subtree_ranges))
+        });
+        Self { pub_use, ..self }
+    }
+}
+
+fn subtree_reexport_ranges(fix_scans: FixScans<'_>) -> Vec<FileRange<'_>> {
+    fix_scans
+        .subtree_reexports
+        .iter()
+        .flat_map(|scan| scan.fixes.iter())
+        .map(file_range)
+        .collect()
+}
+
+/// Drops every fix that overlaps one of `ranges`, together with every fix
+/// sharing an `ImportGroup` with a dropped one: a `use` rewrite kept without
+/// its call-site rewrites, or an in-body `use` deleted without its insertion at
+/// the scope top, would not compile. An insertion at `k` overlaps `[s, e)` only
+/// when `s < k < e`.
+fn fixes_clear_of_ranges(fixes: Vec<TaggedFix>, ranges: &[FileRange<'_>]) -> Vec<TaggedFix> {
+    let overlapped_groups: BTreeSet<(PathBuf, String, String)> = fixes
+        .iter()
+        .filter(|tagged| overlaps_any(&tagged.fix, ranges))
+        .filter_map(|tagged| {
+            tagged.fix.import_group.as_ref().map(|group| {
+                (
+                    tagged.fix.path.clone(),
+                    group.bare_name.clone(),
+                    group.full_path.clone(),
+                )
+            })
+        })
+        .collect();
+    fixes
+        .into_iter()
+        .filter(|tagged| {
+            !overlaps_any(&tagged.fix, ranges)
+                && tagged.fix.import_group.as_ref().is_none_or(|group| {
+                    !overlapped_groups.contains(&(
+                        tagged.fix.path.clone(),
+                        group.bare_name.clone(),
+                        group.full_path.clone(),
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Pairs each fix with the notice kind of the pass that proposed it.
@@ -198,6 +268,8 @@ mod tests {
     use crate::fixes::imports::UseFix;
     use crate::fixes::imports_at_top::ImportsAtTopScan;
     use crate::fixes::prefer_module_import::PreferModuleImportScan;
+    use crate::fixes::pub_use_fixes::PubUseFixScan;
+    use crate::fixes::subtree_reexport::SubtreeReexportScan;
 
     fn tagged(path: &str, start: usize, replacement: &str, bare: &str, full: &str) -> UseFix {
         range_fix(
@@ -216,8 +288,8 @@ mod tests {
         range_fix(path, start, start, replacement, None)
     }
 
-    /// Exercises the drop over plain `UseFix` values; the notice kind rides
-    /// along untouched, so the tests only care about the fixes.
+    /// Exercises the drop over plain `UseFix` values; the drop never reads the
+    /// notice kind, so the tests only care about the fixes.
     fn drop_conflicts(fixes: Vec<UseFix>) -> Vec<UseFix> {
         let tagged = fixes
             .into_iter()
@@ -262,6 +334,7 @@ mod tests {
             field_visibility:      None,
             imports_at_top:        None,
             pub_use:               None,
+            subtree_reexports:     None,
         }
     }
 
@@ -301,6 +374,7 @@ mod tests {
             field_visibility: None,
             imports_at_top: Some(imports_at_top),
             pub_use: None,
+            subtree_reexports: None,
         }
     }
 
@@ -330,6 +404,40 @@ mod tests {
         ImportGroup {
             bare_name: "helper".to_string(),
             full_path: "crate::tool::helper".to_string(),
+        }
+    }
+
+    /// A subtree re-export pass whose one fix replaces bytes `10..20` of
+    /// `src/lib.rs`.
+    fn subtree_reexport_scan() -> anyhow::Result<SubtreeReexportScan> {
+        Ok(SubtreeReexportScan {
+            fixes:   ValidatedFixSet::try_from(vec![range_fix(
+                "src/lib.rs",
+                10,
+                20,
+                "use super::stage::f;",
+                None,
+            )])?,
+            skipped: 0,
+        })
+    }
+
+    fn fix_scans_with_subtree_reexports<'a>(
+        imports: Option<&'a ImportScan>,
+        module_imports: Option<&'a PreferModuleImportScan>,
+        subtree_reexports: &'a SubtreeReexportScan,
+    ) -> FixScans<'a> {
+        FixScans {
+            imports,
+            module_imports,
+            inline_types: None,
+            unused_pub: None,
+            narrowed_pub: None,
+            restricted_annotation: None,
+            field_visibility: None,
+            imports_at_top: None,
+            pub_use: None,
+            subtree_reexports: Some(subtree_reexports),
         }
     }
 
@@ -602,5 +710,115 @@ mod tests {
         let result = drop_conflicts(fixes);
         assert_eq!(result.len(), 1);
         assert!(result[0].import_group.is_none());
+    }
+
+    #[test]
+    fn subtree_reexport_fix_drops_an_insertion_inside_its_range() -> anyhow::Result<()> {
+        let imports = import_scan(vec![untagged("src/lib.rs", 15, "use crate::x;\n")])?;
+        let subtree_reexports = subtree_reexport_scan()?;
+
+        let fixes = combined_fix_set(fix_scans_with_subtree_reexports(
+            Some(&imports),
+            None,
+            &subtree_reexports,
+        ))?;
+
+        assert_eq!(replacements(&fixes), vec!["use super::stage::f;"]);
+        Ok(())
+    }
+
+    #[test]
+    fn subtree_reexport_fix_keeps_insertions_at_its_boundaries() -> anyhow::Result<()> {
+        let imports = import_scan(vec![
+            untagged("src/lib.rs", 10, "use crate::before;\n"),
+            untagged("src/lib.rs", 20, "use crate::after;\n"),
+        ])?;
+        let subtree_reexports = subtree_reexport_scan()?;
+
+        let fixes = combined_fix_set(fix_scans_with_subtree_reexports(
+            Some(&imports),
+            None,
+            &subtree_reexports,
+        ))?;
+
+        assert_eq!(
+            replacements(&fixes),
+            vec![
+                "use crate::before;\n",
+                "use super::stage::f;",
+                "use crate::after;\n",
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn subtree_reexport_fix_drops_an_overlapped_import_group_whole() -> anyhow::Result<()> {
+        let module_imports = module_import_scan(vec![
+            range_fix(
+                "src/lib.rs",
+                0,
+                8,
+                "use crate::tool::helper;",
+                Some(helper_module_group()),
+            ),
+            range_fix(
+                "src/lib.rs",
+                12,
+                18,
+                "helper::present",
+                Some(helper_module_group()),
+            ),
+        ])?;
+        let subtree_reexports = subtree_reexport_scan()?;
+
+        let fixes = combined_fix_set(fix_scans_with_subtree_reexports(
+            None,
+            Some(&module_imports),
+            &subtree_reexports,
+        ))?;
+
+        assert_eq!(
+            replacements(&fixes),
+            vec!["use super::stage::f;"],
+            "the call-site rewrite overlaps, so its `use` rewrite outside the range goes too"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pub_use_pass_is_left_out_whole_when_one_fix_overlaps_a_subtree_reexport_fix()
+    -> anyhow::Result<()> {
+        let pub_use = PubUseFixScan {
+            fixes:   ValidatedFixSet::try_from(vec![
+                untagged("src/lib.rs", 0, "pub(crate) use child::f;\n"),
+                range_fix("src/lib.rs", 12, 18, "", None),
+            ])?,
+            applied: 1,
+            skipped: 0,
+        };
+        let subtree_reexports = subtree_reexport_scan()?;
+        let overlapping = FixScans {
+            pub_use: Some(&pub_use),
+            ..fix_scans_with_subtree_reexports(None, None, &subtree_reexports)
+        };
+        let clear = FixScans {
+            subtree_reexports: None,
+            ..overlapping
+        };
+
+        assert!(
+            overlapping
+                .without_pub_use_overlapping_subtree_reexports()
+                .pub_use
+                .is_none()
+        );
+        assert!(
+            clear
+                .without_pub_use_overlapping_subtree_reexports()
+                .pub_use
+                .is_some()
+        );
+        Ok(())
     }
 }

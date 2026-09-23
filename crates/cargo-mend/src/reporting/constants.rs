@@ -43,6 +43,11 @@ pub(super) const HINT_ERROR_FIXABLE_WITH_FIX: &str =
 pub(super) const HINT_ERROR_FIXABLE_WITH_FIX_PUB_USE: &str =
     "this error is auto-fixable with `cargo mend --fix-pub-use`";
 
+// pub_use_outside_subtree
+pub(crate) const PUB_USE_OUTSIDE_SUBTREE_HELP: &str = "re-export the item from the module whose \
+     subtree owns it — usually the parent `mod.rs` — or move the definition to the module that \
+     owns the concept, then point callers at that path";
+
 // rustc/cargo json protocol
 pub(super) const CARGO_MESSAGE_TYPE_DIAGNOSTIC: &str = "diagnostic";
 pub(super) const CARGO_REASON_BUILD_FINISHED: &str = "build-finished";

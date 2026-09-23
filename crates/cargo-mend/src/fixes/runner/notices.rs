@@ -23,7 +23,8 @@ impl FixScans<'_> {
                 self.imports.is_some()
                     || self.module_imports.is_some()
                     || self.inline_types.is_some()
-                    || self.imports_at_top.is_some(),
+                    || self.imports_at_top.is_some()
+                    || self.subtree_reexports.is_some(),
             ),
             (FixKind::PubRemoval, self.unused_pub.is_some()),
             (FixKind::Narrowing, self.narrowed_pub.is_some()),
@@ -80,6 +81,12 @@ impl MendRunner<'_> {
             )));
         }
 
+        // Pushed at zero too: a convergence pass that skips nothing replaces an
+        // earlier pass's count instead of leaving it standing.
+        if let Some(scan) = fix_scans.subtree_reexports {
+            notices.push(NoticeKind::SubtreeReexportSkipped(scan.skipped));
+        }
+
         // The historical `ImportCleanupSuggested` notice is gone; the
         // orchestrator runs `cargo fix` automatically when `--fix-pub-use`
         // applied edits and `unused import` warnings followed.
@@ -117,6 +124,7 @@ mod tests {
             field_visibility:      Some(field_visibility),
             imports_at_top:        None,
             pub_use:               None,
+            subtree_reexports:     None,
         }
     }
 

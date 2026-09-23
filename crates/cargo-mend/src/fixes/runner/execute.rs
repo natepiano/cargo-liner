@@ -27,6 +27,7 @@ impl MendRunner<'_> {
                 compiler_warnings,
                 compiler_fixable,
                 applied_pub_use: 0,
+                applied_subtree_reexport: false,
             }),
             OperationIntent::DryRun => {
                 // Count the validated set, not the scans: a dry run must
@@ -48,6 +49,7 @@ impl MendRunner<'_> {
                     compiler_warnings,
                     compiler_fixable,
                     applied_pub_use: 0,
+                    applied_subtree_reexport: false,
                 })
             },
             OperationIntent::Apply => self.apply(planned),

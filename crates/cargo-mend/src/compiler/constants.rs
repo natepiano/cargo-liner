@@ -68,7 +68,7 @@ pub(super) const METADATA_FILE_EXTENSION: &str = "rmeta";
 pub(super) const REPORT_FILE_EXTENSION: &str = "mend.json";
 
 // findings
-pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 34;
+pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 35;
 
 // progress indicator
 pub(super) const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];

@@ -18,6 +18,7 @@ use syn::visit::visit_item_mod;
 use walkdir::WalkDir;
 
 use super::attribute_references;
+use super::descendant_globs;
 use super::function_imports::ImportDetector;
 use super::function_imports::ImportTarget;
 use super::function_imports::RawCandidate;
@@ -85,9 +86,19 @@ pub(super) struct ImportFindingInputs<'a> {
 }
 
 pub(super) struct InlineCallFindingInputs<'a> {
-    pub(super) candidates:            &'a [InlineCallCandidate],
-    pub(super) will_import_modules:   &'a BTreeSet<Vec<String>>,
-    pub(super) file_insertion_offset: usize,
+    pub(super) candidates:          &'a [InlineCallCandidate],
+    pub(super) will_import_modules: &'a BTreeSet<Vec<String>>,
+    pub(super) file_insertion:      FileInsertion,
+}
+
+/// Where a file-level `use` goes: after the last top-level `use`, or before
+/// the first item when the file has none.
+#[derive(Clone, Copy)]
+pub(super) struct FileInsertion {
+    pub(super) offset:            usize,
+    /// The file has no top-level `use`, so the inserted imports need a blank
+    /// line between them and the item that follows.
+    pub(super) before_first_item: bool,
 }
 
 pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImportScan> {
@@ -184,21 +195,14 @@ fn scan_file(
     let existing_module_imports =
         collect_existing_module_imports(&syntax, source_root, &current_module_path);
 
-    let mut module_to_functions = group_candidates_by_module(detector.candidates);
-
-    drop_colliding_candidates(
-        &existing_module_imports,
-        &mut module_to_functions,
-        &mut inline_detector.candidates,
-    );
-
-    drop_attribute_referenced_candidates(&syntax, &mut module_to_functions);
-
-    drop_candidates_reimported_by_inline_modules(&syntax, &mut module_to_functions);
-
-    // Last, so the drops above get to un-collide a pair by removing one side.
-    drop_candidates_colliding_with_each_other(
-        &mut module_to_functions,
+    let module_to_functions = fixable_function_candidates(
+        &FileScope {
+            syntax: &syntax,
+            module_map,
+            current_module_path: &current_module_path,
+            existing_module_imports: &existing_module_imports,
+        },
+        detector.candidates,
         &mut inline_detector.candidates,
     );
 
@@ -238,13 +242,13 @@ fn scan_file(
     if !inline_detector.candidates.is_empty() {
         let will_import_modules =
             build_will_import_modules(&existing_module_imports, &module_to_functions);
-        let file_insertion_offset = file_level_insertion_offset(&syntax, &text, &offsets);
+        let file_insertion = file_level_insertion(&syntax, &text, &offsets);
         let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
             &file_context,
             &InlineCallFindingInputs {
                 candidates: &inline_detector.candidates,
                 will_import_modules: &will_import_modules,
-                file_insertion_offset,
+                file_insertion,
             },
         );
         findings.extend(inline_findings);
@@ -252,6 +256,45 @@ fn scan_file(
     }
 
     Ok((findings, fixes))
+}
+
+/// What the candidate drops read about the scanned file.
+struct FileScope<'a> {
+    syntax:                  &'a File,
+    module_map:              &'a ModuleMap,
+    current_module_path:     &'a [String],
+    existing_module_imports: &'a BTreeSet<ScopedModuleImport>,
+}
+
+/// The function import candidates grouped by module, without those whose
+/// rewrite would not compile; drops the colliding inline call candidates too.
+fn fixable_function_candidates(
+    scope: &FileScope<'_>,
+    candidates: Vec<RawCandidate>,
+    inline_candidates: &mut Vec<InlineCallCandidate>,
+) -> BTreeMap<String, Vec<RawCandidate>> {
+    let mut module_to_functions = group_candidates_by_module(candidates);
+
+    drop_colliding_candidates(
+        scope.existing_module_imports,
+        &mut module_to_functions,
+        inline_candidates,
+    );
+
+    drop_attribute_referenced_candidates(scope.syntax, &mut module_to_functions);
+
+    drop_candidates_reimported_by_inline_modules(scope.syntax, &mut module_to_functions);
+
+    descendant_globs::drop_candidates_reached_by_descendant_globs(
+        scope.module_map,
+        scope.current_module_path,
+        &mut module_to_functions,
+    );
+
+    // Last, so the drops above get to un-collide a pair by removing one side.
+    drop_candidates_colliding_with_each_other(&mut module_to_functions, inline_candidates);
+
+    module_to_functions
 }
 
 fn group_candidates_by_module(
@@ -589,7 +632,7 @@ fn build_will_import_modules(
     will_import_modules
 }
 
-fn file_level_insertion_offset(syntax: &File, text: &str, offsets: &[usize]) -> usize {
+fn file_level_insertion(syntax: &File, text: &str, offsets: &[usize]) -> FileInsertion {
     let mut last_use_end: Option<usize> = None;
     let mut first_item_start: Option<usize> = None;
     for item in &syntax.items {
@@ -605,7 +648,10 @@ fn file_level_insertion_offset(syntax: &File, text: &str, offsets: &[usize]) -> 
             last_use_end = Some(end);
         }
     }
-    last_use_end.or(first_item_start).unwrap_or(0)
+    FileInsertion {
+        offset:            last_use_end.or(first_item_start).unwrap_or(0),
+        before_first_item: last_use_end.is_none(),
+    }
 }
 
 fn build_findings_and_fixes(

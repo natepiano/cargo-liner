@@ -13,6 +13,7 @@ use crate::fixes::narrow_pub_crate::NarrowPubCrateScan;
 use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::fixes::pub_use_fixes::PubUseFixScan;
 use crate::fixes::restricted_annotation::RestrictedAnnotationScan;
+use crate::fixes::subtree_reexport::SubtreeReexportScan;
 use crate::fixes::unused_pub::UnusedPubScan;
 use crate::reporting::ColorMode;
 use crate::reporting::ExecutionOutcome;
@@ -73,6 +74,7 @@ pub(super) struct RunPlan {
     pub(super) field_visibility_fix_scan:  Option<FieldVisibilityFixScan>,
     pub(super) imports_at_top_scan:        Option<ImportsAtTopScan>,
     pub(super) pub_use_scan:               Option<PubUseFixScan>,
+    pub(super) subtree_reexport_scan:      Option<SubtreeReexportScan>,
     pub(super) check_duration:             Duration,
     pub(super) compiler_warnings:          usize,
     pub(super) compiler_fixable:           usize,
@@ -89,10 +91,11 @@ pub(super) struct FixScans<'a> {
     pub(super) field_visibility:      Option<&'a FieldVisibilityFixScan>,
     pub(super) imports_at_top:        Option<&'a ImportsAtTopScan>,
     pub(super) pub_use:               Option<&'a PubUseFixScan>,
+    pub(super) subtree_reexports:     Option<&'a SubtreeReexportScan>,
 }
 
 impl RunPlan {
-    pub(super) const fn fix_scans(&self) -> FixScans<'_> {
+    pub(super) fn fix_scans(&self) -> FixScans<'_> {
         FixScans {
             imports:               self.import_scan.as_ref(),
             module_imports:        self.prefer_module_import_scan.as_ref(),
@@ -103,6 +106,8 @@ impl RunPlan {
             field_visibility:      self.field_visibility_fix_scan.as_ref(),
             imports_at_top:        self.imports_at_top_scan.as_ref(),
             pub_use:               self.pub_use_scan.as_ref(),
+            subtree_reexports:     self.subtree_reexport_scan.as_ref(),
         }
+        .without_pub_use_overlapping_subtree_reexports()
     }
 }
