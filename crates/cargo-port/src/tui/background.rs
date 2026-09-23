@@ -18,10 +18,10 @@ use std::time::Instant;
 
 use tui_pane::PERF_LOG_TARGET;
 
+use super::messages::CiFetchMsg;
+use super::messages::CleanMsg;
+use super::messages::OwnedRunEvent;
 use super::startup_services::WatcherHandle;
-use super::terminal::CiFetchMsg;
-use super::terminal::CleanMsg;
-use super::terminal::OwnedRunEvent;
 use crate::channel::Receiver;
 use crate::channel::SendError;
 use crate::channel::Sender;

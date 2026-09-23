@@ -4,7 +4,7 @@ use super::DiagnosticCode;
 use super::FixSupport;
 
 #[derive(Debug, Deserialize)]
-pub struct Finding {
+pub(crate) struct Finding {
     pub code:        DiagnosticCode,
     #[serde(default)]
     pub headline:    String,

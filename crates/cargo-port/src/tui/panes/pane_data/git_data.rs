@@ -601,9 +601,9 @@ pub(super) fn build_submodule_context(submodule: &Submodule) -> Option<Submodule
 #[cfg(test)]
 mod git_field_tests {
     use super::*;
-    use crate::tui::app::AvailabilityStatus;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::DetailField;
+    use crate::tui::state::AvailabilityStatus;
 
     fn git_data() -> GitData {
         GitData {

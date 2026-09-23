@@ -10,8 +10,11 @@ mod constants;
 mod cpu;
 mod perf_log;
 
+pub use constants::CPU_SMOOTHING_WINDOW_POLLS;
 pub use constants::PERF_LOG_TARGET;
-pub use cpu::CPU_SMOOTHING_WINDOW_POLLS;
+pub use constants::SLOW_BG_BATCH_MS;
+pub use constants::SLOW_FRAME_MS;
+pub use constants::SLOW_INPUT_EVENT_MS;
 #[cfg(target_os = "macos")]
 pub use cpu::CoreCluster;
 pub use cpu::CpuBreakdown;
@@ -24,8 +27,5 @@ pub use cpu::RollingMean;
 pub use cpu::blank_bar_color;
 pub use cpu::filled_cells;
 pub use cpu::severity;
-pub use perf_log::SLOW_BG_BATCH_MS;
-pub use perf_log::SLOW_FRAME_MS;
-pub use perf_log::SLOW_INPUT_EVENT_MS;
 pub use perf_log::init;
 pub use perf_log::ms;

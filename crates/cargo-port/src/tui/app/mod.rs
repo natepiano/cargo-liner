@@ -131,15 +131,14 @@ use self::constants::LINT_PROJECT_PAUSED_TOAST_TITLE;
 use self::constants::LINT_PROJECT_RESUMED_TOAST_TITLE;
 use self::constants::LINT_RESUMED_TOAST_BODY;
 use self::constants::LINT_RESUMED_TOAST_TITLE;
-pub(super) use super::app_render_state::FinderSplit;
-pub(super) use super::app_render_state::OverlayRenderInputs;
-pub(super) use super::app_render_state::RenderBorrows;
-pub(super) use super::app_render_state::RenderRegistry;
+use super::app_render_state::FinderSplit;
+use super::app_render_state::OverlayRenderInputs;
+use super::app_render_state::RenderBorrows;
+use super::app_render_state::RenderRegistry;
 use super::background::Background;
 #[cfg(test)]
 #[cfg(test)]
 use super::columns::LintCell;
-pub(super) use super::columns::ProjectListWidths;
 #[cfg(test)]
 use super::columns::StyledSegment;
 use super::integration;
@@ -157,9 +156,8 @@ use super::panes::PaneBehavior;
 use super::panes::PaneId;
 use super::panes::Panes;
 use super::panes::SyncedDescriptionHeight;
-pub(super) use super::project_list::ExpandKey;
-use super::project_list::ProjectList;
-pub(super) use super::project_list::VisibleRow;
+use super::project_list::VisibleRow;
+use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
 use super::running_targets::RunningTargetTerminationCapability;
 use super::sccache::SccacheStatusLine;
@@ -172,7 +170,6 @@ use super::startup_services::StartupEnvironment;
 use super::startup_services::StartupServices;
 #[cfg(test)]
 use super::state;
-pub(super) use super::state::AvailabilityStatus;
 use super::state::Ci;
 use super::state::CiStatusLookup;
 use super::state::Config;
@@ -1470,7 +1467,7 @@ mod tests {
     use tui_pane::PaneFocusState;
     use tui_pane::RenderFocus;
 
-    pub(super) use super::App;
+    use super::App;
     use super::CiRunDisplayMode;
     use super::DiscoveryRowKind;
     use super::DiscoveryShimmer;
@@ -1522,9 +1519,9 @@ mod tests {
     use crate::tui::panes::PREFIX_ROOT_LEAF;
     use crate::tui::panes::PREFIX_WORKTREE_FLAT;
     use crate::tui::panes::PaneId;
-    pub(super) use crate::tui::project_list::ExpandKey;
-    use crate::tui::project_list::ProjectList;
-    pub(super) use crate::tui::project_list::VisibleRow;
+    use crate::tui::project_list::ExpandKey;
+    use crate::tui::project_list::VisibleRow;
+    use crate::tui::project_list_state::ProjectList;
     use crate::tui::render_context::PaneRenderCtx;
     use crate::tui::state::CiStatusLookup;
     use crate::tui::test_support as tui_test_support;
@@ -2750,7 +2747,6 @@ mod tests {
         use tui_pane::Visibility;
         use tui_pane::render_status_bar;
 
-        use super::App;
         use super::make_app;
         use crate::ci::CiRun;
         use crate::ci::CiStatus;
@@ -2765,6 +2761,7 @@ mod tests {
         use crate::project::RootItem;
         use crate::project::Submodule;
         use crate::test_support;
+        use crate::tui::app::App;
         use crate::tui::app::CargoPortToastAction;
         use crate::tui::input;
         use crate::tui::integration::AppGlobalAction;
@@ -2989,8 +2986,8 @@ mod tests {
                 in_project_target:        None,
                 in_project_non_target:    None,
                 out_of_tree_target_bytes: None,
-                lint_display:             crate::tui::panes::LintDisplay::default(),
-                ci_display:               crate::tui::panes::CiDisplay::default(),
+                lint_display:             crate::tui::state::LintDisplay::default(),
+                ci_display:               crate::tui::state::CiDisplay::default(),
             }
         }
 
@@ -4731,9 +4728,8 @@ mod tests {
         use crate::scan::DirSizes;
         use crate::tui::app::App;
         use crate::tui::app::ConfirmAction;
-        use crate::tui::app::ExpandKey;
         use crate::tui::app::HoveredPaneRow;
-        use crate::tui::app::OverlayRenderInputs;
+        use crate::tui::app_render_state::OverlayRenderInputs;
         use crate::tui::dismiss_target::DismissTarget;
         use crate::tui::finder;
         use crate::tui::hit_test::HoverTarget;
@@ -4749,7 +4745,8 @@ mod tests {
         use crate::tui::panes::RunTargetKind;
         use crate::tui::panes::SyncedDescriptionHeight;
         use crate::tui::panes::TargetsData;
-        use crate::tui::project_list::ProjectList;
+        use crate::tui::project_list::ExpandKey;
+        use crate::tui::project_list_state::ProjectList;
         use crate::tui::render;
         use crate::tui::running_targets::RunProfile;
         use crate::tui::running_targets::RunningInstance;
@@ -10101,9 +10098,9 @@ mod tests {
         use crate::tui::constants::STARTUP_ROW_MIN_VISIBLE;
         use crate::tui::keymap::CiRunsAction;
         use crate::tui::keymap::LintsAction;
+        use crate::tui::messages::CleanMsg;
         use crate::tui::panes;
         use crate::tui::state::StartupNetworkReadiness;
-        use crate::tui::terminal::CleanMsg;
         fn test_pull_request_info(number: u32, title: &str) -> PullRequestInfo {
             test_pull_request_info_with_state(number, title, PullRequestState::Ready)
         }
@@ -11217,7 +11214,7 @@ mod tests {
 
             assert!(matches!(
                 &app.panes.package.content().unwrap().lint_display,
-                panes::LintDisplay::NoRuns
+                crate::tui::state::LintDisplay::NoRuns
             ));
             let generation_before = app.scan.generation();
 
@@ -11245,7 +11242,7 @@ mod tests {
             assert!(
                 matches!(
                     display,
-                    panes::LintDisplay::Runs {
+                    crate::tui::state::LintDisplay::Runs {
                         count:  0,
                         status: LintStatus::Running(..),
                     }
@@ -12268,7 +12265,7 @@ mod tests {
             assert!(
                 matches!(
                     display,
-                    panes::LintDisplay::Runs {
+                    crate::tui::state::LintDisplay::Runs {
                         count:  1,
                         status: LintStatus::Passed(_),
                     }
@@ -12618,7 +12615,7 @@ mod tests {
             assert!(
                 matches!(
                     running_display,
-                    panes::LintDisplay::Runs {
+                    crate::tui::state::LintDisplay::Runs {
                         status: LintStatus::Running(..),
                         ..
                     }
@@ -12640,7 +12637,7 @@ mod tests {
             assert!(
                 !matches!(
                     finished_display,
-                    panes::LintDisplay::Runs {
+                    crate::tui::state::LintDisplay::Runs {
                         status: LintStatus::Running(..),
                         ..
                     }
@@ -15995,7 +15992,7 @@ mod tests {
     /// Wrap owned `RootItem`s in a `ProjectList` for test helpers that pass
     /// them to finder/widths functions.
     pub(super) fn as_entries(items: Vec<RootItem>) -> ProjectList {
-        crate::tui::project_list::ProjectList::new(items)
+        crate::tui::project_list_state::ProjectList::new(items)
     }
 
     fn make_non_rust_project(name: Option<&str>, path: &str) -> RootItem {

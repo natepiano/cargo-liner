@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use super::ProjectList;
 use crate::project::AbsolutePath;
 use crate::project::GitStatus;
 use crate::project::MemberGroup;
@@ -10,6 +9,7 @@ use crate::project::Submodule;
 use crate::project::VendoredPackage;
 use crate::project::Visibility;
 use crate::project::WorktreeGroup;
+use crate::tui::project_list_state::ProjectList;
 
 // ── Visible-rows flattening ──────────────────────────────────────────
 //

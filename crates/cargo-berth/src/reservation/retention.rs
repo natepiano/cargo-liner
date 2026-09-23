@@ -59,15 +59,15 @@ use crate::ledger::JournalActor;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::ProtectedPhaseStartHead;
+use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeAdditionSet;
+use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::ResolvedEditAuthorization;
+use crate::ledger::ScopeKind;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
-use crate::scope::ScopeKind;
 
 impl Reservation {
     /// Retained unions conservatively count every path as committed when a holder is unavailable.
@@ -1691,6 +1691,8 @@ mod tests {
     use crate::ledger::IncursionIncidentId;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ScopeKind;
     use crate::reservation::SuccessorScopedPatchEquivalenceVerdict as Verdict;
     use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability as Availability;
     use crate::reservation::record::ReservationEvidenceState;
@@ -1698,8 +1700,6 @@ mod tests {
     use crate::reservation::scoped_patch_evaluation::ScopedPatchEvaluationPriority;
     use crate::reservation::scoped_patch_evaluation::ScopedPatchTargetVerdictAvailability;
     use crate::scope::PathCase;
-    use crate::scope::ReservationScopeSet;
-    use crate::scope::ScopeKind;
 
     const FOREIGN_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a22";
     const INCIDENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a23";
@@ -2385,14 +2385,14 @@ mod tests {
         assert_eq!(generated.kind, ScopeKind::Tree);
         assert_eq!(single.kind, ScopeKind::File);
         assert!(generated.contains(
-            &crate::scope::ReservationScope {
+            &crate::ledger::ReservationScope {
                 path: "generated/child.rs".parse()?,
                 kind: ScopeKind::File,
             },
             PathCase::Sensitive,
         ));
         assert!(!single.contains(
-            &crate::scope::ReservationScope {
+            &crate::ledger::ReservationScope {
                 path: "single.txt/child".parse()?,
                 kind: ScopeKind::File,
             },

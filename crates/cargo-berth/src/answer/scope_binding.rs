@@ -10,10 +10,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::ids::ReservationId;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
 use crate::reservation::ReservationConflict;
 use crate::scope::PathCase;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
 
 /// A deterministic revision that changes only when a reservation's scopes change.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

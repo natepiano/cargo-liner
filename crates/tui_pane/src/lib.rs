@@ -28,7 +28,6 @@ mod watched_file;
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
 // reference these types via `$crate::*` paths, which requires them at
 // the crate root. `tests/macro_use.rs` locks the path stability.
-pub use activity::ACTIVITY_SPINNER;
 pub use activity::Icon;
 pub use app_context::AppContext;
 pub use app_context::NoToastAction;
@@ -105,6 +104,7 @@ pub use bar::render as render_status_bar;
 pub use bar::render_status_line;
 pub use bar::status_line_global_spans;
 pub use bar::status_line_note_spans;
+pub use constants::ACTIVITY_SPINNER;
 pub use constants::BLOCK_BORDER_WIDTH;
 pub use constants::BYTES_PER_GIB;
 pub use constants::BYTES_PER_KIB;

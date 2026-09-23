@@ -19,8 +19,8 @@ use crate::ids::WorktreeId;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::ReservationPurpose;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
 
 /// One foreign holder whose retained reservation intersects requested scopes.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

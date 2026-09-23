@@ -1,8 +1,8 @@
 //! Whether a conflicted scoped replay still proves one reservation's integration.
 
 use crate::ids::GitObjectId;
-use crate::scope::ReservationScopeSet;
-use crate::scope::ScopeKind;
+use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 
 /// Whether a conflicted replay is still usable for one reservation's proof.
 pub(super) enum ScopedMergeConflictCoverage {

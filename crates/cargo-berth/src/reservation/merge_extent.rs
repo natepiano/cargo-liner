@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use crate::drift::WorkingTreeFingerprint;
 use crate::ids::GitObjectId;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
 
 /// Every repository fact whose movement can change the branch's merge surface.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

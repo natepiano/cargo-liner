@@ -23,7 +23,6 @@ use super::constants::RATE_LIMIT_RESOURCE_HEADER;
 use super::constants::RATE_LIMIT_RESOURCES_KEY;
 use super::constants::RATE_LIMIT_USED_HEADER;
 use super::constants::RATE_LIMIT_USED_KEY;
-pub(super) use super::constants::SYNTHETIC_RATE_LIMIT_SECS;
 
 /// Which GitHub rate-limit bucket a response belongs to. The REST and
 /// GraphQL APIs share `api.github.com` but track their quotas

@@ -10,12 +10,12 @@
 //! primary `Worktree` entry — both resolve to the same `primary_path`, so a
 //! bare path could not tell them apart.
 
-use super::ProjectList;
 use super::visible_rows::ExpandKey;
 use crate::project::AbsolutePath;
 use crate::project::ProjectFields;
 use crate::project::RootItem;
 use crate::project::RustProject;
+use crate::tui::project_list_state::ProjectList;
 
 /// Path-based projection of an [`ExpandKey`] — the form persisted to disk and
 /// re-resolved against the tree on the next launch.

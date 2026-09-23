@@ -28,7 +28,10 @@ use crate::ledger::ClaimSource;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::JournalOperation;
+use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeAdditionSet;
+use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 use crate::ledger::WidenCause;
 use crate::reservation::DriftBlockingCoverage;
 use crate::reservation::IncursionObservation;
@@ -37,9 +40,6 @@ use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::WidenScopeBinding;
 use crate::scope::PathCase;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
-use crate::scope::ScopeKind;
 
 enum WideningAttempt {
     NotNeeded,

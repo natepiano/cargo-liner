@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 
 /// Workspace roots that should receive an initial `cargo metadata`
 /// dispatch: every Rust leaf project (workspace or standalone

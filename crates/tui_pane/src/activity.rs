@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-pub use crate::constants::ACTIVITY_SPINNER;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Cycle {
     period: Duration,

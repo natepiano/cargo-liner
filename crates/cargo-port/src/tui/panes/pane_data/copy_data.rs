@@ -305,7 +305,6 @@ mod tests {
     use crate::lint::LintRunStatus;
     use crate::project::AbsolutePath;
     use crate::project::ProjectType;
-    use crate::tui::app::AvailabilityStatus;
     use crate::tui::panes::pane_data;
     use crate::tui::panes::pane_data::CiEmptyState;
     use crate::tui::panes::pane_data::LintsProjectKind;
@@ -319,6 +318,7 @@ mod tests {
     use crate::tui::panes::pane_data::TargetEntry;
     use crate::tui::panes::pane_data::TargetSource;
     use crate::tui::panes::pane_data::WorktreeInfo;
+    use crate::tui::state::AvailabilityStatus;
     use crate::tui::state::CiDisplay;
     use crate::tui::state::LintDisplay;
 

@@ -724,9 +724,9 @@ mod tests {
     use crate::ledger::ClaimSource;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
-    use crate::scope::ReservationScope;
-    use crate::scope::ReservationScopeSet;
-    use crate::scope::ScopeKind;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ScopeKind;
 
     #[test]
     fn enrolled_claim_replay_defers_each_counterpart_once() -> Result<(), Box<dyn Error>> {

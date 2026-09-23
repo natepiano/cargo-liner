@@ -17,8 +17,8 @@ use crate::git;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ids::WorktreeId;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
 
 /// What each observed foreign holder head would still bring to the acting checkout's HEAD.
 #[derive(Clone, Debug, Eq, PartialEq)]

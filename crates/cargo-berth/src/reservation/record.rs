@@ -42,9 +42,9 @@ use crate::ledger::ClaimSource;
 use crate::ledger::JournalActor;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScopeSet;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
-use crate::scope::ReservationScopeSet;
 
 /// One reservation retained for overlap, evidence, and audit decisions.
 #[derive(Clone, Debug, Eq, PartialEq)]

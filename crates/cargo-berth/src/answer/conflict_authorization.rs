@@ -12,8 +12,8 @@ use super::scope_binding::OverlapScopeRevision;
 use crate::ids::EdgeId;
 use crate::ids::ReservationId;
 use crate::ledger::OrderingDirection;
+use crate::ledger::ReservationScope;
 use crate::scope::PathCase;
-use crate::scope::ReservationScope;
 
 /// The complete overlap decision recorded within a claim or widen transaction.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -135,10 +135,10 @@ mod tests {
     use crate::answer::AuthorizedOverlapSet;
     use crate::answer::OverlapScopeRevision;
     use crate::ids::ReservationId;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ScopeKind;
     use crate::scope::PathCase;
-    use crate::scope::ReservationScope;
-    use crate::scope::ReservationScopeSet;
-    use crate::scope::ScopeKind;
 
     #[test]
     fn enrollment_covers_shared_scopes_after_unrelated_widen() -> Result<(), Box<dyn Error>> {

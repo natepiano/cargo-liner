@@ -1,6 +1,6 @@
 use tui_pane::PaneRegistry;
 
-use super::RenderRegistry;
+use crate::tui::app_render_state::RenderRegistry;
 use crate::tui::panes::PaneId;
 use crate::tui::render_context::PaneRenderCtx;
 

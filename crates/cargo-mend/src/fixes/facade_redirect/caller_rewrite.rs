@@ -29,17 +29,15 @@ use syn::visit;
 use syn::visit::Visit;
 
 use super::module_aliases::ModuleAliases;
-use super::module_path::absolute_use_path;
-use super::module_path::import_path;
+use super::module_path;
 use super::redirect::FacadeRedirect;
 use super::redirect::TargetSide;
+use super::source_text;
 use super::source_text::SourceLines;
-use super::source_text::item_use_byte_range;
-use super::source_text::line_deletion;
-use super::use_tree::render_use_tree;
+use super::use_tree;
+use crate::fixes::imports;
 use crate::fixes::imports::UseBinding;
 use crate::fixes::imports::UseFix;
-use crate::fixes::imports::collect_use_bindings;
 use crate::rust_syntax;
 use crate::rust_syntax::PathAnchor;
 
@@ -223,7 +221,7 @@ impl Visit<'_> for CallerRewriter<'_> {
             return;
         }
         self.record_use_tree_paths(&node.tree);
-        let (start, _) = item_use_byte_range(&self.lines, node);
+        let (start, _) = source_text::item_use_byte_range(&self.lines, node);
         if let Some(scope) = self.scopes.last_mut()
             && scope
                 .owner_imports
@@ -279,13 +277,14 @@ impl<'a> CallerRewriter<'a> {
             if item_use.leading_colon.is_some() {
                 continue;
             }
-            let (item_start, _) = item_use_byte_range(&self.lines, item_use);
-            for binding in collect_use_bindings(&item_use.tree) {
+            let (item_start, _) = source_text::item_use_byte_range(&self.lines, item_use);
+            for binding in imports::collect_use_bindings(&item_use.tree) {
                 let UseBinding::Named { name, path } = binding else {
                     continue;
                 };
                 let segments = split_path(&path);
-                let Some(absolute) = absolute_use_path(&self.module_path, &segments) else {
+                let Some(absolute) = module_path::absolute_use_path(&self.module_path, &segments)
+                else {
                     continue;
                 };
                 let module = self.module_aliases.resolve(absolute.clone());
@@ -337,7 +336,7 @@ impl<'a> CallerRewriter<'a> {
             }
         }
         for item_use in &deferred {
-            let (start, _) = item_use_byte_range(&self.lines, item_use);
+            let (start, _) = source_text::item_use_byte_range(&self.lines, item_use);
             let removed = unused
                 .iter()
                 .filter(|(item_start, _)| *item_start == start)
@@ -356,10 +355,13 @@ impl<'a> CallerRewriter<'a> {
         if lines.redirected.is_empty() && !lines.removed {
             return;
         }
-        let (start, end) = item_use_byte_range(&self.lines, node);
+        let (start, end) = source_text::item_use_byte_range(&self.lines, node);
         if lines.kept.is_empty() && lines.redirected.is_empty() {
-            self.fixes
-                .push(line_deletion(self.file, self.source, start..end));
+            self.fixes.push(source_text::line_deletion(
+                self.file,
+                self.source,
+                start..end,
+            ));
             return;
         }
         let tree_start = self.lines.offset(node.tree.span().start());
@@ -379,7 +381,7 @@ impl<'a> CallerRewriter<'a> {
     /// whether a redirect repoints it. A glob of an unchanged module names
     /// that module.
     fn record_use_tree_paths(&mut self, tree: &UseTree) {
-        for binding in collect_use_bindings(tree) {
+        for binding in imports::collect_use_bindings(tree) {
             let (path, glob) = match binding {
                 UseBinding::Named { path, .. } => (path, false),
                 UseBinding::Glob { path } => (path, true),
@@ -425,7 +427,7 @@ impl<'a> CallerRewriter<'a> {
         {
             return Some(bound.iter().chain(&written[1..]).cloned().collect());
         }
-        absolute_use_path(&self.module_path, written)
+        module_path::absolute_use_path(&self.module_path, written)
     }
 
     /// The crate-relative path `written` names here, with every module binding
@@ -534,11 +536,11 @@ impl<'a> CallerRewriter<'a> {
                 .redirected
                 .entry(target[..target.len().saturating_sub(1)].to_vec())
                 .or_default()
-                .push(import_path(&self.module_path, target, alias));
+                .push(module_path::import_path(&self.module_path, target, alias));
         } else {
             let rendered = self.absolute(&leaf).map_or_else(
                 || render_written(&leaf, alias),
-                |absolute| import_path(&self.module_path, &absolute, alias),
+                |absolute| module_path::import_path(&self.module_path, &absolute, alias),
             );
             lines.kept.push(rendered);
         }
@@ -573,9 +575,9 @@ impl<'a> CallerRewriter<'a> {
     fn render_kept_subtree(&self, written: &[String], tree: &UseTree) -> String {
         let prefix = self.absolute(written).map_or_else(
             || render_written(written, None),
-            |absolute| import_path(&self.module_path, &absolute, None),
+            |absolute| module_path::import_path(&self.module_path, &absolute, None),
         );
-        format!("{prefix}::{}", render_use_tree(tree))
+        format!("{prefix}::{}", use_tree::render_use_tree(tree))
     }
 
     /// Replaces the leading segments of an inline path when they name a
@@ -603,7 +605,8 @@ impl<'a> CallerRewriter<'a> {
         };
         let start = self.lines.offset(idents[0].span().start());
         let end = self.lines.offset(idents[length - 1].span().end());
-        let replacement = anchored.unwrap_or_else(|| import_path(&self.module_path, target, None));
+        let replacement =
+            anchored.unwrap_or_else(|| module_path::import_path(&self.module_path, target, None));
         self.push_fix(start, end, replacement);
     }
 

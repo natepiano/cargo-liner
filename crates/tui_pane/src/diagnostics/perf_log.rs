@@ -19,9 +19,6 @@ use tracing_subscriber::prelude::*;
 
 use super::constants::DEFAULT_PERF_LOG_FILTER;
 use super::constants::PERF_LOG_ENV;
-pub use super::constants::SLOW_BG_BATCH_MS;
-pub use super::constants::SLOW_FRAME_MS;
-pub use super::constants::SLOW_INPUT_EVENT_MS;
 
 /// Saturating conversion from `u128` milliseconds to `u64` for tracing fields.
 #[must_use]

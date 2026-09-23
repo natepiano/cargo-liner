@@ -19,8 +19,8 @@ use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IncursionPathSet;
 use crate::ledger::ReservationScopeAdditionSet;
+use crate::ledger::ReservationScopeSet;
 use crate::reservation::ReservationConflict;
-use crate::scope::ReservationScopeSet;
 use crate::verb::claim::FirstTouchReservationAcquisition;
 
 /// The comparison algorithm that actually produced one report.

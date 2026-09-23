@@ -21,7 +21,7 @@ use crate::ids::GitObjectId;
 use crate::ids::InvalidGitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::ProtectedPhaseStartHead;
-use crate::scope::ReservationScopeSet;
+use crate::ledger::ReservationScopeSet;
 
 /// The fixed checkpoint commit used for ordinary integration evidence.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

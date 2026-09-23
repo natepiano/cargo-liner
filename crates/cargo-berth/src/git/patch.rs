@@ -51,7 +51,7 @@ use super::error::GitError;
 use super::object;
 use super::reachability::PhaseStartTargetFirstParentHistories;
 use crate::ids::GitObjectId;
-use crate::scope::ReservationScopeSet;
+use crate::ledger::ReservationScopeSet;
 
 /// The result of comparing a protected phase's aggregate scoped change with a target history.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

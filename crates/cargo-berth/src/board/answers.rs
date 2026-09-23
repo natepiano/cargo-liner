@@ -24,9 +24,9 @@ use crate::ids::ReservationId;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::OrderingDirection;
+use crate::ledger::ReservationScope;
 use crate::ledger::WidenCause;
 use crate::reservation::EditBlockingStatus;
-use crate::scope::ReservationScope;
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "answer", rename_all = "snake_case")]
@@ -445,9 +445,9 @@ mod tests {
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
     use crate::ledger::OrderingDirection;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
-    use crate::scope::ReservationScope;
-    use crate::scope::ReservationScopeSet;
 
     #[test]
     fn enrollment_answers_preserve_each_pending_pair_until_sequence() -> FixtureResult<()> {

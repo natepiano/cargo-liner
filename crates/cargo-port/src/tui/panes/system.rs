@@ -165,11 +165,11 @@ mod detail_set_tests {
     //! `PaneDataStore` itself only tracks the stamp.
     use super::Panes;
     use crate::config::CpuConfig;
-    use crate::tui::app::VisibleRow;
     use crate::tui::panes::GitData;
     use crate::tui::panes::PackageData;
     use crate::tui::panes::TargetsData;
     use crate::tui::panes::data::DetailCacheKey;
+    use crate::tui::project_list::VisibleRow;
 
     fn fresh() -> Panes {
         Panes::new(

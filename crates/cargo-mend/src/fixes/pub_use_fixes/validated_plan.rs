@@ -8,12 +8,10 @@ use anyhow::Context;
 use anyhow::Result;
 
 use super::parent_boundary::ParentBoundaryKey;
+use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::FacadeRedirect;
 use crate::fixes::facade_redirect::ModuleAliases;
 use crate::fixes::facade_redirect::RedirectTarget;
-use crate::fixes::facade_redirect::dedup_fixes;
-use crate::fixes::facade_redirect::find_source_root;
-use crate::fixes::facade_redirect::redirect_callers_in_file;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax::ModuleMap;
 
@@ -43,7 +41,7 @@ pub(super) fn rewrite_subtree_imports_for_plans(
         let parent_dir = parent_module
             .parent()
             .context("candidate parent boundary had no parent directory")?;
-        let source_root = find_source_root(&parent_module).with_context(|| {
+        let source_root = facade_redirect::find_source_root(&parent_module).with_context(|| {
             format!(
                 "failed to determine src root for parent boundary {}",
                 parent_module.display()
@@ -66,7 +64,7 @@ pub(super) fn rewrite_subtree_imports_for_plans(
                 continue;
             };
             fixes.extend(
-                redirect_callers_in_file(
+                facade_redirect::redirect_callers_in_file(
                     &file,
                     module_path,
                     &redirects,
@@ -77,7 +75,7 @@ pub(super) fn rewrite_subtree_imports_for_plans(
         }
     }
 
-    dedup_fixes(&mut fixes);
+    facade_redirect::dedup_fixes(&mut fixes);
     Ok(fixes)
 }
 

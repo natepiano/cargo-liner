@@ -19,6 +19,7 @@ use crate::coordination_identity::RecoveryCommandLine;
 use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
+use crate::ledger::ReservationScopeSet;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -32,7 +33,6 @@ use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
-use crate::scope::ReservationScopeSet;
 
 /// A parsed edit check with lexically valid requested paths.
 pub(crate) struct CheckRequest {

@@ -47,7 +47,7 @@ use unicode_width::UnicodeWidthStr;
 use super::app::App;
 use super::app::ConfirmAction;
 use super::app::ConfirmationModalState;
-use super::app::OverlayRenderInputs;
+use super::app_render_state::OverlayRenderInputs;
 use super::constants::AFFECTED_EXTRAS_VISIBLE_CAP;
 use super::constants::CONFIRM_DIALOG_HEIGHT;
 use super::constants::STRIP_SLOT_COUNT;

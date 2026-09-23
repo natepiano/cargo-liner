@@ -305,9 +305,9 @@ mod git_detail_field_tests {
     use super::DetailField;
     use crate::project::BisectProgress;
     use crate::project::GitStatus;
-    use crate::tui::app::AvailabilityStatus;
     use crate::tui::panes::pane_data::GitData;
     use crate::tui::panes::pane_data::PullRequestSection;
+    use crate::tui::state::AvailabilityStatus;
 
     fn git_data() -> GitData {
         GitData {

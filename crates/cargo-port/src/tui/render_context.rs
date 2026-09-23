@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::panes::OutputPresentation;
 use super::panes::SyncedDescriptionHeight;
-use super::project_list::ProjectList;
+use super::project_list_state::ProjectList;
 use super::running_targets::RunningTargets;
 use super::settings::SettingsRenderInputs;
 use super::state::CiStatusLookup;

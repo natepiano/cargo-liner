@@ -52,7 +52,7 @@ use crate::tui::columns::COL_MAIN;
 use crate::tui::columns::COL_NAME;
 use crate::tui::columns::COL_SYNC;
 use crate::tui::columns::ProjectListWidths;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 
 /// Walk the project tree and produce a `ProjectListWidths`.

@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use super::ExpandKey;
-use super::ProjectList;
 use crate::config::NonRustInclusion;
 use crate::tui::app::FinderState;
+use crate::tui::project_list_state::ProjectList;
 
 /// RAII guard for visibility-changing [`ProjectList`] mutations.
 /// Obtained via [`ProjectList::mutate`]; `Drop` recomputes

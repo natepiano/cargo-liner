@@ -53,9 +53,12 @@ use crate::tui::background::BackgroundChannels;
 use crate::tui::integration;
 use crate::tui::integration::AppPaneId;
 use crate::tui::keymap;
+use crate::tui::messages::CiFetchMsg;
+use crate::tui::messages::CleanMsg;
+use crate::tui::messages::OwnedRunEvent;
 use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::running_targets::RUNNING_TARGETS_REFRESH_INTERVAL;
 use crate::tui::sccache::SccacheStatusLine;
 use crate::tui::settings::StartupSettings;
@@ -73,9 +76,6 @@ use crate::tui::state::Lint;
 use crate::tui::state::Net;
 use crate::tui::state::Scan;
 use crate::tui::state::SyncTracker;
-use crate::tui::terminal::CiFetchMsg;
-use crate::tui::terminal::CleanMsg;
-use crate::tui::terminal::OwnedRunEvent;
 use crate::tui::theme_roles;
 
 /// Caller's raw arguments. Held by value (the slice and config

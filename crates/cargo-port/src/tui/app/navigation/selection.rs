@@ -1,8 +1,8 @@
 use crate::project::DisplayPath;
 use crate::project::RootItem;
 use crate::tui::app::App;
-use crate::tui::app::VisibleRow;
 use crate::tui::project_list::ProjectListRowDisplayPathResolution;
+use crate::tui::project_list::VisibleRow;
 
 impl App {
     /// Returns the `RootItem` when a root row is selected.

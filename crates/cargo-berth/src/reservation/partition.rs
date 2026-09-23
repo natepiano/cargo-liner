@@ -16,8 +16,8 @@ use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
+use crate::ledger::ReservationScope;
 use crate::scope::PathCase;
-use crate::scope::ReservationScope;
 
 /// How current edit-blocking reservations cover one drift path.
 pub(crate) enum DriftBlockingCoverage {

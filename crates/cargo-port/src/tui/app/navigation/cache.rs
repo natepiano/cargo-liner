@@ -3,10 +3,10 @@ use tui_pane::PERF_LOG_TARGET;
 use crate::scan::ProjectStorage;
 use crate::tui;
 use crate::tui::app::App;
-use crate::tui::app::VisibleRow;
 use crate::tui::columns;
 use crate::tui::panes;
 use crate::tui::panes::DetailCacheKey;
+use crate::tui::project_list::VisibleRow;
 use crate::tui::render;
 
 impl App {

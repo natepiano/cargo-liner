@@ -10,7 +10,7 @@ use crate::tui::app::App;
 use crate::tui::app::scan_state::ScanPhase;
 use crate::tui::panes::PaneId;
 #[cfg(test)]
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::startup_services::StartupEffect;
 use crate::tui::startup_services::StreamingScanStartup;
 

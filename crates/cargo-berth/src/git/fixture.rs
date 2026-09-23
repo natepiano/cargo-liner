@@ -20,8 +20,8 @@ use super::patch::ScopedPatchComparison;
 use super::refs;
 use crate::ids::GitObjectId;
 use crate::ledger::ReservationScope;
-use crate::scope::ReservationScopeSet;
-use crate::scope::ScopeKind;
+use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 
 const INITIAL_PRIMARY: &str = "first\nsecond\nthird\n";
 const INITIAL_SECONDARY: &str = "secondary\n";

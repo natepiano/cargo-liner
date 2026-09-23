@@ -32,7 +32,6 @@ use crate::constants::IN_SYNC;
 use crate::constants::NO_REMOTE_SYNC;
 use crate::project::HeadState;
 use crate::project::PullRequestCompleteness;
-use crate::tui::app::AvailabilityStatus;
 use crate::tui::panes;
 use crate::tui::panes::DescriptionBlock;
 use crate::tui::panes::DetailField;
@@ -64,6 +63,7 @@ use crate::tui::panes::constants::WORKTREES_NAME_HEADER;
 use crate::tui::panes::package;
 use crate::tui::panes::support;
 use crate::tui::render_context::PaneRenderCtx;
+use crate::tui::state::AvailabilityStatus;
 use crate::tui::theme_roles;
 
 struct GitRenderCtx<'a> {

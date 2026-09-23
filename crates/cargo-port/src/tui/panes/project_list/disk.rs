@@ -12,8 +12,8 @@ use tui_pane::warning_color;
 
 use crate::project::RootItem;
 use crate::scan::StorageHeadroom;
-use crate::tui::project_list::ProjectList;
 use crate::tui::project_list::VisibleRow;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 
 /// Number of largest distinct visible disk values highlighted by

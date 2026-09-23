@@ -1,5 +1,5 @@
-use super::CPU_SMOOTHING_WINDOW_POLLS;
 use super::VecDeque;
+use crate::diagnostics::constants::CPU_SMOOTHING_WINDOW_POLLS;
 
 /// Bounded rolling-mean window for utilization samples.
 ///

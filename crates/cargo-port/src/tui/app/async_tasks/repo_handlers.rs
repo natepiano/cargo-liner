@@ -33,7 +33,7 @@ use crate::scan::CachedRepoData;
 use crate::scan::CiFetchResult;
 use crate::scan::RepoCache;
 use crate::tui::app::App;
-use crate::tui::project_list::SyncResolution;
+use crate::tui::project_list_state::SyncResolution;
 use crate::tui::state;
 
 impl App {

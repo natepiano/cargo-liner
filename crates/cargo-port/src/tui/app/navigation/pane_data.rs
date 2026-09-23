@@ -3,8 +3,8 @@ use crate::project::RootItem;
 use crate::project::RustProject;
 use crate::tui;
 use crate::tui::app::App;
-use crate::tui::app::VisibleRow;
 use crate::tui::panes::DetailPaneData;
+use crate::tui::project_list::VisibleRow;
 
 impl App {
     /// Build per-pane data for the currently selected row, resolving through

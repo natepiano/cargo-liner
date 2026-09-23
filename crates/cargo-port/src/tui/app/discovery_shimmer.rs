@@ -11,7 +11,7 @@ use crate::project::RustProject;
 use crate::project::Workspace;
 use crate::tui::columns;
 use crate::tui::columns::StyledSegment;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::state::Config;
 use crate::tui::state::Scan;
 

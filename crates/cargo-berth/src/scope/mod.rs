@@ -13,9 +13,9 @@ use std::str::FromStr;
 
 use crate::ids::InvalidReservationScopePath;
 use crate::ids::ReservationScopePath;
-pub(crate) use crate::ledger::ReservationScope;
-pub(crate) use crate::ledger::ReservationScopeSet;
-pub(crate) use crate::ledger::ScopeKind;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 
 const FILE_SCOPE_PREFIX: &str = "file:";
 const GIT_CONFIG_FILE_NAME: &str = "config";
@@ -268,9 +268,9 @@ mod tests {
 
     use super::DeclaredReservationScopeSet;
     use super::PathCase;
-    use super::ReservationScope;
-    use super::ScopeKind;
     use super::parse_path_case;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ScopeKind;
 
     #[test]
     fn parsing_is_lexical_and_accepts_future_paths() {

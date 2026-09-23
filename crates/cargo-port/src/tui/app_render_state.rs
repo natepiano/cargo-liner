@@ -9,7 +9,7 @@ use super::panes::OutputPresentation;
 use super::panes::PackagePane;
 use super::panes::ProjectListPane;
 use super::panes::TargetsPane;
-use super::project_list::ProjectList;
+use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
 use super::running_targets::RunningTargets;
 use super::settings::SettingsRenderInputs;

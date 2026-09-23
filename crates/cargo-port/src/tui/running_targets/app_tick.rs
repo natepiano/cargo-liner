@@ -333,7 +333,7 @@ mod tests {
     use crate::project::WorkspaceMetadata;
     use crate::tui::panes::TargetSource;
     use crate::tui::panes::TargetsData;
-    use crate::tui::project_list::ProjectList;
+    use crate::tui::project_list_state::ProjectList;
 
     fn path(path: impl AsRef<Path>) -> AbsolutePath {
         AbsolutePath::from(path.as_ref().to_path_buf())

@@ -7,8 +7,8 @@ use tui_pane::Viewport;
 
 #[cfg(test)]
 use crate::project::RootItem;
-use crate::tui::app::ProjectListWidths;
-use crate::tui::project_list::ProjectList;
+use crate::tui::columns::ProjectListWidths;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::render_context::PaneRenderCtx;
 
 mod disk;

@@ -53,7 +53,6 @@ use sysinfo::CpuRefreshKind;
 use sysinfo::RefreshKind;
 use sysinfo::System;
 
-pub use super::constants::CPU_SMOOTHING_WINDOW_POLLS;
 #[cfg(target_os = "windows")]
 use super::constants::GPU_COUNTER_PATH;
 #[cfg(target_os = "macos")]

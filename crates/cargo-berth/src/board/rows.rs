@@ -49,6 +49,7 @@ use crate::ledger::FullRefName;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScopeSet;
 use crate::presentation;
 use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
@@ -63,7 +64,6 @@ use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
-use crate::scope::ReservationScopeSet;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
 
@@ -850,6 +850,8 @@ mod tests {
     use crate::edge::DeferralOrigin;
     use crate::ids::GitObjectId;
     use crate::ledger::JournalOperation;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
     use crate::ledger::ReservationSnapshot;
     use crate::ledger::ScopeKind;
     use crate::reconcile;
@@ -863,8 +865,6 @@ mod tests {
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationLifecycle;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
-    use crate::scope::ReservationScope;
-    use crate::scope::ReservationScopeSet;
 
     const PENDING_BYPASS_NAME: &str =
         "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";

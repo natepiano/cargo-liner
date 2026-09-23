@@ -22,8 +22,8 @@ use crate::tui::columns;
 use crate::tui::dismiss_target::DismissTarget;
 use crate::tui::panes::constants::DISMISS_SUFFIX;
 use crate::tui::panes::constants::TITLE_ELLIPSIS;
-use crate::tui::project_list::ProjectList;
 use crate::tui::project_list::VisibleRow;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
@@ -340,7 +340,7 @@ mod tests {
     use crate::project::Workspace;
     use crate::project::WorktreeGroup;
     use crate::tui::project_list::ExpandKey;
-    use crate::tui::project_list::ProjectList;
+    use crate::tui::project_list_state::ProjectList;
 
     #[test]
     fn project_roots_title_adds_ellipsis_when_roots_overflow() {

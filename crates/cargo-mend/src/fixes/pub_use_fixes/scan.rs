@@ -11,8 +11,8 @@ use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
 use super::validated_plan;
 use super::validated_plan::ValidatedPubUsePlan;
+use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
-use crate::fixes::facade_redirect::find_source_root;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Report;
@@ -156,7 +156,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             continue;
         };
 
-        let source_root = find_source_root(&fact.parent_module)
+        let source_root = facade_redirect::find_source_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
         let module_map = module_maps

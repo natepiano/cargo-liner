@@ -35,11 +35,11 @@ use crate::ids::ReservationId;
 use crate::ledger::ClaimSource;
 use crate::ledger::JournalActor;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationLifecycle;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
 
 /// Why one reservation was declared to precede another.
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -485,10 +485,10 @@ mod tests {
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ScopeKind;
     use crate::reservation::ReleaseDisposition;
-    use crate::scope::ReservationScope;
-    use crate::scope::ReservationScopeSet;
-    use crate::scope::ScopeKind;
     use crate::worktree::WorktreeHead;
     use crate::worktree::WorktreeLiveness;
 

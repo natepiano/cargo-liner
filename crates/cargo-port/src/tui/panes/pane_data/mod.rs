@@ -77,22 +77,23 @@ use self::constants::TESTS_DOC_LABEL;
 use self::constants::TESTS_INTEGRATION_LABEL;
 use self::constants::TESTS_UNIT_LABEL;
 use super::EmptyDescriptionBehavior;
-pub use super::ci::CiData;
+use super::ci::CiData;
 #[cfg(test)]
-pub use super::ci::CiEmptyState;
+use super::ci::CiEmptyState;
 use super::constants::TESTS_IGNORED_LABEL;
 use super::constants::TESTS_TOTAL_LABEL;
 use super::git;
-pub use super::lints::LintsData;
+use super::lints::LintsData;
 #[cfg(test)]
-pub use super::lints::LintsProjectKind;
+use super::lints::LintsProjectKind;
 use super::package;
-pub use super::targets::BuildMode;
-pub use super::targets::RunTargetKind;
-pub use super::targets::TargetEntry;
+use super::targets::BuildMode;
+use super::targets::RunTargetKind;
 #[cfg(test)]
-pub use super::targets::TargetSource;
-pub use super::targets::TargetsData;
+use super::targets::TargetEntry;
+#[cfg(test)]
+use super::targets::TargetSource;
+use super::targets::TargetsData;
 use crate::ci;
 use crate::ci::CiStatus;
 use crate::constants::GIT_CLONE;
@@ -129,9 +130,9 @@ use crate::project::Visibility;
 use crate::project::Workspace;
 use crate::project::WorktreeStatus;
 use crate::tui::app::App;
-use crate::tui::app::AvailabilityStatus;
 use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
 use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
+use crate::tui::state::AvailabilityStatus;
 use crate::tui::state::ServiceStatus;

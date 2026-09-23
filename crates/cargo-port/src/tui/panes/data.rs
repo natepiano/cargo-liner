@@ -1,4 +1,4 @@
-use crate::tui::app::VisibleRow;
+use crate::tui::project_list::VisibleRow;
 
 /// Identifies the inputs that produced a built detail set.
 /// Two keys match iff both the selected row and the app's data generation

@@ -851,14 +851,14 @@ mod tests {
     use crate::ledger::BypassRecording;
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ScopeKind;
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
     use crate::reservation::MergeExtent;
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReservationRunStatus;
-    use crate::scope::ReservationScope;
-    use crate::scope::ScopeKind;
 
     #[test]
     fn rejected_reconciliation_does_not_append_or_run_its_committed_action() {

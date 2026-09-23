@@ -20,9 +20,9 @@ use crate::ledger::IncursionIncidentId;
 use crate::ledger::JournalActor;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScopeSet;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
-use crate::scope::ReservationScopeSet;
 
 /// Borrowed fields from one replayed claim event.
 #[derive(Clone, Copy)]

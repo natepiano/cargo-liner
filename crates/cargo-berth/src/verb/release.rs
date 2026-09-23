@@ -30,6 +30,7 @@ use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReplayedLedgerState;
+use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
@@ -52,7 +53,6 @@ use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
-use crate::scope::ReservationScopeSet;
 use crate::session::SessionIdentityMappingPublication;
 
 /// A parsed request to checkpoint or revalidate one reservation.

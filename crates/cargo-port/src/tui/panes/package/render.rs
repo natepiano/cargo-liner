@@ -34,11 +34,9 @@ use crate::constants::LINT_NO_LOG;
 use crate::lint::LintStatus;
 use crate::tui::integration;
 use crate::tui::panes;
-use crate::tui::panes::CiDisplay;
 use crate::tui::panes::DescriptionBlock;
 use crate::tui::panes::DetailField;
 use crate::tui::panes::EmptyDescriptionBehavior;
-use crate::tui::panes::LintDisplay;
 use crate::tui::panes::PackageData;
 use crate::tui::panes::PackageRow;
 use crate::tui::panes::RenderStyles;
@@ -58,6 +56,8 @@ use crate::tui::panes::support;
 use crate::tui::render;
 use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::state;
+use crate::tui::state::CiDisplay;
+use crate::tui::state::LintDisplay;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LintRenderMode {
@@ -1233,9 +1233,9 @@ mod tests {
     use crate::lint::LintRunPhase;
     use crate::lint::LintStatus;
     use crate::tui::panes;
-    use crate::tui::panes::LintDisplay;
     use crate::tui::panes::PackageData;
     use crate::tui::panes::PackageRow;
+    use crate::tui::state::LintDisplay;
 
     /// 15 Structure rows and 5 Tests rows; the flat row list is Description,
     /// the metadata fields, then the section rows.

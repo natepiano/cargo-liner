@@ -24,6 +24,9 @@ use std::collections::HashMap;
 
 #[cfg(test)]
 pub(super) use actions::handle_ci_runs_key;
+pub(super) use ci::CiData;
+#[cfg(test)]
+pub(super) use ci::CiEmptyState;
 pub(super) use ci::build_ci_data;
 pub(super) use ci::render_ci_pane_body;
 #[cfg(test)]
@@ -49,6 +52,9 @@ pub(super) use layout::BottomRow;
 pub(super) use layout::resolve_layout;
 pub(super) use layout::tab_order;
 pub(super) use layout::top_pane_widths;
+pub(super) use lints::LintsData;
+#[cfg(test)]
+pub(super) use lints::LintsProjectKind;
 pub(super) use lints::build_lints_data;
 pub(super) use lints::render_lints_pane_body;
 pub(super) use output::CapturedOutputRow;
@@ -60,19 +66,12 @@ pub(super) use output::OutputPresentation;
 #[cfg(test)]
 pub(super) use output::OutputSelectionRange;
 pub(super) use package::PackagePane;
-pub(super) use pane_data::BuildMode;
 pub(super) use pane_data::CargoPackageInvocation;
-pub(super) use pane_data::CiData;
-#[cfg(test)]
-pub(super) use pane_data::CiEmptyState;
 pub(super) use pane_data::CiFetchKind;
 pub(super) use pane_data::DetailField;
 pub(super) use pane_data::DetailPaneData;
 pub(super) use pane_data::GitData;
 pub(super) use pane_data::GitRow;
-pub(super) use pane_data::LintsData;
-#[cfg(test)]
-pub(super) use pane_data::LintsProjectKind;
 pub(super) use pane_data::PackageData;
 #[cfg(test)]
 pub(super) use pane_data::PackagePresence;
@@ -87,11 +86,6 @@ pub(super) use pane_data::PullRequestRow;
 pub(super) use pane_data::PullRequestSection;
 pub(super) use pane_data::PullRequestSectionState;
 pub(super) use pane_data::RemoteRow;
-pub(super) use pane_data::RunTargetKind;
-pub(super) use pane_data::TargetEntry;
-#[cfg(test)]
-pub(super) use pane_data::TargetSource;
-pub(super) use pane_data::TargetsData;
 pub(super) use pane_data::WorktreeInfo;
 pub(super) use pane_data::build_pane_data;
 pub(super) use pane_data::build_pane_data_for_member;
@@ -121,8 +115,14 @@ pub(super) use spec::PaneId;
 pub(super) use spec::behavior;
 pub(super) use spec::size_spec;
 pub(super) use system::Panes;
+pub(super) use targets::BuildMode;
 pub(super) use targets::CargoGroup;
+pub(super) use targets::RunTargetKind;
 pub(super) use targets::RunningListRow;
+pub(super) use targets::TargetEntry;
+#[cfg(test)]
+pub(super) use targets::TargetSource;
+pub(super) use targets::TargetsData;
 pub(super) use targets::TargetsPane;
 pub(super) use targets::build_running_list;
 pub(super) use targets::build_running_rows;
@@ -139,7 +139,7 @@ pub(super) use widths::name_width_with_gutter;
 
 use super::app::App;
 #[cfg(test)]
-use super::app::ProjectListWidths;
+use super::columns::ProjectListWidths;
 use super::integration::AppPaneId;
 use super::integration::NavAction;
 use super::keymap::CiRunsAction;
@@ -147,12 +147,10 @@ use super::keymap::GitAction;
 use super::keymap::LintsAction;
 use super::keymap::PackageAction;
 use super::keymap::TargetsAction;
-use super::project_list::ProjectList;
+use super::project_list_state::ProjectList;
 #[cfg(test)]
 use super::render_context::PaneRenderCtx;
 use super::running_targets::RunningTargetTerminationCapability;
-pub(super) use super::state::CiDisplay;
-pub(super) use super::state::LintDisplay;
 #[cfg(test)]
 use crate::project::RootItem;
 

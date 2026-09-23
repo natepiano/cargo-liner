@@ -52,7 +52,7 @@ pub(in crate::fixes) fn absolute_use_path(
 /// and anything further as `crate::…`. These are the spellings the
 /// `shorten_local_crate_import` and `replace_deep_super_import` checks accept,
 /// so a rewritten path never raises a follow-up finding.
-pub(in crate::fixes) fn import_path(
+pub(super) fn import_path(
     current_module_path: &[String],
     target_path: &[String],
     rename: Option<&str>,

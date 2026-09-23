@@ -1,9 +1,9 @@
 //! Minimal-antichain reduction for declared reservation scopes.
 
 use super::PathCase;
-use super::ReservationScope;
-use super::ReservationScopeSet;
-use super::ScopeKind;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 
 pub(super) fn reduce(scopes: ReservationScopeSet, path_case: PathCase) -> ReservationScopeSet {
     let mut reduced = Vec::new();

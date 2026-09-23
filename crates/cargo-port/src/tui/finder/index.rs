@@ -24,7 +24,7 @@ use crate::tui::constants::TARGET_KIND_BENCH_LABEL;
 use crate::tui::constants::TARGET_KIND_BIN_LABEL;
 use crate::tui::constants::TARGET_KIND_EXAMPLE_LABEL;
 use crate::tui::panes::RunTargetKind;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 
 /// A searchable item in the universal finder.
 #[derive(Clone)]
@@ -564,7 +564,7 @@ mod tests {
     use crate::project::VendoredPackage;
     use crate::project::Visibility;
     use crate::project::Workspace;
-    use crate::tui::project_list::ProjectList;
+    use crate::tui::project_list_state::ProjectList;
 
     fn test_path(path: &str) -> AbsolutePath {
         let pb = if path == "~" {

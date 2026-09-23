@@ -18,8 +18,8 @@ use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScopeSet;
 use crate::reservation::ReservationConflict;
-use crate::scope::ReservationScopeSet;
 
 /// A claim's semantic overlap-answer state after CLI conversion.
 #[derive(Clone, Debug, Eq, PartialEq)]

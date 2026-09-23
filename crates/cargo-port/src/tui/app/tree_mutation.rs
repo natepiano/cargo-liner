@@ -5,7 +5,7 @@ use crate::project::RootItem;
 use crate::scan;
 use crate::scan::MetadataDispatchContext;
 use crate::tui::panes::Panes;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 
 /// RAII guard for structural mutations of the project tree.
 /// Obtained via `App::mutate_tree`; dropped at end of scope (or

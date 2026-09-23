@@ -40,15 +40,15 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScope;
+use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
-use crate::scope::ReservationScope;
-use crate::scope::ReservationScopeSet;
-use crate::scope::ScopeKind;
 
 /// Reservations acquired and unresolved ordering decisions discovered by initialization.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

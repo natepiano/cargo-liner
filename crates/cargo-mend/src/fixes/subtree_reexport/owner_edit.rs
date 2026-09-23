@@ -5,6 +5,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use syn::Ident;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
@@ -344,7 +345,7 @@ fn has_name_leaf(prefix: Vec<String>, tree: &UseTree, leaf: &[String]) -> bool {
 }
 
 /// A `use` leaf's written segments without a leading `self`.
-fn leaf_segments(prefix: &[String], ident: &syn::Ident) -> Vec<String> {
+fn leaf_segments(prefix: &[String], ident: &Ident) -> Vec<String> {
     let mut segments = prefix.to_vec();
     segments.push(ident.to_string());
     rust_syntax::trim_leading_self(&segments).to_vec()

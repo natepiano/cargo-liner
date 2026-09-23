@@ -9,9 +9,9 @@ use syn::Item;
 use syn::ext::IdentExt;
 use syn::parse_file;
 
-use super::module_path::absolute_use_path;
+use super::module_path;
+use crate::fixes::imports;
 use crate::fixes::imports::UseBinding;
-use crate::fixes::imports::collect_use_bindings;
 
 /// The module-level `use` items of a crate that bind one of its modules under
 /// another path, such as `pub(super) use crate::platform::stream as capture;`
@@ -156,13 +156,14 @@ impl AliasCollector {
         for item in items {
             match item {
                 Item::Use(item_use) if item_use.leading_colon.is_none() => {
-                    for binding in collect_use_bindings(&item_use.tree) {
+                    for binding in imports::collect_use_bindings(&item_use.tree) {
                         let segments = binding
                             .path()
                             .split("::")
                             .map(str::to_string)
                             .collect::<Vec<_>>();
-                        let Some(target) = absolute_use_path(module_path, &segments) else {
+                        let Some(target) = module_path::absolute_use_path(module_path, &segments)
+                        else {
                             continue;
                         };
                         match binding {

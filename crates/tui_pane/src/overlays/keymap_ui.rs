@@ -18,7 +18,6 @@ use super::constants::DESCRIPTION_KEY_GAP;
 use super::constants::KEYMAP_COLUMN_GAP;
 use super::constants::KEYMAP_MARGIN_HEIGHT;
 use super::constants::KEYMAP_POPUP_HEIGHT_PERCENT;
-pub use super::constants::KEYMAP_POPUP_MAX_HEIGHT;
 use super::constants::OVERLAY_RIGHT_PADDING_WIDTH;
 use super::constants::PERCENT_DENOMINATOR;
 use super::constants::POPUP_BORDER_HEIGHT;

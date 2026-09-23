@@ -118,13 +118,14 @@ fn collect_use_lines(
 )]
 mod tests {
     use syn::ItemUse;
+    use syn::UseTree;
     use syn::parse_str;
 
     use super::remove_use_leaves;
     use super::render_use_lines;
     use super::render_use_tree;
 
-    fn tree(source: &str) -> syn::UseTree { parse_str::<ItemUse>(source).expect("parse use").tree }
+    fn tree(source: &str) -> UseTree { parse_str::<ItemUse>(source).expect("parse use").tree }
 
     #[test]
     fn removing_one_of_two_group_leaves_collapses_the_group() {

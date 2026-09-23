@@ -7,9 +7,6 @@ use std::path::Path;
 use indexmap::map::Values;
 use indexmap::map::ValuesMut;
 
-use super::LintRuntimeRootEntry;
-use super::ProjectList;
-use super::SyncResolution;
 use super::expand_state;
 use super::expand_state::ExpandTarget;
 use super::grouping;
@@ -66,6 +63,9 @@ use crate::tui::app::SelectionPaths;
 use crate::tui::app::SelectionSync;
 use crate::tui::columns::ProjectListWidths;
 use crate::tui::dismiss_target::DismissTarget;
+use crate::tui::project_list_state::LintRuntimeRootEntry;
+use crate::tui::project_list_state::ProjectList;
+use crate::tui::project_list_state::SyncResolution;
 use crate::tui::state::Ci;
 use crate::tui::state::CiStatusLookup;
 

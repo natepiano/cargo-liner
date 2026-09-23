@@ -12,11 +12,8 @@ use syn::Visibility;
 use syn::parse_file;
 use syn::spanned::Spanned;
 
+use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
-use crate::fixes::facade_redirect::item_use_byte_range;
-use crate::fixes::facade_redirect::remove_use_leaves;
-use crate::fixes::facade_redirect::render_use_lines;
-use crate::fixes::facade_redirect::word_occurs_outside;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
 use crate::rust_syntax::PathAnchor;
@@ -48,7 +45,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
         let Some(use_prefix) = facade_use_prefix(&item_use.vis) else {
             continue;
         };
-        let (start, end) = item_use_byte_range(&lines, &item_use);
+        let (start, end) = facade_redirect::item_use_byte_range(&lines, &item_use);
         if start != parent_boundary.item_start || end != parent_boundary.item_end {
             continue;
         }
@@ -99,7 +96,7 @@ pub(super) fn resolve_parent_pub_use_export(
             // textual match as authoritative.
             continue;
         }
-        let (item_start, item_end) = item_use_byte_range(&lines, &item_use);
+        let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, &item_use);
         return Ok(Some(ParentExportResolution {
             exported_name:   item_name.to_string(),
             parent_boundary: ParentBoundaryKey {
@@ -151,14 +148,19 @@ fn rewrite_parent_pub_use_item_for_exports(
     use_prefix: &str,
 ) -> String {
     let mut lines = Vec::new();
-    if let Some(rewritten_tree) = remove_use_leaves(Vec::new(), &item_use.tree, &|prefix, name| {
-        let normalized = rust_syntax::trim_leading_self(prefix);
-        normalized.len() == 1
-            && exports.iter().any(|(child_module_name, item_name)| {
-                normalized[0] == *child_module_name && name == item_name
-            })
-    }) {
-        lines.extend(render_use_lines(&rewritten_tree, use_prefix));
+    if let Some(rewritten_tree) =
+        facade_redirect::remove_use_leaves(Vec::new(), &item_use.tree, &|prefix, name| {
+            let normalized = rust_syntax::trim_leading_self(prefix);
+            normalized.len() == 1
+                && exports.iter().any(|(child_module_name, item_name)| {
+                    normalized[0] == *child_module_name && name == item_name
+                })
+        })
+    {
+        lines.extend(facade_redirect::render_use_lines(
+            &rewritten_tree,
+            use_prefix,
+        ));
     }
     lines.extend(render_parent_local_use_lines(local_exports));
     lines.join("\n")
@@ -198,7 +200,7 @@ fn locally_used_exports(
     let (start, end) = item_use_range;
     let mut locally_used = Vec::new();
     for (child_module, item_name) in exports {
-        if word_occurs_outside(source, iter::once(start..end), item_name) {
+        if facade_redirect::word_occurs_outside(source, iter::once(start..end), item_name) {
             locally_used.push((child_module.clone(), item_name.clone()));
         }
     }

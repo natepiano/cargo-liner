@@ -10,7 +10,7 @@ use crate::project::Submodule;
 use crate::scan::BackgroundMsg;
 use crate::tui::app::App;
 use crate::tui::app::scan_state::ScanPhase;
-use crate::tui::project_list::ProjectList;
+use crate::tui::project_list_state::ProjectList;
 use crate::tui::sccache;
 
 impl App {
