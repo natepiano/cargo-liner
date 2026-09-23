@@ -229,24 +229,32 @@ fn open_stream(
 /// width and height in pixels.
 fn try_frame(stream: &ScreenCaptureStream) -> Option<(Vec<u8>, usize, usize)> {
     let sample = stream.stream.try_next()?;
-    let pixel_buffer = sample.image_buffer()?;
+    let pixel_buffer = sample.pixel_buffer()?;
     let pixels = pixel_buffer.lock(CVPixelBufferLockFlags::READ_ONLY).ok()?;
-    Some(tightly_packed_frame(&pixels))
+    tightly_packed_frame(&pixels)
 }
 
 /// Copies the locked pixel buffer into owned bytes, dropping any per-row padding `CoreVideo` adds
 /// beyond `width * BYTES_PER_PIXEL`.
-fn tightly_packed_frame(pixels: &CVPixelBufferLockGuard) -> (Vec<u8>, usize, usize) {
+#[expect(
+    unsafe_code,
+    reason = "screencapturekit exposes the locked pixel bytes only through an unsafe slice view"
+)]
+fn tightly_packed_frame(pixels: &CVPixelBufferLockGuard) -> Option<(Vec<u8>, usize, usize)> {
     let width = pixels.width();
     let height = pixels.height();
     let row_bytes = width * BYTES_PER_PIXEL;
 
+    // SAFETY: `pixels` holds a read-only lock on the buffer for as long as the slice is borrowed
+    // here, so CoreVideo keeps the mapping allocated and in place. Nothing in this process writes
+    // to it, and the guard is the only handle that could unlock it.
+    let bytes = unsafe { pixels.as_slice() }?;
     let mut data = Vec::with_capacity(row_bytes * height);
-    for row in pixels.as_slice().chunks_exact(pixels.bytes_per_row()) {
+    for row in bytes.chunks_exact(pixels.bytes_per_row()) {
         data.extend_from_slice(&row[..row_bytes]);
     }
 
-    (data, width, height)
+    Some((data, width, height))
 }
 
 /// One display's persistent capture stream and the last good frame read from it.
