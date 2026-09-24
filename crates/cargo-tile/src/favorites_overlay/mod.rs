@@ -1017,6 +1017,31 @@ tail_speed = 72
 fraying = "leading"
 "#;
 
+    /// The two moving-band rows of [`RECOGNIZED_ROWS`], saved in a past year: a row saved in the
+    /// current year renders without its year, so a golden built on this year's rows would change
+    /// on the first of January.
+    pub(super) const RECOGNIZED_ROWS_TWO: &str = r#"
+[[favorite]]
+id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
+saved = "2025-08-26T11:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10
+speed = 32
+tail_speed = 72
+fraying = "leading"
+
+[[favorite]]
+id = "01a03f5e-9c14-7b41-8a02-1de4c7c9b330"
+saved = "2025-08-26T09:02:44-07:00"
+mode = "moving_band"
+direction = "right"
+width = 12
+speed = 40
+tail_speed = 96
+fraying = "both"
+"#;
+
     fn keymap_from(toml: &str) -> Keymap<App> {
         let directory = TempDir::new().expect("temporary directory should be created");
         let path = directory.path().join("keymap.toml");
@@ -1163,6 +1188,25 @@ fraying = "leading"
                 })
             })
             .collect()
+    }
+
+    fn rendered_lines(overlay: &mut FavoritesOverlay, width: u16, height: u16) -> Vec<String> {
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("test terminal should build");
+        terminal
+            .draw(|frame| overlay.render(frame))
+            .expect("favorites overlay should render");
+        rendered_buffer_lines(terminal.backend().buffer())
+    }
+
+    fn open_two_rows(keymap: &Keymap<App>) -> FavoritesOverlay {
+        let mut overlay = FavoritesOverlay::default();
+        overlay.open_file_state(
+            loaded_state(RECOGNIZED_ROWS_TWO),
+            current_parameters(),
+            keymap,
+        );
+        overlay
     }
 
     #[test]
@@ -2022,6 +2066,90 @@ travel_left = "界"
 
         let rendered = rendered_buffer_lines(terminal.backend().buffer());
         assert!(rendered.iter().any(|line| line.contains('▸')));
+    }
+
+    /// Pins the popup's size and border, the heading, the column headers with their default key
+    /// labels, the currency marker, and the footer.
+    #[test]
+    fn two_row_file_renders_the_pinned_overlay() {
+        let keymap = keymap_from("");
+        let mut overlay = open_two_rows(&keymap);
+
+        assert_eq!(
+            rendered_lines(&mut overlay, 100, 20),
+            [
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "  ┌ Favorites -- 2 saved -- ● matches the current parameters ────────────────────────────────────┐  ",
+                "  │Attract: Moving Band                                                                          │  ",
+                "  │   Saved                 Direction  Width  Speed  Tail  Fraying                               │  ",
+                "  │                         ←↑↓→       -/+    </>    [/]   v                                     │  ",
+                "  │▸● 26 Aug 2025 11:02:44  left       10     32     72    leading                               │  ",
+                "  │   26 Aug 2025 09:02:44  right      12     40     96    both                                  │  ",
+                "  │↑/↓ move   enter load   x delete   Esc close                                                  │  ",
+                "  └──────────────────────────────────────────────────────────────────────────────────────────────┘  ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+            ]
+        );
+    }
+
+    /// Pins the refusal notice's layout and retry text inside the open overlay.
+    #[test]
+    fn refused_deletion_renders_the_pinned_notice() {
+        let keymap = keymap_from("");
+        let mut overlay = open_two_rows(&keymap);
+        let _ = rendered_lines(&mut overlay, 100, 20);
+        let (favorite_id, _) = selected(&overlay);
+        let started = Instant::now();
+        start_selected_removal(&mut overlay, started);
+        assert_eq!(
+            overlay.advance(started + FAVORITE_REMOVAL_FADE),
+            FavoritesOverlayFrameOutcome::CommitRemoval(FavoriteRemovalTarget::Recognized(
+                favorite_id
+            ))
+        );
+        overlay.finish_removal(
+            FavoriteRemovalTarget::Recognized(favorite_id),
+            Err(FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from("/tmp/favorites.lock"),
+                error: "held".to_string(),
+            }),
+        );
+
+        assert_eq!(
+            rendered_lines(&mut overlay, 100, 20),
+            [
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "  ┌ Favorites -- 2 saved -- ● matches the current parameters ────────────────────────────────────┐  ",
+                "  │Attract: Moving Band                                                                          │  ",
+                "  │   Saved                 Direction  Width  Speed  Tail  Fraying                               │  ",
+                "  │                         ←↑↓→       -/+    </>    [/]   v                                     │  ",
+                "  │▸● 26 Aug 2025 11:02:44  left       10     32     72    leading                               │  ",
+                "  │   26 Aug 2025 09:02:44  right      12     40     96    both                                  │  ",
+                "  │Favorites refused the deletion because they are in use; press x to try again.                 │  ",
+                "  │/tmp/favorites.lock: cannot acquire favorites lock: held                                      │  ",
+                "  │↑/↓ move   enter load   x delete   Esc close                                                  │  ",
+                "  └──────────────────────────────────────────────────────────────────────────────────────────────┘  ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+                "                                                                                                    ",
+            ]
+        );
     }
 
     #[test]

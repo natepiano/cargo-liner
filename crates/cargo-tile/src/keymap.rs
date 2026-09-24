@@ -143,6 +143,18 @@ mod tests {
         );
     }
 
+    /// The favorites overlay's keys are read from the `[favorites]` table
+    /// of the hand-edited `keymap.toml`, wherever the scope is declared.
+    #[test]
+    fn the_favorites_overlay_keeps_its_keymap_table_name() {
+        let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        let keymap = build_keymap(&mut framework, None).expect("the app's keymap must assemble");
+        assert_eq!(
+            keymap.scope_toml_name_for(AppPaneId::Favorites),
+            Some("favorites")
+        );
+    }
+
     /// Every registration the app makes has to agree with the
     /// framework's rules about what a complete keymap holds, and
     /// nothing but assembling one says whether it does. Registering a

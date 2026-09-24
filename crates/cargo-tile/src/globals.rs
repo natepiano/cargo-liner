@@ -230,16 +230,22 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use tempfile::TempDir;
+    use tui_pane::Action;
     use tui_pane::AttractGridPresentation;
     use tui_pane::AttractVisibilityInstruction;
     use tui_pane::FavoritesMutationError;
+    use tui_pane::FocusedPane;
+    use tui_pane::Framework;
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
+    use tui_pane::Keymap;
     use tui_pane::ToastVisualDeadline;
     use tui_pane::Updates;
 
     use super::*;
+    use crate::app::AppPaneId;
     use crate::app::ProcessTree;
+    use crate::keymap;
 
     const MOVING_BAND_ROW: &str = r#"
 [[favorite]]
@@ -259,6 +265,17 @@ id = "01a03f62-9c14-7b41-8a02-1de4c7c9b334"
 saved = "2026-08-26T14:31:05-07:00"
 mode = "future_mode"
 "#;
+
+    fn keymap_from(toml: &str) -> Keymap<App> {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = directory.path().join("keymap.toml");
+        if !toml.is_empty() {
+            fs::write(&path, toml).expect("test keymap should be written");
+        }
+        let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        keymap::build_keymap(&mut framework, (!toml.is_empty()).then_some(path))
+            .expect("test keymap should resolve")
+    }
 
     fn loaded_state(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
         FavoritesFileState::Loaded {
@@ -697,6 +714,42 @@ mode = "future_mode"
             assert!(message.contains(cause), "{message:?} should name {cause:?}");
         }
         assert!(messages[3].contains("press ⌃s to try again"));
+    }
+
+    /// A save refusal can't be produced without writing the real favorites file, so this pins
+    /// the retry text `save_favorite` builds: the binding read by its type, as `save_favorite`
+    /// reads it, agrees with the binding read by its TOML name, as the overlay's prompts read it,
+    /// and a rebound key reaches the toast.
+    #[test]
+    fn save_refusal_toast_names_the_bound_key() {
+        let keymap = keymap_from("[global]\nsave_favorite = \"y\"\n");
+        let typed = keymap
+            .globals::<AppGlobalAction>()
+            .and_then(|scope| scope.key_for(AppGlobalAction::SaveFavorite))
+            .cloned();
+        let by_name = AppGlobalAction::from_toml_key("save_favorite").and_then(|action| {
+            keymap
+                .globals::<AppGlobalAction>()
+                .and_then(|scope| scope.key_for(action))
+                .cloned()
+        });
+        assert_eq!(typed, by_name);
+
+        let retry =
+            FavoritesRetryInstruction::Press(ResolvedBinding::for_action("save_favorite", typed));
+        let message = tui_pane::favorite_refusal_message(
+            FavoritesMutation::Save,
+            &retry,
+            &FavoritesMutationError::LockUnavailable {
+                path:  PathBuf::from("/tmp/favorites.lock"),
+                error: "held".to_string(),
+            },
+        );
+
+        assert!(
+            message.contains("press y to try again"),
+            "{message:?} should name the rebound key"
+        );
     }
 
     /// The display starts short and the key walks between the two. A
