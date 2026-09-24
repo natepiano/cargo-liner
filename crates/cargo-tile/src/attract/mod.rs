@@ -52,20 +52,22 @@ use std::time::Instant;
 use AdjustedAttractParameterSets as Adjusted;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use tui_pane::BackdropMonitor;
 use tui_pane::BackdropStatus;
 use tui_pane::BandDirection;
 use tui_pane::BandSettings;
 use tui_pane::DriftingText;
+use tui_pane::FramePhase;
+use tui_pane::FrameProbe;
 use tui_pane::LastSuccessfulCaptureWindowId;
 use tui_pane::LatestCaptureAttemptWindowSelection;
 use tui_pane::PixelSettings;
 use tui_pane::ResolvingPixels;
 use tui_pane::TextSettings;
 use tui_pane::TravelingBand;
+use tui_pane::Updates;
 use tui_pane::WindowIdentification;
-use tui_pane::pane_background;
+use tui_pane::attract_ground;
 
 use self::backdrop_notice::AttractScreenVisibility;
 use self::backdrop_notice::BackdropDiagnostic;
@@ -83,7 +85,6 @@ use self::moving_text::MovingTextAction;
 pub(crate) use self::moving_text::MovingTextPane;
 use self::pixelate::PixelateAction;
 pub(crate) use self::pixelate::PixelatePane;
-use crate::app::Updates;
 use crate::constants::ATTRACT_BACKDROP_GRACE;
 use crate::constants::ATTRACT_FADE_STEP;
 use crate::constants::ATTRACT_RETURN_QUIET;
@@ -96,8 +97,7 @@ use crate::constants::PIXEL_WAVE_STEP;
 use crate::constants::TEXT_SPEED_STEP;
 use crate::constants::TEXT_SPREAD_STEP;
 use crate::favorites::AttractSettings;
-use crate::probe;
-use crate::probe::Phase;
+use crate::probe::FrameLog;
 use crate::random;
 use crate::random::NonZeroIndexBound;
 
@@ -899,7 +899,7 @@ impl Attract {
         if !self.showing() {
             return;
         }
-        self.note_completed_backdrop_attempts(probe::note);
+        self.note_completed_backdrop_attempts(FrameLog::note);
         // Cheap once it has settled: the monitor answers from what it
         // found and asks the window server nothing more.
         let backdrop_diagnostic = BackdropDiagnostic {
@@ -912,7 +912,7 @@ impl Attract {
         // retries and an unchanged capture failure do not write one line per frame.
         if self.noted_backdrop_diagnostic != backdrop_diagnostic {
             self.noted_backdrop_diagnostic = backdrop_diagnostic;
-            probe::note(&backdrop_diagnostic_record(backdrop_diagnostic));
+            FrameLog::note(&backdrop_diagnostic_record(backdrop_diagnostic));
         }
     }
 
@@ -932,7 +932,7 @@ impl Attract {
 
     /// Record capture completions still waiting when the event loop exits.
     pub(crate) fn record_completed_backdrop_attempts_before_exit(&mut self) {
-        self.note_completed_backdrop_attempts(probe::note);
+        self.note_completed_backdrop_attempts(FrameLog::note);
     }
 
     /// Move the screen's standing with the roster on one frame, and
@@ -1075,7 +1075,7 @@ impl Attract {
             static SETTLED: OnceLock<()> = OnceLock::new();
 
             if SETTLED.set(()).is_ok() {
-                probe::trace();
+                FrameLog::trace();
             }
         }
         // The grid comes back only once the strip has gone the whole
@@ -1093,15 +1093,15 @@ impl Attract {
             AttractGridPresentation::OverGrid
         };
         if self.faded == u8::MAX {
-            probe::timed(Phase::Refresh, || {
-                self.refresh_backdrop(area, probe::note);
+            FrameLog::timed(FramePhase::Refresh, || {
+                self.refresh_backdrop(area, FrameLog::note);
             });
             self.size_current_animation();
             return self.grid();
         }
 
-        probe::timed(Phase::Refresh, || {
-            self.refresh_backdrop(area, probe::note);
+        FrameLog::timed(FramePhase::Refresh, || {
+            self.refresh_backdrop(area, FrameLog::note);
         });
         // A capture takes a few frames to arrive and is re-taken on a
         // timer, so having none for a moment is ordinary. Having none
@@ -1114,7 +1114,7 @@ impl Attract {
             (None, BackdropWait::NotWaiting) => BackdropWait::WaitingSince(now),
         };
         if std::mem::discriminant(&backdrop_wait) != std::mem::discriminant(&self.backdrop_wait) {
-            probe::note(&format!(
+            FrameLog::note(&format!(
                 "attract: backdrop={}",
                 matches!(backdrop_wait, BackdropWait::NotWaiting),
             ));
@@ -1163,7 +1163,7 @@ impl Attract {
             return;
         }
         self.noted = Some(reading);
-        probe::note(&format!(
+        FrameLog::note(&format!(
             "attract: work={:?} standing={:?} instruction={:?} showing={} faded={}",
             reading.work, reading.standing, reading.instruction, reading.showing, self.faded,
         ));
@@ -1213,8 +1213,8 @@ impl Attract {
     ///
     /// Drawn after the grid, so the panes it is arriving over or
     /// leaving over are already painted and it has a colour to settle
-    /// into. [`ground`] only stands in for a cell painted on nothing at
-    /// all.
+    /// into. [`attract_ground`] only stands in for a cell painted on
+    /// nothing at all.
     pub(crate) fn render(&self, buffer: &mut Buffer, area: Rect) {
         if self.faded == u8::MAX {
             return;
@@ -1223,24 +1223,10 @@ impl Attract {
             return;
         };
         match self.mode {
-            AttractMode::MovingBand => self.band.render(area, backdrop, ground(), buffer),
-            AttractMode::MovingText => self.text.render(area, backdrop, ground(), buffer),
-            AttractMode::Pixelate => self.pixels.render(area, backdrop, ground(), buffer),
+            AttractMode::MovingBand => self.band.render(area, backdrop, attract_ground(), buffer),
+            AttractMode::MovingText => self.text.render(area, backdrop, attract_ground(), buffer),
+            AttractMode::Pixelate => self.pixels.render(area, backdrop, attract_ground(), buffer),
         }
-    }
-}
-
-/// The colour anything leaving the attract screen fades toward where
-/// the cell it sits on is painted on nothing.
-///
-/// A profile the app is drawn transparent in paints no ground of its
-/// own, and a colour with no channels is one nothing can be mixed
-/// against -- so what leaves fades toward black, which is what absent
-/// looks like when the desktop is showing through.
-pub(crate) fn ground() -> Color {
-    match pane_background(false) {
-        Color::Reset => Color::Black,
-        background => background,
     }
 }
 

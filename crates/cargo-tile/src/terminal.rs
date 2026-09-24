@@ -11,11 +11,11 @@ use std::time::Instant;
 
 use tui_pane::PollWork;
 use tui_pane::Repaint;
+use tui_pane::Updates;
 use tui_pane::install_theme;
 use tui_pane::run_terminal;
 
 use crate::app::App;
-use crate::app::Updates;
 use crate::capture;
 use crate::census;
 use crate::census::CargoGroup;

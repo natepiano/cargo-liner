@@ -261,10 +261,10 @@ mod tests {
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
     use tui_pane::ToastVisualDeadline;
+    use tui_pane::Updates;
 
     use super::*;
     use crate::app::ProcessTree;
-    use crate::app::Updates;
     use crate::attract::AttractGridPresentation;
     use crate::attract::AttractVisibilityInstruction;
     use crate::favorites;

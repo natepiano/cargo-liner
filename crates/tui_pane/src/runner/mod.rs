@@ -6,7 +6,8 @@
 //! terminal, and relaunches the binary when a restart was asked for.
 //! The app is a [`TerminalApp`]; the work it folds in on every pass is a
 //! [`PollWork`], built after the terminal is set up; how the loop is
-//! timed is its [`FrameProbe`].
+//! timed is its [`FrameProbe`], which also times the other
+//! [`FramePhase`]s of a frame wherever the app calls it.
 //!
 //! A frame is drawn only when an event arrived or the app's work asked
 //! for one, paced against a fixed deadline. A burst of resize events is
@@ -28,6 +29,7 @@ mod iterm2;
 mod keys;
 mod lifecycle;
 
+pub use app::FramePhase;
 pub use app::FrameProbe;
 pub use app::NoProbe;
 pub use app::PollWork;

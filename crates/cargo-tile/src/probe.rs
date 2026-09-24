@@ -24,58 +24,48 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use tui_pane::FramePhase;
 use tui_pane::FrameProbe;
 
 use crate::constants::PROBE_THRESHOLD;
 
-/// The phases of one frame, each timed on its own.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Phase {
-    /// [`crate::attract::Attract::advance`], which carries the backdrop
-    /// monitor's own per-frame work inside it.
-    Advance,
-    /// Reading the newest capture at where the window stands.
-    Refresh,
-    /// Drawing the panes, with or without their contents.
-    Panes,
-    /// Drawing the band over them.
-    Band,
-    /// Everything `terminal.draw` does, the flush to the tty included.
-    Draw,
+/// Where `phase`'s nanoseconds are kept.
+fn slot(phase: FramePhase) -> &'static AtomicU64 {
+    static SLOTS: [AtomicU64; 5] = [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ];
+    let index = match phase {
+        FramePhase::Advance => 0,
+        FramePhase::Refresh => 1,
+        FramePhase::Panes => 2,
+        FramePhase::Band => 3,
+        FramePhase::Draw => 4,
+    };
+    &SLOTS[index]
 }
 
-impl Phase {
-    /// Where this phase's nanoseconds are kept.
-    fn slot(self) -> &'static AtomicU64 {
-        static SLOTS: [AtomicU64; 5] = [
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-            AtomicU64::new(0),
-        ];
-        &SLOTS[self as usize]
-    }
-
-    /// What this phase is called in the log.
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Advance => "advance",
-            Self::Refresh => "refresh",
-            Self::Panes => "panes",
-            Self::Band => "band",
-            Self::Draw => "draw",
-        }
+/// What `phase` is called in the log.
+const fn name(phase: FramePhase) -> &'static str {
+    match phase {
+        FramePhase::Advance => "advance",
+        FramePhase::Refresh => "refresh",
+        FramePhase::Panes => "panes",
+        FramePhase::Band => "band",
+        FramePhase::Draw => "draw",
     }
 }
 
 /// Every phase, for walking them in a fixed order.
-const PHASES: [Phase; 5] = [
-    Phase::Draw,
-    Phase::Advance,
-    Phase::Refresh,
-    Phase::Panes,
-    Phase::Band,
+const PHASES: [FramePhase; 5] = [
+    FramePhase::Draw,
+    FramePhase::Advance,
+    FramePhase::Refresh,
+    FramePhase::Panes,
+    FramePhase::Band,
 ];
 
 /// The path to append to, or [`None`] where the probe is off.
@@ -90,13 +80,13 @@ fn target() -> Option<&'static str> {
 fn on() -> bool { target().is_some() }
 
 /// Time `body` and record it as `phase`.
-pub(crate) fn timed<T>(phase: Phase, body: impl FnOnce() -> T) -> T {
+fn timed<T>(phase: FramePhase, body: impl FnOnce() -> T) -> T {
     if !on() {
         return body();
     }
     let at = Instant::now();
     let answer = body();
-    phase.slot().store(
+    slot(phase).store(
         u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
@@ -139,8 +129,9 @@ impl<W: Write> Write for Counted<W> {
 }
 
 /// The frame log as the runner's [`FrameProbe`]: every pass of the
-/// loop is a [`frame`], the draw is timed as [`Phase::Draw`], and the
-/// terminal's output is [`Counted`] once the setup has been written.
+/// loop is a [`frame`], each [`FramePhase`] is [`timed`] into its own
+/// column, and the terminal's output is [`Counted`] once the setup has
+/// been written.
 pub(crate) enum FrameLog {}
 
 impl FrameProbe for FrameLog {
@@ -150,7 +141,11 @@ impl FrameProbe for FrameLog {
 
     fn frame_started(gap: Duration) { frame(gap, PROBE_THRESHOLD); }
 
-    fn time_draw<T>(draw: impl FnOnce() -> T) -> T { timed(Phase::Draw, draw) }
+    fn timed<T>(phase: FramePhase, body: impl FnOnce() -> T) -> T { timed(phase, body) }
+
+    fn note(line: &str) { note(line); }
+
+    fn trace() { trace(); }
 }
 
 /// How many frames go into one summary line.
@@ -186,7 +181,7 @@ static TRACED: AtomicU64 = AtomicU64::new(0);
 /// A summary hides the two things a stuttering animation is most
 /// likely to be made of: frames that arrive early, which no worst-case
 /// gap can show, and frames that drew nothing at all.
-pub(crate) fn trace() {
+fn trace() {
     if !on() {
         return;
     }
@@ -236,9 +231,9 @@ fn frame(gap: Duration, threshold: Duration) {
     if !on() {
         return;
     }
-    let phases: Vec<(Phase, u64)> = PHASES
+    let phases: Vec<(FramePhase, u64)> = PHASES
         .into_iter()
-        .map(|phase| (phase, phase.slot().swap(0, Ordering::Relaxed)))
+        .map(|phase| (phase, slot(phase).swap(0, Ordering::Relaxed)))
         .collect();
     let nanos = u64::try_from(gap.as_nanos()).unwrap_or(u64::MAX);
     WORST.fetch_max(nanos, Ordering::Relaxed);
@@ -271,7 +266,7 @@ fn frame(gap: Duration, threshold: Duration) {
 
 /// Write `message` to the log as a line of its own, where the probe is
 /// switched on. For the things that happen once rather than per frame.
-pub(crate) fn note(message: &str) {
+fn note(message: &str) {
     if !on() {
         return;
     }
@@ -294,7 +289,7 @@ fn throughput(bytes: u64, over: Duration) -> f64 {
 }
 
 /// One frame as a line of the log.
-fn describe(label: &str, gap: Duration, phases: &[(Phase, u64)]) -> String {
+fn describe(label: &str, gap: Duration, phases: &[(FramePhase, u64)]) -> String {
     let mut line = format!(
         "{label} {:>7.1}ms  wrote={:<6}",
         gap.as_secs_f64() * 1000.0,
@@ -308,10 +303,10 @@ fn describe(label: &str, gap: Duration, phases: &[(Phase, u64)]) -> String {
                       millisecond, are far inside what an f64 carries exactly"
         )]
         let millis = nanos as f64 / 1_000_000.0;
-        if matches!(phase, Phase::Draw) {
+        if phase == FramePhase::Draw {
             accounted = millis;
         }
-        let _ = write!(line, "  {}={millis:.1}", phase.name());
+        let _ = write!(line, "  {}={millis:.1}", name(phase));
     }
     // What the loop cannot account for is what it was not running for,
     // which is the whole reason to print the gap beside the phases.
@@ -321,4 +316,41 @@ fn describe(label: &str, gap: Duration, phases: &[(Phase, u64)]) -> String {
         gap.as_secs_f64().mul_add(1000.0, -accounted).max(0.0),
     );
     line
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use tui_pane::FramePhase;
+
+    use super::PHASES;
+    use super::describe;
+    use super::slot;
+
+    /// Each phase keeps its own slot and its own column, and the columns
+    /// run in the order every frame log has written them.
+    #[test]
+    fn a_frame_line_names_each_phase_in_a_fixed_column_order() {
+        for (phase, millis) in [
+            (FramePhase::Draw, 5),
+            (FramePhase::Advance, 1),
+            (FramePhase::Refresh, 2),
+            (FramePhase::Panes, 3),
+            (FramePhase::Band, 4),
+        ] {
+            slot(phase).store(millis * 1_000_000, Ordering::Relaxed);
+        }
+        let phases: Vec<(FramePhase, u64)> = PHASES
+            .into_iter()
+            .map(|phase| (phase, slot(phase).swap(0, Ordering::Relaxed)))
+            .collect();
+
+        assert_eq!(
+            describe("frame", Duration::from_millis(20), &phases),
+            "frame    20.0ms  wrote=0       draw=5.0  advance=1.0  refresh=2.0  panes=3.0  band=4.0  \
+             unaccounted=15.0",
+        );
+    }
 }

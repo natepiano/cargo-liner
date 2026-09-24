@@ -9,6 +9,8 @@ mod app_config;
 mod app_context;
 mod app_settings;
 #[cfg(feature = "backdrop")]
+mod attract;
+#[cfg(feature = "backdrop")]
 mod backdrop;
 mod bar;
 mod constants;
@@ -51,6 +53,12 @@ pub use app_settings::apply_settings;
 pub use app_settings::draw_settings;
 pub use app_settings::step_framework_setting;
 pub use app_settings::stepped;
+#[cfg(feature = "backdrop")]
+pub use attract::Updates;
+#[cfg(feature = "backdrop")]
+pub use attract::attract_ground;
+#[cfg(feature = "backdrop")]
+pub use attract::fade_to_background;
 #[cfg(feature = "backdrop")]
 pub use backdrop::Backdrop;
 #[cfg(feature = "backdrop")]
@@ -276,6 +284,7 @@ pub use pane::selection_state_for;
 pub use pane::selection_style;
 pub use pane::share_borders;
 pub use process::kernel_parent;
+pub use runner::FramePhase;
 pub use runner::FrameProbe;
 pub use runner::NoProbe;
 pub use runner::PollWork;

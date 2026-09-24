@@ -22,6 +22,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
+use super::app::FramePhase;
 use super::app::FrameProbe;
 use super::app::PollWork;
 use super::app::Repaint;
@@ -68,7 +69,9 @@ pub(super) fn event_loop<A: TerminalApp, W: PollWork<A>>(
             // Re-borrowed every frame: rebinding a key in the keymap
             // overlay swaps the whole map out from under the loop.
             let keymap = app.keymap();
-            A::Probe::time_draw(|| terminal.draw(|frame| app.draw(frame, &keymap)))?;
+            A::Probe::timed(FramePhase::Draw, || {
+                terminal.draw(|frame| app.draw(frame, &keymap))
+            })?;
             dirty = false;
         }
         // When the next frame is due, carried forward from when the

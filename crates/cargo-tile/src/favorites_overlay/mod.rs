@@ -931,6 +931,7 @@ mod tests {
     use tui_pane::PixelFill;
     use tui_pane::PixelResolve;
     use tui_pane::ToastVisualDeadline;
+    use tui_pane::Updates;
     use unicode_width::UnicodeWidthStr;
 
     use super::constants::COLUMN_GAP;
@@ -943,7 +944,6 @@ mod tests {
     use super::table_layout::favorite_section_table_layout_for_test;
     use super::*;
     use crate::app::AppPaneId;
-    use crate::app::Updates;
     use crate::attract::AttractGridPresentation;
     use crate::attract::AttractVisibilityInstruction;
     use crate::attract::Work;

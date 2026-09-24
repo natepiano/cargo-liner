@@ -22,6 +22,8 @@ use ratatui::widgets::Widget;
 use tui_pane::BarPalette;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
+use tui_pane::FramePhase;
+use tui_pane::FrameProbe;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::Keymap;
 use tui_pane::PaneFocusState;
@@ -36,11 +38,13 @@ use tui_pane::StatusLineNote;
 use tui_pane::TileCells;
 use tui_pane::TileGridContents;
 use tui_pane::ToastsRenderCtx;
+use tui_pane::Updates;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
 use tui_pane::draw_global_shortcuts_overlay;
 use tui_pane::draw_keymap_overlay;
 use tui_pane::draw_settings;
+use tui_pane::fade_to_background;
 use tui_pane::label_color;
 use tui_pane::pane_background;
 use tui_pane::render_status_line;
@@ -51,8 +55,6 @@ use tui_pane::warning_color;
 
 use crate::app::App;
 use crate::app::ProcessTree;
-use crate::app::Updates;
-use crate::attract;
 use crate::attract::BackdropNotice;
 use crate::attract::Grid;
 use crate::attract::Work;
@@ -112,7 +114,7 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
-use crate::probe;
+use crate::probe::FrameLog;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
 use crate::progress::capture_read::CaptureLookup;
@@ -238,10 +240,10 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     // there, which with nothing running is a summary cell and little
     // else. Between those two it draws over bare panes, which is what
     // it arrives over and leaves over. See [`Attract::advance`].
-    let grid = probe::timed(probe::Phase::Advance, || {
+    let grid = FrameLog::timed(FramePhase::Advance, || {
         app.attract.advance(area, work, updates, Instant::now())
     });
-    probe::timed(probe::Phase::Panes, || match grid {
+    FrameLog::timed(FramePhase::Panes, || match grid {
         Grid::Full => draw_panes(frame, app, body, TileGridContents::Shown),
         Grid::Empty(faded) => {
             draw_panes(frame, app, body, TileGridContents::Hidden);
@@ -252,7 +254,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     // Over the grid rather than under it: the attract screen owns the
     // whole terminal while nothing is running, and the status line goes
     // back on top of it below.
-    probe::timed(probe::Phase::Band, || {
+    FrameLog::timed(FramePhase::Band, || {
         app.attract.render(frame.buffer_mut(), area);
     });
     draw_backdrop_notice(frame, app, body);
@@ -309,29 +311,6 @@ fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
     frame
         .buffer_mut()
         .set_string(body.left(), row, notice, Style::default().fg(label_color()));
-}
-
-/// Carry every cell of `area` `faded` of the way toward the colour it
-/// is painted on.
-///
-/// Each cell goes toward its own background rather than toward one
-/// colour picked for the grid, so a focused pane's contents settle into
-/// the focused pane's tint. [`attract::ground`] stands in only where a
-/// cell is painted on nothing at all, which is what a transparent
-/// profile leaves behind.
-fn fade_to_background(buffer: &mut Buffer, area: Rect, faded: u8) {
-    let absent = attract::ground();
-    for row in area.top()..area.bottom() {
-        for column in area.left()..area.right() {
-            if let Some(cell) = buffer.cell_mut((column, row)) {
-                let toward = match cell.bg {
-                    Color::Reset => absent,
-                    background => background,
-                };
-                cell.set_fg(blend_color(cell.fg, toward, faded));
-            }
-        }
-    }
 }
 
 /// Draw the tile grid into the body above the status line.
@@ -4160,5 +4139,64 @@ mod tests {
             ))),
             CounterState::Blocked
         );
+    }
+
+    /// Fading the grid carries each cell's text half way toward the colour
+    /// that cell is painted on, a cell painted on nothing toward the attract
+    /// ground, and leaves every cell outside the faded area as it was.
+    #[test]
+    fn a_faded_grid_carries_each_cell_toward_its_own_background() {
+        const WIDTH: u16 = 40;
+        const HEIGHT: u16 = 6;
+        const PAINTED_ON_NOTHING: (u16, u16) = (20, 3);
+        let painted: [(Color, Color); HEIGHT as usize] = [
+            (Color::Rgb(200, 100, 50), Color::Rgb(10, 20, 30)),
+            (Color::Rgb(200, 100, 50), Color::Rgb(10, 20, 30)),
+            (Color::White, Color::Rgb(0, 0, 0)),
+            (Color::Rgb(255, 255, 255), Color::Indexed(236)),
+            (Color::Reset, Color::Rgb(40, 40, 40)),
+            (Color::Rgb(90, 180, 30), Color::Rgb(250, 250, 250)),
+        ];
+        let mut buffer = Buffer::empty(Rect::new(0, 0, WIDTH, HEIGHT));
+        for (row, &(fg, bg)) in (0..).zip(&painted) {
+            for column in 0..WIDTH {
+                buffer
+                    .cell_mut((column, row))
+                    .expect("the cell is inside the buffer")
+                    .set_fg(fg)
+                    .set_bg(bg);
+            }
+        }
+        buffer
+            .cell_mut(PAINTED_ON_NOTHING)
+            .expect("the cell is inside the buffer")
+            .set_bg(Color::Reset);
+        let area = Rect::new(4, 1, 32, 4);
+
+        fade_to_background(&mut buffer, area, 128);
+
+        // What each row of `area` fades to, top to bottom, and what the
+        // one cell painted on nothing fades to.
+        let faded = [
+            Color::Rgb(104, 59, 39),
+            Color::Rgb(127, 127, 127),
+            Color::Rgb(151, 151, 151),
+            Color::Reset,
+        ];
+        let faded_on_nothing = Color::Rgb(134, 134, 135);
+        let expected: Vec<Color> = (0..HEIGHT)
+            .flat_map(|row| (0..WIDTH).map(move |column| (column, row)))
+            .map(|(column, row)| {
+                if (column, row) == PAINTED_ON_NOTHING {
+                    faded_on_nothing
+                } else if area.contains((column, row).into()) {
+                    faded[usize::from(row - area.top())]
+                } else {
+                    painted[usize::from(row)].0
+                }
+            })
+            .collect();
+        let actual: Vec<Color> = buffer.content.iter().map(|cell| cell.fg).collect();
+        assert_eq!(actual, expected);
     }
 }

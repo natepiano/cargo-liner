@@ -9,6 +9,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use tui_pane::PaneFocusState;
+use tui_pane::attract_ground;
 use tui_pane::blend_color;
 use tui_pane::error_color;
 use tui_pane::label_color;
@@ -32,7 +33,6 @@ use super::table_layout;
 use super::table_layout::FavoriteSectionTableLayout;
 use crate::app::AppOverlay;
 use crate::app::OpenFavoritesCurrentParameters;
-use crate::attract;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
 use crate::favorites::FavoriteId;
@@ -180,12 +180,12 @@ pub(super) fn rendered_line(
                 let color = match identity {
                     FavoriteRowIdentity::Recognized(_) => blend_color(
                         text_default(),
-                        attract::ground(),
+                        attract_ground(),
                         removal_alpha(lifecycle, now),
                     ),
                     FavoriteRowIdentity::Unrecognized(_) => blend_color(
                         error_color(),
-                        attract::ground(),
+                        attract_ground(),
                         removal_alpha(lifecycle, now),
                     ),
                 };
@@ -802,7 +802,7 @@ fraying = "leading"
 
         assert_eq!(
             active.style.fg,
-            Some(blend_color(error_color(), attract::ground(), 0))
+            Some(blend_color(error_color(), attract_ground(), 0))
         );
         assert_ne!(removing.style.fg, active.style.fg);
     }

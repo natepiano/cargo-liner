@@ -109,6 +109,23 @@ pub enum Repaint {
     NotNeeded,
 }
 
+/// A stretch of one frame a [`FrameProbe`] times on its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FramePhase {
+    /// Everything `terminal.draw` does, the flush to the tty included.
+    /// The runner times this one itself.
+    Draw,
+    /// Moving the attract screen on by a frame, the backdrop monitor's
+    /// own per-frame work included.
+    Advance,
+    /// Reading the newest capture at where the window stands.
+    Refresh,
+    /// Drawing the panes, with or without their contents.
+    Panes,
+    /// Drawing the attract animation over them.
+    Band,
+}
+
 /// Timing and output counting for the loop, for finding a stall.
 pub trait FrameProbe {
     /// Where the terminal's output is written.
@@ -122,9 +139,16 @@ pub trait FrameProbe {
     /// started.
     fn frame_started(_gap: Duration) {}
 
-    /// Run `draw`, the whole of drawing one frame, the flush to the tty
-    /// included.
-    fn time_draw<T>(draw: impl FnOnce() -> T) -> T { draw() }
+    /// Run `body`, recording how long it took as `phase`.
+    fn timed<T>(_phase: FramePhase, body: impl FnOnce() -> T) -> T { body() }
+
+    /// Write `line` to the probe's log as a line of its own, for what
+    /// happens once rather than every frame.
+    fn note(_line: &str) {}
+
+    /// Start recording every frame in full rather than only the slow
+    /// ones.
+    fn trace() {}
 }
 
 /// A [`FrameProbe`] that times nothing and writes straight to standard
