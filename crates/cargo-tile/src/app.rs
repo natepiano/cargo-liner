@@ -11,6 +11,9 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
 use tui_pane::AppIdentity;
+use tui_pane::AttractHost;
+use tui_pane::AttractMode;
+use tui_pane::AttractSettings;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::KeyBind;
@@ -26,12 +29,9 @@ use tui_pane::TerminalApp;
 use tui_pane::Updates;
 use tui_pane::VisualDeadline;
 
-use crate::attract::Attract;
-use crate::attract::AttractMode;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
-use crate::favorites::AttractSettings;
 use crate::favorites_overlay::FavoritesOverlay;
 use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
@@ -45,6 +45,9 @@ use crate::roster::Roster;
 use crate::sccache::SccacheStats;
 use crate::settings;
 use crate::tiles::TileGrid;
+
+/// The attract screen, writing its lines and timings to the frame log.
+pub(crate) type Attract = tui_pane::Attract<FrameLog>;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
 /// [`AppPaneId`] belongs here or its pane-local shortcuts go unlisted.
@@ -65,7 +68,7 @@ pub(crate) enum AppPaneId {
     /// The one content pane this template starts with.
     Main,
     /// One per attract-screen animation. Not a pane in the sense of
-    /// having a rectangle -- [`crate::attract`] draws over the whole
+    /// having a rectangle -- [`tui_pane::Attract`] draws over the whole
     /// terminal -- but a scope of its own, so each animation binds its
     /// own keys and `keymap.toml` keeps a table for each.
     Attract(AttractMode),
@@ -336,10 +339,7 @@ impl TerminalApp for App {
     /// actually binds are taken -- `q` still quits, `f` still freezes,
     /// and `a` gives the grid back.
     fn attract_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
-        let Some(attract) = self.attract.keyed_mode() else {
-            return KeyOutcome::Unhandled;
-        };
-        keymap.dispatch_app_pane(AppPaneId::Attract(attract), bind, self)
+        tui_pane::dispatch_attract_key(self, keymap, bind)
     }
 
     fn resized(&mut self, area: Rect) { self.attract.record_terminal_resize(area); }
@@ -364,6 +364,18 @@ impl TerminalApp for App {
         self.attract
             .record_completed_backdrop_attempts_before_exit();
     }
+}
+
+/// Each attract animation's keys hang off an [`AppPaneId::Attract`] of
+/// their own.
+impl AttractHost for App {
+    const MOVING_BAND_PANE: AppPaneId = AppPaneId::Attract(AttractMode::MovingBand);
+    const MOVING_TEXT_PANE: AppPaneId = AppPaneId::Attract(AttractMode::MovingText);
+    const PIXELATE_PANE: AppPaneId = AppPaneId::Attract(AttractMode::Pixelate);
+
+    fn attract(&self) -> &Attract { &self.attract }
+
+    fn attract_mut(&mut self) -> &mut Attract { &mut self.attract }
 }
 
 #[cfg(test)]

@@ -9,18 +9,22 @@
 
 use std::time::Instant;
 
-use tui_pane::BackdropStatus;
-use tui_pane::CaptureAttemptSequence;
-use tui_pane::CaptureAttemptWindowSelection;
-use tui_pane::CaptureFailure;
-use tui_pane::CompletedCaptureAttemptDiagnostic;
-use tui_pane::LastSuccessfulCaptureWindowId;
-use tui_pane::LatestCaptureAttemptWindowSelection;
-use tui_pane::WindowIdentification;
+use super::constants::ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE;
+use super::constants::ATTRACT_BACKDROP_STALLED_NOTICE;
+use super::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
+use super::constants::ATTRACT_NO_BACKDROP_NOTICE;
+use crate::BackdropStatus;
+use crate::CaptureAttemptSequence;
+use crate::CaptureAttemptWindowSelection;
+use crate::CaptureFailure;
+use crate::CompletedCaptureAttemptDiagnostic;
+use crate::LastSuccessfulCaptureWindowId;
+use crate::LatestCaptureAttemptWindowSelection;
+use crate::WindowIdentification;
 
 /// What the status line should say about desktop capture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BackdropNotice {
+pub enum BackdropNotice {
     /// Do not draw a notice.
     None,
     /// Tell the reader how to grant Screen Recording access.
@@ -32,6 +36,19 @@ pub(crate) enum BackdropNotice {
     CaptureRecoveryStopped,
     /// Report that capture is unavailable and diagnostics recorded why.
     CaptureUnavailable,
+}
+
+impl BackdropNotice {
+    /// The line the screen shows for this notice, or `None` for no line.
+    pub(crate) const fn text(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::ScreenRecordingAccessInstruction => Some(ATTRACT_NO_BACKDROP_NOTICE),
+            Self::CaptureStalled => Some(ATTRACT_BACKDROP_STALLED_NOTICE),
+            Self::CaptureRecoveryStopped => Some(ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE),
+            Self::CaptureUnavailable => Some(ATTRACT_BACKDROP_UNAVAILABLE_NOTICE),
+        }
+    }
 }
 
 /// Whether the attract screen can present a backdrop notice.
@@ -193,12 +210,11 @@ pub(super) const fn classify_backdrop_notice(
 
 #[cfg(test)]
 mod tests {
-    use tui_pane::BackdropMonitor;
-    use tui_pane::CaptureAttemptTestCase;
-    use tui_pane::CaptureWindowSelectionMethod;
-    use tui_pane::TerminalWindowCandidateSource;
-
     use super::*;
+    use crate::BackdropMonitor;
+    use crate::CaptureAttemptTestCase;
+    use crate::CaptureWindowSelectionMethod;
+    use crate::TerminalWindowCandidateSource;
 
     /// Capture failure stages exercised by the notice classifier.
     const CAPTURE_FAILURES: [CaptureFailure; 12] = [

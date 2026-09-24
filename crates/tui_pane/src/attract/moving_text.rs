@@ -11,34 +11,48 @@
 //! is showing -- see [`Attract::keyed_mode`](super::Attract::keyed_mode)
 //! -- whether it was asked for or came on over an idle grid.
 
+use std::marker::PhantomData;
+
 use crossterm::event::KeyCode;
-use tui_pane::Bindings;
-use tui_pane::Mode;
-use tui_pane::Pane;
-use tui_pane::Shortcuts;
-use tui_pane::TabStop;
 
-use super::AttractMode;
-use crate::app::App;
-use crate::app::AppPaneId;
-use crate::constants::ATTRACT_MOVING_TEXT_SCOPE;
-use crate::constants::ATTRACT_MOVING_TEXT_SECTION;
+use super::AttractHost;
+use super::constants::ATTRACT_MOVING_TEXT_SCOPE;
+use super::constants::ATTRACT_MOVING_TEXT_SECTION;
+use crate::Bindings;
+use crate::Mode;
+use crate::Pane;
+use crate::Shortcuts;
+use crate::TabStop;
 
-tui_pane::action_enum! {
+crate::action_enum! {
+    /// One thing a key asks the drifting text to do.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum MovingTextAction {
+    pub enum MovingTextAction {
+        /// Drift the text left.
         TravelLeft     => ("travel_left",     "Drift the text left");
+        /// Drift the text right.
         TravelRight    => ("travel_right",    "Drift the text right");
+        /// Drift the text up.
         TravelUp       => ("travel_up",       "Drift the text up");
+        /// Drift the text down.
         TravelDown     => ("travel_down",     "Drift the text down");
+        /// Speed the text up.
         Faster         => ("faster",          "Speed the text up");
+        /// Slow the text down.
         Slower         => ("slower",          "Slow the text down");
+        /// Drift the lines as one, or apart.
         CycleDrift     => ("cycle_drift",     "Drift the lines as one, or apart");
+        /// Fill the cells with bars, or with characters.
         CycleFill      => ("cycle_fill",      "Fill the cells with bars, or with characters");
+        /// Draw the lines' speeds together.
         SpreadNarrower => ("spread_narrower", "Draw the lines' speeds together");
+        /// Send the lines' speeds apart.
         SpreadWider    => ("spread_wider",    "Send the lines' speeds apart");
+        /// Show the moving band.
         ShowMovingBand => ("show_moving_band", "Show the moving band");
+        /// Show the moving text.
         ShowMovingText => ("show_moving_text", "Show the moving text");
+        /// Show the pixelate screen.
         ShowPixelate   => ("show_pixelate",    "Show the pixelate screen");
     }
 }
@@ -49,21 +63,25 @@ tui_pane::action_enum! {
 /// [`MovingBandPane`](super::MovingBandPane) is one: the attract screen
 /// is drawn over the whole terminal, and this exists so the framework
 /// has somewhere to hang a scope of its own.
-pub(crate) struct MovingTextPane;
+pub struct MovingTextPane<A>(PhantomData<fn() -> A>);
 
-impl Pane<App> for MovingTextPane {
-    const APP_PANE_ID: AppPaneId = AppPaneId::Attract(AttractMode::MovingText);
+impl<A> Default for MovingTextPane<A> {
+    fn default() -> Self { Self(PhantomData) }
+}
+
+impl<A: AttractHost> Pane<A> for MovingTextPane<A> {
+    const APP_PANE_ID: A::AppPaneId = A::MOVING_TEXT_PANE;
 
     /// The text is steered, not scrolled, so the status line's
     /// navigation region has nothing to say about it.
-    fn mode() -> fn(&App) -> Mode<App> { |_app| Mode::Static }
+    fn mode() -> fn(&A) -> Mode<A> { |_app| Mode::Static }
 
     /// Never a Tab stop. Tab walks the tile grid, and the grid is what
     /// the attract screen is covering.
-    fn tab_stop() -> TabStop<App> { TabStop::never() }
+    fn tab_stop() -> TabStop<A> { TabStop::never() }
 }
 
-impl Shortcuts<App> for MovingTextPane {
+impl<A: AttractHost> Shortcuts<A> for MovingTextPane<A> {
     type Actions = MovingTextAction;
 
     const SCOPE_NAME: &'static str = ATTRACT_MOVING_TEXT_SCOPE;
@@ -85,35 +103,39 @@ impl Shortcuts<App> for MovingTextPane {
     /// written. Every scope binds all three, so each is reachable from
     /// the others and none is a door that only opens one way; pressing
     /// the one already showing does nothing.
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            KeyCode::Left => MovingTextAction::TravelLeft,
-            KeyCode::Right => MovingTextAction::TravelRight,
-            KeyCode::Up => MovingTextAction::TravelUp,
-            KeyCode::Down => MovingTextAction::TravelDown,
-            ['>', '.'] => MovingTextAction::Faster,
-            ['<', ','] => MovingTextAction::Slower,
-            'v' => MovingTextAction::CycleDrift,
-            't' => MovingTextAction::CycleFill,
-            '[' => MovingTextAction::SpreadNarrower,
-            ']' => MovingTextAction::SpreadWider,
-            '1' => MovingTextAction::ShowMovingBand,
-            '2' => MovingTextAction::ShowMovingText,
-            '3' => MovingTextAction::ShowPixelate,
-        }
-    }
+    fn defaults() -> Bindings<Self::Actions> { default_bindings() }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
+    fn dispatcher() -> fn(Self::Actions, &mut A) { dispatch::<A> }
 }
 
 /// Run one drifting-text action.
-fn dispatch(action: MovingTextAction, app: &mut App) { app.attract.moving_text(action); }
+fn dispatch<A: AttractHost>(action: MovingTextAction, app: &mut A) {
+    app.attract_mut().moving_text(action);
+}
+
+/// The keys the drifting text is steered with until `keymap.toml` says otherwise.
+fn default_bindings() -> Bindings<MovingTextAction> {
+    crate::bindings! {
+        KeyCode::Left => MovingTextAction::TravelLeft,
+        KeyCode::Right => MovingTextAction::TravelRight,
+        KeyCode::Up => MovingTextAction::TravelUp,
+        KeyCode::Down => MovingTextAction::TravelDown,
+        ['>', '.'] => MovingTextAction::Faster,
+        ['<', ','] => MovingTextAction::Slower,
+        'v' => MovingTextAction::CycleDrift,
+        't' => MovingTextAction::CycleFill,
+        '[' => MovingTextAction::SpreadNarrower,
+        ']' => MovingTextAction::SpreadWider,
+        '1' => MovingTextAction::ShowMovingBand,
+        '2' => MovingTextAction::ShowMovingText,
+        '3' => MovingTextAction::ShowPixelate,
+    }
+}
 
 #[cfg(test)]
 mod tests {
-    use tui_pane::KeyBind;
-
     use super::*;
+    use crate::KeyBind;
 
     /// The arrows point the way the text drifts. Read out of the table
     /// the keymap is actually built from, and asserted apart from the
@@ -122,7 +144,7 @@ mod tests {
     /// focus ring instead, which looks like a key doing nothing.
     #[test]
     fn the_arrows_point_the_way_the_text_drifts() {
-        let scope = MovingTextPane::defaults().into_scope_map();
+        let scope = default_bindings().into_scope_map();
         let cases = [
             (KeyCode::Left, MovingTextAction::TravelLeft),
             (KeyCode::Right, MovingTextAction::TravelRight),
@@ -143,7 +165,7 @@ mod tests {
     /// out of the table the keymap is actually built from.
     #[test]
     fn the_steering_keys_resolve_to_their_actions() {
-        let scope = MovingTextPane::defaults().into_scope_map();
+        let scope = default_bindings().into_scope_map();
         let cases = [
             ('v', MovingTextAction::CycleDrift),
             ('t', MovingTextAction::CycleFill),
@@ -170,7 +192,7 @@ mod tests {
     /// away from the grid underneath.
     #[test]
     fn the_bands_depth_keys_are_left_unbound() {
-        let scope = MovingTextPane::defaults().into_scope_map();
+        let scope = default_bindings().into_scope_map();
 
         for key in ['+', '=', '-'] {
             assert_eq!(

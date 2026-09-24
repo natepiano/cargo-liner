@@ -1,49 +1,9 @@
-//! The attract screen: what the terminal shows while no cargo is
-//! running.
-//!
-//! A grid with nothing in it is a screen with nothing to say, so the
-//! app spends that time showing the desktop aligned under it.
-//! [`tui_pane`] hands back one colour per character cell, taken from
-//! the captured macOS desktop or the reconstructed KDE wallpaper;
-//! [`TravelingBand`] draws a strip of characters crossing the grid in
-//! those colours.
-//!
-//! The strip fades in when the roster empties and back out when
-//! something starts, which is why [`Attract::render`] is called every
-//! frame rather than only while idle -- the frames after work arrives
-//! are the ones that carry it off the screen.
-//!
-//! Which animation is drawn is an [`AttractMode`], and the mode is also
-//! the keymap scope the reader's keys resolve against while the screen
-//! has been asked for: `+` widens the moving band rather than opening a
-//! tile, and the other mode binds the same key to whatever it wants --
-//! or, as it happens, to nothing. `1`, `2` and `3` turn between them.
-//! See [`moving_band`], [`moving_text`] and [`pixelate`].
-//!
-//! It can also be asked for outright, with the key bound to
-//! [`AppGlobalAction::Attract`](crate::globals::AppGlobalAction). A
-//! screen that only ever appears when there is nothing to build is one
-//! that cannot be looked at on purpose -- and the reader wanting to
-//! watch it is reason enough to show it over a grid that is busy. Asked
-//! for, it takes the terminal rather than sharing it: [`Attract::grid`]
-//! tells [`crate::render`] to leave the panes out, so what is drawn is
-//! the animation and the status line and nothing else.
-//!
-//! Neither end of that is abrupt. [`Grid::Empty`] holds the panes on
-//! screen with nothing in them for as long as the strip is arriving or
-//! leaving, and carries them toward the colour they are painted on in
-//! step with it. What that buys is a background: a strip fading out
-//! over bare terminal has nothing to fade into and goes dark instead of
-//! going away, and content appearing under a strip still crossing it is
-//! the crowded look the screen exists to avoid.
-
-mod backdrop_notice;
-mod held_key;
-mod moving_band;
-mod moving_text;
-mod pixelate;
+//! [`Attract`]: the controller that decides, frame by frame, whether
+//! the attract screen is on the terminal, how far through its fade it
+//! is, which animation it draws and with what parameters.
 
 use std::io;
+use std::marker::PhantomData;
 use std::mem;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -52,58 +12,54 @@ use std::time::Instant;
 use AdjustedAttractParameterSets as Adjusted;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use tui_pane::BackdropMonitor;
-use tui_pane::BackdropStatus;
-use tui_pane::BandDirection;
-use tui_pane::BandSettings;
-use tui_pane::DriftingText;
-use tui_pane::FramePhase;
-use tui_pane::FrameProbe;
-use tui_pane::LastSuccessfulCaptureWindowId;
-use tui_pane::LatestCaptureAttemptWindowSelection;
-use tui_pane::PixelSettings;
-use tui_pane::ResolvingPixels;
-use tui_pane::TextSettings;
-use tui_pane::TravelingBand;
-use tui_pane::Updates;
-use tui_pane::WindowIdentification;
-use tui_pane::attract_ground;
 
-use self::backdrop_notice::AttractScreenVisibility;
-use self::backdrop_notice::BackdropDiagnostic;
-use self::backdrop_notice::BackdropGracePeriod;
-pub(crate) use self::backdrop_notice::BackdropNotice;
-use self::backdrop_notice::BackdropWait;
-use self::backdrop_notice::CurrentBackdrop;
-use self::backdrop_notice::backdrop_diagnostic_record;
-use self::backdrop_notice::classify_backdrop_notice;
-use self::backdrop_notice::note_backdrop_attempts;
-use self::held_key::HeldKey;
-use self::moving_band::MovingBandAction;
-pub(crate) use self::moving_band::MovingBandPane;
-use self::moving_text::MovingTextAction;
-pub(crate) use self::moving_text::MovingTextPane;
-use self::pixelate::PixelateAction;
-pub(crate) use self::pixelate::PixelatePane;
-use crate::constants::ATTRACT_BACKDROP_GRACE;
-use crate::constants::ATTRACT_FADE_STEP;
-use crate::constants::ATTRACT_RETURN_QUIET;
-use crate::constants::BAND_SPEED_STEP;
-use crate::constants::BAND_TAIL_SPEED_STEP;
-use crate::constants::BAND_WIDTH_STEP;
-use crate::constants::PIXEL_BLOCK_STEP;
-use crate::constants::PIXEL_SPEED_STEP;
-use crate::constants::PIXEL_WAVE_STEP;
-use crate::constants::TEXT_SPEED_STEP;
-use crate::constants::TEXT_SPREAD_STEP;
-use crate::favorites::AttractSettings;
-use crate::probe::FrameLog;
-use crate::random;
-use crate::random::NonZeroIndexBound;
+use super::attract_ground;
+use super::backdrop_notice;
+use super::backdrop_notice::AttractScreenVisibility;
+use super::backdrop_notice::BackdropDiagnostic;
+use super::backdrop_notice::BackdropGracePeriod;
+use super::backdrop_notice::BackdropNotice;
+use super::backdrop_notice::BackdropWait;
+use super::backdrop_notice::CurrentBackdrop;
+use super::constants::ATTRACT_BACKDROP_GRACE;
+use super::constants::ATTRACT_FADE_STEP;
+use super::constants::ATTRACT_FRAME_INTERVAL;
+use super::constants::ATTRACT_RETURN_QUIET;
+use super::constants::BAND_SPEED_STEP;
+use super::constants::BAND_TAIL_SPEED_STEP;
+use super::constants::BAND_WIDTH_STEP;
+use super::constants::PIXEL_BLOCK_STEP;
+use super::constants::PIXEL_SPEED_STEP;
+use super::constants::PIXEL_WAVE_STEP;
+use super::constants::TEXT_SPEED_STEP;
+use super::constants::TEXT_SPREAD_STEP;
+use super::held_key::HeldKey;
+use super::moving_band::MovingBandAction;
+use super::moving_text::MovingTextAction;
+use super::pixelate::PixelateAction;
+use super::random;
+use super::random::NonZeroIndexBound;
+use super::settings::AttractSettings;
+use super::updates::Updates;
+use crate::BackdropMonitor;
+use crate::BackdropStatus;
+use crate::BandDirection;
+use crate::BandSettings;
+use crate::DriftingText;
+use crate::FramePhase;
+use crate::FrameProbe;
+use crate::LastSuccessfulCaptureWindowId;
+use crate::LatestCaptureAttemptWindowSelection;
+use crate::PixelSettings;
+use crate::Repaint;
+use crate::ResolvingPixels;
+use crate::TextSettings;
+use crate::TravelingBand;
+use crate::WindowIdentification;
 
-/// What [`crate::render`] should do with the tile grid this frame.
+/// What the app's frame should do with its tile grid this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Grid {
+pub enum Grid {
     /// Draw it in full. The attract screen is either off the terminal
     /// or decorating an idle grid rather than replacing it.
     Full,
@@ -120,7 +76,7 @@ pub(crate) enum Grid {
 
 /// Whether the display has any cargo to show.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Work {
+pub enum Work {
     /// Nothing is running, so the attract screen has the terminal.
     Idle,
     /// Something is running, so the attract screen gives it back.
@@ -136,7 +92,7 @@ pub(crate) enum Work {
 /// them as one is what left `a` unable to put the strip away at
 /// exactly the moment it is being watched.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum AttractVisibilityInstruction {
+pub enum AttractVisibilityInstruction {
     /// Follow whether the roster is idle or working.
     #[default]
     FollowRoster,
@@ -150,7 +106,7 @@ pub(crate) enum AttractVisibilityInstruction {
 
 /// Whether the attract screen is drawn over the grid or replaces it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum AttractGridPresentation {
+pub enum AttractGridPresentation {
     /// Draw the attract screen over the grid.
     #[default]
     OverGrid,
@@ -187,26 +143,40 @@ enum Standing {
 
 /// Durable presentation state that survives a wholesale parameter replacement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AttractPresentation {
+struct AttractPresentation {
     /// The reader's standing instruction to the attract screen.
-    pub(crate) visibility_instruction: AttractVisibilityInstruction,
+    visibility_instruction: AttractVisibilityInstruction,
     /// Whether the attract screen covers or replaces the grid.
-    pub(crate) grid_presentation:      AttractGridPresentation,
+    grid_presentation:      AttractGridPresentation,
 }
 
 /// Complete semantic attract configuration at one instant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct AttractConfiguration {
+pub struct AttractConfiguration {
     /// Animation selected for display and keyboard input.
-    mode:                    AttractMode,
+    mode:         AttractMode,
     /// Moving-band parameters.
-    band:                    BandSettings,
+    band:         BandSettings,
     /// Moving-text parameters.
-    text:                    TextSettings,
+    text:         TextSettings,
     /// Pixelate parameters.
-    pixels:                  PixelSettings,
+    pixels:       PixelSettings,
     /// Durable presentation state.
-    pub(crate) presentation: AttractPresentation,
+    presentation: AttractPresentation,
+}
+
+impl AttractConfiguration {
+    /// The reader's standing instruction to the attract screen.
+    #[must_use]
+    pub const fn visibility_instruction(&self) -> AttractVisibilityInstruction {
+        self.presentation.visibility_instruction
+    }
+
+    /// Whether the attract screen covers or replaces the grid.
+    #[must_use]
+    pub const fn grid_presentation(&self) -> AttractGridPresentation {
+        self.presentation.grid_presentation
+    }
 }
 
 /// Complete configuration displaced by the most recent wholesale replacement.
@@ -215,7 +185,7 @@ struct AttractConfigurationBeforeReplacement(AttractConfiguration);
 
 /// Parameter sets adjusted while restoring a complete attract configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AdjustedAttractParameterSets {
+pub enum AdjustedAttractParameterSets {
     /// Only moving-band parameters were adjusted.
     MovingBand,
     /// Only moving-text parameters were adjusted.
@@ -258,7 +228,7 @@ enum ReplacementUndoState {
 
 /// Result of trying to restore the configuration before the latest replacement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AttractConfigurationRestoreOutcome {
+pub enum AttractConfigurationRestoreOutcome {
     /// No replacement was available to undo.
     NothingToUndo,
     /// The complete configuration was restored unchanged.
@@ -337,11 +307,11 @@ enum AnimationArea {
 /// Which animation the attract screen is drawing.
 ///
 /// Also the keymap scope its keys resolve against: each variant is an
-/// [`AppPaneId::Attract`](crate::app::AppPaneId) of its own, so two
-/// animations can bind the same key to different things and
+/// app pane id of its own (see [`AttractHost`](super::AttractHost)), so
+/// two animations can bind the same key to different things and
 /// `keymap.toml` keeps a table for each.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub(crate) enum AttractMode {
+pub enum AttractMode {
     /// A lit strip of characters crossing the grid, drawn in the
     /// colours of the desktop aligned under the window.
     MovingBand,
@@ -369,7 +339,7 @@ impl AttractMode {
 
 /// Result of applying attract settings through the selected animation's clamp setters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SettingsApplicationOutcome {
+pub enum SettingsApplicationOutcome {
     /// Every requested value was accepted unchanged.
     AppliedExactly,
     /// One or more requested values were corrected for the current animation bounds.
@@ -412,7 +382,10 @@ impl AnimationSizing {
 }
 
 /// The attract screen's state between frames.
-pub(crate) struct Attract {
+///
+/// `P` is where its frame-log lines and timings go: the app's own
+/// [`FrameProbe`], or [`NoProbe`](crate::NoProbe) for none.
+pub struct Attract<P: FrameProbe> {
     /// Keeps the captured desktop up to date on a worker thread.
     monitor:                   BackdropMonitor,
     /// Which animation is being drawn, and which keymap scope the
@@ -444,7 +417,7 @@ pub(crate) struct Attract {
     /// And the same again for the pixelate screen's.
     held_pixels:               HeldKey<PixelateAction>,
     /// How far the strip is carried toward the ground it is drawn on,
-    /// on the alpha scale [`tui_pane::blend_color`] reads. Starts at
+    /// on the alpha scale [`blend_color`](crate::blend_color) reads. Starts at
     /// [`u8::MAX`] so the app opens with nothing over its grid.
     faded:                     u8,
     /// When the strip was last moved on, so its speed is a speed rather
@@ -472,6 +445,11 @@ pub(crate) struct Attract {
     /// line where the screen changed its mind rather than one per
     /// frame. See [`Attract::note_standing`].
     noted:                     Option<Reading>,
+    /// When the screen last asked the event loop for a frame. See
+    /// [`Self::frame_due`].
+    attracted:                 Instant,
+    /// The probe the frame log's lines and timings go to.
+    probe:                     PhantomData<fn() -> P>,
 }
 
 /// What the screen decided on a frame, in the terms that decide whether
@@ -493,9 +471,14 @@ struct Reading {
     showing:     bool,
 }
 
-impl Attract {
+impl<P: FrameProbe> Default for Attract<P> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<P: FrameProbe> Attract<P> {
     /// An attract screen that is not yet showing.
-    pub(crate) fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             monitor:                   BackdropMonitor::new(),
             mode:                      AttractMode::default(),
@@ -523,6 +506,8 @@ impl Attract {
                 latest_window_selection: LatestCaptureAttemptWindowSelection::WaitingForFirstResult,
             },
             noted:                     None,
+            attracted:                 Instant::now(),
+            probe:                     PhantomData,
         }
     }
 
@@ -532,7 +517,7 @@ impl Attract {
     /// next frame: the panes are drawn before the strip is, so waiting
     /// would show one frame of the grid with the strip over it -- the
     /// very look this is here to avoid.
-    pub(crate) const fn toggle(&mut self) {
+    pub const fn toggle(&mut self) {
         self.visibility_instruction = match self.visibility_instruction {
             AttractVisibilityInstruction::Show => AttractVisibilityInstruction::Hide,
             AttractVisibilityInstruction::FollowRoster | AttractVisibilityInstruction::Hide => {
@@ -548,13 +533,13 @@ impl Attract {
     }
 
     /// Ask for the attract screen regardless of its current fade direction.
-    pub(crate) const fn request_show(&mut self) {
+    pub const fn request_show(&mut self) {
         self.visibility_instruction = AttractVisibilityInstruction::Show;
         self.grid_presentation = AttractGridPresentation::ReplacesGrid;
     }
 
     /// Draw and apply a fresh mode and parameters, then show the result.
-    pub(crate) fn randomize(&mut self) { self.randomize_from_seed(random::clock_seed()); }
+    pub fn randomize(&mut self) { self.randomize_from_seed(random::clock_seed()); }
 
     fn randomize_from_seed(&mut self, seed: u64) {
         self.size_all_animations();
@@ -585,7 +570,8 @@ impl Attract {
     /// is what the status line says: a grid taken off the screen by the
     /// attract screen otherwise looks exactly like a grid with nothing
     /// on it.
-    pub(crate) const fn asked_for(&self) -> bool {
+    #[must_use]
+    pub const fn asked_for(&self) -> bool {
         matches!(
             self.visibility_instruction,
             AttractVisibilityInstruction::Show
@@ -611,7 +597,8 @@ impl Attract {
     /// so `s` still opens settings and `a` still gives the grid back --
     /// a developer who has stopped typing has not stopped meaning
     /// "settings".
-    pub(crate) const fn keyed_mode(&self) -> Option<AttractMode> {
+    #[must_use]
+    pub const fn keyed_mode(&self) -> Option<AttractMode> {
         if matches!(
             self.visibility_instruction,
             AttractVisibilityInstruction::Show
@@ -625,10 +612,10 @@ impl Attract {
 
     /// Settings the current attract mode is running with now.
     ///
-    /// Applies the latest [`FrameArea`] or [`PendingTerminalResize`]
+    /// Applies the latest laid-out frame area or pending terminal resize
     /// first so the returned values already match the next frame,
     /// including a mode switch with no frame in between.
-    pub(crate) fn current_settings(&mut self) -> AttractSettings {
+    pub fn current_settings(&mut self) -> AttractSettings {
         self.size_current_animation();
         match self.mode {
             AttractMode::MovingBand => AttractSettings::MovingBand(self.band.settings()),
@@ -638,10 +625,7 @@ impl Attract {
     }
 
     /// Apply mode-specific settings after sizing their animation to the latest terminal area.
-    pub(crate) fn apply_settings(
-        &mut self,
-        requested: AttractSettings,
-    ) -> SettingsApplicationOutcome {
+    pub fn apply_settings(&mut self, requested: AttractSettings) -> SettingsApplicationOutcome {
         self.size_all_animations();
         self.replacement_undo = ReplacementUndoState::Available(
             AttractConfigurationBeforeReplacement(self.configuration()),
@@ -672,7 +656,7 @@ impl Attract {
     }
 
     /// Restore the complete configuration displaced by the latest replacement.
-    pub(crate) fn restore_configuration_before_last_replacement(
+    pub fn restore_configuration_before_last_replacement(
         &mut self,
     ) -> AttractConfigurationRestoreOutcome {
         let checkpoint = mem::replace(
@@ -696,7 +680,10 @@ impl Attract {
         AttractConfigurationRestoreOutcome::from_configurations(requested, self.configuration())
     }
 
-    pub(crate) const fn configuration(&self) -> AttractConfiguration {
+    /// The complete configuration in effect now: the animation shown,
+    /// the parameters of all three, and the presentation state.
+    #[must_use]
+    pub const fn configuration(&self) -> AttractConfiguration {
         AttractConfiguration {
             mode:         self.mode,
             band:         self.band.settings(),
@@ -754,7 +741,7 @@ impl Attract {
 
     /// Record an input-reported terminal area before queued keys are
     /// dispatched.
-    pub(crate) const fn record_terminal_resize(&mut self, area: Rect) {
+    pub const fn record_terminal_resize(&mut self, area: Rect) {
         self.pending_resize = PendingTerminalResize::Reported(area);
     }
 
@@ -765,7 +752,7 @@ impl Attract {
     /// is not stepped -- it is one of four answers, and there is no
     /// such thing as being more left -- and neither is which of the
     /// edges fray, which is a cycle rather than a range.
-    fn moving_band(&mut self, action: MovingBandAction) {
+    pub(super) fn moving_band(&mut self, action: MovingBandAction) {
         let step = self.held_band.step(action, Instant::now());
         match action {
             MovingBandAction::Wider => self.band.widen(step * BAND_WIDTH_STEP),
@@ -795,7 +782,7 @@ impl Attract {
     /// Turning to the other animation leaves this one exactly as it was
     /// steered, so coming back finds it where it was left rather than
     /// at its defaults.
-    fn moving_text(&mut self, action: MovingTextAction) {
+    pub(super) fn moving_text(&mut self, action: MovingTextAction) {
         let step = self.held_text.step(action, Instant::now());
         match action {
             MovingTextAction::TravelLeft => self.text.set_direction(BandDirection::Left),
@@ -821,7 +808,7 @@ impl Attract {
     /// is not stepped -- it is one of four answers -- and neither is
     /// how a block gives its cells back or what a cell is drawn with,
     /// each of which is a cycle rather than a range.
-    fn pixelate(&mut self, action: PixelateAction) {
+    pub(super) fn pixelate(&mut self, action: PixelateAction) {
         let step = self.held_pixels.step(action, Instant::now());
         match action {
             PixelateAction::SweepLeft => self.pixels.set_direction(BandDirection::Left),
@@ -872,7 +859,38 @@ impl Attract {
     /// it runs precisely while the app is idle -- so without this it
     /// would draw one frame and stop. Fully faded out it wants nothing,
     /// which is what hands the idle app its quiet back.
-    pub(crate) const fn showing(&self) -> bool { self.faded != u8::MAX }
+    #[must_use]
+    pub const fn showing(&self) -> bool { self.faded != u8::MAX }
+
+    /// Whether the attract screen wants the event loop to draw a frame.
+    ///
+    /// It runs while nothing is building, which is exactly when the loop
+    /// would otherwise have nothing to repaint for. It asks for frames
+    /// only while it is on the screen, so an app with work in front of
+    /// it goes back to costing nothing.
+    ///
+    /// And one more at the end of the quiet it waits out before coming
+    /// back, which is time nothing else repaints for either: an empty
+    /// grid standing still. Without that frame the screen would be due
+    /// and nothing would be drawing to let it back on.
+    ///
+    /// Asked for on its own cadence rather than at every poll: a frame
+    /// of it is every cell of the window, and the terminal parses the
+    /// whole screen for each one, so it asks about 30 times a second.
+    ///
+    /// Called from the app's [`PollWork`](crate::PollWork) while the
+    /// display is live; a frozen display asks for no frames of it.
+    pub fn frame_due(&mut self) -> Repaint {
+        let interval_due = self.showing() && self.attracted.elapsed() >= ATTRACT_FRAME_INTERVAL;
+        if interval_due {
+            self.attracted = Instant::now();
+        }
+        if interval_due || self.due_back(Instant::now()) {
+            Repaint::Needed
+        } else {
+            Repaint::NotNeeded
+        }
+    }
 
     /// Whether the screen is due back, which is the one frame the event
     /// loop owes it while it is off the terminal.
@@ -883,7 +901,7 @@ impl Attract {
     /// of the quiet rather than through it -- one draw, on which
     /// [`Self::advance`] turns the screen back on and [`Self::showing`]
     /// carries the frames from there.
-    pub(crate) fn due_back(&self, now: Instant) -> bool {
+    fn due_back(&self, now: Instant) -> bool {
         match self.standing {
             Standing::Settling(since) => now.duration_since(since) >= ATTRACT_RETURN_QUIET,
             Standing::Showing | Standing::Leaving | Standing::Working => false,
@@ -895,11 +913,11 @@ impl Attract {
     /// Tried once, on the first poll the strip is showing on: a run
     /// that never shows it never pays the round trips, and a terminal
     /// that will not wear a title is not asked twice.
-    pub(crate) fn identify(&mut self) {
+    pub fn identify(&mut self) {
         if !self.showing() {
             return;
         }
-        self.note_completed_backdrop_attempts(FrameLog::note);
+        self.note_completed_backdrop_attempts(P::note);
         // Cheap once it has settled: the monitor answers from what it
         // found and asks the window server nothing more.
         let backdrop_diagnostic = BackdropDiagnostic {
@@ -912,13 +930,15 @@ impl Attract {
         // retries and an unchanged capture failure do not write one line per frame.
         if self.noted_backdrop_diagnostic != backdrop_diagnostic {
             self.noted_backdrop_diagnostic = backdrop_diagnostic;
-            FrameLog::note(&backdrop_diagnostic_record(backdrop_diagnostic));
+            P::note(&backdrop_notice::backdrop_diagnostic_record(
+                backdrop_diagnostic,
+            ));
         }
     }
 
     /// Record every capture attempt currently completed by the monitor.
     fn note_completed_backdrop_attempts(&mut self, note: impl FnMut(&str)) {
-        note_backdrop_attempts(
+        backdrop_notice::note_backdrop_attempts(
             self.monitor.take_completed_capture_attempt_diagnostics(),
             note,
         );
@@ -931,8 +951,8 @@ impl Attract {
     }
 
     /// Record capture completions still waiting when the event loop exits.
-    pub(crate) fn record_completed_backdrop_attempts_before_exit(&mut self) {
-        self.note_completed_backdrop_attempts(FrameLog::note);
+    pub fn record_completed_backdrop_attempts_before_exit(&mut self) {
+        self.note_completed_backdrop_attempts(P::note);
     }
 
     /// Move the screen's standing with the roster on one frame, and
@@ -1002,15 +1022,9 @@ impl Attract {
     /// what is behind it.
     ///
     /// `now` comes from the caller rather than the clock so a test can
-    /// walk the quiet in [`Standing::Settling`] without standing
-    /// through it.
-    pub(crate) fn advance(
-        &mut self,
-        area: Rect,
-        work: Work,
-        updates: Updates,
-        now: Instant,
-    ) -> Grid {
+    /// walk the quiet a screen waits out before coming back without
+    /// standing through it.
+    pub fn advance(&mut self, area: Rect, work: Work, updates: Updates, now: Instant) -> Grid {
         self.laid_out_area = FrameArea::LaidOut(area);
         self.pending_resize = PendingTerminalResize::NotReported;
         // A freeze just let go of leaves a gap between this draw and
@@ -1075,7 +1089,7 @@ impl Attract {
             static SETTLED: OnceLock<()> = OnceLock::new();
 
             if SETTLED.set(()).is_ok() {
-                FrameLog::trace();
+                P::trace();
             }
         }
         // The grid comes back only once the strip has gone the whole
@@ -1093,15 +1107,15 @@ impl Attract {
             AttractGridPresentation::OverGrid
         };
         if self.faded == u8::MAX {
-            FrameLog::timed(FramePhase::Refresh, || {
-                self.refresh_backdrop(area, FrameLog::note);
+            P::timed(FramePhase::Refresh, || {
+                self.refresh_backdrop(area, P::note);
             });
             self.size_current_animation();
             return self.grid();
         }
 
-        FrameLog::timed(FramePhase::Refresh, || {
-            self.refresh_backdrop(area, FrameLog::note);
+        P::timed(FramePhase::Refresh, || {
+            self.refresh_backdrop(area, P::note);
         });
         // A capture takes a few frames to arrive and is re-taken on a
         // timer, so having none for a moment is ordinary. Having none
@@ -1114,7 +1128,7 @@ impl Attract {
             (None, BackdropWait::NotWaiting) => BackdropWait::WaitingSince(now),
         };
         if std::mem::discriminant(&backdrop_wait) != std::mem::discriminant(&self.backdrop_wait) {
-            FrameLog::note(&format!(
+            P::note(&format!(
                 "attract: backdrop={}",
                 matches!(backdrop_wait, BackdropWait::NotWaiting),
             ));
@@ -1163,7 +1177,7 @@ impl Attract {
             return;
         }
         self.noted = Some(reading);
-        FrameLog::note(&format!(
+        P::note(&format!(
             "attract: work={:?} standing={:?} instruction={:?} showing={} faded={}",
             reading.work, reading.standing, reading.instruction, reading.showing, self.faded,
         ));
@@ -1181,7 +1195,8 @@ impl Attract {
     /// suppresses ordinary failure notices, while stalled recovery is
     /// still reported. A hidden attract screen never reports a backdrop
     /// notice over the working grid.
-    pub(crate) fn backdrop_notice(&self, now: Instant) -> BackdropNotice {
+    #[must_use]
+    pub fn backdrop_notice(&self, now: Instant) -> BackdropNotice {
         let attract_screen_visibility = if self.showing() {
             AttractScreenVisibility::Showing
         } else {
@@ -1201,7 +1216,7 @@ impl Attract {
             .monitor
             .current()
             .map_or(CurrentBackdrop::Missing, |_| CurrentBackdrop::Available);
-        classify_backdrop_notice(
+        backdrop_notice::classify_backdrop_notice(
             attract_screen_visibility,
             grace_period,
             current_backdrop,
@@ -1215,7 +1230,7 @@ impl Attract {
     /// leaving over are already painted and it has a colour to settle
     /// into. [`attract_ground`] only stands in for a cell painted on
     /// nothing at all.
-    pub(crate) fn render(&self, buffer: &mut Buffer, area: Rect) {
+    pub fn render(&self, buffer: &mut Buffer, area: Rect) {
         if self.faded == u8::MAX {
             return;
         }
@@ -1236,17 +1251,21 @@ mod tests {
     use std::collections::HashSet;
 
     use ratatui::layout::Rect;
-    use tui_pane::BandDirection;
-    use tui_pane::BandFraying;
-    use tui_pane::CaptureAttemptTestCase;
-    use tui_pane::CaptureFailure;
-    use tui_pane::FRAME_POLL_MILLIS;
-    use tui_pane::PixelFill;
-    use tui_pane::PixelResolve;
-    use tui_pane::TextDrift;
-    use tui_pane::TextFill;
 
     use super::*;
+    use crate::BandDirection;
+    use crate::BandFraying;
+    use crate::CaptureAttemptTestCase;
+    use crate::CaptureFailure;
+    use crate::FRAME_POLL_MILLIS;
+    use crate::NoProbe;
+    use crate::PixelFill;
+    use crate::PixelResolve;
+    use crate::TextDrift;
+    use crate::TextFill;
+
+    /// The controller the tests drive, writing to no probe.
+    type Attract = super::Attract<NoProbe>;
 
     /// The area the strip is advanced against. Any non-empty rectangle
     /// will do -- nothing here reads what is drawn, only how far the

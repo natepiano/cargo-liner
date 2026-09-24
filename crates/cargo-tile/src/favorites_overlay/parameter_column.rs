@@ -1,14 +1,13 @@
 //! Parameter columns for a favorite's saved settings and the spellings of their values.
 
+use tui_pane::AttractMode;
+use tui_pane::AttractSettings;
 use tui_pane::BandDirection;
 use tui_pane::BandFraying;
 use tui_pane::PixelFill;
 use tui_pane::PixelResolve;
 use tui_pane::TextDrift;
 use tui_pane::TextFill;
-
-use crate::attract::AttractMode;
-use crate::favorites::AttractSettings;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ParameterColumnDescriptor {

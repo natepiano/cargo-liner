@@ -1,4 +1,5 @@
-//! How a key held down arrives, and what one press of it is worth.
+//! How a key held down arrives, and how many steps one press of it
+//! moves.
 //!
 //! Shared by every [`AttractMode`](super::AttractMode): each animation
 //! has its own actions and its own run in progress, so the run is
@@ -6,9 +7,9 @@
 
 use std::time::Instant;
 
-use crate::constants::HELD_KEY_GAP;
-use crate::constants::HELD_KEY_MAX_STEP;
-use crate::constants::HELD_KEY_PRESSES_PER_STEP;
+use super::constants::HELD_KEY_GAP;
+use super::constants::HELD_KEY_MAX_STEP;
+use super::constants::HELD_KEY_PRESSES_PER_STEP;
 
 /// How far into a run of presses of the same key the reader is.
 ///
@@ -44,7 +45,7 @@ impl<A: Copy + PartialEq> HeldKey<A> {
     }
 
     /// Fold a press of `action` arriving at `pressed_at` into the run,
-    /// and say how many steps it is worth.
+    /// and say how many steps the press moves.
     ///
     /// Never fewer than one, so a single press always does something,
     /// and never more than [`HELD_KEY_MAX_STEP`], so a key left down
@@ -75,13 +76,13 @@ mod tests {
     const HELD: Duration = HELD_KEY_GAP;
 
     #[test]
-    fn a_single_press_is_worth_one_step() {
+    fn a_single_press_moves_one_step() {
         let mut held_key = HeldKey::new();
 
         assert_eq!(held_key.step(MovingBandAction::Wider, Instant::now()), 1);
     }
 
-    /// A run of presses is worth more per press the longer it runs, so
+    /// A run of presses moves further per press the longer it runs, so
     /// a key held down crosses the range without sixty presses.
     #[test]
     fn a_run_of_presses_grows_the_step_and_then_stops_growing() {

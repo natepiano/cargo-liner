@@ -25,19 +25,18 @@
 use std::rc::Rc;
 
 use crossterm::event::KeyCode;
+use tui_pane::AttractMode;
+use tui_pane::AttractSettings;
 use tui_pane::Bindings;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
 use tui_pane::TileAction;
 
 use crate::app::App;
-use crate::attract::AttractConfigurationRestoreOutcome;
-use crate::attract::AttractMode;
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::favorites;
-use crate::favorites::AttractSettings;
 use crate::favorites::FavoriteRows;
 use crate::favorites::FavoriteSaveOutcome;
 use crate::favorites::FavoritesFileState;
@@ -111,7 +110,7 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),
-        AppGlobalAction::UndoAttractReplacement => undo_attract_replacement(app),
+        AppGlobalAction::UndoAttractReplacement => tui_pane::undo_attract_replacement(app),
         AppGlobalAction::ProcessTree => app.tree = app.tree.toggled(),
         AppGlobalAction::SaveFavorite => save_favorite(app),
         AppGlobalAction::OpenFavorites => {
@@ -121,37 +120,6 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
         },
         AppGlobalAction::RandomFavorite => show_random_favorite(app),
     }
-}
-
-fn undo_attract_replacement(app: &mut App) {
-    let outcome = app.attract.restore_configuration_before_last_replacement();
-    let (title, body) = match outcome {
-        AttractConfigurationRestoreOutcome::NothingToUndo => (
-            "Nothing to undo",
-            "No attract replacement is available to undo".to_string(),
-        ),
-        AttractConfigurationRestoreOutcome::RestoredExactly { mode } => (
-            "Attract restored",
-            format!("{} configuration restored", mode_label(mode)),
-        ),
-        AttractConfigurationRestoreOutcome::RestoredWithAdjustments {
-            mode,
-            adjusted_parameter_sets,
-        } => (
-            "Attract restored with adjustments",
-            format!(
-                "{} configuration restored; terminal size adjusted {} parameters",
-                mode_label(mode),
-                adjusted_parameter_sets.names(),
-            ),
-        ),
-    };
-    app.framework.toasts.push_timed(
-        title,
-        &body,
-        NOTICE_TOAST_VISIBLE,
-        NOTICE_TOAST_MIN_INTERIOR_LINES,
-    );
 }
 
 /// Load the current favorites file and show one recognized row at random.
@@ -258,6 +226,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use tempfile::TempDir;
+    use tui_pane::AttractGridPresentation;
+    use tui_pane::AttractVisibilityInstruction;
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
     use tui_pane::ToastVisualDeadline;
@@ -265,8 +235,6 @@ mod tests {
 
     use super::*;
     use crate::app::ProcessTree;
-    use crate::attract::AttractGridPresentation;
-    use crate::attract::AttractVisibilityInstruction;
     use crate::favorites;
     use crate::favorites::FavoritesMutationError;
 
@@ -611,11 +579,11 @@ mode = "future_mode"
 
         let before_configuration = app.attract.configuration();
         assert_eq!(
-            before_configuration.presentation.visibility_instruction,
+            before_configuration.visibility_instruction(),
             AttractVisibilityInstruction::Hide
         );
         assert_eq!(
-            before_configuration.presentation.grid_presentation,
+            before_configuration.grid_presentation(),
             AttractGridPresentation::ReplacesGrid
         );
         show_random_favorite_with(&mut app, || load_test_path(&path), || 0);

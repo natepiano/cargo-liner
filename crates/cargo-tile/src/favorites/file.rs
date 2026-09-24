@@ -13,10 +13,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::thread;
 
+use tui_pane::AttractSettings;
 use tui_pane::KeySequence;
 
 use super::UnrecognizedFavoriteRemovalLocator;
-use super::rows::AttractSettings;
 use super::rows::Favorite;
 use super::rows::FavoriteId;
 use super::rows::FavoriteRows;

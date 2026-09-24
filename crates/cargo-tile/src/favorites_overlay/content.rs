@@ -6,9 +6,9 @@ use std::time::Instant;
 
 use chrono::Datelike;
 use chrono::Local;
+use tui_pane::AttractMode;
+use tui_pane::AttractSettings;
 
-use crate::attract::AttractMode;
-use crate::favorites::AttractSettings;
 use crate::favorites::Favorite;
 use crate::favorites::FavoriteId;
 use crate::favorites::FavoriteRowRecognition;

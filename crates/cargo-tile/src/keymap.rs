@@ -16,7 +16,7 @@
 //! `register_pane` because it carries keys of its own. It is a scope
 //! without a rectangle: the attract screen draws over the whole
 //! terminal, and the registration exists so its keys are bindable
-//! separately from every other scope. See [`crate::attract`].
+//! separately from every other scope. See [`tui_pane::Attract`].
 
 use std::path::PathBuf;
 
@@ -28,14 +28,14 @@ use tui_pane::GlobalAction;
 use tui_pane::Keymap;
 use tui_pane::KeymapError;
 use tui_pane::Mode;
+use tui_pane::MovingBandPane;
+use tui_pane::MovingTextPane;
 use tui_pane::Pane;
+use tui_pane::PixelatePane;
 use tui_pane::SettingsNavigation;
 
 use crate::app::App;
 use crate::app::AppPaneId;
-use crate::attract::MovingBandPane;
-use crate::attract::MovingTextPane;
-use crate::attract::PixelatePane;
 use crate::favorites_overlay::FavoritesOverlayPane;
 use crate::globals::AppGlobalAction;
 
@@ -101,9 +101,9 @@ pub(crate) fn build_keymap(
         .register_globals::<AppGlobalAction>()?
         .register_overlay()?
         .register_pane::<MainPane>()
-        .register(MovingBandPane)
-        .register(MovingTextPane)
-        .register(PixelatePane)
+        .register(MovingBandPane::<App>::default())
+        .register(MovingTextPane::<App>::default())
+        .register(PixelatePane::<App>::default())
         .register(FavoritesOverlayPane)
         .build_into(framework)
 }
@@ -114,12 +114,34 @@ pub(crate) fn build_keymap(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tui_pane::AttractMode;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
 
     use super::build_keymap;
     use crate::app::AppPaneId;
-    use crate::attract::AttractMode;
+
+    /// `keymap.toml` is hand-edited, so the table each attract mode's
+    /// keys are read from keeps its name wherever the scope is declared.
+    #[test]
+    fn each_attract_mode_keeps_its_keymap_table_name() {
+        let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
+        let keymap = build_keymap(&mut framework, None).expect("the app's keymap must assemble");
+        let table_names = [
+            AttractMode::MovingBand,
+            AttractMode::MovingText,
+            AttractMode::Pixelate,
+        ]
+        .map(|mode| keymap.scope_toml_name_for(AppPaneId::Attract(mode)));
+        assert_eq!(
+            table_names,
+            [
+                Some("attract_moving_band"),
+                Some("attract_moving_text"),
+                Some("attract_pixelate"),
+            ]
+        );
+    }
 
     /// Every registration the app makes has to agree with the
     /// framework's rules about what a complete keymap holds, and

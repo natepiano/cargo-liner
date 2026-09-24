@@ -180,6 +180,7 @@ mod tests {
     use std::fs;
 
     use tempfile::TempDir;
+    use tui_pane::AttractMode;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::Keymap;
@@ -187,7 +188,6 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::AppPaneId;
-    use crate::attract::AttractMode;
     use crate::favorites;
     use crate::favorites_overlay::content::FavoriteRowsView;
     use crate::favorites_overlay::parameter_column::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;

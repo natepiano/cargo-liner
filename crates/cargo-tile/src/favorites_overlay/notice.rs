@@ -5,12 +5,12 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
+use tui_pane::AttractSettings;
 use tui_pane::error_color;
 use tui_pane::warning_color;
 
 use super::parameter_column;
 use crate::favorites;
-use crate::favorites::AttractSettings;
 use crate::favorites::FavoritesMutation;
 use crate::favorites::FavoritesMutationError;
 use crate::favorites::FavoritesRetryInstruction;

@@ -16,8 +16,10 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
+use tui_pane::AttractSettings;
 use tui_pane::Keymap;
 use tui_pane::PopupFrame;
+use tui_pane::SettingsApplicationOutcome;
 use tui_pane::ToastStyle;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
@@ -58,13 +60,11 @@ use crate::app::App;
 use crate::app::AppOverlay;
 use crate::app::OpenFavoritesCurrentParameters;
 use crate::app::OpenFavoritesOverlayState;
-use crate::attract::SettingsApplicationOutcome;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
 use crate::favorites;
-use crate::favorites::AttractSettings;
 use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutationError;
@@ -924,6 +924,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use tempfile::TempDir;
+    use tui_pane::AttractGridPresentation;
+    use tui_pane::AttractVisibilityInstruction;
     use tui_pane::BandDirection;
     use tui_pane::BandFraying;
     use tui_pane::FocusedPane;
@@ -932,6 +934,7 @@ mod tests {
     use tui_pane::PixelResolve;
     use tui_pane::ToastVisualDeadline;
     use tui_pane::Updates;
+    use tui_pane::Work;
     use unicode_width::UnicodeWidthStr;
 
     use super::constants::COLUMN_GAP;
@@ -944,9 +947,6 @@ mod tests {
     use super::table_layout::favorite_section_table_layout_for_test;
     use super::*;
     use crate::app::AppPaneId;
-    use crate::attract::AttractGridPresentation;
-    use crate::attract::AttractVisibilityInstruction;
-    use crate::attract::Work;
     use crate::favorites;
     use crate::favorites::FavoriteId;
     use crate::keymap;
@@ -2109,11 +2109,11 @@ travel_left = "界"
         app.attract.toggle();
         let before_adjusted_load = app.attract.configuration();
         assert_eq!(
-            before_adjusted_load.presentation.visibility_instruction,
+            before_adjusted_load.visibility_instruction(),
             AttractVisibilityInstruction::Hide
         );
         assert_eq!(
-            before_adjusted_load.presentation.grid_presentation,
+            before_adjusted_load.grid_presentation(),
             AttractGridPresentation::ReplacesGrid
         );
         app.favorites_overlay =
@@ -2158,11 +2158,11 @@ travel_left = "界"
         exact_app.attract.toggle();
         let before_exact_load = exact_app.attract.configuration();
         assert_eq!(
-            before_exact_load.presentation.visibility_instruction,
+            before_exact_load.visibility_instruction(),
             AttractVisibilityInstruction::Hide
         );
         assert_eq!(
-            before_exact_load.presentation.grid_presentation,
+            before_exact_load.grid_presentation(),
             AttractGridPresentation::ReplacesGrid
         );
         exact_app.favorites_overlay =

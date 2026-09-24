@@ -2,7 +2,6 @@
 //! framework.
 
 mod app;
-mod attract;
 mod birth_stamp;
 mod capture;
 mod census;

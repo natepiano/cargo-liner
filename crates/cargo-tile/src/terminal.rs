@@ -22,7 +22,6 @@ use crate::census::CargoGroup;
 use crate::config::CargoTile;
 use crate::config::Config;
 use crate::config::LoadedConfig;
-use crate::constants::ATTRACT_FRAME_INTERVAL;
 use crate::constants::CAPTURE_ROOT;
 use crate::favorites;
 use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
@@ -100,8 +99,6 @@ struct Workers {
     sccache_reads:   Sender<SccacheSummary>,
     /// Where those reads reply.
     sccache_replies: Receiver<SccacheSummary>,
-    /// When the attract screen last asked for a frame.
-    attracted:       Instant,
 }
 
 impl Workers {
@@ -112,7 +109,6 @@ impl Workers {
             scans,
             sccache_reads,
             sccache_replies,
-            attracted: Instant::now(),
         }
     }
 }
@@ -166,27 +162,11 @@ impl PollWork<App> for Workers {
             if app.tiles.tick() {
                 dirty = true;
             }
-            // The attract screen is the other: it runs while nothing is
-            // building, which is exactly when this loop would otherwise
-            // have nothing to repaint for. It asks for frames only
-            // while it is on the screen, so an app with work in front
-            // of it goes back to costing nothing.
-            //
-            // And one more at the end of the quiet it waits out before
-            // coming back, which is time nothing else repaints for
-            // either: an empty grid standing still. Without that frame
-            // the screen would be due and nothing would be drawing to
-            // let it back on.
-            //
-            // Asked for on its own cadence rather than at every poll:
-            // a frame of it is every cell of the window, and the
-            // terminal parses the whole screen for each one. See
-            // [`ATTRACT_FRAME_INTERVAL`].
-            if app.attract.showing() && self.attracted.elapsed() >= ATTRACT_FRAME_INTERVAL {
-                self.attracted = Instant::now();
-                dirty = true;
-            }
-            if app.attract.due_back(Instant::now()) {
+            // The attract screen is the other: it asks for frames on its
+            // own cadence while it is on the screen, and for one more at
+            // the end of the quiet it waits out before coming back. See
+            // [`tui_pane::Attract::frame_due`].
+            if app.attract.frame_due() == Repaint::Needed {
                 dirty = true;
             }
         }
@@ -262,11 +242,11 @@ mod tests {
     use ratatui::layout::Rect;
     use tempfile::TempDir;
     use tui_pane::FrameworkOverlayId;
+    use tui_pane::SettingsApplicationOutcome;
     use tui_pane::TerminalApp;
     use tui_pane::dispatch_key;
 
     use super::*;
-    use crate::attract::SettingsApplicationOutcome;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;

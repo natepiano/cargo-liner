@@ -25,6 +25,7 @@ use tui_pane::ColumnWidths;
 use tui_pane::FramePhase;
 use tui_pane::FrameProbe;
 use tui_pane::FrameworkOverlayId;
+use tui_pane::Grid;
 use tui_pane::Keymap;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
@@ -39,8 +40,10 @@ use tui_pane::TileCells;
 use tui_pane::TileGridContents;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::Updates;
+use tui_pane::Work;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
+use tui_pane::draw_backdrop_notice;
 use tui_pane::draw_global_shortcuts_overlay;
 use tui_pane::draw_keymap_overlay;
 use tui_pane::draw_settings;
@@ -55,9 +58,6 @@ use tui_pane::warning_color;
 
 use crate::app::App;
 use crate::app::ProcessTree;
-use crate::attract::BackdropNotice;
-use crate::attract::Grid;
-use crate::attract::Work;
 use crate::census;
 use crate::census::Ancestor;
 use crate::census::CargoProcess;
@@ -75,10 +75,6 @@ use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
-use crate::constants::ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE;
-use crate::constants::ATTRACT_BACKDROP_STALLED_NOTICE;
-use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
-use crate::constants::ATTRACT_NO_BACKDROP_NOTICE;
 use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
@@ -257,7 +253,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     FrameLog::timed(FramePhase::Band, || {
         app.attract.render(frame.buffer_mut(), area);
     });
-    draw_backdrop_notice(frame, app, body);
+    draw_backdrop_notice(frame, app.attract.backdrop_notice(Instant::now()), body);
     draw_status_line(frame, app, keymap, status);
     app.framework.toasts.render(
         frame,
@@ -280,37 +276,6 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         },
         None => (),
     }
-}
-
-/// Say so where the attract screen is running with no desktop to draw.
-///
-/// Every animation draws in the colours of what is behind the terminal,
-/// so with no capture there is nothing to put on the screen and the
-/// screen puts nothing there -- which reads as an attract screen that
-/// never came on, over a grid that is still sitting where it was. One
-/// line is what separates the two. It gives the Screen Recording instruction only when the
-/// capture status reports that access was not granted, names stalled-worker recovery directly,
-/// and points every other failure to the recorded diagnostics.
-///
-/// On the last row of the body, which is the row furthest from anything
-/// an idle grid has to say.
-fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
-    let notice = match app.attract.backdrop_notice(Instant::now()) {
-        BackdropNotice::None => return,
-        BackdropNotice::ScreenRecordingAccessInstruction => ATTRACT_NO_BACKDROP_NOTICE,
-        BackdropNotice::CaptureStalled => ATTRACT_BACKDROP_STALLED_NOTICE,
-        BackdropNotice::CaptureRecoveryStopped => ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE,
-        BackdropNotice::CaptureUnavailable => ATTRACT_BACKDROP_UNAVAILABLE_NOTICE,
-    };
-    let Some(row) = body.bottom().checked_sub(1) else {
-        return;
-    };
-    // `set_string` stops at the edge of the buffer, so a terminal too
-    // narrow for the whole notice gets as much of it as it can hold
-    // rather than a panic or a wrapped second line over the grid.
-    frame
-        .buffer_mut()
-        .set_string(body.left(), row, notice, Style::default().fg(label_color()));
 }
 
 /// Draw the tile grid into the body above the status line.
@@ -2057,7 +2022,11 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Cell;
     use sysinfo::Pid;
+    use tui_pane::BackdropNotice;
 
     use super::*;
     use crate::birth_stamp::BirthStamp;
@@ -4198,5 +4167,94 @@ mod tests {
             .collect();
         let actual: Vec<Color> = buffer.content.iter().map(|cell| cell.fg).collect();
         assert_eq!(actual, expected);
+    }
+
+    /// Each backdrop notice is written on the last row of the body in
+    /// the label colour, leaving every other row of the frame as it was,
+    /// and no notice leaves the frame blank.
+    #[test]
+    fn each_backdrop_notice_is_written_on_the_last_body_row() {
+        const WIDTH: u16 = 128;
+        const HEIGHT: u16 = 4;
+        let cases = [
+            (BackdropNotice::None, ""),
+            (
+                BackdropNotice::ScreenRecordingAccessInstruction,
+                "attract: no desktop capture -- allow Screen Recording for this terminal in System Settings \u{203a} Privacy & Security",
+            ),
+            (
+                BackdropNotice::CaptureStalled,
+                "attract: desktop capture stalled -- retrying with a replacement capture worker",
+            ),
+            (
+                BackdropNotice::CaptureRecoveryStopped,
+                "attract: desktop capture recovery stopped -- worker replacement limit reached",
+            ),
+            (
+                BackdropNotice::CaptureUnavailable,
+                "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why",
+            ),
+        ];
+        let blank = " ".repeat(usize::from(WIDTH));
+        for (notice, text) in cases {
+            let buffer = drawn_backdrop_notice(notice, WIDTH, HEIGHT);
+            let expected = [
+                blank.clone(),
+                blank.clone(),
+                format!("{text:<width$}", width = usize::from(WIDTH)),
+                blank.clone(),
+            ];
+            assert_eq!(buffer_rows(&buffer), expected, "{notice:?}");
+            for (column, character) in (0..).zip(text.chars()) {
+                let cell = buffer
+                    .cell((column, 2))
+                    .expect("the cell is inside the buffer");
+                assert_eq!(
+                    cell.fg,
+                    label_color(),
+                    "{notice:?} at column {column} ({character})"
+                );
+            }
+        }
+    }
+
+    /// A terminal too narrow for the whole notice gets as much of it as
+    /// fits on the one row rather than a second line over the grid.
+    #[test]
+    fn a_narrow_body_cuts_the_backdrop_notice_at_its_edge() {
+        let buffer = drawn_backdrop_notice(BackdropNotice::CaptureStalled, 40, 3);
+        assert_eq!(
+            buffer_rows(&buffer),
+            [
+                " ".repeat(40),
+                "attract: desktop capture stalled -- retr".to_string(),
+                " ".repeat(40),
+            ]
+        );
+    }
+
+    /// Draw `notice` into a `width` by `height` frame whose body is every
+    /// row but the last, which stands in for the status line.
+    fn drawn_backdrop_notice(notice: BackdropNotice, width: u16, height: u16) -> Buffer {
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("the test terminal opens");
+        terminal
+            .draw(|frame| {
+                draw_backdrop_notice(frame, notice, Rect::new(0, 0, width, height - 1));
+            })
+            .expect("the test terminal draws");
+        terminal.backend().buffer().clone()
+    }
+
+    /// Every row of `buffer`, top to bottom, as the text it shows.
+    fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+        let area = buffer.area;
+        (area.top()..area.bottom())
+            .map(|row| {
+                (area.left()..area.right())
+                    .filter_map(|column| buffer.cell((column, row)).map(Cell::symbol))
+                    .collect()
+            })
+            .collect()
     }
 }

@@ -18,7 +18,6 @@ pub(crate) use file::load;
 pub(crate) use file::push;
 pub(crate) use file::remove;
 pub(crate) use recognition::UnrecognizedFavoriteValue;
-pub(crate) use rows::AttractSettings;
 pub(crate) use rows::Favorite;
 pub(crate) use rows::FavoriteId;
 pub(crate) use rows::FavoriteRowRecognition;

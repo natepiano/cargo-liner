@@ -1,10 +1,16 @@
-//! Carrying a region of the frame toward the colour it is painted on.
+//! Carrying a region of the frame toward the colour it is painted on,
+//! and the line the attract screen writes over it when there is no
+//! desktop to draw.
 
+use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::style::Style;
 
+use super::backdrop_notice::BackdropNotice;
 use crate::blend_color;
+use crate::label_color;
 use crate::pane_background;
 
 /// Carry every cell of `area` `faded` of the way toward the colour it
@@ -43,4 +49,32 @@ pub fn attract_ground() -> Color {
         Color::Reset => Color::Black,
         background => background,
     }
+}
+
+/// Say so where the attract screen is running with no desktop to draw.
+///
+/// Every animation draws in the colours of what is behind the terminal,
+/// so with no capture there is nothing to put on the screen and the
+/// screen puts nothing there -- which reads as an attract screen that
+/// never came on, over a grid that is still sitting where it was. One
+/// line is what separates the two. It gives the Screen Recording
+/// instruction only when the capture status reports that access was not
+/// granted, names stalled-worker recovery directly, and points every
+/// other failure to the recorded diagnostics.
+///
+/// On the last row of `body`, which is the row furthest from anything
+/// an idle grid has to say. [`BackdropNotice::None`] draws nothing.
+pub fn draw_backdrop_notice(frame: &mut Frame, notice: BackdropNotice, body: Rect) {
+    let Some(notice) = notice.text() else {
+        return;
+    };
+    let Some(row) = body.bottom().checked_sub(1) else {
+        return;
+    };
+    // `set_string` stops at the edge of the buffer, so a terminal too
+    // narrow for the whole notice gets as much of it as it can hold
+    // rather than a panic or a wrapped second line over the grid.
+    frame
+        .buffer_mut()
+        .set_string(body.left(), row, notice, Style::default().fg(label_color()));
 }

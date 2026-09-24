@@ -10,14 +10,12 @@ use chrono::Local;
 use toml::Table;
 use toml::Value;
 use toml::ser::Error;
-use tui_pane::BandSettings;
-use tui_pane::PixelSettings;
-use tui_pane::TextSettings;
+use tui_pane::AttractMode;
+use tui_pane::AttractSettings;
 use uuid::Uuid;
 
 use super::recognition;
 use super::recognition::UnrecognizedFavoriteValue;
-use crate::attract::AttractMode;
 use crate::constants::FAVORITE_ID_KEY;
 use crate::constants::FAVORITE_SAVED_KEY;
 use crate::constants::FAVORITES_ARRAY_KEY;
@@ -33,29 +31,6 @@ impl FavoriteId {
 
 impl Display for FavoriteId {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
-}
-
-/// Parameters that one attract-screen mode runs with, whether loaded or newly drawn.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AttractSettings {
-    /// Moving-band parameters.
-    MovingBand(BandSettings),
-    /// Moving-text parameters.
-    MovingText(TextSettings),
-    /// Pixelate parameters.
-    Pixelate(PixelSettings),
-}
-
-impl AttractSettings {
-    /// Attract mode that owns these parameters.
-    #[must_use]
-    pub(crate) const fn mode(&self) -> AttractMode {
-        match self {
-            Self::MovingBand(_) => AttractMode::MovingBand,
-            Self::MovingText(_) => AttractMode::MovingText,
-            Self::Pixelate(_) => AttractMode::Pixelate,
-        }
-    }
 }
 
 /// Typed values derived from one recognized favorite table.
