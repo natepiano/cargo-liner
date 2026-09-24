@@ -1,4 +1,9 @@
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::collections::HashSet;
+use std::fs::Metadata;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -244,12 +249,53 @@ fn is_lint_source(path: &Path) -> bool {
     }
 }
 
+/// Per-walk record of the hard-linked files a size walk has already counted.
+///
+/// cargo hard-links each binary, example, and test executable it builds in
+/// `deps/` into the profile directory (`target/debug/hana` and
+/// `target/debug/deps/hana-<hash>` are one file), and rustc hard-links
+/// unchanged artifacts from one `incremental/` session directory into the
+/// next. Summing `Metadata::len` per path counted those files once per link:
+/// a `target/` that `du` measures at 96 GiB was reported as 150 GiB.
+#[derive(Default)]
+struct HardLinks {
+    /// `(st_dev, st_ino)` of every multiply-linked file already counted.
+    #[cfg(unix)]
+    counted: HashSet<(u64, u64)>,
+}
+
+impl HardLinks {
+    /// Bytes `metadata`'s file adds to the walk: its length the first time the
+    /// walk reaches its inode, zero at every later link to that inode. Non-unix
+    /// `Metadata` carries no inode identity, so there every path counts.
+    fn unseen_bytes(&mut self, metadata: &Metadata) -> u64 {
+        #[cfg(unix)]
+        if metadata.nlink() > 1 && !self.counted.insert((metadata.dev(), metadata.ino())) {
+            return 0;
+        }
+        metadata.len()
+    }
+}
+
+/// Bytes held by the files under `path`, each hard-linked file counted once.
+pub(crate) fn dir_size(path: &Path) -> u64 {
+    let mut hard_links = HardLinks::default();
+    WalkDir::new(path)
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|metadata| hard_links.unseen_bytes(&metadata))
+        .sum()
+}
+
 fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
     let mut totals: HashMap<AbsolutePath, DirSizes> = tree
         .entries
         .iter()
         .map(|abs_path| (abs_path.clone(), DirSizes::default()))
         .collect();
+    let mut hard_links = HardLinks::default();
 
     for entry in WalkDir::new(&tree.root_abs_path).into_iter().flatten() {
         if !entry.file_type().is_file() {
@@ -258,7 +304,7 @@ fn dir_sizes_for_tree(tree: &DiskUsageTree) -> Vec<(AbsolutePath, DirSizes)> {
         let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        let bytes = metadata.len();
+        let bytes = hard_links.unseen_bytes(&metadata);
         let modified = metadata.modified().ok();
         let file_path = entry.path();
         let mut current = file_path.parent();
@@ -429,6 +475,33 @@ mod tests {
             entry.total,
             "breakdown always sums to total"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn size_walks_count_a_hard_linked_file_once() {
+        // cargo's layout: the binary built in `deps/` is hard-linked into
+        // the profile directory, so both paths name one 11-byte file.
+        let tmp = tempfile::tempdir().expect("create hard-link test tempdir");
+        let root: AbsolutePath = tmp.path().join("proj").into();
+        let profile = root.join("target").join("debug");
+        let deps = profile.join("deps");
+        std::fs::create_dir_all(&deps).expect("create deps directory");
+        let built = deps.join("proj-0123456789abcdef");
+        std::fs::write(&built, vec![0_u8; 11]).expect("write built binary fixture");
+        std::fs::hard_link(&built, profile.join("proj"))
+            .expect("hard-link the binary into the profile directory");
+        std::fs::write(root.join("Cargo.toml"), vec![0_u8; 5])
+            .expect("write manifest fixture file");
+
+        let sizes = dir_sizes_for_tree(&DiskUsageTree {
+            root_abs_path: root.clone(),
+            entries:       vec![root.clone()],
+        });
+        let (_, entry) = &sizes[0];
+        assert_eq!(entry.total, 16, "5 (manifest) + 11 (binary, once)");
+        assert_eq!(entry.in_project_target, 11, "both links name one file");
+        assert_eq!(dir_size(&root), 16, "dir_size counts the binary once too");
     }
 
     #[test]

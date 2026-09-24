@@ -12,7 +12,6 @@ use cargo_metadata::Metadata;
 use tokio::runtime::Handle;
 use tokio::sync::Semaphore;
 use tui_pane::PERF_LOG_TARGET;
-use walkdir::WalkDir;
 
 use super::BackgroundMsg;
 use super::constants::CARGO_OFFLINE_FLAG;
@@ -299,7 +298,8 @@ pub(crate) fn spawn_out_of_tree_target_walk(
 ) {
     handle.spawn(async move {
         let walk_target = target_dir.clone();
-        let bytes = tokio::task::spawn_blocking(move || sum_dir_bytes(walk_target.as_path())).await;
+        let bytes =
+            tokio::task::spawn_blocking(move || disk_usage::dir_size(walk_target.as_path())).await;
         let bytes = match bytes {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -324,15 +324,6 @@ pub(crate) fn spawn_out_of_tree_target_walk(
             bytes,
         });
     });
-}
-
-fn sum_dir_bytes(dir: &Path) -> u64 {
-    WalkDir::new(dir)
-        .into_iter()
-        .flatten()
-        .filter(|entry| entry.file_type().is_file())
-        .filter_map(|entry| entry.metadata().ok().map(|meta| meta.len()))
-        .sum()
 }
 
 fn run_cargo_metadata_for_root(

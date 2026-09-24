@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay moves with `j`/`k` when `navigation_keys` enables vim keys; it was handed the untranslated key, so only the arrows reached it.
 - While a framework overlay is open, `h`/`l` always mean left/right rather than being folded into up/down by the pane underneath.
 - A settings key arriving in the same input batch as the key that opened the overlay is no longer dropped.
+- Project and target-directory sizes count a hard-linked file once. Cargo hard-links each binary, example, and test executable from `deps/` into the profile directory, and rustc hard-links incremental artifacts between session directories, so every such file was counted once per link: a `target/` that `du` measures at 96 GiB showed as 150 GiB.
 
 ### Removed
 - **Breaking:** Remove the build monitor from the Output pane -- the opt-in view of running Cargo builds (`C`), its columns and activity rows, and the build termination behind `alt-k`/`alt-shift-k`. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead. The Output pane stays: it still shows a target launched from the Targets pane, and `Esc` still stops that run.

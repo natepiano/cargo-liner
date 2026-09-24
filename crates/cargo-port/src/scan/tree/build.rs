@@ -11,21 +11,10 @@ use super::ProjectFields;
 use super::RootItem;
 use super::RustInfo;
 use super::RustProject;
-use super::WalkDir;
 use super::extract_vendored_new;
 use super::merge_worktrees_new;
 use super::normalize_workspace_path;
 use super::workspace_member_paths_new;
-
-pub(crate) fn dir_size(path: &Path) -> u64 {
-    WalkDir::new(path)
-        .into_iter()
-        .flatten()
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
-}
 
 /// Build a project tree from a flat list of discovered `RootItem`s.
 ///

@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use itertools::Itertools;
 use toml::Table;
 use toml::Value;
-use walkdir::WalkDir;
 
 use crate::constants::CARGO_TOML;
 use crate::project::AbsolutePath;
@@ -31,7 +30,6 @@ mod worktrees;
 
 pub(crate) use build::build_tree;
 pub(crate) use build::cargo_project_to_item;
-pub(crate) use build::dir_size;
 use dependencies::package_path_dependencies;
 use dependencies::workspace_path_dependencies;
 use vendored::extract_vendored_new;
