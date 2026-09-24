@@ -8,7 +8,10 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use tui_pane::FavoriteId;
+use tui_pane::FavoriteRemovalTarget;
 use tui_pane::PaneFocusState;
+use tui_pane::UnrecognizedFavoriteRemovalLocator;
 use tui_pane::attract_ground;
 use tui_pane::blend_color;
 use tui_pane::error_color;
@@ -35,9 +38,6 @@ use crate::app::AppOverlay;
 use crate::app::OpenFavoritesCurrentParameters;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
-use crate::favorites::FavoriteId;
-use crate::favorites::FavoriteRemovalTarget;
-use crate::favorites::UnrecognizedFavoriteRemovalLocator;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FavoriteRowCurrentParameters {
@@ -496,6 +496,7 @@ mod tests {
     use std::fs;
 
     use tempfile::TempDir;
+    use tui_pane::FavoriteRowRecognition;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::Keymap;
@@ -504,8 +505,6 @@ mod tests {
     use crate::app::App;
     use crate::app::AppPaneId;
     use crate::app::OpenFavoritesCurrentParameters;
-    use crate::favorites;
-    use crate::favorites::FavoriteRowRecognition;
     use crate::favorites_overlay::content::FavoriteRowsView;
     use crate::keymap;
 
@@ -562,7 +561,7 @@ fraying = "leading"
     }
 
     fn current_parameters(text: &str) -> OpenFavoritesCurrentParameters {
-        favorites::parse_rows_for_overlay_test(text)
+        tui_pane::parse_favorite_rows_for_test(text)
             .expect("current-parameters fixture should parse")
             .recognized()
             .next()
@@ -574,7 +573,7 @@ fraying = "leading"
     #[test]
     fn navigation_indexes_only_rows_and_unrecognized_selection_uses_cursor_style() {
         let keymap = keymap_from("");
-        let rows = favorites::parse_rows_for_overlay_test(&format!(
+        let rows = tui_pane::parse_favorite_rows_for_test(&format!(
             "{MOVING_BAND_ROW}\n{UNRECOGNIZED_ROW}"
         ))
         .expect("mixed fixture should parse");
@@ -627,7 +626,7 @@ fraying = "leading"
     #[test]
     fn unrecognized_row_is_never_marked_current() {
         let keymap = keymap_from("");
-        let rows = favorites::parse_rows_for_overlay_test(UNRECOGNIZED_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(UNRECOGNIZED_ROW)
             .expect("unrecognized fixture should parse");
         let content = FavoritesOverlayContent::Rows(FavoriteRowsView::from(&rows));
         let current_parameters = current_parameters(MOVING_BAND_ROW);
@@ -672,7 +671,7 @@ fraying = "leading"
 
     #[test]
     fn row_marker_renders_every_selected_and_current_combination() {
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let favorite_id = rows
             .recognized()
@@ -723,7 +722,7 @@ fraying = "leading"
     #[test]
     fn every_row_with_matching_settings_is_current() {
         let keymap = keymap_from("");
-        let rows = favorites::parse_rows_for_overlay_test(TWO_MATCHING_ROWS)
+        let rows = tui_pane::parse_favorite_rows_for_test(TWO_MATCHING_ROWS)
             .expect("matching favorites fixture should parse");
         let content = FavoritesOverlayContent::Rows(FavoriteRowsView::from(&rows));
         let current_parameters = current_parameters(MOVING_BAND_ROW);
@@ -770,7 +769,7 @@ fraying = "leading"
 
     #[test]
     fn removing_unrecognized_row_fades_from_its_error_color() {
-        let rows = favorites::parse_rows_for_overlay_test(UNRECOGNIZED_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(UNRECOGNIZED_ROW)
             .expect("unrecognized fixture should parse");
         let removal_locator = rows
             .iter()

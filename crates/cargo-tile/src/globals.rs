@@ -28,21 +28,21 @@ use crossterm::event::KeyCode;
 use tui_pane::AttractMode;
 use tui_pane::AttractSettings;
 use tui_pane::Bindings;
+use tui_pane::FavoriteRows;
+use tui_pane::FavoriteSaveOutcome;
+use tui_pane::FavoritesFileState;
+use tui_pane::FavoritesMutation;
+use tui_pane::FavoritesRetryInstruction;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
+use tui_pane::ResolvedBinding;
 use tui_pane::TileAction;
 
 use crate::app::App;
+use crate::config::CargoTile;
 use crate::constants::APP_GLOBALS_SECTION;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
-use crate::favorites;
-use crate::favorites::FavoriteRows;
-use crate::favorites::FavoriteSaveOutcome;
-use crate::favorites::FavoritesFileState;
-use crate::favorites::FavoritesMutation;
-use crate::favorites::FavoritesRetryInstruction;
-use crate::favorites::ResolvedBinding;
 use crate::favorites_overlay;
 use crate::random;
 use crate::random::EmptyIndexDomain;
@@ -124,7 +124,11 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
 
 /// Load the current favorites file and show one recognized row at random.
 fn show_random_favorite(app: &mut App) {
-    show_random_favorite_with(app, favorites::load, random::clock_seed);
+    show_random_favorite_with(
+        app,
+        tui_pane::load_favorites::<CargoTile>,
+        random::clock_seed,
+    );
 }
 
 fn show_random_favorite_with(
@@ -163,7 +167,7 @@ fn draw_recognized_settings(
 fn save_favorite(app: &mut App) {
     let settings = app.attract.current_settings();
     let attract_mode = settings.mode();
-    let result = favorites::push(settings);
+    let result = tui_pane::push_favorite::<CargoTile>(settings);
     let (title, body) = match result {
         Ok(FavoriteSaveOutcome::Added) => (
             "Favorite added",
@@ -188,7 +192,7 @@ fn save_favorite(app: &mut App) {
             ));
             (
                 "Favorite not saved",
-                favorites::favorite_refusal_message(FavoritesMutation::Save, &retry, &error),
+                tui_pane::favorite_refusal_message(FavoritesMutation::Save, &retry, &error),
             )
         },
     };
@@ -228,6 +232,7 @@ mod tests {
     use tempfile::TempDir;
     use tui_pane::AttractGridPresentation;
     use tui_pane::AttractVisibilityInstruction;
+    use tui_pane::FavoritesMutationError;
     use tui_pane::KeyBind;
     use tui_pane::KeySequence;
     use tui_pane::ToastVisualDeadline;
@@ -235,8 +240,6 @@ mod tests {
 
     use super::*;
     use crate::app::ProcessTree;
-    use crate::favorites;
-    use crate::favorites::FavoritesMutationError;
 
     const MOVING_BAND_ROW: &str = r#"
 [[favorite]]
@@ -260,7 +263,7 @@ mode = "future_mode"
     fn loaded_state(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
         FavoritesFileState::Loaded {
             path: path.into(),
-            rows: favorites::parse_rows_for_overlay_test(text)
+            rows: tui_pane::parse_favorite_rows_for_test(text)
                 .expect("favorites fixture should parse"),
         }
     }
@@ -298,7 +301,7 @@ mode = "future_mode"
 
     fn moving_band_settings() -> AttractSettings {
         draw_recognized_settings(
-            &favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+            &tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
                 .expect("favorites fixture should parse"),
             0,
         )
@@ -556,7 +559,7 @@ mode = "future_mode"
         assert_eq!(
             app.attract.current_settings(),
             draw_recognized_settings(
-                &favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+                &tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
                     .expect("favorites fixture should parse"),
                 0,
             )
@@ -679,9 +682,7 @@ mode = "future_mode"
         ));
         let messages: Vec<String> = errors
             .iter()
-            .map(|error| {
-                favorites::favorite_refusal_message(FavoritesMutation::Save, &retry, error)
-            })
+            .map(|error| tui_pane::favorite_refusal_message(FavoritesMutation::Save, &retry, error))
             .collect();
         let distinct: HashSet<&str> = messages.iter().map(String::as_str).collect();
 

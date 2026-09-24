@@ -10,19 +10,19 @@ use chrono::Local;
 use toml::Table;
 use toml::Value;
 use toml::ser::Error;
-use tui_pane::AttractMode;
-use tui_pane::AttractSettings;
 use uuid::Uuid;
 
+use super::constants::FAVORITE_ID_KEY;
+use super::constants::FAVORITE_SAVED_KEY;
+use super::constants::FAVORITES_ARRAY_KEY;
 use super::recognition;
 use super::recognition::UnrecognizedFavoriteValue;
-use crate::constants::FAVORITE_ID_KEY;
-use crate::constants::FAVORITE_SAVED_KEY;
-use crate::constants::FAVORITES_ARRAY_KEY;
+use crate::AttractMode;
+use crate::AttractSettings;
 
 /// Stable identity for one favorite row.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct FavoriteId(pub(super) Uuid);
+pub struct FavoriteId(pub(super) Uuid);
 
 impl FavoriteId {
     #[cfg(test)]
@@ -35,13 +35,13 @@ impl Display for FavoriteId {
 
 /// Typed values derived from one recognized favorite table.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Favorite {
+pub struct Favorite {
     /// Stable row identity used by selection and deletion.
-    pub(crate) id:       FavoriteId,
+    pub id:       FavoriteId,
     /// Local RFC 3339 time of the most recent save.
-    pub(crate) saved:    DateTime<FixedOffset>,
+    pub saved:    DateTime<FixedOffset>,
     /// Mode-specific animation parameters.
-    pub(crate) settings: AttractSettings,
+    pub settings: AttractSettings,
 }
 
 impl Favorite {
@@ -57,7 +57,7 @@ impl Favorite {
 
 /// Successful effect of saving one attract parameter set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FavoriteSaveOutcome {
+pub enum FavoriteSaveOutcome {
     /// A new favorite row was appended.
     Added,
     /// An existing row with identical settings received the new timestamp.
@@ -65,8 +65,8 @@ pub(crate) enum FavoriteSaveOutcome {
 }
 
 /// Opaque identity for removing one unrecognized raw favorite table.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct UnrecognizedFavoriteRemovalLocator {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnrecognizedFavoriteRemovalLocator {
     raw_table_index: usize,
     fingerprint:     String,
 }
@@ -119,8 +119,8 @@ pub(super) enum UnrecognizedFavoriteRemoval {
 }
 
 /// Typed recognition result for one raw favorite table.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum FavoriteRowRecognition {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FavoriteRowRecognition {
     /// The table contains one complete, recognized favorite.
     Recognized(Favorite),
     /// The table is retained and diagnosed in the overlay, but excluded from loading.
@@ -134,7 +134,7 @@ pub(crate) enum FavoriteRowRecognition {
 
 /// Raw favorite tables together with their ordered typed interpretations.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct FavoriteRows {
+pub struct FavoriteRows {
     tables:            Vec<Table>,
     recognitions:      Vec<FavoriteRowRecognition>,
     additional_fields: Table,
@@ -142,12 +142,10 @@ pub(crate) struct FavoriteRows {
 
 impl FavoriteRows {
     /// All row recognition results, with recognized rows grouped by mode and newest first.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &FavoriteRowRecognition> {
-        self.recognitions.iter()
-    }
+    pub fn iter(&self) -> impl Iterator<Item = &FavoriteRowRecognition> { self.recognitions.iter() }
 
     /// Recognized favorites, grouped by mode and newest first within each mode.
-    pub(crate) fn recognized(&self) -> impl Iterator<Item = &Favorite> {
+    pub fn recognized(&self) -> impl Iterator<Item = &Favorite> {
         self.recognitions
             .iter()
             .filter_map(|recognition| match recognition {
@@ -302,8 +300,13 @@ const fn attract_mode_order(attract_mode: AttractMode) -> u8 {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn parse_rows_for_overlay_test(text: &str) -> Result<FavoriteRows, String> {
+/// Parse `favorites.toml` text into rows, for tests in apps that build overlay fixtures.
+///
+/// # Errors
+///
+/// Returns the TOML or favorite-table structure failure text.
+#[doc(hidden)]
+pub fn parse_favorite_rows_for_test(text: &str) -> Result<FavoriteRows, String> {
     FavoriteRows::parse(text)
 }
 

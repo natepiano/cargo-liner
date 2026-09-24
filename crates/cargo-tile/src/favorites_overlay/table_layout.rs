@@ -188,7 +188,6 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::AppPaneId;
-    use crate::favorites;
     use crate::favorites_overlay::content::FavoriteRowsView;
     use crate::favorites_overlay::parameter_column::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
     use crate::keymap;
@@ -224,7 +223,7 @@ fraying = "leading"
     }
 
     fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayout {
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let bindings = FavoritesSurfaceBindings::resolve(keymap);
@@ -270,7 +269,7 @@ fraying = "leading"
         let labels = FavoritesSurfaceBindings::resolve(&keymap)
             .column_labels(AttractMode::MovingBand)
             .to_vec();
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let row = &view.sections[0].rows[0];

@@ -3,7 +3,6 @@
 //! `tui_pane` finds that file, the keymap file and the themes directory
 //! by.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -21,7 +20,6 @@ use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
 use crate::constants::DEFAULT_LIGHT_THEME;
-use crate::constants::FAVORITES_FILENAME;
 use crate::constants::MAX_FADE_SECONDS;
 
 /// cargo-tile's identity for the framework's config and runner paths.
@@ -159,11 +157,6 @@ impl AppConfig for Config {
 /// `config.toml` as loaded, with whatever went wrong reading or
 /// writing it.
 pub(crate) type LoadedConfig = tui_pane::LoadedConfig<Config>;
-
-/// `<os config dir>/cargo-tile/favorites.toml`.
-pub(crate) fn favorites_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(CONFIG_DIRNAME).join(FAVORITES_FILENAME))
-}
 
 #[cfg(test)]
 #[expect(

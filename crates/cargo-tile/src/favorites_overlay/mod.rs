@@ -17,6 +17,10 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use tui_pane::AttractSettings;
+use tui_pane::FavoriteRemovalTarget;
+use tui_pane::FavoritesFileState;
+use tui_pane::FavoritesMutationError;
+use tui_pane::FavoritesRetryInstruction;
 use tui_pane::Keymap;
 use tui_pane::PopupFrame;
 use tui_pane::SettingsApplicationOutcome;
@@ -60,15 +64,11 @@ use crate::app::App;
 use crate::app::AppOverlay;
 use crate::app::OpenFavoritesCurrentParameters;
 use crate::app::OpenFavoritesOverlayState;
+use crate::config::CargoTile;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::constants::POPUP_CHROME_WIDTH;
-use crate::favorites;
-use crate::favorites::FavoriteRemovalTarget;
-use crate::favorites::FavoritesFileState;
-use crate::favorites::FavoritesMutationError;
-use crate::favorites::FavoritesRetryInstruction;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 enum FavoriteRemovalCommitState {
@@ -162,7 +162,11 @@ impl FavoritesOverlay {
         keymap: &Keymap<App>,
         current_parameters: OpenFavoritesCurrentParameters,
     ) {
-        self.open_with_loader(keymap, current_parameters, favorites::load);
+        self.open_with_loader(
+            keymap,
+            current_parameters,
+            tui_pane::load_favorites::<CargoTile>,
+        );
     }
 
     fn open_with_loader(
@@ -848,7 +852,7 @@ fn removal_visual_deadline(
 }
 
 fn close_overlay(overlay: &mut FavoritesOverlay, app: &mut App) {
-    close_overlay_with(overlay, app, favorites::remove);
+    close_overlay_with(overlay, app, tui_pane::remove_favorite::<CargoTile>);
 }
 
 fn close_overlay_with(
@@ -928,6 +932,7 @@ mod tests {
     use tui_pane::AttractVisibilityInstruction;
     use tui_pane::BandDirection;
     use tui_pane::BandFraying;
+    use tui_pane::FavoriteId;
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::PixelFill;
@@ -947,8 +952,6 @@ mod tests {
     use super::table_layout::favorite_section_table_layout_for_test;
     use super::*;
     use crate::app::AppPaneId;
-    use crate::favorites;
-    use crate::favorites::FavoriteId;
     use crate::keymap;
 
     const RECOGNIZED_ROWS: &str = r#"
@@ -1032,7 +1035,7 @@ fraying = "leading"
     fn loaded_state_at(path: impl Into<PathBuf>, text: &str) -> FavoritesFileState {
         FavoritesFileState::Loaded {
             path: path.into(),
-            rows: favorites::parse_rows_for_overlay_test(text)
+            rows: tui_pane::parse_favorite_rows_for_test(text)
                 .expect("favorites fixture should parse"),
         }
     }
@@ -1061,7 +1064,7 @@ fraying = "leading"
     }
 
     fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayoutForTest {
-        let rows = favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let bindings = FavoritesSurfaceBindings::resolve(keymap);
@@ -1069,7 +1072,7 @@ fraying = "leading"
     }
 
     fn current_parameters() -> OpenFavoritesCurrentParameters {
-        favorites::parse_rows_for_overlay_test(MOVING_BAND_ROW)
+        tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("current-parameters fixture should parse")
             .recognized()
             .next()
@@ -2217,7 +2220,7 @@ travel_left = "界"
 
     #[test]
     fn pixel_adjustment_toast_uses_lowercase_resolve_and_fill_spellings() {
-        let rows = favorites::parse_rows_for_overlay_test(RECOGNIZED_ROWS)
+        let rows = tui_pane::parse_favorite_rows_for_test(RECOGNIZED_ROWS)
             .expect("recognized favorites fixture should parse");
         let mut requested = rows
             .recognized()

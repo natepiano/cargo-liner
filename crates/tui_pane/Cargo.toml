@@ -18,16 +18,20 @@ workspace = true
 # Capture of the desktop behind the terminal window, and the attract-mode animation drawn from it.
 # Off by default because only an app that draws an idle screen has any use for it.
 backdrop = [
+  "dep:chrono",
   "dep:image",
   "dep:objc2-core-graphics",
   "dep:screencapturekit",
   "dep:serde_json",
   "dep:url",
+  "dep:uuid",
 ]
 clipboard = ["crossterm/osc52"]
 default = ["clipboard"]
 
 [dependencies]
+# Save times on the attract favorites `backdrop` keeps in `favorites.toml`.
+chrono             = { workspace = true, optional = true }
 crossbeam-channel  = { workspace = true }
 crossterm          = { workspace = true }
 dark-light         = { workspace = true }
@@ -41,6 +45,11 @@ toml               = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 unicode-width      = { workspace = true }
+# Row ids on the same favorites.
+uuid = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 # Reconstructs Plasma's wallpaper at the selected KScreen output geometry. Window geometry and
 # wallpaper configuration come from KWin and Plasma over the session D-Bus. The appearance

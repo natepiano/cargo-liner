@@ -16,6 +16,8 @@ mod bar;
 mod constants;
 mod copy;
 mod diagnostics;
+#[cfg(feature = "backdrop")]
+mod favorites;
 mod format;
 mod framework;
 mod input;
@@ -213,6 +215,43 @@ pub use diagnostics::filled_cells as cpu_filled_cells;
 pub use diagnostics::init as init_perf_log;
 pub use diagnostics::ms as perf_log_ms;
 pub use diagnostics::severity as cpu_severity;
+#[cfg(feature = "backdrop")]
+pub use favorites::Favorite;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoriteId;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoriteRemovalTarget;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoriteRowRecognition;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoriteRows;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoriteSaveOutcome;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoritesFileState;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoritesMutation;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoritesMutationError;
+#[cfg(feature = "backdrop")]
+pub use favorites::FavoritesRetryInstruction;
+#[cfg(feature = "backdrop")]
+pub use favorites::ResolvedBinding;
+#[cfg(feature = "backdrop")]
+pub use favorites::UnrecognizedFavoriteRemovalLocator;
+#[cfg(feature = "backdrop")]
+pub use favorites::UnrecognizedFavoriteValue;
+#[cfg(feature = "backdrop")]
+pub use favorites::favorite_refusal_message;
+#[cfg(feature = "backdrop")]
+pub use favorites::load_favorites;
+#[cfg(feature = "backdrop")]
+#[doc(hidden)]
+pub use favorites::parse_favorite_rows_for_test;
+#[cfg(feature = "backdrop")]
+pub use favorites::push_favorite;
+#[cfg(feature = "backdrop")]
+pub use favorites::remove_favorite;
 pub use format::format_progressive;
 pub use framework::CycleDirection;
 pub use framework::Framework;

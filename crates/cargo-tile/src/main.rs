@@ -8,7 +8,6 @@ mod census;
 mod cli;
 mod config;
 mod constants;
-mod favorites;
 mod favorites_overlay;
 mod globals;
 mod hook;

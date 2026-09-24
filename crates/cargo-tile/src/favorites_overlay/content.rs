@@ -8,14 +8,13 @@ use chrono::Datelike;
 use chrono::Local;
 use tui_pane::AttractMode;
 use tui_pane::AttractSettings;
-
-use crate::favorites::Favorite;
-use crate::favorites::FavoriteId;
-use crate::favorites::FavoriteRowRecognition;
-use crate::favorites::FavoriteRows;
-use crate::favorites::FavoritesFileState;
-use crate::favorites::UnrecognizedFavoriteRemovalLocator;
-use crate::favorites::UnrecognizedFavoriteValue;
+use tui_pane::Favorite;
+use tui_pane::FavoriteId;
+use tui_pane::FavoriteRowRecognition;
+use tui_pane::FavoriteRows;
+use tui_pane::FavoritesFileState;
+use tui_pane::UnrecognizedFavoriteRemovalLocator;
+use tui_pane::UnrecognizedFavoriteValue;
 
 /// The content carried by an open favorites modal.
 #[derive(Clone, Debug)]
@@ -288,13 +287,12 @@ fn format_timestamp(favorite: &Favorite) -> String {
 )]
 mod tests {
     use super::*;
-    use crate::favorites;
 
     #[test]
     fn timestamps_keep_seconds_and_add_the_year_only_when_needed() {
         let current_year = Local::now().year();
         let old_year = current_year - 1;
-        let rows = favorites::parse_rows_for_overlay_test(&format!(
+        let rows = tui_pane::parse_favorite_rows_for_test(&format!(
             r#"
 [[favorite]]
 id = "01a03f64-9c14-7b41-8a02-1de4c7c9b336"

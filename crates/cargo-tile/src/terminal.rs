@@ -23,7 +23,6 @@ use crate::config::CargoTile;
 use crate::config::Config;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
-use crate::favorites;
 use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::root_scan::SharedCaptureDirectory;
@@ -120,7 +119,7 @@ impl PollWork<App> for Workers {
             FavoritesOverlayFrameOutcome::Quiet => {},
             FavoritesOverlayFrameOutcome::Repaint => dirty = true,
             FavoritesOverlayFrameOutcome::CommitRemoval(removal_target) => {
-                let result = favorites::remove(removal_target.clone());
+                let result = tui_pane::remove_favorite::<CargoTile>(removal_target.clone());
                 app.favorites_overlay.finish_removal(removal_target, result);
                 dirty = true;
             },
@@ -241,6 +240,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use tempfile::TempDir;
+    use tui_pane::FavoritesFileState;
     use tui_pane::FrameworkOverlayId;
     use tui_pane::SettingsApplicationOutcome;
     use tui_pane::TerminalApp;
@@ -267,7 +267,6 @@ mod tests {
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
-    use crate::favorites::FavoritesFileState;
     use crate::progress::capture::Capture;
     use crate::progress::capture::CaptureRootIndex;
     use crate::progress::capture_read::CaptureLookup;
@@ -635,7 +634,7 @@ fraying = "leading"
         let path = directory.path().join("favorites.toml");
         fs::write(&path, FAVORITE_ROW).expect("favorite fixture should be written");
         let original = fs::read(&path).expect("favorite fixture should be readable");
-        let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(FAVORITE_ROW)
             .expect("favorite fixture should parse");
         let current_parameters = app.attract.current_settings().into();
         let keymap = Rc::clone(&app.keymap);
@@ -681,7 +680,7 @@ fraying = "leading"
     #[test]
     fn coalesced_resize_refreshes_currency_after_attract_reclamping() {
         let mut app = App::new_for_test().expect("test app should build");
-        let rows = favorites::parse_rows_for_overlay_test(FAVORITE_ROW)
+        let rows = tui_pane::parse_favorite_rows_for_test(FAVORITE_ROW)
             .expect("favorite fixture should parse");
         let favorite_settings = rows
             .recognized()

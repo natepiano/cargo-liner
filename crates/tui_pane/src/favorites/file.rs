@@ -13,25 +13,25 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::thread;
 
-use tui_pane::AttractSettings;
-use tui_pane::KeySequence;
-
 use super::UnrecognizedFavoriteRemovalLocator;
+use super::constants::FAVORITES_FILENAME;
+use super::constants::FAVORITES_LOCK_RETRY_ATTEMPTS;
+use super::constants::FAVORITES_LOCK_RETRY_DELAY;
+use super::constants::FAVORITES_LOCK_SUFFIX;
+use super::constants::FAVORITES_TEMP_SUFFIX;
 use super::rows::Favorite;
 use super::rows::FavoriteId;
 use super::rows::FavoriteRows;
 use super::rows::FavoriteSaveOutcome;
 use super::rows::UnrecognizedFavoriteRemoval;
-use crate::config;
-use crate::constants::FAVORITES_FILENAME;
-use crate::constants::FAVORITES_LOCK_RETRY_ATTEMPTS;
-use crate::constants::FAVORITES_LOCK_RETRY_DELAY;
-use crate::constants::FAVORITES_LOCK_SUFFIX;
-use crate::constants::FAVORITES_TEMP_SUFFIX;
+use crate::AppIdentity;
+use crate::AttractSettings;
+use crate::KeySequence;
+use crate::SettingsFileSpec;
 
 /// A keymap lookup whose variants say whether the action can currently be invoked.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ResolvedBinding {
+pub enum ResolvedBinding {
     /// The action has a primary binding.
     Bound {
         /// TOML name of the action the key invokes.
@@ -48,7 +48,8 @@ pub(crate) enum ResolvedBinding {
 
 impl ResolvedBinding {
     /// Resolve the primary binding for one named keymap action.
-    pub(crate) fn for_action(action_name: &'static str, binding: Option<KeySequence>) -> Self {
+    #[must_use]
+    pub fn for_action(action_name: &'static str, binding: Option<KeySequence>) -> Self {
         binding.map_or(Self::Unbound { action_name }, |sequence| Self::Bound {
             action_name,
             sequence,
@@ -56,7 +57,8 @@ impl ResolvedBinding {
     }
 
     /// Compact label for the resolved key, or an empty label when it is unbound.
-    pub(crate) fn display_short(&self) -> String {
+    #[must_use]
+    pub fn display_short(&self) -> String {
         match self {
             Self::Bound { sequence, .. } => sequence.display_short(),
             Self::Unbound { .. } => String::new(),
@@ -75,7 +77,7 @@ impl ResolvedBinding {
 
 /// Result of resolving and reading the favorites file.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum FavoritesFileState {
+pub enum FavoritesFileState {
     /// The operating system did not provide a configuration directory.
     LocationUnavailable,
     /// No favorites file exists yet.
@@ -108,7 +110,7 @@ pub(crate) enum FavoritesFileState {
 
 /// Failure from a locked favorites mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum FavoritesMutationError {
+pub enum FavoritesMutationError {
     /// The operating system did not provide a configuration directory.
     LocationUnavailable,
     /// Existing favorites could not be parsed, so the file was not changed.
@@ -144,8 +146,8 @@ pub(crate) enum FavoritesMutationError {
 }
 
 /// Identity of the recognized or unrecognized favorite row to remove.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum FavoriteRemovalTarget {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FavoriteRemovalTarget {
     /// A recognized row named by its stable identifier.
     Recognized(FavoriteId),
     /// An unrecognized row named by its load-time raw-table locator.
@@ -160,7 +162,7 @@ impl From<UnrecognizedFavoriteRemovalLocator> for FavoriteRemovalTarget {
 
 /// Favorites-file mutation being reported to the reader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FavoritesMutation {
+pub enum FavoritesMutation {
     /// Saving the current attract parameters.
     Save,
     /// Deleting a saved favorite.
@@ -178,7 +180,7 @@ impl FavoritesMutation {
 
 /// Usable instruction for retrying a refused favorites mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum FavoritesRetryInstruction {
+pub enum FavoritesRetryInstruction {
     /// Retry through one action that is available on the current surface.
     Press(ResolvedBinding),
     /// Reopen the favorites overlay before invoking its local retry action.
@@ -205,7 +207,7 @@ impl FavoritesRetryInstruction {
 
 /// Explain a refused mutation, including a retry that works on the current surface.
 #[must_use]
-pub(crate) fn favorite_refusal_message(
+pub fn favorite_refusal_message(
     mutation: FavoritesMutation,
     retry: &FavoritesRetryInstruction,
     error: &FavoritesMutationError,
@@ -271,32 +273,41 @@ impl Display for FavoritesMutationError {
 
 impl Error for FavoritesMutationError {}
 
-/// Read the configured favorites file without replacing malformed or unreadable content.
+/// Read `I`'s favorites file without replacing malformed or unreadable content.
 #[must_use]
-pub(crate) fn load() -> FavoritesFileState {
-    load_from(FavoritesLocation::from(config::favorites_path()))
+pub fn load_favorites<I: AppIdentity>() -> FavoritesFileState {
+    load_from(FavoritesLocation::from(favorites_path::<I>()))
 }
 
-/// Save one parameter set and report whether it added or refreshed a row.
+/// Save one parameter set to `I`'s favorites file and report whether it added or refreshed a
+/// row.
 ///
 /// # Errors
 ///
 /// Returns the read-only file state or the lock, directory, serialization, or write failure.
-pub(crate) fn push(
+pub fn push_favorite<I: AppIdentity>(
     settings: AttractSettings,
 ) -> Result<FavoriteSaveOutcome, FavoritesMutationError> {
     let favorite = Favorite::now(settings);
-    push_to_location(FavoritesLocation::from(config::favorites_path()), &favorite)
+    push_to_location(FavoritesLocation::from(favorites_path::<I>()), &favorite)
 }
 
-/// Remove `target` after re-reading and re-verifying it under the file lock.
+/// Remove `target` from `I`'s favorites file after re-reading and re-verifying it under the
+/// file lock.
 ///
 /// # Errors
 ///
 /// Returns a stale unrecognized-row locator, read-only file state, or the lock, directory,
 /// serialization, or write failure.
-pub(crate) fn remove(target: FavoriteRemovalTarget) -> Result<(), FavoritesMutationError> {
-    remove_from_location(FavoritesLocation::from(config::favorites_path()), target)
+pub fn remove_favorite<I: AppIdentity>(
+    target: FavoriteRemovalTarget,
+) -> Result<(), FavoritesMutationError> {
+    remove_from_location(FavoritesLocation::from(favorites_path::<I>()), target)
+}
+
+/// `<os config dir>/<CONFIG_DIRNAME>/favorites.toml`, beside `I`'s `config.toml`.
+fn favorites_path<I: AppIdentity>() -> Option<PathBuf> {
+    SettingsFileSpec::new(I::CONFIG_DIRNAME, FAVORITES_FILENAME).resolved_path()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -492,21 +503,61 @@ mod tests {
     use chrono::DateTime;
     use chrono::FixedOffset;
     use tempfile::TempDir;
-    use tui_pane::BandDirection;
-    use tui_pane::BandFraying;
-    use tui_pane::BandSettings;
-    use tui_pane::KeyBind;
     use uuid::Uuid;
 
     use super::*;
-    use crate::constants::FAVORITE_DIRECTION_KEY;
-    use crate::constants::FAVORITE_MODE_KEY;
+    use crate::BandDirection;
+    use crate::BandFraying;
+    use crate::BandSettings;
+    use crate::KeyBind;
+    use crate::PixelFill;
+    use crate::PixelResolve;
+    use crate::PixelSettings;
+    use crate::TextDrift;
+    use crate::TextFill;
+    use crate::TextSettings;
+    use crate::favorites::constants::FAVORITE_DIRECTION_KEY;
+    use crate::favorites::constants::FAVORITE_MODE_KEY;
     use crate::favorites::rows::FavoriteRowRecognition;
 
     const FIRST_ID: &str = "01a03f5e-9c14-7b41-8a02-1de4c7c9b330";
     const FIRST_SAVED: &str = "2026-08-26T09:02:44.870-07:00";
     const SECOND_ID: &str = "01a03f60-2e8b-77c2-858f-476ee413d81c";
     const SECOND_SAVED: &str = "2026-08-26T14:31:05.412-07:00";
+    const THIRD_ID: &str = "01a03f61-4b2c-7d3e-9f40-5a6b7c8d9e0f";
+    const THIRD_SAVED: &str = "2026-08-27T08:15:30.007+02:00";
+    /// `favorites.toml` as written after one save of each attract mode.
+    const EVERY_MODE_FILE_TEXT: &str = r#"[[favorite]]
+direction = "right"
+fraying = "both"
+id = "01a03f5e-9c14-7b41-8a02-1de4c7c9b330"
+mode = "moving_band"
+saved = "2026-08-26T09:02:44.870-07:00"
+speed = 40
+tail_speed = 96
+width = 12
+
+[[favorite]]
+direction = "up"
+drift = "apart"
+fill = "glyphs"
+id = "01a03f60-2e8b-77c2-858f-476ee413d81c"
+mode = "moving_text"
+saved = "2026-08-26T14:31:05.412-07:00"
+speed = 30
+spread = 50
+
+[[favorite]]
+block_columns = 6
+direction = "left"
+fill = "shades"
+id = "01a03f61-4b2c-7d3e-9f40-5a6b7c8d9e0f"
+mode = "pixelate"
+resolve = "scatter"
+saved = "2026-08-27T08:15:30.007+02:00"
+speed = 24
+wave_percent = 145
+"#;
 
     fn mutation_errors() -> [FavoritesMutationError; 6] {
         let path = PathBuf::from("/tmp/favorites.toml");
@@ -1102,6 +1153,31 @@ future_parameter = 41
         assert!(path.is_dir());
     }
 
+    enum TestIdentity {}
+
+    impl AppIdentity for TestIdentity {
+        const BINARY_NAME: &'static str = "favorites-test";
+        const CONFIG_DIRNAME: &'static str = "favorites-test";
+        const DEFAULT_LIGHT_THEME: &'static str = "light";
+        const DEFAULT_DARK_THEME: &'static str = "dark";
+    }
+
+    #[test]
+    fn favorites_file_sits_beside_the_app_config() {
+        assert_eq!(
+            super::favorites_path::<TestIdentity>(),
+            dirs::config_dir().map(|dir| dir.join("favorites-test").join("favorites.toml"))
+        );
+        assert_eq!(
+            super::favorites_path::<TestIdentity>()
+                .as_deref()
+                .and_then(Path::parent),
+            TestIdentity::config_path()
+                .as_deref()
+                .and_then(Path::parent)
+        );
+    }
+
     #[test]
     fn unavailable_location_refuses_save_push_and_delete() {
         let favorite = Favorite {
@@ -1163,6 +1239,60 @@ future_parameter = 41
         let text = fs::read_to_string(path).expect("updated favorites should be readable");
         assert!(text.contains(FIRST_ID));
         assert!(!text.contains(SECOND_ID));
+    }
+
+    #[test]
+    fn saving_one_favorite_of_each_mode_writes_the_pinned_file_text() {
+        let directory = TempDir::new().expect("temporary directory should be created");
+        let path = favorites_path(&directory);
+        let favorites = [
+            Favorite {
+                id:       favorite_id(FIRST_ID),
+                saved:    saved(FIRST_SAVED),
+                settings: band_settings(),
+            },
+            Favorite {
+                id:       favorite_id(SECOND_ID),
+                saved:    saved(SECOND_SAVED),
+                settings: AttractSettings::MovingText(TextSettings {
+                    direction: BandDirection::Up,
+                    speed:     30,
+                    spread:    50,
+                    drift:     TextDrift::Apart,
+                    fill:      TextFill::Glyphs,
+                }),
+            },
+            Favorite {
+                id:       favorite_id(THIRD_ID),
+                saved:    saved(THIRD_SAVED),
+                settings: AttractSettings::Pixelate(PixelSettings {
+                    direction:     BandDirection::Left,
+                    speed:         24,
+                    wave_percent:  145,
+                    block_columns: 6,
+                    resolve:       PixelResolve::Scatter,
+                    fill:          PixelFill::Shades,
+                }),
+            },
+        ];
+
+        for favorite in &favorites {
+            assert_eq!(
+                push_to_location(location(&path), favorite),
+                Ok(FavoriteSaveOutcome::Added)
+            );
+        }
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("saved favorites should be readable"),
+            EVERY_MODE_FILE_TEXT
+        );
+        let state = load_from(location(&path));
+        let loaded = loaded_rows(&state)
+            .recognized()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(loaded, favorites);
     }
 
     #[test]

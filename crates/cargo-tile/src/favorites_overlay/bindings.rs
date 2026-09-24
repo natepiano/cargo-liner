@@ -2,14 +2,14 @@
 
 use tui_pane::Action;
 use tui_pane::AttractMode;
+use tui_pane::FavoritesRetryInstruction;
 use tui_pane::Keymap;
+use tui_pane::ResolvedBinding;
 
 use super::parameter_column;
 use super::parameter_column::ParameterColumnDescriptor;
 use crate::app::App;
 use crate::app::AppPaneId;
-use crate::favorites::FavoritesRetryInstruction;
-use crate::favorites::ResolvedBinding;
 use crate::globals::AppGlobalAction;
 
 #[derive(Clone, Debug)]

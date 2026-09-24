@@ -6,14 +6,13 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use tui_pane::AttractSettings;
+use tui_pane::FavoritesMutation;
+use tui_pane::FavoritesMutationError;
+use tui_pane::FavoritesRetryInstruction;
 use tui_pane::error_color;
 use tui_pane::warning_color;
 
 use super::parameter_column;
-use crate::favorites;
-use crate::favorites::FavoritesMutation;
-use crate::favorites::FavoritesMutationError;
-use crate::favorites::FavoritesRetryInstruction;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) enum FavoritesOverlayNotice {
@@ -43,7 +42,7 @@ pub(super) fn deletion_refusal_message(
                 and reopen favorites, then try again."
             .to_string();
     }
-    favorites::favorite_refusal_message(FavoritesMutation::Delete, retry, error)
+    tui_pane::favorite_refusal_message(FavoritesMutation::Delete, retry, error)
 }
 
 pub(super) fn render_notice(frame: &mut Frame<'_>, notice: &FavoritesOverlayNotice, area: Rect) {

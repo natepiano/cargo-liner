@@ -7,44 +7,44 @@ use chrono::SecondsFormat;
 use chrono::Timelike;
 use toml::Table;
 use toml::Value;
-use tui_pane::AttractMode;
-use tui_pane::AttractSettings;
-use tui_pane::BandDirection;
-use tui_pane::BandFraying;
-use tui_pane::BandSettings;
-use tui_pane::PixelFill;
-use tui_pane::PixelResolve;
-use tui_pane::PixelSettings;
-use tui_pane::TextDrift;
-use tui_pane::TextFill;
-use tui_pane::TextSettings;
 use uuid::Uuid;
 
+use super::constants::FAVORITE_BLOCK_COLUMNS_KEY;
+use super::constants::FAVORITE_DIRECTION_KEY;
+use super::constants::FAVORITE_DRIFT_KEY;
+use super::constants::FAVORITE_FILL_KEY;
+use super::constants::FAVORITE_FRAYING_KEY;
+use super::constants::FAVORITE_ID_KEY;
+use super::constants::FAVORITE_MISSING_VALUE;
+use super::constants::FAVORITE_MODE_KEY;
+use super::constants::FAVORITE_RESOLVE_KEY;
+use super::constants::FAVORITE_SAVED_KEY;
+use super::constants::FAVORITE_SPEED_KEY;
+use super::constants::FAVORITE_SPREAD_KEY;
+use super::constants::FAVORITE_TAIL_SPEED_KEY;
+use super::constants::FAVORITE_WAVE_PERCENT_KEY;
+use super::constants::FAVORITE_WIDTH_KEY;
 use super::rows::Favorite;
 use super::rows::FavoriteId;
-use crate::constants::FAVORITE_BLOCK_COLUMNS_KEY;
-use crate::constants::FAVORITE_DIRECTION_KEY;
-use crate::constants::FAVORITE_DRIFT_KEY;
-use crate::constants::FAVORITE_FILL_KEY;
-use crate::constants::FAVORITE_FRAYING_KEY;
-use crate::constants::FAVORITE_ID_KEY;
-use crate::constants::FAVORITE_MISSING_VALUE;
-use crate::constants::FAVORITE_MODE_KEY;
-use crate::constants::FAVORITE_RESOLVE_KEY;
-use crate::constants::FAVORITE_SAVED_KEY;
-use crate::constants::FAVORITE_SPEED_KEY;
-use crate::constants::FAVORITE_SPREAD_KEY;
-use crate::constants::FAVORITE_TAIL_SPEED_KEY;
-use crate::constants::FAVORITE_WAVE_PERCENT_KEY;
-use crate::constants::FAVORITE_WIDTH_KEY;
+use crate::AttractMode;
+use crate::AttractSettings;
+use crate::BandDirection;
+use crate::BandFraying;
+use crate::BandSettings;
+use crate::PixelFill;
+use crate::PixelResolve;
+use crate::PixelSettings;
+use crate::TextDrift;
+use crate::TextFill;
+use crate::TextSettings;
 
 /// The file key and spelling that prevented a favorite row from being recognized.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UnrecognizedFavoriteValue {
+pub struct UnrecognizedFavoriteValue {
     /// TOML key whose value was missing, malformed, or unknown.
-    pub(crate) key:      String,
+    pub key:      String,
     /// Value spelling found in the file, or `<missing>` when absent.
-    pub(crate) spelling: String,
+    pub spelling: String,
 }
 
 impl UnrecognizedFavoriteValue {
