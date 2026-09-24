@@ -1,13 +1,13 @@
 //! Parameter columns for a favorite's saved settings and the spellings of their values.
 
-use tui_pane::AttractMode;
-use tui_pane::AttractSettings;
-use tui_pane::BandDirection;
-use tui_pane::BandFraying;
-use tui_pane::PixelFill;
-use tui_pane::PixelResolve;
-use tui_pane::TextDrift;
-use tui_pane::TextFill;
+use crate::AttractMode;
+use crate::AttractSettings;
+use crate::BandDirection;
+use crate::BandFraying;
+use crate::PixelFill;
+use crate::PixelResolve;
+use crate::TextDrift;
+use crate::TextFill;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ParameterColumnDescriptor {
@@ -347,9 +347,8 @@ pub(super) const fn mode_label(mode: AttractMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use tui_pane::BandSettings;
-
     use super::*;
+    use crate::BandSettings;
 
     #[test]
     fn reordering_descriptors_keeps_each_heading_with_its_value() {

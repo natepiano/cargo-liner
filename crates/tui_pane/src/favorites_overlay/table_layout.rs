@@ -2,8 +2,6 @@
 
 use std::ops::Range;
 
-use tui_pane::ColumnSpec;
-use tui_pane::ColumnWidths;
 use unicode_width::UnicodeWidthStr;
 
 use super::bindings::FavoritesSurfaceBindings;
@@ -13,6 +11,8 @@ use super::content::FavoriteModeSection;
 use super::content::FavoriteRowView;
 use super::parameter_column;
 use super::parameter_column::ParameterColumnDescriptor;
+use crate::ColumnSpec;
+use crate::ColumnWidths;
 
 #[derive(Clone, Debug)]
 pub(super) struct FavoriteSectionTableLayout {
@@ -177,20 +177,14 @@ fn push_display_padded(line: &mut String, value: &str, width: usize) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::fs;
-
-    use tempfile::TempDir;
-    use tui_pane::AttractMode;
-    use tui_pane::FocusedPane;
-    use tui_pane::Framework;
-    use tui_pane::Keymap;
 
     use super::*;
-    use crate::app::App;
-    use crate::app::AppPaneId;
+    use crate::AttractMode;
+    use crate::Keymap;
     use crate::favorites_overlay::content::FavoriteRowsView;
     use crate::favorites_overlay::parameter_column::BAND_COLUMNS_FOR_TEST as BAND_COLUMNS;
-    use crate::keymap;
+    use crate::favorites_overlay::test_app;
+    use crate::favorites_overlay::test_app::TestApp;
 
     const MOVING_BAND_ROW: &str = r#"
 [[favorite]]
@@ -204,17 +198,6 @@ tail_speed = 72
 fraying = "leading"
 "#;
 
-    fn keymap_from(toml: &str) -> Keymap<App> {
-        let directory = TempDir::new().expect("temporary directory should be created");
-        let path = directory.path().join("keymap.toml");
-        if !toml.is_empty() {
-            fs::write(&path, toml).expect("test keymap should be written");
-        }
-        let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
-        keymap::build_keymap(&mut framework, (!toml.is_empty()).then_some(path))
-            .expect("test keymap should resolve")
-    }
-
     fn display_column(line: &str, value: &str) -> usize {
         let byte_index = line
             .find(value)
@@ -222,8 +205,8 @@ fraying = "leading"
         UnicodeWidthStr::width(&line[..byte_index])
     }
 
-    fn moving_band_table_layout(keymap: &Keymap<App>) -> FavoriteSectionTableLayout {
-        let rows = tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
+    fn moving_band_table_layout(keymap: &Keymap<TestApp>) -> FavoriteSectionTableLayout {
+        let rows = crate::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let bindings = FavoritesSurfaceBindings::resolve(keymap);
@@ -232,7 +215,7 @@ fraying = "leading"
 
     #[test]
     fn exactly_fitting_parameter_column_is_visible() {
-        let keymap = keymap_from("");
+        let keymap = test_app::keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let width = u16::try_from(
             FAVORITE_ROW_PREFIX_WIDTH
@@ -255,7 +238,7 @@ fraying = "leading"
 
     #[test]
     fn too_narrow_table_still_renders_one_clipped_parameter_column() {
-        let keymap = keymap_from("");
+        let keymap = test_app::keymap_from("");
         let table_layout = moving_band_table_layout(&keymap);
         let exact_width = usize::from(table_layout.saved_width)
             + FAVORITE_ROW_PREFIX_WIDTH
@@ -269,7 +252,7 @@ fraying = "leading"
         let labels = FavoritesSurfaceBindings::resolve(&keymap)
             .column_labels(AttractMode::MovingBand)
             .to_vec();
-        let rows = tui_pane::parse_favorite_rows_for_test(MOVING_BAND_ROW)
+        let rows = crate::parse_favorite_rows_for_test(MOVING_BAND_ROW)
             .expect("moving-band fixture should parse");
         let view = FavoriteRowsView::from(&rows);
         let row = &view.sections[0].rows[0];

@@ -6,19 +6,20 @@ use std::time::Instant;
 
 use chrono::Datelike;
 use chrono::Local;
-use tui_pane::AttractMode;
-use tui_pane::AttractSettings;
-use tui_pane::Favorite;
-use tui_pane::FavoriteId;
-use tui_pane::FavoriteRowRecognition;
-use tui_pane::FavoriteRows;
-use tui_pane::FavoritesFileState;
-use tui_pane::UnrecognizedFavoriteRemovalLocator;
-use tui_pane::UnrecognizedFavoriteValue;
+
+use crate::AttractMode;
+use crate::AttractSettings;
+use crate::Favorite;
+use crate::FavoriteId;
+use crate::FavoriteRowRecognition;
+use crate::FavoriteRows;
+use crate::FavoritesFileState;
+use crate::UnrecognizedFavoriteRemovalLocator;
+use crate::UnrecognizedFavoriteValue;
 
 /// The content carried by an open favorites modal.
 #[derive(Clone, Debug)]
-pub(crate) enum FavoritesOverlayContent {
+pub(super) enum FavoritesOverlayContent {
     /// At least one recognized favorite, with any unrecognized rows retained below it.
     Rows(FavoriteRowsView),
     /// No favorites file has been created yet, or its loaded row list is empty.
@@ -110,7 +111,7 @@ impl FavoritesOverlayContent {
 
 /// Cached, display-ready recognized favorites and diagnostics.
 #[derive(Clone, Debug)]
-pub(crate) struct FavoriteRowsView {
+pub(super) struct FavoriteRowsView {
     pub(super) sections:     Vec<FavoriteModeSection>,
     pub(super) unrecognized: Vec<UnrecognizedFavoriteView>,
 }
@@ -246,7 +247,7 @@ pub(super) enum FavoriteRowLifecycle {
 
 /// Display-ready rows a newer or misspelled file left unrecognized.
 #[derive(Clone, Debug)]
-pub(crate) struct UnrecognizedFavoritesView {
+pub(super) struct UnrecognizedFavoritesView {
     pub(super) rows: Vec<UnrecognizedFavoriteView>,
 }
 
@@ -292,7 +293,7 @@ mod tests {
     fn timestamps_keep_seconds_and_add_the_year_only_when_needed() {
         let current_year = Local::now().year();
         let old_year = current_year - 1;
-        let rows = tui_pane::parse_favorite_rows_for_test(&format!(
+        let rows = crate::parse_favorite_rows_for_test(&format!(
             r#"
 [[favorite]]
 id = "01a03f64-9c14-7b41-8a02-1de4c7c9b336"

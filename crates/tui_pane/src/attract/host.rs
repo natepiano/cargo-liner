@@ -111,7 +111,7 @@ pub fn undo_attract_replacement<A: AttractHost>(app: &mut A) {
 }
 
 /// How a toast names `attract_mode` at the start of a sentence.
-const fn mode_label(attract_mode: AttractMode) -> &'static str {
+pub(crate) const fn mode_label(attract_mode: AttractMode) -> &'static str {
     match attract_mode {
         AttractMode::MovingBand => "Moving band",
         AttractMode::MovingText => "Moving text",

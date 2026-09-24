@@ -21,6 +21,7 @@
 use std::path::PathBuf;
 
 use tui_pane::CycleDirection;
+use tui_pane::FavoritesOverlayPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkGlobalShortcutPresentation;
 use tui_pane::FrameworkGlobalShortcutVisibility;
@@ -36,7 +37,6 @@ use tui_pane::SettingsNavigation;
 
 use crate::app::App;
 use crate::app::AppPaneId;
-use crate::favorites_overlay::FavoritesOverlayPane;
 use crate::globals::AppGlobalAction;
 
 /// `Pane<App>` host for the main content pane. No pane-local shortcuts
@@ -104,7 +104,7 @@ pub(crate) fn build_keymap(
         .register(MovingBandPane::<App>::default())
         .register(MovingTextPane::<App>::default())
         .register(PixelatePane::<App>::default())
-        .register(FavoritesOverlayPane)
+        .register(FavoritesOverlayPane::<App>::default())
         .build_into(framework)
 }
 

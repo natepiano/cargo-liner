@@ -18,6 +18,8 @@ mod copy;
 mod diagnostics;
 #[cfg(feature = "backdrop")]
 mod favorites;
+#[cfg(feature = "backdrop")]
+mod favorites_overlay;
 mod format;
 mod framework;
 mod input;
@@ -252,6 +254,29 @@ pub use favorites::parse_favorite_rows_for_test;
 pub use favorites::push_favorite;
 #[cfg(feature = "backdrop")]
 pub use favorites::remove_favorite;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::FavoritesHost;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::FavoritesOverlay;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::FavoritesOverlayAction;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::FavoritesOverlayPane;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::dispatch_favorites_key;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::favorites_resize_settled;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::open_favorites;
+#[cfg(feature = "backdrop")]
+#[doc(hidden)]
+pub use favorites_overlay::open_favorites_on_state_for_test;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::poll_favorites;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::save_favorite;
+#[cfg(feature = "backdrop")]
+pub use favorites_overlay::show_random_favorite;
 pub use format::format_progressive;
 pub use framework::CycleDirection;
 pub use framework::Framework;

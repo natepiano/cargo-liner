@@ -119,8 +119,6 @@ impl InputContext for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::rc::Rc;
-
     use super::*;
 
     #[test]
@@ -131,9 +129,7 @@ mod tests {
             ModalHit::Closed
         );
 
-        let current_parameters = app.attract.current_settings().into();
-        let keymap = Rc::clone(&app.keymap);
-        app.favorites_overlay.open(&keymap, current_parameters);
+        tui_pane::open_favorites(&mut app);
         assert_eq!(
             app.app_modal_overlay_hit(Position::new(0, 0)),
             ModalHit::MissedRow

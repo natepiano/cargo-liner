@@ -10,7 +10,7 @@ use super::constants::SPLITMIX_SECOND_MULTIPLIER;
 
 /// A nonempty set of consecutive indices beginning at zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct NonZeroIndexBound(NonZeroUsize);
+pub(crate) struct NonZeroIndexBound(NonZeroUsize);
 
 impl NonZeroIndexBound {
     /// Build an index bound from a collection length.
@@ -18,7 +18,7 @@ impl NonZeroIndexBound {
     /// # Errors
     ///
     /// Returns [`EmptyIndexDomain`] when `len` contains no index to draw.
-    pub(super) const fn try_from_len(len: usize) -> Result<Self, EmptyIndexDomain> {
+    pub(crate) const fn try_from_len(len: usize) -> Result<Self, EmptyIndexDomain> {
         match NonZeroUsize::new(len) {
             Some(bound) => Ok(Self(bound)),
             None => Err(EmptyIndexDomain),
@@ -30,7 +30,7 @@ impl NonZeroIndexBound {
 
 /// A requested index draw had no possible result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct EmptyIndexDomain;
+pub(crate) struct EmptyIndexDomain;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SplitMix64(u64);
@@ -49,7 +49,7 @@ impl SplitMix64 {
 
 /// Seed a caller-owned random operation from nanoseconds since the Unix epoch.
 #[must_use]
-pub(super) fn clock_seed() -> u64 {
+pub(crate) fn clock_seed() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since_epoch| {
@@ -59,7 +59,7 @@ pub(super) fn clock_seed() -> u64 {
 
 /// Draw an unbiased index in `0..bound` from a reproducible seed.
 #[must_use]
-pub(super) fn bounded_index(seed: u64, bound: NonZeroIndexBound) -> usize {
+pub(crate) fn bounded_index(seed: u64, bound: NonZeroIndexBound) -> usize {
     let mut generator = SplitMix64::new(seed);
     bounded_index_from(&mut generator, bound)
 }

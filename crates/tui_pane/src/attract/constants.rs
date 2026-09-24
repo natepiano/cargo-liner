@@ -121,9 +121,9 @@ pub(super) const ATTRACT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 // notice toasts
 /// Interior lines a notice toast keeps even when its body is one line,
 /// so entrance and exit animate over a stable height.
-pub(super) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
+pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 /// How long a notice toast stays visible before it starts to exit.
-pub(super) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
+pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 
 // random
 /// Second multiplier in `SplitMix64`'s finalizer.

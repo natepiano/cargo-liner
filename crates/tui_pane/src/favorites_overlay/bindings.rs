@@ -1,16 +1,17 @@
 //! Resolved favorites bindings and footer labels.
 
-use tui_pane::Action;
-use tui_pane::AttractMode;
-use tui_pane::FavoritesRetryInstruction;
-use tui_pane::Keymap;
-use tui_pane::ResolvedBinding;
-
+use super::FavoritesHost;
 use super::parameter_column;
 use super::parameter_column::ParameterColumnDescriptor;
-use crate::app::App;
-use crate::app::AppPaneId;
-use crate::globals::AppGlobalAction;
+use crate::Action;
+use crate::AppContext;
+use crate::AttractMode;
+use crate::FavoritesRetryInstruction;
+use crate::Globals;
+use crate::Keymap;
+use crate::KeymapEditContext;
+use crate::ResolvedBinding;
+use crate::attract_pane_id;
 
 #[derive(Clone, Debug)]
 struct ModeColumnBindings {
@@ -76,7 +77,7 @@ impl Default for FavoritesSurfaceBindings {
 }
 
 impl FavoritesSurfaceBindings {
-    pub(super) fn resolve(keymap: &Keymap<App>) -> Self {
+    pub(super) fn resolve<A: FavoritesHost>(keymap: &Keymap<A>) -> Self {
         let columns = [
             AttractMode::MovingBand,
             AttractMode::MovingText,
@@ -93,13 +94,13 @@ impl FavoritesSurfaceBindings {
         .collect();
         Self {
             columns,
-            previous: resolve_pane_binding(keymap, AppPaneId::Favorites, "select_previous"),
-            next: resolve_pane_binding(keymap, AppPaneId::Favorites, "select_next"),
-            left: resolve_pane_binding(keymap, AppPaneId::Favorites, "page_columns_left"),
-            right: resolve_pane_binding(keymap, AppPaneId::Favorites, "page_columns_right"),
-            load: resolve_pane_binding(keymap, AppPaneId::Favorites, "load"),
-            delete: resolve_pane_binding(keymap, AppPaneId::Favorites, "delete"),
-            close: resolve_pane_binding(keymap, AppPaneId::Favorites, "close"),
+            previous: resolve_pane_binding(keymap, A::FAVORITES_PANE, "select_previous"),
+            next: resolve_pane_binding(keymap, A::FAVORITES_PANE, "select_next"),
+            left: resolve_pane_binding(keymap, A::FAVORITES_PANE, "page_columns_left"),
+            right: resolve_pane_binding(keymap, A::FAVORITES_PANE, "page_columns_right"),
+            load: resolve_pane_binding(keymap, A::FAVORITES_PANE, "load"),
+            delete: resolve_pane_binding(keymap, A::FAVORITES_PANE, "delete"),
+            close: resolve_pane_binding(keymap, A::FAVORITES_PANE, "close"),
             save: resolve_global_binding(keymap, "save_favorite"),
             open: resolve_global_binding(keymap, "open_favorites"),
             footer: CachedFavoritesFooter::NeedsRebuild,
@@ -223,26 +224,33 @@ impl FavoritesSurfaceBindings {
     }
 }
 
-fn resolve_pane_binding(
-    keymap: &Keymap<App>,
-    pane: AppPaneId,
+fn resolve_pane_binding<A: AppContext + 'static>(
+    keymap: &Keymap<A>,
+    pane: A::AppPaneId,
     action_name: &'static str,
 ) -> ResolvedBinding {
     ResolvedBinding::for_action(action_name, keymap.key_for_toml_key(pane, action_name))
 }
 
-fn resolve_global_binding(keymap: &Keymap<App>, action_name: &'static str) -> ResolvedBinding {
-    let binding = AppGlobalAction::from_toml_key(action_name).and_then(|action| {
-        keymap
-            .globals::<AppGlobalAction>()
-            .and_then(|scope| scope.key_for(action))
-            .cloned()
-    });
+/// The key bound to the app global named `action_name` in `[global]`,
+/// looked up by that TOML name, as the [`FavoritesHost`] naming contract
+/// asks.
+pub(super) fn resolve_global_binding<A: KeymapEditContext + 'static>(
+    keymap: &Keymap<A>,
+    action_name: &'static str,
+) -> ResolvedBinding {
+    let binding = <<A::AppGlobals as Globals<A>>::Actions as Action>::from_toml_key(action_name)
+        .and_then(|action| {
+            keymap
+                .globals::<A::AppGlobals>()
+                .and_then(|scope| scope.key_for(action))
+                .cloned()
+        });
     ResolvedBinding::for_action(action_name, binding)
 }
 
-fn resolve_column_label(
-    keymap: &Keymap<App>,
+fn resolve_column_label<A: FavoritesHost>(
+    keymap: &Keymap<A>,
     mode: AttractMode,
     descriptor: ParameterColumnDescriptor,
 ) -> String {
@@ -250,43 +258,23 @@ fn resolve_column_label(
         .action_names
         .iter()
         .map(|action| {
-            resolve_pane_binding(keymap, AppPaneId::Attract(mode), action).display_short()
+            resolve_pane_binding(keymap, attract_pane_id::<A>(mode), action).display_short()
         })
         .collect::<Vec<_>>()
         .join(descriptor.separator)
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod tests {
-    use std::fs;
-
-    use tempfile::TempDir;
-    use tui_pane::FocusedPane;
-    use tui_pane::Framework;
-    use tui_pane::KeyBind;
-    use tui_pane::KeySequence;
 
     use super::*;
-    use crate::keymap;
-
-    fn keymap_from(toml: &str) -> Keymap<App> {
-        let directory = TempDir::new().expect("temporary directory should be created");
-        let path = directory.path().join("keymap.toml");
-        if !toml.is_empty() {
-            fs::write(&path, toml).expect("test keymap should be written");
-        }
-        let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
-        keymap::build_keymap(&mut framework, (!toml.is_empty()).then_some(path))
-            .expect("test keymap should resolve")
-    }
+    use crate::KeyBind;
+    use crate::KeySequence;
+    use crate::favorites_overlay::test_app;
 
     #[test]
     fn column_descriptors_resolve_the_complete_default_matrix() {
-        let keymap = keymap_from("");
+        let keymap = test_app::keymap_from("");
         let bindings = FavoritesSurfaceBindings::resolve(&keymap);
 
         assert_eq!(
@@ -317,7 +305,7 @@ mod tests {
 
     #[test]
     fn column_footer_and_empty_labels_follow_rebinding() {
-        let keymap = keymap_from(
+        let keymap = test_app::keymap_from(
             r#"
 [global]
 save_favorite = "y"
@@ -359,7 +347,7 @@ sweep_right = "r"
 
     #[test]
     fn footer_names_only_actions_the_selection_can_run() {
-        let keymap = keymap_from("");
+        let keymap = test_app::keymap_from("");
         let mut bindings = FavoritesSurfaceBindings::resolve(&keymap);
 
         bindings.refresh_footer(2, 0, SelectedFavoriteActions::DeleteOnly);
@@ -378,7 +366,7 @@ sweep_right = "r"
 
     #[test]
     fn footer_omits_every_segment_with_an_unbound_action() {
-        let keymap = keymap_from(
+        let keymap = test_app::keymap_from(
             r#"
 [favorites]
 select_previous = ""

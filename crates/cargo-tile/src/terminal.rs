@@ -23,7 +23,6 @@ use crate::config::CargoTile;
 use crate::config::Config;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
-use crate::favorites_overlay::FavoritesOverlayFrameOutcome;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::sccache;
@@ -114,16 +113,7 @@ impl Workers {
 
 impl PollWork<App> for Workers {
     fn poll(&mut self, app: &mut App, now: Instant) -> Repaint {
-        let mut dirty = false;
-        match app.favorites_overlay.advance(now) {
-            FavoritesOverlayFrameOutcome::Quiet => {},
-            FavoritesOverlayFrameOutcome::Repaint => dirty = true,
-            FavoritesOverlayFrameOutcome::CommitRemoval(removal_target) => {
-                let result = tui_pane::remove_favorite::<CargoTile>(removal_target.clone());
-                app.favorites_overlay.finish_removal(removal_target, result);
-                dirty = true;
-            },
-        }
+        let mut dirty = tui_pane::poll_favorites(app, now) == Repaint::Needed;
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
         // reached are the whole of what moves on this screen. The
@@ -230,7 +220,6 @@ fn drain_sccache(app: &mut App, replies: &Receiver<SccacheSummary>) -> bool {
 )]
 mod tests {
     use std::fs;
-    use std::rc::Rc;
 
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
@@ -628,56 +617,6 @@ fraying = "leading"
     }
 
     #[test]
-    fn unmapped_modal_key_cancels_delete_confirmation_without_writing() {
-        let mut app = App::new_for_test().expect("test app should build");
-        let directory = TempDir::new().expect("temporary directory should be created");
-        let path = directory.path().join("favorites.toml");
-        fs::write(&path, FAVORITE_ROW).expect("favorite fixture should be written");
-        let original = fs::read(&path).expect("favorite fixture should be readable");
-        let rows = tui_pane::parse_favorite_rows_for_test(FAVORITE_ROW)
-            .expect("favorite fixture should parse");
-        let current_parameters = app.attract.current_settings().into();
-        let keymap = Rc::clone(&app.keymap);
-        app.favorites_overlay.open_file_state(
-            FavoritesFileState::Loaded {
-                path: path.clone(),
-                rows,
-            },
-            current_parameters,
-            &keymap,
-        );
-        let mut terminal =
-            Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");
-        terminal
-            .draw(|frame| app.favorites_overlay.render(frame))
-            .expect("favorites overlay should render");
-
-        dispatch_key(&mut app, key(KeyCode::Char('x')));
-        assert!(
-            app.favorites_overlay
-                .deletion_confirmation_is_armed_for_test()
-        );
-        assert!(
-            app.favorites_overlay
-                .deletion_confirmation_notice_is_visible_for_test()
-        );
-        dispatch_key(&mut app, key(KeyCode::Char('z')));
-
-        assert!(
-            !app.favorites_overlay
-                .deletion_confirmation_is_armed_for_test()
-        );
-        assert!(
-            !app.favorites_overlay
-                .deletion_confirmation_notice_is_visible_for_test()
-        );
-        assert_eq!(
-            fs::read(&path).expect("favorite fixture should remain readable"),
-            original
-        );
-    }
-
-    #[test]
     fn coalesced_resize_refreshes_currency_after_attract_reclamping() {
         let mut app = App::new_for_test().expect("test app should build");
         let rows = tui_pane::parse_favorite_rows_for_test(FAVORITE_ROW)
@@ -692,15 +631,12 @@ fraying = "leading"
             app.attract.apply_settings(favorite_settings),
             SettingsApplicationOutcome::AppliedExactly
         );
-        let current_parameters = app.attract.current_settings().into();
-        let keymap = Rc::clone(&app.keymap);
-        app.favorites_overlay.open_file_state(
+        tui_pane::open_favorites_on_state_for_test(
+            &mut app,
             FavoritesFileState::Loaded {
                 path: PathBuf::from("/tmp/favorites.toml"),
                 rows,
             },
-            current_parameters,
-            &keymap,
         );
         let mut terminal =
             Terminal::new(TestBackend::new(100, 30)).expect("test terminal should be created");

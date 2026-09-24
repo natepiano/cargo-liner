@@ -13,7 +13,8 @@ use tui_pane::AppContext;
 use tui_pane::AppIdentity;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
-use tui_pane::AttractSettings;
+use tui_pane::FavoritesHost;
+use tui_pane::FavoritesOverlay;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
 use tui_pane::KeyBind;
@@ -32,8 +33,6 @@ use tui_pane::VisualDeadline;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
-use crate::favorites_overlay::FavoritesOverlay;
-use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
 use crate::interaction;
 use crate::keymap;
@@ -74,39 +73,6 @@ pub(crate) enum AppPaneId {
     Attract(AttractMode),
     /// The app-owned favorites modal and its local keymap scope.
     Favorites,
-}
-
-/// Position of the app-owned modal layer.
-pub(crate) enum AppOverlay {
-    /// No app modal is open.
-    Closed,
-    /// The favorites modal is open with its content and parameter snapshot.
-    Favorites(OpenFavoritesOverlayState),
-}
-
-/// Content and current-parameter snapshot owned for one open favorites modal.
-pub(crate) struct OpenFavoritesOverlayState {
-    /// Display-ready rows or file-state diagnostic shown in the modal.
-    pub(crate) content:            FavoritesOverlayContent,
-    /// Attract parameters in effect when the modal opened or last resized.
-    pub(crate) current_parameters: OpenFavoritesCurrentParameters,
-}
-
-/// Attract parameters in effect for the lifetime of an open favorites snapshot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct OpenFavoritesCurrentParameters {
-    attract_settings: AttractSettings,
-}
-
-impl OpenFavoritesCurrentParameters {
-    /// Whether a recognized favorite has the same parameters as the attract screen.
-    pub(crate) fn matches(&self, attract_settings: AttractSettings) -> bool {
-        self.attract_settings == attract_settings
-    }
-}
-
-impl From<AttractSettings> for OpenFavoritesCurrentParameters {
-    fn from(attract_settings: AttractSettings) -> Self { Self { attract_settings } }
 }
 
 /// How much of each command a cell spells out.
@@ -321,13 +287,7 @@ impl TerminalApp for App {
     /// scope does not bind is still its own, and disarms a pending
     /// delete rather than reaching a global.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
-        if !self.favorites_overlay.is_open() {
-            return KeyOutcome::Unhandled;
-        }
-        if keymap.dispatch_app_pane(AppPaneId::Favorites, bind, self) == KeyOutcome::Unhandled {
-            self.favorites_overlay.handle_unmapped_key();
-        }
-        KeyOutcome::Consumed
+        tui_pane::dispatch_favorites_key(self, keymap, bind)
     }
 
     /// An attract screen that is what the display is showing owns the
@@ -346,14 +306,7 @@ impl TerminalApp for App {
 
     /// The attract screen reclamps its parameters to the new size, so
     /// an open favorites table re-marks which row matches them.
-    fn resize_settled(&mut self) {
-        if !self.favorites_overlay.is_open() {
-            return;
-        }
-        let current_parameters = self.attract.current_settings().into();
-        self.favorites_overlay
-            .refresh_current_parameters(current_parameters);
-    }
+    fn resize_settled(&mut self) { tui_pane::favorites_resize_settled(self); }
 
     /// Never while the attract screen is up: the strip already paints
     /// every cell it covers, and a full repaint inside one frame of it
@@ -376,6 +329,15 @@ impl AttractHost for App {
     fn attract(&self) -> &Attract { &self.attract }
 
     fn attract_mut(&mut self) -> &mut Attract { &mut self.attract }
+}
+
+/// The favorites modal's keys hang off [`AppPaneId::Favorites`].
+impl FavoritesHost for App {
+    const FAVORITES_PANE: AppPaneId = AppPaneId::Favorites;
+
+    fn favorites_overlay(&self) -> &FavoritesOverlay { &self.favorites_overlay }
+
+    fn favorites_overlay_mut(&mut self) -> &mut FavoritesOverlay { &mut self.favorites_overlay }
 }
 
 #[cfg(test)]

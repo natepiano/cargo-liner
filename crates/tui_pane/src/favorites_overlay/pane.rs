@@ -1,80 +1,101 @@
 //! Keymap host, action set, and dispatcher for the favorites modal.
 
+use std::marker::PhantomData;
 use std::mem;
 
 use crossterm::event::KeyCode;
-use tui_pane::Bindings;
-use tui_pane::Mode;
-use tui_pane::Pane;
-use tui_pane::Shortcuts;
-use tui_pane::TabStop;
 
+use super::FavoritesHost;
 use super::FavoritesOverlayActionOutcome;
 use super::close_overlay;
 use super::constants::FAVORITES_SCOPE;
 use super::constants::FAVORITES_SECTION;
 use super::report_application_outcome;
-use crate::app::App;
-use crate::app::AppPaneId;
+use crate::Bindings;
+use crate::Mode;
+use crate::Pane;
+use crate::Shortcuts;
+use crate::TabStop;
 
-tui_pane::action_enum! {
+crate::action_enum! {
+    /// One thing a key asks the open favorites modal to do.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    pub(crate) enum FavoritesOverlayAction {
+    pub enum FavoritesOverlayAction {
+        /// Select the previous favorite.
         SelectPrevious => ("select_previous", "Select the previous favorite");
+        /// Select the next favorite.
         SelectNext => ("select_next", "Select the next favorite");
+        /// Show the previous parameter column.
         PageColumnsLeft => ("page_columns_left", "Show the previous parameter column");
+        /// Show the next parameter column.
         PageColumnsRight => ("page_columns_right", "Show the next parameter column");
+        /// Load the selected favorite.
         Load => ("load", "Load the selected favorite");
+        /// Delete the selected favorite.
         Delete => ("delete", "Delete the selected favorite");
+        /// Close favorites.
         Close => ("close", "Close favorites");
     }
 }
 
-/// Keymap host for the app-owned favorites modal.
-pub(crate) struct FavoritesOverlayPane;
+/// Keymap host for the favorites modal.
+///
+/// A [`Pane`] with no rectangle of its own: the modal is drawn over the
+/// whole terminal by [`FavoritesOverlay::render`](super::FavoritesOverlay::render),
+/// and this exists so its keys have a scope of their own. `A` is the
+/// app hosting it, which registers `FavoritesOverlayPane::<A>::default()`
+/// with its keymap.
+pub struct FavoritesOverlayPane<A>(PhantomData<fn() -> A>);
 
-impl Pane<App> for FavoritesOverlayPane {
-    const APP_PANE_ID: AppPaneId = AppPaneId::Favorites;
-
-    fn mode() -> fn(&App) -> Mode<App> { |_app| Mode::Static }
-
-    fn tab_stop() -> TabStop<App> { TabStop::never() }
+impl<A> Default for FavoritesOverlayPane<A> {
+    fn default() -> Self { Self(PhantomData) }
 }
 
-impl Shortcuts<App> for FavoritesOverlayPane {
+impl<A: FavoritesHost> Pane<A> for FavoritesOverlayPane<A> {
+    const APP_PANE_ID: A::AppPaneId = A::FAVORITES_PANE;
+
+    fn mode() -> fn(&A) -> Mode<A> { |_app| Mode::Static }
+
+    fn tab_stop() -> TabStop<A> { TabStop::never() }
+}
+
+impl<A: FavoritesHost> Shortcuts<A> for FavoritesOverlayPane<A> {
     type Actions = FavoritesOverlayAction;
 
     const SCOPE_NAME: &'static str = FAVORITES_SCOPE;
     const SECTION_NAME: &'static str = FAVORITES_SECTION;
 
-    fn defaults() -> Bindings<Self::Actions> {
-        tui_pane::bindings! {
-            [KeyCode::Up, 'k'] => FavoritesOverlayAction::SelectPrevious,
-            [KeyCode::Down, 'j'] => FavoritesOverlayAction::SelectNext,
-            [KeyCode::Left, 'h'] => FavoritesOverlayAction::PageColumnsLeft,
-            [KeyCode::Right, 'l'] => FavoritesOverlayAction::PageColumnsRight,
-            KeyCode::Enter => FavoritesOverlayAction::Load,
-            'x' => FavoritesOverlayAction::Delete,
-            KeyCode::Esc => FavoritesOverlayAction::Close,
-        }
-    }
+    fn defaults() -> Bindings<Self::Actions> { default_bindings() }
 
-    fn dispatcher() -> fn(Self::Actions, &mut App) { dispatch }
+    fn dispatcher() -> fn(Self::Actions, &mut A) { dispatch::<A> }
 }
 
-pub(super) fn dispatch(action: FavoritesOverlayAction, app: &mut App) {
-    let mut overlay = mem::take(&mut app.favorites_overlay);
+pub(super) fn dispatch<A: FavoritesHost>(action: FavoritesOverlayAction, app: &mut A) {
+    let mut overlay = mem::take(app.favorites_overlay_mut());
     match overlay.handle_action(action) {
         FavoritesOverlayActionOutcome::Quiet => {},
         FavoritesOverlayActionOutcome::Load(settings) => {
-            let application = app.attract.apply_settings(settings);
+            let application = app.attract_mut().apply_settings(settings);
             close_overlay(&mut overlay, app);
-            app.attract.request_show();
+            app.attract_mut().request_show();
             report_application_outcome(&mut overlay, app, application);
         },
         FavoritesOverlayActionOutcome::Close => close_overlay(&mut overlay, app),
     }
-    app.favorites_overlay = overlay;
+    *app.favorites_overlay_mut() = overlay;
+}
+
+/// The keys the open modal answers to until `keymap.toml` says otherwise.
+fn default_bindings() -> Bindings<FavoritesOverlayAction> {
+    crate::bindings! {
+        [KeyCode::Up, 'k'] => FavoritesOverlayAction::SelectPrevious,
+        [KeyCode::Down, 'j'] => FavoritesOverlayAction::SelectNext,
+        [KeyCode::Left, 'h'] => FavoritesOverlayAction::PageColumnsLeft,
+        [KeyCode::Right, 'l'] => FavoritesOverlayAction::PageColumnsRight,
+        KeyCode::Enter => FavoritesOverlayAction::Load,
+        'x' => FavoritesOverlayAction::Delete,
+        KeyCode::Esc => FavoritesOverlayAction::Close,
+    }
 }
 
 #[cfg(test)]
@@ -90,10 +111,11 @@ mod tests {
     use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use tui_pane::FavoritesFileState;
-    use tui_pane::KeyBind;
 
     use super::*;
+    use crate::FavoritesFileState;
+    use crate::KeyBind;
+    use crate::favorites_overlay::test_app::TestApp;
     use crate::favorites_overlay::tests::RECOGNIZED_ROWS_TWO;
 
     /// What one key press leaves behind in the modal and the attract screen.
@@ -109,8 +131,8 @@ mod tests {
     /// Open the two-row file on a fresh app, draw it narrow enough to page its columns, press
     /// `prelude` and then `code` through the full key ladder, and read back what changed.
     fn effect_of(prelude: &[KeyCode], code: KeyCode) -> KeyEffect {
-        let mut app = App::new_for_test().expect("test app should build");
-        let rows = tui_pane::parse_favorite_rows_for_test(RECOGNIZED_ROWS_TWO)
+        let mut app = TestApp::new_for_test().expect("test app should build");
+        let rows = crate::parse_favorite_rows_for_test(RECOGNIZED_ROWS_TWO)
             .expect("favorites fixture should parse");
         let current_parameters = app.attract.current_settings().into();
         let keymap = Rc::clone(&app.keymap);
@@ -129,7 +151,7 @@ mod tests {
             .expect("favorites overlay should render");
 
         for pressed in prelude.iter().copied().chain([code]) {
-            tui_pane::dispatch_key(&mut app, KeyEvent::new(pressed, KeyModifiers::NONE));
+            crate::dispatch_key(&mut app, KeyEvent::new(pressed, KeyModifiers::NONE));
         }
         KeyEffect {
             open:              app.favorites_overlay.is_open(),
@@ -203,7 +225,7 @@ mod tests {
 
     #[test]
     fn modal_scope_includes_load_and_delete() {
-        let scope = FavoritesOverlayPane::defaults().into_scope_map();
+        let scope = FavoritesOverlayPane::<TestApp>::defaults().into_scope_map();
         let cases = [
             (
                 KeyBind::from(KeyCode::Up),

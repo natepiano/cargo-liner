@@ -48,9 +48,8 @@ pub(crate) const LIST_SEPARATOR: &str = ", ";
 /// being indistinguishable from a broken one.
 pub(crate) const EMPTY_LIST: &str = "none";
 /// Rows of popup border above and below a popup's body.
+#[cfg(test)]
 pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
-/// Columns of popup border left and right of a popup's body.
-pub(crate) const POPUP_CHROME_WIDTH: u16 = 2;
 
 // lifecycle
 /// The binary's own name: what the command line calls itself in help
@@ -150,14 +149,6 @@ pub(crate) const CARGO_MESSAGE_FORMAT_FLAG: &str = "--message-format";
 pub(crate) const CARGO_MESSAGE_FORMAT_JSON_PREFIX: &str = "--message-format=json";
 /// Flags the shim removes before `--` for non-terminal JSON capture.
 pub(crate) const CARGO_QUIET_FLAGS: [&str; 2] = ["--quiet", "-q"];
-
-// random
-/// Second multiplier in `SplitMix64`'s finalizer.
-pub(crate) const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xbf58_476d_1ce4_e5b9;
-/// Odd increment `SplitMix64` adds to its state before each draw.
-pub(crate) const SPLITMIX_INCREMENT: u64 = 0x9e37_79b9_7f4a_7c15;
-/// Third multiplier in `SplitMix64`'s finalizer.
-pub(crate) const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94d0_49bb_1331_11eb;
 
 // running-cargo table
 /// Process names that are the genuine cargo binary.
