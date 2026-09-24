@@ -27,6 +27,7 @@ use std::time::Instant;
 use tui_pane::FramePhase;
 use tui_pane::FrameProbe;
 
+use crate::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 use crate::constants::PROBE_THRESHOLD;
 
 /// Where `phase`'s nanoseconds are kept.
@@ -136,6 +137,8 @@ pub(crate) enum FrameLog {}
 
 impl FrameProbe for FrameLog {
     type Output = Counted<Stdout>;
+
+    const BACKDROP_UNAVAILABLE_NOTICE: &'static str = ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 
     fn output(stdout: Stdout) -> Self::Output { Counted::new(stdout) }
 

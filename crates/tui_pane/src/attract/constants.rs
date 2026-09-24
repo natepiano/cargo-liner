@@ -40,11 +40,10 @@ pub(super) const ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE: &str =
 pub(super) const ATTRACT_BACKDROP_STALLED_NOTICE: &str =
     "attract: desktop capture stalled -- retrying with a replacement capture worker";
 /// What the screen says when desktop capture is unavailable for a reason
-/// the user cannot grant their way out of. The frame log is off unless
-/// its variable is set, so the line names the variable rather than
-/// promising a recording an ordinary run never makes.
-pub(super) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
-    "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
+/// the user cannot grant their way out of, unless the app's
+/// [`FrameProbe`](crate::FrameProbe) says it in words of its own. It
+/// promises no recording: a probe that keeps no log makes none.
+pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str = "attract: desktop capture unavailable";
 /// What the screen says while it has no desktop to draw in the colours
 /// of because Screen Recording access is not granted. The permission
 /// belongs to the terminal the app is drawn in rather than to the app

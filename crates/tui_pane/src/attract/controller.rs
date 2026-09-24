@@ -59,7 +59,7 @@ use crate::WindowIdentification;
 
 /// What the app's frame should do with its tile grid this frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Grid {
+pub enum AttractGrid {
     /// Draw it in full. The attract screen is either off the terminal
     /// or decorating an idle grid rather than replacing it.
     Full,
@@ -74,9 +74,9 @@ pub enum Grid {
     Off,
 }
 
-/// Whether the display has any cargo to show.
+/// Whether the app has any work running to show.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Work {
+pub enum AttractWork {
     /// Nothing is running, so the attract screen has the terminal.
     Idle,
     /// Something is running, so the attract screen gives it back.
@@ -462,7 +462,7 @@ pub struct Attract<P: FrameProbe> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Reading {
     /// What the fade was moved toward.
-    work:        Work,
+    work:        AttractWork,
     /// Where the screen stands with the roster.
     standing:    Standing,
     /// What the reader has instructed.
@@ -840,14 +840,14 @@ impl<P: FrameProbe> Attract<P> {
     /// comes the rest of the way in. Leaving runs the same thing
     /// backwards: the panes come back bare under a strip still crossing
     /// them, and only fill once it has gone.
-    const fn grid(&self) -> Grid {
+    const fn grid(&self) -> AttractGrid {
         if matches!(self.grid_presentation, AttractGridPresentation::OverGrid) {
-            return Grid::Full;
+            return AttractGrid::Full;
         }
         if self.faded == 0 {
-            return Grid::Off;
+            return AttractGrid::Off;
         }
-        Grid::Empty(u8::MAX - self.faded)
+        AttractGrid::Empty(u8::MAX - self.faded)
     }
 
     /// Whether the strip is anywhere on the screen, which is what the
@@ -973,7 +973,7 @@ impl<P: FrameProbe> Attract<P> {
     /// for [`ATTRACT_RETURN_QUIET`] -- so a watcher firing every few
     /// seconds keeps the display rather than trading it back and forth
     /// with the animation.
-    fn stand(&mut self, work: Work, now: Instant) -> Work {
+    fn stand(&mut self, work: AttractWork, now: Instant) -> AttractWork {
         // A departure that has arrived is over, and this frame's reading
         // of the roster is the first one to count since it began.
         if matches!(self.standing, Standing::Leaving) && self.faded == u8::MAX {
@@ -981,29 +981,29 @@ impl<P: FrameProbe> Attract<P> {
         }
         self.standing = match self.standing {
             // Nothing reaches inside a departure still in flight.
-            Standing::Leaving => return Work::Running,
+            Standing::Leaving => return AttractWork::Running,
             Standing::Showing => match work {
-                Work::Idle => Standing::Showing,
+                AttractWork::Idle => Standing::Showing,
                 // Already gone, so there is no departure to make --
                 // which is the app opening onto a grid with work on it.
-                Work::Running if self.faded == u8::MAX => Standing::Working,
-                Work::Running => Standing::Leaving,
+                AttractWork::Running if self.faded == u8::MAX => Standing::Working,
+                AttractWork::Running => Standing::Leaving,
             },
             Standing::Working => match work {
-                Work::Running => Standing::Working,
-                Work::Idle => Standing::Settling(now),
+                AttractWork::Running => Standing::Working,
+                AttractWork::Idle => Standing::Settling(now),
             },
             Standing::Settling(since) => match work {
-                Work::Running => Standing::Working,
-                Work::Idle if now.duration_since(since) >= ATTRACT_RETURN_QUIET => {
+                AttractWork::Running => Standing::Working,
+                AttractWork::Idle if now.duration_since(since) >= ATTRACT_RETURN_QUIET => {
                     Standing::Showing
                 },
-                Work::Idle => Standing::Settling(since),
+                AttractWork::Idle => Standing::Settling(since),
             },
         };
         match self.standing {
-            Standing::Showing => Work::Idle,
-            Standing::Leaving | Standing::Working | Standing::Settling(_) => Work::Running,
+            Standing::Showing => AttractWork::Idle,
+            Standing::Leaving | Standing::Working | Standing::Settling(_) => AttractWork::Running,
         }
     }
 
@@ -1024,7 +1024,13 @@ impl<P: FrameProbe> Attract<P> {
     /// `now` comes from the caller rather than the clock so a test can
     /// walk the quiet a screen waits out before coming back without
     /// standing through it.
-    pub fn advance(&mut self, area: Rect, work: Work, updates: Updates, now: Instant) -> Grid {
+    pub fn advance(
+        &mut self,
+        area: Rect,
+        work: AttractWork,
+        updates: Updates,
+        now: Instant,
+    ) -> AttractGrid {
         self.laid_out_area = FrameArea::LaidOut(area);
         self.pending_resize = PendingTerminalResize::NotReported;
         // A freeze just let go of leaves a gap between this draw and
@@ -1050,7 +1056,7 @@ impl<P: FrameProbe> Attract<P> {
         // away was the strip standing over an idle grid, and the grid
         // has not been idle since -- so the screen re-arms and comes
         // back by itself once this finishes, as it would have before.
-        if work == Work::Running {
+        if work == AttractWork::Running {
             self.visibility_instruction = match self.visibility_instruction {
                 AttractVisibilityInstruction::Hide => AttractVisibilityInstruction::FollowRoster,
                 instruction => instruction,
@@ -1068,13 +1074,13 @@ impl<P: FrameProbe> Attract<P> {
         // roster had the answer.
         let standing = self.stand(work, now);
         let work = match self.visibility_instruction {
-            AttractVisibilityInstruction::Show => Work::Idle,
-            AttractVisibilityInstruction::Hide => Work::Running,
+            AttractVisibilityInstruction::Show => AttractWork::Idle,
+            AttractVisibilityInstruction::Hide => AttractWork::Running,
             AttractVisibilityInstruction::FollowRoster => standing,
         };
         self.faded = match work {
-            Work::Idle => self.faded.saturating_sub(ATTRACT_FADE_STEP),
-            Work::Running => self.faded.saturating_add(ATTRACT_FADE_STEP),
+            AttractWork::Idle => self.faded.saturating_sub(ATTRACT_FADE_STEP),
+            AttractWork::Running => self.faded.saturating_add(ATTRACT_FADE_STEP),
         };
         self.note_standing(work);
         // Once the strip is the whole of what is on the screen, rather
@@ -1166,7 +1172,7 @@ impl<P: FrameProbe> Attract<P> {
     /// the terminal separates them, so the separation is recorded here
     /// instead. Costs nothing with the probe off, and with it on writes
     /// a line where the answer changed rather than one per frame.
-    fn note_standing(&mut self, work: Work) {
+    fn note_standing(&mut self, work: AttractWork) {
         let reading = Reading {
             work,
             standing: self.standing,
@@ -1310,7 +1316,7 @@ mod tests {
 
     /// Carry `attract` forward until the strip is the whole of what is
     /// on the screen, and answer how it went.
-    fn settle(attract: &mut Attract, work: Work) -> u8 {
+    fn settle(attract: &mut Attract, work: AttractWork) -> u8 {
         let mut now = Instant::now();
         for _ in 0..FRAMES {
             now += POLL;
@@ -1327,7 +1333,7 @@ mod tests {
         let unsized_settings = attract.band.settings();
         let now = Instant::now();
 
-        attract.advance(NARROW_AREA, Work::Running, Updates::Live, now);
+        attract.advance(NARROW_AREA, AttractWork::Running, Updates::Live, now);
         attract.moving_text(MovingTextAction::ShowMovingBand);
         let saved = attract.current_settings();
 
@@ -1340,7 +1346,7 @@ mod tests {
         );
 
         attract.toggle();
-        attract.advance(NARROW_AREA, Work::Running, Updates::Live, now + POLL);
+        attract.advance(NARROW_AREA, AttractWork::Running, Updates::Live, now + POLL);
 
         assert_eq!(
             attract.current_settings(),
@@ -1703,7 +1709,7 @@ mod tests {
             attract.visibility_instruction,
             AttractVisibilityInstruction::Show
         );
-        attract.advance(AREA, Work::Running, Updates::Live, Instant::now());
+        attract.advance(AREA, AttractWork::Running, Updates::Live, Instant::now());
         assert!(attract.faded < fade_at_restore);
     }
 
@@ -1725,7 +1731,7 @@ mod tests {
             attract.visibility_instruction,
             AttractVisibilityInstruction::Hide
         );
-        attract.advance(AREA, Work::Idle, Updates::Live, Instant::now());
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, Instant::now());
         assert!(attract.faded > fade_at_restore);
     }
 
@@ -1752,7 +1758,7 @@ mod tests {
         );
         assert_eq!(attract.grid_presentation, AttractGridPresentation::OverGrid);
         assert_eq!(attract.standing, Standing::Working);
-        attract.advance(AREA, Work::Running, Updates::Live, Instant::now());
+        attract.advance(AREA, AttractWork::Running, Updates::Live, Instant::now());
         assert!(attract.faded > fade_at_restore);
     }
 
@@ -1760,16 +1766,16 @@ mod tests {
     fn request_show_reverses_a_fade_out() {
         let mut attract = Attract::new();
         attract.request_show();
-        assert_eq!(settle(&mut attract, Work::Idle), 0);
+        assert_eq!(settle(&mut attract, AttractWork::Idle), 0);
         attract.toggle();
         let now = Instant::now();
-        attract.advance(AREA, Work::Idle, Updates::Live, now);
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, now);
         let fading_out = attract.faded;
 
         assert!(attract.showing());
         assert!(fading_out > 0);
         attract.request_show();
-        attract.advance(AREA, Work::Idle, Updates::Live, now + POLL);
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, now + POLL);
 
         assert!(attract.asked_for());
         assert!(attract.faded < fading_out);
@@ -1780,7 +1786,12 @@ mod tests {
         let mut attract = Attract::new();
         let resized = Rect::new(0, 0, AREA.width.saturating_sub(7), AREA.height);
 
-        attract.advance(resized, Work::Running, Updates::Frozen, Instant::now());
+        attract.advance(
+            resized,
+            AttractWork::Running,
+            Updates::Frozen,
+            Instant::now(),
+        );
 
         assert_eq!(attract.laid_out_area, FrameArea::LaidOut(resized));
     }
@@ -1793,7 +1804,7 @@ mod tests {
         let _ = attract.current_settings();
         let band_before_frame = attract.band.clone();
 
-        attract.advance(AREA, Work::Idle, Updates::Frozen, Instant::now());
+        attract.advance(AREA, AttractWork::Idle, Updates::Frozen, Instant::now());
 
         assert_eq!(attract.band, band_before_frame);
     }
@@ -1811,7 +1822,7 @@ mod tests {
         expected.advance(AREA, POLL);
         expected.fade(0);
 
-        attract.advance(AREA, Work::Idle, Updates::Live, previous + POLL);
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, previous + POLL);
 
         assert_eq!(attract.band, expected);
     }
@@ -1827,18 +1838,22 @@ mod tests {
         let mut attract = Attract::new();
 
         attract.toggle();
-        assert_eq!(settle(&mut attract, Work::Idle), 0, "the strip comes in");
+        assert_eq!(
+            settle(&mut attract, AttractWork::Idle),
+            0,
+            "the strip comes in"
+        );
 
         attract.toggle();
 
         assert_eq!(
-            settle(&mut attract, Work::Idle),
+            settle(&mut attract, AttractWork::Idle),
             u8::MAX,
             "and asking again sends it away, idle grid underneath or not"
         );
         assert_eq!(
             attract.grid(),
-            Grid::Full,
+            AttractGrid::Full,
             "which is what gives the panes back"
         );
     }
@@ -1859,7 +1874,7 @@ mod tests {
         );
 
         attract.backdrop_wait = BackdropWait::NotWaiting;
-        attract.advance(AREA, Work::Idle, Updates::Live, started);
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, started);
         assert!(attract.showing(), "the screen is on");
         assert_eq!(
             attract.backdrop_notice(started),
@@ -1893,7 +1908,7 @@ mod tests {
         attract.monitor = monitor;
 
         let started = Instant::now();
-        attract.advance(AREA, Work::Idle, Updates::Live, started);
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, started);
         assert!(attract.showing(), "the screen is on and wants a desktop");
 
         assert_eq!(
@@ -1939,7 +1954,11 @@ mod tests {
         let mut attract = Attract::new();
         assert_eq!(attract.keyed_mode(), None, "nothing is on screen yet");
 
-        assert_eq!(settle(&mut attract, Work::Idle), 0, "it comes on by itself");
+        assert_eq!(
+            settle(&mut attract, AttractWork::Idle),
+            0,
+            "it comes on by itself"
+        );
 
         assert_eq!(attract.keyed_mode(), Some(attract.mode));
         assert!(
@@ -1954,7 +1973,7 @@ mod tests {
     #[test]
     fn a_screen_part_way_in_or_out_takes_no_keys() {
         let mut attract = Attract::new();
-        attract.advance(AREA, Work::Idle, Updates::Live, Instant::now());
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, Instant::now());
 
         assert!(attract.faded > 0, "it has only started arriving");
         assert_eq!(attract.keyed_mode(), None);
@@ -1980,14 +1999,14 @@ mod tests {
     fn work_arriving_re_arms_a_strip_that_was_put_away() {
         let mut attract = Attract::new();
         attract.toggle();
-        settle(&mut attract, Work::Idle);
+        settle(&mut attract, AttractWork::Idle);
         attract.toggle();
-        settle(&mut attract, Work::Idle);
+        settle(&mut attract, AttractWork::Idle);
 
-        attract.advance(AREA, Work::Running, Updates::Live, Instant::now());
+        attract.advance(AREA, AttractWork::Running, Updates::Live, Instant::now());
 
         assert_eq!(
-            settle(&mut attract, Work::Idle),
+            settle(&mut attract, AttractWork::Idle),
             0,
             "the strip comes back by itself once the work is done"
         );
@@ -2003,15 +2022,19 @@ mod tests {
     fn work_that_comes_and_goes_does_not_turn_a_hand_over_around() {
         let mut attract = Attract::new();
         let mut now = Instant::now();
-        assert_eq!(settle(&mut attract, Work::Idle), 0, "the screen is on");
+        assert_eq!(
+            settle(&mut attract, AttractWork::Idle),
+            0,
+            "the screen is on"
+        );
 
         // One frame of work, then an empty grid for the rest of the
         // fade: exactly the command that starts and stops too quickly.
         now += POLL;
-        attract.advance(AREA, Work::Running, Updates::Live, now);
+        attract.advance(AREA, AttractWork::Running, Updates::Live, now);
         for _ in 0..FRAMES {
             now += POLL;
-            attract.advance(AREA, Work::Idle, Updates::Live, now);
+            attract.advance(AREA, AttractWork::Idle, Updates::Live, now);
             if attract.faded == u8::MAX {
                 break;
             }
@@ -2022,7 +2045,11 @@ mod tests {
         }
 
         assert_eq!(attract.faded, u8::MAX, "and it goes the whole way off");
-        assert_eq!(attract.grid(), Grid::Full, "which gives the panes back");
+        assert_eq!(
+            attract.grid(),
+            AttractGrid::Full,
+            "which gives the panes back"
+        );
     }
 
     /// Having gone, the screen waits out a quiet grid before coming
@@ -2032,24 +2059,24 @@ mod tests {
     fn the_screen_waits_out_a_quiet_grid_before_coming_back() {
         let mut attract = Attract::new();
         let mut now = Instant::now();
-        settle(&mut attract, Work::Idle);
+        settle(&mut attract, AttractWork::Idle);
         now += POLL;
-        attract.advance(AREA, Work::Running, Updates::Live, now);
+        attract.advance(AREA, AttractWork::Running, Updates::Live, now);
         while attract.faded != u8::MAX {
             now += POLL;
-            attract.advance(AREA, Work::Idle, Updates::Live, now);
+            attract.advance(AREA, AttractWork::Idle, Updates::Live, now);
         }
 
         // Short of the quiet, the grid keeps the terminal.
         now += ATTRACT_RETURN_QUIET / 2;
-        attract.advance(AREA, Work::Idle, Updates::Live, now);
+        attract.advance(AREA, AttractWork::Idle, Updates::Live, now);
         assert_eq!(attract.faded, u8::MAX, "not back yet");
         assert!(!attract.due_back(now), "and the loop is owed no frame");
 
         now += ATTRACT_RETURN_QUIET;
         assert!(attract.due_back(now), "past the quiet, one frame is owed");
         assert_eq!(
-            settle(&mut attract, Work::Idle),
+            settle(&mut attract, AttractWork::Idle),
             0,
             "and the screen comes back on",
         );
@@ -2062,15 +2089,15 @@ mod tests {
     fn asking_for_the_screen_outranks_a_hand_over_in_progress() {
         let mut attract = Attract::new();
         let mut now = Instant::now();
-        settle(&mut attract, Work::Idle);
+        settle(&mut attract, AttractWork::Idle);
         now += POLL;
-        attract.advance(AREA, Work::Running, Updates::Live, now);
+        attract.advance(AREA, AttractWork::Running, Updates::Live, now);
         assert!(attract.faded > 0, "it has started leaving");
 
         attract.toggle();
 
         assert_eq!(
-            settle(&mut attract, Work::Running),
+            settle(&mut attract, AttractWork::Running),
             0,
             "asked for, it comes back over a grid with work on it",
         );

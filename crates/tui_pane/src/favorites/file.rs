@@ -31,7 +31,7 @@ use crate::SettingsFileSpec;
 
 /// A keymap lookup whose variants say whether the action can currently be invoked.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ResolvedBinding {
+pub(crate) enum ResolvedBinding {
     /// The action has a primary binding.
     Bound {
         /// TOML name of the action the key invokes.
@@ -49,7 +49,7 @@ pub enum ResolvedBinding {
 impl ResolvedBinding {
     /// Resolve the primary binding for one named keymap action.
     #[must_use]
-    pub fn for_action(action_name: &'static str, binding: Option<KeySequence>) -> Self {
+    pub(crate) fn for_action(action_name: &'static str, binding: Option<KeySequence>) -> Self {
         binding.map_or(Self::Unbound { action_name }, |sequence| Self::Bound {
             action_name,
             sequence,
@@ -58,7 +58,7 @@ impl ResolvedBinding {
 
     /// Compact label for the resolved key, or an empty label when it is unbound.
     #[must_use]
-    pub fn display_short(&self) -> String {
+    pub(crate) fn display_short(&self) -> String {
         match self {
             Self::Bound { sequence, .. } => sequence.display_short(),
             Self::Unbound { .. } => String::new(),
@@ -110,7 +110,7 @@ pub enum FavoritesFileState {
 
 /// Failure from a locked favorites mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FavoritesMutationError {
+pub(crate) enum FavoritesMutationError {
     /// The operating system did not provide a configuration directory.
     LocationUnavailable,
     /// Existing favorites could not be parsed, so the file was not changed.
@@ -147,7 +147,7 @@ pub enum FavoritesMutationError {
 
 /// Identity of the recognized or unrecognized favorite row to remove.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FavoriteRemovalTarget {
+pub(crate) enum FavoriteRemovalTarget {
     /// A recognized row named by its stable identifier.
     Recognized(FavoriteId),
     /// An unrecognized row named by its load-time raw-table locator.
@@ -162,7 +162,7 @@ impl From<UnrecognizedFavoriteRemovalLocator> for FavoriteRemovalTarget {
 
 /// Favorites-file mutation being reported to the reader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FavoritesMutation {
+pub(crate) enum FavoritesMutation {
     /// Saving the current attract parameters.
     Save,
     /// Deleting a saved favorite.
@@ -180,7 +180,7 @@ impl FavoritesMutation {
 
 /// Usable instruction for retrying a refused favorites mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FavoritesRetryInstruction {
+pub(crate) enum FavoritesRetryInstruction {
     /// Retry through one action that is available on the current surface.
     Press(ResolvedBinding),
     /// Reopen the favorites overlay before invoking its local retry action.
@@ -207,7 +207,7 @@ impl FavoritesRetryInstruction {
 
 /// Explain a refused mutation, including a retry that works on the current surface.
 #[must_use]
-pub fn favorite_refusal_message(
+pub(crate) fn favorite_refusal_message(
     mutation: FavoritesMutation,
     retry: &FavoritesRetryInstruction,
     error: &FavoritesMutationError,
@@ -275,7 +275,7 @@ impl Error for FavoritesMutationError {}
 
 /// Read `I`'s favorites file without replacing malformed or unreadable content.
 #[must_use]
-pub fn load_favorites<I: AppIdentity>() -> FavoritesFileState {
+pub(crate) fn load_favorites<I: AppIdentity>() -> FavoritesFileState {
     load_from(FavoritesLocation::from(favorites_path::<I>()))
 }
 
@@ -285,7 +285,7 @@ pub fn load_favorites<I: AppIdentity>() -> FavoritesFileState {
 /// # Errors
 ///
 /// Returns the read-only file state or the lock, directory, serialization, or write failure.
-pub fn push_favorite<I: AppIdentity>(
+pub(crate) fn push_favorite<I: AppIdentity>(
     settings: AttractSettings,
 ) -> Result<FavoriteSaveOutcome, FavoritesMutationError> {
     let favorite = Favorite::now(settings);
@@ -299,7 +299,7 @@ pub fn push_favorite<I: AppIdentity>(
 ///
 /// Returns a stale unrecognized-row locator, read-only file state, or the lock, directory,
 /// serialization, or write failure.
-pub fn remove_favorite<I: AppIdentity>(
+pub(crate) fn remove_favorite<I: AppIdentity>(
     target: FavoriteRemovalTarget,
 ) -> Result<(), FavoritesMutationError> {
     remove_from_location(FavoritesLocation::from(favorites_path::<I>()), target)

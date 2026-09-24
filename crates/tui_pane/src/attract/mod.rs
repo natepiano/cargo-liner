@@ -29,11 +29,11 @@
 //! nothing to build is one that cannot be looked at on purpose -- and
 //! the reader wanting to watch it is reason enough to show it over a
 //! grid that is busy. Asked for, it takes the terminal rather than
-//! sharing it: the [`Grid`] that [`Attract::advance`] answers tells the
+//! sharing it: the [`AttractGrid`] that [`Attract::advance`] answers tells the
 //! app's frame to leave the panes out, so what is drawn is the animation
 //! and the status line and nothing else.
 //!
-//! Neither end of that is abrupt. [`Grid::Empty`] holds the panes on
+//! Neither end of that is abrupt. [`AttractGrid::Empty`] holds the panes on
 //! screen with nothing in them for as long as the animation is arriving
 //! or leaving, and [`fade_to_background`] carries them toward the
 //! colour they are painted on in step with it, [`attract_ground`]
@@ -44,7 +44,14 @@
 //! to avoid.
 //!
 //! Where there is no desktop to draw, [`draw_backdrop_notice`] writes the
-//! [`BackdropNotice`] [`Attract::backdrop_notice`] settles on.
+//! [`BackdropNotice`] [`Attract::backdrop_notice`] settles on, in the
+//! words the app's [`FrameProbe`](crate::FrameProbe) gives the case
+//! where capture is unavailable.
+//!
+//! [`draw_attract_layers`] is the attract screen's share of the app's
+//! frame: it advances the controller, has the app draw its panes as the
+//! [`AttractGrid`] answer calls for, fades them, draws the animation over
+//! them and writes the notice.
 //!
 //! [`Updates`] is whether the display takes new work in or is held
 //! still, which the grid and the animation both answer to.
@@ -53,6 +60,7 @@ mod backdrop_notice;
 mod constants;
 mod controller;
 mod fade;
+mod frame;
 mod held_key;
 mod host;
 mod moving_band;
@@ -63,21 +71,23 @@ mod settings;
 mod updates;
 
 pub use backdrop_notice::BackdropNotice;
+pub(crate) use constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 pub(crate) use constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 pub(crate) use constants::NOTICE_TOAST_VISIBLE;
 pub use controller::AdjustedAttractParameterSets;
 pub use controller::Attract;
 pub use controller::AttractConfiguration;
 pub use controller::AttractConfigurationRestoreOutcome;
+pub use controller::AttractGrid;
 pub use controller::AttractGridPresentation;
 pub use controller::AttractMode;
 pub use controller::AttractVisibilityInstruction;
-pub use controller::Grid;
+pub use controller::AttractWork;
 pub use controller::SettingsApplicationOutcome;
-pub use controller::Work;
 pub use fade::attract_ground;
 pub use fade::draw_backdrop_notice;
 pub use fade::fade_to_background;
+pub use frame::draw_attract_layers;
 pub use host::AttractHost;
 pub use host::attract_pane_id;
 pub use host::dispatch_attract_key;

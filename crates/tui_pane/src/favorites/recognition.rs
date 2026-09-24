@@ -40,7 +40,7 @@ use crate::TextSettings;
 
 /// The file key and spelling that prevented a favorite row from being recognized.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UnrecognizedFavoriteValue {
+pub(crate) struct UnrecognizedFavoriteValue {
     /// TOML key whose value was missing, malformed, or unknown.
     pub key:      String,
     /// Value spelling found in the file, or `<missing>` when absent.

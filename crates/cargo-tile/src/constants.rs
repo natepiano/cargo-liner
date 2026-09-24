@@ -126,6 +126,12 @@ pub(crate) const MAX_FADE_SECONDS: u64 = 30;
 /// gap stops reading as one frame arriving late and starts reading as
 /// the display having stopped.
 pub(crate) const PROBE_THRESHOLD: Duration = Duration::from_millis(33);
+/// What the attract screen says when desktop capture is unavailable for
+/// a reason the user cannot grant their way out of. The frame log is off
+/// unless its variable is set, so the line names the variable rather
+/// than promising a recording an ordinary run never makes.
+pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
+    "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
 /// Written on the summary cell's top border, so the one cell listing
 /// every command is named rather than told apart by its contents. A
 /// manager's own cell reads much like the summary -- one row per cargo

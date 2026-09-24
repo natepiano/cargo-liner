@@ -9,6 +9,7 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 
 use super::backdrop_notice::BackdropNotice;
+use crate::FrameProbe;
 use crate::blend_color;
 use crate::label_color;
 use crate::pane_background;
@@ -64,8 +65,10 @@ pub fn attract_ground() -> Color {
 ///
 /// On the last row of `body`, which is the row furthest from anything
 /// an idle grid has to say. [`BackdropNotice::None`] draws nothing.
-pub fn draw_backdrop_notice(frame: &mut Frame, notice: BackdropNotice, body: Rect) {
-    let Some(notice) = notice.text() else {
+/// [`BackdropNotice::CaptureUnavailable`] is written in `P`'s
+/// [`FrameProbe::BACKDROP_UNAVAILABLE_NOTICE`].
+pub fn draw_backdrop_notice<P: FrameProbe>(frame: &mut Frame, notice: BackdropNotice, body: Rect) {
+    let Some(notice) = notice.text::<P>() else {
         return;
     };
     let Some(row) = body.bottom().checked_sub(1) else {

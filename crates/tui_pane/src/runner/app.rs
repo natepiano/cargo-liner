@@ -19,6 +19,8 @@ use crate::KeyOutcome;
 use crate::Keymap;
 use crate::KeymapEditContext;
 use crate::SettingsHost;
+#[cfg(feature = "backdrop")]
+use crate::attract::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 
 /// An app [`run_terminal`](crate::run_terminal) can run.
 ///
@@ -130,6 +132,15 @@ pub enum FramePhase {
 pub trait FrameProbe {
     /// Where the terminal's output is written.
     type Output: io::Write;
+
+    /// What the attract screen says when desktop capture is unavailable
+    /// for a reason the user cannot grant their way out of.
+    ///
+    /// The probe owns the log that could record why, so a probe that
+    /// writes one only when asked names how to ask. The default promises
+    /// no recording.
+    #[cfg(feature = "backdrop")]
+    const BACKDROP_UNAVAILABLE_NOTICE: &'static str = ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 
     /// Wrap standard output once the terminal is set up, so the bytes
     /// the setup wrote are not counted.

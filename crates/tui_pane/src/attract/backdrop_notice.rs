@@ -11,13 +11,13 @@ use std::time::Instant;
 
 use super::constants::ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE;
 use super::constants::ATTRACT_BACKDROP_STALLED_NOTICE;
-use super::constants::ATTRACT_BACKDROP_UNAVAILABLE_NOTICE;
 use super::constants::ATTRACT_NO_BACKDROP_NOTICE;
 use crate::BackdropStatus;
 use crate::CaptureAttemptSequence;
 use crate::CaptureAttemptWindowSelection;
 use crate::CaptureFailure;
 use crate::CompletedCaptureAttemptDiagnostic;
+use crate::FrameProbe;
 use crate::LastSuccessfulCaptureWindowId;
 use crate::LatestCaptureAttemptWindowSelection;
 use crate::WindowIdentification;
@@ -40,13 +40,17 @@ pub enum BackdropNotice {
 
 impl BackdropNotice {
     /// The line the screen shows for this notice, or `None` for no line.
-    pub(crate) const fn text(self) -> Option<&'static str> {
+    ///
+    /// [`Self::CaptureUnavailable`] is written in `P`'s words: the probe
+    /// owns the log that could record why, so the probe names how to
+    /// switch it on.
+    pub(crate) const fn text<P: FrameProbe>(self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::ScreenRecordingAccessInstruction => Some(ATTRACT_NO_BACKDROP_NOTICE),
             Self::CaptureStalled => Some(ATTRACT_BACKDROP_STALLED_NOTICE),
             Self::CaptureRecoveryStopped => Some(ATTRACT_BACKDROP_RECOVERY_STOPPED_NOTICE),
-            Self::CaptureUnavailable => Some(ATTRACT_BACKDROP_UNAVAILABLE_NOTICE),
+            Self::CaptureUnavailable => Some(P::BACKDROP_UNAVAILABLE_NOTICE),
         }
     }
 }

@@ -19,13 +19,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Row;
 use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
+use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
-use tui_pane::FramePhase;
-use tui_pane::FrameProbe;
 use tui_pane::FrameworkOverlayId;
-use tui_pane::Grid;
 use tui_pane::Keymap;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
@@ -40,14 +38,12 @@ use tui_pane::TileCells;
 use tui_pane::TileGridContents;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::Updates;
-use tui_pane::Work;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
-use tui_pane::draw_backdrop_notice;
+use tui_pane::draw_attract_layers;
 use tui_pane::draw_global_shortcuts_overlay;
 use tui_pane::draw_keymap_overlay;
 use tui_pane::draw_settings;
-use tui_pane::fade_to_background;
 use tui_pane::label_color;
 use tui_pane::pane_background;
 use tui_pane::render_status_line;
@@ -110,7 +106,6 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
-use crate::probe::FrameLog;
 use crate::progress::Progress;
 use crate::progress::capture::CaptureRootIndex;
 use crate::progress::capture_read::CaptureLookup;
@@ -223,37 +218,15 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         .tiled_ids(&app.loaded_config.config.commands.hidden_when_idle)
         .is_empty()
     {
-        Work::Idle
+        AttractWork::Idle
     } else {
-        Work::Running
+        AttractWork::Running
     };
     let area = frame.area();
     let updates = app.updates;
-    // Asked for, the attract screen replaces the grid rather than
-    // sharing the terminal with it: a strip of characters drawn across
-    // a grid of borders and tables reads as neither one thing nor the
-    // other. Left to come on by itself, it draws over whatever is
-    // there, which with nothing running is a summary cell and little
-    // else. Between those two it draws over bare panes, which is what
-    // it arrives over and leaves over. See [`Attract::advance`].
-    let grid = FrameLog::timed(FramePhase::Advance, || {
-        app.attract.advance(area, work, updates, Instant::now())
+    draw_attract_layers(frame, app, body, work, updates, |frame, app, contents| {
+        draw_panes(frame, app, body, contents);
     });
-    FrameLog::timed(FramePhase::Panes, || match grid {
-        Grid::Full => draw_panes(frame, app, body, TileGridContents::Shown),
-        Grid::Empty(faded) => {
-            draw_panes(frame, app, body, TileGridContents::Hidden);
-            fade_to_background(frame.buffer_mut(), body, faded);
-        },
-        Grid::Off => (),
-    });
-    // Over the grid rather than under it: the attract screen owns the
-    // whole terminal while nothing is running, and the status line goes
-    // back on top of it below.
-    FrameLog::timed(FramePhase::Band, || {
-        app.attract.render(frame.buffer_mut(), area);
-    });
-    draw_backdrop_notice(frame, app.attract.backdrop_notice(Instant::now()), body);
     draw_status_line(frame, app, keymap, status);
     app.framework.toasts.render(
         frame,
@@ -2027,6 +2000,8 @@ mod tests {
     use ratatui::buffer::Cell;
     use sysinfo::Pid;
     use tui_pane::BackdropNotice;
+    use tui_pane::draw_backdrop_notice;
+    use tui_pane::fade_to_background;
 
     use super::*;
     use crate::birth_stamp::BirthStamp;
@@ -2053,6 +2028,7 @@ mod tests {
     use crate::constants::REGISTRATION_MAGIC;
     use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::UNRESOLVED_TIME;
+    use crate::probe::FrameLog;
     use crate::progress::capture::Capture;
     use crate::progress::capture_read::Phase;
     use crate::progress::capture_roots::CaptureRoots;
@@ -4169,6 +4145,42 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// A whole frame three frames after the attract screen is asked for
+    /// over an idle grid: the panes stand bare while it arrives, the
+    /// status line goes back on top, and no backdrop notice is due yet.
+    #[test]
+    fn an_arriving_attract_screen_draws_the_pinned_frame() {
+        const WIDTH: u16 = 80;
+        const HEIGHT: u16 = 24;
+        let mut app = App::new_for_test().expect("test app should build");
+        app.attract.toggle();
+        app.started = Instant::now();
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal =
+            Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("the test terminal opens");
+        for _ in 0..3 {
+            terminal
+                .draw(|frame| draw(frame, &mut app, &keymap))
+                .expect("the test terminal draws");
+        }
+
+        let inner = usize::from(WIDTH) - 2;
+        let title = " summary";
+        let notes = format!("cargo-tile {APP_VERSION} attract  ? shortcuts ");
+        let mut expected = vec![format!(
+            "┌{title}{}┐",
+            "─".repeat(inner - title.chars().count())
+        )];
+        expected.extend((0..HEIGHT - 3).map(|_| format!("│{}│", " ".repeat(inner))));
+        expected.push(format!("└{}┘", "─".repeat(inner)));
+        expected.push(format!(
+            "{:<width$}{notes}",
+            " Uptime: 0s",
+            width = usize::from(WIDTH) - notes.chars().count()
+        ));
+        assert_eq!(buffer_rows(terminal.backend().buffer()), expected);
+    }
+
     /// Each backdrop notice is written on the last row of the body in
     /// the label colour, leaving every other row of the frame as it was,
     /// and no notice leaves the frame blank.
@@ -4240,7 +4252,7 @@ mod tests {
             Terminal::new(TestBackend::new(width, height)).expect("the test terminal opens");
         terminal
             .draw(|frame| {
-                draw_backdrop_notice(frame, notice, Rect::new(0, 0, width, height - 1));
+                draw_backdrop_notice::<FrameLog>(frame, notice, Rect::new(0, 0, width, height - 1));
             })
             .expect("the test terminal draws");
         terminal.backend().buffer().clone()

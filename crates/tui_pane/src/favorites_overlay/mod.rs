@@ -979,6 +979,7 @@ mod tests {
     use super::*;
     use crate::AttractGridPresentation;
     use crate::AttractVisibilityInstruction;
+    use crate::AttractWork;
     use crate::BandDirection;
     use crate::BandFraying;
     use crate::FavoriteId;
@@ -986,7 +987,6 @@ mod tests {
     use crate::PixelResolve;
     use crate::ToastVisualDeadline;
     use crate::Updates;
-    use crate::Work;
     use crate::dispatch_key;
 
     const RECOGNIZED_ROWS: &str = r#"
@@ -1502,18 +1502,22 @@ travel_left = "界"
         let mut app = TestApp::new_for_test().expect("test app should build");
         let now = Instant::now();
         app.attract.request_show();
-        app.attract
-            .advance(Rect::new(0, 0, 80, 24), Work::Idle, Updates::Live, now);
         app.attract.advance(
             Rect::new(0, 0, 80, 24),
-            Work::Idle,
+            AttractWork::Idle,
+            Updates::Live,
+            now,
+        );
+        app.attract.advance(
+            Rect::new(0, 0, 80, 24),
+            AttractWork::Idle,
             Updates::Live,
             now + Duration::from_millis(8),
         );
         app.attract.toggle();
         app.attract.advance(
             Rect::new(0, 0, 80, 24),
-            Work::Idle,
+            AttractWork::Idle,
             Updates::Live,
             now + Duration::from_millis(16),
         );

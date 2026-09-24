@@ -22,7 +22,7 @@ use crate::AttractSettings;
 
 /// Stable identity for one favorite row.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct FavoriteId(pub(super) Uuid);
+pub(crate) struct FavoriteId(pub(super) Uuid);
 
 impl FavoriteId {
     #[cfg(test)]
@@ -37,11 +37,11 @@ impl Display for FavoriteId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Favorite {
     /// Stable row identity used by selection and deletion.
-    pub id:       FavoriteId,
+    pub(crate) id: FavoriteId,
     /// Local RFC 3339 time of the most recent save.
-    pub saved:    DateTime<FixedOffset>,
+    pub saved:     DateTime<FixedOffset>,
     /// Mode-specific animation parameters.
-    pub settings: AttractSettings,
+    pub settings:  AttractSettings,
 }
 
 impl Favorite {
@@ -57,7 +57,7 @@ impl Favorite {
 
 /// Successful effect of saving one attract parameter set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FavoriteSaveOutcome {
+pub(crate) enum FavoriteSaveOutcome {
     /// A new favorite row was appended.
     Added,
     /// An existing row with identical settings received the new timestamp.
@@ -66,7 +66,7 @@ pub enum FavoriteSaveOutcome {
 
 /// Opaque identity for removing one unrecognized raw favorite table.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UnrecognizedFavoriteRemovalLocator {
+pub(crate) struct UnrecognizedFavoriteRemovalLocator {
     raw_table_index: usize,
     fingerprint:     String,
 }
@@ -120,7 +120,7 @@ pub(super) enum UnrecognizedFavoriteRemoval {
 
 /// Typed recognition result for one raw favorite table.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FavoriteRowRecognition {
+pub(crate) enum FavoriteRowRecognition {
     /// The table contains one complete, recognized favorite.
     Recognized(Favorite),
     /// The table is retained and diagnosed in the overlay, but excluded from loading.
@@ -142,7 +142,9 @@ pub struct FavoriteRows {
 
 impl FavoriteRows {
     /// All row recognition results, with recognized rows grouped by mode and newest first.
-    pub fn iter(&self) -> impl Iterator<Item = &FavoriteRowRecognition> { self.recognitions.iter() }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &FavoriteRowRecognition> {
+        self.recognitions.iter()
+    }
 
     /// Recognized favorites, grouped by mode and newest first within each mode.
     pub fn recognized(&self) -> impl Iterator<Item = &Favorite> {
