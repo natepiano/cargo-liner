@@ -1077,6 +1077,7 @@ mod tests {
             crate::git::discover_historical_integration_candidate(
                 fixture.root(),
                 &fixture.phase_start_head,
+                &crate::git::fixture::file_scopes(&[PRIMARY_PATH])?,
                 &protected_tip,
                 &trunk,
                 &observation.target_histories,
@@ -1087,6 +1088,7 @@ mod tests {
             crate::git::discover_historical_integration_candidate(
                 fixture.root(),
                 &fixture.phase_start_head,
+                &crate::git::fixture::file_scopes(&[PRIMARY_PATH])?,
                 &protected_tip,
                 &trunk,
                 &super::PhaseStartTargetFirstParentHistories::default(),
@@ -1172,6 +1174,7 @@ mod tests {
             crate::git::discover_historical_integration_candidate(
                 fixture.root(),
                 &fixture.phase_start_head,
+                &crate::git::fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &trunk,
                 &observation.target_histories,

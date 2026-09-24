@@ -2861,6 +2861,7 @@ fn evaluate_reservation_scoped_integration(
             git::discover_historical_integration_candidate(
                 repository_root,
                 reservation.phase_start_head().as_ref(),
+                reservation.scopes(),
                 protected_tip.as_ref(),
                 target,
                 &integration_reachability.target_histories,

@@ -76,15 +76,25 @@ pub(crate) enum HistoricalIntegrationCandidateDiscovery {
 }
 
 /// Nominate a historical integration site without certifying the protected phase's content.
+///
+/// Matches compare patch identities limited to the reservation scopes: a push that amended the
+/// phase commit with edits outside them changes its whole-commit patch identity but not the work
+/// the reservation protects, and the scoped replay that follows certifies the nominee anyway.
 pub(crate) fn discover_historical_integration_candidate(
     repository_root: &Path,
     phase_start: &GitObjectId,
+    scopes: &ReservationScopeSet,
     protected_tip: &GitObjectId,
     target: &GitObjectId,
     target_histories: &PhaseStartTargetFirstParentHistories,
 ) -> HistoricalIntegrationCandidateDiscovery {
-    let Ok(matches) = phase_equivalent_commits(repository_root, phase_start, protected_tip, target)
-    else {
+    let Ok(matches) = phase_equivalent_commits(
+        repository_root,
+        phase_start,
+        protected_tip,
+        target,
+        PatchIdentityExtent::ReservationScopes(scopes),
+    ) else {
         return HistoricalIntegrationCandidateDiscovery::Unavailable;
     };
     if matches.is_empty() {
@@ -181,6 +191,15 @@ struct InitialScopedPatchEvidence {
     protected_scoped_replay:  ProtectedScopedReplayState,
 }
 
+/// Which part of each commit a patch identity covers when matching phase commits.
+#[derive(Clone, Copy)]
+enum PatchIdentityExtent<'scopes> {
+    /// The whole commit, so a rebased branch's anchor sits under complete replays of the phase.
+    WholeCommit,
+    /// Only the reserved paths, so edits outside the reservation do not hide an equivalent.
+    ReservationScopes(&'scopes ReservationScopeSet),
+}
+
 enum TargetScopedChangePosition {
     Absent,
     Contiguous,
@@ -196,6 +215,15 @@ enum TargetPhaseIntegrationCommits {
 struct TargetFirstParentHistory {
     commits:        Vec<GitObjectId>,
     scoped_commits: Vec<GitObjectId>,
+    /// The subset of `scoped_commits` that joined another line of history into the target.
+    scoped_merges:  Vec<FirstParentMerge>,
+}
+
+/// A first-parent target commit with more than one parent.
+struct FirstParentMerge {
+    commit:         GitObjectId,
+    first_parent:   GitObjectId,
+    merged_parents: Vec<GitObjectId>,
 }
 
 /// Whether the protected tip carries a scoped commit with no equivalent on the target.
@@ -207,6 +235,47 @@ enum ProtectedUnmatchedCommit {
 struct ScopedSymmetricDifference {
     protected_unmatched_commit: ProtectedUnmatchedCommit,
     target_unmatched_commits:   HashSet<GitObjectId>,
+    /// Commits on either side whose scoped patch has an equivalent on the other.
+    equivalent_commits:         HashSet<GitObjectId>,
+}
+
+impl ScopedSymmetricDifference {
+    /// Count a first-parent merge as matched when it brought a phase equivalent into the target.
+    ///
+    /// A merge has no patch identity of its own, so `--cherry-mark` always reports it unmatched,
+    /// and the equivalent it carried sits off the first-parent walk. Work that reached trunk
+    /// because a branch merged it in is integrated at that merge, the commit where the target's
+    /// own line of history first contains it.
+    fn match_merges_carrying_equivalents(
+        &mut self,
+        repository_root: &Path,
+        phase_start_head: &GitObjectId,
+        scoped_merges: &[FirstParentMerge],
+    ) -> Result<(), ScopedPatchComparisonError> {
+        if self.equivalent_commits.is_empty() {
+            return Ok(());
+        }
+        for merge in scoped_merges {
+            let mut arguments = vec![GIT_REV_LIST_COMMAND.to_owned()];
+            arguments.extend(merge.merged_parents.iter().map(ToString::to_string));
+            arguments.extend([
+                format!("{GIT_EXCLUDE_REVISION_PREFIX}{}", merge.first_parent),
+                format!("{GIT_EXCLUDE_REVISION_PREFIX}{phase_start_head}"),
+            ]);
+            let merged_commits = scoped_rev_list(repository_root, &arguments)?;
+            let carries_equivalent = merged_commits
+                .lines()
+                .map(str::parse::<GitObjectId>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(GitError::InvalidObjectId)?
+                .iter()
+                .any(|merged_commit| self.equivalent_commits.contains(merged_commit));
+            if carries_equivalent {
+                self.target_unmatched_commits.remove(&merge.commit);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Locate a rewritten branch's replayed phase commits and return the commit beneath them.
@@ -235,8 +304,13 @@ pub(crate) fn rewritten_phase_anchor(
     if phase_commit_count == 0 {
         return Ok(proposed_tip.clone());
     }
-    let equivalents =
-        phase_equivalent_commits(repository_root, phase_start, previous_tip, proposed_tip)?;
+    let equivalents = phase_equivalent_commits(
+        repository_root,
+        phase_start,
+        previous_tip,
+        proposed_tip,
+        PatchIdentityExtent::WholeCommit,
+    )?;
     let replayed = first_parent_commits(repository_root, proposed_tip, phase_commit_count)?
         .iter()
         .take_while(|commit| equivalents.contains(commit))
@@ -272,8 +346,9 @@ fn phase_equivalent_commits(
     phase_start: &GitObjectId,
     previous_tip: &GitObjectId,
     proposed_tip: &GitObjectId,
+    patch_identity_extent: PatchIdentityExtent<'_>,
 ) -> Result<Vec<GitObjectId>, GitError> {
-    let arguments = vec![
+    let mut arguments = vec![
         GIT_REV_LIST_COMMAND.to_owned(),
         GIT_CHERRY_MARK_ARG.to_owned(),
         GIT_LEFT_RIGHT_ARG.to_owned(),
@@ -282,6 +357,13 @@ fn phase_equivalent_commits(
         format!("{previous_tip}{GIT_SYMMETRIC_RANGE_INFIX}{proposed_tip}"),
         format!("{GIT_EXCLUDE_REVISION_PREFIX}{phase_start}"),
     ];
+    match patch_identity_extent {
+        PatchIdentityExtent::WholeCommit => {},
+        PatchIdentityExtent::ReservationScopes(scopes) => {
+            arguments.push(GIT_PATHSPEC_SEPARATOR.to_owned());
+            arguments.extend(scope_pathspecs(scopes));
+        },
+    }
     rev_list(repository_root, &arguments)?
         .lines()
         .filter_map(|line| line.strip_prefix(GIT_EQUIVALENT_COMMIT_MARK))
@@ -639,12 +721,7 @@ fn target_contains_protected_scoped_change(
         target.to_string(),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ];
-    diff_arguments.extend(
-        scopes
-            .as_slice()
-            .iter()
-            .map(|scope| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{}", scope.path)),
-    );
+    diff_arguments.extend(scope_pathspecs(scopes));
     let diff_output = scoped_patch_command_output(
         command::git_output_dynamic(repository_root, &diff_arguments).into(),
     )?;
@@ -680,7 +757,12 @@ fn target_scoped_change_position(
         "compare protected and target scoped commits",
     );
     let target_history = target_history?;
-    let symmetric_difference = symmetric_difference?;
+    let mut symmetric_difference = symmetric_difference?;
+    symmetric_difference.match_merges_carrying_equivalents(
+        repository_root,
+        phase_start_head,
+        &target_history.scoped_merges,
+    )?;
     let target_phase_integration_commits =
         classify_target_phase_integration_commits(&target_history, &symmetric_difference);
     let TargetPhaseIntegrationCommits::Identified(scoped_commits) =
@@ -780,6 +862,7 @@ fn scoped_symmetric_difference(
     let output = scoped_rev_list(repository_root, &arguments)?;
     let mut protected_unmatched_commit = ProtectedUnmatchedCommit::Absent;
     let mut target_unmatched_commits = HashSet::new();
+    let mut equivalent_commits = HashSet::new();
     for line in output.lines() {
         let mut characters = line.chars();
         let Some(commit_mark) = characters.next() else {
@@ -794,7 +877,9 @@ fn scoped_symmetric_difference(
             GIT_RIGHT_COMMIT_MARK => {
                 target_unmatched_commits.insert(commit);
             },
-            GIT_EQUIVALENT_COMMIT_MARK => {},
+            GIT_EQUIVALENT_COMMIT_MARK => {
+                equivalent_commits.insert(commit);
+            },
             _ => {
                 return Err(GitError::InvalidScopedHistoryLine {
                     line: line.to_owned(),
@@ -806,6 +891,7 @@ fn scoped_symmetric_difference(
     Ok(ScopedSymmetricDifference {
         protected_unmatched_commit,
         target_unmatched_commits,
+        equivalent_commits,
     })
 }
 
@@ -815,7 +901,7 @@ fn target_first_parent_history(
     tip: &GitObjectId,
     affected_paths: &[String],
 ) -> Result<TargetFirstParentHistory, ScopedPatchComparisonError> {
-    let record_format = format!("--format=%x00{TARGET_FIRST_PARENT_RECORD_MARKER}%x00%H");
+    let record_format = format!("--format=%x00{TARGET_FIRST_PARENT_RECORD_MARKER}%x00%H %P");
     let arguments = [
         GIT_LOG_COMMAND.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
@@ -847,6 +933,7 @@ fn parse_target_first_parent_history(
     let fields = output.split(|byte| *byte == b'\0').collect::<Vec<_>>();
     let mut commits = Vec::new();
     let mut scoped_commits = Vec::new();
+    let mut scoped_merges = Vec::new();
     let mut index = 0;
     while index < fields.len() {
         while fields.get(index).is_some_and(|field| field.is_empty()) {
@@ -869,12 +956,22 @@ fn parse_target_first_parent_history(
             .into());
         };
         index += 1;
-        let commit = str::from_utf8(commit_field)
+        let mut commit_and_parents = str::from_utf8(commit_field)
             .map_err(|_| GitError::InvalidScopedHistoryLine {
                 line: String::from_utf8_lossy(commit_field).into_owned(),
             })?
-            .parse::<GitObjectId>()
-            .map_err(GitError::InvalidObjectId)?;
+            .split_whitespace()
+            .map(str::parse::<GitObjectId>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(GitError::InvalidObjectId)?
+            .into_iter();
+        let Some(commit) = commit_and_parents.next() else {
+            return Err(GitError::InvalidScopedHistoryLine {
+                line: "target history record named no commit".to_owned(),
+            }
+            .into());
+        };
+        let parents = commit_and_parents.collect::<Vec<_>>();
         let mut affects_scope = false;
         while index < fields.len() {
             if fields[index].is_empty() {
@@ -895,12 +992,22 @@ fn parse_target_first_parent_history(
         }
         if affects_scope {
             scoped_commits.push(commit.clone());
+            if let [first_parent, merged_parents @ ..] = parents.as_slice()
+                && !merged_parents.is_empty()
+            {
+                scoped_merges.push(FirstParentMerge {
+                    commit:         commit.clone(),
+                    first_parent:   first_parent.clone(),
+                    merged_parents: merged_parents.to_vec(),
+                });
+            }
         }
         commits.push(commit);
     }
     Ok(TargetFirstParentHistory {
         commits,
         scoped_commits,
+        scoped_merges,
     })
 }
 
@@ -942,12 +1049,7 @@ fn protected_scoped_changes(
         protected_tip.to_string(),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ];
-    arguments.extend(
-        scopes
-            .as_slice()
-            .iter()
-            .map(|scope| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{}", scope.path)),
-    );
+    arguments.extend(scope_pathspecs(scopes));
     let output = scoped_patch_command_output(
         command::git_output_dynamic(repository_root, &arguments).into(),
     )?;
@@ -1022,6 +1124,14 @@ fn protected_scoped_changes(
     }
 }
 
+/// Spell each reservation scope as a literal pathspec rooted at the repository top.
+fn scope_pathspecs(scopes: &ReservationScopeSet) -> impl Iterator<Item = String> + '_ {
+    scopes
+        .as_slice()
+        .iter()
+        .map(|scope| format!("{GIT_LITERAL_TOP_PATHSPEC_PREFIX}{}", scope.path))
+}
+
 /// Run one `rev-list` invocation and return its standard output.
 fn scoped_rev_list(
     repository_root: &Path,
@@ -1076,6 +1186,7 @@ mod tests {
     use crate::git::refs;
     use crate::ids::GitObjectId;
     use crate::ledger::ProtectedPhaseStartHead;
+    use crate::ledger::ReservationScopeSet;
     use crate::reservation;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
@@ -1086,12 +1197,14 @@ mod tests {
     /// Exercise both the retained graph and the bounded fallback with the same repository.
     fn historical_candidate(
         fixture: &PatchEquivalenceFixture,
+        scopes: &ReservationScopeSet,
         protected_tip: &GitObjectId,
         target: &GitObjectId,
     ) -> FixtureResult<HistoricalIntegrationCandidateDiscovery> {
         let fallback = discover_historical_integration_candidate(
             fixture.root(),
             &fixture.phase_start_head,
+            scopes,
             protected_tip,
             target,
             &crate::git::PhaseStartTargetFirstParentHistories::default(),
@@ -1106,6 +1219,7 @@ mod tests {
             discover_historical_integration_candidate(
                 fixture.root(),
                 &fixture.phase_start_head,
+                scopes,
                 protected_tip,
                 target,
                 &observation.target_histories,
@@ -2246,7 +2360,12 @@ mod tests {
         let target = fixture.commit("changed second block")?;
 
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &target)?,
+            historical_candidate(
+                &fixture,
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             HistoricalIntegrationCandidateDiscovery::Nominated(target.clone()),
         );
         assert_eq!(
@@ -2400,7 +2519,12 @@ mod tests {
         let target = fixture.commit("rewritten first patch only")?;
 
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &target)?,
+            historical_candidate(
+                &fixture,
+                &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             HistoricalIntegrationCandidateDiscovery::Nominated(target.clone()),
         );
         assert_eq!(
@@ -2415,7 +2539,12 @@ mod tests {
         fixture.write(SECONDARY_PATH, "missing part\n")?;
         let final_only = fixture.commit("rewritten final patch only")?;
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &final_only)?,
+            historical_candidate(
+                &fixture,
+                &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
+                &protected_tip,
+                &final_only
+            )?,
             HistoricalIntegrationCandidateDiscovery::Nominated(final_only.clone()),
         );
         let scopes = fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?;
@@ -2426,7 +2555,7 @@ mod tests {
         fixture.write(PRIMARY_PATH, "integrated part\n")?;
         let reordered = fixture.commit("replay first patch after final patch")?;
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &reordered)?,
+            historical_candidate(&fixture, &scopes, &protected_tip, &reordered)?,
             HistoricalIntegrationCandidateDiscovery::Nominated(reordered.clone()),
         );
         assert_eq!(
@@ -2449,7 +2578,7 @@ mod tests {
         fixture.git(&["branch", "prefix-sibling"])?;
         let scopes = fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?;
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &sibling_prefix)?,
+            historical_candidate(&fixture, &scopes, &protected_tip, &sibling_prefix)?,
             HistoricalIntegrationCandidateDiscovery::Nominated(sibling_prefix.clone())
         );
         assert_eq!(
@@ -2464,7 +2593,7 @@ mod tests {
         fixture.write(PRIMARY_PATH, "later trunk replacement\n")?;
         let target = fixture.commit("rewrite integrated hunk")?;
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &target)?,
+            historical_candidate(&fixture, &scopes, &protected_tip, &target)?,
             HistoricalIntegrationCandidateDiscovery::Nominated(candidate.clone())
         );
         assert_eq!(
@@ -2487,13 +2616,19 @@ mod tests {
         fixture.write(SECONDARY_PATH, "unrelated target change\n")?;
         let target = fixture.commit("unrelated target change")?;
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &target)?,
+            historical_candidate(
+                &fixture,
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
+                &protected_tip,
+                &target
+            )?,
             HistoricalIntegrationCandidateDiscovery::NoMatch
         );
         assert_eq!(
             discover_historical_integration_candidate(
                 fixture.root(),
                 &fixture.phase_start_head,
+                &fixture::file_scopes(&[PRIMARY_PATH])?,
                 &protected_tip,
                 &UNAVAILABLE_OBJECT_ID.parse()?,
                 &crate::git::PhaseStartTargetFirstParentHistories::default(),
@@ -2537,7 +2672,12 @@ mod tests {
         fixture.write(SECONDARY_PATH, "second protected patch\n")?;
         let separated = fixture.commit("rewritten second patch after protected gap")?;
         assert_eq!(
-            historical_candidate(&fixture, &protected_tip, &separated)?,
+            historical_candidate(
+                &fixture,
+                &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
+                &protected_tip,
+                &separated
+            )?,
             HistoricalIntegrationCandidateDiscovery::Nominated(separated.clone()),
         );
         assert_eq!(
@@ -2545,6 +2685,109 @@ mod tests {
                 &fixture::file_scopes(&[PRIMARY_PATH, SECONDARY_PATH])?,
                 &protected_tip,
                 &separated,
+            )?,
+            ScopedPatchComparison::Different
+        );
+        Ok(())
+    }
+
+    /// A trunk that holds the phase only through a merge's second parent.
+    struct SecondParentIntegration {
+        fixture:       PatchEquivalenceFixture,
+        protected_tip: GitObjectId,
+        merge:         GitObjectId,
+        target:        GitObjectId,
+    }
+
+    /// The phase line, and the line a side branch edits before merging it.
+    fn merged_source() -> String {
+        MAPPED_BASE
+            .replace("two\n", "two phase\n")
+            .replace("ten\n", "ten side\n")
+    }
+
+    /// The phase reaches `main` amended with an edit outside the reservation. A branch forked at
+    /// the phase start edits the reserved file, merges that `main`, commits `after_merge` and one
+    /// more reserved edit, and becomes `main`, as a fast-forward onto a branch that merged trunk
+    /// leaves it.
+    fn second_parent_integration(after_merge: &str) -> FixtureResult<SecondParentIntegration> {
+        let fixture = mapped_fixture()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("two\n", "two phase\n"))?;
+        let protected_tip = fixture.commit("protected phase")?;
+        fixture.write("docs/amended.md", "outside the reservation\n")?;
+        fixture.git(&["add", "--all"])?;
+        fixture.amend("protected phase, amended outside its scope")?;
+        fixture.git(&["branch", "amended-trunk"])?;
+        fixture.reset_to_phase_start()?;
+        fixture.write(PRIMARY_PATH, &MAPPED_BASE.replace("ten\n", "ten side\n"))?;
+        fixture.commit("side edit before the merge")?;
+        fixture.git(&[
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "amended-trunk",
+            "-m",
+            "merge amended trunk",
+        ])?;
+        let merge = refs::head_object_id(fixture.root())?;
+        fixture.write(PRIMARY_PATH, after_merge)?;
+        fixture.commit("side edit after the merge")?;
+        fixture.write(
+            PRIMARY_PATH,
+            &after_merge.replace("twelve\n", "twelve later\n"),
+        )?;
+        let target = fixture.commit("second side edit after the merge")?;
+        Ok(SecondParentIntegration {
+            fixture,
+            protected_tip,
+            merge,
+            target,
+        })
+    }
+
+    #[test]
+    fn a_merge_carrying_the_phase_integrates_it_despite_later_scoped_edits() -> FixtureResult {
+        let integration =
+            second_parent_integration(&merged_source().replace("eleven\n", "eleven later\n"))?;
+        let scopes = fixture::file_scopes(&[PRIMARY_PATH])?;
+        assert_eq!(
+            integration.fixture.equivalence(
+                &scopes,
+                &integration.protected_tip,
+                &integration.target
+            )?,
+            ScopedPatchComparison::Equivalent
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn historical_candidate_matches_a_phase_amended_outside_its_scopes() -> FixtureResult {
+        let integration =
+            second_parent_integration(&merged_source().replace("two phase\n", "two bumped\n"))?;
+        let scopes = fixture::file_scopes(&[PRIMARY_PATH])?;
+        assert_eq!(
+            historical_candidate(
+                &integration.fixture,
+                &scopes,
+                &integration.protected_tip,
+                &integration.target
+            )?,
+            HistoricalIntegrationCandidateDiscovery::Nominated(integration.merge.clone())
+        );
+        assert_eq!(
+            integration.fixture.equivalence(
+                &scopes,
+                &integration.protected_tip,
+                &integration.merge
+            )?,
+            ScopedPatchComparison::Equivalent
+        );
+        assert_eq!(
+            integration.fixture.equivalence(
+                &scopes,
+                &integration.protected_tip,
+                &integration.target
             )?,
             ScopedPatchComparison::Different
         );

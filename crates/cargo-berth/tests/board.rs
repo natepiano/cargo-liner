@@ -3863,7 +3863,173 @@ fn the_lost_evidence_alert_waits_for_a_second_pass_to_agree() {
     );
 }
 
+/// Work that reached trunk through a merge's second parent stays integrated after the trunk commit
+/// its proof names is amended away. The phase commit fast-forwards into trunk and a push amends it
+/// with an edit outside the reservation; a branch that forked before the phase merges that trunk,
+/// then rewrites the phase's own line; trunk fast-forwards to the branch and its tip is amended.
+/// Re-derivation has to nominate the merge as the historical integration site, which needs a patch
+/// identity limited to the reserved paths, and has to accept the merge as the commit that carried
+/// the phase, which a first-parent-only walk never sees.
+#[test]
+fn work_merged_through_a_second_parent_survives_an_amended_trunk_tip() {
+    let fixture = released_phase_amended_outside_its_scope();
+    let root = fixture.repository.path();
+    let merge = fast_forward_trunk_onto_a_branch_that_merged_it(&fixture);
+    let catalyst_tip = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_scoped_patch_proof_at(&board_data(root), &fixture.reservation_id, &catalyst_tip);
+
+    git(
+        root,
+        &[
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "catalyst tip, amended",
+        ],
+    );
+    let amended_tip = git_stdout(root, &["rev-parse", "HEAD"]);
+    // Two passes, because `alert::for_lost_integration_evidence` speaks only when a second pass
+    // agrees with a proofless status the first one recorded.
+    for _ in 0..2 {
+        let data = board_data(root);
+        assert_scoped_patch_proof_at(&data, &fixture.reservation_id, &amended_tip);
+        assert_eq!(
+            board_reservation_snapshot(&data, &fixture.reservation_id)["integration_evidence"]["status"]
+                ["witness"],
+            serde_json::json!({"kind": "historical", "commit": merge}),
+            "the merge that carried the phase is the integration witness: {data:#}"
+        );
+        assert!(
+            lost_integration_evidence_alert(&data, &fixture.reservation_id).is_none(),
+            "work carried by a merge must not be reported lost: {data:#}"
+        );
+    }
+}
+
+/// A released phase whose trunk commit a push amended with an edit outside the reservation.
+struct AmendedPhaseFixture {
+    repository:       TempDir,
+    reservation_id:   String,
+    phase_start_head: String,
+    reserved_base:    String,
+    phase_source:     String,
+}
+
+/// Release a phase that fast-forwarded into trunk, then amend it outside the reserved file.
+fn released_phase_amended_outside_its_scope() -> AmendedPhaseFixture {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let reserved_base =
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n";
+    fs::write(root.join("src/lib.rs"), reserved_base).expect("reserved source should write");
+    git(root, &["add", CONFIGURATION_PATH, "src/lib.rs"]);
+    git(
+        root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "configuration and reserved base",
+        ],
+    );
+    git(root, &["config", "core.hooksPath", "/dev/null"]);
+    let phase_start_head = git_stdout(root, &["rev-parse", "HEAD"]);
+    let reservation_id = reservation_id(&claim(root, "file:src/lib.rs", FIRST_RUN));
+    let phase_source = reserved_base.replace("two\n", "two phase\n");
+    commit_historical_source(root, &phase_source, "protected phase");
+    let protected_tip = git_stdout(root, &["rev-parse", "HEAD"]);
+    append_journal_operation(
+        root,
+        &serde_json::json!({
+            "op": "checkpoint", "reservation_id": reservation_id,
+            "protected_tip": protected_tip, "trunk_snapshot": protected_tip,
+        }),
+    );
+    let released = board_data(root);
+    let released_row = board_reservation_snapshot(&released, &reservation_id);
+    assert_eq!(released_row["lifecycle"]["stage"], "released");
+    assert_eq!(
+        released_row["integration_evidence"]["status"]["proof"],
+        "protected_tip_ancestor"
+    );
+
+    fs::write(root.join("src/amended.rs"), "pub fn amended() {}\n")
+        .expect("unreserved source should write");
+    git(root, &["add", "src/amended.rs"]);
+    git(
+        root,
+        &[
+            "commit",
+            "--quiet",
+            "--amend",
+            "-m",
+            "protected phase, amended",
+        ],
+    );
+    let amended_phase = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_scoped_patch_proof_at(&board_data(root), &reservation_id, &amended_phase);
+    AmendedPhaseFixture {
+        repository,
+        reservation_id,
+        phase_start_head,
+        reserved_base: reserved_base.to_owned(),
+        phase_source,
+    }
+}
+
+/// A branch forked at the phase start edits the reserved file, merges trunk, rewrites the phase's
+/// own line, and trunk fast-forwards onto it. Returns the merge that carried the phase.
+fn fast_forward_trunk_onto_a_branch_that_merged_it(fixture: &AmendedPhaseFixture) -> String {
+    let root = fixture.repository.path();
+    git(
+        root,
+        &[
+            "checkout",
+            "--quiet",
+            "-b",
+            "catalyst",
+            &fixture.phase_start_head,
+        ],
+    );
+    commit_historical_source(
+        root,
+        &fixture.reserved_base.replace("ten\n", "ten catalyst\n"),
+        "catalyst edit before the merge",
+    );
+    git(
+        root,
+        &[
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "-m",
+            "Merge main into catalyst",
+            "main",
+        ],
+    );
+    let merge = git_stdout(root, &["rev-parse", "HEAD"]);
+    let merged_source = fixture.phase_source.replace("ten\n", "ten catalyst\n");
+    assert_eq!(
+        fs::read_to_string(root.join("src/lib.rs")).expect("merged source should read"),
+        merged_source
+    );
+    let rewritten_source = merged_source.replace("two phase\n", "two bumped\n");
+    commit_historical_source(root, &rewritten_source, "catalyst rewrites the phase line");
+    commit_historical_source(
+        root,
+        &rewritten_source.replace("twelve\n", "twelve later\n"),
+        "catalyst edit after the rewrite",
+    );
+    git(root, &["checkout", "--quiet", "main"]);
+    git(root, &["merge", "--quiet", "--ff-only", "catalyst"]);
+    merge
+}
+
 /// The reported proof, and the trunk `reanchored_proof` anchored it to.
+#[track_caller]
 fn assert_scoped_patch_proof_at(data: &serde_json::Value, reservation_id: &str, trunk_oid: &str) {
     let status =
         &board_reservation_snapshot(data, reservation_id)["integration_evidence"]["status"];
