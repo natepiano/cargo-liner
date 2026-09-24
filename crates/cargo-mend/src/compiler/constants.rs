@@ -27,6 +27,9 @@ pub(super) const CARGO_FLAG_TESTS: &str = "--tests";
 pub(crate) const CARGO_FLAG_WORKSPACE: &str = "--workspace";
 
 // cargo output protocol
+/// What closes cargo's drawn progress bar, ahead of its `done/total` counter.
+pub(super) const CARGO_PROGRESS_BAR_CLOSE: &str = "] ";
+pub(super) const CARGO_PROGRESS_COUNTER_SEPARATOR: &str = "/";
 pub(super) const CARGO_PROGRESS_PREFIX_BLOCKING: &str = "Blocking waiting for file lock";
 pub(super) const CARGO_PROGRESS_PREFIX_BUILDING: &str = "Building ";
 pub(super) const CARGO_PROGRESS_PREFIX_CHECKING: &str = "Checking ";
@@ -43,6 +46,16 @@ pub(super) const CARGO_WARNING_SUMMARY_TOKEN_TO_APPLY: &str = "to apply ";
 pub(super) const CARGO_SUBCOMMAND_CHECK: &str = "check";
 pub(super) const CARGO_SUBCOMMAND_FIX: &str = "fix";
 pub(crate) const CARGO_SUBCOMMAND_MEND: &str = "mend";
+
+// cargo terminal settings
+pub(super) const CARGO_TERM_PROGRESS_WHEN_ALWAYS: &str = "always";
+pub(super) const CARGO_TERM_PROGRESS_WHEN_ENV: &str = "CARGO_TERM_PROGRESS_WHEN";
+pub(super) const CARGO_TERM_PROGRESS_WHEN_NEVER: &str = "never";
+/// Cargo refuses `CARGO_TERM_PROGRESS_WHEN=always` on a pipe without a width to
+/// draw to. Only the counter is read out of the bar, so any width that leaves
+/// room for it serves.
+pub(super) const CARGO_TERM_PROGRESS_WIDTH: &str = "80";
+pub(super) const CARGO_TERM_PROGRESS_WIDTH_ENV: &str = "CARGO_TERM_PROGRESS_WIDTH";
 
 // diagnostic severity prefixes
 pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
@@ -71,6 +84,9 @@ pub(super) const REPORT_FILE_EXTENSION: &str = "mend.json";
 pub(super) const FINDINGS_SCHEMA_VERSION: u32 = 35;
 
 // progress indicator
+pub(super) const PROGRESS_BAR_FILL: &str = "=";
+pub(super) const PROGRESS_BAR_HEAD: &str = ">";
+pub(super) const PROGRESS_BAR_WIDTH: usize = 25;
 pub(super) const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 pub(super) const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
 

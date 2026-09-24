@@ -21,6 +21,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use serde_json::to_string;
 
+use super::progress::CargoProgress;
+use super::progress::ProgressDisplay;
 use super::source_transaction::CompilerFixTransaction;
 use super::stderr;
 use super::stdout;
@@ -37,6 +39,10 @@ use crate::compiler::constants::CARGO_FLAG_NO_DEFAULT_FEATURES;
 use crate::compiler::constants::CARGO_FLAG_TESTS;
 use crate::compiler::constants::CARGO_SUBCOMMAND_CHECK;
 use crate::compiler::constants::CARGO_SUBCOMMAND_FIX;
+use crate::compiler::constants::CARGO_TERM_PROGRESS_WHEN_ALWAYS;
+use crate::compiler::constants::CARGO_TERM_PROGRESS_WHEN_ENV;
+use crate::compiler::constants::CARGO_TERM_PROGRESS_WIDTH;
+use crate::compiler::constants::CARGO_TERM_PROGRESS_WIDTH_ENV;
 use crate::compiler::constants::CONFIG_FINGERPRINT_ENV;
 use crate::compiler::constants::CONFIG_JSON_ENV;
 use crate::compiler::constants::CONFIG_ROOT_ENV;
@@ -489,6 +495,17 @@ fn run_cargo_command(
     if color_mode.is_enabled() {
         command.env(CARGO_TERM_COLOR_ENV, CARGO_TERM_COLOR_ALWAYS);
     }
+    let progress = CargoProgress::start(output_mode, analyzing_dir);
+    // The status line takes its counter from cargo's bar, which cargo draws on
+    // a pipe only when asked to and given a width to draw it at.
+    if progress.is_active() {
+        command
+            .env(
+                CARGO_TERM_PROGRESS_WHEN_ENV,
+                CARGO_TERM_PROGRESS_WHEN_ALWAYS,
+            )
+            .env(CARGO_TERM_PROGRESS_WIDTH_ENV, CARGO_TERM_PROGRESS_WIDTH);
+    }
     command.stdin(Stdio::inherit());
     command.stderr(Stdio::piped());
     command.stdout(Stdio::piped());
@@ -506,7 +523,7 @@ fn run_cargo_command(
     // thread keeps a full stdout pipe from stalling cargo while this thread
     // is still streaming stderr.
     let stdout_reader = thread::spawn(move || stdout::collect_report_paths(stdout, output_mode));
-    let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode, analyzing_dir)?;
+    let stderr_outcome = stderr::stream_cargo_stderr(stderr, output_mode, progress)?;
     let report_paths = stdout_reader
         .join()
         .map_err(|_| anyhow!("cargo stdout reader panicked"))?

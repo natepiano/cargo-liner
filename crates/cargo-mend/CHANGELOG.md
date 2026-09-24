@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- The `mend:` status line now leads with cargo's own `done/total` unit counter and bar, e.g. `mend: / [=======================> ] 519/523: analyzing cargo_mend`, so tools that read cargo's progress bar, such as cargo-tile, can show progress for a `cargo mend` run. When stderr is not a terminal the line is drawn only under `CARGO_TERM_PROGRESS_WHEN=always`, and then rewritten only when its text changes; `CARGO_TERM_PROGRESS_WHEN=never` turns it off.
+
 ## [0.22.0] - 2026-09-23
 
 ### Added

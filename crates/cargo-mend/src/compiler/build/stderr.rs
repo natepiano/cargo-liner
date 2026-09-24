@@ -1,6 +1,9 @@
+use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::io::Read;
+use std::mem;
 use std::process::ChildStderr;
 
 use anyhow::Result;
@@ -8,6 +11,9 @@ use anyhow::Result;
 use super::BuildOutputMode;
 use super::progress::CargoProgress;
 use super::progress::ProgressDisplay;
+use super::progress::UnitCounter;
+use crate::compiler::constants::CARGO_PROGRESS_BAR_CLOSE;
+use crate::compiler::constants::CARGO_PROGRESS_COUNTER_SEPARATOR;
 use crate::compiler::constants::CARGO_PROGRESS_PREFIX_BLOCKING;
 use crate::compiler::constants::CARGO_PROGRESS_PREFIX_BUILDING;
 use crate::compiler::constants::CARGO_PROGRESS_PREFIX_CHECKING;
@@ -58,14 +64,63 @@ impl From<bool> for ProgressStatus {
     fn from(value: bool) -> Self { if value { Self::Active } else { Self::Inactive } }
 }
 
+/// Cargo's stderr split into lines the way `BufRead::read_line` splits it, with
+/// the counter out of each progress-bar frame handed on the moment it lands.
+///
+/// Cargo ends a bar frame with `\r` and no newline, then draws the next frame
+/// over it, so a build that prints nothing else holds one unfinished line for as
+/// long as it runs. Reading the counter only once that line ends would hold the
+/// status line at wherever cargo stood the last time it printed a status.
+struct StderrReader<R> {
+    reader:  BufReader<R>,
+    /// Bytes read but not yet returned as a line.
+    pending: Vec<u8>,
+}
+
+impl<R: Read> From<R> for StderrReader<R> {
+    fn from(stderr: R) -> Self {
+        Self {
+            reader:  BufReader::new(stderr),
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl<R: Read> StderrReader<R> {
+    /// The next line, ending in `\n` unless the stream ended first, or `None`
+    /// once the stream is spent. Bytes that are not UTF-8 are replaced rather
+    /// than failing the run.
+    fn next_line(&mut self, progress: &mut impl ProgressDisplay) -> io::Result<Option<String>> {
+        loop {
+            if let Some(end) = self.pending.iter().position(|&byte| byte == b'\n') {
+                let line: Vec<u8> = self.pending.drain(..=end).collect();
+                return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+            }
+            let chunk = match self.reader.fill_buf() {
+                Ok(chunk) => chunk,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            if chunk.is_empty() {
+                let rest = mem::take(&mut self.pending);
+                return Ok((!rest.is_empty()).then(|| String::from_utf8_lossy(&rest).into_owned()));
+            }
+            let read = chunk.len();
+            self.pending.extend_from_slice(chunk);
+            self.reader.consume(read);
+            if let Some(unit_counter) = latest_unit_counter(&self.pending) {
+                progress.record_unit_counter(unit_counter);
+            }
+        }
+    }
+}
+
 pub(super) fn stream_cargo_stderr(
     stderr: ChildStderr,
     output_mode: BuildOutputMode,
-    analyzing_dir: &Path,
+    mut progress: CargoProgress,
 ) -> Result<StderrObservation> {
-    let mut reader = BufReader::new(stderr);
-    let mut progress = CargoProgress::start(output_mode, analyzing_dir);
-    let mut line = String::new();
+    let mut reader = StderrReader::from(stderr);
     let mut block = Vec::new();
     let mut suppression_notice = SuppressionNotice::Pending;
     let mut compiler_warning_facts = CompilerWarningFacts::None;
@@ -73,9 +128,7 @@ pub(super) fn stream_cargo_stderr(
     let mut compiler_fixable_count: usize = 0;
 
     loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
+        let Some(line) = reader.next_line(&mut progress)? else {
             flush_diagnostic_block(
                 &mut block,
                 &mut suppression_notice,
@@ -86,7 +139,7 @@ pub(super) fn stream_cargo_stderr(
                 &mut progress,
             );
             break;
-        }
+        };
 
         let current = collapse_carriage_returns(&line);
         // Cargo erases the progress frame it just drew and writes the next
@@ -176,6 +229,34 @@ fn is_progress_line(line: &str) -> bool {
         || trimmed.starts_with(CARGO_PROGRESS_PREFIX_COMPILING)
         || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FINISHED)
         || trimmed.starts_with(CARGO_PROGRESS_PREFIX_FRESH)
+}
+
+/// The counter in the newest complete bar frame in `pending`: text a `\r` has
+/// ended, since the text after the last `\r` may still be arriving.
+fn latest_unit_counter(pending: &[u8]) -> Option<UnitCounter> {
+    let frames_end = pending.iter().rposition(|&byte| byte == b'\r')?;
+    String::from_utf8_lossy(pending.get(..frames_end)?)
+        .rsplit(['\r', '\n'])
+        .find_map(parse_unit_counter)
+}
+
+/// Cargo's unit counter out of one progress-bar frame,
+/// `    Building [=======>        ] 149/403: globset, regex-automata`.
+fn parse_unit_counter(frame: &str) -> Option<UnitCounter> {
+    let sanitized = sanitize_for_match(frame);
+    let bar = sanitized
+        .trim_start()
+        .strip_prefix(CARGO_PROGRESS_PREFIX_BUILDING)?;
+    let (_, counter) = bar.split_once(CARGO_PROGRESS_BAR_CLOSE)?;
+    let (done, rest) = counter.split_once(CARGO_PROGRESS_COUNTER_SEPARATOR)?;
+    let total = rest
+        .split(|character: char| !character.is_ascii_digit())
+        .next()?;
+    let unit_counter = UnitCounter {
+        done:  done.parse().ok()?,
+        total: total.parse().ok()?,
+    };
+    (unit_counter.total > 0).then_some(unit_counter)
 }
 
 fn is_finished_line(line: &str) -> bool {
@@ -335,24 +416,35 @@ fn flush_diagnostic_block(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
 mod tests {
     use super::DiagnosticBlockKind;
     use super::ProgressStatus;
+    use super::StderrReader;
     use super::SuppressionNotice;
     use super::classify_diagnostic_block;
     use super::collapse_carriage_returns;
     use super::flush_diagnostic_block;
     use super::is_progress_line;
+    use super::parse_unit_counter;
     use super::should_forward_progress_line;
     use crate::compiler::build::BuildOutputMode;
     use crate::compiler::build::progress::ProgressDisplay;
+    use crate::compiler::build::progress::UnitCounter;
     use crate::reporting::CompilerWarningFacts;
+
+    const CAPTURED_FRAME: &str = "\u{1b}[1m\u{1b}[96m    Building\u{1b}[0m \
+                                  [========>                ] 149/403: globset, regex-automata\r";
 
     #[derive(Default)]
     struct ProgressRecorder {
         progress_status: ProgressStatus,
         notices:         Vec<String>,
         stops:           usize,
+        unit_counters:   Vec<UnitCounter>,
     }
 
     impl ProgressRecorder {
@@ -361,12 +453,17 @@ mod tests {
                 progress_status: ProgressStatus::Active,
                 notices:         Vec::new(),
                 stops:           0,
+                unit_counters:   Vec::new(),
             }
         }
     }
 
     impl ProgressDisplay for ProgressRecorder {
         fn is_active(&self) -> bool { matches!(self.progress_status, ProgressStatus::Active) }
+
+        fn record_unit_counter(&mut self, unit_counter: UnitCounter) {
+            self.unit_counters.push(unit_counter);
+        }
 
         fn write_status_notice(&mut self, notice: &str) { self.notices.push(notice.to_string()); }
 
@@ -538,5 +635,58 @@ mod tests {
         assert_eq!(compiler_warning_count, 2);
         assert_eq!(compiler_fixable_count, 1);
         assert!(progress.notices.is_empty());
+    }
+
+    #[test]
+    fn a_captured_bar_frame_yields_cargos_counter() {
+        assert_eq!(
+            parse_unit_counter(CAPTURED_FRAME),
+            Some(UnitCounter {
+                done:  149,
+                total: 403,
+            })
+        );
+    }
+
+    #[test]
+    fn only_a_building_frame_over_a_nonzero_total_is_a_counter() {
+        assert_eq!(parse_unit_counter("    Checking fixture v0.1.0\n"), None);
+        assert_eq!(
+            parse_unit_counter("    Downloading [=====>   ] 3/10: serde\r"),
+            None
+        );
+        assert_eq!(parse_unit_counter("    Building [   ] 0/0: fixture"), None);
+    }
+
+    #[test]
+    fn reader_reports_each_frame_and_splits_lines_as_read_line_does() {
+        let second_frame = CAPTURED_FRAME.replace("149/403", "150/403");
+        let stderr = format!(
+            "    Checking fixture v0.1.0\n{CAPTURED_FRAME}{second_frame}\u{1b}[Kwarning: unused\n\
+             trailing"
+        );
+        let mut reader = StderrReader::from(stderr.as_bytes());
+        let mut progress = ProgressRecorder::default();
+
+        let mut lines = Vec::new();
+        while let Some(line) = reader.next_line(&mut progress).expect("read stderr") {
+            lines.push(line);
+        }
+
+        assert_eq!(
+            lines,
+            vec![
+                "    Checking fixture v0.1.0\n".to_string(),
+                format!("{CAPTURED_FRAME}{second_frame}\u{1b}[Kwarning: unused\n"),
+                "trailing".to_string(),
+            ]
+        );
+        assert_eq!(
+            progress.unit_counters.last(),
+            Some(&UnitCounter {
+                done:  150,
+                total: 403,
+            })
+        );
     }
 }
