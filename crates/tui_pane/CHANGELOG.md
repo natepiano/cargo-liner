@@ -55,6 +55,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Narrow `SECTION_HEADER_INDENT` to one space from two and `SECTION_ITEM_INDENT` to one from four, so a header and its items start in the same column.
 
 ### Fixed
+- `tui_pane` builds with default features off: the clipboard imports now sit behind the `clipboard` feature like the code that uses them.
 - KDE backdrop: a window underneath is drawn at its `frameGeometry`, with `include-shadow: false` so the capture covers exactly that. Placed by `bufferGeometry` -- which `KWin` reports as the client area inside the title bar, or the shadowed frame on a window that decorates itself -- every window stood tens of pixels right of and below where it really was, while the wallpaper lined up exactly.
 - KDE backdrop: the window stack is read on every capture and a picture kept only while its arrangement stands, so a window that moved or closed no longer lingers for the whole `COMPOSITE_HOLD`. The read costs five milliseconds against a capture per window.
 - `Desktop::placement` reads the terminal's current cell count rather than the capture's, which after a resize gave a negative padding and placed a halved window 86 columns off the display. The cell *size* still comes from the capture.

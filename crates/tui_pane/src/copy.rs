@@ -8,7 +8,9 @@ use std::fmt::Formatter;
 #[cfg(feature = "clipboard")]
 use std::io::Write as _;
 
+#[cfg(feature = "clipboard")]
 use crossterm::clipboard::CopyToClipboard;
+#[cfg(feature = "clipboard")]
 use crossterm::execute;
 
 use crate::AppContext;
@@ -163,7 +165,7 @@ fn write_system_clipboard(text: &str) -> Result<(), ClipboardError> {
 }
 
 #[cfg(not(feature = "clipboard"))]
-fn write_system_clipboard(_: &str) -> Result<(), ClipboardError> {
+const fn write_system_clipboard(_: &str) -> Result<(), ClipboardError> {
     Err(ClipboardError::Unavailable)
 }
 
