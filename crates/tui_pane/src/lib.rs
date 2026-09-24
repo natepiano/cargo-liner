@@ -5,7 +5,9 @@
 //! `AppContext` trait.
 
 mod activity;
+mod app_config;
 mod app_context;
+mod app_settings;
 #[cfg(feature = "backdrop")]
 mod backdrop;
 mod bar;
@@ -20,6 +22,7 @@ mod layout;
 mod overlays;
 mod pane;
 mod process;
+mod runner;
 mod settings_store;
 mod theme;
 mod tiles;
@@ -30,8 +33,24 @@ mod watched_file;
 // reference these types via `$crate::*` paths, which requires them at
 // the crate root. `tests/macro_use.rs` locks the path stability.
 pub use activity::Icon;
+pub use app_config::AppIdentity;
+pub use app_config::AppearanceConfig;
+pub use app_config::InitialRows;
+pub use app_config::LoadedConfig;
+pub use app_config::install_theme;
 pub use app_context::AppContext;
 pub use app_context::NoToastAction;
+pub use app_settings::AppConfig;
+pub use app_settings::FrameworkSetting;
+pub use app_settings::SettingStep;
+pub use app_settings::SettingTarget;
+pub use app_settings::SettingsHost;
+pub use app_settings::SettingsNavigation;
+pub use app_settings::SettingsRows;
+pub use app_settings::apply_settings;
+pub use app_settings::draw_settings;
+pub use app_settings::step_framework_setting;
+pub use app_settings::stepped;
 #[cfg(feature = "backdrop")]
 pub use backdrop::Backdrop;
 #[cfg(feature = "backdrop")]
@@ -220,6 +239,8 @@ pub use overlays::SettingsRenderOptions;
 pub use overlays::SettingsRowHit;
 pub use overlays::SettingsSelectionLine;
 pub use overlays::dispatch_keymap_action;
+pub use overlays::draw_global_shortcuts_overlay;
+pub use overlays::draw_keymap_overlay;
 pub use overlays::edit_selected_global_shortcut;
 pub use overlays::handle_keymap_capture_command;
 pub use overlays::handle_keymap_navigation_key;
@@ -255,6 +276,14 @@ pub use pane::selection_state_for;
 pub use pane::selection_style;
 pub use pane::share_borders;
 pub use process::kernel_parent;
+pub use runner::FrameProbe;
+pub use runner::NoProbe;
+pub use runner::PollWork;
+pub use runner::Repaint;
+pub use runner::TerminalApp;
+pub use runner::VisualDeadline;
+pub use runner::dispatch_key;
+pub use runner::run_terminal;
 pub use settings_store::LoadedSettings;
 pub use settings_store::SettingCodecs;
 pub use settings_store::SettingsError;

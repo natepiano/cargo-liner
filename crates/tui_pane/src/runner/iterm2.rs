@@ -13,15 +13,15 @@ use std::io;
 use std::io::Write;
 use std::panic;
 
-use crate::constants::ITERM2_PROFILE_ENV;
-use crate::constants::ITERM2_TERM_PROGRAM;
-use crate::constants::TERM_PROGRAM_ENV;
+use super::constants::ITERM2_PROFILE_ENV;
+use super::constants::ITERM2_TERM_PROGRAM;
+use super::constants::TERM_PROGRAM_ENV;
 
 /// A profile switch that is in force, holding the profile to go back to.
 ///
 /// Only ever constructed when the switch actually happened, so holding
 /// one is the proof that something needs undoing.
-pub(crate) struct ProfileSwitch {
+pub(super) struct ProfileSwitch {
     /// Profile the session was on before the app took it over.
     previous: String,
 }
@@ -36,7 +36,7 @@ impl ProfileSwitch {
     /// own profile is left alone. Refusing on incomplete information is
     /// the point: a switch this cannot reverse is worse than no switch,
     /// because it outlives the process and lands on the user's shell.
-    pub(crate) fn enter(profile: &str, out: &mut impl Write) -> io::Result<Option<Self>> {
+    pub(super) fn enter(profile: &str, out: &mut impl Write) -> io::Result<Option<Self>> {
         if !is_iterm2() || !is_writable_name(profile) {
             return Ok(None);
         }
@@ -49,7 +49,7 @@ impl ProfileSwitch {
     }
 
     /// Put the session back on the profile it came in on.
-    pub(crate) fn leave(&self, out: &mut impl Write) -> io::Result<()> {
+    pub(super) fn leave(&self, out: &mut impl Write) -> io::Result<()> {
         set_profile(out, &self.previous)
     }
 }
@@ -62,7 +62,7 @@ impl ProfileSwitch {
 /// transparency does not. The name to go back to is read from the
 /// environment rather than carried in, so the hook needs no state and
 /// cannot itself fail on a poisoned lock.
-pub(crate) fn install_panic_restore() {
+pub(super) fn install_panic_restore() {
     if !is_iterm2() {
         return;
     }

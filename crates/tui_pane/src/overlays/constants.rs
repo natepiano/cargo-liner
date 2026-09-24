@@ -23,8 +23,10 @@ pub(super) const KEYMAP_POPUP_HEIGHT_PERCENT: u16 = 80;
 /// exported so existing callers do not break.
 pub const KEYMAP_POPUP_MAX_HEIGHT: u16 = 43;
 pub(super) const PERCENT_DENOMINATOR: u32 = 100;
-pub(super) const POPUP_BORDER_HEIGHT: u16 = 2;
-pub(super) const POPUP_BORDER_WIDTH: u16 = 2;
+/// Rows of popup border above and below a popup's body.
+pub(crate) const POPUP_BORDER_HEIGHT: u16 = 2;
+/// Columns of popup border left and right of a popup's body.
+pub(crate) const POPUP_BORDER_WIDTH: u16 = 2;
 /// Terminal cells the keymap popup leaves either side of itself, so it
 /// reads as a popup over the display rather than as the display.
 pub(super) const POPUP_SIDE_MARGIN_WIDTH: u16 = 4;

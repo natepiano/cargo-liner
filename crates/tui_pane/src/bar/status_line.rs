@@ -102,6 +102,18 @@ pub struct StatusLineNote {
     pub value: String,
 }
 
+impl StatusLineNote {
+    /// A note that is its label alone, with an empty value: a flag
+    /// saying some state is in force, such as a paused display.
+    #[must_use]
+    pub fn flag(label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            value: String::new(),
+        }
+    }
+}
+
 /// Whether the status line shows its framework-owned scan indicator.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ScanIndicator {

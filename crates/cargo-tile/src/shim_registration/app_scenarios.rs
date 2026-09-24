@@ -20,6 +20,8 @@ use tempfile::TempDir;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
+use tui_pane::SettingStep;
+use tui_pane::SettingsNavigation;
 use tui_pane::TILE_ROWS_CONTENT_LABEL;
 use tui_pane::ToastDuration;
 use tui_pane::ToastVisualDeadline;
@@ -47,7 +49,6 @@ use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::hook;
 use crate::hook::NewerShim;
 use crate::hook::Startup;
-use crate::navigation::AppNavigation;
 use crate::progress::capture::Capture;
 use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::progress::capture_roots::AccountName;
@@ -57,7 +58,6 @@ use crate::progress::capture_roots::RootReadStatus;
 use crate::render;
 use crate::root_scan::RootOwner;
 use crate::settings;
-use crate::settings::Step;
 use crate::tiles::TileContent;
 
 #[test]
@@ -94,7 +94,7 @@ fn settings_scroll_reaches_every_account_and_later_settings() {
     );
 
     let mut pending = directories.clone();
-    for _ in 0..settings::rows(&app).rows.len() {
+    for _ in 0..settings::rows(&app).rows().len() {
         navigate(&mut app, NavAction::Down);
         let rendered = draw(&mut terminal, &mut app);
         pending.retain(|path| !selected_line(&rendered).contains(path));
@@ -110,7 +110,7 @@ fn settings_scroll_reaches_every_account_and_later_settings() {
         .expect("last selected account");
     let before = toml::to_string(&app.loaded_config.config).expect("serialize config");
     // Enter dispatches this same step; account rows must remain read-only.
-    settings::cycle(&mut app, Step::Next);
+    settings::cycle(&mut app, SettingStep::Next);
     navigate(&mut app, NavAction::Right);
     navigate(&mut app, NavAction::Left);
     assert_eq!(
@@ -122,7 +122,7 @@ fn settings_scroll_reaches_every_account_and_later_settings() {
     terminal.backend_mut().resize(240, 9);
     assert!(selected_line(&draw(&mut terminal, &mut app)).contains(account));
     let mut pending = vec!["excluded", "hidden when idle", "config", "themes", "keymap"];
-    for _ in 0..settings::rows(&app).rows.len() {
+    for _ in 0..settings::rows(&app).rows().len() {
         navigate(&mut app, NavAction::Down);
         let rendered = draw(&mut terminal, &mut app);
         let selected = selected_line(&rendered)
@@ -260,7 +260,7 @@ fn assert_settings_notices(
     keymap.dispatch_framework_global(GlobalAction::OpenSettings, app);
     let rendered = draw(terminal, app);
     assert!(rendered.contains("Notices:"), "{rendered}");
-    let rows = settings::rows(app).rows;
+    let rows = settings::rows(app).rows().to_vec();
     let notices: Vec<_> = rows.iter().filter(|row| row.label == "capture").collect();
     assert_eq!(notices.len(), expected.len());
     for (row, (_, body)) in notices.iter().zip(expected) {
@@ -303,7 +303,7 @@ fn popup_text(rendered: &str, title: &str) -> String {
 }
 
 fn navigate(app: &mut App, action: NavAction) {
-    AppNavigation::dispatcher()(action, *app.framework.focused(), app);
+    SettingsNavigation::<App>::dispatcher()(action, *app.framework.focused(), app);
 }
 
 fn selected_line(rendered: &str) -> &str {

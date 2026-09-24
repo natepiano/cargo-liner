@@ -34,6 +34,7 @@ use crate::KeymapPane;
 use crate::PaneFocusState;
 use crate::PaneSelectionState;
 use crate::PopupFrame;
+use crate::RenderFocus;
 use crate::ViewportOverflow;
 use crate::constants::SECTION_HEADER_INDENT;
 use crate::constants::SECTION_ITEM_INDENT;
@@ -238,6 +239,23 @@ impl KeymapPane {
             Style::default().fg(label_color()),
         );
     }
+}
+
+/// Draw the framework's keymap overlay over the whole frame: every
+/// registered action, its scope, and the key it currently resolves to.
+///
+/// Marks the pane active first, since an open overlay holds the focus.
+pub fn draw_keymap_overlay<Ctx>(frame: &mut Frame<'_>, ctx: &mut Ctx, keymap: &Keymap<Ctx>)
+where
+    Ctx: KeymapUiContext + 'static,
+{
+    ctx.framework_mut().keymap_pane.focus = RenderFocus {
+        pane_focus_state: PaneFocusState::Active,
+    };
+    let inputs = KeymapPane::prepare_overlay_inputs(ctx, keymap);
+    ctx.framework_mut()
+        .keymap_pane
+        .render_overlay(frame, frame.area(), &inputs);
 }
 
 /// Sort action rows within each section. Headers are anchors; rows

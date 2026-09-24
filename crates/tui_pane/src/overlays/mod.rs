@@ -51,7 +51,10 @@ crate::action_enum! {
 }
 
 pub use constants::KEYMAP_POPUP_MAX_HEIGHT;
+pub(crate) use constants::POPUP_BORDER_HEIGHT;
+pub(crate) use constants::POPUP_BORDER_WIDTH;
 pub use global_shortcuts::GlobalShortcutsPane;
+pub use global_shortcuts::draw_global_shortcuts_overlay;
 pub use keymap::KeymapCaptureCommand;
 pub use keymap::KeymapPane;
 pub use keymap_edit::KeymapEditContext;
@@ -63,6 +66,7 @@ pub use keymap_edit::keymap_toml;
 pub use keymap_edit::save_keymap_to_disk;
 pub use keymap_ui::KeymapOverlayInputs;
 pub use keymap_ui::KeymapUiContext;
+pub use keymap_ui::draw_keymap_overlay;
 use ratatui::text::Line;
 pub use settings::SettingsCommand;
 pub use settings::SettingsLineTarget;

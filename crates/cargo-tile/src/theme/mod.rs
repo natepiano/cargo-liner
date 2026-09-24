@@ -1,26 +1,16 @@
-//! Theme installation.
-//!
-//! Builds a [`ThemeRegistry`] from cargo-tile's own [`builtins`] plus
-//! every `*.toml` in the user's themes directory, resolves the
-//! `[appearance]` selection against it, and publishes the result
-//! process-wide so the `tui_pane` color helpers
-//! (`active_border_color`, `label_color`, …) read it.
+//! cargo-tile's themes: the built-in variants [`builtins`] hands to
+//! [`tui_pane::install_theme`] at startup, and the colours a family of
+//! invocations is tied together by.
 //!
 //! The palettes themselves are this app's — `tui_pane` ships the
 //! machinery and no colors.
 
-mod builtins;
-
-use std::path::Path;
+pub(crate) mod builtins;
 
 use ratatui::style::Color;
-use tui_pane::ThemeRegistry;
-use tui_pane::ThemeState;
 use tui_pane::color_distance;
 use tui_pane::error_color;
 use tui_pane::label_color;
-
-use crate::config::Config;
 
 /// The colours a family of invocations is tied together by: the pid of
 /// a command that has cargo running under it, and the parent pid on
@@ -120,26 +110,6 @@ pub(crate) fn family_color(index: usize) -> Color {
     family_palette()
         .nth(index % count)
         .unwrap_or_else(label_color)
-}
-
-/// Install the theme `config` selects. Returns a note when the
-/// configured theme id matched nothing and another variant was
-/// substituted.
-pub(crate) fn install(config: &Config, themes_dir: Option<&Path>) -> Option<String> {
-    let registry = ThemeRegistry::from_dir_with_builtins(themes_dir, builtins::builtins());
-    let resolved = registry.resolve_active(
-        &config.appearance.mode,
-        &config.appearance.light_theme,
-        &config.appearance.dark_theme,
-        None,
-    );
-    let note = resolved
-        .miss
-        .as_ref()
-        .map(|missing| format!("theme `{missing}` not found — using a built-in"));
-    let initial_theme = (*resolved.theme).clone();
-    tui_pane::install_theme_state(ThemeState::with_registry(registry, initial_theme));
-    note
 }
 
 #[cfg(test)]

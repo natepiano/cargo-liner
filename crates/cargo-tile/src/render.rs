@@ -11,7 +11,6 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -25,16 +24,12 @@ use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::FrameworkOverlayId;
 use tui_pane::Keymap;
-use tui_pane::KeymapPane;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
-use tui_pane::PopupFrame;
-use tui_pane::RenderFocus;
 use tui_pane::Renderable;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ScanIndicator;
-use tui_pane::SettingsRenderOptions;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
@@ -43,18 +38,15 @@ use tui_pane::TileGridContents;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
-use tui_pane::error_color;
-use tui_pane::hover_focus_color;
-use tui_pane::inline_error_color;
+use tui_pane::draw_global_shortcuts_overlay;
+use tui_pane::draw_keymap_overlay;
+use tui_pane::draw_settings;
 use tui_pane::label_color;
 use tui_pane::pane_background;
 use tui_pane::render_status_line;
 use tui_pane::secondary_text_color;
-use tui_pane::selection_style;
-use tui_pane::status_bar_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
-use tui_pane::title_color;
 use tui_pane::warning_color;
 
 use crate::app::App;
@@ -98,8 +90,6 @@ use crate::constants::MANAGED_COLUMN;
 use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PARENT_COLUMN;
 use crate::constants::PID_COLUMN;
-use crate::constants::POPUP_CHROME_HEIGHT;
-use crate::constants::POPUP_CHROME_WIDTH;
 use crate::constants::PROCESS_TREE_NOTE_LABEL;
 use crate::constants::PROGRESS_HEADING_EMPTY;
 use crate::constants::PROGRESS_HEADING_FILLED;
@@ -109,7 +99,6 @@ use crate::constants::PROGRESS_HEADING_PHASE_MARGIN;
 use crate::constants::PROGRESS_READING_TENTHS_WIDTH;
 use crate::constants::PROGRESS_READING_WIDTH;
 use crate::constants::PROGRESS_TENTHS_MIN_TOTAL;
-use crate::constants::SETTINGS_POPUP_WIDTH;
 use crate::constants::START_COLUMN;
 use crate::constants::STATE_BLOCKED;
 use crate::constants::STATE_COLUMN;
@@ -279,9 +268,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     app.favorites_overlay.render(frame);
 
     match app.framework.overlay() {
-        Some(FrameworkOverlayId::Settings) => draw_settings(frame, app),
-        Some(FrameworkOverlayId::Keymap) => draw_keymap(frame, app, keymap),
-        Some(FrameworkOverlayId::GlobalShortcuts) => draw_global_shortcuts(frame, app, keymap),
+        Some(FrameworkOverlayId::Settings) => {
+            let rows = settings::rows(app);
+            draw_settings(frame, &mut app.framework.settings_pane, &rows);
+        },
+        Some(FrameworkOverlayId::Keymap) => draw_keymap_overlay(frame, app, keymap),
+        Some(FrameworkOverlayId::GlobalShortcuts) => {
+            draw_global_shortcuts_overlay(frame, app, keymap);
+        },
         None => (),
     }
 }
@@ -2022,29 +2016,20 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
     // A held display looks exactly like an idle one, and the difference
     // between the two is whether anything is being missed. Say which.
     if app.updates == Updates::Frozen {
-        notes.push(StatusLineNote {
-            label: FROZEN_NOTE_LABEL.to_string(),
-            value: String::new(),
-        });
+        notes.push(StatusLineNote::flag(FROZEN_NOTE_LABEL));
     }
     // And a grid drawn over looks exactly like an empty one, which is
     // the same problem: say that the work is behind the animation
     // rather than absent.
     if app.attract.asked_for() {
-        notes.push(StatusLineNote {
-            label: ATTRACT_NOTE_LABEL.to_string(),
-            value: String::new(),
-        });
+        notes.push(StatusLineNote::flag(ATTRACT_NOTE_LABEL));
     }
     // The chain is half a cell that nothing on screen explains: the
     // short setting is where the display starts, so a cell full of
     // ancestry is a key that was pressed rather than a command with a
     // long history. Say which.
     if app.tree == ProcessTree::Long {
-        notes.push(StatusLineNote {
-            label: PROCESS_TREE_NOTE_LABEL.to_string(),
-            value: String::new(),
-        });
+        notes.push(StatusLineNote::flag(PROCESS_TREE_NOTE_LABEL));
     }
     let status = StatusLine::new(
         app.started.elapsed().as_secs(),
@@ -2058,111 +2043,9 @@ fn draw_status_line(frame: &mut Frame, app: &App, keymap: &Keymap<App>, area: Re
         app,
         keymap,
         &app.framework,
-        &bar_palette(),
+        &BarPalette::themed(),
         &status,
     );
-}
-
-/// Status-line styling, drawn from the active theme.
-fn bar_palette() -> BarPalette {
-    let enabled_key_style = Style::default()
-        .fg(accent_color())
-        .add_modifier(Modifier::BOLD);
-    let disabled_key_style = Style::default()
-        .fg(secondary_text_color())
-        .add_modifier(Modifier::BOLD);
-    BarPalette {
-        status_line_style: Style::default().bg(status_bar_color()).fg(text_default()),
-        status_activity_style: enabled_key_style,
-        status_label_style: Style::default()
-            .fg(title_color())
-            .add_modifier(Modifier::BOLD),
-        status_value_style: Style::default().fg(text_default()),
-        enabled_key_style,
-        enabled_label_style: Style::default().fg(text_default()),
-        disabled_key_style,
-        disabled_label_style: Style::default().fg(secondary_text_color()),
-        separator_style: Style::default(),
-    }
-}
-
-/// Draw the framework's keymap overlay: every registered action, its
-/// scope, and the key it currently resolves to.
-fn draw_keymap(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
-    app.framework.keymap_pane.focus = RenderFocus {
-        pane_focus_state: PaneFocusState::Active,
-    };
-    let inputs = KeymapPane::prepare_overlay_inputs(app, keymap);
-    app.framework
-        .keymap_pane
-        .render_overlay(frame, frame.area(), &inputs);
-}
-
-/// Draw the framework's global-shortcuts overlay — the `?` popup.
-fn draw_global_shortcuts(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
-    app.framework.global_shortcuts_pane.focus = RenderFocus {
-        pane_focus_state: PaneFocusState::Active,
-    };
-    app.framework
-        .global_shortcuts_pane
-        .render(frame, frame.area(), keymap);
-}
-
-/// Popup width that fits the widest row plus borders, never narrower
-/// than [`SETTINGS_POPUP_WIDTH`]. The caller clamps it to the terminal.
-fn fitted_width(widest_row: usize) -> u16 {
-    let width = u16::try_from(widest_row.saturating_add(usize::from(POPUP_CHROME_WIDTH)))
-        .unwrap_or(u16::MAX);
-    width.max(SETTINGS_POPUP_WIDTH)
-}
-
-/// Draw the visible rendered lines of the framework settings overlay.
-fn draw_settings(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
-    let built = settings::rows(app);
-    // The popup centers itself and clamps to the frame, so the rows have
-    // to be laid out for the width that survives that clamp.
-    let width = fitted_width(built.widest_row).min(area.width);
-    let content_width = usize::from(width.saturating_sub(POPUP_CHROME_WIDTH));
-    let options = SettingsRenderOptions {
-        focus: PaneFocusState::Active,
-        inline_error: None,
-        content_width,
-        section_header_indent: SECTION_HEADER_INDENT,
-        section_item_indent: SECTION_ITEM_INDENT,
-        title_style: Style::default().fg(title_color()),
-        label_style: Style::default().fg(label_color()),
-        muted_style: Style::default().fg(label_color()),
-        success_style: Style::default().fg(success_color()),
-        error_style: Style::default().fg(error_color()),
-        inline_error_style: Style::default().fg(inline_error_color()),
-        active_style: selection_style(PaneFocusState::Active),
-        remembered_style: selection_style(PaneFocusState::Remembered),
-        hovered_style: Style::default().bg(hover_focus_color()),
-    };
-    let rendered = app
-        .framework
-        .settings_pane
-        .render_rows(&built.rows, options);
-    let line_count = u16::try_from(rendered.lines.len()).unwrap_or(u16::MAX);
-    let height = line_count
-        .saturating_add(POPUP_CHROME_HEIGHT)
-        .min(area.height);
-    let popup = PopupFrame {
-        title: Some(" Settings ".to_string()),
-        border_color: title_color(),
-        width,
-        height,
-    }
-    .render_with_areas(frame);
-
-    let viewport = app.framework.settings_pane.viewport_mut();
-    viewport.set_content_area(popup.inner);
-    viewport.set_viewport_rows(usize::from(popup.inner.height));
-    app.framework.settings_pane.update_scroll();
-    app.framework
-        .settings_pane
-        .render_lines(frame, rendered.lines);
 }
 
 /// Read the CPU values selected by the production summary without exposing its rows.

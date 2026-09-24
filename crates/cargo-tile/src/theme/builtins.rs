@@ -5,8 +5,7 @@
 //! palette this app ships lives here, so retuning cargo-tile's grid
 //! cannot move cargo-port's panes.
 //!
-//! [`builtins`] is what [`install`](super::install) hands to
-//! [`ThemeRegistry::from_dir_with_builtins`](tui_pane::ThemeRegistry::from_dir_with_builtins);
+//! [`builtins`] is what startup hands to [`tui_pane::install_theme`];
 //! user `themes/*.toml` variants layer on top, replacing a built-in
 //! when the names match. The `cargo-tile/themes/*.toml` templates
 //! mirror these constructors as copyable documentation, locked against
@@ -35,7 +34,7 @@ use crate::constants::DEFAULT_LIGHT_THEME;
 
 /// The variants cargo-tile compiles in, in the order the settings
 /// stepper offers them.
-pub(super) fn builtins() -> Vec<ThemeVariant> {
+pub(crate) fn builtins() -> Vec<ThemeVariant> {
     vec![
         ThemeVariant {
             id:         ThemeId::new(DEFAULT_DARK_THEME),

@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use ratatui::style::Modifier;
-
 // account headings
 /// Separate the account qualifier from the directory without joining their names.
 pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
@@ -114,8 +112,6 @@ pub(crate) const HELD_KEY_PRESSES_PER_STEP: u32 = 4;
 /// Directory under the OS config root holding `config.toml`,
 /// `keymap.toml`, and `themes/`.
 pub(crate) const CONFIG_DIRNAME: &str = "cargo-tile";
-/// App configuration file, read at startup for its `[appearance]` section.
-pub(crate) const CONFIG_FILENAME: &str = "config.toml";
 /// Id of the built-in dark variant, and the `appearance.dark_theme`
 /// default. Defined in [`crate::theme`], not in `tui_pane`: theme
 /// content belongs to the app.
@@ -184,15 +180,8 @@ pub(crate) const FAVORITES_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10
 pub(crate) const FAVORITES_LOCK_SUFFIX: &str = ".lock";
 /// Suffix appended to the favorites path for its atomic-write file.
 pub(crate) const FAVORITES_TEMP_SUFFIX: &str = ".tmp";
-/// Keymap overrides loaded by [`tui_pane::KeymapBuilder::load_toml`].
-pub(crate) const KEYMAP_FILENAME: &str = "keymap.toml";
-/// Per-user theme directory scanned by
-/// [`tui_pane::ThemeRegistry::from_dir_with_builtins`].
-pub(crate) const THEMES_DIRNAME: &str = "themes";
 
 // settings overlay
-/// Values `appearance.mode` cycles through, in stepper order.
-pub(crate) const APPEARANCE_MODES: [&str; 3] = ["auto", "light", "dark"];
 /// What separates a list setting's entries where the overlay reports
 /// one. Config lists are edited in the file rather than stepped, so
 /// this is for reading only.
@@ -200,19 +189,10 @@ pub(crate) const LIST_SEPARATOR: &str = ", ";
 /// Shown in place of a list setting the user has emptied, an empty row
 /// being indistinguishable from a broken one.
 pub(crate) const EMPTY_LIST: &str = "none";
-/// Rows of popup border above and below the settings body.
+/// Rows of popup border above and below a popup's body.
 pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
-/// Columns of popup border left and right of the settings body.
+/// Columns of popup border left and right of a popup's body.
 pub(crate) const POPUP_CHROME_WIDTH: u16 = 2;
-/// Cells the selection cursor occupies to the left of a row label.
-pub(crate) const CURSOR_WIDTH: usize = 2;
-/// Cells between a row label and its value.
-pub(crate) const LABEL_VALUE_GAP: usize = 2;
-/// Cells `< ` and ` >` add around a stepper row's value.
-pub(crate) const STEPPER_DECORATION_WIDTH: usize = 4;
-/// Minimum width of the settings popup in cells. Long rows widen it, a
-/// narrow terminal caps it.
-pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 64;
 
 // lifecycle
 /// The binary's own name: what the command line calls itself in help
@@ -243,19 +223,6 @@ pub(crate) const SUBCOMMAND_NAME: &str = "tile";
 /// day without compiling anything.
 pub(crate) const SIBLING_SUBCOMMAND_NAME: &str = "port";
 
-// iterm2
-/// Environment variable naming the terminal emulator in use.
-pub(crate) const TERM_PROGRAM_ENV: &str = "TERM_PROGRAM";
-/// Value [`TERM_PROGRAM_ENV`] carries inside iTerm2.
-pub(crate) const ITERM2_TERM_PROGRAM: &str = "iTerm.app";
-/// Environment variable iTerm2 sets to the name of the profile the
-/// session started on.
-pub(crate) const ITERM2_PROFILE_ENV: &str = "ITERM_PROFILE";
-/// iTerm2 profile the app adopts while it runs, when the user has made
-/// one by that name. Sharing the binary's name keeps the pairing
-/// obvious from the iTerm2 side.
-pub(crate) const DEFAULT_ITERM2_PROFILE: &str = BINARY_NAME;
-
 // startup
 /// Shown in the settings overlay when a path cannot be resolved on this
 /// platform.
@@ -276,8 +243,6 @@ pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 # Edit bindings below. Format: action = \"key\" or \"modifier-key\"\n\
 # Modifiers: ctrl, alt, shift.  Examples: \"ctrl-k\", \"shift-tab\", \"q\"\n\
 # Chord steps are space-separated, e.g. \"g g\".\n\n";
-/// Section heading the keymap overlay gives the navigation scope.
-pub(crate) const NAVIGATION_SECTION: &str = "Navigation";
 /// Interior lines a notice toast keeps even when its body is one line,
 /// so entrance and exit animate over a stable height.
 pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
@@ -287,11 +252,6 @@ pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
 // tiles
-/// Rows the grid grows to in a single column before it starts
-/// arranging itself into a square, when `config.toml` says nothing.
-pub(crate) const DEFAULT_INITIAL_ROWS: usize = 4;
-/// Ceiling the settings stepper walks `tiles.initial_rows` up to.
-pub(crate) const MAX_INITIAL_ROWS: usize = 8;
 /// Seconds a finished row stays on screen, greyed, before it goes, when
 /// `config.toml` says nothing.
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
@@ -301,31 +261,6 @@ pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 pub(crate) const MIN_FADE_SECONDS: u64 = 0;
 /// Ceiling the settings stepper walks `tiles.fade_seconds` up to.
 pub(crate) const MAX_FADE_SECONDS: u64 = 30;
-/// Laid over the comparison buffer to make every cell differ from
-/// anything a frame can render, which is what turns the next draw into
-/// a full repaint.
-///
-/// The difference is carried by modifiers rather than by the symbol.
-/// An unrenderable symbol would have been the obvious choice, but
-/// ratatui measures every symbol's display width and rejects control
-/// characters on the way, so the only symbols it accepts are ones a
-/// frame could legitimately hold. Nothing in this app blinks, so the
-/// combination below is one no rendered cell ever carries.
-pub(crate) const REPAINT_SENTINEL: Modifier = Modifier::SLOW_BLINK
-    .union(Modifier::RAPID_BLINK)
-    .union(Modifier::CROSSED_OUT);
-/// How often the screen is redrawn cell for cell rather than by
-/// difference.
-///
-/// ratatui writes only the cells that changed since the last frame, so
-/// anything put on this terminal by something other than this app --
-/// a pane manager splitting the window, a stray line landing on the
-/// same tty -- stays where it is for good: both buffers agree those
-/// cells already hold what they should, and nothing ever writes over
-/// them. A redraw on this cadence is what repairs that, and it is far
-/// enough apart to cost nothing while being well inside the time it
-/// takes to notice a smear.
-pub(crate) const FULL_REPAINT_SECONDS: u64 = 2;
 /// How often the attract screen asks for a frame while it is showing.
 ///
 /// It draws at every poll otherwise, which is 125 frames a second now

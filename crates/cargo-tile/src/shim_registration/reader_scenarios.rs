@@ -24,6 +24,7 @@ use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::SettingsLineTarget;
+use tui_pane::SettingsNavigation;
 use tui_pane::SettingsRowIdentity;
 use tui_pane::SettingsRowPayload;
 
@@ -33,7 +34,6 @@ use crate::census::Measurement;
 use crate::config::Config;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::interaction;
-use crate::navigation::AppNavigation;
 use crate::progress::capture_roots::CaptureRoots;
 use crate::render;
 use crate::roster::Roster;
@@ -195,7 +195,7 @@ fn settings_click_after_navigation_selects_the_row_still_drawn() {
     let mut app = App::new_for_test().expect("build isolated settings app");
     app.loaded_config.config.commands.excluded = vec!["wrapped-command ".repeat(24)];
     app.loaded_config.config.commands.hidden_when_idle = vec!["port".to_owned()];
-    let rows = settings::rows(&app).rows;
+    let rows = settings::rows(&app).rows().to_vec();
     let selection = |label| {
         rows.iter()
             .find_map(|row| match row.identity {
@@ -237,7 +237,7 @@ fn settings_click_after_navigation_selects_the_row_still_drawn() {
     let focused = *app.framework.focused();
 
     // The terminal drains navigation and mouse input before repainting.
-    AppNavigation::dispatcher()(NavAction::Down, focused, &mut app);
+    SettingsNavigation::<App>::dispatcher()(NavAction::Down, focused, &mut app);
     assert!(app.framework.settings_pane.viewport().scroll_offset() > offset);
     assert_eq!(
         app.framework.settings_pane.viewport().pos(),

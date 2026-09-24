@@ -3,31 +3,46 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 use std::time::Instant;
 
+use ratatui::Frame;
+use ratatui::layout::Position;
+use ratatui::layout::Rect;
 use tui_pane::AppContext;
+use tui_pane::AppIdentity;
 use tui_pane::FocusedPane;
 use tui_pane::Framework;
+use tui_pane::KeyBind;
+use tui_pane::KeyOutcome;
 use tui_pane::Keymap;
 use tui_pane::KeymapEditContext;
 use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
+use tui_pane::SettingStep;
+use tui_pane::SettingsHost;
+use tui_pane::TerminalApp;
+use tui_pane::VisualDeadline;
 
 use crate::attract::Attract;
 use crate::attract::AttractMode;
-use crate::config;
+use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::favorites::AttractSettings;
 use crate::favorites_overlay::FavoritesOverlay;
 use crate::favorites_overlay::FavoritesOverlayContent;
 use crate::globals::AppGlobalAction;
+use crate::interaction;
 use crate::keymap;
+use crate::probe::FrameLog;
 use crate::progress::capture_roots::AccountCaptureDirectory;
+use crate::render;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::Roster;
 use crate::sccache::SccacheStats;
+use crate::settings;
 use crate::tiles::TileGrid;
 
 /// App-pane sections the keymap overlay walks, in display order. Every
@@ -218,7 +233,7 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
     ) -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(loaded_config, startup_note, config::keymap_path())
+        Self::new_with_keymap_path(loaded_config, startup_note, CargoTile::keymap_path())
     }
 
     fn new_with_keymap_path(
@@ -270,6 +285,10 @@ impl AppContext for App {
     fn framework_mut(&mut self) -> &mut Framework<Self> { &mut self.framework }
 }
 
+impl SettingsHost for App {
+    fn step_setting(&mut self, step: SettingStep) { settings::cycle(self, step); }
+}
+
 impl KeymapUiContext for App {
     fn keymap_inline_error(&self) -> Option<&str> { self.inline_error.as_deref() }
 
@@ -281,7 +300,7 @@ impl KeymapEditContext for App {
 
     const KEYMAP_TOML_HEADER: &'static str = KEYMAP_TOML_HEADER;
 
-    fn keymap_file_path(&self) -> Option<PathBuf> { config::keymap_path() }
+    fn keymap_file_path(&self) -> Option<PathBuf> { CargoTile::keymap_path() }
 
     fn set_keymap_inline_error(&mut self, message: String) { self.inline_error = Some(message); }
 
@@ -292,10 +311,83 @@ impl KeymapEditContext for App {
     /// resolves, and re-running it is what keeps a rebind and a
     /// hand-edited `keymap.toml` on the same path.
     fn reload_keymap(&mut self, _content: &str) {
-        match keymap::build_keymap(&mut self.framework, config::keymap_path()) {
+        match keymap::build_keymap(&mut self.framework, CargoTile::keymap_path()) {
             Ok(keymap) => self.keymap = Rc::new(keymap),
             Err(error) => self.inline_error = Some(format!("keymap reload failed: {error}")),
         }
+    }
+}
+
+impl TerminalApp for App {
+    type Identity = CargoTile;
+    type Probe = FrameLog;
+
+    fn keymap(&self) -> Rc<Keymap<Self>> { Rc::clone(&self.keymap) }
+
+    fn draw(&mut self, frame: &mut Frame, keymap: &Keymap<Self>) {
+        render::draw(frame, self, keymap);
+    }
+
+    fn click(&mut self, position: Position) { interaction::handle_click(self, position); }
+
+    /// Settling the window costs several round trips to the window
+    /// server, which is far longer than a frame, and `terminal.draw` is
+    /// no place to spend them.
+    fn before_draw(&mut self) { self.attract.identify(); }
+
+    fn visual_deadline(&self, now: Instant, frame_period: Duration) -> VisualDeadline {
+        self.favorites_overlay.visual_deadline(now, frame_period)
+    }
+
+    /// The favorites modal owns every key while it is open: a key its
+    /// scope does not bind is still its own, and disarms a pending
+    /// delete rather than reaching a global.
+    fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        if !self.favorites_overlay.is_open() {
+            return KeyOutcome::Unhandled;
+        }
+        if keymap.dispatch_app_pane(AppPaneId::Favorites, bind, self) == KeyOutcome::Unhandled {
+            self.favorites_overlay.handle_unmapped_key();
+        }
+        KeyOutcome::Consumed
+    }
+
+    /// An attract screen that is what the display is showing owns the
+    /// keyboard, and it owns it ahead of everything else: the keys that
+    /// steer it are the arrows and `+` `-`, which the grid underneath
+    /// spends on focus and on opening and closing a tile. A band that
+    /// could not be steered because a grid nobody can see moved its
+    /// focus ring would not be steerable at all. Only the keys it
+    /// actually binds are taken -- `q` still quits, `f` still freezes,
+    /// and `a` gives the grid back.
+    fn attract_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        let Some(attract) = self.attract.keyed_mode() else {
+            return KeyOutcome::Unhandled;
+        };
+        keymap.dispatch_app_pane(AppPaneId::Attract(attract), bind, self)
+    }
+
+    fn resized(&mut self, area: Rect) { self.attract.record_terminal_resize(area); }
+
+    /// The attract screen reclamps its parameters to the new size, so
+    /// an open favorites table re-marks which row matches them.
+    fn resize_settled(&mut self) {
+        if !self.favorites_overlay.is_open() {
+            return;
+        }
+        let current_parameters = self.attract.current_settings().into();
+        self.favorites_overlay
+            .refresh_current_parameters(current_parameters);
+    }
+
+    /// Never while the attract screen is up: the strip already paints
+    /// every cell it covers, and a full repaint inside one frame of it
+    /// shows as a tear.
+    fn holds_full_repaint(&self) -> bool { self.attract.showing() }
+
+    fn before_exit(&mut self) {
+        self.attract
+            .record_completed_backdrop_attempts_before_exit();
     }
 }
 

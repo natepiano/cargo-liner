@@ -15,6 +15,7 @@
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io;
+use std::io::Stdout;
 use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
@@ -22,6 +23,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+
+use tui_pane::FrameProbe;
+
+use crate::constants::PROBE_THRESHOLD;
 
 /// The phases of one frame, each timed on its own.
 #[derive(Clone, Copy, Debug)]
@@ -133,6 +138,21 @@ impl<W: Write> Write for Counted<W> {
     fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
 }
 
+/// The frame log as the runner's [`FrameProbe`]: every pass of the
+/// loop is a [`frame`], the draw is timed as [`Phase::Draw`], and the
+/// terminal's output is [`Counted`] once the setup has been written.
+pub(crate) enum FrameLog {}
+
+impl FrameProbe for FrameLog {
+    type Output = Counted<Stdout>;
+
+    fn output(stdout: Stdout) -> Self::Output { Counted::new(stdout) }
+
+    fn frame_started(gap: Duration) { frame(gap, PROBE_THRESHOLD); }
+
+    fn time_draw<T>(draw: impl FnOnce() -> T) -> T { timed(Phase::Draw, draw) }
+}
+
 /// How many frames go into one summary line.
 const SUMMARY_FRAMES: u32 = 120;
 
@@ -198,7 +218,7 @@ fn append(line: &str) {
                 file,
                 "probe on -- one line per {SUMMARY_FRAMES} frames, plus every \
                  frame over {}ms",
-                crate::constants::PROBE_THRESHOLD.as_millis(),
+                PROBE_THRESHOLD.as_millis(),
             );
         }
         let _ = writeln!(file, "{line}");
@@ -212,7 +232,7 @@ fn append(line: &str) {
 /// one, which is what the eye is actually reading. A summary always
 /// arrives, so a log that says nothing is slow is telling the reader
 /// that rather than leaving them to wonder whether it ran.
-pub(crate) fn frame(gap: Duration, threshold: Duration) {
+fn frame(gap: Duration, threshold: Duration) {
     if !on() {
         return;
     }

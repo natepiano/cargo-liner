@@ -21,6 +21,7 @@ use tui_pane::PopupFrame;
 use tui_pane::ToastStyle;
 use tui_pane::Viewport;
 use tui_pane::ViewportOverflow;
+use tui_pane::VisualDeadline;
 use tui_pane::keep_visible_scroll_offset;
 use tui_pane::label_color;
 use tui_pane::render_overflow_affordance;
@@ -68,7 +69,6 @@ use crate::favorites::FavoriteRemovalTarget;
 use crate::favorites::FavoritesFileState;
 use crate::favorites::FavoritesMutationError;
 use crate::favorites::FavoritesRetryInstruction;
-use crate::terminal::VisualDeadline;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 enum FavoriteRemovalCommitState {

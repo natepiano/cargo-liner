@@ -1,25 +1,27 @@
-//! Rows rendered in the framework settings overlay, and the cycling
-//! that edits them.
+//! cargo-tile's rows in the framework settings overlay, and the
+//! stepping that edits them.
 //!
-//! The three `[appearance]` rows are steppers: Left/Right/Enter walk
-//! them through their allowed values, write `config.toml`, and swap the
-//! active theme in place. Every other row reports state and is inert —
-//! nothing here opens a text editor, so the overlay never has a mode the
-//! user has to type their way out of.
+//! The framework owns the `[appearance]` steppers, `initial rows`, the
+//! Files paths and the Notices section; this module places them and
+//! adds cargo-tile's own `fade seconds` stepper and its Capture and
+//! Commands rows. Every stepper walks its allowed values on
+//! Left/Right/Enter, writes `config.toml`, and swaps the active theme
+//! in place. Every other row reports state and is inert.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use tui_pane::Appearance;
-use tui_pane::MIN_INITIAL_ROWS;
-use tui_pane::SECTION_ITEM_INDENT;
-use tui_pane::SettingsRow;
+use tui_pane::SettingStep;
+use tui_pane::SettingTarget;
+use tui_pane::SettingsRows;
+use tui_pane::apply_settings;
+use tui_pane::step_framework_setting;
+use tui_pane::stepped;
 
 use crate::app::App;
 use crate::app::CaptureStartupNotice;
 use crate::census::SelectedProof;
-use crate::config;
-use crate::constants::APPEARANCE_MODES;
+use crate::config::CargoTile;
 use crate::constants::CAPTURE_ASSOCIATION;
 use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
 use crate::constants::CAPTURE_ASSOCIATION_COMPETING;
@@ -53,16 +55,11 @@ use crate::constants::CAPTURE_STATUS_UNVERIFIABLE;
 use crate::constants::CAPTURE_STATUS_VERSION_RECOVERY;
 use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
 use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
-use crate::constants::CURSOR_WIDTH;
 use crate::constants::EMPTY_LIST;
-use crate::constants::LABEL_VALUE_GAP;
 use crate::constants::LIST_SEPARATOR;
 use crate::constants::MAX_FADE_SECONDS;
-use crate::constants::MAX_INITIAL_ROWS;
 use crate::constants::MIN_FADE_SECONDS;
 use crate::constants::REGISTRATION_SEPARATOR;
-use crate::constants::STEPPER_DECORATION_WIDTH;
-use crate::constants::UNRESOLVED_PATH;
 use crate::progress::capture::CaptureGeneration;
 use crate::progress::capture::CaptureKey;
 use crate::progress::capture_diagnostic::CaptureDiagnostic;
@@ -123,167 +120,39 @@ pub(crate) enum UnusedCaptureReason {
     SelectedUnconfirmed,
 }
 
-/// Which setting a selected row edits.
+/// cargo-tile's own stepper rows; the framework steps the rest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettingId {
-    /// `appearance.mode` — cycles through [`APPEARANCE_MODES`].
-    Mode,
-    /// `appearance.light_theme` — cycles the registry's light variants.
-    LightTheme,
-    /// `appearance.dark_theme` — cycles the registry's dark variants.
-    DarkTheme,
-    /// `tiles.initial_rows` — cycles one through [`MAX_INITIAL_ROWS`].
-    InitialRows,
-    /// `tiles.fade_seconds` — cycles zero through [`MAX_FADE_SECONDS`].
+pub(crate) enum AppSetting {
+    /// `tiles.fade_seconds` — steps zero through [`MAX_FADE_SECONDS`].
     FadeSeconds,
-    /// A reported value with nothing to change.
-    ReadOnly,
-}
-
-/// Which way a cycling row steps.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Step {
-    /// Toward the previous value, wrapping at the start.
-    Prev,
-    /// Toward the next value, wrapping at the end.
-    Next,
-}
-
-/// The overlay's rows plus the setting each selectable row edits,
-/// indexed the same way the settings pane indexes its selection.
-pub(crate) struct SettingsRows {
-    /// Rows to hand to [`tui_pane::SettingsPane::render_rows`].
-    pub(crate) rows:       Vec<SettingsRow>,
-    /// Cells the widest row needs, laid out the way
-    /// [`tui_pane::SettingsPane::render_rows`] lays rows out: indent,
-    /// selection cursor, labels padded to the widest label, separator,
-    /// then the value with any stepper decoration.
-    pub(crate) widest_row: usize,
-    /// `ids[selection]` is the setting the pane's nth selectable row
-    /// edits.
-    ids:                   Vec<SettingId>,
-}
-
-/// Widest label and widest value seen while building the rows.
-#[derive(Default)]
-struct RowWidths {
-    /// Widest label in cells.
-    label: usize,
-    /// Widest value in cells, stepper decoration included.
-    value: usize,
-}
-
-impl RowWidths {
-    /// Fold one row's label and value in.
-    fn observe(&mut self, label: &str, value: &str, decoration: usize) {
-        self.label = self.label.max(label.chars().count());
-        self.value = self.value.max(value.chars().count() + decoration);
-    }
-
-    /// Cells the widest row needs once every label is padded to match.
-    fn widest_row(&self) -> usize {
-        SECTION_ITEM_INDENT.chars().count()
-            + CURSOR_WIDTH
-            + self.label
-            + LABEL_VALUE_GAP
-            + self.value
-    }
 }
 
 /// Build the settings rows for the current frame.
-pub(crate) fn rows(app: &App) -> SettingsRows {
-    let appearance = &app.loaded_config.config.appearance;
-    let mut out = SettingsRows {
-        rows:       Vec::new(),
-        widest_row: 0,
-        ids:        Vec::new(),
-    };
-    let mut widths = RowWidths::default();
+pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
+    let config = &app.loaded_config.config;
+    let mut out = SettingsRows::new();
 
-    out.rows.push(SettingsRow::section("Appearance"));
-    push_stepper(
-        &mut out,
-        &mut widths,
-        SettingId::Mode,
-        "mode",
-        &appearance.mode,
-    );
-    push_stepper(
-        &mut out,
-        &mut widths,
-        SettingId::LightTheme,
-        "light theme",
-        &appearance.light_theme,
-    );
-    push_stepper(
-        &mut out,
-        &mut widths,
-        SettingId::DarkTheme,
-        "dark theme",
-        &appearance.dark_theme,
-    );
+    out.appearance(&config.appearance);
 
-    out.rows.push(SettingsRow::section("Tiles"));
-    push_stepper(
-        &mut out,
-        &mut widths,
-        SettingId::InitialRows,
-        "initial rows",
-        &app.loaded_config.config.tiles.initial_rows().to_string(),
-    );
-    push_stepper(
-        &mut out,
-        &mut widths,
-        SettingId::FadeSeconds,
+    out.section("Tiles");
+    out.initial_rows(config.tiles.initial_rows);
+    out.stepper(
+        AppSetting::FadeSeconds,
         "fade seconds",
-        &app.loaded_config.config.tiles.fade().as_secs().to_string(),
+        &config.tiles.fade().as_secs().to_string(),
     );
 
-    out.rows.push(SettingsRow::section("Capture"));
-    push_value(
-        &mut out,
-        &mut widths,
-        "auto install",
-        app.loaded_config.config.capture.auto_install.to_string(),
-    );
-    push_capture_directories(&mut out, &mut widths, app);
+    out.section("Capture");
+    out.value("auto install", config.capture.auto_install.to_string());
+    push_capture_directories(&mut out, app);
 
-    out.rows.push(SettingsRow::section("Commands"));
-    push_value(
-        &mut out,
-        &mut widths,
-        "excluded",
-        list(&app.loaded_config.config.commands.excluded),
-    );
-    push_value(
-        &mut out,
-        &mut widths,
-        "hidden when idle",
-        list(&app.loaded_config.config.commands.hidden_when_idle),
-    );
+    out.section("Commands");
+    out.value("excluded", list(&config.commands.excluded));
+    out.value("hidden when idle", list(&config.commands.hidden_when_idle));
 
-    out.rows.push(SettingsRow::section("Files"));
-    push_value(
-        &mut out,
-        &mut widths,
-        "config",
-        display_path(config::config_path()),
-    );
-    push_value(
-        &mut out,
-        &mut widths,
-        "themes",
-        display_path(config::themes_dir()),
-    );
-    push_value(
-        &mut out,
-        &mut widths,
-        "keymap",
-        display_path(config::keymap_path()),
-    );
+    out.files::<CargoTile>();
 
-    push_notices(&mut out, &mut widths, app);
-    out.widest_row = widths.widest_row();
+    out.notices(&notices(app));
     out
 }
 
@@ -291,75 +160,22 @@ pub(crate) fn rows(app: &App) -> SettingsRows {
 ///
 /// A read-only row is a no-op, so the keys stay harmless everywhere in
 /// the overlay.
-pub(crate) fn cycle(app: &mut App, step: Step) {
+pub(crate) fn cycle(app: &mut App, step: SettingStep) {
     let selection = app.framework.settings_pane.viewport().pos();
-    let Some(&id) = rows(app).ids.get(selection) else {
-        return;
-    };
-    if id == SettingId::InitialRows {
-        let rows = initial_row_choices();
-        let current = app.loaded_config.config.tiles.initial_rows().to_string();
-        app.loaded_config.config.tiles.initial_rows = stepped(&rows, &current, step)
-            .parse()
-            .unwrap_or(MIN_INITIAL_ROWS);
-        apply(app);
-        return;
-    }
-    if id == SettingId::FadeSeconds {
-        let seconds = fade_choices();
-        let current = app.loaded_config.config.tiles.fade().as_secs().to_string();
-        app.loaded_config.config.tiles.fade_seconds = stepped(&seconds, &current, step)
-            .parse()
-            .unwrap_or(MIN_FADE_SECONDS);
-        apply(app);
-        return;
-    }
-    let appearance = &mut app.loaded_config.config.appearance;
-    match id {
-        SettingId::Mode => {
-            let modes: Vec<String> = APPEARANCE_MODES
-                .iter()
-                .map(|mode| (*mode).to_string())
-                .collect();
-            appearance.mode = stepped(&modes, &appearance.mode, step);
+    match rows(app).target(selection) {
+        Some(SettingTarget::Framework(setting)) => {
+            step_framework_setting(setting, step, &mut app.loaded_config, &mut app.startup_note);
         },
-        SettingId::LightTheme => {
-            let ids = theme_ids(Appearance::Light);
-            appearance.light_theme = stepped(&ids, &appearance.light_theme, step);
+        Some(SettingTarget::App(AppSetting::FadeSeconds)) => {
+            let seconds = fade_choices();
+            let current = app.loaded_config.config.tiles.fade().as_secs().to_string();
+            app.loaded_config.config.tiles.fade_seconds = stepped(&seconds, &current, step)
+                .parse()
+                .unwrap_or(MIN_FADE_SECONDS);
+            apply_settings(&mut app.loaded_config, &mut app.startup_note);
         },
-        SettingId::DarkTheme => {
-            let ids = theme_ids(Appearance::Dark);
-            appearance.dark_theme = stepped(&ids, &appearance.dark_theme, step);
-        },
-        SettingId::FadeSeconds | SettingId::InitialRows | SettingId::ReadOnly => return,
+        Some(SettingTarget::ReadOnly) | None => {},
     }
-    apply(app);
-}
-
-/// Re-resolve the active theme from the edited config and write the
-/// file, reporting either failure through the overlay's notice rows.
-fn apply(app: &mut App) {
-    let appearance = &app.loaded_config.config.appearance;
-    let registry = tui_pane::registry();
-    let resolved = registry.resolve_active(
-        &appearance.mode,
-        &appearance.light_theme,
-        &appearance.dark_theme,
-        None,
-    );
-    app.startup_note = resolved
-        .miss
-        .as_ref()
-        .map(|missing| format!("theme `{missing}` not found — using a built-in"));
-    tui_pane::set_active_theme(resolved.theme);
-    app.loaded_config.error = config::save(&app.loaded_config.config);
-}
-
-/// The values `tiles.initial_rows` steps through.
-fn initial_row_choices() -> Vec<String> {
-    (MIN_INITIAL_ROWS..=MAX_INITIAL_ROWS)
-        .map(|rows| rows.to_string())
-        .collect()
 }
 
 /// The values `tiles.fade_seconds` steps through.
@@ -369,80 +185,26 @@ fn fade_choices() -> Vec<String> {
         .collect()
 }
 
-/// Theme ids registered for one appearance, in registry order.
-fn theme_ids(appearance: Appearance) -> Vec<String> {
-    tui_pane::registry()
-        .variants_by_appearance(appearance)
-        .map(|variant| variant.id.as_str().to_string())
-        .collect()
-}
-
-/// The value one step from `current`, wrapping at both ends.
-///
-/// A `current` that is not in `values` steps to the first entry, which
-/// is how a hand-edited `config.toml` with an unknown id recovers.
-fn stepped(values: &[String], current: &str, step: Step) -> String {
-    let Some(first) = values.first() else {
-        return current.to_string();
-    };
-    let Some(index) = values.iter().position(|value| value == current) else {
-        return first.clone();
-    };
-    let len = values.len();
-    let next = match step {
-        Step::Prev => (index + len - 1) % len,
-        Step::Next => (index + 1) % len,
-    };
-    values.get(next).unwrap_or(first).clone()
-}
-
-/// Push a cycling row and record which setting it edits.
-fn push_stepper(
-    out: &mut SettingsRows,
-    widths: &mut RowWidths,
-    id: SettingId,
-    label: &str,
-    value: &str,
-) {
-    widths.observe(label, value, STEPPER_DECORATION_WIDTH);
-    out.rows
-        .push(SettingsRow::stepper(out.ids.len(), label, value));
-    out.ids.push(id);
-}
-
-/// Push a reported row that nothing edits.
-fn push_value(out: &mut SettingsRows, widths: &mut RowWidths, label: &str, value: String) {
-    widths.observe(label, &value, 0);
-    out.rows
-        .push(SettingsRow::value(out.ids.len(), label, value));
-    out.ids.push(SettingId::ReadOnly);
-}
-
-/// Keep outstanding startup notices visible after their toasts disappear.
-fn push_notices(out: &mut SettingsRows, widths: &mut RowWidths, app: &App) {
-    if app.startup_note.is_some()
-        || !matches!(app.capture_note, CaptureStartupNotice::Quiet)
-        || app.loaded_config.error.is_some()
-    {
-        out.rows.push(SettingsRow::section("Notices"));
-    }
-    if let Some(note) = app.startup_note.clone() {
-        push_value(out, widths, "theme", note);
+/// Outstanding startup notices, kept visible after their toasts
+/// disappear: the theme note, then capture, then the config error.
+fn notices(app: &App) -> Vec<(&'static str, &str)> {
+    let mut notices = Vec::new();
+    if let Some(note) = &app.startup_note {
+        notices.push(("theme", note.as_str()));
     }
     match &app.capture_note {
         CaptureStartupNotice::Quiet => {},
         CaptureStartupNotice::InstallationFailed(note)
-        | CaptureStartupNotice::NewerShimKept(note) => {
-            push_value(out, widths, "capture", note.clone());
-        },
+        | CaptureStartupNotice::NewerShimKept(note) => notices.push(("capture", note.as_str())),
         CaptureStartupNotice::NewerShimKeptWithFailures { kept, failures } => {
-            push_value(out, widths, "capture", kept.clone());
-            push_value(out, widths, "capture", failures.clone());
+            notices.push(("capture", kept.as_str()));
+            notices.push(("capture", failures.as_str()));
         },
     }
-    if let Some(error) = app.loaded_config.error.clone() {
-        push_value(out, widths, "config", error);
+    if let Some(error) = &app.loaded_config.error {
+        notices.push(("config", error.as_str()));
     }
+    notices
 }
 
 /// Render a list setting for reading.
@@ -457,28 +219,14 @@ fn list(entries: &[String]) -> String {
     entries.join(LIST_SEPARATOR)
 }
 
-/// Render a resolved path, or the placeholder for a platform where the
-/// OS config directory is unavailable.
-fn display_path(path: Option<PathBuf>) -> String {
-    path.map_or_else(
-        || UNRESOLVED_PATH.to_string(),
-        |path| path.display().to_string(),
-    )
-}
-
 /// Each effective root adds one selectable value whose controls remain inert.
-fn push_capture_directories(out: &mut SettingsRows, widths: &mut RowWidths, app: &App) {
-    push_value(
-        out,
-        widths,
+fn push_capture_directories(out: &mut SettingsRows<AppSetting>, app: &App) {
+    out.value(
         "shared directory",
         shared_directory_status(&app.shared_directory),
     );
-    let statuses = &app.root_status;
-    for (index, status) in statuses.iter().enumerate() {
-        push_value(
-            out,
-            widths,
+    for (index, status) in app.root_status.iter().enumerate() {
+        out.value(
             &format!("{CAPTURE_SETTINGS_ROOT} {}", index + 1),
             capture_root_status(status),
         );
@@ -747,12 +495,12 @@ fn path_failure(failure: &PathFailure) -> String {
 mod tests {
     use std::io::ErrorKind;
 
+    use tui_pane::SettingTarget;
     use tui_pane::SettingsRow;
     use tui_pane::SettingsRowIdentity;
 
     use super::AssociationSelection;
     use super::CaptureAssociation;
-    use super::SettingId;
     use super::UnusedCaptureReason;
     use super::rows;
     use crate::app::App;
@@ -831,7 +579,7 @@ mod tests {
         app.root_status.push(status);
         let settings = rows(&app);
         let root = settings
-            .rows
+            .rows()
             .iter()
             .find(|row| row.label == "account 1")
             .expect("retained root row");
@@ -839,8 +587,10 @@ mod tests {
         let SettingsRowIdentity::Selectable(payload) = root.identity else {
             panic!("account row must carry a selectable identity");
         };
-        assert_eq!(settings.ids[payload.get()], SettingId::ReadOnly);
-        assert!(settings.widest_row >= root.value.chars().count());
+        assert_eq!(
+            settings.target(payload.get()),
+            Some(SettingTarget::ReadOnly)
+        );
         root.clone()
     }
 
@@ -1006,7 +756,7 @@ mod tests {
             for _ in 0..2 {
                 let settings = rows(&app);
                 let actual: Vec<_> = settings
-                    .rows
+                    .rows()
                     .iter()
                     .filter(|row| row.label == "capture")
                     .map(|row| row.value.as_str())
@@ -1278,9 +1028,9 @@ mod tests {
         app.root_status.push(status);
         let first = rows(&app);
         let second = rows(&app);
-        assert_eq!(first.rows, second.rows);
+        assert_eq!(first.rows(), second.rows());
         let root = first
-            .rows
+            .rows()
             .iter()
             .find(|row| row.label == "account 1")
             .expect("root row");
@@ -1296,9 +1046,9 @@ mod tests {
         status.state =
             RootReadStatus::Unavailable(failure("/retained/captures", ErrorKind::NotFound));
         app.root_status.push(status);
-        let missing = rows(&app).rows;
+        let missing = rows(&app).rows().to_vec();
         app.root_status[0].state = RootReadStatus::Readable;
-        let readable = rows(&app).rows;
+        let readable = rows(&app).rows().to_vec();
         assert_ne!(missing, readable);
         app.root_status[0]
             .diagnostics
@@ -1306,9 +1056,171 @@ mod tests {
                 "/retained/captures/run-42.log",
                 ErrorKind::PermissionDenied,
             )));
-        let unreadable_log = rows(&app).rows;
+        let unreadable_log = rows(&app).rows().to_vec();
         assert_ne!(readable, unreadable_log);
         app.root_status[0].diagnostics.clear();
-        assert_eq!(rows(&app).rows, readable);
+        assert_eq!(rows(&app).rows(), readable);
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "tests should panic on unexpected values"
+)]
+mod layout_tests {
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use tui_pane::AppIdentity;
+    use tui_pane::GlobalAction;
+    use tui_pane::SECTION_ITEM_INDENT;
+    use tui_pane::SettingsRow;
+    use tui_pane::SettingsRowIdentity;
+
+    use super::rows;
+    use super::shared_directory_status;
+    use crate::app::App;
+    use crate::app::CaptureStartupNotice;
+    use crate::config::CargoTile;
+    use crate::render;
+
+    /// A resolved path as the Files rows print it.
+    fn shown(path: Option<PathBuf>) -> String {
+        path.map_or_else(
+            || "unavailable".to_string(),
+            |path| path.display().to_string(),
+        )
+    }
+
+    /// Each row as `[section]` or `payload kind label = value`, with the
+    /// machine-specific Files paths replaced by placeholders.
+    fn layout(app: &App) -> Vec<String> {
+        let paths = [
+            (
+                shared_directory_status(&app.shared_directory),
+                "<shared directory>",
+            ),
+            (shown(CargoTile::config_path()), "<config path>"),
+            (shown(CargoTile::themes_dir()), "<themes dir>"),
+            (shown(CargoTile::keymap_path()), "<keymap path>"),
+        ];
+        rows(app)
+            .rows()
+            .iter()
+            .map(|row| {
+                let value = paths
+                    .iter()
+                    .find(|(path, _)| *path == row.value)
+                    .map_or(row.value.as_str(), |(_, placeholder)| placeholder);
+                match row.identity {
+                    SettingsRowIdentity::Decoration => format!("[{}]", row.label),
+                    SettingsRowIdentity::Selectable(payload) => {
+                        format!("{} {:?} {} = {value}", payload.get(), row.kind, row.label)
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Rows shared by both layouts: everything above Notices.
+    const BODY: [&str; 17] = [
+        "[Appearance]",
+        "0 Stepper mode = auto",
+        "1 Stepper light theme = Default Light",
+        "2 Stepper dark theme = Default Dark",
+        "[Tiles]",
+        "3 Stepper initial rows = 4",
+        "4 Stepper fade seconds = 3",
+        "[Capture]",
+        "5 Value auto install = true",
+        "6 Value shared directory = <shared directory>",
+        "[Commands]",
+        "7 Value excluded = berth",
+        "8 Value hidden when idle = port",
+        "[Files]",
+        "9 Value config = <config path>",
+        "10 Value themes = <themes dir>",
+        "11 Value keymap = <keymap path>",
+    ];
+
+    /// Order, section headers, labels, values, row kinds and selectable
+    /// payloads, captured from the build before the settings overlay
+    /// moved into `tui_pane`.
+    #[test]
+    fn settings_rows_keep_their_layout() {
+        let mut app = App::new_for_test().expect("quiet settings app");
+        assert_eq!(layout(&app), BODY);
+
+        app.startup_note = Some("theme note".to_string());
+        app.capture_note = CaptureStartupNotice::NewerShimKeptWithFailures {
+            kept:     "kept note".to_string(),
+            failures: "failure note".to_string(),
+        };
+        app.loaded_config.error = Some("config error".to_string());
+        let mut expected = BODY.to_vec();
+        expected.extend([
+            "[Notices]",
+            "12 Value theme = theme note",
+            "13 Value capture = kept note",
+            "14 Value capture = failure note",
+            "15 Value config = config error",
+        ]);
+        assert_eq!(layout(&app), expected);
+    }
+
+    /// The popup is as wide as its widest row plus the border, never
+    /// narrower than 64 cells, measured from the drawn frame.
+    #[test]
+    fn settings_popup_fits_its_widest_row() {
+        let mut app = App::new_for_test().expect("quiet settings app");
+        let built = rows(&app).rows().to_vec();
+        let section = SettingsRow::section("").kind;
+        let stepper = SettingsRow::stepper(0, "", "").kind;
+        let label = built
+            .iter()
+            .filter(|row| row.kind != section)
+            .map(|row| row.label.chars().count())
+            .max()
+            .unwrap_or(0);
+        let value = built
+            .iter()
+            .filter(|row| row.kind != section)
+            .map(|row| {
+                let decoration = if row.kind == stepper { 4 } else { 0 };
+                row.value.chars().count() + decoration
+            })
+            .max()
+            .unwrap_or(0);
+        let widest = SECTION_ITEM_INDENT.chars().count() + 2 + label + 2 + value;
+        let expected = (widest + 2).max(64);
+
+        let keymap = Rc::clone(&app.keymap);
+        keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+        let mut terminal =
+            Terminal::new(TestBackend::new(400, 60)).expect("create settings terminal");
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &keymap))
+            .expect("draw settings");
+        let buffer = terminal.backend().buffer();
+        let top = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .find(|line| line.contains(" Settings "))
+            .expect("settings popup title");
+        let left = top
+            .chars()
+            .position(|cell| cell == '┌')
+            .expect("left border");
+        let right = top
+            .chars()
+            .position(|cell| cell == '┐')
+            .expect("right border");
+        assert_eq!(right - left + 1, expected);
     }
 }

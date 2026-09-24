@@ -1548,9 +1548,9 @@ mod tests {
             let mut app = crate::app::App::new_for_test().unwrap();
             app.root_status.clone_from(&capture.root_status);
             let settings = crate::settings::rows(&app)
-                .rows
-                .into_iter()
-                .map(|row| row.value)
+                .rows()
+                .iter()
+                .map(|row| row.value.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
             assert!(

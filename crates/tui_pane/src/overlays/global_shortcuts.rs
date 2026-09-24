@@ -3,7 +3,7 @@
 //! The pane owns generic overlay state: selectable-row geometry,
 //! viewport, focus snapshot, local bar actions, and rendering.
 //! App-global actions reach this pane through the registered
-//! [`Keymap`](crate::Keymap) globals scope.
+//! [`Keymap`] globals scope.
 
 use crossterm::event::KeyCode;
 use ratatui::Frame;
@@ -29,6 +29,7 @@ use crate::GlobalShortcutRow;
 use crate::Keymap;
 use crate::Mode;
 use crate::OverlayAction;
+use crate::PaneFocusState;
 use crate::PaneSelectionState;
 use crate::PopupFrame;
 use crate::RenderFocus;
@@ -187,10 +188,28 @@ impl Default for GlobalShortcutsPane {
     fn default() -> Self { Self::new() }
 }
 
+/// Draw the framework's global-shortcuts overlay — the `?` popup — over
+/// the whole frame.
+///
+/// Marks the pane active first, since an open overlay holds the focus.
+pub fn draw_global_shortcuts_overlay<Ctx>(
+    frame: &mut Frame<'_>,
+    ctx: &mut Ctx,
+    keymap: &Keymap<Ctx>,
+) where
+    Ctx: AppContext + 'static,
+{
+    let pane = &mut ctx.framework_mut().global_shortcuts_pane;
+    pane.focus = RenderFocus {
+        pane_focus_state: PaneFocusState::Active,
+    };
+    pane.render(frame, frame.area(), keymap);
+}
+
 fn render_inputs(
     rows: &[GlobalShortcutRow],
     viewport: &Viewport,
-    focus: crate::PaneFocusState,
+    focus: PaneFocusState,
 ) -> RenderInputs {
     let (lines, line_targets) = build_lines(rows, viewport, focus);
     let content_width = lines
@@ -216,7 +235,7 @@ fn render_inputs(
 fn build_lines(
     rows: &[GlobalShortcutRow],
     viewport: &Viewport,
-    focus: crate::PaneFocusState,
+    focus: PaneFocusState,
 ) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
     let mut lines = vec![Line::from("")];
     let mut line_targets = vec![None];

@@ -3349,9 +3349,9 @@ mod tests {
         let mut app = crate::app::App::new_for_test().expect("settings app");
         app.root_status.clone_from(&capture.root_status);
         let settings = crate::settings::rows(&app)
-            .rows
-            .into_iter()
-            .map(|row| row.value)
+            .rows()
+            .iter()
+            .map(|row| row.value.as_str())
             .collect::<Vec<_>>()
             .join("\n");
         let owner = match &capture.root_status[0].account {
@@ -3493,11 +3493,12 @@ mod tests {
 
     fn account_settings_text(app: &App) -> String {
         crate::settings::rows(app)
-            .rows
-            .into_iter()
+            .rows()
+            .iter()
             .find(|row| row.label == "account 1")
             .expect("scanned account reaches Settings")
             .value
+            .clone()
     }
 
     /// A scanned registration renders one qualified row with unavailable process measurements.

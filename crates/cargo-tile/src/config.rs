@@ -1,58 +1,37 @@
-//! `cargo-tile` configuration: the `[appearance]` section of
-//! `<os config dir>/cargo-tile/config.toml`, plus the sibling paths for
-//! the keymap file and the themes directory.
+//! `cargo-tile` configuration: the sections of
+//! `<os config dir>/cargo-tile/config.toml`, and the identity
+//! `tui_pane` finds that file, the keymap file and the themes directory
+//! by.
 
-use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
-use tui_pane::MIN_INITIAL_ROWS;
+use tui_pane::AppConfig;
+use tui_pane::AppIdentity;
+use tui_pane::AppearanceConfig;
+use tui_pane::InitialRows;
 
+use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
-use crate::constants::CONFIG_FILENAME;
 use crate::constants::DEFAULT_CAPTURE_AUTO_INSTALL;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
-use crate::constants::DEFAULT_INITIAL_ROWS;
-use crate::constants::DEFAULT_ITERM2_PROFILE;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::FAVORITES_FILENAME;
-use crate::constants::KEYMAP_FILENAME;
 use crate::constants::MAX_FADE_SECONDS;
-use crate::constants::THEMES_DIRNAME;
 
-/// Which appearance the app resolves at startup and which theme id
-/// serves each one. Theme ids name a variant from
-/// [`crate::theme`]'s registry: one of the app's own built-ins, or one
-/// declared in a `themes/*.toml` file.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(default)]
-pub(crate) struct AppearanceConfig {
-    /// `auto` follows the terminal, `light` and `dark` pin one.
-    pub(crate) mode:           String,
-    /// Theme id used when the resolved appearance is light.
-    pub(crate) light_theme:    String,
-    /// Theme id used when the resolved appearance is dark.
-    pub(crate) dark_theme:     String,
-    /// iTerm2 profile the session adopts while the app runs, switched
-    /// back to the one it came in on at exit. Empty leaves the session
-    /// alone, and so does every terminal that is not iTerm2.
-    pub(crate) iterm2_profile: String,
-}
+/// cargo-tile's identity for the framework's config and runner paths.
+pub(crate) enum CargoTile {}
 
-impl Default for AppearanceConfig {
-    fn default() -> Self {
-        Self {
-            mode:           "auto".to_string(),
-            light_theme:    DEFAULT_LIGHT_THEME.to_string(),
-            dark_theme:     DEFAULT_DARK_THEME.to_string(),
-            iterm2_profile: DEFAULT_ITERM2_PROFILE.to_string(),
-        }
-    }
+impl AppIdentity for CargoTile {
+    const BINARY_NAME: &'static str = BINARY_NAME;
+    const CONFIG_DIRNAME: &'static str = CONFIG_DIRNAME;
+    const DEFAULT_LIGHT_THEME: &'static str = DEFAULT_LIGHT_THEME;
+    const DEFAULT_DARK_THEME: &'static str = DEFAULT_DARK_THEME;
 }
 
 /// Which commands the grid holds back until they have work under them,
@@ -101,7 +80,7 @@ pub(crate) struct TilesConfig {
     /// Rows the grid grows to in a single column before it starts
     /// arranging itself into a square. Read through
     /// [`TilesConfig::initial_rows`], which enforces the floor.
-    pub(crate) initial_rows: usize,
+    pub(crate) initial_rows: InitialRows,
     /// Seconds a finished row stays on screen, greyed, before it and any
     /// cell it leaves empty go. Read through
     /// [`TilesConfig::fade`], which enforces the ceiling.
@@ -111,19 +90,16 @@ pub(crate) struct TilesConfig {
 impl Default for TilesConfig {
     fn default() -> Self {
         Self {
-            initial_rows: DEFAULT_INITIAL_ROWS,
+            initial_rows: InitialRows::default(),
             fade_seconds: DEFAULT_FADE_SECONDS,
         }
     }
 }
 
 impl TilesConfig {
-    /// Rows the single column grows to, never below one.
-    ///
-    /// Clamped on read rather than at load so a hand-edited zero in
-    /// `config.toml` is corrected rather than rejected -- the file keeps
-    /// what was typed, the grid stays laid out.
-    pub(crate) fn initial_rows(&self) -> usize { self.initial_rows.max(MIN_INITIAL_ROWS) }
+    /// Rows the single column grows to, never below one; see
+    /// [`InitialRows::get`].
+    pub(crate) fn initial_rows(&self) -> usize { self.initial_rows.get() }
 
     /// How long a finished row lingers before the display lets go of it,
     /// clamped on read for the same reason as
@@ -161,7 +137,7 @@ impl Default for CaptureConfig {
 #[serde(default)]
 pub(crate) struct Config {
     /// `[appearance]` — theme selection.
-    pub(crate) appearance: AppearanceConfig,
+    pub(crate) appearance: AppearanceConfig<CargoTile>,
     /// `[capture]` — automatic shim installation.
     pub(crate) capture:    CaptureConfig,
     /// `[commands]` — which commands the grid holds back while idle.
@@ -170,109 +146,24 @@ pub(crate) struct Config {
     pub(crate) tiles:      TilesConfig,
 }
 
-/// A load attempt: the config that will be used, plus the parse error
-/// that made it fall back to defaults.
-pub(crate) struct LoadedConfig {
-    /// The config the app runs with.
-    pub(crate) config: Config,
-    /// Parse failure text, surfaced in the settings overlay.
-    pub(crate) error:  Option<String>,
+impl AppConfig for Config {
+    type Identity = CargoTile;
+
+    fn appearance(&self) -> &AppearanceConfig<CargoTile> { &self.appearance }
+
+    fn appearance_mut(&mut self) -> &mut AppearanceConfig<CargoTile> { &mut self.appearance }
+
+    fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.tiles.initial_rows }
 }
 
-/// Read `config.toml`, falling back to defaults when it is absent.
-///
-/// A parse error is not fatal: the app runs on defaults and reports the
-/// error through [`LoadedConfig::error`], because the terminal is not
-/// yet in raw mode here and a panic would leave nothing on screen.
-pub(crate) fn load() -> LoadedConfig {
-    let Some(path) = config_path() else {
-        return LoadedConfig {
-            config: Config::default(),
-            error:  None,
-        };
-    };
-    let Ok(text) = fs::read_to_string(&path) else {
-        return LoadedConfig {
-            config: Config::default(),
-            error:  None,
-        };
-    };
-    toml::from_str(&text).map_or_else(
-        |error| LoadedConfig {
-            config: Config::default(),
-            error:  Some(error.to_string()),
-        },
-        |config| {
-            let error = restate(&config, &text);
-            LoadedConfig { config, error }
-        },
-    )
-}
-
-/// Write a parsed config back over the file it came from when the file
-/// does not already say the same thing.
-///
-/// A file written before a setting existed does not mention it, which
-/// leaves that setting editable only by someone who already knows its
-/// name. Writing the parsed config back spells out every section at its
-/// default, so the file lists the whole of what can be set. It is a
-/// no-op once the file holds everything, and it is only reached on a
-/// file that parsed -- one with a typo in it is left alone for its
-/// author to fix rather than overwritten.
-fn restate(config: &Config, text: &str) -> Option<String> {
-    match toml::to_string_pretty(config) {
-        Ok(restated) if restated == text => None,
-        Ok(_) => save(config),
-        Err(error) => Some(error.to_string()),
-    }
-}
-
-/// Write `config.toml`, creating the config directory when it is
-/// missing.
-///
-/// Returns the failure text for the settings overlay rather than an
-/// error type: every caller renders it, none of them recover.
-pub(crate) fn save(config: &Config) -> Option<String> {
-    let Some(path) = config_path() else {
-        return Some(format!(
-            "no OS config directory: cannot write {CONFIG_FILENAME}"
-        ));
-    };
-    let text = match toml::to_string_pretty(config) {
-        Ok(text) => text,
-        Err(error) => return Some(error.to_string()),
-    };
-    if let Some(parent) = path.parent()
-        && let Err(error) = fs::create_dir_all(parent)
-    {
-        return Some(format!("{}: {error}", parent.display()));
-    }
-    fs::write(&path, text)
-        .err()
-        .map(|error| format!("{}: {error}", path.display()))
-}
-
-/// `<os config dir>/cargo-tile/config.toml`.
-pub(crate) fn config_path() -> Option<PathBuf> {
-    config_root().map(|dir| dir.join(CONFIG_FILENAME))
-}
+/// `config.toml` as loaded, with whatever went wrong reading or
+/// writing it.
+pub(crate) type LoadedConfig = tui_pane::LoadedConfig<Config>;
 
 /// `<os config dir>/cargo-tile/favorites.toml`.
 pub(crate) fn favorites_path() -> Option<PathBuf> {
-    config_root().map(|dir| dir.join(FAVORITES_FILENAME))
+    dirs::config_dir().map(|dir| dir.join(CONFIG_DIRNAME).join(FAVORITES_FILENAME))
 }
-
-/// `<os config dir>/cargo-tile/keymap.toml`.
-pub(crate) fn keymap_path() -> Option<PathBuf> {
-    config_root().map(|dir| dir.join(KEYMAP_FILENAME))
-}
-
-/// `<os config dir>/cargo-tile/themes`.
-pub(crate) fn themes_dir() -> Option<PathBuf> { config_root().map(|dir| dir.join(THEMES_DIRNAME)) }
-
-/// `<os config dir>/cargo-tile`. `None` on platforms where the OS
-/// config directory cannot be resolved.
-fn config_root() -> Option<PathBuf> { dirs::config_dir().map(|dir| dir.join(CONFIG_DIRNAME)) }
 
 #[cfg(test)]
 #[expect(
@@ -282,14 +173,14 @@ fn config_root() -> Option<PathBuf> { dirs::config_dir().map(|dir| dir.join(CONF
 mod tests {
     use super::*;
 
-    /// What [`restate`] compares against, for a config that has been
-    /// through the file and back.
+    /// What [`LoadedConfig::load`] compares against, for a config that
+    /// has been through the file and back.
     fn round_trip(text: &str) -> String {
         let config: Config = toml::from_str(text).expect("a config the test wrote should parse");
         toml::to_string_pretty(&config).expect("a config should serialize")
     }
 
-    /// [`load`] writes the file back whenever it does not already hold
+    /// [`LoadedConfig::load`] writes the file back whenever it does not already hold
     /// every setting, so a file that does hold them must serialize to
     /// itself -- otherwise every startup rewrites the config, for good.
     #[test]
@@ -313,6 +204,43 @@ mod tests {
         // What the file did say survives the rewrite; only what it left
         // out is filled in.
         assert!(restated.contains("mode = \"dark\""));
+    }
+
+    /// Every key the default config writes, in the order and spelling
+    /// `config.toml` has always carried. A change here rewrites every
+    /// user's file on their next startup.
+    #[test]
+    fn the_default_config_serializes_to_the_known_file() {
+        let expected = "\
+[appearance]
+mode = \"auto\"
+light_theme = \"Default Light\"
+dark_theme = \"Default Dark\"
+iterm2_profile = \"cargo-tile\"
+
+[capture]
+auto_install = true
+
+[commands]
+excluded = [\"berth\"]
+hidden_when_idle = [\"port\"]
+
+[tiles]
+initial_rows = 4
+fade_seconds = 3
+";
+        let written =
+            toml::to_string_pretty(&Config::default()).expect("a config should serialize");
+        assert_eq!(written, expected);
+    }
+
+    /// A file that leaves `iterm2_profile` and the theme ids out gets the
+    /// app's own defaults for them when it is restated.
+    #[test]
+    fn a_config_missing_iterm2_profile_restates_the_binary_name() {
+        let restated = round_trip("[appearance]\nmode = \"dark\"\n");
+        assert!(restated.contains("iterm2_profile = \"cargo-tile\""));
+        assert!(restated.contains("light_theme = \"Default Light\""));
     }
 
     #[test]
