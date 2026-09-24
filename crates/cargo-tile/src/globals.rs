@@ -28,6 +28,7 @@ use crossterm::event::KeyCode;
 use tui_pane::Bindings;
 use tui_pane::Globals;
 use tui_pane::KeyBind;
+use tui_pane::TileAction;
 
 use crate::app::App;
 use crate::attract::AttractConfigurationRestoreOutcome;
@@ -47,7 +48,6 @@ use crate::favorites_overlay;
 use crate::random;
 use crate::random::EmptyIndexDomain;
 use crate::random::NonZeroIndexBound;
-use crate::tiles::Direction;
 
 tui_pane::action_enum! {
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -102,12 +102,12 @@ impl Globals<App> for AppGlobalAction {
 fn dispatch(action: AppGlobalAction, app: &mut App) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
     match action {
-        AppGlobalAction::AddTile => app.tiles.add(initial_rows),
-        AppGlobalAction::RemoveTile => app.tiles.remove(),
-        AppGlobalAction::FocusLeft => app.tiles.focus_step(Direction::Left, initial_rows),
-        AppGlobalAction::FocusRight => app.tiles.focus_step(Direction::Right, initial_rows),
-        AppGlobalAction::FocusUp => app.tiles.focus_step(Direction::Up, initial_rows),
-        AppGlobalAction::FocusDown => app.tiles.focus_step(Direction::Down, initial_rows),
+        AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, initial_rows),
+        AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, initial_rows),
+        AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, initial_rows),
+        AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, initial_rows),
+        AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, initial_rows),
+        AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, initial_rows),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),

@@ -2773,6 +2773,7 @@ mod tests {
     use sysinfo::Users;
     use tempfile::TempDir;
     use tempfile::tempdir;
+    use tui_pane::TABLE_CELL;
 
     use super::*;
     use crate::app::App;
@@ -2788,7 +2789,6 @@ mod tests {
     use crate::constants::PID_SEPARATOR;
     use crate::constants::RUN_LOG_PREFIX;
     use crate::constants::RUN_LOG_SUFFIX;
-    use crate::constants::TABLE_CELL;
     use crate::constants::TABLE_HEADERS;
     use crate::constants::UNAVAILABLE_MEASUREMENT;
     use crate::progress::capture::CaptureRootIndex;

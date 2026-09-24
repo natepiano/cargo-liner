@@ -20,6 +20,7 @@ use tempfile::TempDir;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
+use tui_pane::TILE_ROWS_CONTENT_LABEL;
 use tui_pane::ToastDuration;
 use tui_pane::ToastVisualDeadline;
 
@@ -42,7 +43,6 @@ use crate::census::scan::ProcessObservations;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
-use crate::constants::TILE_ROWS_CONTENT_LABEL;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::hook;
 use crate::hook::NewerShim;

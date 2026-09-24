@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report the state of an invocation the lead command is driving, not just the lead's own. A row with no capture of its own stays blank rather than borrowing the reading above it.
 
 ### Changed
+- The tile grid and its drawing now come from `tui_pane`'s `TileGrid` and `draw_tile_grid`, keyed by invocation. Layout, motion, borders, the rows readout, keys and `keymap.toml` names are unchanged.
 - Saving a favorite says whether it added a row or refreshed an existing one's timestamp.
 - The favorites footer offers only what the current selection can do, so `enter` is not advertised with nothing selected.
 - The moving-band screen paints the desktop into every cell it has a sample for and fades the strip's edges into it.

@@ -11,6 +11,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use tui_pane::Appearance;
+use tui_pane::MIN_INITIAL_ROWS;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::SettingsRow;
 
@@ -59,7 +60,6 @@ use crate::constants::LIST_SEPARATOR;
 use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MAX_INITIAL_ROWS;
 use crate::constants::MIN_FADE_SECONDS;
-use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::REGISTRATION_SEPARATOR;
 use crate::constants::STEPPER_DECORATION_WIDTH;
 use crate::constants::UNRESOLVED_PATH;

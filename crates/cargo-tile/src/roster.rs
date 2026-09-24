@@ -345,7 +345,7 @@ impl Roster {
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
 
     /// The identity of every group that gets a cell, in order -- what
-    /// [`crate::tiles::TileGrid::sync`] assigns cells from.
+    /// [`tui_pane::TileGrid::sync`] assigns cells from.
     ///
     /// Narrower than [`groups`](Self::groups), which the summary reads:
     /// a command held back by `commands.hidden_when_idle` keeps its

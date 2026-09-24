@@ -24,10 +24,8 @@ use tui_pane::BarPalette;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::FrameworkOverlayId;
-use tui_pane::GridLines;
 use tui_pane::Keymap;
 use tui_pane::KeymapPane;
-use tui_pane::PaneBorders;
 use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
 use tui_pane::PopupFrame;
@@ -40,11 +38,11 @@ use tui_pane::SettingsRenderOptions;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
+use tui_pane::TileCells;
+use tui_pane::TileGridContents;
 use tui_pane::ToastsRenderCtx;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
-use tui_pane::default_pane_chrome;
-use tui_pane::draw_clipped;
 use tui_pane::error_color;
 use tui_pane::hover_focus_color;
 use tui_pane::inline_error_color;
@@ -123,13 +121,6 @@ use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
-use crate::constants::TILE_NUMBER_INDENT;
-use crate::constants::TILE_ROWS_CELL_LABEL;
-use crate::constants::TILE_ROWS_CELL_SEPARATOR;
-use crate::constants::TILE_ROWS_CONTENT_LABEL;
-use crate::constants::TILE_ROWS_READOUT_HEIGHT;
-use crate::constants::TILE_ROWS_RIGHT_INSET;
-use crate::constants::TILE_ROWS_WIDTH_LABEL;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
 use crate::probe;
@@ -262,9 +253,9 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         app.attract.advance(area, work, updates, Instant::now())
     });
     probe::timed(probe::Phase::Panes, || match grid {
-        Grid::Full => draw_panes(frame, app, body, Contents::Shown),
+        Grid::Full => draw_panes(frame, app, body, TileGridContents::Shown),
         Grid::Empty(faded) => {
-            draw_panes(frame, app, body, Contents::Hidden);
+            draw_panes(frame, app, body, TileGridContents::Hidden);
             fade_to_background(frame.buffer_mut(), body, faded);
         },
         Grid::Off => (),
@@ -326,20 +317,6 @@ fn draw_backdrop_notice(frame: &mut Frame, app: &App, body: Rect) {
         .set_string(body.left(), row, notice, Style::default().fg(label_color()));
 }
 
-/// Whether the panes are drawn with what is in them.
-///
-/// Hidden leaves the frames, the borders and the titles and takes away
-/// the tables, the readouts and the cache figures -- everything that is
-/// a number rather than a place. It is what the grid looks like while
-/// the attract screen is arriving or leaving.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Contents {
-    /// Draw what each pane holds.
-    Shown,
-    /// Draw the panes and nothing in them.
-    Hidden,
-}
-
 /// Carry every cell of `area` `faded` of the way toward the colour it
 /// is painted on.
 ///
@@ -367,102 +344,70 @@ fn fade_to_background(buffer: &mut Buffer, area: Rect, faded: u8) {
 ///
 /// The summary cell carries one row per command; every other cell
 /// carries one command's own invocations, which is what the summary
-/// collapsed into that command's single row. [`crate::tiles`] decides
-/// where each cell goes and how far through a transition it is, so what
-/// is left here is drawing.
+/// collapsed into that command's single row.
+/// [`tui_pane::draw_tile_grid`] decides where each cell goes, how far
+/// through a transition it is, and draws the frames and readouts;
+/// [`Cells`] is what goes inside them.
 ///
-/// Contents go down first and the frame over the top of them, because a
-/// border belongs to the grid rather than to either cell it divides:
-/// neighbours share one line, and [`GridLines`] is what knows the glyph
-/// each crossing wants. [`SUMMARY_CELL_TITLE`] goes on through
-/// [`GridLines::add_titled`] for the same reason: a border a cell shares
-/// is drawn by the pass that owns it, so anything written there has to
-/// go in with it.
-fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) {
+/// With [`TileGridContents::Hidden`] the frames, the borders and the
+/// titles remain and the tables, the readouts and the cache figures go
+/// -- which is what the grid looks like while the attract screen is
+/// arriving or leaving.
+fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridContents) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
-    app.tiles.set_layout(area, initial_rows);
-    let widths = app.tiles.content_widths(area, initial_rows);
-    let demands = tile_demands(
-        &app.roster,
-        &widths,
-        &app.loaded_config.config.commands.hidden_when_idle,
-        app.tree,
-    );
-    app.tiles.sync(&demands, initial_rows);
-    let placements = app.tiles.placements(area, initial_rows);
-    let tree = app.tree;
-    let mut grid_lines = GridLines::new(area);
-    for placement in &placements {
-        // The ground a fading row is carried toward is the one its own
-        // cell is painted on, which focus moves.
-        let ground = pane_background(placement.frame.is_focused());
-        let hidden_when_idle = &app.loaded_config.config.commands.hidden_when_idle;
-        let cell_rows = match &placement.content {
-            TileContent::Summary => demands.summary,
-            TileContent::Group(id) => demands.rows_for(id),
-            TileContent::Empty(_) => 0,
-        };
-        // The width the demand above was measured at, which is read off
-        // the layout as it stood before `sync` -- the readout carries it
-        // beside the cell's own so a cell measured at one width and
-        // drawn at another says so rather than only looking wrong.
-        let demand_width = widths
-            .iter()
-            .find(|(content, _)| *content == placement.content)
-            .map_or_else(
-                || {
-                    widths
-                        .iter()
-                        .map(|&(_, width)| width)
-                        .min()
-                        .unwrap_or_default()
-                },
-                |&(_, width)| width,
-            );
-        let content_rows = cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
-        if contents == Contents::Shown {
-            draw_clipped(frame.buffer_mut(), placement.frame, |buffer, inner| {
-                draw_with_readout(
-                    buffer,
-                    inner,
-                    content_rows,
-                    demand_width,
-                    |buffer, inner| {
-                        draw_contents(
-                            buffer,
-                            &app.roster,
-                            &placement.content,
-                            inner,
-                            ground,
-                            hidden_when_idle,
-                            tree,
-                        );
-                    },
-                );
-            });
-        }
-        match &placement.content {
-            TileContent::Summary => {
-                grid_lines.add_titled(placement.frame, SUMMARY_CELL_TITLE);
-                if contents == Contents::Shown {
-                    for label in sccache_label(&app.sccache, placement.frame.rect()) {
-                        grid_lines.add_label(placement.frame, label);
-                    }
-                }
-            },
-            TileContent::Group(_) | TileContent::Empty(_) => {
-                grid_lines.add(placement.frame);
-            },
-        }
-    }
-    // Neighbouring tiles meet on one line, so no cell belongs to a
-    // single tile and none of them can carry focus. Focus is the
-    // background tint under a tile's contents instead.
-    grid_lines.render(
+    let cells = Cells {
+        roster:           &app.roster,
+        hidden_when_idle: &app.loaded_config.config.commands.hidden_when_idle,
+        tree:             app.tree,
+        sccache:          &app.sccache,
+    };
+    tui_pane::draw_tile_grid(
         frame.buffer_mut(),
-        default_pane_chrome(),
-        PaneBorders::Shared,
+        &mut app.tiles,
+        area,
+        initial_rows,
+        contents,
+        &cells,
     );
+}
+
+/// What the tile grid's cells hold, borrowed out of [`App`] for one
+/// frame.
+struct Cells<'a> {
+    /// Every command group, which the summary gathers and each group's
+    /// own cell draws.
+    roster:           &'a Roster,
+    /// `commands.hidden_when_idle`, which settles whether a driver draws
+    /// as a row or as the last step of its chain.
+    hidden_when_idle: &'a [String],
+    /// How much of what stands above a command goes over its table.
+    tree:             ProcessTree,
+    /// What sccache reports, written along the summary cell's top border.
+    sccache:          &'a SccacheStats,
+}
+
+impl TileCells<InvocationId> for Cells<'_> {
+    fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
+
+    fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
+        tile_demands(self.roster, widths, self.hidden_when_idle, self.tree)
+    }
+
+    fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
+        draw_contents(
+            buffer,
+            self.roster,
+            content,
+            inner,
+            ground,
+            self.hidden_when_idle,
+            self.tree,
+        );
+    }
+
+    fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
+        sccache_label(self.sccache, rect)
+    }
 }
 
 /// What every cell is asking for, each measured at the width it will be
@@ -471,8 +416,8 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: Contents) 
 /// The demand is counted here rather than in [`crate::roster`] because a
 /// command line wraps, and how many lines it wraps to is something only
 /// the table layout knows. The roster still says which groups get cells;
-/// this says how tall each of them wants to be, including the separate
-/// row for the readout whenever the measured width can display it.
+/// this says how tall each of them wants to be. The readout row under
+/// each is not counted here: [`tui_pane::draw_tile_grid`] adds it.
 ///
 /// A group that has no cell yet -- a command first seen on this scan --
 /// is measured at the narrowest cell on screen, which is the width it
@@ -503,8 +448,7 @@ fn tile_demands(
             summary_width,
             PinnedGroup::Unpinned,
             tree,
-        )
-        .saturating_add(usize::from(rows_readout_height(summary_width))),
+        ),
         groups:  roster
             .tiled_ids(hidden_when_idle)
             .into_iter()
@@ -513,8 +457,7 @@ fn tile_demands(
                 let width = width_of(TileContent::Group(group.id.clone()));
                 TileDemand {
                     id:   group.id.clone(),
-                    rows: group_height(group, width, hidden_when_idle, tree)
-                        .saturating_add(usize::from(rows_readout_height(width))),
+                    rows: group_height(group, width, hidden_when_idle, tree),
                 }
             })
             .collect(),
@@ -620,94 +563,6 @@ fn table_height(
         .saturating_add(gaps)
 }
 
-/// Write what a cell's contents ask for against what the cell was
-/// given, along the separate readout row at the foot of the cell.
-///
-/// `rows` is the unrounded count the contents would take if nothing
-/// stopped them. [`tile_demands`] adds the readout row before [`crate::tiles`]
-/// rounds to a step of demand and divides a column by it. `inner.height`
-/// is the rows the cell actually has to draw into, one short of its allotment
-/// wherever it shares a border with the cell below. The count is
-/// written green while the contents fit above the readout and red once
-/// they do not.
-///
-/// The cell's own rows and columns follow, and the width the demand was
-/// settled at is written between them only when the two widths differ.
-/// The demand is measured against the layout as it stood before
-/// [`crate::tiles::TileGrid::sync`] and the cell is drawn at whatever the layout became
-/// after it -- and a command line wraps, which makes a demand taken at
-/// half the width very nearly twice the rows. So the two widths
-/// agreeing is worth no room at all, while the two disagreeing is the
-/// whole of what separates a cell asking for too much from a cell
-/// asking against the wrong ruler, and is written red where it appears.
-fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize, measured_at: u16) {
-    let reading = if rows <= usize::from(content_area(inner).height) {
-        success_color()
-    } else {
-        error_color()
-    };
-    let mut spans = vec![
-        Span::styled(TILE_ROWS_CONTENT_LABEL, Style::default().fg(label_color())),
-        Span::styled(rows.to_string(), Style::default().fg(reading)),
-    ];
-    if measured_at != inner.width {
-        spans.push(Span::styled(
-            TILE_ROWS_WIDTH_LABEL,
-            Style::default().fg(label_color()),
-        ));
-        spans.push(Span::styled(
-            measured_at.to_string(),
-            Style::default().fg(error_color()),
-        ));
-    }
-    spans.extend([
-        Span::styled(TILE_ROWS_CELL_LABEL, Style::default().fg(label_color())),
-        Span::styled(
-            inner.height.to_string(),
-            Style::default().fg(text_default()),
-        ),
-        Span::styled(TILE_ROWS_CELL_SEPARATOR, Style::default().fg(label_color())),
-        Span::styled(inner.width.to_string(), Style::default().fg(text_default())),
-    ]);
-    let line = Line::from(spans);
-    let Some(area) = readout_area(inner, u16::try_from(line.width()).unwrap_or(u16::MAX)) else {
-        return;
-    };
-    Paragraph::new(line).render(area, buffer);
-}
-
-/// Reserve the readout's row before drawing the cell's contents.
-fn draw_with_readout(
-    buffer: &mut Buffer,
-    inner: Rect,
-    rows: usize,
-    measured_at: u16,
-    draw: impl FnOnce(&mut Buffer, Rect),
-) {
-    let contents = content_area(inner);
-    if !contents.is_empty() {
-        draw(buffer, contents);
-    }
-    draw_rows_readout(buffer, inner, rows, measured_at);
-}
-
-/// The cell interior above the readout, or the whole interior when it cannot show one.
-fn content_area(inner: Rect) -> Rect {
-    readout_area(inner, inner.width).map_or(inner, |readout| Rect {
-        height: readout.y.saturating_sub(inner.y),
-        ..inner
-    })
-}
-
-/// Rows reserved for the readout at a width that can display it.
-const fn rows_readout_height(width: u16) -> u16 {
-    if width > TILE_ROWS_RIGHT_INSET {
-        TILE_ROWS_READOUT_HEIGHT
-    } else {
-        0
-    }
-}
-
 /// Render fixed cell geometry through the production content/readout sequence.
 #[cfg(test)]
 pub(crate) fn draw_cell_for_test(
@@ -717,37 +572,24 @@ pub(crate) fn draw_cell_for_test(
     inner: Rect,
     content_rows: usize,
 ) {
-    draw_with_readout(buffer, inner, content_rows, inner.width, |buffer, inner| {
-        draw_contents(
-            buffer,
-            roster,
-            content,
-            inner,
-            pane_background(false),
-            &[],
-            ProcessTree::Long,
-        );
-    });
-}
-
-/// The last row of a cell's interior, right-aligned and held off the
-/// border, or `None` when the cell has no room for the readout at all.
-fn readout_area(inner: Rect, width: u16) -> Option<Rect> {
-    let room = inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET);
-    let height = rows_readout_height(inner.width);
-    if height == 0 || inner.height < height {
-        return None;
-    }
-    let width = width.min(room);
-    Some(Rect {
-        x: inner
-            .right()
-            .saturating_sub(TILE_ROWS_RIGHT_INSET)
-            .saturating_sub(width),
-        y: inner.bottom().saturating_sub(height),
-        width,
-        height,
-    })
+    tui_pane::draw_tile_cell(
+        buffer,
+        content,
+        inner,
+        content_rows,
+        inner.width,
+        |buffer, inner| {
+            draw_contents(
+                buffer,
+                roster,
+                content,
+                inner,
+                pane_background(false),
+                &[],
+                ProcessTree::Long,
+            );
+        },
+    );
 }
 
 /// What a cell holds inside its borders. `ground` is the colour the
@@ -755,7 +597,8 @@ fn readout_area(inner: Rect, width: u16) -> Option<Rect> {
 /// `hidden_when_idle` is what settles whether a command's own cell
 /// draws it as a row or as the last step of its chain. `tree` says how
 /// much of what stands above the command goes over the table; the
-/// summary cell has no such block, so it never reads it.
+/// summary cell has no such block, so it never reads it. An empty cell
+/// holds only its number, which [`tui_pane::draw_tile_cell`] draws.
 fn draw_contents(
     buffer: &mut Buffer,
     roster: &Roster,
@@ -770,7 +613,7 @@ fn draw_contents(
         TileContent::Group(id) => {
             draw_group(buffer, roster, id, inner, ground, hidden_when_idle, tree);
         },
-        TileContent::Empty(number) => draw_number(buffer, *number, inner),
+        TileContent::Empty(_) => {},
     }
 }
 
@@ -1360,16 +1203,6 @@ fn ancestry_lines(
             Line::from([stem, line.spans].concat())
         })
         .collect()
-}
-
-/// A cell opened with `+` that no command has claimed: its number, on
-/// the first row it has to give.
-fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
-    Paragraph::new(Line::from(vec![
-        Span::raw(TILE_NUMBER_INDENT),
-        Span::styled(number.to_string(), Style::default().fg(title_color())),
-    ]))
-    .render(Rect { height: 1, ..inner }, buffer);
 }
 
 /// Which cell is drawing a table, which is what settles how much of a
@@ -2498,32 +2331,6 @@ mod tests {
             .map(|x| buffer[(x, y)].symbol())
             .collect();
         line.trim_end().to_string()
-    }
-
-    #[test]
-    fn an_empty_tile_number_needs_a_row_above_the_readout() {
-        let number = 42;
-        for height in [TILE_ROWS_READOUT_HEIGHT, TILE_ROWS_READOUT_HEIGHT + 1] {
-            let inner = Rect::new(0, 0, 80, height);
-            let mut buffer = Buffer::empty(inner);
-            draw_cell_for_test(
-                &mut buffer,
-                &Roster::new(),
-                &TileContent::Empty(number),
-                inner,
-                0,
-            );
-
-            assert!(
-                buffer_line(&buffer, height - 1).contains(TILE_ROWS_CONTENT_LABEL),
-                "the readout occupies the last interior row"
-            );
-            assert_eq!(
-                buffer_line(&buffer, 0).contains(&number.to_string()),
-                height > TILE_ROWS_READOUT_HEIGHT,
-                "the tile number draws only when the readout leaves a content row"
-            );
-        }
     }
 
     /// Draw the complete table so measurement assertions include column fitting.

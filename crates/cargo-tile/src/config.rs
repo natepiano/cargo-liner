@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
+use tui_pane::MIN_INITIAL_ROWS;
 
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::CONFIG_FILENAME;
@@ -22,7 +23,6 @@ use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::FAVORITES_FILENAME;
 use crate::constants::KEYMAP_FILENAME;
 use crate::constants::MAX_FADE_SECONDS;
-use crate::constants::MIN_INITIAL_ROWS;
 use crate::constants::THEMES_DIRNAME;
 
 /// Which appearance the app resolves at startup and which theme id

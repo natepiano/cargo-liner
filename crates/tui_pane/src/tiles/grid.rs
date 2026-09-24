@@ -27,7 +27,7 @@
 //!
 //! The demand is deliberately coarse. Measured in rows, a column would
 //! re-divide on every scan that rewrapped a command line; rounded up to
-//! a whole [`crate::constants::TILE_DEMAND_STEP`] it moves on the step
+//! a whole [`super::constants::TILE_DEMAND_STEP`] it moves on the step
 //! from a quiet cell to a busy one, which is what keeps a change
 //! something the grid travels through rather than something it twitches
 //! on.
@@ -36,51 +36,51 @@
 //! [`constraints_for_sizes`] turns per-column and per-row shares into
 //! ratatui constraints and ratatui's solver tiles the rect exactly, and
 //! the result is a [`ResolvedPaneLayout`] keyed by cell number -- the
-//! same type [`tui_pane::render_panes`] walks. What is left here is only
+//! same type [`crate::render_panes`] walks. What is left here is only
 //! what the framework has no opinion about: how many columns there are,
 //! how tall each one is, and how a cell travels when that changes.
 //!
 //! Neighbours share a border, so the rects handed out overlap by the one
-//! line between them rather than sitting flush. [`tui_pane::GridLines`]
+//! line between them rather than sitting flush. [`crate::GridLines`]
 //! draws that line once for both.
 
 use std::cmp::Reverse;
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::time::Instant;
 
 use ratatui::layout::Layout;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
-use tui_pane::CycleDirection;
-use tui_pane::PaneAxisSize;
-use tui_pane::PaneFrame;
-use tui_pane::ResolvedPane;
-use tui_pane::ResolvedPaneLayout;
-use tui_pane::constraints_for_sizes;
-use tui_pane::frame_inner;
-use tui_pane::share_borders;
 
-use crate::census::InvocationId;
-use crate::constants::FOCUS_ANIMATION_MILLIS;
-use crate::constants::MAX_PENDING_STEPS;
-use crate::constants::MIN_INITIAL_ROWS;
-use crate::constants::MIN_STEP_MILLIS;
-use crate::constants::MIN_TILE_HEIGHT;
-use crate::constants::MIN_TILE_WIDTH;
-use crate::constants::PROGRESS_SCALE;
-use crate::constants::TABLE_CELL;
-use crate::constants::TILE_ANIMATION_MILLIS;
-use crate::constants::TILE_BORDER_ROWS;
-use crate::constants::TILE_DEMAND_STEP;
+use super::action::TileAction;
+use super::constants::MIN_INITIAL_ROWS;
+use super::constants::PROGRESS_SCALE;
+use super::constants::TABLE_CELL;
+use super::settings::TileSettings;
+use crate::CycleDirection;
+use crate::PaneAxisSize;
+use crate::PaneFrame;
+use crate::ResolvedPane;
+use crate::ResolvedPaneLayout;
+use crate::constraints_for_sizes;
+use crate::frame_inner;
+use crate::share_borders;
 
 /// One group's claim on its column.
+///
+/// `Id` is the app's identity for the group a cell draws. The grid only
+/// clones and compares it, so any stable key the app already holds will
+/// do.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileDemand {
-    /// The group's identity, matching [`crate::roster::TrackedGroup`].
-    pub(crate) id:   InvocationId,
+pub struct TileDemand<Id> {
+    /// The group's identity, the same key [`TileContent::Group`] carries.
+    pub id:   Id,
     /// Rows the group's cell would draw given all the room it wants,
-    /// which [`crate::render`] measures at the width the cell will have.
-    pub(crate) rows: usize,
+    /// which the app measures at the width
+    /// [`TileCells::demands`](crate::TileCells::demands) is handed for
+    /// the cell.
+    pub rows: usize,
 }
 
 /// What every cell of the grid is asking for, as one scan left it.
@@ -91,18 +91,27 @@ pub(crate) struct TileDemand {
 /// change on different events -- a command starting or finishing moves
 /// cells, while a command merely running more invocations than before
 /// only re-divides the column it is already in.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TileDemands {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TileDemands<Id> {
     /// Rows the summary cell would draw given all the room it wants.
-    pub(crate) summary: usize,
+    pub summary: usize,
     /// Every group that gets a cell, in cell order.
-    pub(crate) groups:  Vec<TileDemand>,
+    pub groups:  Vec<TileDemand<Id>>,
 }
 
-impl TileDemands {
+impl<Id> Default for TileDemands<Id> {
+    fn default() -> Self {
+        Self {
+            summary: 0,
+            groups:  Vec::new(),
+        }
+    }
+}
+
+impl<Id: Clone + Eq + Debug> TileDemands<Id> {
     /// Rows the cell drawing `id` is asking for, and none when this
     /// scan no longer carries that group.
-    pub(crate) fn rows_for(&self, id: &InvocationId) -> usize {
+    pub(super) fn rows_for(&self, id: &Id) -> usize {
         self.groups
             .iter()
             .find(|demand| &demand.id == id)
@@ -110,23 +119,21 @@ impl TileDemands {
     }
 
     /// The identity of every group that gets a cell, in order.
-    fn ids(&self) -> Vec<InvocationId> {
-        self.groups.iter().map(|demand| demand.id.clone()).collect()
-    }
+    fn ids(&self) -> Vec<Id> { self.groups.iter().map(|demand| demand.id.clone()).collect() }
 
     /// Whether this scan still carries `id`, which is what tells a cell
     /// closing to make way for the order apart from one whose command
     /// has finished.
-    fn holds(&self, id: &InvocationId) -> bool { self.groups.iter().any(|demand| &demand.id == id) }
+    fn holds(&self, id: &Id) -> bool { self.groups.iter().any(|demand| &demand.id == id) }
 }
 
 /// What a cell is showing.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum TileContent {
+pub enum TileContent<Id> {
     /// The summary table, which every grid opens with.
     Summary,
     /// One command's tile, keyed by the group whose rows it draws.
-    Group(InvocationId),
+    Group(Id),
     /// A cell opened with `+` that no command has claimed, carrying the
     /// number it currently sits at.
     Empty(usize),
@@ -138,13 +145,13 @@ pub(crate) enum TileContent {
 /// leaving the old column and the piece arriving in the new one -- which
 /// is what makes it read as sliding off one column's edge and back in at
 /// the next.
-pub(crate) struct Placement {
+pub struct TilePlacement<Id> {
     /// What the cell draws.
-    pub(crate) content: TileContent,
+    pub content: TileContent<Id>,
     /// Where the cell's box sits this frame, and how far it is cut off
     /// -- the framework's own account of a moving pane, which both
-    /// [`tui_pane::draw_clipped`] and [`tui_pane::GridLines`] read.
-    pub(crate) frame:   PaneFrame,
+    /// [`crate::draw_clipped`] and [`crate::GridLines`] read.
+    pub frame:   PaneFrame,
 }
 
 /// A cell after the summary.
@@ -155,9 +162,9 @@ pub(crate) struct Placement {
 /// travelling one place forward, rather than the contents jumping
 /// between cells that stayed put.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum Slot {
+enum Slot<Id> {
     /// The tile drawing one command's rows.
-    Group(InvocationId),
+    Group(Id),
     /// A cell opened with `+` and not yet claimed. The number is only
     /// an identity -- it is never shown, and no two empties share one --
     /// so an empty cell can be told from its neighbour while the grid
@@ -171,16 +178,16 @@ enum Slot {
 /// reason the cells are: the command a developer is watching keeps the
 /// ring as the grid closes up around it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum Focus {
+enum Focus<Id> {
     /// The summary, where focus starts and where it falls back to.
     Summary,
     /// One of the cells after it.
-    Cell(Slot),
+    Cell(Slot<Id>),
 }
 
 /// One step of the focus ring, named for the arrow that asks for it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Direction {
+enum Direction {
     /// Toward the column on the left.
     Left,
     /// Toward the column on the right.
@@ -192,19 +199,19 @@ pub(crate) enum Direction {
 }
 
 /// What a cell draws and whether it holds focus -- everything a
-/// [`Placement`] carries that is not geometry.
+/// [`TilePlacement`] carries that is not geometry.
 #[derive(Clone)]
-struct Drawn {
+struct Drawn<Id> {
     /// What the cell draws.
-    content: TileContent,
+    content: TileContent<Id>,
     /// Whether the cell holds focus, which is what lights its border.
     focused: bool,
 }
 
-impl Drawn {
+impl<Id: Clone> Drawn<Id> {
     /// This cell drawn at `frame`, focus carried onto it.
-    fn at(&self, frame: PaneFrame) -> Placement {
-        Placement {
+    fn at(&self, frame: PaneFrame) -> TilePlacement<Id> {
+        TilePlacement {
             content: self.content.clone(),
             frame:   frame.with_focus(self.focused),
         }
@@ -231,11 +238,11 @@ enum ColumnFocus {
 }
 
 /// Whether cell geometry is settled or moving from a previous arrangement.
-enum GridMotion {
+enum GridMotion<Id> {
     /// The current layout is fully drawn at its destination.
     Settled,
     /// A timed move retains the layout it started from.
-    Moving(Transition),
+    Moving(Transition<Id>),
 }
 
 /// What one arrangement is drawn at: the rows every cell is holding
@@ -258,9 +265,9 @@ struct HeldCellLayout {
 }
 
 /// The arrangement a transition is moving away from.
-struct Transition {
+struct Transition<Id> {
     /// The cells as they stood before the change.
-    from:    Vec<Slot>,
+    from:    Vec<Slot<Id>>,
     /// What those cells were drawn at. Snapshotted rather than
     /// recomputed, because by the time a transition starts the demands
     /// it is moving away from have already been replaced by the ones it
@@ -274,30 +281,36 @@ struct Transition {
 
 /// One arrangement waiting its turn, and how long the move into it
 /// takes once it comes up.
-struct Step {
+struct Step<Id> {
     /// The cells as this step leaves them.
-    slots:  Vec<Slot>,
+    slots:  Vec<Slot<Id>>,
     /// How long the move into `slots` runs for.
     millis: u64,
 }
 
 /// The grid's cells and the transition it is playing, if any.
-pub(crate) struct TileGrid {
+///
+/// Cell one is the summary and is always there; every other cell draws
+/// one group, keyed by the app's `Id`, or stands empty. The app feeds
+/// the grid what each cell is asking for through [`Self::sync`], draws
+/// what [`Self::placements`] hands back, and moves it on with
+/// [`Self::tick`] and [`Self::apply`].
+pub struct TileGrid<Id> {
     /// Cells after the summary, in cell order. The summary is cell one
     /// and is not held here, so the grid never falls below one cell.
-    slots:        Vec<Slot>,
+    slots:        Vec<Slot<Id>>,
     /// Arrangements waiting their turn, each one cell's move from the
     /// one before it. Only ever one of them is in flight, which is what
     /// makes a change propagate through the grid instead of happening
     /// to every cell at once.
-    pending:      VecDeque<Step>,
+    pending:      VecDeque<Step<Id>>,
     /// What each cell is currently drawn at, which is what a change
     /// animates away from. Empty until the first scan settles it.
     held:         HeldCellLayout,
     /// What every cell is asking for, as the last scan left it.
-    demands:      TileDemands,
+    demands:      TileDemands<Id>,
     /// Whether the geometry is settled or playing a timed move.
-    motion:       GridMotion,
+    motion:       GridMotion<Id>,
     /// The rect the last frame laid out, so [`Self::add`] can tell
     /// whether the cells it would create still fit on screen.
     area:         Rect,
@@ -308,12 +321,19 @@ pub(crate) struct TileGrid {
     /// Identity for the next cell opened or emptied.
     next_slot:    u64,
     /// The cell the focus ring is on.
-    focus:        Focus,
+    focus:        Focus<Id>,
+    /// The sizes and timings the grid is laid out and animated with.
+    settings:     TileSettings,
 }
 
-impl TileGrid {
+impl<Id: Clone + Eq + Debug> Default for TileGrid<Id> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// A grid holding nothing but the summary.
-    pub(crate) const fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             slots:        Vec::new(),
             pending:      VecDeque::new(),
@@ -330,6 +350,7 @@ impl TileGrid {
             initial_rows: 0,
             next_slot:    0,
             focus:        Focus::Summary,
+            settings:     TileSettings::default(),
         }
     }
 
@@ -342,7 +363,7 @@ impl TileGrid {
             return self.held.clone();
         }
         HeldCellLayout {
-            rows:    cell_wants(&self.demands, &self.slots),
+            rows:    cell_wants(&self.demands, &self.slots, &self.settings),
             focused: self.focused_cell(),
         }
     }
@@ -356,7 +377,7 @@ impl TileGrid {
     /// the short one taking its room from whichever neighbour happens
     /// to be next to it.
     fn settled_held(&self) -> HeldCellLayout {
-        let wants = cell_wants(&self.demands, &self.slots);
+        let wants = cell_wants(&self.demands, &self.slots, &self.settings);
         let focused = self.focused_cell();
         if wants.len() != self.held.rows.len()
             || wants
@@ -382,14 +403,14 @@ impl TileGrid {
     ///
     /// How many columns there are is settled by the cell count alone,
     /// so a cell's width is known before its column has been divided
-    /// vertically. That is what lets [`crate::render`] measure a cell's
+    /// vertically. That is what lets the app measure a cell's
     /// contents at the width they will be wrapped to and hand the
     /// result back as the demand this same grid divides by.
-    pub(crate) fn content_widths(
+    pub(super) fn content_widths(
         &self,
         area: Rect,
         initial_rows: usize,
-    ) -> Vec<(TileContent, u16)> {
+    ) -> Vec<(TileContent<Id>, u16)> {
         let held = columns(self.count(), initial_rows);
         let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(held.len())))
             .split(area)
@@ -409,7 +430,7 @@ impl TileGrid {
     }
 
     /// Record the geometry the pane just laid out.
-    pub(crate) const fn set_layout(&mut self, area: Rect, initial_rows: usize) {
+    pub const fn set_layout(&mut self, area: Rect, initial_rows: usize) {
         self.area = area;
         self.initial_rows = initial_rows;
     }
@@ -421,7 +442,7 @@ impl TileGrid {
     /// opens a third is three steps, and they play in order rather than
     /// at once -- three separate travels are followable where three
     /// overlaid on each other are not.
-    pub(crate) fn tick(&mut self) -> bool {
+    pub fn tick(&mut self) -> bool {
         if matches!(self.motion, GridMotion::Settled) {
             return false;
         }
@@ -459,10 +480,10 @@ impl TileGrid {
     /// cells are asking for is part of the arrangement, so a command
     /// that has taken on enough new invocations to want another unit of
     /// its column travels there the same way a cell opening does.
-    pub(crate) fn sync(&mut self, demands: &TileDemands, initial_rows: usize) {
+    pub fn sync(&mut self, demands: &TileDemands<Id>, initial_rows: usize) {
         self.demands = demands.clone();
         let mut arrangement = self.target();
-        let mut steps: Vec<Vec<Slot>> = Vec::new();
+        let mut steps: Vec<Vec<Slot<Id>>> = Vec::new();
         let live = demands.ids();
         while let Some(index) = arrangement.iter().position(|slot| match slot {
             Slot::Group(id) => !live.contains(id),
@@ -477,7 +498,7 @@ impl TileGrid {
         // Every cell from the first one out of order onward goes, and
         // the cells before it are the run the grid gets to keep.
         let standing = kept(&arrangement, &ids);
-        let mut reopening: Vec<InvocationId> = Vec::new();
+        let mut reopening: Vec<Id> = Vec::new();
         while let Some((index, id)) =
             arrangement
                 .iter()
@@ -554,12 +575,7 @@ impl TileGrid {
     /// stop the order at its own place and send every cell behind it
     /// through a close and an open to make way for a cell that never
     /// opens.
-    fn admitted(
-        &self,
-        arrangement: &[Slot],
-        live: Vec<InvocationId>,
-        initial_rows: usize,
-    ) -> Vec<InvocationId> {
+    fn admitted(&self, arrangement: &[Slot<Id>], live: Vec<Id>, initial_rows: usize) -> Vec<Id> {
         let mut spare = arrangement
             .iter()
             .filter(|slot| matches!(**slot, Slot::Empty(_)))
@@ -598,7 +614,7 @@ impl TileGrid {
     /// time, which is what this used to do. Every swap along the way
     /// drew the hole travelling down through the cell travelling up --
     /// two boxes crossing, where the eye was looking for one closing.
-    fn close(arrangement: &mut Vec<Slot>, index: usize, steps: &mut Vec<Vec<Slot>>) {
+    fn close(arrangement: &mut Vec<Slot<Id>>, index: usize, steps: &mut Vec<Vec<Slot<Id>>>) {
         let _ = arrangement.remove(index);
         steps.push(arrangement.clone());
     }
@@ -609,7 +625,7 @@ impl TileGrid {
     /// Refusing beats filling the pane with cells too small to carry a
     /// border and a row: the grid stops growing at the point the
     /// terminal stops being able to show it.
-    pub(crate) fn add(&mut self, initial_rows: usize) {
+    fn add(&mut self, initial_rows: usize) {
         let mut arrangement = self.target();
         if !self.fits(arrangement.len() + TABLE_CELL + 1, initial_rows) {
             return;
@@ -631,7 +647,7 @@ impl TileGrid {
     /// The cell leaves the way a finished command's does, through
     /// [`Self::close`], so taking one out of the middle closes the grid
     /// over it rather than leaving a hole behind to travel.
-    pub(crate) fn remove(&mut self) {
+    fn remove(&mut self) {
         let mut arrangement = self.target();
         let Some(index) = self.removable(&arrangement) else {
             return;
@@ -643,7 +659,7 @@ impl TileGrid {
 
     /// Which cell `-` takes out of `arrangement`, or `None` when it
     /// holds no empty one.
-    fn removable(&self, arrangement: &[Slot]) -> Option<usize> {
+    fn removable(&self, arrangement: &[Slot<Id>]) -> Option<usize> {
         if let Focus::Cell(slot @ Slot::Empty(_)) = &self.focus
             && let Some(index) = arrangement.iter().position(|held| held == slot)
         {
@@ -656,7 +672,7 @@ impl TileGrid {
 
     /// The arrangement the grid is headed for: the last step queued, or
     /// what it is showing when nothing is queued.
-    fn target(&self) -> Vec<Slot> {
+    fn target(&self) -> Vec<Slot<Id>> {
         self.pending
             .back()
             .map_or_else(|| self.slots.clone(), |step| step.slots.clone())
@@ -665,30 +681,31 @@ impl TileGrid {
     /// Queue `steps`, starting the first one when nothing is in flight.
     ///
     /// One scan's worth of change is spread over
-    /// [`TILE_ANIMATION_MILLIS`] however many steps it takes, down to
-    /// [`MIN_STEP_MILLIS`] a step, so a single cell closing keeps the
-    /// full unhurried travel and a burst of them runs at one steady
-    /// pace instead of dragging. Past [`MAX_PENDING_STEPS`] the grid
+    /// [`TileSettings::animation_millis`] however many steps it takes,
+    /// down to [`TileSettings::min_step_millis`] a step, so a single cell
+    /// closing keeps the full unhurried travel and a burst of them runs
+    /// at one steady pace instead of dragging. Past
+    /// [`TileSettings::max_pending_steps`] the grid
     /// gives the sequence up and settles the rest in one move: a whole
     /// suite finishing at once would take longer to play through than
     /// anyone would watch.
-    fn queue(&mut self, steps: Vec<Vec<Slot>>) {
+    fn queue(&mut self, steps: Vec<Vec<Slot<Id>>>) {
         if steps.is_empty() {
             return;
         }
         let millis = u64::try_from(steps.len())
             .ok()
-            .and_then(|count| TILE_ANIMATION_MILLIS.checked_div(count))
-            .unwrap_or(TILE_ANIMATION_MILLIS)
-            .max(MIN_STEP_MILLIS);
+            .and_then(|count| self.settings.animation_millis.checked_div(count))
+            .unwrap_or(self.settings.animation_millis)
+            .max(self.settings.min_step_millis);
         self.pending
             .extend(steps.into_iter().map(|slots| Step { slots, millis }));
-        if self.pending.len() > MAX_PENDING_STEPS
+        if self.pending.len() > self.settings.max_pending_steps
             && let Some(last) = self.pending.pop_back()
         {
             self.pending.clear();
             self.pending.push_back(Step {
-                millis: TILE_ANIMATION_MILLIS,
+                millis: self.settings.animation_millis,
                 ..last
             });
         }
@@ -725,7 +742,7 @@ impl TileGrid {
     /// Re-divide the column focus just landed in or left, when the
     /// change asks for one.
     ///
-    /// Queued at [`FOCUS_ANIMATION_MILLIS`] rather than through
+    /// Queued at [`TileSettings::focus_animation_millis`] rather than through
     /// [`Self::queue`]: the ring is a key the developer is already
     /// pressing again, and the full travel a cell opening gets would
     /// leave the grid settling behind them.
@@ -735,7 +752,7 @@ impl TileGrid {
         }
         self.pending.push_back(Step {
             slots:  self.slots.clone(),
-            millis: FOCUS_ANIMATION_MILLIS,
+            millis: self.settings.focus_animation_millis,
         });
         self.advance();
     }
@@ -754,7 +771,7 @@ impl TileGrid {
     /// than dropping to the summary and making the developer find it
     /// again. [`Self::focused_cell`] already answers `FocusLocation::Departing` while the
     /// slot is off the grid, so nothing is drawn holding it meanwhile.
-    fn settle_focus(&mut self, previous: &[Slot]) {
+    fn settle_focus(&mut self, previous: &[Slot<Id>]) {
         let Focus::Cell(slot) = &self.focus else {
             return;
         };
@@ -790,7 +807,7 @@ impl TileGrid {
     /// than the last -- so a sideways step keeps the row it can and
     /// lands on the bottom cell of a shorter column rather than
     /// refusing to move at all.
-    pub(crate) fn focus_step(&mut self, direction: Direction, initial_rows: usize) {
+    fn focus_step(&mut self, direction: Direction, initial_rows: usize) {
         let widths = columns(self.count(), initial_rows);
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return;
@@ -828,7 +845,7 @@ impl TileGrid {
     /// then back to the summary. Reports whether it took the step, so
     /// the framework knows the key was spent here rather than on the
     /// pane cycle.
-    pub(crate) fn cycle_focus(&mut self, direction: CycleDirection) -> bool {
+    pub fn cycle_focus(&mut self, direction: CycleDirection) -> bool {
         let last = self.count();
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return false;
@@ -856,7 +873,7 @@ impl TileGrid {
 
     /// What focus becomes on landing at cell `index`, left where it is
     /// when the grid has no such cell.
-    fn focus_at(&self, index: usize) -> Focus {
+    fn focus_at(&self, index: usize) -> Focus<Id> {
         if index == TABLE_CELL {
             return Focus::Summary;
         }
@@ -868,7 +885,7 @@ impl TileGrid {
 
     /// Put focus on cell `index`, leaving it where it is when the grid
     /// has no such cell.
-    pub(crate) fn focus_cell(&mut self, index: usize) {
+    pub fn focus_cell(&mut self, index: usize) {
         self.focus = self.focus_at(index);
         self.resize_for_focus();
     }
@@ -879,8 +896,13 @@ impl TileGrid {
     /// Answered against the settled grid rather than against a
     /// transition in flight: a cell mid-travel is a transient, and
     /// clicking one is asking for where it is going.
-    pub(crate) fn cell_at(&self, pos: Position) -> Option<usize> {
-        let grid = Grid::new(self.area, &self.drawn_held(), self.initial_rows);
+    pub fn cell_at(&self, pos: Position) -> Option<usize> {
+        let grid = Grid::new(
+            self.area,
+            &self.drawn_held(),
+            self.initial_rows,
+            &self.settings,
+        );
         grid.resolved
             .panes
             .iter()
@@ -899,8 +921,8 @@ impl TileGrid {
         let Ok(tallest) = u16::try_from(tallest) else {
             return false;
         };
-        self.area.width >= shared_run(opened, MIN_TILE_WIDTH)
-            && self.area.height >= shared_run(tallest, MIN_TILE_HEIGHT)
+        self.area.width >= shared_run(opened, self.settings.min_tile_width)
+            && self.area.height >= shared_run(tallest, self.settings.min_tile_height)
     }
 
     /// How far through the current transition the grid is, on the
@@ -918,14 +940,14 @@ impl TileGrid {
     }
 
     /// Every piece to draw this frame, in cell order.
-    pub(crate) fn placements(&self, area: Rect, initial_rows: usize) -> Vec<Placement> {
-        let settled = Grid::new(area, &self.drawn_held(), initial_rows);
+    pub fn placements(&self, area: Rect, initial_rows: usize) -> Vec<TilePlacement<Id>> {
+        let settled = Grid::new(area, &self.drawn_held(), initial_rows, &self.settings);
         let focused = self.focused_cell();
         let GridMotion::Moving(transition) = &self.motion else {
             return cells(&self.slots)
                 .into_iter()
                 .filter_map(|(content, index)| {
-                    Some(Placement {
+                    Some(TilePlacement {
                         content,
                         frame: PaneFrame::new(settled.cell(index)?)
                             .with_focus(focused == FocusLocation::Cell(index)),
@@ -935,7 +957,7 @@ impl TileGrid {
         };
 
         let progress = eased(self.progress());
-        let before = Grid::new(area, &transition.held, initial_rows);
+        let before = Grid::new(area, &transition.held, initial_rows, &self.settings);
         let mut placements = Vec::new();
         // The summary keeps cell one throughout, but the grid around it
         // resizes, so it still has somewhere to travel.
@@ -980,10 +1002,25 @@ impl TileGrid {
         }
         placements
     }
+
+    /// Carry out one grid action: open or close a cell, or move the
+    /// focus ring a step. `initial_rows` is the height the first column
+    /// opens to, which decides whether a new cell still fits and where
+    /// a step of the ring lands.
+    pub fn apply(&mut self, action: TileAction, initial_rows: usize) {
+        match action {
+            TileAction::Add => self.add(initial_rows),
+            TileAction::Remove => self.remove(),
+            TileAction::FocusLeft => self.focus_step(Direction::Left, initial_rows),
+            TileAction::FocusRight => self.focus_step(Direction::Right, initial_rows),
+            TileAction::FocusUp => self.focus_step(Direction::Up, initial_rows),
+            TileAction::FocusDown => self.focus_step(Direction::Down, initial_rows),
+        }
+    }
 }
 
 /// What each slot draws and the cell it sits at, the summary first.
-fn cells(slots: &[Slot]) -> Vec<(TileContent, usize)> {
+fn cells<Id: Clone>(slots: &[Slot<Id>]) -> Vec<(TileContent<Id>, usize)> {
     let mut out = vec![(TileContent::Summary, TABLE_CELL)];
     out.extend(slots.iter().enumerate().map(|(position, slot)| {
         let index = position + TABLE_CELL + 1;
@@ -994,7 +1031,7 @@ fn cells(slots: &[Slot]) -> Vec<(TileContent, usize)> {
 
 /// The cell `slot` sits at, or `None` when this arrangement has no such
 /// slot.
-fn cell_of(slots: &[Slot], slot: &Slot) -> Option<usize> {
+fn cell_of<Id: Eq>(slots: &[Slot<Id>], slot: &Slot<Id>) -> Option<usize> {
     slots
         .iter()
         .position(|held| held == slot)
@@ -1002,7 +1039,7 @@ fn cell_of(slots: &[Slot], slot: &Slot) -> Option<usize> {
 }
 
 /// What a slot draws once it knows the cell it landed at.
-fn content_of(slot: &Slot, index: usize) -> TileContent {
+fn content_of<Id: Clone>(slot: &Slot<Id>, index: usize) -> TileContent<Id> {
     match slot {
         Slot::Group(id) => TileContent::Group(id.clone()),
         Slot::Empty(_) => TileContent::Empty(index),
@@ -1011,13 +1048,13 @@ fn content_of(slot: &Slot, index: usize) -> TileContent {
 
 /// Whether `taken` is a command landing in the empty cell `held` stood
 /// for, which is the one way a slot changes identity without moving.
-const fn claims(held: &Slot, taken: &Slot) -> bool {
+const fn claims<Id>(held: &Slot<Id>, taken: &Slot<Id>) -> bool {
     matches!((held, taken), (Slot::Empty(_), Slot::Group(_)))
 }
 
 /// Every slot either arrangement holds, the ones that survive first so
 /// the pieces come out roughly in cell order.
-fn union(from: &[Slot], to: &[Slot]) -> Vec<Slot> {
+fn union<Id: Clone + Eq>(from: &[Slot<Id>], to: &[Slot<Id>]) -> Vec<Slot<Id>> {
     let mut out = to.to_vec();
     out.extend(from.iter().filter(|slot| !to.contains(slot)).cloned());
     out
@@ -1032,7 +1069,7 @@ fn union(from: &[Slot], to: &[Slot]) -> Vec<Slot> {
 /// because a cell only ever comes back in *behind* the cells still
 /// standing -- so the ones that stay have to be the front of the order
 /// rather than a stretch out of its middle.
-fn kept(arrangement: &[Slot], ids: &[InvocationId]) -> usize {
+fn kept<Id: Eq>(arrangement: &[Slot<Id>], ids: &[Id]) -> usize {
     let mut cursor = 0_usize;
     let mut count = 0_usize;
     for id in ids {
@@ -1053,7 +1090,7 @@ fn kept(arrangement: &[Slot], ids: &[InvocationId]) -> usize {
 /// and the rect every column holds.
 ///
 /// Columns are resolved one at a time rather than through
-/// [`tui_pane::PaneGridLayout`] because the grid is ragged -- column one
+/// [`crate::PaneGridLayout`] because the grid is ragged -- column one
 /// can stand a row taller than the rest -- and that type's placements
 /// describe a uniform grid.
 struct Grid {
@@ -1069,7 +1106,12 @@ struct Grid {
 
 impl Grid {
     /// Resolve the cells `held` describes against `area`.
-    fn new(area: Rect, held: &HeldCellLayout, initial_rows: usize) -> Self {
+    fn new(
+        area: Rect,
+        held: &HeldCellLayout,
+        initial_rows: usize,
+        settings: &TileSettings,
+    ) -> Self {
         let count = held.rows.len();
         let widths = columns(count, initial_rows);
         let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(widths.len())))
@@ -1102,6 +1144,7 @@ impl Grid {
                 wants,
                 column_rect.height,
                 focused,
+                settings.min_tile_height,
             )))
             .split(column_rect)
             .iter()
@@ -1208,8 +1251,9 @@ fn fills(count: usize) -> Vec<PaneAxisSize> { vec![PaneAxisSize::Fill(1); count]
 ///
 /// A cell holds on to what its contents need and hands over the rest,
 /// so a summary showing six rows in a column of eighty gives up the
-/// other seventy-odd rather than half its share. [`MIN_TILE_HEIGHT`] is
-/// the one floor: below it a cell has stopped reading as a cell at all.
+/// other seventy-odd rather than half its share. `floor` -- the grid's
+/// [`TileSettings::min_tile_height`] -- is the one floor: below it a
+/// cell has stopped reading as a cell at all.
 /// There is no ceiling -- a cell can only ever take what its neighbours
 /// are not using, and they are not using it precisely because they do
 /// not need it.
@@ -1219,7 +1263,7 @@ fn fills(count: usize) -> Vec<PaneAxisSize> { vec![PaneAxisSize::Fill(1); count]
 /// is enough to go round -- every short cell is filled either way --
 /// and decides it where there is not: the cell being watched gets what
 /// it asked for and the others divide what is left.
-fn shares(wants: &[u16], height: u16, focused: ColumnFocus) -> Vec<PaneAxisSize> {
+fn shares(wants: &[u16], height: u16, focused: ColumnFocus, floor: u16) -> Vec<PaneAxisSize> {
     let count = wants.len();
     if count == 0 {
         return Vec::new();
@@ -1227,7 +1271,7 @@ fn shares(wants: &[u16], height: u16, focused: ColumnFocus) -> Vec<PaneAxisSize>
     let base = apportion(&vec![1; count], height);
     let want: Vec<u16> = wants
         .iter()
-        .map(|&asked| asked.max(MIN_TILE_HEIGHT).min(height))
+        .map(|&asked| asked.max(floor).min(height))
         .collect();
 
     let mut short: Vec<u16> = want
@@ -1311,27 +1355,21 @@ fn apportion(weights: &[u16], total: u16) -> Vec<u16> {
 /// The rows every cell is asking for, the summary's first.
 ///
 /// What a cell asks for is its contents rounded up to a whole
-/// [`TILE_DEMAND_STEP`], plus the rows its own border costs. An empty
-/// cell asks for nothing beyond its border, which [`shares`] takes as a
-/// cell with room to spare rather than one to shrink.
-fn cell_wants(demands: &TileDemands, slots: &[Slot]) -> Vec<u16> {
+/// [`TileSettings::demand_step`], plus the rows its own border costs.
+/// An empty cell asks for nothing beyond its border, which [`shares`]
+/// takes as a cell with room to spare rather than one to shrink.
+fn cell_wants<Id: Clone + Eq + Debug>(
+    demands: &TileDemands<Id>,
+    slots: &[Slot<Id>],
+    settings: &TileSettings,
+) -> Vec<u16> {
     let mut wants = Vec::with_capacity(slots.len() + TABLE_CELL);
-    wants.push(demanded_rows(demands.summary));
+    wants.push(settings.demanded_rows(demands.summary));
     wants.extend(slots.iter().map(|slot| match slot {
-        Slot::Group(id) => demanded_rows(demands.rows_for(id)),
-        Slot::Empty(_) => demanded_rows(0),
+        Slot::Group(id) => settings.demanded_rows(demands.rows_for(id)),
+        Slot::Empty(_) => settings.demanded_rows(0),
     }));
     wants
-}
-
-/// The rows a cell drawing `rows` of content asks its column for.
-fn demanded_rows(rows: usize) -> u16 {
-    let stepped = rows
-        .div_ceil(TILE_DEMAND_STEP)
-        .saturating_mul(TILE_DEMAND_STEP);
-    u16::try_from(stepped)
-        .unwrap_or(u16::MAX)
-        .saturating_add(TILE_BORDER_ROWS)
 }
 
 /// Cells a run of `count` tiles needs along one axis once neighbours
@@ -1350,13 +1388,13 @@ const fn shared_run(count: u16, min_tile: u16) -> u16 {
 /// slot but not its number: closing a cell in the middle of the grid
 /// moves every cell after it one place forward, and animating that means
 /// travelling from the old number's rect to the new number's.
-fn moving_cell(
+fn moving_cell<Id: Clone>(
     before: &Grid,
     after: &Grid,
     (old, new): (Option<usize>, Option<usize>),
     progress: u32,
-    drawn: &Drawn,
-    out: &mut Vec<Placement>,
+    drawn: &Drawn<Id>,
+    out: &mut Vec<TilePlacement<Id>>,
 ) {
     let was = old.and_then(|index| Some((index, before.cell(index)?)));
     let is = new.and_then(|index| Some((index, after.cell(index)?)));
@@ -1404,14 +1442,14 @@ fn moving_cell(
 /// them. Read off a settled grid instead, the two pieces stood in
 /// geometry the rest of the frame had already left -- their borders
 /// drawn across the cells that had widened past them.
-fn wrapping_cell(
+fn wrapping_cell<Id: Clone>(
     before: &Grid,
     after: &Grid,
     (from_column, to_column): (usize, usize),
     progress: u32,
     (from, to): (Rect, Rect),
-    drawn: &Drawn,
-    out: &mut Vec<Placement>,
+    drawn: &Drawn<Id>,
+    out: &mut Vec<TilePlacement<Id>>,
 ) {
     let leaving = column_band(before, after, from_column, progress);
     let arriving = column_band(before, after, to_column, progress);
@@ -1438,7 +1476,7 @@ fn wrapping_cell(
     };
 
     // A column that is closing is being pushed off the right edge, and
-    // the cell riding it goes with it: no line in that column travels
+    // the cell standing in it goes with it: no line in that column travels
     // up or down while it disappears. Given the slide as well, the cell
     // was drawn sliding up through the column that was sliding away --
     // two motions over the same ground, in the one place the eye was
@@ -1459,7 +1497,7 @@ fn wrapping_cell(
 ///
 /// A column the step opens grows out of the right edge and one it
 /// closes is squeezed back off it -- the same edge [`closing_rect`]
-/// uses, so a cell riding a column that is going is swept away by the
+/// uses, so a cell in a column that is going is swept away by the
 /// columns widening behind it rather than left standing where the
 /// column was.
 fn column_band(before: &Grid, after: &Grid, column: usize, progress: u32) -> Rect {
@@ -1614,23 +1652,25 @@ mod tests {
     use ratatui::layout::Margin;
 
     use super::*;
-    use crate::birth_stamp::ProcessLifetime;
-    use crate::census::process_identity::ProcessIdentity;
-    use crate::constants::TEST_INVOCATION_PID;
-    use crate::constants::TEST_REPLACEMENT_LIFETIME;
+    use crate::tiles::constants::MIN_TILE_HEIGHT;
+    use crate::tiles::constants::TILE_BORDER_ROWS;
+    use crate::tiles::constants::TILE_DEMAND_STEP;
+
+    /// The pid both invocations of the reused-pid test share.
+    const TEST_PID: u32 = 42;
+    /// The lifetime that tells the replacement apart from the original,
+    /// whose lifetime is its pid.
+    const TEST_REPLACEMENT_LIFETIME: u64 = 100_002;
 
     /// A replacement cannot take the old invocation's cell or focus identity.
     #[test]
     fn reused_pids_keep_distinct_tiles_and_focus() {
-        let first = InvocationId::for_test(TEST_INVOCATION_PID);
-        let replacement = InvocationId::Process(ProcessIdentity::Known {
-            pid:      TEST_INVOCATION_PID,
-            lifetime: ProcessLifetime::for_test(TEST_REPLACEMENT_LIFETIME),
-        });
+        let first = (TEST_PID, u64::from(TEST_PID));
+        let replacement = (TEST_PID, TEST_REPLACEMENT_LIFETIME);
         let mut demands = TileDemands {
             summary: 0,
             groups:  vec![TileDemand {
-                id:   first.clone(),
+                id:   first,
                 rows: 0,
             }],
         };
@@ -1639,7 +1679,7 @@ mod tests {
         grid.settle();
         grid.focus_cell(TABLE_CELL + 1);
         demands.groups.push(TileDemand {
-            id:   replacement.clone(),
+            id:   replacement,
             rows: 0,
         });
 
@@ -1648,10 +1688,7 @@ mod tests {
 
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(first.clone()),
-                TileContent::Group(replacement.clone())
-            ]
+            vec![TileContent::Group(first), TileContent::Group(replacement)]
         );
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(first)));
         demands.groups.remove(0);
@@ -1669,6 +1706,10 @@ mod tests {
     /// The rect the placement tests lay their grids out in.
     const fn test_area() -> Rect { Rect::new(0, 0, TEST_WIDTH, TEST_HEIGHT) }
 
+    /// The rows a cell drawing `rows` of content asks for under the
+    /// default settings.
+    fn demanded_rows(rows: usize) -> u16 { TileSettings::default().demanded_rows(rows) }
+
     /// `count` cells with nothing to show, which every column divides
     /// evenly -- the geometry and motion tests are written against it.
     fn even(count: usize) -> HeldCellLayout {
@@ -1680,13 +1721,13 @@ mod tests {
 
     /// What one scan of `ids` demands, every cell asking for the floor
     /// so the arrangement is all that moves.
-    fn quiet(ids: &[u32]) -> TileDemands {
+    fn quiet<Id: Clone>(ids: &[Id]) -> TileDemands<Id> {
         TileDemands {
             summary: 0,
             groups:  ids
                 .iter()
-                .map(|&id| TileDemand {
-                    id:   InvocationId::for_test(id),
+                .map(|id| TileDemand {
+                    id:   id.clone(),
                     rows: 0,
                 })
                 .collect(),
@@ -1835,15 +1876,12 @@ mod tests {
 
     /// What one scan of `(id, rows)` pairs demands, so a test can say
     /// which cells are busy and which are idle.
-    fn busy(groups: &[(u32, usize)]) -> TileDemands {
+    fn busy(groups: &[(u32, usize)]) -> TileDemands<u32> {
         TileDemands {
             summary: 0,
             groups:  groups
                 .iter()
-                .map(|&(id, rows)| TileDemand {
-                    id: InvocationId::for_test(id),
-                    rows,
-                })
+                .map(|&(id, rows)| TileDemand { id, rows })
                 .collect(),
         }
     }
@@ -1854,7 +1892,7 @@ mod tests {
     /// cells share a border line, so the rects overlap by one and no
     /// longer add up to the column.
     fn column_rows(wants: &[u16], focused: ColumnFocus) -> Vec<u16> {
-        shares(wants, TEST_HEIGHT, focused)
+        shares(wants, TEST_HEIGHT, focused, MIN_TILE_HEIGHT)
             .into_iter()
             .map(|size| match size {
                 PaneAxisSize::Fixed(rows) => rows,
@@ -1988,8 +2026,8 @@ mod tests {
         let share = TEST_HEIGHT / 4;
         for asked in [vec![demanded_rows(0); 4], vec![0, share + 1, share + 1, 0]] {
             assert_eq!(
-                shares(&asked, TEST_HEIGHT, ColumnFocus::Row(1)),
-                shares(&asked, TEST_HEIGHT, ColumnFocus::Outside),
+                shares(&asked, TEST_HEIGHT, ColumnFocus::Row(1), MIN_TILE_HEIGHT),
+                shares(&asked, TEST_HEIGHT, ColumnFocus::Outside, MIN_TILE_HEIGHT),
                 "nothing is competing, so the ring changes nothing: {asked:?}"
             );
         }
@@ -2001,8 +2039,8 @@ mod tests {
     fn focus_takes_nothing_from_a_column_that_has_no_room_to_spare() {
         let asked = vec![u16::MAX; 3];
         assert_eq!(
-            shares(&asked, TEST_HEIGHT, ColumnFocus::Row(1)),
-            shares(&asked, TEST_HEIGHT, ColumnFocus::Outside),
+            shares(&asked, TEST_HEIGHT, ColumnFocus::Row(1), MIN_TILE_HEIGHT),
+            shares(&asked, TEST_HEIGHT, ColumnFocus::Outside, MIN_TILE_HEIGHT),
             "every cell is short, so the ring changes nothing"
         );
     }
@@ -2099,7 +2137,7 @@ mod tests {
             rows,
             focused: FocusLocation::Cell(2 + TABLE_CELL),
         };
-        let grid = Grid::new(test_area(), &held, 4);
+        let grid = Grid::new(test_area(), &held, 4, &TileSettings::default());
         for index in 1..=held.rows.len() {
             let rect = grid.cell(index).expect("cell is in the grid");
             paint(&mut covered, rect);
@@ -2119,7 +2157,7 @@ mod tests {
     /// ends on. That single shared line is what the grid is drawn from.
     #[test]
     fn a_column_starts_where_the_one_before_it_ends() {
-        let grid = Grid::new(test_area(), &even(5), 4);
+        let grid = Grid::new(test_area(), &even(5), 4, &TileSettings::default());
         let first = grid.cell(1).expect("cell is in the grid");
         let second = grid.cell(5).expect("cell is in the grid");
         assert_eq!(first.right() - 1, second.left());
@@ -2128,7 +2166,7 @@ mod tests {
     /// A stacked cell starts on the row the one above it ends on.
     #[test]
     fn a_row_starts_where_the_one_above_it_ends() {
-        let grid = Grid::new(test_area(), &even(2), 4);
+        let grid = Grid::new(test_area(), &even(2), 4, &TileSettings::default());
         let first = grid.cell(1).expect("cell is in the grid");
         let second = grid.cell(2).expect("cell is in the grid");
         assert_eq!(first.bottom() - 1, second.top());
@@ -2136,7 +2174,7 @@ mod tests {
 
     #[test]
     fn a_settled_grid_places_one_piece_per_cell() {
-        let placements = TileGrid::new().placements(test_area(), 4);
+        let placements = TileGrid::<u32>::new().placements(test_area(), 4);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].content, TileContent::Summary);
         assert_eq!(placements[0].frame.rect(), test_area());
@@ -2144,14 +2182,14 @@ mod tests {
 
     #[test]
     fn the_table_cell_is_never_removed() {
-        let mut grid = TileGrid::new();
+        let mut grid = TileGrid::<u32>::new();
         grid.remove();
         assert_eq!(grid.count(), 1);
     }
 
     #[test]
     fn a_grid_with_no_room_refuses_to_grow() {
-        let mut grid = TileGrid::new();
+        let mut grid = TileGrid::<u32>::new();
         grid.set_layout(Rect::new(0, 0, 4, 2), 4);
         grid.add(4);
         assert_eq!(grid.count(), 1);
@@ -2162,9 +2200,9 @@ mod tests {
     #[test]
     fn a_cell_changing_column_is_drawn_in_both() {
         let area = test_area();
-        let before = Grid::new(area, &even(16), 4);
-        let after = Grid::new(area, &even(17), 4);
-        let mut out = Vec::new();
+        let before = Grid::new(area, &even(16), 4, &TileSettings::default());
+        let after = Grid::new(area, &even(17), 4, &TileSettings::default());
+        let mut out: Vec<TilePlacement<u32>> = Vec::new();
         moving_cell(
             &before,
             &after,
@@ -2189,7 +2227,7 @@ mod tests {
 
     /// One cell as the wrapping tests draw it; nothing about the motion
     /// depends on what it holds.
-    fn drawn() -> Drawn {
+    fn drawn() -> Drawn<u32> {
         Drawn {
             content: TileContent::Summary,
             focused: false,
@@ -2206,8 +2244,8 @@ mod tests {
     #[test]
     fn a_wrapping_cell_shares_its_column_edges_with_the_cells_that_stay() {
         let area = test_area();
-        let before = Grid::new(area, &even(7), 3);
-        let after = Grid::new(area, &even(6), 3);
+        let before = Grid::new(area, &even(7), 3, &TileSettings::default());
+        let after = Grid::new(area, &even(6), 3, &TileSettings::default());
         assert_eq!(before.widths, vec![3, 3, 1]);
         assert_eq!(after.widths, vec![3, 3], "the last column goes too");
         let half = PROGRESS_SCALE / 2;
@@ -2233,7 +2271,7 @@ mod tests {
             &mut staying,
         );
 
-        let column = |placement: &Placement| {
+        let column = |placement: &TilePlacement<u32>| {
             let rect = placement.frame.rect();
             (rect.x, rect.width)
         };
@@ -2250,8 +2288,8 @@ mod tests {
     #[test]
     fn a_wrapping_cell_leaving_with_its_column_is_squeezed_off_the_edge() {
         let area = test_area();
-        let before = Grid::new(area, &even(7), 3);
-        let after = Grid::new(area, &even(6), 3);
+        let before = Grid::new(area, &even(7), 3, &TileSettings::default());
+        let after = Grid::new(area, &even(6), 3, &TileSettings::default());
         let half = PROGRESS_SCALE / 2;
 
         let mut out = Vec::new();
@@ -2267,7 +2305,7 @@ mod tests {
         let leaving = out[0].frame.rect();
         assert!(
             leaving.width < before.column_rect(2).width,
-            "the column it is riding is being taken away"
+            "the column it stands in is being taken away"
         );
         assert_eq!(leaving.right(), area.right(), "against the right edge");
         assert_eq!(out[0].frame.clip(), leaving, "and it is cut off there");
@@ -2280,8 +2318,8 @@ mod tests {
     #[test]
     fn a_cell_taking_its_column_with_it_closes_off_the_right_edge() {
         let area = test_area();
-        let before = Grid::new(area, &even(7), 3);
-        let after = Grid::new(area, &even(6), 3);
+        let before = Grid::new(area, &even(7), 3, &TileSettings::default());
+        let after = Grid::new(area, &even(6), 3, &TileSettings::default());
         assert_eq!(
             before.widths,
             vec![3, 3, 1],
@@ -2304,8 +2342,8 @@ mod tests {
     #[test]
     fn a_cell_leaving_a_column_that_stays_closes_onto_its_floor() {
         let area = test_area();
-        let before = Grid::new(area, &even(6), 4);
-        let after = Grid::new(area, &even(5), 4);
+        let before = Grid::new(area, &even(6), 4, &TileSettings::default());
+        let after = Grid::new(area, &even(5), 4, &TileSettings::default());
         assert_eq!(before.widths, vec![3, 3], "cell six sits under cell five");
         let from = before.cell(6).expect("cell six is in the grid");
 
@@ -2324,14 +2362,14 @@ mod tests {
     }
 
     /// A grid the tests can grow without a terminal under it.
-    fn seeded_grid() -> TileGrid {
+    fn seeded_grid<Id: Clone + Eq + Debug>() -> TileGrid<Id> {
         let mut grid = TileGrid::new();
         grid.set_layout(test_area(), 4);
         grid
     }
 
     /// What each cell after the summary is showing, settled.
-    fn shown(grid: &TileGrid) -> Vec<TileContent> {
+    fn shown<Id: Clone + Eq + Debug>(grid: &TileGrid<Id>) -> Vec<TileContent<Id>> {
         cells(&grid.slots)
             .into_iter()
             .skip(1)
@@ -2344,10 +2382,7 @@ mod tests {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
         grid.settle();
-        assert_eq!(
-            shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(7))]
-        );
+        assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
     /// A developer who pressed `+` made room deliberately, so the next
@@ -2361,10 +2396,7 @@ mod tests {
         grid.settle();
 
         assert_eq!(shown(&grid).len(), 2, "no third cell opened");
-        assert_eq!(
-            shown(&grid)[0],
-            TileContent::Group(InvocationId::for_test(7))
-        );
+        assert_eq!(shown(&grid)[0], TileContent::Group(7));
         assert_eq!(shown(&grid)[1], TileContent::Empty(3));
     }
 
@@ -2383,10 +2415,7 @@ mod tests {
 
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(7)),
-                TileContent::Group(InvocationId::for_test(8)),
-            ]
+            vec![TileContent::Group(7), TileContent::Group(8),]
         );
     }
 
@@ -2404,8 +2433,8 @@ mod tests {
         grid.settle();
 
         let shown = shown(&grid);
-        assert_eq!(shown[0], TileContent::Group(InvocationId::for_test(7)));
-        assert_eq!(shown[1], TileContent::Group(InvocationId::for_test(8)));
+        assert_eq!(shown[0], TileContent::Group(7));
+        assert_eq!(shown[1], TileContent::Group(8));
         assert!(
             matches!(shown[2], TileContent::Empty(_)),
             "the empty cell stayed last: {shown:?}"
@@ -2424,10 +2453,7 @@ mod tests {
 
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(7)),
-                TileContent::Group(InvocationId::for_test(9))
-            ]
+            vec![TileContent::Group(7), TileContent::Group(9)]
         );
     }
 
@@ -2462,10 +2488,7 @@ mod tests {
         grid.sync(&quiet(&[7, 9]), 4);
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(7)),
-                TileContent::Group(InvocationId::for_test(9))
-            ],
+            vec![TileContent::Group(7), TileContent::Group(9)],
             "the cell above it and the cell below it come together"
         );
         grid.advance();
@@ -2490,16 +2513,13 @@ mod tests {
         grid.sync(&quiet(&[8, 7]), 4);
         assert_eq!(
             shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(8))],
+            vec![TileContent::Group(8)],
             "the overtaken cell closes on its own"
         );
         grid.advance();
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(8)),
-                TileContent::Group(InvocationId::for_test(7))
-            ],
+            vec![TileContent::Group(8), TileContent::Group(7)],
             "and opens again behind the one that passed it"
         );
         grid.advance();
@@ -2522,34 +2542,28 @@ mod tests {
         grid.sync(&quiet(&[8, 7, 9]), 4);
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(8)),
-                TileContent::Group(InvocationId::for_test(9))
-            ],
+            vec![TileContent::Group(8), TileContent::Group(9)],
             "the overtaken cell goes first"
         );
         grid.advance();
         assert_eq!(
             shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(8))],
+            vec![TileContent::Group(8)],
             "then the cell behind it, which has nowhere left to come back in"
         );
         grid.advance();
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(8)),
-                TileContent::Group(InvocationId::for_test(7))
-            ],
+            vec![TileContent::Group(8), TileContent::Group(7)],
             "the overtaken cell returns behind the one that passed it"
         );
         grid.advance();
         assert_eq!(
             shown(&grid),
             vec![
-                TileContent::Group(InvocationId::for_test(8)),
-                TileContent::Group(InvocationId::for_test(7)),
-                TileContent::Group(InvocationId::for_test(9)),
+                TileContent::Group(8),
+                TileContent::Group(7),
+                TileContent::Group(9),
             ],
             "and the last one behind that"
         );
@@ -2570,12 +2584,12 @@ mod tests {
         let mut crossed = Vec::new();
         while let GridMotion::Moving(transition) = &grid.motion {
             let (from, to) = (transition.from.clone(), grid.slots.clone());
-            let left: Vec<Slot> = from
+            let left: Vec<Slot<u32>> = from
                 .iter()
                 .filter(|slot| to.contains(slot))
                 .cloned()
                 .collect();
-            let landed: Vec<Slot> = to
+            let landed: Vec<Slot<u32>> = to
                 .iter()
                 .filter(|slot| from.contains(slot))
                 .cloned()
@@ -2589,10 +2603,10 @@ mod tests {
         assert_eq!(
             shown(&grid),
             vec![
-                TileContent::Group(InvocationId::for_test(9)),
-                TileContent::Group(InvocationId::for_test(7)),
-                TileContent::Group(InvocationId::for_test(10)),
-                TileContent::Group(InvocationId::for_test(8)),
+                TileContent::Group(9),
+                TileContent::Group(7),
+                TileContent::Group(10),
+                TileContent::Group(8),
             ],
             "and the grid still arrives at the order it was asked for"
         );
@@ -2613,8 +2627,8 @@ mod tests {
         grid.settle();
         let shown = shown(&grid);
         assert_eq!(shown.len(), 3, "the grid is the size it was: {shown:?}");
-        assert_eq!(shown[0], TileContent::Group(InvocationId::for_test(8)));
-        assert_eq!(shown[1], TileContent::Group(InvocationId::for_test(7)));
+        assert_eq!(shown[0], TileContent::Group(8));
+        assert_eq!(shown[1], TileContent::Group(7));
         assert!(
             matches!(shown[2], TileContent::Empty(_)),
             "and the reader's cell is still there: {shown:?}"
@@ -2631,15 +2645,12 @@ mod tests {
         grid.settle();
         grid.focus_step(Direction::Down, 4);
         grid.settle();
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(7)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
 
         grid.sync(&quiet(&[8, 7]), 4);
         assert_eq!(
             grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(7))),
+            Focus::Cell(Slot::Group(7)),
             "the ring stays with the command while its cell is off the grid"
         );
         assert_eq!(
@@ -2670,10 +2681,7 @@ mod tests {
         grid.sync(&quiet(&[9]), 4);
         assert_eq!(
             shown(&grid),
-            vec![
-                TileContent::Group(InvocationId::for_test(8)),
-                TileContent::Group(InvocationId::for_test(9))
-            ],
+            vec![TileContent::Group(8), TileContent::Group(9)],
             "the oldest of them goes first, on its own"
         );
         assert!(
@@ -2684,21 +2692,21 @@ mod tests {
         grid.advance();
         assert_eq!(
             shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(9))],
+            vec![TileContent::Group(9)],
             "the next one follows once that travel is done"
         );
     }
 
-    /// A cell riding a column that is closing travels nowhere up or
+    /// A cell in a column that is closing travels nowhere up or
     /// down: the column is being pushed off the right edge and the cell
     /// goes with it. Given the slide as well it was drawn sliding up
     /// through a column that was sliding away, in the one place the eye
     /// was watching a column simply go.
     #[test]
-    fn a_cell_riding_a_closing_column_makes_no_vertical_travel() {
+    fn a_cell_in_a_closing_column_makes_no_vertical_travel() {
         let area = test_area();
-        let before = Grid::new(area, &even(7), 3);
-        let after = Grid::new(area, &even(6), 3);
+        let before = Grid::new(area, &even(7), 3, &TileSettings::default());
+        let after = Grid::new(area, &even(6), 3, &TileSettings::default());
         assert_eq!(
             before.widths,
             vec![3, 3, 1],
@@ -2732,8 +2740,8 @@ mod tests {
     #[test]
     fn a_cell_leaving_a_column_that_stays_slides_off_its_edge() {
         let area = test_area();
-        let before = Grid::new(area, &even(16), 4);
-        let after = Grid::new(area, &even(17), 4);
+        let before = Grid::new(area, &even(16), 4, &TileSettings::default());
+        let after = Grid::new(area, &even(17), 4, &TileSettings::default());
 
         let mut out = Vec::new();
         moving_cell(
@@ -2760,7 +2768,7 @@ mod tests {
         let moved = grid
             .placements(test_area(), 4)
             .into_iter()
-            .find(|placement| placement.content == TileContent::Group(InvocationId::for_test(9)))
+            .find(|placement| placement.content == TileContent::Group(9))
             .expect("the surviving command is still drawn");
         // Against the grid's own account of what it is leaving rather
         // than an even division: the summary holds focus, so it is
@@ -2770,7 +2778,7 @@ mod tests {
             GridMotion::Settled => None,
         }
         .expect("the close is in flight");
-        let before = Grid::new(test_area(), &transition.held, 4);
+        let before = Grid::new(test_area(), &transition.held, 4, &TileSettings::default());
         assert_eq!(
             moved.frame.rect(),
             before.cell(4).expect("cell four exists"),
@@ -2785,10 +2793,7 @@ mod tests {
         grid.settle();
         grid.remove();
         grid.settle();
-        assert_eq!(
-            shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(7))]
-        );
+        assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
     #[test]
@@ -2798,15 +2803,12 @@ mod tests {
         grid.add(4);
         grid.remove();
         grid.settle();
-        assert_eq!(
-            shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(7))]
-        );
+        assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
     #[test]
     fn the_summary_holds_focus_to_begin_with() {
-        assert_eq!(TileGrid::new().focus, Focus::Summary);
+        assert_eq!(TileGrid::<u32>::new().focus, Focus::Summary);
     }
 
     #[test]
@@ -2859,24 +2861,18 @@ mod tests {
     /// Focus is held by identity, so the cell it is on keeps it while
     /// the grid closes up around it.
     #[test]
-    fn focus_rides_a_cell_through_a_closing() {
+    fn focus_follows_a_cell_through_a_closing() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
         grid.settle();
         grid.focus_step(Direction::Down, 4);
         grid.focus_step(Direction::Down, 4);
         grid.focus_step(Direction::Down, 4);
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(9)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(9)));
 
         grid.sync(&quiet(&[7, 9]), 4);
         grid.settle();
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(9)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(9)));
         assert_eq!(
             grid.focused_cell(),
             FocusLocation::Cell(3),
@@ -2890,10 +2886,7 @@ mod tests {
         grid.sync(&quiet(&[7]), 4);
         grid.settle();
         grid.focus_step(Direction::Down, 4);
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(7)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
 
         grid.sync(&quiet(&[]), 4);
         grid.settle();
@@ -2912,10 +2905,7 @@ mod tests {
 
         grid.sync(&quiet(&[7]), 4);
         grid.settle();
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(7)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
     }
 
     /// A click is the other way onto a cell, and lands on the same ring
@@ -2926,22 +2916,24 @@ mod tests {
         grid.sync(&quiet(&[7, 8]), 4);
         grid.settle();
 
-        let second = Grid::new(test_area(), &even(grid.count()), 4)
-            .cell(2)
-            .expect("the grid has three cells");
+        let second = Grid::new(
+            test_area(),
+            &even(grid.count()),
+            4,
+            &TileSettings::default(),
+        )
+        .cell(2)
+        .expect("the grid has three cells");
         let inside = Position::new(second.x + second.width / 2, second.y + second.height / 2);
         let index = grid.cell_at(inside).expect("the point is inside cell two");
         grid.focus_cell(index);
 
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(7)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
     }
 
     #[test]
     fn a_click_outside_the_grid_finds_no_cell() {
-        let grid = seeded_grid();
+        let grid = seeded_grid::<u32>();
         assert_eq!(grid.cell_at(Position::new(TEST_WIDTH, TEST_HEIGHT)), None);
     }
 
@@ -2949,7 +2941,7 @@ mod tests {
     /// than the last one opened.
     #[test]
     fn minus_takes_out_the_focused_empty_cell() {
-        let mut grid = seeded_grid();
+        let mut grid = seeded_grid::<u32>();
         grid.add(4);
         grid.add(4);
         grid.settle();
@@ -2973,16 +2965,13 @@ mod tests {
         grid.add(4);
         grid.settle();
         grid.focus_step(Direction::Down, 4);
-        assert_eq!(
-            grid.focus,
-            Focus::Cell(Slot::Group(InvocationId::for_test(7)))
-        );
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
 
         grid.remove();
         grid.settle();
         assert_eq!(
             shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(7))],
+            vec![TileContent::Group(7)],
             "the command keeps its cell and the empty one goes"
         );
     }
@@ -2995,10 +2984,7 @@ mod tests {
 
         grid.remove();
         grid.settle();
-        assert_eq!(
-            shown(&grid),
-            vec![TileContent::Group(InvocationId::for_test(7))]
-        );
+        assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
     #[test]

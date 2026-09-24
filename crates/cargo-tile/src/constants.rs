@@ -301,27 +301,6 @@ pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
 pub(crate) const MIN_FADE_SECONDS: u64 = 0;
 /// Ceiling the settings stepper walks `tiles.fade_seconds` up to.
 pub(crate) const MAX_FADE_SECONDS: u64 = 30;
-/// Floor on `tiles.initial_rows`. At one there is no single-column
-/// stretch at all: the grid arranges itself into a square from the
-/// second cell on.
-pub(crate) const MIN_INITIAL_ROWS: usize = 1;
-/// Rows one cell standing alone needs: a border line, a line of
-/// content, and a border line. A cell with a neighbour below costs one
-/// less, because the two share that line.
-pub(crate) const MIN_TILE_HEIGHT: u16 = 3;
-/// Columns one cell standing alone needs, its two border lines
-/// included. A cell with a neighbour to its right costs one less.
-pub(crate) const MIN_TILE_WIDTH: u16 = 8;
-/// Rows a cell spends on its own border, which is what its contents
-/// have to be given on top of. Two, though neighbours share one of
-/// them, so a stacked cell costs less than this and the division is a
-/// little conservative rather than a little short.
-pub(crate) const TILE_BORDER_ROWS: u16 = 2;
-/// Rows of content one step of demand is worth. A cell asks for its
-/// content rounded up to a whole number of these, so a column
-/// re-divides on the move from a quiet cell to a busy one rather than
-/// on every scan that added a row or rewrapped a command line.
-pub(crate) const TILE_DEMAND_STEP: usize = 3;
 /// Laid over the comparison buffer to make every cell differ from
 /// anything a frame can render, which is what turns the next draw into
 /// a full repaint.
@@ -369,9 +348,6 @@ pub(crate) const ATTRACT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// gap stops reading as one frame arriving late and starts reading as
 /// the display having stopped.
 pub(crate) const PROBE_THRESHOLD: Duration = Duration::from_millis(33);
-/// Fixed-point scale a transition's progress is measured on, so the
-/// animation needs no floating point.
-pub(crate) const PROGRESS_SCALE: u32 = 1000;
 /// Written on the summary cell's top border, so the one cell listing
 /// every command is named rather than told apart by its contents. A
 /// manager's own cell reads much like the summary -- one row per cargo
@@ -388,50 +364,6 @@ pub(crate) const SUMMARY_LABEL_BORDER_RESERVE: u16 = 3;
 /// cell's top-right corner -- the corner glyph itself, and the line
 /// cell kept clear in front of it.
 pub(crate) const SUMMARY_LABEL_RIGHT_INSET: u16 = 2;
-/// The cell holding the running-cargo table. Cells are numbered from
-/// one and fill column by column, so the table is always the first.
-pub(crate) const TABLE_CELL: usize = 1;
-/// How long one change to the grid takes, however many single-cell
-/// steps it propagates through: one step takes all of it, and a longer
-/// ripple divides it up between them.
-pub(crate) const TILE_ANIMATION_MILLIS: u64 = 720;
-/// Floor on one step of a ripple, so a long one still reads as cells
-/// moving rather than flickering past.
-pub(crate) const MIN_STEP_MILLIS: u64 = 60;
-/// How long the resize a step of the focus ring asks for takes.
-///
-/// Far shorter than [`TILE_ANIMATION_MILLIS`], because the two are
-/// different events: a cell opening or closing happens on its own and
-/// wants watching, while this one is a key the developer just pressed
-/// and is already pressing again. At the full travel, holding an arrow
-/// down would leave the grid still settling from the first press.
-pub(crate) const FOCUS_ANIMATION_MILLIS: u64 = 140;
-/// Steps the grid queues before it gives up propagating and settles the
-/// rest in one move. A whole test suite finishing at once would take
-/// longer to walk through cell by cell than anyone would watch.
-pub(crate) const MAX_PENDING_STEPS: usize = 64;
-/// Kept between a cell's left border and the number it carries, so the
-/// number is not flush against the line.
-pub(crate) const TILE_NUMBER_INDENT: &str = " ";
-/// Ahead of what a cell's contents ask for, in the readout along the
-/// foot of every cell.
-pub(crate) const TILE_ROWS_CONTENT_LABEL: &str = "content rows: ";
-/// Ahead of the cell's own size in the same readout, written as rows
-/// over columns.
-pub(crate) const TILE_ROWS_CELL_LABEL: &str = "  r/c: ";
-/// Between those two numbers.
-pub(crate) const TILE_ROWS_CELL_SEPARATOR: &str = "/";
-/// Ahead of the width the demand was measured at, which is written only
-/// where it is not the width the cell was drawn at. The two agreeing is
-/// the ordinary case and says nothing; the two disagreeing is the one
-/// way the counts can differ without either being wrong on its own
-/// terms, and is worth the room it takes.
-pub(crate) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
-/// Kept between that readout and the cell's right border, so it is not
-/// flush against the line.
-pub(crate) const TILE_ROWS_RIGHT_INSET: u16 = 1;
-/// Rows the readout takes: it is one line along the foot of the cell.
-pub(crate) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
 
 // process arguments
 pub(crate) const CARGO_JSON_FORMAT_PREFIX: &str = "json";

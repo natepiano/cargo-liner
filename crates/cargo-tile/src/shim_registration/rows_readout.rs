@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use tui_pane::TILE_ROWS_CONTENT_LABEL;
 
 use crate::census::Ancestor;
 use crate::census::CargoGroup;
@@ -17,7 +18,6 @@ use crate::census::VisibleParent;
 use crate::census::command_text::CommandText;
 use crate::census::invocation_cpu_accounting::MeasurementAbsence;
 use crate::census::process_identity::CaptureMembership;
-use crate::constants::TILE_ROWS_CONTENT_LABEL;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::progress::capture_read::CaptureLookup;
 use crate::registration::WorkingDirectoryIdentity;
