@@ -20,7 +20,6 @@
 
 use std::path::PathBuf;
 
-use tui_pane::CycleDirection;
 use tui_pane::FavoritesOverlayPane;
 use tui_pane::Framework;
 use tui_pane::FrameworkGlobalShortcutPresentation;
@@ -28,38 +27,14 @@ use tui_pane::FrameworkGlobalShortcutVisibility;
 use tui_pane::GlobalAction;
 use tui_pane::Keymap;
 use tui_pane::KeymapError;
-use tui_pane::Mode;
 use tui_pane::MovingBandPane;
 use tui_pane::MovingTextPane;
-use tui_pane::Pane;
 use tui_pane::PixelatePane;
 use tui_pane::SettingsNavigation;
+use tui_pane::TileGridPane;
 
 use crate::app::App;
-use crate::app::AppPaneId;
 use crate::globals::AppGlobalAction;
-
-/// `Pane<App>` host for the main content pane. No pane-local shortcuts
-/// yet, so it registers through `register_pane` rather than `register`.
-struct MainPane;
-
-impl Pane<App> for MainPane {
-    const APP_PANE_ID: AppPaneId = AppPaneId::Main;
-
-    /// The grid is not a list. Its cells are walked by the app globals
-    /// and by Tab, so the status line's navigation region has nothing
-    /// to say about it, and `Static` is what keeps that region off.
-    fn mode() -> fn(&App) -> Mode<App> { |_app| Mode::Static }
-
-    /// Tab walks the tile grid rather than the framework's pane cycle.
-    /// The app registers one pane and puts every command in a cell
-    /// inside it, so the cells are what a developer means by "the next
-    /// one" -- and the step never falls through, because there is no
-    /// second pane behind the grid to fall through to.
-    fn cycle_step() -> Option<fn(&mut App, CycleDirection) -> bool> {
-        Some(|app, direction| app.tiles.cycle_focus(direction))
-    }
-}
 
 const fn cargo_tile_framework_global_shortcut_visibility(
     action: GlobalAction,
@@ -100,7 +75,7 @@ pub(crate) fn build_keymap(
         .register_navigation::<SettingsNavigation<App>>()?
         .register_globals::<AppGlobalAction>()?
         .register_overlay()?
-        .register_pane::<MainPane>()
+        .register_pane::<TileGridPane<App>>()
         .register(MovingBandPane::<App>::default())
         .register(MovingTextPane::<App>::default())
         .register(PixelatePane::<App>::default())

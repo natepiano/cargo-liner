@@ -27,14 +27,15 @@ use tui_pane::NoToastAction;
 use tui_pane::SettingStep;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
+use tui_pane::TileGridHost;
 use tui_pane::Updates;
 use tui_pane::VisualDeadline;
 
+use crate::census::InvocationId;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::globals::AppGlobalAction;
-use crate::interaction;
 use crate::keymap;
 use crate::probe::FrameLog;
 use crate::progress::capture_roots::AccountCaptureDirectory;
@@ -272,7 +273,7 @@ impl TerminalApp for App {
         render::draw(frame, self, keymap);
     }
 
-    fn click(&mut self, position: Position) { interaction::handle_click(self, position); }
+    fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
 
     /// Settling the window costs several round trips to the window
     /// server, which is far longer than a frame, and `terminal.draw` is
@@ -317,6 +318,15 @@ impl TerminalApp for App {
         self.attract
             .record_completed_backdrop_attempts_before_exit();
     }
+}
+
+/// The tile grid is the whole body, registered under [`AppPaneId::Main`].
+impl TileGridHost for App {
+    type TileId = InvocationId;
+
+    const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
+
+    fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
 }
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of

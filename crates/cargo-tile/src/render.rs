@@ -3,7 +3,6 @@
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -23,11 +22,8 @@ use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
-use tui_pane::FrameworkOverlayId;
 use tui_pane::Keymap;
-use tui_pane::PaneFocusState;
 use tui_pane::PaneFrameLabel;
-use tui_pane::Renderable;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
 use tui_pane::ScanIndicator;
@@ -36,14 +32,10 @@ use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::TileCells;
 use tui_pane::TileGridContents;
-use tui_pane::ToastsRenderCtx;
 use tui_pane::Updates;
 use tui_pane::accent_color;
 use tui_pane::blend_color;
 use tui_pane::draw_attract_layers;
-use tui_pane::draw_global_shortcuts_overlay;
-use tui_pane::draw_keymap_overlay;
-use tui_pane::draw_settings;
 use tui_pane::label_color;
 use tui_pane::pane_background;
 use tui_pane::render_status_line;
@@ -222,33 +214,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     } else {
         AttractWork::Running
     };
-    let area = frame.area();
     let updates = app.updates;
     draw_attract_layers(frame, app, body, work, updates, |frame, app, contents| {
         draw_panes(frame, app, body, contents);
     });
     draw_status_line(frame, app, keymap, status);
-    app.framework.toasts.render(
-        frame,
-        area,
-        &ToastsRenderCtx {
-            now:              Instant::now(),
-            pane_focus_state: PaneFocusState::Inactive,
-        },
-    );
+    tui_pane::render_toasts(frame, &mut app.framework);
     app.favorites_overlay.render(frame);
-
-    match app.framework.overlay() {
-        Some(FrameworkOverlayId::Settings) => {
-            let rows = settings::rows(app);
-            draw_settings(frame, &mut app.framework.settings_pane, &rows);
-        },
-        Some(FrameworkOverlayId::Keymap) => draw_keymap_overlay(frame, app, keymap),
-        Some(FrameworkOverlayId::GlobalShortcuts) => {
-            draw_global_shortcuts_overlay(frame, app, keymap);
-        },
-        None => (),
-    }
+    tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
 
 /// Draw the tile grid into the body above the status line.

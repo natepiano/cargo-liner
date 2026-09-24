@@ -27,13 +27,13 @@ use tui_pane::SettingsLineTarget;
 use tui_pane::SettingsNavigation;
 use tui_pane::SettingsRowIdentity;
 use tui_pane::SettingsRowPayload;
+use tui_pane::TerminalApp;
 
 use crate::app::App;
 use crate::census;
 use crate::census::Measurement;
 use crate::config::Config;
 use crate::constants::POPUP_CHROME_HEIGHT;
-use crate::interaction;
 use crate::progress::capture_roots::CaptureRoots;
 use crate::render;
 use crate::roster::Roster;
@@ -243,7 +243,7 @@ fn settings_click_after_navigation_selects_the_row_still_drawn() {
         app.framework.settings_pane.viewport().pos(),
         hidden_when_idle + 1
     );
-    interaction::handle_click(&mut app, click);
+    app.click(click);
 
     assert_eq!(terminal.backend().buffer(), &painted);
     assert_eq!(app.framework.settings_pane.viewport().pos(), excluded);

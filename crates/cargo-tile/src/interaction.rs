@@ -3,77 +3,33 @@
 //! The framework owns the order a click is offered around — toasts,
 //! then any open framework overlay, then whatever the app tiles
 //! underneath — so nothing here re-derives it. [`App`] supplies the two
-//! app-side pieces that ladder asks for, [`tui_pane::dispatch_hit_test`]
-//! walks it, and [`handle_click`] acts on what comes back.
+//! app-side pieces that ladder asks for, and
+//! [`tui_pane::handle_tile_click`] walks it and acts on the
+//! [`TilePick`] that comes back.
 
 use ratatui::layout::Position;
 use tui_pane::FrameworkHit;
-use tui_pane::FrameworkOverlayId;
 use tui_pane::HitTestRegistry;
 use tui_pane::Hittable;
 use tui_pane::InputContext;
 use tui_pane::ModalHit;
+use tui_pane::TilePick;
 use tui_pane::Viewport;
 
 use crate::app::App;
 use crate::app::AppPaneId;
-use crate::tiles::TileGrid;
 
 /// Every pane a click can land on, top of the stack first. The tile
 /// grid fills the whole body, so there is only the one.
 const HIT_TEST_Z_ORDER: [AppPaneId; 1] = [AppPaneId::Main];
 
-/// What a click found.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Picked {
-    /// A cell of the tile grid, by cell number.
-    Cell(usize),
-    /// A row of an open framework overlay.
-    OverlayRow {
-        /// The overlay the row belongs to.
-        id:  FrameworkOverlayId,
-        /// The row's index inside it.
-        row: usize,
-    },
-}
-
-/// Act on the click at `pos`.
-///
-/// Clicking a cell is how focus moves without the arrow keys, and it
-/// reads the same way: the cell lights up and stays lit until something
-/// takes it out of the grid.
-pub(crate) fn handle_click(app: &mut App, pos: Position) {
-    match tui_pane::dispatch_hit_test(app, pos) {
-        Some(Picked::Cell(index)) => app.tiles.focus_cell(index),
-        Some(Picked::OverlayRow { id, row }) => overlay_row(app, id, row),
-        None => (),
-    }
-}
-
-/// Move an overlay's selection to the row that was clicked.
-fn overlay_row(app: &mut App, id: FrameworkOverlayId, row: usize) {
-    match id {
-        FrameworkOverlayId::Settings => app.framework.settings_pane.select_row(row),
-        FrameworkOverlayId::Keymap => app.framework.keymap_pane.viewport_mut().set_pos(row),
-        FrameworkOverlayId::GlobalShortcuts => app
-            .framework
-            .global_shortcuts_pane
-            .viewport_mut()
-            .set_pos(row),
-    }
-}
-
-impl Hittable<Picked> for TileGrid {
-    fn hit_test_at(&self, pos: Position) -> Option<Picked> { self.cell_at(pos).map(Picked::Cell) }
-}
-
 impl HitTestRegistry for App {
     type PaneId = AppPaneId;
-    type Target = Picked;
+    type Target = TilePick;
 
     fn z_order() -> &'static [AppPaneId] { &HIT_TEST_Z_ORDER }
 
-    fn pane(&self, id: AppPaneId) -> Option<&dyn Hittable<Picked>> {
+    fn pane(&self, id: AppPaneId) -> Option<&dyn Hittable<TilePick>> {
         match id {
             AppPaneId::Main => Some(&self.tiles),
             // The attract screen has no click behavior, and the
@@ -94,7 +50,7 @@ impl InputContext for App {
 
     /// The favorites modal has no mouse selection yet, but still
     /// absorbs every click so none reaches the grid underneath it.
-    fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<Picked> {
+    fn app_modal_overlay_hit(&self, _: Position) -> ModalHit<TilePick> {
         if self.favorites_overlay.is_open() {
             ModalHit::MissedRow
         } else {
@@ -102,14 +58,8 @@ impl InputContext for App {
         }
     }
 
-    /// Toasts and overlay chrome are framework surfaces. An overlay row
-    /// is the only framework hit that becomes an app action; every
-    /// other hit has already been absorbed.
-    fn map_framework_hit(&self, hit: FrameworkHit) -> Option<Picked> {
-        match hit {
-            FrameworkHit::Overlay { id, row } => Some(Picked::OverlayRow { id, row }),
-            FrameworkHit::Toast(_) | FrameworkHit::ModalMissed => None,
-        }
+    fn map_framework_hit(&self, hit: FrameworkHit) -> Option<TilePick> {
+        TilePick::from_framework_hit(hit)
     }
 }
 
@@ -126,6 +76,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use tui_pane::FavoritesFileState;
+    use tui_pane::FrameworkOverlayId;
     use tui_pane::GlobalAction;
     use tui_pane::TABLE_CELL;
     use tui_pane::TerminalApp;
