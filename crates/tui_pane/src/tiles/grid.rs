@@ -792,9 +792,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     }
 
     /// Play every queued step at once, for tests that care where the
-    /// grid ends up rather than how it gets there.
-    #[cfg(test)]
-    fn settle(&mut self) {
+    /// grid ends up rather than how it gets there -- a render golden
+    /// among them, since each step otherwise runs for as long as its
+    /// travel takes on the wall clock.
+    #[doc(hidden)]
+    pub fn settle_for_test(&mut self) {
         while !self.pending.is_empty() {
             self.advance();
         }
@@ -1676,7 +1678,7 @@ mod tests {
         };
         let mut grid = seeded_grid();
         grid.sync(&demands, MIN_INITIAL_ROWS);
-        grid.settle();
+        grid.settle_for_test();
         grid.focus_cell(TABLE_CELL + 1);
         demands.groups.push(TileDemand {
             id:   replacement,
@@ -1684,7 +1686,7 @@ mod tests {
         });
 
         grid.sync(&demands, MIN_INITIAL_ROWS);
-        grid.settle();
+        grid.settle_for_test();
 
         assert_eq!(
             shown(&grid),
@@ -1693,7 +1695,7 @@ mod tests {
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(first)));
         demands.groups.remove(0);
         grid.sync(&demands, MIN_INITIAL_ROWS);
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(replacement)]);
         assert_eq!(grid.focus, Focus::Summary);
     }
@@ -2052,11 +2054,11 @@ mod tests {
     fn a_cell_keeps_what_it_grew_to_while_nothing_encroaches() {
         let mut grid = seeded_grid();
         grid.sync(&busy(&[(7, usize::from(TEST_HEIGHT))]), 4);
-        grid.settle();
+        grid.settle_for_test();
         let grown = grid.held.clone();
 
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         assert_eq!(
             grid.held, grown,
@@ -2070,13 +2072,13 @@ mod tests {
     fn a_cell_hands_its_room_back_once_another_encroaches() {
         let mut grid = seeded_grid();
         grid.sync(&busy(&[(7, usize::from(TEST_HEIGHT))]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         let grown = grid.held.clone();
 
         grid.sync(&busy(&[(7, 0), (8, usize::from(TEST_HEIGHT))]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         assert_ne!(
             grid.held, grown,
@@ -2096,7 +2098,7 @@ mod tests {
     fn a_column_re_dividing_travels_the_way_a_cell_moving_does() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         assert!(
             matches!(grid.motion, GridMotion::Settled),
             "the arrangement has settled"
@@ -2381,7 +2383,7 @@ mod tests {
     fn a_command_arriving_opens_its_own_cell() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
@@ -2393,7 +2395,7 @@ mod tests {
         grid.add(4);
         grid.add(4);
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         assert_eq!(shown(&grid).len(), 2, "no third cell opened");
         assert_eq!(shown(&grid)[0], TileContent::Group(7));
@@ -2409,9 +2411,9 @@ mod tests {
     fn the_cells_stand_in_the_order_they_are_demanded_in() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[8]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         assert_eq!(
             shown(&grid),
@@ -2426,11 +2428,11 @@ mod tests {
     fn re_ordering_leaves_an_empty_cell_where_it_was_made() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[8]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.add(4);
         grid.add(4);
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         let shown = shown(&grid);
         assert_eq!(shown[0], TileContent::Group(7));
@@ -2447,9 +2449,9 @@ mod tests {
     fn a_command_leaving_the_middle_moves_the_rest_forward() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.sync(&quiet(&[7, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         assert_eq!(
             shown(&grid),
@@ -2466,7 +2468,7 @@ mod tests {
     fn nothing_extra_is_in_flight_while_the_grid_closes() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[7, 9]), 4);
         let placements = grid.placements(test_area(), 4);
@@ -2483,7 +2485,7 @@ mod tests {
     fn a_command_leaving_the_middle_closes_the_grid_in_one_step() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[7, 9]), 4);
         assert_eq!(
@@ -2508,7 +2510,7 @@ mod tests {
     fn a_cell_the_order_overtakes_closes_and_comes_back_in_behind() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[8, 7]), 4);
         assert_eq!(
@@ -2537,7 +2539,7 @@ mod tests {
     fn the_order_changing_cascades_down_the_rest_of_the_grid() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[8, 7, 9]), 4);
         assert_eq!(
@@ -2578,7 +2580,7 @@ mod tests {
     fn no_step_of_a_reorder_draws_two_cells_crossing() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9, 10]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[9, 7, 10, 8]), 4);
         let mut crossed = Vec::new();
@@ -2619,12 +2621,12 @@ mod tests {
     fn a_reorder_leaves_the_cell_count_where_it_found_it() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.add(4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[8, 7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         let shown = shown(&grid);
         assert_eq!(shown.len(), 3, "the grid is the size it was: {shown:?}");
         assert_eq!(shown[0], TileContent::Group(8));
@@ -2642,9 +2644,9 @@ mod tests {
     fn focus_waits_for_a_cell_that_closed_to_let_the_order_through() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.focus_step(Direction::Down, 4);
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
 
         grid.sync(&quiet(&[8, 7]), 4);
@@ -2659,7 +2661,7 @@ mod tests {
             "and no cell is drawn holding it meanwhile"
         );
 
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(
             grid.focused_cell(),
             FocusLocation::Cell(TABLE_CELL + 2),
@@ -2676,7 +2678,7 @@ mod tests {
     fn commands_ending_together_close_one_cell_at_a_time() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.sync(&quiet(&[9]), 4);
         assert_eq!(
@@ -2760,7 +2762,7 @@ mod tests {
     fn a_cell_travels_from_the_number_it_held_to_the_one_it_takes() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
         // The command above the one that left stays where it is; this
         // is the one below it, travelling up into the closed grid.
         grid.sync(&quiet(&[7, 9]), 4);
@@ -2790,9 +2792,9 @@ mod tests {
     fn removing_refuses_to_close_a_cell_holding_a_command() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.remove();
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
@@ -2802,7 +2804,7 @@ mod tests {
         grid.sync(&quiet(&[7]), 4);
         grid.add(4);
         grid.remove();
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 
@@ -2815,7 +2817,7 @@ mod tests {
     fn focus_walks_the_grid_and_stops_at_its_edges() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.focus_step(Direction::Down, 4);
         assert_eq!(grid.focused_cell(), FocusLocation::Cell(2));
@@ -2838,7 +2840,7 @@ mod tests {
     fn tab_walks_every_cell_and_comes_back_round() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         assert!(grid.cycle_focus(CycleDirection::Next));
         assert_eq!(grid.focused_cell(), FocusLocation::Cell(2));
@@ -2864,14 +2866,14 @@ mod tests {
     fn focus_follows_a_cell_through_a_closing() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.focus_step(Direction::Down, 4);
         grid.focus_step(Direction::Down, 4);
         grid.focus_step(Direction::Down, 4);
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(9)));
 
         grid.sync(&quiet(&[7, 9]), 4);
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(9)));
         assert_eq!(
             grid.focused_cell(),
@@ -2884,12 +2886,12 @@ mod tests {
     fn focus_falls_back_to_the_summary_when_its_command_ends() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         grid.focus_step(Direction::Down, 4);
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
 
         grid.sync(&quiet(&[]), 4);
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(grid.focus, Focus::Summary);
     }
 
@@ -2899,12 +2901,12 @@ mod tests {
     fn focus_stays_on_an_empty_cell_a_command_claims() {
         let mut grid = seeded_grid();
         grid.add(4);
-        grid.settle();
+        grid.settle_for_test();
         grid.focus_step(Direction::Down, 4);
         assert!(matches!(grid.focus, Focus::Cell(Slot::Empty(_))));
 
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
     }
 
@@ -2914,7 +2916,7 @@ mod tests {
     fn a_click_inside_a_cell_takes_the_focus_ring() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7, 8]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         let second = Grid::new(
             test_area(),
@@ -2944,13 +2946,13 @@ mod tests {
         let mut grid = seeded_grid::<u32>();
         grid.add(4);
         grid.add(4);
-        grid.settle();
+        grid.settle_for_test();
         let first = grid.slots[0].clone();
         grid.focus_step(Direction::Down, 4);
         assert_eq!(grid.focus, Focus::Cell(first.clone()));
 
         grid.remove();
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(grid.slots.len(), 1, "one cell went");
         assert_ne!(grid.slots[0], first, "and it was the focused one");
         assert_eq!(grid.focus, Focus::Summary, "the ring falls back");
@@ -2963,12 +2965,12 @@ mod tests {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
         grid.add(4);
-        grid.settle();
+        grid.settle_for_test();
         grid.focus_step(Direction::Down, 4);
         assert_eq!(grid.focus, Focus::Cell(Slot::Group(7)));
 
         grid.remove();
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(
             shown(&grid),
             vec![TileContent::Group(7)],
@@ -2980,10 +2982,10 @@ mod tests {
     fn minus_with_no_empty_cell_changes_nothing() {
         let mut grid = seeded_grid();
         grid.sync(&quiet(&[7]), 4);
-        grid.settle();
+        grid.settle_for_test();
 
         grid.remove();
-        grid.settle();
+        grid.settle_for_test();
         assert_eq!(shown(&grid), vec![TileContent::Group(7)]);
     }
 

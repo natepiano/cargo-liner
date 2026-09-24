@@ -119,7 +119,162 @@ impl InputContext for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use tui_pane::FavoritesFileState;
+    use tui_pane::GlobalAction;
+    use tui_pane::TABLE_CELL;
+    use tui_pane::TerminalApp;
+    use tui_pane::TileAction;
+
     use super::*;
+    use crate::constants::STATUS_LINE_HEIGHT;
+    use crate::render;
+    use crate::tiles::TileContent;
+
+    /// Width of the frame the click tests draw.
+    const WIDTH: u16 = 80;
+    /// Height of the frame the click tests draw.
+    const HEIGHT: u16 = 24;
+
+    /// The body the grid is drawn in: every row but the status line.
+    const fn body() -> Rect { Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT) }
+
+    /// Draw one frame of `app`, which is what records where the grid's
+    /// cells and an open overlay's rows sit for a click to find.
+    fn draw_frame(app: &mut App) {
+        let keymap = Rc::clone(&app.keymap);
+        let mut terminal =
+            Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("the test terminal opens");
+        terminal
+            .draw(|frame| render::draw(frame, app, &keymap))
+            .expect("the test terminal draws");
+    }
+
+    /// An app whose grid holds the summary and one empty cell, settled
+    /// and drawn.
+    fn two_cell_app() -> App {
+        let mut app = App::new_for_test().expect("test app should build");
+        draw_frame(&mut app);
+        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        app.tiles.apply(TileAction::Add, initial_rows);
+        app.tiles.settle_for_test();
+        draw_frame(&mut app);
+        app
+    }
+
+    /// What the cell holding the focus ring shows.
+    fn focused(app: &App) -> TileContent {
+        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        app.tiles
+            .placements(body(), initial_rows)
+            .into_iter()
+            .find(|placement| placement.frame.is_focused())
+            .map(|placement| placement.content)
+            .expect("one cell holds the focus ring")
+    }
+
+    /// The middle of the cell showing `content`.
+    fn middle_of(app: &App, content: &TileContent) -> Position {
+        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        let rect = app
+            .tiles
+            .placements(body(), initial_rows)
+            .into_iter()
+            .find(|placement| &placement.content == content)
+            .map(|placement| placement.frame.rect())
+            .expect("the grid draws the cell");
+        Position::new(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    }
+
+    /// A click on the second cell of a two-cell grid moves the ring
+    /// onto it.
+    #[test]
+    fn a_click_on_a_cell_focuses_it() {
+        let mut app = two_cell_app();
+        assert_eq!(focused(&app), TileContent::Summary);
+
+        let cell = middle_of(&app, &TileContent::Empty(TABLE_CELL + 1));
+        app.click(cell);
+
+        assert_eq!(focused(&app), TileContent::Empty(TABLE_CELL + 1));
+    }
+
+    /// A click on the summary takes the ring back from the cell after
+    /// it.
+    #[test]
+    fn a_click_on_the_summary_focuses_it() {
+        let mut app = two_cell_app();
+        app.tiles.focus_cell(TABLE_CELL + 1);
+        assert_eq!(focused(&app), TileContent::Empty(TABLE_CELL + 1));
+
+        let summary = middle_of(&app, &TileContent::Summary);
+        app.click(summary);
+
+        assert_eq!(focused(&app), TileContent::Summary);
+    }
+
+    /// The open favorites overlay takes a click on the cell under it,
+    /// so the ring stays where it was.
+    #[test]
+    fn a_click_under_the_favorites_overlay_leaves_the_ring_in_place() {
+        let mut app = two_cell_app();
+        tui_pane::open_favorites_on_state_for_test(
+            &mut app,
+            FavoritesFileState::Missing {
+                path: PathBuf::from("/tmp/favorites.toml"),
+            },
+        );
+
+        let cell = middle_of(&app, &TileContent::Empty(TABLE_CELL + 1));
+        app.click(cell);
+
+        assert_eq!(focused(&app), TileContent::Summary);
+    }
+
+    /// The row the open framework overlay has selected, or `None` when
+    /// no framework overlay is open.
+    fn selected(app: &App) -> Option<usize> {
+        let viewport = match app.framework.overlay()? {
+            FrameworkOverlayId::Settings => app.framework.settings_pane.viewport(),
+            FrameworkOverlayId::Keymap => app.framework.keymap_pane.viewport(),
+            FrameworkOverlayId::GlobalShortcuts => app.framework.global_shortcuts_pane.viewport(),
+        };
+        Some(viewport.pos())
+    }
+
+    /// A click on a row of each framework overlay selects that row.
+    #[test]
+    fn a_click_on_a_framework_overlay_row_selects_it() {
+        for opener in [
+            GlobalAction::OpenSettings,
+            GlobalAction::OpenKeymap,
+            GlobalAction::OpenGlobalShortcuts,
+        ] {
+            let mut app = App::new_for_test().expect("test app should build");
+            let keymap = Rc::clone(&app.keymap);
+            keymap.dispatch_framework_global(opener, &mut app);
+            draw_frame(&mut app);
+            let before = selected(&app).expect("the overlay opened");
+            let (position, row) = (0..HEIGHT)
+                .flat_map(|y| (0..WIDTH).map(move |x| Position::new(x, y)))
+                .find_map(|position| match app.framework.hit_test_at(position) {
+                    Some(FrameworkHit::Overlay { row, .. }) if row != before => {
+                        Some((position, row))
+                    },
+                    _ => None,
+                })
+                .expect("the overlay draws a second row to click");
+
+            app.click(position);
+
+            assert_eq!(selected(&app), Some(row), "{opener:?}");
+        }
+    }
 
     #[test]
     fn open_app_modal_absorbs_clicks_before_the_grid() {

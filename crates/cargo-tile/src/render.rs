@@ -1993,6 +1993,7 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
+    use std::path::PathBuf;
     use std::time::Instant;
 
     use ratatui::Terminal;
@@ -2000,6 +2001,9 @@ mod tests {
     use ratatui::buffer::Cell;
     use sysinfo::Pid;
     use tui_pane::BackdropNotice;
+    use tui_pane::FavoritesFileState;
+    use tui_pane::GlobalAction;
+    use tui_pane::ToastStyle;
     use tui_pane::draw_backdrop_notice;
     use tui_pane::fade_to_background;
 
@@ -4179,6 +4183,134 @@ mod tests {
             width = usize::from(WIDTH) - notes.chars().count()
         ));
         assert_eq!(buffer_rows(terminal.backend().buffer()), expected);
+    }
+
+    /// Width of the frame the tail test draws.
+    const FRAME_TAIL_WIDTH: u16 = 60;
+    /// Height of the frame the tail test draws.
+    const FRAME_TAIL_HEIGHT: u16 = 14;
+
+    /// The frames the tail test pins: the favorites overlay alone, then
+    /// each framework overlay.
+    const FRAME_TAIL_CASES: [(Option<GlobalAction>, [&str; FRAME_TAIL_HEIGHT as usize]); 4] = [
+        (
+            None,
+            [
+                "┌ summary──────────────────────────────────────────────────┐",
+                "│                                                          │",
+                "│ no cargo processes running                               │",
+                "│                                                          │",
+                "┌ toast title ─────────────────────────────────────────[x]─┐",
+                "│t┌ Favorites -- 0 saved -- ● matches the current paramet┐ │",
+                "│ │No favorites saved -- press Esc, then ⌃s while the att│ │",
+                "│ │Esc close                                             │ │",
+                "│ └──────────────────────────────────────────────────────┘ │",
+                "│                                                          │",
+                "│                                                          │",
+                "│                                                          │",
+                "│                                                          │",
+                "└──────────────────────────────────────────────────────────┘",
+            ],
+        ),
+        (
+            Some(GlobalAction::OpenSettings),
+            [
+                "┌ Settings ────────────────────────────────────────────────┐",
+                "│ Appearance:                                              │",
+                "│ ▶ mode              < auto >                             │",
+                "│   light theme       < Default Light >                    │",
+                "│   dark theme        < Default Dark >                     │",
+                "│ Tiles:                                                   │",
+                "│   initial rows      < 4 >                                │",
+                "│   fade seconds      < 3 >                                │",
+                "│ Capture:                                                 │",
+                "│   auto install      true                                 │",
+                "│   shared directory  /tmp/cargo-tile; created by the first│",
+                "│                     captured cargo run                   │",
+                "│ Commands:                                                │",
+                "└──────────────────────────────────────────────────────────┘",
+            ],
+        ),
+        (
+            Some(GlobalAction::OpenKeymap),
+            [
+                "┌ summary──────────────────────────────────────────────────┐",
+                "│ ┌ Keymap ──────────────────────────────────────────────┐ │",
+                "│ │                                                      │ │",
+                "│ │ Global Navigation:                                   │ │",
+                "┌ │ ▸ Next pane                                     tab  │─┐",
+                "│t│   Previous pane                                 shift│ │",
+                "│ │ Global Shortcuts:                                    │ │",
+                "│ │   Add a tile                                    +    │ │",
+                "│ │   Dismiss overlay / output                      x    │ │",
+                "│ │   Focus the tile above                          up   │ │",
+                "│ │   Focus the tile below                          down │ │",
+                "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
+                "│                                                          │",
+                "└──────────────────────────────────────────────────────────┘",
+            ],
+        ),
+        (
+            Some(GlobalAction::OpenGlobalShortcuts),
+            [
+                "┌ summary──────────────────────────────────────────────────┐",
+                "│    ┌ Global Shortcuts ─────────────────────────────┐     │",
+                "│ no │                                               │     │",
+                "│    │ Global Navigation:                            │     │",
+                "┌ toa│ ▸ Next pane                         tab       │─[x]─┐",
+                "│the │   Previous pane                     shift-tab │     │",
+                "│    │ Global Shortcuts:                             │     │",
+                "│    │   Add a tile                        +         │     │",
+                "│    │   Focus the tile above              up        │     │",
+                "│    │   Focus the tile below              down      │     │",
+                "│    │   Focus the tile to the left        left      │     │",
+                "│    │   Focus the tile to the right       right     │     │",
+                "│    └───────────────────1 of 3 ▼────────────────────┘     │",
+                "└──────────────────────────────────────────────────────────┘",
+            ],
+        ),
+    ];
+
+    /// What follows the status line in a frame: the toasts over the
+    /// whole frame, the favorites overlay over them, and whichever
+    /// framework overlay is open over everything.
+    #[test]
+    fn the_frame_ends_with_toasts_then_favorites_then_the_framework_overlay() {
+        // Tall enough to reach up under every popup, so the frame shows
+        // which of the two is drawn over the other.
+        const TOAST_LINES: usize = 8;
+        for (opener, expected) in FRAME_TAIL_CASES {
+            let mut app = App::new_for_test().expect("test app should build");
+            app.started = Instant::now();
+            app.framework.toasts.push_persistent(
+                "toast title",
+                "the toast's body",
+                ToastStyle::Normal,
+                None,
+                TOAST_LINES,
+            );
+            let keymap = std::rc::Rc::clone(&app.keymap);
+            match opener {
+                Some(action) => keymap.dispatch_framework_global(action, &mut app),
+                None => tui_pane::open_favorites_on_state_for_test(
+                    &mut app,
+                    FavoritesFileState::Missing {
+                        path: PathBuf::from("/tmp/favorites.toml"),
+                    },
+                ),
+            }
+            let mut terminal = Terminal::new(TestBackend::new(FRAME_TAIL_WIDTH, FRAME_TAIL_HEIGHT))
+                .expect("the test terminal opens");
+            terminal
+                .draw(|frame| draw(frame, &mut app, &keymap))
+                .expect("the test terminal draws");
+
+            assert_eq!(
+                buffer_rows(terminal.backend().buffer()),
+                expected,
+                "{opener:?}"
+            );
+        }
     }
 
     /// Each backdrop notice is written on the last row of the body in
