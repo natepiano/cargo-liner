@@ -7,6 +7,7 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::text::Span;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::Keymap;
@@ -35,6 +36,7 @@ use crate::constants::SUMMARY_CELL_TITLE;
 use crate::globals::AppGlobalAction;
 use crate::settings;
 use crate::summary;
+use crate::theme::Role;
 use crate::tiles::AgentCell;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
@@ -143,7 +145,9 @@ impl TileCells<AgentCell> for Cells<'_> {
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
-            TileContent::Summary => summary::draw(buffer, inner, &self.machines, self.now),
+            TileContent::Summary => {
+                summary::draw(buffer, inner, &self.machines, &self.agents, self.now);
+            },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
                     agent_cell::draw(
@@ -161,10 +165,15 @@ impl TileCells<AgentCell> for Cells<'_> {
         }
     }
 
-    /// An agent's cell is titled with the agent's name.
-    fn group_title(&self, id: &AgentCell) -> Option<String> {
-        self.agent(id)
-            .map(|entry| format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name))
+    /// An agent's cell is titled with the agent's name, in the hue the
+    /// summary draws that name in.
+    fn group_title(&self, id: &AgentCell) -> Option<Span<'static>> {
+        self.agent(id).map(|entry| {
+            Span::styled(
+                format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name),
+                Role::Rainbow(entry.hue).style(),
+            )
+        })
     }
 }
 
@@ -679,8 +688,8 @@ fraying = "leading"
     }
 
     /// The grid of `app` drawn into the body of an 80×24 frame with ages
-    /// measured to [`NOW`], as rows of text.
-    fn drawn_grid(app: &mut App) -> Vec<String> {
+    /// measured to [`NOW`].
+    fn drawn_buffer(app: &mut App) -> Buffer {
         let body = Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT);
         let initial_rows = app.loaded_config.config.tiles.initial_rows();
         let cells = Cells::new(
@@ -697,6 +706,13 @@ fraying = "leading"
             TileGridContents::Shown,
             &cells,
         );
+        buffer
+    }
+
+    /// [`drawn_buffer`] as rows of text.
+    fn drawn_grid(app: &mut App) -> Vec<String> {
+        let buffer = drawn_buffer(app);
+        let body = buffer.area;
         (body.top()..body.bottom())
             .map(|row| {
                 (body.left()..body.right())
@@ -717,6 +733,25 @@ fraying = "leading"
         app.tiles.settle_for_test();
 
         assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
+    }
+
+    /// The agent's name in the summary and the title of its cell are
+    /// drawn in one hue: the first cell's, red.
+    #[test]
+    fn an_agent_name_and_its_cell_title_share_a_hue() {
+        let mut app = laid_out_app();
+        app.census
+            .apply(CensusUpdate::Local(vec![boss(21 * 60 * 60)]));
+        drawn_buffer(&mut app);
+        app.tiles.settle_for_test();
+
+        let buffer = drawn_buffer(&mut app);
+
+        let red = Color::Rgb(255, 95, 95);
+        assert_eq!(buffer[(19, 3)].symbol(), "b");
+        assert_eq!(buffer[(19, 3)].fg, red, "the summary's name");
+        assert_eq!(buffer[(2, 12)].symbol(), "b");
+        assert_eq!(buffer[(2, 12)].fg, red, "the cell's title");
     }
 
     /// Three frames after `a`, the status line says the grid is being

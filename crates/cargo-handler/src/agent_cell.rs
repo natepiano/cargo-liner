@@ -48,6 +48,7 @@ use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::summary;
 use crate::summary::age;
+use crate::theme::RainbowHue;
 use crate::theme::Role;
 use crate::tiles::AgentCell;
 
@@ -63,13 +64,16 @@ pub(crate) struct AgentEntry<'a> {
     pub(crate) launcher: Option<&'a str>,
     /// The heading of the machine the agent runs on.
     pub(crate) machine:  &'a str,
+    /// The hue the cell's title and the agent's name in the summary are
+    /// drawn in: the next of the rainbow, in cell order.
+    pub(crate) hue:      RainbowHue,
 }
 
 /// Every agent's cell across `machines`, in the order the grid shows
 /// them: machine by machine, and within a machine each top-level agent
 /// oldest first, followed by the sessions it opened, depth first and
 /// oldest first. A session whose launcher is not listed stands as a
-/// top-level agent.
+/// top-level agent. Each cell takes the next hue of the rainbow.
 pub(crate) fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
     let mut cells = Vec::new();
     for machine in machines {
@@ -118,6 +122,7 @@ fn place<'a>(
         row,
         launcher,
         machine,
+        hue: RainbowHue::of_cell(cells.len()),
     });
     for session in rows
         .iter()
@@ -486,12 +491,11 @@ mod tests {
         );
     }
 
-    /// Machine by machine, each top-level agent comes oldest first,
-    /// followed by the sessions it opened, depth first. A session whose
-    /// launcher is not listed stands on its own, and two rows naming
-    /// only each other still get a cell each.
-    #[test]
-    fn cells_follow_each_agent_with_the_sessions_it_opened() {
+    /// natedev's answer and the mac's: two top-level agents, the
+    /// sessions they opened, one under another, a session whose
+    /// launcher is not listed and two rows naming only each other, then
+    /// the mac's one agent.
+    fn natedev_and_mac() -> (MachineState, MachineState) {
         let natedev = MachineState::Answered(vec![
             agent(BOSS, "boss of bosses", 23 * HOUR, None),
             agent(428_044, "enh/handler", 22 * HOUR, None),
@@ -503,6 +507,16 @@ mod tests {
             agent(3_700_000, "right", 20 * MINUTE, Some(3_600_000)),
         ]);
         let mac = MachineState::Answered(vec![agent(12_055, "natemccoy-30", HOUR, None)]);
+        (natedev, mac)
+    }
+
+    /// Machine by machine, each top-level agent comes oldest first,
+    /// followed by the sessions it opened, depth first. A session whose
+    /// launcher is not listed stands on its own, and two rows naming
+    /// only each other still get a cell each.
+    #[test]
+    fn cells_follow_each_agent_with_the_sessions_it_opened() {
+        let (natedev, mac) = natedev_and_mac();
         let machines = [
             Machine {
                 name:  "natedev",
@@ -547,6 +561,44 @@ mod tests {
                 pid:     3_266_367,
                 started: NOW - 21 * HOUR,
             }
+        );
+    }
+
+    /// Every cell takes the next hue of the rainbow in cell order, a
+    /// launched session as much as a top-level agent, carrying on from
+    /// one machine to the next and starting over at red past violet.
+    #[test]
+    fn each_cell_takes_the_next_hue_of_the_rainbow() {
+        let (natedev, mac) = natedev_and_mac();
+        let machines = [
+            Machine {
+                name:  "natedev",
+                state: &natedev,
+            },
+            Machine {
+                name:  "mac",
+                state: &mac,
+            },
+        ];
+
+        let hues: Vec<(&str, RainbowHue)> = cell_order(&machines)
+            .iter()
+            .map(|cell| (cell.row.name.as_str(), cell.hue))
+            .collect();
+
+        assert_eq!(
+            hues,
+            [
+                ("boss of bosses", RainbowHue::Red),
+                ("trunk", RainbowHue::Orange),
+                ("under trunk", RainbowHue::Yellow),
+                ("arrange", RainbowHue::Green),
+                ("enh/handler", RainbowHue::Cyan),
+                ("orphan", RainbowHue::Blue),
+                ("left", RainbowHue::Violet),
+                ("right", RainbowHue::Red),
+                ("natemccoy-30", RainbowHue::Orange),
+            ]
         );
     }
 }

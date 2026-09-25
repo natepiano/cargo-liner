@@ -47,12 +47,19 @@ dim       = "DarkGray"
 secondary = "Gray"
 
 [variants.roles]
-busy        = { r = 100, g = 220, b = 100 }
-claude      = { r = 217, g = 119, b = 87 }
-codex       = { r = 175, g = 140, b = 255 }
-idle        = { r = 140, g = 140, b = 140 }
-shell       = { r = 90, g = 200, b = 220 }
-unreachable = { r = 255, g = 100, b = 100 }
+busy           = { r = 100, g = 220, b = 100 }
+claude         = { r = 217, g = 119, b = 87 }
+codex          = { r = 175, g = 140, b = 255 }
+idle           = { r = 140, g = 140, b = 140 }
+rainbow_blue   = { r = 100, g = 150, b = 255 }
+rainbow_cyan   = { r = 80, g = 210, b = 230 }
+rainbow_green  = { r = 110, g = 220, b = 110 }
+rainbow_orange = { r = 255, g = 165, b = 70 }
+rainbow_red    = { r = 255, g = 95, b = 95 }
+rainbow_violet = { r = 190, g = 130, b = 255 }
+rainbow_yellow = { r = 240, g = 220, b = 80 }
+shell          = { r = 90, g = 200, b = 220 }
+unreachable    = { r = 255, g = 100, b = 100 }
 
 [variants.status]
 bar = "DarkGray"

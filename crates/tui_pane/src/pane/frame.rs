@@ -330,9 +330,19 @@ struct Overlay {
     rect:  Rect,
     /// The text.
     text:  String,
-    /// The shade to write it in, or `None` for the chrome's title style
-    /// under the pane's own focus -- which is what a title takes.
-    style: Option<Style>,
+    /// The shade to write it in.
+    style: OverlayStyle,
+}
+
+/// Where a held-back piece of text takes its shade from.
+#[derive(Clone, Copy)]
+enum OverlayStyle {
+    /// The chrome's title style under the pane's own focus, with this
+    /// style patched over it -- which is what a title takes, so one that
+    /// sets only a colour keeps the weight focus gives it.
+    Title(Style),
+    /// Exactly this style, whatever the pane's focus.
+    Label(Style),
 }
 
 /// Whether neighbouring panes share the cells their borders fall on.
@@ -429,11 +439,14 @@ impl GridLines {
     ///
     /// The title goes where a ratatui [`Block`] puts a left-aligned one:
     /// the top border line, inset a cell at each end so it clears the
-    /// corners.
+    /// corners. It is written in the chrome's title style under the
+    /// pane's focus with the span's own style patched over it, so plain
+    /// text takes the title style unchanged.
     ///
     /// [`Block`]: ratatui::widgets::Block
-    pub fn add_titled(&mut self, frame: PaneFrame, title: impl Into<String>) {
+    pub fn add_titled<'a>(&mut self, frame: PaneFrame, title: impl Into<Span<'a>>) {
         self.add(frame);
+        let title = title.into();
         let rect = frame.rect;
         self.titles.push(Overlay {
             frame,
@@ -445,8 +458,8 @@ impl GridLines {
                     .saturating_sub(BORDER_LINE_WIDTH.saturating_mul(2)),
                 height: 1,
             },
-            text: title.into(),
-            style: None,
+            text: title.content.into_owned(),
+            style: OverlayStyle::Title(title.style),
         });
     }
 
@@ -493,7 +506,7 @@ impl GridLines {
             frame,
             rect: label.area,
             text: label.text,
-            style: Some(label.style),
+            style: OverlayStyle::Label(label.style),
         });
     }
 
@@ -611,8 +624,10 @@ impl GridLines {
 
     /// Write one held-back piece of text over the finished lines.
     fn write_overlay(buffer: &mut Buffer, chrome: PaneChrome, overlay: &Overlay, row: Rect) {
-        let focused = overlay.frame.focused;
-        let style = overlay.style.unwrap_or_else(|| chrome.title_style(focused));
+        let style = match overlay.style {
+            OverlayStyle::Title(patch) => chrome.title_style(overlay.frame.focused).patch(patch),
+            OverlayStyle::Label(style) => style,
+        };
         Line::from(Span::styled(overlay.text.as_str(), style)).render(row, buffer);
     }
 
@@ -710,6 +725,7 @@ const fn within(inner: Rect, outer: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use ratatui::style::Color;
+    use ratatui::style::Modifier;
 
     use super::*;
 
@@ -971,6 +987,35 @@ mod tests {
         let picture = titled(area, frame, " Git ");
         assert_eq!(picture[0], "        ", "the row the pane left stays empty");
         assert_eq!(picture[1], "┌ Git ─┐");
+    }
+
+    /// A styled title's colour replaces the chrome's title colour, and
+    /// the weight focus gives a title stays; plain text keeps the
+    /// chrome's title style whole.
+    #[test]
+    fn a_styled_title_is_patched_over_the_title_style() {
+        let area = Rect::new(0, 0, 16, 3);
+        let chrome = PaneChrome {
+            active_title: Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+            ..chrome()
+        };
+        let mut grid_lines = GridLines::new(area);
+        grid_lines.add_titled(
+            PaneFrame::new(Rect::new(0, 0, 8, 3)).with_focus(true),
+            Span::styled(" Git ", Style::default().fg(Color::Blue)),
+        );
+        grid_lines.add_titled(PaneFrame::new(Rect::new(7, 0, 9, 3)), " Log ");
+        let mut buffer = Buffer::empty(area);
+
+        grid_lines.render(&mut buffer, chrome, PaneBorders::Shared);
+
+        assert_eq!(rows(&buffer, area)[0], "┌ Git ─┬ Log ──┐");
+        assert_eq!(buffer[(2, 0)].fg, Color::Blue);
+        assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(9, 0)].fg, Color::Red);
+        assert!(!buffer[(9, 0)].modifier.contains(Modifier::BOLD));
     }
 
     /// The still path draws straight through to the target buffer, at

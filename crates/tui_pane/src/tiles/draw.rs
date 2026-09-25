@@ -90,8 +90,12 @@ pub trait TileCells<Id> {
     /// while the contents are hidden. None unless the app names its
     /// groups there.
     ///
+    /// The span's style is patched over the chrome's title style, so a
+    /// title that sets only a colour keeps the weight focus gives it,
+    /// and an unstyled one is drawn as the summary's title is.
+    ///
     /// [`summary_title`]: Self::summary_title
-    fn group_title(&self, _id: &Id) -> Option<String> { None }
+    fn group_title(&self, _id: &Id) -> Option<Span<'static>> { None }
 }
 
 /// Draw `grid` into `area`, with `cells` saying what goes in each cell.

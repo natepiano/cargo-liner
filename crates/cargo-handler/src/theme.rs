@@ -6,7 +6,10 @@
 //! cannot move another app's panes.
 //!
 //! The summary's own colors are theme roles: [`Role`] names each one,
-//! and every built-in variant carries a value for each.
+//! and every built-in variant carries a value for each. Among them is
+//! the rainbow the agent cells take in turn, one [`RainbowHue`] a cell,
+//! which draws both the cell's title and its agent's name in the
+//! summary.
 //!
 //! [`builtins`] is what startup hands to [`tui_pane::install_theme`];
 //! user `themes/*.toml` variants layer on top, replacing a built-in
@@ -39,6 +42,13 @@ use crate::constants::DEFAULT_HC_DARK_THEME;
 use crate::constants::DEFAULT_HC_LIGHT_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::IDLE_ROLE;
+use crate::constants::RAINBOW_BLUE_ROLE;
+use crate::constants::RAINBOW_CYAN_ROLE;
+use crate::constants::RAINBOW_GREEN_ROLE;
+use crate::constants::RAINBOW_ORANGE_ROLE;
+use crate::constants::RAINBOW_RED_ROLE;
+use crate::constants::RAINBOW_VIOLET_ROLE;
+use crate::constants::RAINBOW_YELLOW_ROLE;
 use crate::constants::SHELL_ROLE;
 use crate::constants::UNREACHABLE_ROLE;
 
@@ -59,17 +69,26 @@ pub(crate) enum Role {
     Idle,
     /// Why a remote machine gave no answer.
     Unreachable,
+    /// An agent cell's title and its agent's name in the summary.
+    Rainbow(RainbowHue),
 }
 
 impl Role {
     /// Every role, in the order [`RolePalette`] lists them.
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 13] = [
         Self::Claude,
         Self::Codex,
         Self::Busy,
         Self::Shell,
         Self::Idle,
         Self::Unreachable,
+        Self::Rainbow(RainbowHue::Red),
+        Self::Rainbow(RainbowHue::Orange),
+        Self::Rainbow(RainbowHue::Yellow),
+        Self::Rainbow(RainbowHue::Green),
+        Self::Rainbow(RainbowHue::Cyan),
+        Self::Rainbow(RainbowHue::Blue),
+        Self::Rainbow(RainbowHue::Violet),
     ];
 
     /// The role's key in `[variants.roles]`.
@@ -81,6 +100,7 @@ impl Role {
             Self::Shell => SHELL_ROLE,
             Self::Idle => IDLE_ROLE,
             Self::Unreachable => UNREACHABLE_ROLE,
+            Self::Rainbow(hue) => hue.key(),
         }
     }
 
@@ -88,6 +108,90 @@ impl Role {
     /// role gets [`DEFAULT_DARK_ROLES`]' value.
     pub(crate) fn style(self) -> Style {
         tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self))
+    }
+}
+
+/// One color of the rainbow the agent cells take in turn, in cell
+/// order: a cell's title and its agent's name in the summary are drawn
+/// in its hue, so the two can be paired at a glance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RainbowHue {
+    /// The first cell's hue.
+    Red,
+    /// The second cell's hue.
+    Orange,
+    /// The third cell's hue.
+    Yellow,
+    /// The fourth cell's hue.
+    Green,
+    /// The fifth cell's hue.
+    Cyan,
+    /// The sixth cell's hue.
+    Blue,
+    /// The seventh cell's hue; the eighth starts over at [`Self::Red`].
+    Violet,
+}
+
+impl RainbowHue {
+    /// Every hue, in the order the cells take them.
+    const ALL: [Self; 7] = [
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Cyan,
+        Self::Blue,
+        Self::Violet,
+    ];
+
+    /// The hue of the cell at `position` in cell order, counted from
+    /// zero and starting over at red past violet.
+    pub(crate) const fn of_cell(position: usize) -> Self { Self::ALL[position % Self::ALL.len()] }
+
+    /// The hue's key in `[variants.roles]`.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Red => RAINBOW_RED_ROLE,
+            Self::Orange => RAINBOW_ORANGE_ROLE,
+            Self::Yellow => RAINBOW_YELLOW_ROLE,
+            Self::Green => RAINBOW_GREEN_ROLE,
+            Self::Cyan => RAINBOW_CYAN_ROLE,
+            Self::Blue => RAINBOW_BLUE_ROLE,
+            Self::Violet => RAINBOW_VIOLET_ROLE,
+        }
+    }
+}
+
+/// One built-in variant's value for each [`RainbowHue`].
+struct RainbowPalette {
+    /// [`RainbowHue::Red`].
+    red:    StyleSpec,
+    /// [`RainbowHue::Orange`].
+    orange: StyleSpec,
+    /// [`RainbowHue::Yellow`].
+    yellow: StyleSpec,
+    /// [`RainbowHue::Green`].
+    green:  StyleSpec,
+    /// [`RainbowHue::Cyan`].
+    cyan:   StyleSpec,
+    /// [`RainbowHue::Blue`].
+    blue:   StyleSpec,
+    /// [`RainbowHue::Violet`].
+    violet: StyleSpec,
+}
+
+impl RainbowPalette {
+    /// The value for `hue`.
+    const fn spec(&self, hue: RainbowHue) -> StyleSpec {
+        match hue {
+            RainbowHue::Red => self.red,
+            RainbowHue::Orange => self.orange,
+            RainbowHue::Yellow => self.yellow,
+            RainbowHue::Green => self.green,
+            RainbowHue::Cyan => self.cyan,
+            RainbowHue::Blue => self.blue,
+            RainbowHue::Violet => self.violet,
+        }
     }
 }
 
@@ -105,6 +209,8 @@ struct RolePalette {
     idle:        StyleSpec,
     /// [`Role::Unreachable`].
     unreachable: StyleSpec,
+    /// [`Role::Rainbow`], one value per hue.
+    rainbow:     RainbowPalette,
 }
 
 impl RolePalette {
@@ -117,6 +223,7 @@ impl RolePalette {
             Role::Shell => self.shell,
             Role::Idle => self.idle,
             Role::Unreachable => self.unreachable,
+            Role::Rainbow(hue) => self.rainbow.spec(hue),
         }
     }
 
@@ -138,6 +245,15 @@ const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
     shell:       StyleSpec::from_color(Color::Rgb(90, 200, 220)),
     idle:        StyleSpec::from_color(Color::Rgb(140, 140, 140)),
     unreachable: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
+    rainbow:     RainbowPalette {
+        red:    StyleSpec::from_color(Color::Rgb(255, 95, 95)),
+        orange: StyleSpec::from_color(Color::Rgb(255, 165, 70)),
+        yellow: StyleSpec::from_color(Color::Rgb(240, 220, 80)),
+        green:  StyleSpec::from_color(Color::Rgb(110, 220, 110)),
+        cyan:   StyleSpec::from_color(Color::Rgb(80, 210, 230)),
+        blue:   StyleSpec::from_color(Color::Rgb(100, 150, 255)),
+        violet: StyleSpec::from_color(Color::Rgb(190, 130, 255)),
+    },
 };
 
 /// [`default_light`]'s roles: the same hues, darker, for a white
@@ -149,6 +265,15 @@ const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
     shell:       StyleSpec::from_color(Color::Rgb(0, 120, 150)),
     idle:        StyleSpec::from_color(Color::Rgb(120, 120, 120)),
     unreachable: StyleSpec::from_color(Color::Rgb(190, 0, 0)),
+    rainbow:     RainbowPalette {
+        red:    StyleSpec::from_color(Color::Rgb(200, 30, 30)),
+        orange: StyleSpec::from_color(Color::Rgb(180, 85, 0)),
+        yellow: StyleSpec::from_color(Color::Rgb(135, 105, 0)),
+        green:  StyleSpec::from_color(Color::Rgb(0, 135, 0)),
+        cyan:   StyleSpec::from_color(Color::Rgb(0, 120, 140)),
+        blue:   StyleSpec::from_color(Color::Rgb(30, 80, 210)),
+        violet: StyleSpec::from_color(Color::Rgb(130, 50, 200)),
+    },
 };
 
 /// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
@@ -160,6 +285,15 @@ const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
     shell:       StyleSpec::bold(Color::LightCyan),
     idle:        StyleSpec::from_color(Color::Gray),
     unreachable: StyleSpec::bold(Color::LightRed),
+    rainbow:     RainbowPalette {
+        red:    StyleSpec::bold(Color::LightRed),
+        orange: StyleSpec::bold(Color::Rgb(255, 170, 60)),
+        yellow: StyleSpec::bold(Color::LightYellow),
+        green:  StyleSpec::bold(Color::LightGreen),
+        cyan:   StyleSpec::bold(Color::LightCyan),
+        blue:   StyleSpec::bold(Color::LightBlue),
+        violet: StyleSpec::bold(Color::LightMagenta),
+    },
 };
 
 /// [`high_contrast_light`]'s roles: deep and bold, save `idle`, which
@@ -171,6 +305,15 @@ const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
     shell:       StyleSpec::bold(Color::Rgb(0, 80, 120)),
     idle:        StyleSpec::from_color(Color::Rgb(80, 80, 80)),
     unreachable: StyleSpec::bold(Color::Rgb(180, 0, 0)),
+    rainbow:     RainbowPalette {
+        red:    StyleSpec::bold(Color::Rgb(180, 0, 0)),
+        orange: StyleSpec::bold(Color::Rgb(150, 60, 0)),
+        yellow: StyleSpec::bold(Color::Rgb(110, 85, 0)),
+        green:  StyleSpec::bold(Color::Rgb(0, 100, 0)),
+        cyan:   StyleSpec::bold(Color::Rgb(0, 95, 115)),
+        blue:   StyleSpec::bold(Color::Rgb(0, 0, 170)),
+        violet: StyleSpec::bold(Color::Rgb(100, 0, 160)),
+    },
 };
 
 /// The variants cargo-handler compiles in, in the order the settings
@@ -469,6 +612,51 @@ mod tests {
                 .any(|builtin| builtin.id.as_str() == variant.name),
             "starter must not shadow a built-in on drop-in"
         );
+    }
+
+    /// The cells take the rainbow red to violet, and the eighth starts
+    /// over at red.
+    #[test]
+    fn cells_take_the_rainbow_in_order_and_start_over_past_violet() {
+        let hues: Vec<RainbowHue> = (0..9).map(RainbowHue::of_cell).collect();
+
+        assert_eq!(
+            hues,
+            [
+                RainbowHue::Red,
+                RainbowHue::Orange,
+                RainbowHue::Yellow,
+                RainbowHue::Green,
+                RainbowHue::Cyan,
+                RainbowHue::Blue,
+                RainbowHue::Violet,
+                RainbowHue::Red,
+                RainbowHue::Orange,
+            ]
+        );
+    }
+
+    /// Every built-in variant gives each hue a color of its own, so no
+    /// two cells within one turn of the rainbow share a color.
+    #[test]
+    fn every_builtin_draws_each_hue_in_its_own_color() {
+        for palette in [
+            &DEFAULT_DARK_ROLES,
+            &DEFAULT_LIGHT_ROLES,
+            &HIGH_CONTRAST_DARK_ROLES,
+            &HIGH_CONTRAST_LIGHT_ROLES,
+        ] {
+            let colors: Vec<Color> = RainbowHue::ALL
+                .into_iter()
+                .map(|hue| palette.rainbow.spec(hue).color)
+                .collect();
+            for (index, color) in colors.iter().enumerate() {
+                assert!(
+                    !colors[index + 1..].contains(color),
+                    "{color:?} is drawn for two hues"
+                );
+            }
+        }
     }
 
     #[test]

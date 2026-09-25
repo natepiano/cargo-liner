@@ -37,14 +37,15 @@ what it is running. Every cell carries the framework's readout on its last row.
 This machine comes first, under its short host name, then each remote machine in
 config order. Each machine's heading is followed by its own column-label row,
 with the columns sized across every machine so they line up down the cell; the
-first column is the agent's pid. Within a machine the rows run oldest first. A
-machine with no agents keeps its heading (`natedev · no agents`) and has no
-label row; one that has not answered yet says `scanning`; one whose probe failed
-shows the reason in the `unreachable` color: `unreachable` (ssh exit 255),
-`cargo-handler not installed` (exit 127), `probe version N, expected M`,
-`timed out` (no answer within 10 seconds), or the probe's exit status. This
-machine is scanned every 2 seconds and each remote every 5; a remote whose probe
-is still out is skipped until it answers.
+first column is the agent's pid. Within a machine the rows run oldest first.
+Each name is drawn in the color of the agent's cell (see
+[agent cells](#agent-cells)). A machine with no agents keeps its heading
+(`natedev · no agents`) and has no label row; one that has not answered yet
+says `scanning`; one whose probe failed shows the reason in the `unreachable`
+color: `unreachable` (ssh exit 255), `cargo-handler not installed` (exit 127),
+`probe version N, expected M`, `timed out` (no answer within 10 seconds), or
+the probe's exit status. This machine is scanned every 2 seconds and each
+remote every 5; a remote whose probe is still out is skipped until it answers.
 
 Only top-level agents are listed -- the ones a person started, not the ones an
 agent started:
@@ -93,7 +94,12 @@ name (`tool-based-ui-trunk` above): each
 top-level agent, and each session another agent opened in tmux. The cells
 follow the machines in summary order; within a machine each top-level agent
 comes oldest first, followed by the sessions it opened, depth first and oldest
-first. The header gives the agent's pid, program, status, age, machine and
+first. Each cell takes the next color of a rainbow in that order -- red,
+orange, yellow, green, cyan, blue, violet, then red again -- and its title and
+the agent's name in the summary are both drawn in it, so a summary row and its
+cell pair up at a glance. A launched session takes a color of its own even
+though the summary leaves it out, and when a cell closes, the cells after it
+each take the color before. The header gives the agent's pid, program, status, age, machine and
 desktop, colored as the summary colors them, then its directory, and for a launched
 session the agent that opened it. Below it is a table of everything the agent
 started that is still running, each row's `kind` indented two cells under the
@@ -269,10 +275,13 @@ For custom colors, copy [`themes/starter.toml`](themes/starter.toml) into
 `themes/` under the config directory and point `dark_theme` at
 `Cargo Handler Dark`.
 
-The summary reads six keys from each variant's `[variants.roles]`: `claude`
-and `codex` color the agent column, `busy`, `shell` and `idle` the status
-column (a missing or unknown status uses `idle`), and `unreachable` a remote's
-failure reason. A custom variant that leaves one out takes it from the built-in
+The summary reads thirteen keys from each variant's `[variants.roles]`:
+`claude` and `codex` color the agent column, `busy`, `shell` and `idle` the
+status column (a missing or unknown status uses `idle`), `unreachable` a
+remote's failure reason, and `rainbow_red`, `rainbow_orange`,
+`rainbow_yellow`, `rainbow_green`, `rainbow_cyan`, `rainbow_blue` and
+`rainbow_violet` the colors the agent cells take in turn, for the name column
+and each cell's title. A custom variant that leaves one out takes it from the built-in
 it replaces, or, under a new name, from `Default Dark` or `Default Light` to
 match its appearance.
 

@@ -199,6 +199,22 @@ pub(crate) const SHELL_ROLE: &str = "shell";
 pub(crate) const IDLE_ROLE: &str = "idle";
 /// `[variants.roles]` key for why a remote machine gave no answer.
 pub(crate) const UNREACHABLE_ROLE: &str = "unreachable";
+/// `[variants.roles]` key for the first color of the rainbow the agent
+/// cells take in turn.
+pub(crate) const RAINBOW_RED_ROLE: &str = "rainbow_red";
+/// `[variants.roles]` key for the rainbow's second color.
+pub(crate) const RAINBOW_ORANGE_ROLE: &str = "rainbow_orange";
+/// `[variants.roles]` key for the rainbow's third color.
+pub(crate) const RAINBOW_YELLOW_ROLE: &str = "rainbow_yellow";
+/// `[variants.roles]` key for the rainbow's fourth color.
+pub(crate) const RAINBOW_GREEN_ROLE: &str = "rainbow_green";
+/// `[variants.roles]` key for the rainbow's fifth color.
+pub(crate) const RAINBOW_CYAN_ROLE: &str = "rainbow_cyan";
+/// `[variants.roles]` key for the rainbow's sixth color.
+pub(crate) const RAINBOW_BLUE_ROLE: &str = "rainbow_blue";
+/// `[variants.roles]` key for the rainbow's last color, after which the
+/// cells start over at [`RAINBOW_RED_ROLE`].
+pub(crate) const RAINBOW_VIOLET_ROLE: &str = "rainbow_violet";
 
 // census
 /// The `agent` value of a Claude Code row, and the process name a

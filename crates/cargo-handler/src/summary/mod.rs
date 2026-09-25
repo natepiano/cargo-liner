@@ -2,6 +2,8 @@
 //! agents, a column-label row and its top-level agents, oldest first,
 //! with a blank row between machines. Every machine's table is laid out
 //! with the same column widths, so the columns line up down the cell.
+//! Each agent's name is drawn in the hue of its cell, so a row and that
+//! agent's cell can be paired at a glance.
 
 pub(crate) mod age;
 
@@ -24,6 +26,7 @@ use tui_pane::label_color;
 use tui_pane::text_default;
 
 use self::age::age_label;
+use crate::agent_cell::AgentEntry;
 use crate::census::Agent;
 use crate::census::AgentRow;
 use crate::census::Machine;
@@ -75,9 +78,15 @@ fn table_height(rows: usize) -> usize {
     }
 }
 
-/// Draw `machines` into `area`, with ages measured to `now` in unix
-/// seconds.
-pub(crate) fn draw(buffer: &mut Buffer, area: Rect, machines: &[Machine<'_>], now: u64) {
+/// Draw `machines` into `area`, with each agent's name in the hue of its
+/// cell among `cells` and ages measured to `now` in unix seconds.
+pub(crate) fn draw(
+    buffer: &mut Buffer,
+    area: Rect,
+    machines: &[Machine<'_>],
+    cells: &[AgentEntry<'_>],
+    now: u64,
+) {
     // Every machine's table is laid out with the same constraints and
     // indent, so its columns line up with every other machine's.
     let constraints = fitted_constraints(machines, now);
@@ -86,7 +95,7 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, machines: &[Machine<'_>], no
         if remaining.height == 0 {
             break;
         }
-        let used = draw_machine(buffer, remaining, machine, &constraints, now);
+        let used = draw_machine(buffer, remaining, machine, cells, &constraints, now);
         remaining.y = remaining.y.saturating_add(used);
         remaining.height = remaining.height.saturating_sub(used);
     }
@@ -94,11 +103,12 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, machines: &[Machine<'_>], no
 
 /// Draw one machine's heading, and its label row and rows when it lists
 /// agents, into the top of `area`, answering how many rows that took
-/// including the gap below it.
+/// including the gap below it. Each name takes its hue from `cells`.
 fn draw_machine(
     buffer: &mut Buffer,
     area: Rect,
     machine: &Machine<'_>,
+    cells: &[AgentEntry<'_>],
     constraints: &[Constraint],
     now: u64,
 ) -> u16 {
@@ -142,7 +152,8 @@ fn draw_machine(
         .saturating_sub(GROUP_HEADER_HEIGHT)
         .min(u16::try_from(table_height(rows.len())).unwrap_or(u16::MAX));
     Table::new(
-        rows.iter().map(|row| agent_row(row, now)),
+        rows.iter()
+            .map(|row| agent_row(row, name_style(cells, machine.name, row), now)),
         constraints.iter().copied(),
     )
     .header(Row::new(
@@ -172,15 +183,27 @@ fn count_note(count: usize) -> String {
     }
 }
 
-/// One agent's table row.
-fn agent_row(row: &AgentRow, now: u64) -> Row<'static> {
+/// The style `row`'s name is drawn in on `machine`: the hue of its cell
+/// among `cells`, or the default text color for a row with no cell.
+fn name_style(cells: &[AgentEntry<'_>], machine: &str, row: &AgentRow) -> Style {
+    cells
+        .iter()
+        .find(|cell| cell.machine == machine && cell.row.pid == row.pid)
+        .map_or_else(
+            || Style::default().fg(text_default()),
+            |cell| Role::Rainbow(cell.hue).style(),
+        )
+}
+
+/// One agent's table row, its name drawn in `name_style`.
+fn agent_row(row: &AgentRow, name_style: Style, now: u64) -> Row<'static> {
     let label = Style::default().fg(label_color());
     Row::new([
         Span::styled(row.pid.to_string(), Style::default().fg(text_default())),
         Span::styled(row.agent.label(), agent_role(row.agent).style()),
         Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
-            Style::default().fg(text_default()),
+            name_style,
         ),
         Span::styled(status_text(row).to_string(), status_role(row).style()),
         Span::styled(age_label(now.saturating_sub(row.started)), label),
@@ -291,6 +314,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::agent_cell;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -301,6 +325,8 @@ mod tests {
     /// The summary's width in these tests: wide enough that no
     /// directory is cut.
     const WIDTH: u16 = 120;
+    /// The column each name starts at in these tests.
+    const NAME_X: u16 = 18;
 
     /// Process `pid`, an `agent` named `name`, started `age` seconds
     /// before [`NOW`].
@@ -404,7 +430,8 @@ mod tests {
     /// with one agent; a remote whose probe failed; and one that has not
     /// answered. Each machine that lists agents repeats the label row
     /// under its heading, with the columns sized across both machines'
-    /// rows.
+    /// rows. Each name takes the hue of its cell: the launched session
+    /// has a cell but no row, so the hue after boss's goes to it.
     #[test]
     fn each_machine_lists_its_agents_under_its_own_label_row() {
         let natedev = natedev();
@@ -439,8 +466,9 @@ mod tests {
         let height = u16::try_from(height(&machines)).expect("the height should fit a u16");
         let area = Rect::new(0, 0, WIDTH, height);
         let mut buffer = Buffer::empty(area);
+        let cells = agent_cell::cell_order(&machines);
 
-        draw(&mut buffer, area, &machines, NOW);
+        draw(&mut buffer, area, &machines, &cells, NOW);
 
         assert_eq!(
             lines(&buffer),
@@ -467,5 +495,20 @@ mod tests {
         assert_eq!(buffer[(56, 4)].fg, Color::Rgb(100, 220, 100));
         assert_eq!(buffer[(56, 5)].fg, Color::Rgb(140, 140, 140));
         assert_eq!(buffer[(10, 11)].fg, Color::Rgb(255, 100, 100));
+        let names: Vec<Color> = [2, 3, 4, 5, 9]
+            .into_iter()
+            .map(|y| buffer[(NAME_X, y)].fg)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                Color::Rgb(255, 95, 95),
+                Color::Rgb(240, 220, 80),
+                Color::Rgb(110, 220, 110),
+                Color::Rgb(80, 210, 230),
+                Color::Rgb(100, 150, 255),
+            ],
+            "red, then yellow past trunk's orange, green, cyan, and the mac's blue"
+        );
     }
 }

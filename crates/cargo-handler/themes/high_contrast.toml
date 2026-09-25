@@ -45,12 +45,19 @@ dim       = "Gray"
 secondary = "White"
 
 [variants.roles]
-busy        = { color = "LightGreen", bold = true }
-claude      = { color = { r = 255, g = 150, b = 90 }, bold = true }
-codex       = { color = "LightMagenta", bold = true }
-idle        = "Gray"
-shell       = { color = "LightCyan", bold = true }
-unreachable = { color = "LightRed", bold = true }
+busy           = { color = "LightGreen", bold = true }
+claude         = { color = { r = 255, g = 150, b = 90 }, bold = true }
+codex          = { color = "LightMagenta", bold = true }
+idle           = "Gray"
+rainbow_blue   = { color = "LightBlue", bold = true }
+rainbow_cyan   = { color = "LightCyan", bold = true }
+rainbow_green  = { color = "LightGreen", bold = true }
+rainbow_orange = { color = { r = 255, g = 170, b = 60 }, bold = true }
+rainbow_red    = { color = "LightRed", bold = true }
+rainbow_violet = { color = "LightMagenta", bold = true }
+rainbow_yellow = { color = "LightYellow", bold = true }
+shell          = { color = "LightCyan", bold = true }
+unreachable    = { color = "LightRed", bold = true }
 
 [variants.status]
 bar = { r = 60, g = 60, b = 60 }
@@ -93,12 +100,19 @@ dim       = { r = 80, g = 80, b = 80 }
 secondary = "Black"
 
 [variants.roles]
-busy        = { color = { r = 0, g = 100, b = 0 }, bold = true }
-claude      = { color = { r = 160, g = 60, b = 0 }, bold = true }
-codex       = { color = { r = 100, g = 0, b = 160 }, bold = true }
-idle        = { r = 80, g = 80, b = 80 }
-shell       = { color = { r = 0, g = 80, b = 120 }, bold = true }
-unreachable = { color = { r = 180, g = 0, b = 0 }, bold = true }
+busy           = { color = { r = 0, g = 100, b = 0 }, bold = true }
+claude         = { color = { r = 160, g = 60, b = 0 }, bold = true }
+codex          = { color = { r = 100, g = 0, b = 160 }, bold = true }
+idle           = { r = 80, g = 80, b = 80 }
+rainbow_blue   = { color = { r = 0, g = 0, b = 170 }, bold = true }
+rainbow_cyan   = { color = { r = 0, g = 95, b = 115 }, bold = true }
+rainbow_green  = { color = { r = 0, g = 100, b = 0 }, bold = true }
+rainbow_orange = { color = { r = 150, g = 60, b = 0 }, bold = true }
+rainbow_red    = { color = { r = 180, g = 0, b = 0 }, bold = true }
+rainbow_violet = { color = { r = 100, g = 0, b = 160 }, bold = true }
+rainbow_yellow = { color = { r = 110, g = 85, b = 0 }, bold = true }
+shell          = { color = { r = 0, g = 80, b = 120 }, bold = true }
+unreachable    = { color = { r = 180, g = 0, b = 0 }, bold = true }
 
 [variants.status]
 bar = { r = 210, g = 210, b = 210 }
