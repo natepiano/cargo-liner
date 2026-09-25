@@ -180,6 +180,7 @@ mod tests {
             status:      Some("busy".to_string()),
             started:     90,
             pid:         428_044,
+            desktop:     None,
             directory:   "~/rust/handler".to_string(),
             launched_by: None,
             children:    Vec::new(),

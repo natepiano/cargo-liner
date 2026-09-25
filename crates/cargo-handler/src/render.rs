@@ -452,8 +452,8 @@ fraying = "leading"
     const ONE_AGENT_CELL: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
         "│ natedev · 1 agent                                                            │",
-        "│ pid      agent   name            status  age  directory                      │",
-        "│ 1579022  claude  boss of bosses  idle    21h  ~/rust/hana_catalyst/docs/hana │",
+        "│ pid      agent   name            status  age  desktop  directory             │",
+        "│ 1579022  claude  boss of bosses  idle    21h  —        ~/rust/hana_catalyst/d│",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -463,7 +463,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                  content rows: 3  r/c: 11/78 │",
         "├ boss of bosses───────────────────────────────────────────────────────────────┤",
-        "│ pid 1579022 · claude · idle · 21h · natedev                                  │",
+        "│ pid 1579022 · claude · idle · 21h · natedev · —                              │",
         "│ ~/rust/hana_catalyst/docs/hana                                               │",
         "│                                                                              │",
         "│ pid      kind        name                                    age             │",
@@ -642,6 +642,7 @@ fraying = "leading"
             status:      Some("idle".to_string()),
             started:     NOW - age,
             pid:         1_579_022,
+            desktop:     None,
             directory:   "~/rust/hana_catalyst/docs/hana".to_string(),
             launched_by: None,
             children:    vec![

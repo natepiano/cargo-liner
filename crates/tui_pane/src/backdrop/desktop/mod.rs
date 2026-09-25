@@ -42,6 +42,8 @@ pub use self::capture_attempt::CaptureFailure;
 pub use self::capture_attempt::CaptureWindowSelectionMethod;
 pub use self::capture_attempt::CompletedCaptureAttemptDiagnostic;
 pub use self::capture_attempt::TerminalWindowCandidateSource;
+#[cfg(target_os = "linux")]
+pub use self::platform::kwin_evaluate;
 
 /// What the terminal reports about its own grid.
 ///

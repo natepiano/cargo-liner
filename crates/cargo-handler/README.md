@@ -24,14 +24,14 @@ what it is running. Every cell carries the framework's readout on its last row.
 
 ```text
  natedev · 3 agents
- pid      agent   name                                  status  age     directory
- 1579022  claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana
- 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler
- 4039085  codex   codex test                            —       12m     ~/rust/handler
+ pid      agent   name                                  status  age     desktop        directory
+ 1579022  claude  boss of bosses                        idle    21h     boss           ~/rust/hana_catalyst/docs/hana
+ 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  berth_fix      ~/rust/cargo-handler
+ 4039085  codex   codex test                            —       12m     cargo handler  ~/rust/handler
 
  mac · 1 agent
- pid      agent   name                                  status  age     directory
- 12055    claude  natemccoy-30                          idle    23h     ~
+ pid      agent   name                                  status  age     desktop        directory
+ 12055    claude  natemccoy-30                          idle    23h     —              ~
 ```
 
 This machine comes first, under its short host name, then each remote machine in
@@ -52,7 +52,8 @@ agent started:
 - **Claude Code**: each `~/.claude/sessions/<pid>.json` whose process is alive
   and is `claude`. The row shows the session's name (or the start of its session
   id), its status (`busy`, `shell`, `idle`, or `—` when the record has none),
-  the age of the process, and the session's directory.
+  the age of the process, the desktop its window is on (see
+  [desktops](#desktops)), and the session's directory.
 - **Codex**: an interactive `codex` process -- not `codex app-server`, which
   runs for another program. Its name is that of the thread it started with:
   the thread's name, else its first prompt on one line, cut at 80 characters.
@@ -74,7 +75,7 @@ launcher's.
 ## agent cells
 
 ```text
- pid 3266367 · claude · busy · 23h · natedev
+ pid 3266367 · claude · busy · 23h · natedev · berth_fix
  ~/rust/tool-based-ui-trunk
  launched by boss of bosses
 
@@ -92,8 +93,8 @@ name (`tool-based-ui-trunk` above): each
 top-level agent, and each session another agent opened in tmux. The cells
 follow the machines in summary order; within a machine each top-level agent
 comes oldest first, followed by the sessions it opened, depth first and oldest
-first. The header gives the agent's pid, program, status, age and machine,
-colored as the summary colors them, then its directory, and for a launched
+first. The header gives the agent's pid, program, status, age, machine and
+desktop, colored as the summary colors them, then its directory, and for a launched
 session the agent that opened it. Below it is a table of everything the agent
 started that is still running, each row's `kind` indented two cells under the
 row that started it, with `—` for a row that has no process of its own. An
@@ -153,6 +154,36 @@ that path would be too long for ssh). `probe` prints the host's own census as
 one line of JSON and exits, so cargo-handler must be installed on the remote and
 on the `PATH` ssh gives a non-interactive command -- `cargo install` puts it in
 `~/.cargo/bin/`.
+
+### desktops
+
+The `desktop` column, and the last part of each agent cell's first header line,
+name the KDE virtual desktop the agent's terminal window is on: `cargo handler`,
+`berth_fix`, `bevy 0.20.0-rc.1`. A window on several desktops lists them joined
+with `, `, and one on every desktop says `all desktops`. At most every 5
+seconds, and only while there are agents, cargo-handler runs one `KWin` script
+over the session bus that lists every window's pid, caption and desktops. The
+window is matched to the agent this way:
+
+- The agent's terminal is the nearest process at or above it that owns a
+  window. A terminal with one window gives that window.
+- A terminal that owns several windows, such as a single-instance Ghostty, gives
+  the one whose caption is the session's name after the status glyph Claude Code
+  writes ahead of it (`✳ boss of bosses`, `◐ enh/handler`), or, for Codex, the
+  thread's name ahead of ` | ` and the directory's (`codex test | handler`). No
+  such caption, or more than one, gives `—`. A session whose window shows
+  another tab's title, or a title that is not the session's name, gives `—`
+  too.
+- An agent a tmux server holds is found through the pane it runs in, that pane's
+  session, the clients showing that session (`tmux list-panes -a` and
+  `tmux list-clients`), and each client's terminal window, by the same two
+  rules. A detached session gives `—`. Only the default tmux socket is read,
+  through the program the server was started as when that is an absolute path,
+  since tmux need not be on `PATH`.
+
+Off Linux, outside KDE Plasma, or where `KWin` does not answer, every desktop is
+`—`. The probe carries each row's `desktop`, so a remote Linux machine under KDE
+fills it in; the Mac shows `—`.
 
 ## keys
 

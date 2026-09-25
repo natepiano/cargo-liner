@@ -24,6 +24,8 @@ pub(super) use self::fallback::window_titles;
 #[cfg(target_os = "linux")]
 pub(super) use self::linux::capture;
 #[cfg(target_os = "linux")]
+pub use self::linux::kwin_evaluate;
+#[cfg(target_os = "linux")]
 pub(super) use self::linux::window_at;
 #[cfg(target_os = "linux")]
 pub(super) use self::linux::window_frame;

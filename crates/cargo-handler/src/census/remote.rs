@@ -237,6 +237,7 @@ mod tests {
                 status:      Some("idle".to_string()),
                 started:     5,
                 pid:         80_020,
+                desktop:     None,
                 directory:   "~".to_string(),
                 launched_by: None,
                 children:    Vec::new(),

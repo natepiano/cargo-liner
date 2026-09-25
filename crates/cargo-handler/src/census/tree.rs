@@ -678,6 +678,7 @@ mod tests {
             status: None,
             started,
             pid,
+            desktop: None,
             directory: HOME.to_string(),
             launched_by: None,
             children: Vec::new(),

@@ -2,7 +2,8 @@
 //! `~/.claude/sessions`, the process table, the threads interactive
 //! Codex sessions started, and the transcripts that name what each
 //! agent is running and which agent opened a session tmux holds, handed
-//! to [`classify`] and [`tree`].
+//! to [`classify`] and [`tree`]; and the windows `KWin` lists with the
+//! panes and clients of tmux, handed to [`desktop`].
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -10,6 +11,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use sysinfo::Pid;
@@ -26,6 +30,9 @@ use super::classify::HeldSession;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
+use super::desktop;
+use super::desktop::TmuxLayout;
+use super::desktop::WindowEntry;
 use super::transcript;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
@@ -42,10 +49,15 @@ use crate::constants::CLAUDE_SESSIONS_DIRNAME;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_DIRNAME;
 use crate::constants::CODEX_SESSIONS_DIRNAME;
+use crate::constants::DESKTOP_QUERY_INTERVAL;
 use crate::constants::PROC_DIRNAME;
 use crate::constants::PROC_FD_DIRNAME;
 use crate::constants::PROJECTS_DIRNAME;
 use crate::constants::SESSION_RECORD_EXTENSION;
+use crate::constants::TMUX_LIST_CLIENTS;
+use crate::constants::TMUX_LIST_PANES;
+#[cfg(target_os = "linux")]
+use crate::constants::WINDOW_LIST_EXPRESSION;
 
 /// A process as a cache knows it: its pid and start, so a pid handed
 /// out again is a new key.
@@ -64,6 +76,42 @@ pub(super) struct LocalScanner {
     /// pid and start, or none found once the session was
     /// [`CALL_SEARCH_SETTLE`] old.
     launchers:   HashMap<ProcessKey, Option<ProcessKey>>,
+    /// What `KWin` and tmux last answered, kept for
+    /// [`DESKTOP_QUERY_INTERVAL`]; none before the first scan with rows.
+    desktops:    Option<DesktopRead>,
+}
+
+/// What `KWin` and tmux answered at one moment.
+#[derive(Debug)]
+struct DesktopRead {
+    /// When they were asked.
+    read_at: Instant,
+    /// Every window `KWin` listed; none where it did not answer, as off
+    /// Linux or outside KDE.
+    windows: Option<Vec<WindowEntry>>,
+    /// The default tmux server's panes and clients; none where tmux held
+    /// no row, `KWin` did not answer, or tmux did not.
+    tmux:    Option<TmuxLayout>,
+}
+
+impl DesktopRead {
+    /// Ask `KWin` for its windows now and, when it answers and tmux holds
+    /// one of `rows`, tmux for its panes and clients.
+    fn now(processes: &[ProcessEntry], rows: &[AgentRow]) -> Self {
+        let windows = read_windows();
+        let tmux = windows
+            .as_ref()
+            .and_then(|_| desktop::tmux_program(processes, rows))
+            .and_then(|program| read_tmux(&program));
+        Self {
+            read_at: Instant::now(),
+            windows,
+            tmux,
+        }
+    }
+
+    /// Whether this answer is old enough to be asked for again.
+    fn is_stale(&self) -> bool { self.read_at.elapsed() >= DESKTOP_QUERY_INTERVAL }
 }
 
 impl LocalScanner {
@@ -73,6 +121,7 @@ impl LocalScanner {
             home:        dirs::home_dir(),
             shell_calls: HashMap::new(),
             launchers:   HashMap::new(),
+            desktops:    None,
         }
     }
 
@@ -136,7 +185,28 @@ impl LocalScanner {
             threads,
         };
         tree::attach_children(&mut rows, &processes, &sources);
+        self.attach_desktops(&processes, &mut rows);
         rows
+    }
+
+    /// Set the desktop of each of `rows`. `KWin` and tmux are asked
+    /// again only once their last answer is [`DESKTOP_QUERY_INTERVAL`]
+    /// old, and not at all while there are no rows.
+    fn attach_desktops(&mut self, processes: &[ProcessEntry], rows: &mut [AgentRow]) {
+        if rows.is_empty() {
+            return;
+        }
+        if self.desktops.as_ref().is_none_or(DesktopRead::is_stale) {
+            self.desktops = Some(DesktopRead::now(processes, rows));
+        }
+        if let Some(DesktopRead {
+            windows: Some(windows),
+            tmux,
+            ..
+        }) = &self.desktops
+        {
+            desktop::attach_desktops(rows, processes, windows, tmux.as_ref());
+        }
     }
 
     /// Set `launched_by` on each of `rows` a tmux server holds, from the
@@ -445,6 +515,40 @@ fn claude_pid(environment: &[OsString]) -> Option<u32> {
     })
 }
 
+/// Every window `KWin` lists, from a script it runs; none where it does
+/// not answer.
+#[cfg(target_os = "linux")]
+fn read_windows() -> Option<Vec<WindowEntry>> {
+    desktop::parse_windows(&tui_pane::kwin_evaluate(WINDOW_LIST_EXPRESSION)?)
+}
+
+/// No windows off Linux, where there is no `KWin` to ask.
+#[cfg(not(target_os = "linux"))]
+const fn read_windows() -> Option<Vec<WindowEntry>> { None }
+
+/// The default tmux server's panes and clients, asked of `program`;
+/// none where either list fails.
+fn read_tmux(program: &str) -> Option<TmuxLayout> {
+    let panes = tmux_output(program, &TMUX_LIST_PANES)?;
+    let clients = tmux_output(program, &TMUX_LIST_CLIENTS)?;
+    Some(TmuxLayout::parse(&panes, &clients))
+}
+
+/// What `program` prints to standard output run with `arguments`; none
+/// where it cannot be run or exits with a failure.
+fn tmux_output(program: &str, arguments: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// The processes whose command line and directory the second pass
 /// reads, and every process above one of them.
 ///
@@ -602,6 +706,7 @@ mod tests {
             home:        None,
             shell_calls: HashMap::new(),
             launchers:   HashMap::new(),
+            desktops:    None,
         }
     }
 
@@ -638,6 +743,7 @@ mod tests {
             status: None,
             started,
             pid,
+            desktop: None,
             directory: "~".to_string(),
             launched_by: None,
             children: Vec::new(),

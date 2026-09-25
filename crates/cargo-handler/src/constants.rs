@@ -123,8 +123,15 @@ pub(crate) const THREAD_KIND: &str = "thread";
 
 // summary table
 /// The summary's column labels, in column order.
-pub(crate) const SUMMARY_HEADERS: [&str; 6] =
-    ["pid", "agent", "name", "status", "age", "directory"];
+pub(crate) const SUMMARY_HEADERS: [&str; 7] = [
+    "pid",
+    "agent",
+    "name",
+    "status",
+    "age",
+    "desktop",
+    "directory",
+];
 /// Index of the `pid` column in [`SUMMARY_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `agent` column in [`SUMMARY_HEADERS`].
@@ -135,9 +142,11 @@ pub(crate) const NAME_COLUMN: usize = 2;
 pub(crate) const STATUS_COLUMN: usize = 3;
 /// Index of the `age` column in [`SUMMARY_HEADERS`].
 pub(crate) const AGE_COLUMN: usize = 4;
+/// Index of the `desktop` column in [`SUMMARY_HEADERS`].
+pub(crate) const DESKTOP_COLUMN: usize = 5;
 /// Index of the `directory` column in [`SUMMARY_HEADERS`], the one
 /// column that takes whatever the fitted columns leave.
-pub(crate) const DIRECTORY_COLUMN: usize = 5;
+pub(crate) const DIRECTORY_COLUMN: usize = 6;
 /// Cells the `name` column grows to at most. A longer name is cut to
 /// fit and ends in [`TRUNCATION_MARK`].
 pub(crate) const NAME_COLUMN_MAX: u16 = 36;
@@ -365,6 +374,37 @@ pub(crate) const LOCAL_MACHINE_FALLBACK: &str = "localhost";
 pub(crate) const LOCAL_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 /// How often the scheduler asks each remote machine for its agents.
 pub(crate) const REMOTE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+
+// desktops
+/// How long the scanner keeps what `KWin` and tmux answered before
+/// asking again. Each `KWin` read loads and runs a script inside the
+/// compositor, so it is not repeated on every scan.
+pub(crate) const DESKTOP_QUERY_INTERVAL: Duration = Duration::from_secs(5);
+/// The expression `KWin` evaluates to list every window as JSON: the
+/// pid of the process that owns it, its caption, the names of the
+/// virtual desktops it is on, and whether it is on every one.
+#[cfg(target_os = "linux")]
+pub(crate) const WINDOW_LIST_EXPRESSION: &str = "JSON.stringify(workspace.windowList().map(w => \
+    ({pid: w.pid, caption: w.caption, desktops: (w.desktops || []).map(d => d.name), \
+    all_desktops: w.onAllDesktops})))";
+/// Separates the thread's name from the directory's in the caption
+/// Codex gives its window: `codex test | handler`.
+pub(crate) const CODEX_CAPTION_SEPARATOR: &str = " | ";
+/// Shown for an agent whose window is on every virtual desktop.
+pub(crate) const ALL_DESKTOPS_LABEL: &str = "all desktops";
+/// Joins the names of the desktops one window is on.
+pub(crate) const DESKTOP_SEPARATOR: &str = ", ";
+/// The tmux program run where the server's own command line does not
+/// name its program by an absolute path.
+pub(crate) const TMUX_PROGRAM: &str = "tmux";
+/// The arguments that list every pane of the default tmux server as
+/// its shell's pid and its session's name.
+pub(crate) const TMUX_LIST_PANES: [&str; 4] =
+    ["list-panes", "-a", "-F", "#{pane_pid} #{session_name}"];
+/// The arguments that list every client of the default tmux server as
+/// its pid and the name of the session it shows.
+pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
+    ["list-clients", "-F", "#{client_pid} #{session_name}"];
 
 // remote probe
 /// The hidden subcommand that prints this machine's agents as JSON,

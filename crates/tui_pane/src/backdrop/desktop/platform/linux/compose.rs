@@ -44,6 +44,7 @@ use super::constants::COMPOSITE_ANSWER_DEADLINE;
 use super::constants::COMPOSITE_COVERAGE_TOLERANCE;
 use super::constants::COMPOSITE_RATIO_TOLERANCE;
 use super::constants::COMPOSITE_SCRIPT_PREFIX;
+use super::constants::EXPRESSION_PLACEHOLDER;
 use super::constants::KWIN_LOAD_SCRIPT_METHOD;
 use super::constants::KWIN_RUN_SCRIPT_METHOD;
 use super::constants::KWIN_SCRIPT_INTERFACE;
@@ -60,9 +61,10 @@ use super::constants::SCREENSHOT_SHADOW_OPTION;
 use super::constants::SCREENSHOT_STRIDE_RESULT;
 use super::constants::SCREENSHOT_WIDTH_RESULT;
 use super::constants::SCREENSHOT_WINDOW_METHOD;
+use super::constants::SCRIPT_TEMPLATE;
 use super::constants::SINK_PATH;
 use super::constants::SINK_PLACEHOLDER;
-use super::constants::STACKING_SCRIPT;
+use super::constants::STACKING_EXPRESSION;
 use super::display::Output;
 
 /// One display's pixels, holding everything that stands under this
@@ -126,15 +128,15 @@ struct Rectangle {
     size:   (i32, i32),
 }
 
-/// Receives the stacking order the `KWin` script reads.
+/// Receives the one answer a `KWin` script sends back.
 struct Sink {
-    /// Carries the script's one answer back to the capture.
+    /// Carries the script's one answer back to the caller waiting on it.
     sender: Sender<String>,
 }
 
 #[interface(name = "dev.tui_pane.Backdrop")]
 impl Sink {
-    /// Called once by the script, with one window to the line.
+    /// Called once by the script, with the text of the expression it evaluated.
     ///
     /// The name is spelled out because `KWin`'s `callDBus` names the
     /// method exactly as written and the macro would otherwise publish
@@ -256,13 +258,25 @@ impl StackedWindow {
 }
 
 /// Read `KWin`'s stacking order, bottom window first.
+fn stacking_order() -> Option<Vec<StackedWindow>> {
+    let answer = kwin_evaluate(STACKING_EXPRESSION)?;
+    Some(answer.lines().filter_map(StackedWindow::parse).collect())
+}
+
+/// Evaluate one JavaScript `expression` inside `KWin` and return its
+/// value as text.
 ///
 /// `KWin` runs scripts in its own process and gives them no way to
 /// return a value, so the script is handed the bus name this connection
-/// already owns and calls [`Sink`] back with what it read. The script is
-/// unloaded and its file removed whether or not the answer arrived, so a
-/// capture that failed part way through leaves nothing loaded behind it.
-fn stacking_order() -> Option<Vec<StackedWindow>> {
+/// already owns and calls [`Sink`] back with the expression's text. The
+/// script is unloaded and its file removed whether or not the answer
+/// arrived, so a read that failed part way through leaves nothing loaded
+/// behind it.
+///
+/// [`None`] where there is no session bus, `KWin` refuses the script, or
+/// no answer arrives within five seconds.
+#[must_use]
+pub fn kwin_evaluate(expression: &str) -> Option<String> {
     let (sender, receiver) = channel();
     let connection = Builder::session()
         .ok()?
@@ -272,7 +286,10 @@ fn stacking_order() -> Option<Vec<StackedWindow>> {
         .ok()?;
     let sink = connection.unique_name()?.as_str().to_owned();
     let path = script_path();
-    fs::write(&path, STACKING_SCRIPT.replace(SINK_PLACEHOLDER, &sink)).ok()?;
+    let script = SCRIPT_TEMPLATE
+        .replace(SINK_PLACEHOLDER, &sink)
+        .replace(EXPRESSION_PLACEHOLDER, expression);
+    fs::write(&path, script).ok()?;
 
     let plugin = path.file_stem()?.to_str()?.to_owned();
     let scripting = Proxy::new(
@@ -288,8 +305,7 @@ fn stacking_order() -> Option<Vec<StackedWindow>> {
     let answer = loaded.and_then(|id| run_script(&connection, id, &receiver));
     let _: Result<bool, _> = scripting.call(KWIN_UNLOAD_SCRIPT_METHOD, &plugin.as_str());
     let _ = fs::remove_file(&path);
-
-    Some(answer?.lines().filter_map(StackedWindow::parse).collect())
+    answer
 }
 
 /// Run one loaded script and wait for the answer it calls back with.
@@ -306,7 +322,7 @@ fn run_script(connection: &Connection, id: i32, receiver: &Receiver<String>) -> 
     receiver.recv_timeout(COMPOSITE_ANSWER_DEADLINE).ok()
 }
 
-/// Where the next stacking script is written.
+/// Where the next script is written.
 ///
 /// The session's runtime directory where there is one, because only this
 /// user may read it, and the shared temporary directory otherwise. The

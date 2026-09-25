@@ -16,6 +16,7 @@
 
 pub(crate) mod classify;
 pub(crate) mod codex;
+pub(crate) mod desktop;
 pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
@@ -79,6 +80,13 @@ pub(crate) struct AgentRow {
     pub(crate) started:     u64,
     /// The agent's process id on its own machine.
     pub(crate) pid:         u32,
+    /// The names of the KDE virtual desktops the agent's terminal window
+    /// is on, or [`ALL_DESKTOPS_LABEL`](crate::constants::ALL_DESKTOPS_LABEL)
+    /// for a window on every one; none where no window was matched to
+    /// the agent. Read on Linux under `KWin` alone, and missing from a
+    /// probe printed before it existed.
+    #[serde(default)]
+    pub(crate) desktop:     Option<String>,
     /// The directory the agent runs in, with its machine's home
     /// directory written as `~`.
     pub(crate) directory:   String,
@@ -327,6 +335,7 @@ mod tests {
             status: Some("busy".to_string()),
             started,
             pid: 428_044,
+            desktop: None,
             directory: "~/rust/handler".to_string(),
             launched_by: None,
             children: Vec::new(),

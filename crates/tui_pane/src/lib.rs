@@ -174,6 +174,8 @@ pub use backdrop::TextSettings;
 pub use backdrop::TravelingBand;
 #[cfg(feature = "backdrop")]
 pub use backdrop::WindowIdentification;
+#[cfg(all(feature = "backdrop", target_os = "linux"))]
+pub use backdrop::kwin_evaluate;
 pub use bar::BarPalette;
 pub use bar::BarRegion;
 pub use bar::BarSlot;

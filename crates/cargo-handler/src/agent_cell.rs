@@ -208,7 +208,8 @@ pub(crate) fn draw(
 }
 
 /// The header's first line: `pid <pid> · <agent> · <status> · <age> ·
-/// <machine>`, colored as the summary colors the same values.
+/// <machine> · <desktop>`, colored as the summary colors the same
+/// values.
 fn summary_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
     let label = Style::default().fg(label_color());
     let separator = || Span::styled(HEADING_SEPARATOR, label);
@@ -227,6 +228,8 @@ fn summary_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
         Span::styled(age::age_label(now.saturating_sub(row.started)), label),
         separator(),
         Span::styled(machine.to_string(), Style::default().fg(accent_color())),
+        separator(),
+        Span::styled(summary::desktop_text(row).to_string(), label),
     ])
 }
 
@@ -340,6 +343,7 @@ mod tests {
             status: Some("busy".to_string()),
             started: NOW - age,
             pid,
+            desktop: None,
             directory: format!("~/rust/{name}"),
             launched_by,
             children: Vec::new(),
@@ -386,6 +390,7 @@ mod tests {
     #[test]
     fn a_launched_session_draws_its_header_and_tree() {
         let trunk = AgentRow {
+            desktop: Some("berth_fix".to_string()),
             children: vec![
                 child(
                     0,
@@ -438,7 +443,7 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " pid 3266367 · claude · busy · 23h · natedev",
+                " pid 3266367 · claude · busy · 23h · natedev · berth_fix",
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
                 "",
@@ -472,7 +477,7 @@ mod tests {
         assert_eq!(
             lines(&drawn(&arrange, None)),
             [
-                " pid 3337048 · claude · busy · 2h · natedev",
+                " pid 3337048 · claude · busy · 2h · natedev · —",
                 " ~/rust/tool-based-ui-arrange",
                 " launched by pid 1579022",
                 "",

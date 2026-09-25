@@ -33,6 +33,7 @@ use crate::constants::AGENT_COLUMN;
 use crate::constants::AGENT_PLURAL;
 use crate::constants::AGENT_SINGULAR;
 use crate::constants::BUSY_STATUS;
+use crate::constants::DESKTOP_COLUMN;
 use crate::constants::DIRECTORY_COLUMN;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
@@ -183,6 +184,7 @@ fn agent_row(row: &AgentRow, now: u64) -> Row<'static> {
         ),
         Span::styled(status_text(row).to_string(), status_role(row).style()),
         Span::styled(age_label(now.saturating_sub(row.started)), label),
+        Span::styled(desktop_text(row).to_string(), label),
         Span::styled(row.directory.clone(), label),
     ])
 }
@@ -206,6 +208,11 @@ pub(crate) fn status_role(row: &AgentRow) -> Role {
 
 /// The status cell: the status, or [`MISSING_VALUE`].
 pub(crate) fn status_text(row: &AgentRow) -> &str { row.status.as_deref().unwrap_or(MISSING_VALUE) }
+
+/// The desktop cell: the desktop, or [`MISSING_VALUE`].
+pub(crate) fn desktop_text(row: &AgentRow) -> &str {
+    row.desktop.as_deref().unwrap_or(MISSING_VALUE)
+}
 
 /// `name` cut to `max` cells, ending in [`TRUNCATION_MARK`] when it was
 /// longer.
@@ -243,6 +250,7 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
         widths.observe_cell_usize(STATUS_COLUMN, status_text(row).chars().count());
         let age = age_label(now.saturating_sub(row.started));
         widths.observe_cell_usize(AGE_COLUMN, age.chars().count());
+        widths.observe_cell_usize(DESKTOP_COLUMN, desktop_text(row).chars().count());
     }
     widths
         .to_constraints()
@@ -292,7 +300,7 @@ mod tests {
     const MINUTE: u64 = 60;
     /// The summary's width in these tests: wide enough that no
     /// directory is cut.
-    const WIDTH: u16 = 110;
+    const WIDTH: u16 = 120;
 
     /// Process `pid`, an `agent` named `name`, started `age` seconds
     /// before [`NOW`].
@@ -310,9 +318,18 @@ mod tests {
             status: status.map(str::to_string),
             started: NOW - age,
             pid,
+            desktop: None,
             directory: directory.to_string(),
             launched_by: None,
             children: Vec::new(),
+        }
+    }
+
+    /// `row` with its window on the desktop named `desktop`.
+    fn on(desktop: &str, row: AgentRow) -> AgentRow {
+        AgentRow {
+            desktop: Some(desktop.to_string()),
+            ..row
         }
     }
 
@@ -328,44 +345,47 @@ mod tests {
             .collect()
     }
 
-    /// Four machines: this one with a name past the column's cap, a busy
-    /// session, a Codex with no status and a session another agent
-    /// launched, which is left out of the list and the count; a remote
-    /// with one agent; a remote whose probe failed; and one that has not
-    /// answered. Each machine that lists agents repeats the label row
-    /// under its heading, with the columns sized across both machines'
-    /// rows.
-    #[test]
-    fn each_machine_lists_its_agents_under_its_own_label_row() {
+    /// natedev's answer: three agents on desktops of their own, one
+    /// session boss launched, and a Codex agent with no window.
+    fn natedev() -> MachineState {
         let launched = AgentRow {
             launched_by: Some(1_579_022),
             ..row(3_266_367, Agent::Claude, "trunk", None, HOUR, "~")
         };
-        let natedev = MachineState::Answered(vec![
-            row(
-                1_579_022,
-                Agent::Claude,
-                "boss of bosses",
-                Some("idle"),
-                21 * HOUR,
-                "~/rust/hana_catalyst/docs/hana",
+        MachineState::Answered(vec![
+            on(
+                "boss",
+                row(
+                    1_579_022,
+                    Agent::Claude,
+                    "boss of bosses",
+                    Some("idle"),
+                    21 * HOUR,
+                    "~/rust/hana_catalyst/docs/hana",
+                ),
             ),
             launched,
-            row(
-                2_747_564,
-                Agent::Claude,
-                "tmp cleanup then merge to berth and handler",
-                Some("shell"),
-                2 * HOUR + 29 * MINUTE,
-                "~/rust/cargo-handler",
+            on(
+                "berth_fix",
+                row(
+                    2_747_564,
+                    Agent::Claude,
+                    "tmp cleanup then merge to berth and handler",
+                    Some("shell"),
+                    2 * HOUR + 29 * MINUTE,
+                    "~/rust/cargo-handler",
+                ),
             ),
-            row(
-                428_044,
-                Agent::Claude,
-                "enh/handler",
-                Some("busy"),
-                HOUR + 36 * MINUTE,
-                "~/rust/handler",
+            on(
+                "cargo handler",
+                row(
+                    428_044,
+                    Agent::Claude,
+                    "enh/handler",
+                    Some("busy"),
+                    HOUR + 36 * MINUTE,
+                    "~/rust/handler",
+                ),
             ),
             row(
                 4_039_085,
@@ -375,7 +395,19 @@ mod tests {
                 12 * MINUTE,
                 "~/rust/handler",
             ),
-        ]);
+        ])
+    }
+
+    /// Four machines: this one with a name past the column's cap, a busy
+    /// session, a Codex with no status and a session another agent
+    /// launched, which is left out of the list and the count; a remote
+    /// with one agent; a remote whose probe failed; and one that has not
+    /// answered. Each machine that lists agents repeats the label row
+    /// under its heading, with the columns sized across both machines'
+    /// rows.
+    #[test]
+    fn each_machine_lists_its_agents_under_its_own_label_row() {
+        let natedev = natedev();
         let mac = MachineState::Answered(vec![row(
             12_055,
             Agent::Claude,
@@ -414,15 +446,15 @@ mod tests {
             lines(&buffer),
             [
                 " natedev · 4 agents",
-                " pid      agent   name                                  status  age     directory",
-                " 1579022  claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana",
-                " 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler",
-                " 428044   claude  enh/handler                           busy    1h 36m  ~/rust/handler",
-                " 4039085  codex   --model gpt-5                         —       12m     ~/rust/handler",
+                " pid      agent   name                                  status  age     desktop        directory",
+                " 1579022  claude  boss of bosses                        idle    21h     boss           ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  berth_fix      ~/rust/cargo-handler",
+                " 428044   claude  enh/handler                           busy    1h 36m  cargo handler  ~/rust/handler",
+                " 4039085  codex   --model gpt-5                         —       12m     —              ~/rust/handler",
                 "",
                 " mac · 1 agent",
-                " pid      agent   name                                  status  age     directory",
-                " 12055    claude  natemccoy-30                          idle    23h     ~",
+                " pid      agent   name                                  status  age     desktop        directory",
+                " 12055    claude  natemccoy-30                          idle    23h     —              ~",
                 "",
                 " studio · unreachable",
                 "",

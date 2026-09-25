@@ -53,6 +53,8 @@ use desktop::Desktop;
 use desktop::Placement;
 pub use desktop::TerminalWindowCandidateSource;
 use desktop::TerminalWindowSearchOutcome;
+#[cfg(target_os = "linux")]
+pub use desktop::kwin_evaluate;
 pub use monitor::BackdropMonitor;
 pub use monitor::BackdropMonitorCaptureTestDriver;
 pub use monitor::BackdropStatus;

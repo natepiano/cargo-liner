@@ -90,7 +90,7 @@ impl ProcessEntry {
     pub(super) fn is_agent(&self) -> bool { self.is_claude() || self.is_codex() }
 
     /// Whether this is a tmux server.
-    fn is_tmux_server(&self) -> bool { TMUX_SERVER_NAMES.contains(&self.name.as_str()) }
+    pub(super) fn is_tmux_server(&self) -> bool { TMUX_SERVER_NAMES.contains(&self.name.as_str()) }
 
     /// Whether this `codex` serves a client rather than taking input
     /// itself.
@@ -262,6 +262,7 @@ fn claude_row(
         status:      session.status.clone(),
         started:     process.started,
         pid:         process.pid,
+        desktop:     None,
         directory:   directory_label(directory, home),
         launched_by: None,
         children:    Vec::new(),
@@ -300,6 +301,7 @@ fn codex_row(
         status: None,
         started: process.started,
         pid: process.pid,
+        desktop: None,
         directory: directory_label(process.directory.as_deref(), home),
         launched_by: None,
         children: Vec::new(),
@@ -325,7 +327,7 @@ pub(super) fn held_by_tmux(processes: &[ProcessEntry], pid: u32) -> bool {
 /// The walk stops at a parent missing from the table, and after as
 /// many steps as the table has processes, so a parent link that loops
 /// cannot hold it.
-fn ancestors<'a>(
+pub(super) fn ancestors<'a>(
     table: &'a HashMap<u32, &'a ProcessEntry>,
     process: &ProcessEntry,
 ) -> impl Iterator<Item = &'a ProcessEntry> {

@@ -35,6 +35,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use compose::Layout;
+pub use compose::kwin_evaluate;
 use display::Output;
 use display::OutputSelection;
 use display::TopologyRead;

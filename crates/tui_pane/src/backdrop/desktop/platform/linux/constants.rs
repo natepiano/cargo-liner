@@ -25,7 +25,7 @@ pub(super) const XDG_DATA_DEFAULT: &str = ".local/share";
 pub(super) const XDG_DATA_DIRS_DEFAULT: &str = "/usr/local/share:/usr/share";
 
 // display composite
-/// How long `KWin` has to run the stacking script and call back.
+/// How long `KWin` has to run a script and call back.
 ///
 /// Measured at well under a second for a stack of twenty-nine windows, so five seconds leaves room
 /// for a busy compositor while still returning inside the monitor's own attempt deadline.
@@ -47,31 +47,37 @@ pub(super) const COMPOSITE_RATIO_TOLERANCE: f64 = 0.01;
 /// Keeps one process's scripts apart from another's in a shared directory, and names the plugin
 /// `KWin` unloads each one by.
 pub(super) const COMPOSITE_SCRIPT_PREFIX: &str = "tui-pane-backdrop-";
-/// Where the stacking sink answers on this process's own bus connection.
+/// Where the script sink answers on this process's own bus connection.
 pub(super) const SINK_PATH: &str = "/";
 /// Replaced with the bus name the script calls back on, which is only known once connected.
 pub(super) const SINK_PLACEHOLDER: &str = "SINK_NAME";
+/// Replaced with the expression a script evaluates, after the sink's name is in place.
+pub(super) const EXPRESSION_PLACEHOLDER: &str = "SCRIPT_EXPRESSION";
+/// Every script run through `KWin`: evaluate one expression and send its text to the sink.
+///
+/// `KWin` runs a script in its own process and gives it no way to return a value, so the script
+/// calls the waiting connection back instead.
+pub(super) const SCRIPT_TEMPLATE: &str =
+    r#"callDBus("SINK_NAME", "/", "dev.tui_pane.Backdrop", "result", String(SCRIPT_EXPRESSION));"#;
 /// Reads `KWin`'s stacking order, bottom window first, one window to the line.
 ///
-/// `KWin` runs this in its own process and gives it no way to return a value, so it calls the
-/// waiting connection back instead. `workspace.windowList()` is deliberately not used: it reports
-/// creation order, not stacking order, and everything here turns on which windows stand below ours.
+/// `workspace.windowList()` is deliberately not used: it reports creation order, not stacking
+/// order, and everything here turns on which windows stand below ours.
 ///
 /// The frame is the one rectangle read of each window, because it is the one a capture covers --
 /// see [`SCREENSHOT_SHADOW_OPTION`]. `bufferGeometry` is a different rectangle in each direction
 /// depending on who draws the decoration, and matches the capture in neither: on a window `KWin`
 /// decorates it is the client area inside the title bar, and on one that decorates itself it is
 /// the frame grown by the shadow the client drew.
-pub(super) const STACKING_SCRIPT: &str = r#"
-const rows = workspace.stackingOrder.map(w => [
+pub(super) const STACKING_EXPRESSION: &str = r#"
+workspace.stackingOrder.map(w => [
     w.internalId,
     w.output ? w.output.name : "",
     w.minimized,
     w.onAllDesktops,
     (w.desktops || []).map(d => d.id).join(","),
     w.frameGeometry.x, w.frameGeometry.y, w.frameGeometry.width, w.frameGeometry.height,
-].join("\t")).join("\n");
-callDBus("SINK_NAME", "/", "dev.tui_pane.Backdrop", "result", rows);
+].join("\t")).join("\n")
 "#;
 
 // display topology
