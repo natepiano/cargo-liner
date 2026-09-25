@@ -22,6 +22,8 @@ pub(crate) use scan::Ancestor;
 pub(crate) use scan::CargoGroup;
 pub(crate) use scan::CargoProcess;
 pub(crate) use scan::CompilerObservation;
+pub(crate) use scan::ExcludedCommands;
+pub(crate) use scan::ProcessOwner;
 pub(crate) use scan::RowProvenance;
 pub(crate) use scan::RunStart;
 pub(crate) use scan::spawn_with_resolver;

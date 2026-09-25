@@ -31,6 +31,9 @@ use tui_pane::TerminalApp;
 use tui_pane::TileGridHost;
 use tui_pane::VisualDeadline;
 
+use crate::census;
+use crate::census::Census;
+use crate::census::RemoteMachines;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
@@ -98,6 +101,11 @@ pub(crate) struct App {
     pub(crate) attract:           Attract,
     /// Modal for browsing attract-screen favorites.
     pub(crate) favorites_overlay: FavoritesOverlay,
+    /// The agents on this machine and each remote, as of each one's
+    /// latest answer.
+    pub(crate) census:            Census,
+    /// `machines.remote` as the census scheduler reads it.
+    pub(crate) remote_machines:   RemoteMachines,
 }
 
 impl App {
@@ -106,16 +114,24 @@ impl App {
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
     ) -> Result<Self, KeymapError> {
-        Self::new_with_keymap_path(loaded_config, startup_note, CargoHandler::keymap_path())
+        let census = Census::new(census::local_machine_name());
+        Self::new_with_keymap_path(
+            loaded_config,
+            startup_note,
+            CargoHandler::keymap_path(),
+            census,
+        )
     }
 
     /// Build the app with the keymap read from `keymap_path`, or from
-    /// the defaults alone when there is none.
+    /// the defaults alone when there is none, starting from `census`.
     fn new_with_keymap_path(
         loaded_config: LoadedConfig,
         startup_note: Option<String>,
         keymap_path: Option<PathBuf>,
+        census: Census,
     ) -> Result<Self, KeymapError> {
+        let remote_machines = RemoteMachines::new(loaded_config.config.machines.remote.clone());
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         Ok(Self {
@@ -128,11 +144,14 @@ impl App {
             started: Instant::now(),
             attract: Attract::new(),
             favorites_overlay: FavoritesOverlay::default(),
+            census,
+            remote_machines,
         })
     }
 
     /// An app on the default config and the default keymap, reading
-    /// and writing no file.
+    /// and writing no file, whose census is this machine as `natedev`,
+    /// scanned and holding no agents, with no remotes.
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Result<Self, KeymapError> {
         Self::new_with_keymap_path(
@@ -142,6 +161,11 @@ impl App {
             },
             None,
             None,
+            {
+                let mut census = Census::new("natedev".to_string());
+                census.apply(census::CensusUpdate::Local(Vec::new()));
+                census
+            },
         )
     }
 }
@@ -157,6 +181,10 @@ impl AppContext for App {
 
 impl SettingsHost for App {
     fn step_setting(&mut self, step: SettingStep) { settings::cycle(self, step); }
+
+    fn setting_text(&self) -> Option<String> { settings::selected_text(self) }
+
+    fn commit_setting_text(&mut self, text: &str) { settings::commit_text(self, text); }
 }
 
 impl KeymapUiContext for App {

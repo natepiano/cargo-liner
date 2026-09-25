@@ -346,7 +346,14 @@ impl SettingsPane {
     }
 
     /// Select a row without losing a visible continuation of that row.
+    ///
+    /// Moving to another row drops an edit in progress unsaved: the
+    /// text belongs to the row it was opened on, and committing it
+    /// would write it into whichever row is selected at the time.
     pub fn select_row(&mut self, row: usize) {
+        if self.viewport.pos() != row {
+            self.enter_browse();
+        }
         self.viewport.set_pos(row);
         self.update_scroll();
     }
@@ -871,6 +878,7 @@ struct WrappedValueRow<'a> {
     content_width: usize,
 }
 
+/// Wrap `value` to `width`, starting each of its lines afresh.
 fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];
@@ -878,7 +886,15 @@ fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
     if value.trim().is_empty() {
         return vec![String::new()];
     }
+    value
+        .lines()
+        .flat_map(|line| wrap_line_to_width(line, width))
+        .collect()
+}
 
+/// Wrap one line of a value to `width`, breaking a word only when it
+/// is wider than the whole column.
+fn wrap_line_to_width(value: &str, width: usize) -> Vec<String> {
     let mut wrapped = Vec::new();
     let mut current = String::new();
 
@@ -1032,6 +1048,19 @@ mod tests {
     }
 
     #[test]
+    fn selecting_another_row_drops_an_edit_but_the_same_row_keeps_it() {
+        let mut pane = SettingsPane::new();
+        pane.viewport_mut().set_len(2);
+        pane.begin_editing("hana".to_string());
+        pane.select_row(0);
+        assert!(pane.is_editing());
+        assert_eq!(pane.edit_buffer(), "hana");
+        pane.select_row(1);
+        assert!(!pane.is_editing());
+        assert_eq!(pane.edit_buffer(), "");
+    }
+
+    #[test]
     fn begin_editing_sets_buffer_and_cursor() {
         let mut pane = SettingsPane::new();
 
@@ -1095,6 +1124,22 @@ mod tests {
         assert_eq!(pane.line_target(1), SettingsLineTarget::Row(0.into()));
         assert_eq!(rendered.lines[0].spans[0].content.as_ref(), "▶ Projects  ");
         assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
+    }
+
+    /// A line break in a value starts a line of its own at the value
+    /// column, however much room the line before it left.
+    #[test]
+    fn render_rows_starts_each_value_line_at_value_column() {
+        let mut pane = SettingsPane::new();
+        let rows = vec![SettingsRow::value(0, "Projects", "alpha\nbeta")];
+
+        let rendered = pane.render_rows(&rows, render_options());
+
+        assert_eq!(rendered.lines.len(), 2);
+        assert_eq!(pane.line_target(1), SettingsLineTarget::Row(0.into()));
+        assert_eq!(rendered.lines[0].spans[1].content.as_ref(), "alpha");
+        assert_eq!(rendered.lines[1].spans[0].content.as_ref(), "            ");
+        assert_eq!(rendered.lines[1].spans[1].content.as_ref(), "beta");
     }
 
     #[test]

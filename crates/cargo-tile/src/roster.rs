@@ -505,6 +505,7 @@ mod tests {
     use crate::birth_stamp::LifetimeEvidence;
     use crate::birth_stamp::ProcessLifetime;
     use crate::census::CompilerObservation;
+    use crate::census::ProcessOwner;
     use crate::census::RowProvenance;
     use crate::census::RunStart;
     use crate::census::command_text::CommandText;
@@ -513,7 +514,7 @@ mod tests {
     use crate::census::process_identity::ProcessIdentities;
     use crate::census::process_identity::ProcessIdentity;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
-    use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::constants::PORT_SUBCOMMAND_NAME;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::progress::capture_read::CaptureLookup;
@@ -862,7 +863,7 @@ mod tests {
             pid,
             invocation_id: InvocationId::for_test(pid),
             capture_membership: CaptureMembership::Outside,
-            provenance: RowProvenance::Uncaptured,
+            provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
             start: "10:00".to_string(),
             started: RunStart::Known(0),
@@ -915,7 +916,7 @@ mod tests {
     /// The same, led by a command `commands.hidden_when_idle` names.
     fn hidden_group(lead: u32, rest: &[u32]) -> CargoGroup {
         let mut group = group(lead, rest);
-        group.lead.command = CommandText::of("cargo", &[SIBLING_SUBCOMMAND_NAME]);
+        group.lead.command = CommandText::of("cargo", &[PORT_SUBCOMMAND_NAME]);
         group
     }
 

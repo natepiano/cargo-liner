@@ -19,8 +19,8 @@ use crate::app::App;
 use crate::capture;
 use crate::census;
 use crate::census::CargoGroup;
+use crate::census::ExcludedCommands;
 use crate::config::CargoTile;
-use crate::config::Config;
 use crate::config::LoadedConfig;
 use crate::constants::CAPTURE_ROOT;
 use crate::progress::capture_roots::AccountCaptureDirectory;
@@ -54,15 +54,15 @@ pub(crate) fn run() -> ExitCode { run_with_capture_parent(std::path::PathBuf::fr
 
 /// The executable supplies the fixed parent; PTY tests supply an isolated path.
 pub(crate) fn run_with_capture_parent(parent: PathBuf) -> ExitCode {
-    run_with_scanner(move |config| {
-        census::spawn_with_resolver(config, move || {
+    run_with_scanner(move |excluded| {
+        census::spawn_with_resolver(excluded, move || {
             crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
         })
         .0
     })
 }
 
-fn run_with_scanner(spawn: impl FnOnce(&Config) -> Receiver<Scan>) -> ExitCode {
+fn run_with_scanner(spawn: impl FnOnce(ExcludedCommands) -> Receiver<Scan>) -> ExitCode {
     let loaded_config = LoadedConfig::load::<CargoTile>();
     let startup_note = install_theme(
         &loaded_config.config.appearance,
@@ -82,7 +82,7 @@ fn run_with_scanner(spawn: impl FnOnce(&Config) -> Receiver<Scan>) -> ExitCode {
     capture::stand_up(&mut app);
 
     run_terminal(&mut app, &iterm2_profile, |app| {
-        Workers::new(spawn(&app.loaded_config.config))
+        Workers::new(spawn(app.excluded_commands.clone()))
     })
 }
 
@@ -245,6 +245,7 @@ mod tests {
     use crate::census::CompilerObservation;
     use crate::census::InvocationId;
     use crate::census::Measurement;
+    use crate::census::ProcessOwner;
     use crate::census::RowProvenance;
     use crate::census::RunStart;
     use crate::census::SelectedProof;
@@ -315,7 +316,7 @@ fraying = "leading"
             pid: 11,
             invocation_id,
             capture_membership: CaptureMembership::Outside,
-            provenance: RowProvenance::Uncaptured,
+            provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
             start: "10:00".to_owned(),
             started: RunStart::Known(0),

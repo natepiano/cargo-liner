@@ -82,12 +82,12 @@ case $first in
     metadata | pkgid | locate-project | read-manifest | config | -V | --version | -vV | --list | '')
         capture=0
         ;;
-    # This workspace's own terminal UIs, reached as `cargo tile` and
-    # `cargo port`. They compile nothing, and capturing one would run a
-    # whole terminal UI under `script` -- every redraw copied into a log
-    # for as long as it stays open, and it listing itself as a running
-    # invocation.
-    tile | port)
+    # This workspace's own terminal UIs, reached as `cargo tile`,
+    # `cargo port` and `cargo handler`. They compile nothing, and
+    # capturing one would run a whole terminal UI under `script` -- every
+    # redraw copied into a log for as long as it stays open, and it
+    # listing itself as a running invocation.
+    tile | port | handler)
         capture=0
         ;;
     # This workspace's coordination sibling, reached as `cargo berth`.

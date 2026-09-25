@@ -6,15 +6,21 @@
 //! adds cargo-tile's own `fade seconds` stepper and its Capture and
 //! Commands rows. Every stepper walks its allowed values on
 //! Left/Right/Enter, writes `config.toml`, and swaps the active theme
-//! in place. Every other row reports state and is inert.
+//! in place. The two Commands lists are typed in: Enter opens the list
+//! as comma-separated text, and Enter again writes it and applies it.
+//! Every other row reports state and is inert.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
+use tui_pane::LIST_SEPARATOR;
 use tui_pane::SettingStep;
 use tui_pane::SettingTarget;
 use tui_pane::SettingsRows;
 use tui_pane::apply_settings;
+use tui_pane::join_list;
+use tui_pane::list_display;
+use tui_pane::parse_list;
 use tui_pane::step_framework_setting;
 use tui_pane::stepped;
 
@@ -22,7 +28,7 @@ use crate::app::App;
 use crate::app::CaptureStartupNotice;
 use crate::census::SelectedProof;
 use crate::config::CargoTile;
-use crate::constants::CAPTURE_ASSOCIATION;
+use crate::config::Config;
 use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
 use crate::constants::CAPTURE_ASSOCIATION_COMPETING;
 use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
@@ -31,8 +37,6 @@ use crate::constants::CAPTURE_ASSOCIATION_UNCONFIRMED;
 use crate::constants::CAPTURE_FAILURE_PERMISSION;
 use crate::constants::CAPTURE_OWNER_UID;
 use crate::constants::CAPTURE_OWNER_UNAVAILABLE;
-use crate::constants::CAPTURE_SETTINGS_ROOT;
-use crate::constants::CAPTURE_STATUS_ACTIVE;
 use crate::constants::CAPTURE_STATUS_ANNOTATION;
 use crate::constants::CAPTURE_STATUS_BOOT;
 use crate::constants::CAPTURE_STATUS_BOOT_FAILURE;
@@ -53,10 +57,10 @@ use crate::constants::CAPTURE_STATUS_UNREADABLE_REGISTRATION;
 use crate::constants::CAPTURE_STATUS_UNSUPPORTED_VERSION;
 use crate::constants::CAPTURE_STATUS_UNVERIFIABLE;
 use crate::constants::CAPTURE_STATUS_VERSION_RECOVERY;
+use crate::constants::CAPTURE_STATUS_YOURS;
+use crate::constants::CAPTURE_SUMMARY_SEPARATOR;
 use crate::constants::CAPTURE_UNUSED_ROOT_PRECEDENCE;
 use crate::constants::CAPTURE_UNUSED_SELECTED_UNCONFIRMED;
-use crate::constants::EMPTY_LIST;
-use crate::constants::LIST_SEPARATOR;
 use crate::constants::MAX_FADE_SECONDS;
 use crate::constants::MIN_FADE_SECONDS;
 use crate::constants::REGISTRATION_SEPARATOR;
@@ -120,11 +124,22 @@ pub(crate) enum UnusedCaptureReason {
     SelectedUnconfirmed,
 }
 
-/// cargo-tile's own stepper rows; the framework steps the rest.
+/// cargo-tile's own editable rows; the framework steps the rest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AppSetting {
     /// `tiles.fade_seconds` — steps zero through [`MAX_FADE_SECONDS`].
     FadeSeconds,
+    /// One of the `[commands]` lists, typed in.
+    Commands(CommandList),
+}
+
+/// The `[commands]` lists the settings overlay types into.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CommandList {
+    /// `commands.excluded`.
+    Excluded,
+    /// `commands.hidden_when_idle`.
+    HiddenWhenIdle,
 }
 
 /// Build the settings rows for the current frame.
@@ -147,8 +162,16 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
     push_capture_directories(&mut out, app);
 
     out.section("Commands");
-    out.value("excluded", list(&config.commands.excluded));
-    out.value("hidden when idle", list(&config.commands.hidden_when_idle));
+    out.text(
+        AppSetting::Commands(CommandList::Excluded),
+        "excluded",
+        list_display(&config.commands.excluded),
+    );
+    out.text(
+        AppSetting::Commands(CommandList::HiddenWhenIdle),
+        "hidden when idle",
+        list_display(&config.commands.hidden_when_idle),
+    );
 
     out.files::<CargoTile>();
 
@@ -174,7 +197,64 @@ pub(crate) fn cycle(app: &mut App, step: SettingStep) {
                 .unwrap_or(MIN_FADE_SECONDS);
             apply_settings(&mut app.loaded_config, &mut app.startup_note);
         },
-        Some(SettingTarget::ReadOnly) | None => {},
+        Some(
+            SettingTarget::App(AppSetting::Commands(_))
+            | SettingTarget::AppText(_)
+            | SettingTarget::ReadOnly,
+        )
+        | None => {},
+    }
+}
+
+/// The selected row's list as the text its editor opens on, when the
+/// selection is one of the typed Commands rows.
+pub(crate) fn selected_text(app: &App) -> Option<String> {
+    let list = selected_command_list(app)?;
+    Some(join_list(command_list(&app.loaded_config.config, list)))
+}
+
+/// Replace the selected Commands list with what was typed, write
+/// `config.toml`, and apply it: the grid reads `hidden_when_idle` every
+/// frame, and the census worker picks up `excluded` on its next scan.
+pub(crate) fn commit_text(app: &mut App, text: &str) {
+    let Some(list) = selected_command_list(app) else {
+        return;
+    };
+    set_command_list(app, list, parse_list(text));
+    apply_settings(&mut app.loaded_config, &mut app.startup_note);
+}
+
+/// Replace `list` in the config, and in the census worker's copy when
+/// it is the one the scan reads.
+fn set_command_list(app: &mut App, list: CommandList, entries: Vec<String>) {
+    if list == CommandList::Excluded {
+        app.excluded_commands.replace(entries.clone());
+    }
+    *command_list_mut(&mut app.loaded_config.config, list) = entries;
+}
+
+/// The Commands list the settings selection is on, if any.
+fn selected_command_list(app: &App) -> Option<CommandList> {
+    let selection = app.framework.settings_pane.viewport().pos();
+    match rows(app).target(selection) {
+        Some(SettingTarget::AppText(AppSetting::Commands(list))) => Some(list),
+        _ => None,
+    }
+}
+
+/// The entries `list` holds.
+fn command_list(config: &Config, list: CommandList) -> &[String] {
+    match list {
+        CommandList::Excluded => &config.commands.excluded,
+        CommandList::HiddenWhenIdle => &config.commands.hidden_when_idle,
+    }
+}
+
+/// The entries `list` holds, for replacing.
+const fn command_list_mut(config: &mut Config, list: CommandList) -> &mut Vec<String> {
+    match list {
+        CommandList::Excluded => &mut config.commands.excluded,
+        CommandList::HiddenWhenIdle => &mut config.commands.hidden_when_idle,
     }
 }
 
@@ -207,29 +287,23 @@ fn notices(app: &App) -> Vec<(&'static str, &str)> {
     notices
 }
 
-/// Render a list setting for reading.
-///
-/// The overlay steps through fixed sets of values and a config list is
-/// not one, so this row reports what the file says and the file is
-/// where it is changed -- which the `config` row under Files points at.
-fn list(entries: &[String]) -> String {
-    if entries.is_empty() {
-        return EMPTY_LIST.to_string();
-    }
-    entries.join(LIST_SEPARATOR)
-}
-
-/// Each effective root adds one selectable value whose controls remain inert.
+/// Each effective root adds one selectable value, labelled with its
+/// account, whose controls remain inert.
 fn push_capture_directories(out: &mut SettingsRows<AppSetting>, app: &App) {
     out.value(
         "shared directory",
         shared_directory_status(&app.shared_directory),
     );
-    for (index, status) in app.root_status.iter().enumerate() {
-        out.value(
-            &format!("{CAPTURE_SETTINGS_ROOT} {}", index + 1),
-            capture_root_status(status),
-        );
+    for status in &app.root_status {
+        out.value(&account_label(status), capture_root_status(status));
+    }
+}
+
+/// The account a root belongs to, by name where the scan resolved one.
+pub(crate) fn account_label(status: &AccountCaptureDirectory) -> String {
+    match &status.account {
+        AccountName::Resolved(name) => name.clone(),
+        AccountName::Unavailable => status.root.uid.to_string(),
     }
 }
 
@@ -237,89 +311,96 @@ fn push_capture_directories(out: &mut SettingsRows<AppSetting>, app: &App) {
 pub(crate) fn shared_directory_status(directory: &SharedCaptureDirectory) -> String {
     let path = directory.path.display();
     match &directory.state {
-        SharedDirectoryState::Missing => format!("{path}; created by the first captured cargo run"),
-        SharedDirectoryState::Shared { owner } => {
-            format!("{path}; mode 1777; {}", capture_owner(*owner))
+        SharedDirectoryState::Missing => {
+            format!("{path}{CAPTURE_SUMMARY_SEPARATOR}created by the first captured cargo run")
         },
+        SharedDirectoryState::Shared { owner } => format!(
+            "{path}{CAPTURE_SUMMARY_SEPARATOR}mode 1777{CAPTURE_SUMMARY_SEPARATOR}{}",
+            capture_owner(*owner)
+        ),
         SharedDirectoryState::NotShared { mode, owner } => format!(
-            "{path}; mode {mode:04o}; {}; other accounts cannot register — run: sudo chmod 1777 /tmp/cargo-tile",
+            "{path}{CAPTURE_SUMMARY_SEPARATOR}mode {mode:04o}{CAPTURE_SUMMARY_SEPARATOR}{}{CAPTURE_SUMMARY_SEPARATOR}other accounts cannot register — run: sudo chmod 1777 /tmp/cargo-tile",
             capture_owner(*owner)
         ),
         SharedDirectoryState::Unavailable(failure) => {
-            format!("{path}; unreadable: {}", failure.message)
+            format!(
+                "{path}{CAPTURE_SUMMARY_SEPARATOR}unreadable: {}",
+                failure.message
+            )
         },
     }
 }
 
 /// Render one effective root entirely from observations retained on `App`.
+///
+/// The first line is the account's summary, and every line after it is
+/// something that needs attention. A confirmed association standing
+/// alone is the normal case, and adds no line.
 pub(crate) fn capture_root_status(status: &AccountCaptureDirectory) -> String {
-    let account = match &status.account {
-        AccountName::Resolved(name) => name.clone(),
-        AccountName::Unavailable => status.root.uid.to_string(),
-    };
-    let ownership = match status.root.cleanup {
-        CaptureCleanup::Here => "; yours",
-        CaptureCleanup::AccountNextRun => "",
-    };
-    let readable = match status.state {
-        RootReadStatus::Readable => "readable",
-        RootReadStatus::Unavailable(_) => "unreadable",
-        RootReadStatus::ForeignOwned { .. } => return capture_read_status(status),
-    };
-    let mut parts = vec![format!(
-        "{account}{ownership}; {readable}; {} active captures",
-        status.confirmed
-    )];
-    parts.push(capture_read_status(status));
-    parts.extend(status.diagnostics.iter().map(capture_diagnostic));
-    {
-        let path = &status.root.path;
-        parts.push(path.display().to_string());
-        for association in &status.associations {
-            match &association.selection {
-                AssociationSelection::Selected { key, proof, unused } => {
-                    let proof = match proof {
-                        SelectedProof::Confirmed => CAPTURE_ASSOCIATION_CONFIRMED,
-                        SelectedProof::Unconfirmed => CAPTURE_ASSOCIATION_UNCONFIRMED,
-                    };
-                    parts.push(format!(
-                        "{CAPTURE_ASSOCIATION}: pid {} via registration {} from {} ({proof}: {})",
-                        association.pid,
-                        key.pid,
-                        path.display(),
-                        registration_publication(key),
-                    ));
-                    for suppressed in unused {
-                        let reason = match suppressed.reason {
-                            UnusedCaptureReason::RootPrecedence => CAPTURE_UNUSED_ROOT_PRECEDENCE,
-                            UnusedCaptureReason::SelectedUnconfirmed => {
-                                CAPTURE_UNUSED_SELECTED_UNCONFIRMED
-                            },
-                        };
-                        parts.push(format!(
-                            "{CAPTURE_ASSOCIATION_SUPPRESSED}: pid {} from {} ({}; {reason})",
-                            association.pid,
-                            suppressed.root.display(),
-                            registration_publication(&suppressed.key),
-                        ));
-                    }
-                },
-                AssociationSelection::Ambiguous { candidates } => {
-                    let candidates = candidates
-                        .iter()
-                        .map(registration_publication)
-                        .collect::<Vec<_>>()
-                        .join(LIST_SEPARATOR);
-                    parts.push(format!(
-                        "{CAPTURE_ASSOCIATION_AMBIGUOUS}: pid {} from {}; {CAPTURE_ASSOCIATION_COMPETING}: {candidates}",
-                        association.pid,
-                        path.display(),
-                    ));
-                },
-            }
-        }
+    if matches!(status.state, RootReadStatus::ForeignOwned { .. }) {
+        return capture_read_status(status);
     }
-    parts.join("; ")
+    let mut summary = Vec::new();
+    if status.root.cleanup == CaptureCleanup::Here {
+        summary.push(CAPTURE_STATUS_YOURS.to_string());
+    }
+    summary.push(capture_read_status(status));
+    // A root that could not be read names its path in the failure.
+    if matches!(status.state, RootReadStatus::Readable) {
+        summary.push(status.root.path.display().to_string());
+    }
+    let mut lines = vec![summary.join(CAPTURE_SUMMARY_SEPARATOR)];
+    lines.extend(status.diagnostics.iter().map(capture_diagnostic));
+    for association in &status.associations {
+        lines.extend(association_problems(association));
+    }
+    lines.join("\n")
+}
+
+/// The lines an association adds to its account: none for a confirmed
+/// selection with no competing proof, and otherwise the selection and
+/// whatever it left unused, or the registrations that compete for it.
+fn association_problems(association: &CaptureAssociation) -> Vec<String> {
+    match &association.selection {
+        AssociationSelection::Selected { key, proof, unused } => {
+            if matches!(proof, SelectedProof::Confirmed) && unused.is_empty() {
+                return Vec::new();
+            }
+            let proof = match proof {
+                SelectedProof::Confirmed => CAPTURE_ASSOCIATION_CONFIRMED,
+                SelectedProof::Unconfirmed => CAPTURE_ASSOCIATION_UNCONFIRMED,
+            };
+            let mut lines = vec![format!(
+                "pid {} via registration {} ({proof})",
+                association.pid,
+                registration_publication(key),
+            )];
+            lines.extend(unused.iter().map(|suppressed| {
+                let reason = match suppressed.reason {
+                    UnusedCaptureReason::RootPrecedence => CAPTURE_UNUSED_ROOT_PRECEDENCE,
+                    UnusedCaptureReason::SelectedUnconfirmed => CAPTURE_UNUSED_SELECTED_UNCONFIRMED,
+                };
+                format!(
+                    "{CAPTURE_ASSOCIATION_SUPPRESSED}: pid {} from {} ({}; {reason})",
+                    association.pid,
+                    suppressed.root.display(),
+                    registration_publication(&suppressed.key),
+                )
+            }));
+            lines
+        },
+        AssociationSelection::Ambiguous { candidates } => {
+            let candidates = candidates
+                .iter()
+                .map(registration_publication)
+                .collect::<Vec<_>>()
+                .join(LIST_SEPARATOR);
+            vec![format!(
+                "{CAPTURE_ASSOCIATION_AMBIGUOUS}: pid {}; {CAPTURE_ASSOCIATION_COMPETING}: {candidates}",
+                association.pid,
+            )]
+        },
+    }
 }
 
 /// The publication basename distinguishes generations sharing a shim pid.
@@ -343,32 +424,27 @@ fn capture_read_status(status: &AccountCaptureDirectory) -> String {
                     RootOwner::Unavailable => capture_owner(status.owner),
                 },
             };
-            let account = match &status.account {
-                AccountName::Resolved(name) => name.clone(),
-                AccountName::Unavailable => status.root.uid.to_string(),
-            };
             format!(
-                "{}: owned by {owner}, not by {account} — ignored",
-                status.root.path.display()
+                "{}: owned by {owner}, not by {} — ignored",
+                status.root.path.display(),
+                account_label(status),
             )
         },
         RootReadStatus::Readable => {
-            let captures = if status.confirmed == 0 {
-                CAPTURE_STATUS_EMPTY.to_string()
-            } else {
-                format!(
-                    "{CAPTURE_STATUS_ACTIVE} — {}",
-                    counted(status.confirmed, CAPTURE_STATUS_CAPTURE),
-                )
-            };
-            if status.diagnostics.is_empty() {
-                return captures;
-            }
-            let summary = diagnostic_counts(&status.diagnostics);
-            if status.confirmed == 0 {
-                format!("{CAPTURE_STATUS_PARTIAL} — {summary}")
-            } else {
-                format!("{CAPTURE_STATUS_PARTIAL} — {summary}; {captures}")
+            let partial = format!(
+                "{CAPTURE_STATUS_PARTIAL} — {}",
+                diagnostic_counts(&status.diagnostics)
+            );
+            // A partial read with nothing confirmed does not know there
+            // are no active captures, so it does not say so.
+            match (status.confirmed, status.diagnostics.is_empty()) {
+                (0, true) => CAPTURE_STATUS_EMPTY.to_string(),
+                (0, false) => partial,
+                (confirmed, true) => counted(confirmed, CAPTURE_STATUS_CAPTURE),
+                (confirmed, false) => format!(
+                    "{}{CAPTURE_SUMMARY_SEPARATOR}{partial}",
+                    counted(confirmed, CAPTURE_STATUS_CAPTURE)
+                ),
             }
         },
         RootReadStatus::Unavailable(failure) if failure.failure.kind == ErrorKind::NotFound => {
@@ -498,11 +574,16 @@ mod tests {
     use tui_pane::SettingTarget;
     use tui_pane::SettingsRow;
     use tui_pane::SettingsRowIdentity;
+    use tui_pane::parse_list;
 
     use super::AssociationSelection;
     use super::CaptureAssociation;
+    use super::CommandList;
     use super::UnusedCaptureReason;
+    use super::account_label;
     use super::rows;
+    use super::selected_text;
+    use super::set_command_list;
     use crate::app::App;
     use crate::app::CaptureStartupNotice;
     use crate::birth_stamp::IdentityEvidence;
@@ -576,12 +657,13 @@ mod tests {
     /// Exercise the public row builder, including its inert selection mapping.
     fn root_row(status: AccountCaptureDirectory) -> SettingsRow {
         let mut app = App::new_for_test().expect("quiet settings app");
+        let label = account_label(&status);
         app.root_status.push(status);
         let settings = rows(&app);
         let root = settings
             .rows()
             .iter()
-            .find(|row| row.label == "account 1")
+            .find(|row| row.label == label)
             .expect("retained root row");
         assert_eq!(root.kind, SettingsRow::value(0, "", "").kind);
         let SettingsRowIdentity::Selectable(payload) = root.identity else {
@@ -598,13 +680,13 @@ mod tests {
     fn readable_empty_root_displays_owner_and_path_without_cleanup() {
         assert_eq!(
             root_row(observed_root()).value,
-            "1000; yours; readable; 0 active captures; readable — no active captures; /retained/captures",
+            "yours · no active captures · /retained/captures",
         );
     }
 
     #[test]
     fn confirmed_captures_have_singular_and_plural_counts() {
-        for (confirmed, wording) in [(1, "active — 1 capture;"), (2, "active — 2 captures;")] {
+        for (confirmed, wording) in [(1, "yours · 1 capture ·"), (2, "yours · 2 captures ·")] {
             let mut status = observed_root();
             status.confirmed = confirmed;
             assert!(root_row(status).value.contains(wording));
@@ -618,7 +700,7 @@ mod tests {
         status.root.uid = 2000;
         status.root.cleanup = CaptureCleanup::AccountNextRun;
         let value = root_row(status).value;
-        assert!(value.contains("2000; readable; 0 active captures"));
+        assert_eq!(value, "no active captures · /retained/captures");
         assert!(!value.contains("restart"));
         assert!(!value.contains("writable"));
     }
@@ -630,9 +712,7 @@ mod tests {
         status.state =
             RootReadStatus::Unavailable(failure("/retained/captures", ErrorKind::NotFound));
         let value = root_row(status).value;
-        assert!(value.contains(
-            "1000; yours; unreadable; 0 active captures; missing directory: /retained/captures"
-        ));
+        assert!(value.starts_with("yours · missing directory: /retained/captures"));
         assert!(!value.contains("no active captures"));
         assert!(!value.contains("restart"));
     }
@@ -779,11 +859,13 @@ mod tests {
             CaptureDiagnostic::Staging("/retained/captures/state/pids/44-uuid.tmp".into()),
         ];
         let value = root_row(status).value;
-        assert!(value.contains("partial — 1 unreadable log, 1 annotation-only record, 1 staging file; active — 1 capture"));
+        assert!(value.contains(
+            "1 capture · partial — 1 unreadable log, 1 annotation-only record, 1 staging file"
+        ));
         assert!(value.contains("permission denied: /retained/captures/run-42-uuid.log"));
         assert!(value.contains("annotation-only record: /retained/captures/state/pids/43"));
         assert!(value.contains("staging file: /retained/captures/state/pids/44-uuid.tmp"));
-        assert!(!value.contains("active — 4"));
+        assert!(!value.contains("4 captures"));
     }
 
     #[test]
@@ -854,7 +936,7 @@ mod tests {
         assert!(!value.contains("cleanup"));
         assert!(value.contains("boot identity unavailable — verification disabled for this session; restart to retry boot read: permission denied: /kernel/boot-id"));
         assert!(!value.contains("next scan"));
-        assert!(!value.contains("active —"));
+        assert!(!value.contains("1 capture"));
     }
 
     #[test]
@@ -887,11 +969,7 @@ mod tests {
             },
         }];
         let value = root_row(status).value;
-        assert!(
-            value.contains(
-                "capture association: pid 42 via registration 40 from /retained/captures"
-            )
-        );
+        assert!(value.contains("pid 42 via registration 40.selected"));
         assert!(value.contains("another root's proof went unused: pid 42 from /retained/other"));
     }
 
@@ -926,9 +1004,7 @@ mod tests {
                 });
                 let value = root_row(status).value;
                 assert!(
-                    value.contains(&format!(
-                        "pid {pid} via registration 40 from /retained/captures"
-                    )),
+                    value.contains(&format!("pid {pid} via registration 40.selected")),
                     "{value}"
                 );
                 assert!(value.contains("40.selected"), "{value}");
@@ -963,7 +1039,7 @@ mod tests {
                 "{ambiguous}"
             );
             assert!(
-                ambiguous.contains(&format!("pid {pid} from /retained/captures")),
+                ambiguous.contains(&format!("{CAPTURE_ASSOCIATION_AMBIGUOUS}: pid {pid};")),
                 "{ambiguous}"
             );
             assert!(ambiguous.contains("40.first"), "{ambiguous}");
@@ -974,16 +1050,10 @@ mod tests {
                 unused: Vec::new(),
             };
             let recovered = root_row(status).value;
-            assert!(
-                recovered.contains(CAPTURE_ASSOCIATION_CONFIRMED),
-                "{recovered}"
+            assert_eq!(
+                recovered, "yours · no active captures · /retained/captures",
+                "a confirmed selection standing alone adds no line"
             );
-            assert!(
-                !recovered.contains(CAPTURE_ASSOCIATION_AMBIGUOUS),
-                "{recovered}"
-            );
-            assert!(recovered.contains("40.first"), "{recovered}");
-            assert!(!recovered.contains("40.second"), "{recovered}");
             assert_ne!(ambiguous, recovered);
         }
     }
@@ -1008,13 +1078,13 @@ mod tests {
             },
         });
         let value = root_row(status).value;
-        assert!(value.contains("active — 1 capture"), "{value}");
+        assert!(value.contains("1 capture"), "{value}");
         assert!(value.contains("1 unreadable log"), "{value}");
         assert!(
             value.contains("permission denied: /retained/captures/run-40-selected.log"),
             "{value}"
         );
-        assert!(value.contains(CAPTURE_ASSOCIATION_CONFIRMED), "{value}");
+        assert!(!value.contains(CAPTURE_ASSOCIATION_CONFIRMED), "{value}");
     }
 
     #[test]
@@ -1032,10 +1102,10 @@ mod tests {
         let root = first
             .rows()
             .iter()
-            .find(|row| row.label == "account 1")
+            .find(|row| row.label == "1000")
             .expect("root row");
-        assert!(root.value.contains("1000; yours"));
-        assert!(root.value.contains("active — 2 captures"));
+        assert!(root.value.starts_with("yours"));
+        assert!(root.value.contains("2 captures"));
         assert!(root.value.contains("/retained/\0/captures"));
     }
 
@@ -1060,6 +1130,63 @@ mod tests {
         assert_ne!(readable, unreadable_log);
         app.root_status[0].diagnostics.clear();
         assert_eq!(rows(&app).rows(), readable);
+    }
+
+    /// Select the row `label` names, as a click or the arrows would.
+    fn select(app: &mut App, label: &str) {
+        let settings = rows(app);
+        let selection = settings
+            .rows()
+            .iter()
+            .find_map(|row| match row.identity {
+                SettingsRowIdentity::Selectable(payload) if row.label == label => {
+                    Some(payload.get())
+                },
+                _ => None,
+            })
+            .expect("selectable settings row");
+        app.framework.settings_pane.select_row(selection);
+    }
+
+    /// The editor opens on the entries themselves: an empty list reads
+    /// `none` in the row but opens as nothing to type over.
+    #[test]
+    fn only_the_command_lists_open_an_editor_on_their_bare_entries() {
+        let mut app = App::new_for_test().expect("quiet settings app");
+        app.loaded_config.config.commands.hidden_when_idle = vec!["port".into(), "handler".into()];
+        app.loaded_config.config.commands.excluded.clear();
+        select(&mut app, "hidden when idle");
+        assert_eq!(selected_text(&app).as_deref(), Some("port, handler"));
+        select(&mut app, "excluded");
+        assert_eq!(selected_text(&app).as_deref(), Some(""));
+        select(&mut app, "fade seconds");
+        assert_eq!(selected_text(&app), None);
+        select(&mut app, "auto install");
+        assert_eq!(selected_text(&app), None);
+    }
+
+    /// `hidden_when_idle` is read from the config every frame, while the
+    /// census worker holds its own handle on `excluded`.
+    #[test]
+    fn a_typed_list_replaces_the_config_and_reaches_the_census_worker() {
+        let mut app = App::new_for_test().expect("quiet settings app");
+        let worker = app.excluded_commands.clone();
+        set_command_list(
+            &mut app,
+            CommandList::HiddenWhenIdle,
+            parse_list("port handler"),
+        );
+        assert_eq!(
+            app.loaded_config.config.commands.hidden_when_idle,
+            ["port", "handler"]
+        );
+        assert_eq!(
+            worker.snapshot(),
+            app.loaded_config.config.commands.excluded
+        );
+        set_command_list(&mut app, CommandList::Excluded, parse_list("berth, fmt"));
+        assert_eq!(app.loaded_config.config.commands.excluded, ["berth", "fmt"]);
+        assert_eq!(worker.snapshot(), ["berth", "fmt"]);
     }
 }
 
@@ -1139,7 +1266,7 @@ mod layout_tests {
         "6 Value shared directory = <shared directory>",
         "[Commands]",
         "7 Value excluded = berth",
-        "8 Value hidden when idle = port",
+        "8 Value hidden when idle = port, handler",
         "[Files]",
         "9 Value config = <config path>",
         "10 Value themes = <themes dir>",

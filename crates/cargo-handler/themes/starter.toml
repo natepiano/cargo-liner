@@ -47,6 +47,12 @@ dim       = "DarkGray"
 secondary = "Gray"
 
 [variants.roles]
+busy        = { r = 100, g = 220, b = 100 }
+claude      = { r = 217, g = 119, b = 87 }
+codex       = { r = 175, g = 140, b = 255 }
+idle        = { r = 140, g = 140, b = 140 }
+shell       = { r = 90, g = 200, b = 220 }
+unreachable = { r = 255, g = 100, b = 100 }
 
 [variants.status]
 bar = "DarkGray"

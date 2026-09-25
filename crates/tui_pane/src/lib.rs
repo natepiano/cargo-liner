@@ -48,6 +48,7 @@ pub use app_context::AppContext;
 pub use app_context::NoToastAction;
 pub use app_settings::AppConfig;
 pub use app_settings::FrameworkSetting;
+pub use app_settings::LIST_SEPARATOR;
 pub use app_settings::SettingStep;
 pub use app_settings::SettingTarget;
 pub use app_settings::SettingsHost;
@@ -55,6 +56,9 @@ pub use app_settings::SettingsNavigation;
 pub use app_settings::SettingsRows;
 pub use app_settings::apply_settings;
 pub use app_settings::draw_settings;
+pub use app_settings::join_list;
+pub use app_settings::list_display;
+pub use app_settings::parse_list;
 pub use app_settings::step_framework_setting;
 pub use app_settings::stepped;
 #[cfg(feature = "backdrop")]

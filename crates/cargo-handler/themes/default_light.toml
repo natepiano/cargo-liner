@@ -44,6 +44,12 @@ dim       = { r = 130, g = 130, b = 130 }
 secondary = { r = 70, g = 70, b = 70 }
 
 [variants.roles]
+busy        = { r = 0, g = 130, b = 0 }
+claude      = { r = 190, g = 85, b = 50 }
+codex       = { r = 110, g = 60, b = 200 }
+idle        = { r = 120, g = 120, b = 120 }
+shell       = { r = 0, g = 120, b = 150 }
+unreachable = { r = 190, g = 0, b = 0 }
 
 [variants.status]
 bar = { r = 220, g = 220, b = 220 }

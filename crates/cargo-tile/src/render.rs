@@ -52,6 +52,7 @@ use crate::census::CargoProcess;
 use crate::census::CompilerObservation;
 use crate::census::InvocationId;
 use crate::census::Measurement;
+use crate::census::ProcessOwner;
 use crate::census::RowProvenance;
 use crate::census::RunStart;
 use crate::census::VisibleParent;
@@ -121,10 +122,10 @@ use crate::tiles::TileDemand;
 use crate::tiles::TileDemands;
 use crate::wrap;
 
-/// The verified root owner and its independently resolved display label.
+/// A numeric account and its independently resolved display label.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CaptureAccount {
-    /// Ownership identity comes from the opened root, never its pathname.
+pub(crate) struct Account {
+    /// Ownership identity comes from the opened root or the process table, never a pathname.
     pub(crate) uid:  u32,
     /// Failure to resolve a label does not change grouping.
     pub(crate) name: AccountName,
@@ -138,7 +139,7 @@ pub(crate) struct CaptureContext {
     /// Replacing a directory invalidates its retained grouping identity.
     pub(crate) incarnation: RootIncarnation,
     /// Numeric identity remains separate from its display name.
-    pub(crate) account:     CaptureAccount,
+    pub(crate) account:     Account,
 }
 
 /// What a gauge can show, preserving the reason it has no counter.
@@ -1129,8 +1130,13 @@ enum PinnedGroup<'a> {
 /// Only numeric ownership and root incarnation determine capture grouping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GroupQualification {
-    /// No verified capture supplies an account or root.
-    Uncaptured,
+    /// Neither a verified capture nor an observed process owner supplies an account.
+    Unqualified,
+    /// An uncaptured process names its owner's account without a capture root.
+    Owner {
+        /// A name lookup cannot change the account identity.
+        uid: u32,
+    },
     /// Direct and enclosing membership share the same directory qualification.
     Captured {
         /// A name lookup cannot change the account identity.
@@ -1142,10 +1148,25 @@ enum GroupQualification {
     },
 }
 
+impl GroupQualification {
+    /// An owner row shares a heading with captured rows of its own uid; any other
+    /// pair shares one only when equal, so roots and incarnations stay apart.
+    fn is_compatible(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Owner { uid: owner }, Self::Captured { uid, .. })
+            | (Self::Captured { uid, .. }, Self::Owner { uid: owner }) => owner == uid,
+            _ => self == other,
+        }
+    }
+}
+
 impl From<&RowProvenance> for GroupQualification {
     fn from(provenance: &RowProvenance) -> Self {
         match provenance {
-            RowProvenance::Uncaptured => Self::Uncaptured,
+            RowProvenance::Uncaptured(ProcessOwner::Unavailable) => Self::Unqualified,
+            RowProvenance::Uncaptured(ProcessOwner::Observed(account)) => {
+                Self::Owner { uid: account.uid }
+            },
             RowProvenance::Direct(context) | RowProvenance::Enclosing(context) => Self::Captured {
                 uid:         context.account.uid,
                 root:        context.root,
@@ -1164,7 +1185,7 @@ enum GroupDirectory<'a> {
     Unavailable(&'a InvocationId),
 }
 
-/// The same complete identity selects group members and the pinned heading.
+/// The same compatibility relation selects group members and the pinned heading.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct GroupingIdentity<'a> {
     /// Ownership remains independent from source and account-name resolution.
@@ -1187,9 +1208,18 @@ impl<'a> From<&'a CargoProcess> for GroupingIdentity<'a> {
     }
 }
 
-/// Invocations sharing an account, root incarnation and absolute working directory.
+impl GroupingIdentity<'_> {
+    /// Equal raw directories whose qualifications do not name different accounts or roots.
+    fn is_compatible(&self, other: &GroupingIdentity<'_>) -> bool {
+        self.directory == other.directory && self.qualification.is_compatible(other.qualification)
+    }
+}
+
+/// Invocations sharing an account, root incarnation and absolute working directory,
+/// joined by uncaptured invocations whose process owner is that account.
 struct PathGroup<'a> {
-    /// Display text never participates in membership or pin selection.
+    /// Display text never participates in membership or pin selection. A captured
+    /// member replaces an owner-only identity, so it names the group's root.
     identity: GroupingIdentity<'a>,
     /// The first member's display label preserves the existing heading choice.
     path:     &'a str,
@@ -1199,23 +1229,30 @@ struct PathGroup<'a> {
 
 impl PathGroup<'_> {
     /// Qualify the heading once; unresolved account names retain their numeric uid.
+    /// Every member names the group's uid, and a name any member resolved labels
+    /// it, so the text does not depend on which member sorts first.
     fn heading(&self) -> String {
-        let Some(row) = self.rows.first() else {
-            return self.path.to_string();
+        let uid = match self.identity.qualification {
+            GroupQualification::Unqualified => return self.path.to_string(),
+            GroupQualification::Owner { uid } | GroupQualification::Captured { uid, .. } => uid,
         };
-        match &row.process.provenance {
-            RowProvenance::Uncaptured => self.path.to_string(),
-            RowProvenance::Direct(context) | RowProvenance::Enclosing(context) => {
-                let account = match &context.account.name {
-                    AccountName::Resolved(name) => name.clone(),
-                    AccountName::Unavailable => context.account.uid.to_string(),
-                };
-                format!(
-                    "{ACCOUNT_HEADING_OPEN}{account}{ACCOUNT_HEADING_CLOSE}{}",
-                    self.path
-                )
-            },
-        }
+        let account = self
+            .rows
+            .iter()
+            .find_map(|row| match &row.process.provenance {
+                RowProvenance::Uncaptured(ProcessOwner::Observed(account))
+                | RowProvenance::Direct(CaptureContext { account, .. })
+                | RowProvenance::Enclosing(CaptureContext { account, .. }) => match &account.name {
+                    AccountName::Resolved(name) => Some(name.clone()),
+                    AccountName::Unavailable => None,
+                },
+                RowProvenance::Uncaptured(ProcessOwner::Unavailable) => None,
+            })
+            .unwrap_or_else(|| uid.to_string());
+        format!(
+            "{ACCOUNT_HEADING_OPEN}{account}{ACCOUNT_HEADING_CLOSE}{}",
+            self.path
+        )
     }
 }
 
@@ -1340,17 +1377,26 @@ fn draw_process_table(
 
 /// Collect rows by account, root incarnation and raw working directory.
 ///
-/// The oldest invocation orders each group; the pinned identity keeps the
-/// command's own directory first even when another heading has identical text.
-/// A linear search preserves arrival order for ties across the handful of
-/// working directories normally visible at once.
+/// A row joins the first group, in arrival order, whose identity is compatible
+/// with its own: an uncaptured row whose owner is observed joins a captured
+/// group of that uid rather than repeating its heading. The oldest invocation
+/// orders each group; the pinned identity keeps the command's own directory
+/// first even when another heading has identical text. A linear search
+/// preserves arrival order for ties across the handful of working directories
+/// normally visible at once.
 fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<PathGroup<'a>> {
     let mut groups: Vec<PathGroup<'a>> = Vec::new();
     for row in rows {
         let identity = GroupingIdentity::from(&row.process);
         if let Some(group) = groups.iter_mut().find(|group| {
-            matches!(identity.directory, GroupDirectory::Absolute(_)) && group.identity == identity
+            matches!(identity.directory, GroupDirectory::Absolute(_))
+                && group.identity.is_compatible(&identity)
         }) {
+            // Owner rows accept any root of their uid; once a captured row names
+            // one, a different root or incarnation forms its own group.
+            if matches!(identity.qualification, GroupQualification::Captured { .. }) {
+                group.identity = identity;
+            }
             group.rows.push(row);
             continue;
         }
@@ -1381,6 +1427,16 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
             .rows
             .sort_by_key(|row| (row.process.started, row.process.pid));
     }
+    // The lead finds its group the way a row does, first compatible in
+    // arrival order, so an owner-only lead pins the group it joined even
+    // when a later root of the same uid sorts ahead of it.
+    let pinned = match pinned {
+        PinnedGroup::Lead(lead) => groups
+            .iter()
+            .position(|group| group.identity.is_compatible(&lead))
+            .map(|at| groups.remove(at)),
+        PinnedGroup::Unpinned => None,
+    };
     groups.sort_by_key(|group| {
         group
             .rows
@@ -1392,13 +1448,9 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
     // Whatever the rest sort to, the pinned directory heads the cell.
     // The others keep the order they had under it, so a group that
     // comes and goes moves nothing but itself.
-    let PinnedGroup::Lead(lead) = pinned else {
-        return groups;
-    };
-    let Some(at) = groups.iter().position(|group| group.identity == lead) else {
-        return groups;
-    };
-    groups[..=at].rotate_right(1);
+    if let Some(group) = pinned {
+        groups.insert(0, group);
+    }
     groups
 }
 
@@ -2002,8 +2054,8 @@ mod tests {
     use crate::constants::COMPILER_PROCESS_NAMES;
     use crate::constants::LOCK_WAIT_MARKER;
     use crate::constants::PHASE_TESTING;
+    use crate::constants::PORT_SUBCOMMAND_NAME;
     use crate::constants::REGISTRATION_MAGIC;
-    use crate::constants::SIBLING_SUBCOMMAND_NAME;
     use crate::constants::UNRESOLVED_TIME;
     use crate::probe::FrameLog;
     use crate::progress::capture::Capture;
@@ -2315,7 +2367,7 @@ mod tests {
             pid:                41233,
             invocation_id:      InvocationId::for_test(41233),
             capture_membership: CaptureMembership::Outside,
-            provenance:         RowProvenance::Uncaptured,
+            provenance:         RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent:             VisibleParent::None,
             start:              "11:04".to_string(),
             started:            RunStart::Known(started),
@@ -2642,7 +2694,7 @@ mod tests {
             pid,
             invocation_id: InvocationId::for_test(pid),
             capture_membership: CaptureMembership::Outside,
-            provenance: RowProvenance::Uncaptured,
+            provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             parent: VisibleParent::None,
             start: "11:04".to_string(),
             started: RunStart::Known(0),
@@ -2658,7 +2710,7 @@ mod tests {
     }
 
     /// `commands.hidden_when_idle` as the config hands it over.
-    fn hidden_when_idle() -> Vec<String> { vec![SIBLING_SUBCOMMAND_NAME.to_string()] }
+    fn hidden_when_idle() -> Vec<String> { vec![PORT_SUBCOMMAND_NAME.to_string()] }
 
     /// A roster carrying one command, with `rest` running under it.
     fn roster_of(lead: CargoProcess, rest: Vec<CargoProcess>) -> Roster {
@@ -2671,7 +2723,7 @@ mod tests {
 
     #[test]
     fn an_idle_driver_keeps_one_summary_row() {
-        let roster = roster_of(invocation(4100, &[SIBLING_SUBCOMMAND_NAME]), Vec::new());
+        let roster = roster_of(invocation(4100, &[PORT_SUBCOMMAND_NAME]), Vec::new());
 
         let pids = summary_cpu_for_test(&roster, &hidden_when_idle())
             .into_iter()
@@ -2686,7 +2738,7 @@ mod tests {
         let mut nested = invocation(4300, &["check"]);
         nested.nested = true;
         let roster = roster_of(
-            invocation(4100, &[SIBLING_SUBCOMMAND_NAME]),
+            invocation(4100, &[PORT_SUBCOMMAND_NAME]),
             vec![invocation(4200, &["build"]), nested],
         );
 
@@ -2965,7 +3017,7 @@ mod tests {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 14));
         let area = buffer.area;
         let roster = roster_of(
-            invocation(4100, &[SIBLING_SUBCOMMAND_NAME]),
+            invocation(4100, &[PORT_SUBCOMMAND_NAME]),
             vec![invocation(4212, &["build"])],
         );
 
@@ -3172,7 +3224,7 @@ mod tests {
         CaptureContext {
             root:        CaptureRootIndex(0),
             incarnation: scan.incarnation(),
-            account:     CaptureAccount {
+            account:     Account {
                 uid:  1000,
                 name: AccountName::Resolved("runner-one".into()),
             },
@@ -3345,7 +3397,12 @@ mod tests {
             .find(|group| group.lead.pid == 51)
             .expect("foreign writer process")
             .lead;
-        assert_eq!(other.provenance, RowProvenance::Uncaptured);
+        // The rejected root supplies nothing; the process owner still names the
+        // accepted account, so both writers share one heading.
+        assert_eq!(
+            other.provenance,
+            RowProvenance::Uncaptured(ProcessOwner::Observed(context.account.clone()))
+        );
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         let area = Rect::new(0, 0, 180, 16);
@@ -3565,13 +3622,127 @@ mod tests {
         assert_eq!(groups[1].heading(), "/nested/check");
         assert_eq!(
             groups[1].identity.qualification,
-            GroupQualification::Uncaptured
+            GroupQualification::Unqualified
         );
         for kind in [TableKind::Command, TableKind::Summary] {
             let text = grouped_table_text(&rows, kind, PinnedGroup::Unpinned);
             assert!(text.contains("cargo check"), "{text}");
             assert!(text.contains("cargo build"), "{text}");
         }
+    }
+
+    /// An uncaptured row owned by `uid`, whose owner name resolved to `name`.
+    fn owned(path: &str, pid: u32, uid: u32, name: AccountName) -> TrackedRow {
+        let mut row = same_second(path, pid);
+        row.process.provenance =
+            RowProvenance::Uncaptured(ProcessOwner::Observed(Account { uid, name }));
+        row
+    }
+
+    /// A passed-through command names its process owner; an unread owner names nothing.
+    #[test]
+    fn an_observed_owner_names_an_uncaptured_heading() {
+        let resolved = owned(
+            "/workspace/project",
+            40,
+            1000,
+            AccountName::Resolved("runner-one".into()),
+        );
+        let unresolved = owned("/workspace/project", 40, 1000, AccountName::Unavailable);
+        let unobserved = same_second("/workspace/project", 40);
+        for (row, heading) in [
+            (&resolved, "[runner-one] /workspace/project"),
+            (&unresolved, "[1000] /workspace/project"),
+            (&unobserved, "/workspace/project"),
+        ] {
+            let groups = group_by_path(&[row], PinnedGroup::Unpinned);
+            assert_eq!(groups[0].heading(), heading);
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let text = grouped_table_text(&[row], kind, PinnedGroup::Unpinned);
+                assert!(
+                    text.lines().any(|line| line.trim() == heading),
+                    "{kind:?}: {text}"
+                );
+            }
+        }
+    }
+
+    /// One uid in one absolute directory draws one heading, whichever member sorts first.
+    #[test]
+    fn an_owner_row_joins_a_captured_group_of_its_uid_and_directory() {
+        let mut captured = same_second("/workspace/project", 41);
+        captured.process.provenance = RowProvenance::Direct(capture_context());
+        for owner_pid in [40, 42] {
+            let owner = owned(
+                "/workspace/project",
+                owner_pid,
+                1000,
+                AccountName::Unavailable,
+            );
+            for rows in [[&owner, &captured], [&captured, &owner]] {
+                let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].rows.len(), 2);
+                assert_eq!(groups[0].heading(), "[runner-one] /workspace/project");
+            }
+        }
+        let other_uid = owned("/workspace/project", 40, 2000, AccountName::Unavailable);
+        let other_directory = owned("/workspace/other", 40, 1000, AccountName::Unavailable);
+        for other in [&other_uid, &other_directory] {
+            assert_eq!(
+                group_by_path(&[other, &captured], PinnedGroup::Unpinned).len(),
+                2
+            );
+        }
+    }
+
+    /// An owner row joins the first root of its uid; a second root still heads its own group.
+    #[test]
+    fn an_owner_row_joins_the_first_root_of_its_uid() {
+        let context = capture_context();
+        let owner = owned("/workspace/project", 40, 1000, AccountName::Unavailable);
+        let mut first_root = same_second("/workspace/project", 41);
+        first_root.process.provenance = RowProvenance::Direct(context.clone());
+        let mut second_root = same_second("/workspace/project", 42);
+        let mut second_context = context;
+        second_context.root = CaptureRootIndex(1);
+        second_root.process.provenance = RowProvenance::Direct(second_context);
+        let rows = [&owner, &first_root, &second_root];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0]
+                .rows
+                .iter()
+                .map(|row| row.process.pid)
+                .collect::<Vec<_>>(),
+            [40, 41]
+        );
+        assert_eq!(groups[1].rows[0].process.pid, 42);
+    }
+
+    /// A passed-through lead merged into a captured group still pins that group.
+    #[test]
+    fn a_pinned_uncaptured_lead_heads_the_captured_group_it_joined() {
+        let older = started_at("/other/project", None, 1);
+        let mut captured = started_at("/workspace/project", None, 100);
+        captured.process.provenance = RowProvenance::Direct(capture_context());
+        captured.process.pid = 41;
+        let mut lead = owned("/workspace/project", 42, 1000, AccountName::Unavailable);
+        lead.process.command = CommandText::of("cargo", &["handler"]);
+        let rows = [&older, &lead, &captured];
+        let pinned = PinnedGroup::Lead(GroupingIdentity::from(&lead.process));
+        let groups = group_by_path(&rows, pinned);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].rows.len(), 2);
+        assert!(
+            groups[0]
+                .rows
+                .iter()
+                .any(|row| row.process.pid == lead.process.pid)
+        );
+        assert_eq!(groups[0].heading(), "[runner-one] /workspace/project");
+        assert_eq!(groups[1].path, "/other/project");
     }
 
     /// An unavailable cwd remains a drawable row and keeps its own pin.
@@ -4198,8 +4369,8 @@ mod tests {
                 "│   fade seconds      < 3 >                                │",
                 "│ Capture:                                                 │",
                 "│   auto install      true                                 │",
-                "│   shared directory  /tmp/cargo-tile; created by the first│",
-                "│                     captured cargo run                   │",
+                "│   shared directory  /tmp/cargo-tile · created by the     │",
+                "│                     first captured cargo run             │",
                 "│ Commands:                                                │",
                 "└──────────────────────────────────────────────────────────┘",
             ],

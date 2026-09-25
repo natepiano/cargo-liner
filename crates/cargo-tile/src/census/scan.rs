@@ -11,6 +11,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::PoisonError;
+use std::sync::RwLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -63,7 +66,6 @@ use crate::birth_stamp;
 use crate::birth_stamp::LifetimeEvidence;
 #[cfg(test)]
 use crate::birth_stamp::ProcessLifetime;
-use crate::config::Config;
 use crate::constants::ARGUMENT_SEPARATOR;
 use crate::constants::CARGO_DISPLAY_NAME;
 use crate::constants::CARGO_JSON_FORMAT_PREFIX;
@@ -94,7 +96,7 @@ use crate::progress::capture_roots::CaptureRoots;
 use crate::registration::RegistrationCandidate;
 use crate::registration::WorkingDirectoryIdentity;
 use crate::registration::WriterHome;
-use crate::render::CaptureAccount;
+use crate::render::Account;
 use crate::render::CaptureContext;
 use crate::sccache::SccacheServer;
 use crate::settings::AssociationSelection;
@@ -167,8 +169,9 @@ impl DirectoryComparison {
 /// A row's capture context states whether registration fields may describe it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RowProvenance {
-    /// No verified capture qualifies this row's own working directory.
-    Uncaptured,
+    /// No verified capture qualifies this row's own working directory; an observed
+    /// process owner still names the account it runs under.
+    Uncaptured(ProcessOwner),
     /// This invocation owns its selected registration's metadata.
     Direct(CaptureContext),
     /// A nested invocation shares account and capture, retaining its own fields.
@@ -176,16 +179,17 @@ pub(crate) enum RowProvenance {
 }
 
 impl RowProvenance {
-    /// Verification came from this root; missing owner observations grant no qualification.
-    fn direct(capture: &Capture, key: &CaptureKey) -> Self {
+    /// Verification came from this root; missing owner observations grant no qualification,
+    /// leaving the row uncaptured under its process `owner`.
+    fn direct(capture: &Capture, key: &CaptureKey, owner: ProcessOwner) -> Self {
         let Some(status) = capture.root_status.get(key.root.0) else {
-            return Self::Uncaptured;
+            return Self::Uncaptured(owner);
         };
         let uid = status.root.uid;
         Self::Direct(CaptureContext {
             root:        key.root,
             incarnation: key.incarnation,
-            account:     CaptureAccount {
+            account:     Account {
                 uid,
                 name: status.account.clone(),
             },
@@ -193,10 +197,33 @@ impl RowProvenance {
     }
 
     /// Enclosing membership qualifies a group without granting registration fields.
-    fn enclosing(capture: &Capture, key: &CaptureKey) -> Self {
-        match Self::direct(capture, key) {
+    fn enclosing(capture: &Capture, key: &CaptureKey, owner: ProcessOwner) -> Self {
+        match Self::direct(capture, key, owner) {
             Self::Direct(context) => Self::Enclosing(context),
             provenance => provenance,
+        }
+    }
+}
+
+/// The account an uncaptured invocation's process runs as, named on the scan worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessOwner {
+    /// The process table reported this uid; the account table that named this
+    /// scan's roots named it too, so a root of the same uid carries the same label.
+    Observed(Account),
+    /// An unreadable owner qualifies nothing, so the heading names no account.
+    Unavailable,
+}
+
+impl ProcessOwner {
+    /// Name an observed uid from this scan's account table; rendering performs no lookup.
+    fn observe(uid: ProcessField<u32>, capture: &Capture) -> Self {
+        match uid {
+            ProcessField::Observed(uid) => Self::Observed(Account {
+                uid,
+                name: capture.account_name(uid),
+            }),
+            ProcessField::Unavailable => Self::Unavailable,
         }
     }
 }
@@ -329,20 +356,43 @@ impl CargoGroup {
     pub(crate) fn id(&self) -> InvocationId { self.lead.invocation_id.clone() }
 }
 
+/// `commands.excluded` as the scanner reads it, shared with the app so
+/// a list edited in the settings overlay applies from the next scan on
+/// without restarting the worker.
+#[derive(Clone, Debug)]
+pub(crate) struct ExcludedCommands(Arc<RwLock<Vec<String>>>);
+
+impl ExcludedCommands {
+    /// Share `subcommands` with the worker.
+    pub(crate) fn new(subcommands: Vec<String>) -> Self { Self(Arc::new(RwLock::new(subcommands))) }
+
+    /// Replace the list the next scan leaves out.
+    pub(crate) fn replace(&self, subcommands: Vec<String>) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = subcommands;
+    }
+
+    /// The list as it stands, copied out for one scan.
+    pub(crate) fn snapshot(&self) -> Vec<String> {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
 ///
-/// The caller only snapshots command exclusions. Parent resolution runs once inside
+/// Each scan reads `excluded` afresh. Parent resolution runs once inside
 /// the worker before its scan loop, so a slow filesystem cannot block terminal
 /// startup; each scan still opens every root to recheck access and ownership.
 /// Keep root resolution on the worker even when it stalls. The resolver and
 /// join handle let tests hold resolution and observe repeated scans and shutdown.
 pub(crate) fn spawn_with_resolver(
-    config: &Config,
+    excluded: ExcludedCommands,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
 ) -> (Receiver<Scan>, JoinHandle<()>) {
-    let excluded = config.commands.excluded.clone();
     let (sender, receiver) = mpsc::channel();
     let worker = thread::spawn(move || {
         let roots = resolve();
@@ -357,7 +407,7 @@ pub(crate) fn spawn_with_resolver(
                     &mut smoothing,
                     Instant::now(),
                     scanner_home,
-                    &excluded,
+                    &excluded.snapshot(),
                     &roots,
                 ))
                 .is_err()
@@ -709,6 +759,8 @@ pub(super) struct Census {
     cpu:                      HashMap<Pid, Measurement<f32>>,
     /// Own accumulated task time is the available counter on Darwin.
     accumulated:              HashMap<Pid, Duration>,
+    /// Owners of retained invocations, named from this scan's account table.
+    owners:                   HashMap<Pid, ProcessOwner>,
     /// Fixture rows enter group assembly without a process-row measurement.
     #[cfg(test)]
     registration_rows:        Vec<CargoProcess>,
@@ -727,6 +779,14 @@ impl Census {
         self.collapse_shims(records);
         self.identify_captures(capture);
         self.select_rows(records, capture, excluded);
+        self.owners = self
+            .cargo
+            .iter()
+            .filter_map(|&pid| {
+                let process = records.process(pid)?;
+                Some((pid, ProcessOwner::observe(process.uid, capture)))
+            })
+            .collect();
     }
 
     /// Classify every process the last refresh saw.
@@ -745,6 +805,7 @@ impl Census {
             compilers:                      Vec::new(),
             cpu:                            HashMap::new(),
             accumulated:                    HashMap::new(),
+            owners:                         HashMap::new(),
             #[cfg(test)]
             registration_rows:              Vec::new(),
         };
@@ -1785,9 +1846,15 @@ impl Census {
     }
 
     /// Only a verified direct association may supply directory annotation.
+    /// Without a capture, the process owner names the row's account.
     fn annotate_capture(&self, row: &mut CargoProcess, capture: &Capture, home: ScannerHome<'_>) {
         let pid = Pid::from_u32(row.pid);
-        row.provenance = RowProvenance::Uncaptured;
+        let owner = self
+            .owners
+            .get(&pid)
+            .cloned()
+            .unwrap_or(ProcessOwner::Unavailable);
+        row.provenance = RowProvenance::Uncaptured(owner.clone());
         row.capture_membership = CaptureMembership::Outside;
         if let Some(identity) = self.identities.get(&pid) {
             row.invocation_id.clone_from(identity);
@@ -1800,7 +1867,7 @@ impl Census {
         match self.direct_capture(capture, pid) {
             DirectAssociation::Direct(direct) => {
                 row.invocation_id = direct.invocation_id();
-                row.provenance = RowProvenance::direct(capture, &key);
+                row.provenance = RowProvenance::direct(capture, &key, owner);
                 let record = direct.registration().record();
                 if let WorkingDirectoryIdentity::Absolute(path) = &row.directory_identity
                     && DirectoryComparison::between(record.directory(), path)
@@ -1816,7 +1883,7 @@ impl Census {
                     .iter()
                     .find(|confirmed| confirmed.key == key)
                 {
-                    row.provenance = RowProvenance::enclosing(capture, &key);
+                    row.provenance = RowProvenance::enclosing(capture, &key, owner);
                     row.capture_membership = CaptureMembership::Enclosing(RunId::verified(
                         &key,
                         &confirmed.registration,
@@ -2370,7 +2437,7 @@ fn row(
     Ok(CargoProcess {
         invocation_id,
         capture_membership: CaptureMembership::Outside,
-        provenance: RowProvenance::Uncaptured,
+        provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
         path,
         directory_identity,
         pid: process.pid().as_u32(),
@@ -2486,7 +2553,8 @@ fn registration_row(
     Ok(CargoProcess {
         invocation_id: direct.invocation_id(),
         capture_membership: CaptureMembership::Outside,
-        provenance: RowProvenance::direct(capture, &direct.key),
+        // No process is observed here, so there is no owner to fall back on.
+        provenance: RowProvenance::direct(capture, &direct.key, ProcessOwner::Unavailable),
         path: registration_directory(record, home),
         directory_identity: record.directory_identity(),
         pid: direct.key.pid,
@@ -2780,8 +2848,8 @@ mod tests {
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
+    use crate::config::Config;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
-    use crate::constants::CAPTURE_ASSOCIATION_CONFIRMED;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::COMPILER_COLUMN;
     use crate::constants::CPU_COLUMN;
@@ -2923,6 +2991,42 @@ mod tests {
         };
         assert_eq!(context.account.uid, uid);
         assert_eq!(context.account.name, AccountName::Unavailable);
+    }
+
+    /// The worker names an uncaptured row's owner from the table that named its roots.
+    #[test]
+    fn an_uncaptured_row_names_its_process_owner_on_the_worker() {
+        let root = tempdir().expect("root");
+        let capture = verified_capture(root.path());
+        let EffectiveUser::Known(uid) = crate::root_scan::effective_user() else {
+            panic!("fixture owner");
+        };
+        assert_eq!(capture.root_status[0].root.uid, uid);
+        let fixture = cargo_process("build");
+        for (observed, expected) in [
+            (
+                ProcessField::Observed(uid),
+                ProcessOwner::Observed(Account {
+                    uid,
+                    name: capture.root_status[0].account.clone(),
+                }),
+            ),
+            (ProcessField::Unavailable, ProcessOwner::Unavailable),
+        ] {
+            let mut record = fixture.observation();
+            record.uid = observed;
+            let records = ProcessObservations::new([record]);
+            let groups = CensusSequence::default().sample_capture(&records, &capture);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(
+                groups[0].lead.provenance,
+                RowProvenance::Uncaptured(expected)
+            );
+        }
+        assert_eq!(
+            capture.account_name(uid),
+            AccountName::resolve(RootOwner::Uid(uid), &Users::new_with_refreshed_list())
+        );
     }
 
     #[test]
@@ -3166,7 +3270,10 @@ mod tests {
         assert!(ambiguous.contains("10.second"), "{ambiguous}");
         let mut row = directory_row();
         census.annotate_capture(&mut row, &competing, ScannerHome::Unavailable);
-        assert_eq!(row.provenance, RowProvenance::Uncaptured);
+        assert_eq!(
+            row.provenance,
+            RowProvenance::Uncaptured(ProcessOwner::Unavailable)
+        );
         assert_eq!(row.state, CaptureLookup::Unregistered);
         fs::remove_file(root.path().join(CAPTURE_LIVE_RUNS_DIR).join("10.second"))
             .expect("remove competing publication");
@@ -3193,20 +3300,8 @@ mod tests {
         app.root_status.clone_from(&recovered.root_status);
         let recovered_settings = account_settings_text(&app);
         assert!(
-            recovered_settings.contains(CAPTURE_ASSOCIATION_CONFIRMED),
-            "{recovered_settings}"
-        );
-        assert!(
-            !recovered_settings.contains(CAPTURE_ASSOCIATION_AMBIGUOUS),
-            "{recovered_settings}"
-        );
-        assert!(
-            recovered_settings.contains("10.first"),
-            "{recovered_settings}"
-        );
-        assert!(
-            !recovered_settings.contains("10.second"),
-            "{recovered_settings}"
+            !recovered_settings.contains('\n'),
+            "a confirmed selection standing alone adds no line: {recovered_settings}"
         );
         assert_ne!(recovered_settings, ambiguous);
         let legacy_root = capture_root(&[(10, "")]);
@@ -3365,8 +3460,21 @@ mod tests {
         assert!(settings.contains(&ignored), "{settings}");
         assert!(!settings.contains("unused directory"), "{settings}");
         assert!(!settings.contains("/unused-directory"), "{settings}");
-        assert!(settings.contains(": 10.generation)"), "{settings}");
-        assert!(!settings.contains("(10.generation; "), "{settings}");
+        // The own root's publication is the selection, and the ignored
+        // duplicate is not listed as a proof that went unused.
+        assert!(
+            capture.root_status[0]
+                .associations
+                .iter()
+                .any(|association| matches!(
+                    &association.selection,
+                    AssociationSelection::Selected { key, unused, .. }
+                        if key.pid == 10 && unused.is_empty()
+                )),
+            "{:?}",
+            capture.root_status[0].associations
+        );
+        assert!(!settings.contains("went unused"), "{settings}");
     }
 
     #[test]
@@ -3428,7 +3536,10 @@ mod tests {
             SystemTime::now(),
         );
         assert_eq!(rows, [row]);
-        assert_eq!(rows[0].provenance, RowProvenance::Uncaptured);
+        assert_eq!(
+            rows[0].provenance,
+            RowProvenance::Uncaptured(ProcessOwner::Unavailable)
+        );
         assert_eq!(rows[0].command, CommandText::of("cargo", &["build"]));
         let groups = census.assemble_groups(
             &ProcessObservations::default(),
@@ -3495,7 +3606,7 @@ mod tests {
         crate::settings::rows(app)
             .rows()
             .iter()
-            .find(|row| row.label == "account 1")
+            .find(|row| row.label == crate::settings::account_label(&app.root_status[0]))
             .expect("scanned account reaches Settings")
             .value
             .clone()
@@ -4899,10 +5010,18 @@ mod tests {
         census.associate_status(&mut capture, &groups);
         let mut app = crate::app::App::new_for_test().expect("settings app");
         app.root_status.clone_from(&capture.root_status);
-        let settings = account_settings_text(&app);
         assert!(
-            settings.contains("capture association: pid 11 via registration 10"),
-            "{settings}"
+            capture.root_status[0]
+                .associations
+                .iter()
+                .any(|association| {
+                    association.pid == 11
+                        && matches!(&association.selection,
+                        AssociationSelection::Selected { key, proof: SelectedProof::Confirmed, .. }
+                            if key.pid == 10)
+                }),
+            "{:?}",
+            capture.root_status[0].associations
         );
         assert!(root.path().join("state/pids/10.generation").exists());
         assert!(root.path().join("run-generation-10.log").exists());
@@ -5136,7 +5255,7 @@ mod tests {
 
     #[test]
     fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans() {
-        let config = Config::default();
+        let excluded = ExcludedCommands::new(Config::default().commands.excluded);
         let parent = tempdir().expect("isolated capture parent");
         // Every scan recreates the capture directory, so `parent` stays in the test
         // body until after the worker joins; once it is removed, the child cannot be
@@ -5147,7 +5266,7 @@ mod tests {
         let worker_resolutions = Arc::clone(&resolutions);
         let (started, resolution_started) = mpsc::channel();
         let (release, resolution_release) = mpsc::channel();
-        let (scans, worker) = spawn_with_resolver(&config, move || {
+        let (scans, worker) = spawn_with_resolver(excluded, move || {
             assert_ne!(thread::current().id(), caller);
             worker_resolutions.fetch_add(1, Ordering::SeqCst);
             started.send(()).expect("startup observer is alive");
@@ -5217,6 +5336,7 @@ mod tests {
             compilers:                Vec::new(),
             cpu:                      HashMap::new(),
             accumulated:              HashMap::new(),
+            owners:                   HashMap::new(),
             registration_rows:        Vec::new(),
         }
     }
@@ -5255,7 +5375,7 @@ mod tests {
         CargoProcess {
             invocation_id:      InvocationId::for_test(10),
             capture_membership: CaptureMembership::Outside,
-            provenance:         RowProvenance::Uncaptured,
+            provenance:         RowProvenance::Uncaptured(ProcessOwner::Unavailable),
             path:               "~/project".to_owned(),
             directory_identity: WorkingDirectoryIdentity::Absolute("/writer/project".into()),
             pid:                10,

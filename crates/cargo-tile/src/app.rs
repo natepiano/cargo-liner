@@ -31,6 +31,7 @@ use tui_pane::TileGridHost;
 use tui_pane::Updates;
 use tui_pane::VisualDeadline;
 
+use crate::census::ExcludedCommands;
 use crate::census::InvocationId;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
@@ -140,6 +141,9 @@ pub(crate) struct App {
     /// Parsed `config.toml` and any parse error, surfaced in the
     /// settings overlay.
     pub(crate) loaded_config:     LoadedConfig,
+    /// `commands.excluded` as the census worker reads it, replaced when
+    /// the list is edited in Settings.
+    pub(crate) excluded_commands: ExcludedCommands,
     /// Theme-resolution note from startup (a configured theme id that
     /// no file or built-in supplies), surfaced in the settings overlay.
     pub(crate) startup_note:      Option<String>,
@@ -188,10 +192,13 @@ impl App {
     ) -> Result<Self, KeymapError> {
         let mut framework = Framework::new(FocusedPane::App(AppPaneId::Main));
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
+        let excluded_commands =
+            ExcludedCommands::new(loaded_config.config.commands.excluded.clone());
         Ok(Self {
             framework,
             keymap: Rc::new(keymap),
             loaded_config,
+            excluded_commands,
             startup_note,
             capture_note: CaptureStartupNotice::Quiet,
             root_status: Vec::new(),
@@ -232,6 +239,10 @@ impl AppContext for App {
 
 impl SettingsHost for App {
     fn step_setting(&mut self, step: SettingStep) { settings::cycle(self, step); }
+
+    fn setting_text(&self) -> Option<String> { settings::selected_text(self) }
+
+    fn commit_setting_text(&mut self, text: &str) { settings::commit_text(self, text); }
 }
 
 impl KeymapUiContext for App {

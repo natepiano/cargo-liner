@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Draw a `commands.hidden_when_idle` command as the last step of its own cell's chain rather than a table row, since `cargo port` is open all day and compiles nothing.
 - Write along each cell's foot what its contents ask for against the size it was given -- `content rows: ##  r/c: ##/##` -- green while it fits, red once it does not.
 - Report test progress as well as build progress: `cargo nextest run` counts tests the way cargo counts units, and the heading says which count is on screen. Runs with no terminal read the count from nextest's per-test lines.
+- The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Fixed
 - Running several instances at once no longer kills the desktop backdrop: each display is captured through one persistent multi-client ScreenCaptureKit stream that excludes the terminal's own windows.
@@ -135,6 +136,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Start the working-directory headings and their rows one space in from the cell border rather than two and four.
 - Reject arguments that are not a subcommand; 0.1.0 parsed no command line at all.
 - Head a command's own cell with the directory the command itself runs in, so a test run's per-case temporary directories no longer push the run being watched below the fold.
+- `hidden_when_idle` defaults to `["port", "handler"]`, and the capture shim passes `cargo handler` through uncaptured alongside `tile`, `port` and `berth`.
+- A command the shim passes through uncaptured is headed by the account its process runs as, and shares one heading with that account's captured runs in the same directory instead of drawing a second, bare one.
+- The settings overlay gives each capture account one summary line, and adds lines under it only for what needs attention, rather than spelling out every association.
+- Giving the grid back from an attract screen asked for with `a` returns it to the idle timer: over an idle grid the attract screen comes back after the usual quiet seconds, rather than staying away until asked for again.
 
 ### Notes
 - Installing the shim is always explicit, never done on startup. It changes nothing about what cargo does, prints, or exits with; query invocations, this workspace's own terminal UIs, and nested cargos pass straight through.

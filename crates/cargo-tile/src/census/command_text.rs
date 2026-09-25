@@ -427,7 +427,7 @@ mod tests {
     use super::*;
     use crate::constants::COORDINATION_SUBCOMMAND_NAME;
     use crate::constants::DEFAULT_EXCLUDED;
-    use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::constants::PORT_SUBCOMMAND_NAME;
 
     #[test]
     fn unavailable_argv_and_deliberately_excluded_rows_have_different_outcomes() {
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn a_subcommand_on_the_list_is_recognised_past_a_toolchain_selector() {
-        let selected = CommandText::of(CARGO_DISPLAY_NAME, &["+nightly", SIBLING_SUBCOMMAND_NAME]);
+        let selected = CommandText::of(CARGO_DISPLAY_NAME, &["+nightly", PORT_SUBCOMMAND_NAME]);
         assert!(selected.is_hidden_when_idle(&hidden_when_idle()));
     }
 

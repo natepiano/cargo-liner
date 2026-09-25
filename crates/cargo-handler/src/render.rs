@@ -7,15 +7,9 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::Keymap;
-use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
@@ -24,18 +18,19 @@ use tui_pane::TileCells;
 use tui_pane::TileGridContents;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
-use tui_pane::label_color;
 use tui_pane::render_status_line;
 
 use crate::app::App;
+use crate::census;
+use crate::census::Machine;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
-use crate::constants::EMPTY_SUMMARY_NOTE;
 use crate::constants::STATUS_LINE_HEIGHT;
 use crate::constants::SUMMARY_CELL_TITLE;
 use crate::globals::AppGlobalAction;
 use crate::settings;
+use crate::summary;
 use crate::tiles::NoGroup;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
@@ -72,48 +67,50 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// the summary.
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridContents) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
+    let cells = Cells {
+        machines: app
+            .census
+            .machines(&app.loaded_config.config.machines.remote),
+        now:      census::unix_now(),
+    };
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
         area,
         initial_rows,
         contents,
-        &Cells,
+        &cells,
     );
 }
 
-/// What the tile grid's cells hold. Only the summary has contents, and
-/// those say there is nothing to show.
-struct Cells;
+/// What the tile grid's cells hold. Only the summary has contents: the
+/// machines and their agents.
+struct Cells<'a> {
+    /// This machine, then each configured remote.
+    machines: Vec<Machine<'a>>,
+    /// The unix second the ages are measured to.
+    now:      u64,
+}
 
-impl TileCells<NoGroup> for Cells {
+impl TileCells<NoGroup> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
-    /// The note is drawn in whatever room the summary has, so it asks
-    /// for none.
-    fn demands(&self, _widths: &[(TileContent, u16)]) -> TileDemands { TileDemands::default() }
+    /// Every summary row is one line at any width.
+    fn demands(&self, _widths: &[(TileContent, u16)]) -> TileDemands {
+        TileDemands {
+            summary: summary::height(&self.machines),
+            groups:  Vec::new(),
+        }
+    }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
-            TileContent::Summary => draw_empty_summary(buffer, inner),
+            TileContent::Summary => summary::draw(buffer, inner, &self.machines, self.now),
             // No group claims a cell -- `NoGroup` has no values -- and
             // the grid draws an empty cell's number itself.
             TileContent::Group(_) | TileContent::Empty(_) => {},
         }
     }
-}
-
-/// A blank line, then the note that there is nothing to show, indented
-/// as a section's first line would be.
-fn draw_empty_summary(buffer: &mut Buffer, area: Rect) {
-    Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("{SECTION_HEADER_INDENT}{EMPTY_SUMMARY_NOTE}"),
-            Style::default().fg(label_color()),
-        )),
-    ])
-    .render(area, buffer);
 }
 
 /// The status line: the app's name and version, `attract` while the
@@ -199,10 +196,8 @@ fraying = "leading"
     /// its readout on the last row.
     const FIRST_FRAME: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│                                                                              │",
-        "│ nothing to show yet                                                          │",
-        "│                                                                              │",
-        "│                                                                              │",
+        "│ agent  name  status  age  directory                                          │",
+        "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -219,20 +214,22 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 0  r/c: 21/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 2  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
     /// After `+` `+`: the summary over cells 2 and 3, each numbered.
     const AFTER_TWO_ADDITIONS: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│                                                                              │",
-        "│ nothing to show yet                                                          │",
-        "│                                                                              │",
-        "│                                                                              │",
+        "│ agent  name  status  age  directory                                          │",
+        "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 7/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                   content rows: 2  r/c: 7/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -253,17 +250,17 @@ fraying = "leading"
     /// After `+` `+` `-`: the summary over cell 2.
     const AFTER_TWO_ADDITIONS_AND_A_REMOVAL: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│                                                                              │",
-        "│ nothing to show yet                                                          │",
-        "│                                                                              │",
-        "│                                                                              │",
+        "│ agent  name  status  age  directory                                          │",
+        "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 0  r/c: 11/78 │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 2  r/c: 11/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -281,9 +278,8 @@ fraying = "leading"
     /// the test build's stand-in config root.
     const SETTINGS_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│                                                                              │",
-        "│ nothing to show yet                                                          │",
-        "│                                                                              │",
+        "│ agent  name  status  age  directory                                          │",
+        "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
@@ -293,6 +289,8 @@ fraying = "leading"
         "│       │   dark theme    < Default Dark >                             │       │",
         "│       │ Tiles:                                                       │       │",
         "│       │   initial rows  < 4 >                                        │       │",
+        "│       │ Machines:                                                    │       │",
+        "│       │   remote        none                                         │       │",
         "│       │ Files:                                                       │       │",
         "│       │   config        /<config>/cargo-handler/config.toml          │       │",
         "│       │   themes        /<config>/cargo-handler/themes               │       │",
@@ -300,16 +298,15 @@ fraying = "leading"
         "│       └──────────────────────────────────────────────────────────────┘       │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                  content rows: 0  r/c: 21/78 │",
+        "│                                                  content rows: 2  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
     /// The keymap overlay's first screen.
     const KEYMAP_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│                                                                              │",
-        "│ nothing┌ Keymap ───────────────────────────────────────────────────┐         │",
+        "│ agent  name  status  age  directory                                          │",
+        "│ natedev┌ Keymap ───────────────────────────────────────────────────┐         │",
         "│        │                                                           │         │",
         "│        │ Global Navigation:                                        │         │",
         "│        │ ▸ Next pane                                     tab       │         │",
@@ -328,15 +325,15 @@ fraying = "leading"
         "│        │   Randomize the attract screen                  r         │         │",
         "│        │   Remove an empty tile                          -         │         │",
         "│        └─────────────────────────1 of 6 ▼──────────────────────────┘         │",
-        "│                                                  content rows: 0  r/c: 21/78 │",
+        "│                                                  content rows: 2  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
     /// The `?` overlay's first screen, with no `x` Dismiss row.
     const SHORTCUTS_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│              ┌ Global Shortcuts ─────────────────────────────┐               │",
-        "│ nothing to sh│                                               │               │",
+        "│ agent  name  ┌ Global Shortcuts ─────────────────────────────┐               │",
+        "│ natedev · no │                                               │               │",
         "│              │ Global Navigation:                            │               │",
         "│              │ ▸ Next pane                         tab       │               │",
         "│              │   Previous pane                     shift-tab │               │",
@@ -355,15 +352,15 @@ fraying = "leading"
         "│              │   Restart                           R         │               │",
         "│              │   Save attract parameters           ctrl-s    │               │",
         "│              │   Show a random favorite            m         │               │",
-        "│              │   Show global shortcuts             ?         │ 0  r/c: 21/78 │",
+        "│              │   Show global shortcuts             ?         │ 2  r/c: 21/78 │",
         "└──────────────└───────────────────1 of 2 ▼────────────────────┘───────────────┘",
     ];
 
     /// The favorites overlay on one saved moving-band favorite.
     const FAVORITES_OVERLAY: [&str; BODY_ROWS] = [
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
-        "│                                                                              │",
-        "│ nothing to show yet                                                          │",
+        "│ agent  name  status  age  directory                                          │",
+        "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
@@ -382,7 +379,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                  content rows: 0  r/c: 21/78 │",
+        "│                                                  content rows: 2  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 

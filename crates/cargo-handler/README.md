@@ -11,12 +11,62 @@ cargo handler
 
 Once installed it answers to both `cargo-handler` and `cargo handler` -- cargo
 runs any binary on the path whose name starts with `cargo-` as a subcommand of
-its own. It takes no arguments beyond `--help` and `--version`.
+its own. Beyond `--help` and `--version` it takes one hidden subcommand,
+`probe`, which the summary runs on remote machines (see below).
 
 It takes over the terminal (alternate screen, raw mode) and draws a tile grid
-above the framework status line. The grid opens on the summary cell, which says
-there is nothing to show yet. Every cell carries the framework's readout on its
-last row.
+above the framework status line. The grid opens on the summary cell, which
+lists the Claude Code and Codex agents running on this machine and on the
+remote machines in the config. Every cell carries the framework's readout on
+its last row.
+
+## summary
+
+```text
+ agent   name                                  status  age     directory
+ natedev · 3 agents
+ claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana
+ claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler
+ codex   pid 3140                              —       12m     ~/rust/handler
+
+ mac · 1 agent
+ claude  natemccoy-30                          idle    23h     ~
+```
+
+This machine comes first, under its short host name, then each remote machine
+in config order. Within a machine the rows run oldest first. A machine with no
+agents keeps its heading (`natedev · no agents`); one that has not answered yet
+says `scanning`; one whose probe failed shows the reason in the `unreachable`
+color: `unreachable` (ssh exit 255), `cargo-handler not installed` (exit 127),
+`probe version N, expected M`, `timed out` (no answer within 10 seconds), or
+the probe's exit status. This machine is scanned every 2 seconds and each
+remote every 5; a remote whose probe is still out is skipped until it answers.
+
+Only top-level agents are listed -- the ones a person started, not the ones an
+agent started:
+
+- **Claude Code**: each `~/.claude/sessions/<pid>.json` whose process is alive
+  and is `claude`. The row shows the session's name (or the start of its session
+  id), its status (`busy`, `shell`, `idle`, or `—` when the record has none),
+  the age of the process, and the session's directory.
+- **Codex**: an interactive `codex` process -- not `codex app-server`, which
+  runs for another program. Its name is the command line after `codex`, or
+  `pid <n>`. The one exception is the ChatGPT desktop app on macOS: its
+  `codex app-server` child is listed once, named `ChatGPT`.
+
+A process is dropped when any of its ancestors is another agent (a `claude` or
+`codex` process) or a tmux server, since those sessions are driven by something
+other than a person at a terminal.
+
+### remote machines
+
+A remote is an ssh host name. cargo-handler runs
+`ssh -o BatchMode=yes -o ConnectTimeout=5 <host> cargo-handler probe`, sharing
+one connection per host through a control socket under `~/.ssh/` (left out when
+that path would be too long for ssh). `probe` prints the host's own census as
+one line of JSON and exits, so cargo-handler must be installed on the remote and
+on the `PATH` ssh gives a non-interactive command -- `cargo install` puts it in
+`~/.cargo/bin/`.
 
 ## keys
 
@@ -30,7 +80,7 @@ ctrl-k opens the full keymap editor, where Enter rebinds the selected row.
 | `+` | add a tile |
 | `-` | remove an empty tile |
 | ← → ↑ ↓ | move the focus ring between tiles |
-| `a` | show or hide the attract screen |
+| `a` | show the attract screen, or give the grid back until a few idle seconds pass |
 | `r` | draw a random attract screen |
 | `u` | undo the latest attract replacement |
 | ctrl-s | save the attract parameters on screen as a favorite |
@@ -66,7 +116,7 @@ Everything lives under `<os config dir>/cargo-handler/` -- on macOS
 
 | file | purpose |
 | --- | --- |
-| `config.toml` | theme selection, the iTerm2 profile, and how the grid grows |
+| `config.toml` | theme selection, the iTerm2 profile, how the grid grows, and the remote machines |
 | `keymap.toml` | key binding overrides, written by the keymap editor |
 | `favorites.toml` | saved attract modes and parameters |
 | `themes/*.toml` | custom color themes |
@@ -83,7 +133,13 @@ iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone
 
 [tiles]
 initial_rows = 4                 # rows the first column grows to before the grid squares up
+
+[machines]
+remote = []                      # ssh host names the summary probes, e.g. ["mac"]
 ```
+
+The settings overlay edits `remote` under **Machines** as a typed list; a
+change applies from the next probe.
 
 Four themes are compiled in: `Default Dark`, `Default Light`,
 `High Contrast Dark` and `High Contrast Light`. They live in
@@ -91,6 +147,13 @@ Four themes are compiled in: `Default Dark`, `Default Light`,
 For custom colors, copy [`themes/starter.toml`](themes/starter.toml) into
 `themes/` under the config directory and point `dark_theme` at
 `Cargo Handler Dark`.
+
+The summary reads six keys from each variant's `[variants.roles]`: `claude`
+and `codex` color the agent column, `busy`, `shell` and `idle` the status
+column (a missing or unknown status uses `idle`), and `unreachable` a remote's
+failure reason. A custom variant that leaves one out takes it from the built-in
+it replaces, or, under a new name, from `Default Dark` or `Default Light` to
+match its appearance.
 
 A stale entry in `keymap.toml` is skipped rather than refusing to start.
 

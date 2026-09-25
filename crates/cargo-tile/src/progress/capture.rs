@@ -7,6 +7,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use sysinfo::Users;
+
 use super::capture_diagnostic::CaptureDiagnostic;
 use super::capture_diagnostic::CaptureFailure;
 use super::capture_diagnostic::PathFailure;
@@ -110,6 +112,8 @@ pub(crate) struct Capture {
     /// One observation per effective root, including missing and invalid paths.
     pub(crate) root_status:      Vec<AccountCaptureDirectory>,
     pub(crate) shared_directory: SharedCaptureDirectory,
+    /// The account table read once per scan; roots and process owners share it.
+    users:                       Users,
 }
 
 impl Capture {
@@ -164,7 +168,7 @@ impl Capture {
             ..Self::default()
         };
         let mut budget = SweepBudget::default();
-        let users = sysinfo::Users::new_with_refreshed_list();
+        let users = Users::new_with_refreshed_list();
         for (index, mut status) in roots.discover(&users).into_iter().enumerate() {
             if matches!(status.state, RootReadStatus::ForeignOwned { .. }) {
                 capture.root_status.push(status);
@@ -207,6 +211,7 @@ impl Capture {
             }
             capture.root_status.push(status);
         }
+        capture.users = users;
         capture
     }
 
@@ -296,6 +301,12 @@ impl Capture {
         if status.root.cleanup == CaptureCleanup::Here {
             sweep_ended(scan, &generations, observe, budget);
         }
+    }
+
+    /// Name a process owner from the table that named this scan's roots, so a root
+    /// and a process of one uid always carry the same label.
+    pub(crate) fn account_name(&self, uid: u32) -> AccountName {
+        AccountName::resolve(RootOwner::Uid(uid), &self.users)
     }
 
     /// Membership survives empty or unreadable output without claiming current progress.

@@ -227,12 +227,13 @@ where `adjusted_parameter_sets: AdjustedAttractParameterSets` enumerates the **s
 combinations of the three parameter sets (with `.names()`), so "restored with adjustments,
 nothing adjusted" is unrepresentable.
 
-The presentation values undo restores are `AttractVisibilityInstruction { FollowRoster, Show,
-Hide }` (the reader's standing instruction, which outranks the roster) and
+The presentation values undo restores are `AttractVisibilityInstruction { FollowRoster, Show }`
+(the reader's standing instruction, which outranks the roster) and
 `AttractGridPresentation { OverGrid, ReplacesGrid }` (whether the strip covers or replaces the
-grid), grouped as `AttractPresentation`. They replaced a former `Asked` enum plus a `covering:
-bool`: two enums that name every state, so "not asked for" and "asked to hide" are no longer
-one value. `request_show()` — called by `m` and `r`, never by undo — sets `Show` +
+grid), grouped as `AttractPresentation`. There is no instruction to hide: `a` out of `Show`
+returns to `FollowRoster` and sets the roster standing to `Leaving`, so the strip fades out, the
+grid stands through `ATTRACT_RETURN_QUIET`, and an idle grid then brings the strip back over it.
+`request_show()` — called by `m` and `r`, never by undo — sets `Show` +
 `ReplacesGrid` (idempotent, reverses a fade-out); `asked_for()` and `keyed_mode()` read
 `visibility_instruction`.
 

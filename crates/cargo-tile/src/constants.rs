@@ -30,23 +30,18 @@ pub(crate) const DEFAULT_HC_DARK_THEME: &str = "High Contrast Dark";
 pub(crate) const DEFAULT_HC_LIGHT_THEME: &str = "High Contrast Light";
 /// The `commands.hidden_when_idle` default: subcommands the grid gives a
 /// cell of their own only while they are driving other cargo
-/// invocations. The sibling terminal UI is the case it exists for -- it
-/// is open all day and compiles nothing on its own, so an idle cell for
-/// it is a cell no build is getting. The summary still carries it: one
-/// line saying it is running is the whole of what it has to say.
-pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 1] = [SIBLING_SUBCOMMAND_NAME];
+/// invocations. The sibling terminal UIs are the case it exists for --
+/// each is open all day and compiles nothing on its own, so an idle
+/// cell for one is a cell no build is getting. The summary still
+/// carries them: one line saying each is running is the whole of what
+/// it has to say.
+pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 2] =
+    [PORT_SUBCOMMAND_NAME, HANDLER_SUBCOMMAND_NAME];
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 
 // settings overlay
-/// What separates a list setting's entries where the overlay reports
-/// one. Config lists are edited in the file rather than stepped, so
-/// this is for reading only.
-pub(crate) const LIST_SEPARATOR: &str = ", ";
-/// Shown in place of a list setting the user has emptied, an empty row
-/// being indistinguishable from a broken one.
-pub(crate) const EMPTY_LIST: &str = "none";
 /// Rows of popup border above and below a popup's body.
 #[cfg(test)]
 pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
@@ -59,7 +54,7 @@ pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
 /// line.
 pub(crate) const BINARY_NAME: &str = "cargo-tile";
 /// The coordination sibling in this workspace, reached as `cargo
-/// berth`. Unlike [`SIBLING_SUBCOMMAND_NAME`] it does not run all day:
+/// berth`. Unlike [`PORT_SUBCOMMAND_NAME`] it does not run all day:
 /// it is fired from a hook, does its work in well under one
 /// [`PROCESS_POLL_MILLIS`] and exits. Withholding its cell until it has
 /// work under it would not help, because it never has any -- what it
@@ -72,13 +67,17 @@ pub(crate) const COORDINATION_SUBCOMMAND_NAME: &str = "berth";
 /// `cargo-tile` on the path and handing it this word ahead of every
 /// other argument, so the command line drops it before parsing.
 pub(crate) const SUBCOMMAND_NAME: &str = "tile";
-/// The sibling terminal UI in this workspace, reached as `cargo port`.
+/// A sibling terminal UI in this workspace, reached as `cargo handler`.
+/// The capture shim passes it through and [`DEFAULT_HIDDEN_WHEN_IDLE`]
+/// names it for the same reasons as [`PORT_SUBCOMMAND_NAME`].
+pub(crate) const HANDLER_SUBCOMMAND_NAME: &str = "handler";
+/// A sibling terminal UI in this workspace, reached as `cargo port`.
 /// The capture shim passes it through for the same reason it passes the
 /// grid through: capturing a terminal UI copies every redraw of it into
 /// a log for as long as it stays open. It is also what
 /// [`DEFAULT_HIDDEN_WHEN_IDLE`] names, being the command that runs all
 /// day without compiling anything.
-pub(crate) const SIBLING_SUBCOMMAND_NAME: &str = "port";
+pub(crate) const PORT_SUBCOMMAND_NAME: &str = "port";
 
 // startup
 /// Shown in the settings overlay when a path cannot be resolved on this
@@ -394,8 +393,6 @@ pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 
 // capture root status
-/// Each process association names the root that supplied all capture fields.
-pub(crate) const CAPTURE_ASSOCIATION: &str = "capture association";
 /// Competing generations explain why no capture can supply a row's fields.
 pub(crate) const CAPTURE_ASSOCIATION_AMBIGUOUS: &str =
     "capture association ambiguous — no capture selected";
@@ -408,16 +405,16 @@ pub(crate) const CAPTURE_ASSOCIATION_SUPPRESSED: &str = "another root's proof we
 /// An annotation-only selection must not borrow fields from another root's proof.
 pub(crate) const CAPTURE_ASSOCIATION_UNCONFIRMED: &str =
     "unconfirmed selection — annotation only; no registration fields";
+/// Separates the parts of an account's one-line summary in Settings.
+pub(crate) const CAPTURE_SUMMARY_SEPARATOR: &str = " · ";
+/// Marks the account whose ended captures this reader removes itself.
+pub(crate) const CAPTURE_STATUS_YOURS: &str = "yours";
 /// Preserve denial as an access failure instead of describing an empty root.
 pub(crate) const CAPTURE_FAILURE_PERMISSION: &str = "permission denied";
 /// A uid names the observed account without performing a render-time lookup.
 pub(crate) const CAPTURE_OWNER_UID: &str = "owner uid";
 /// The root could not be inspected, so there is no retained uid to display.
 pub(crate) const CAPTURE_OWNER_UNAVAILABLE: &str = "owner unavailable";
-/// Account ordinals remain stable as more directories are discovered.
-pub(crate) const CAPTURE_SETTINGS_ROOT: &str = "account";
-/// Only confirmed published registrations with readable logs count as active.
-pub(crate) const CAPTURE_STATUS_ACTIVE: &str = "active";
 /// Legacy records may annotate a process without supplying verified identity.
 pub(crate) const CAPTURE_STATUS_ANNOTATION: &str = "annotation-only record";
 /// The boot observation is cached, so another scan cannot retry verification.
@@ -427,7 +424,7 @@ pub(crate) const CAPTURE_STATUS_BOOT_FAILURE: &str = "cached boot failure";
 /// The displayed count excludes annotations, unreadable logs and staging files.
 pub(crate) const CAPTURE_STATUS_CAPTURE: &str = "capture";
 /// A completed read with no captures must remain distinct from failed access.
-pub(crate) const CAPTURE_STATUS_EMPTY: &str = "readable — no active captures";
+pub(crate) const CAPTURE_STATUS_EMPTY: &str = "no active captures";
 /// A short inventory can omit runs even when every returned entry is readable.
 pub(crate) const CAPTURE_STATUS_ENUMERATION: &str = "short directory listing";
 /// Failed enumeration can leave a readable root with no visible registrations.

@@ -33,15 +33,16 @@ bottom-right corner, and ctrl-k opens the full keymap viewer.
 | Tab / shift-Tab | cycle panes |
 | ↑ ↓ | move the selection in the open overlay |
 | ← → | change the selected setting |
-| Enter | rebind the selected row (keymap and `?` overlays); step the selected setting forward |
-| Space | step the selected setting forward |
+| Enter | rebind the selected row (keymap and `?` overlays); step the selected setting forward, or edit a command list |
+| Space | step the selected setting forward, or edit a command list |
 
 In the settings overlay the three `[appearance]` rows are steppers, drawn as
 `< value >`: stepping one writes `config.toml` and swaps the active theme
-immediately. The remaining rows report what the config holds, where each file
-lives and what happened at startup; they are inert. A setting whose values are
-not a fixed set -- a list of subcommands, say -- is reported rather than
-stepped, and edited in `config.toml`, whose path the overlay gives.
+immediately. The two **Commands** lists are not a fixed set of values, so they
+are typed in: Enter opens the list as text, entries separated by commas or
+spaces, Enter again writes it to `config.toml` and applies it on the spot, and
+Esc leaves it as it was. The remaining rows report where each file lives and
+what happened at startup; they are inert.
 
 Every setting appears in that file whether or not it was ever set: a config
 written before a setting existed is rewritten at startup with the section it was
@@ -284,12 +285,13 @@ under them:
 
 ```toml
 [commands]
-hidden_when_idle = ["port"]
+hidden_when_idle = ["port", "handler"]
 ```
 
 The summary is not affected — a line there saying the command is running is the
-whole of what it has to say, and it keeps it. The settings overlay reports the
-list under **Commands**. The cell opens the moment the command drives a cargo
+whole of what it has to say, and it keeps it. The settings overlay edits the
+list under **Commands**. A grid whose only commands are withheld this way
+counts as idle, so the attract screen comes on while they sit there. The cell opens the moment the command drives a cargo
 invocation, carrying that invocation under it, and closes through the usual fade
 once the invocation ends. The list is only for commands that outlast their work:
 anything that finishes on its own already leaves the grid by finishing.
@@ -316,9 +318,10 @@ both `cargo berth` and a direct `cargo-berth`, and a `+toolchain` selector in
 front of it changes nothing.
 
 Capture is decided separately. The shim carries its own short list of
-subcommands it does not open a log for — `tile`, `port` and `berth` — because a
-POSIX shell cannot read this file. Adding a command to `excluded` keeps it off
-the grid; keeping it out of the capture logs means editing that list too.
+subcommands it does not open a log for — `tile`, `port`, `handler` and `berth` —
+because a POSIX shell cannot read this file. Adding a command to `excluded`
+keeps it off the grid; keeping it out of the capture logs means editing that
+list too.
 
 A command finishing in the middle takes its cell with it and the grid closes over
 the space: the cell above it and the cell below come together, and everything
@@ -493,7 +496,10 @@ nothing, but a live run whose log is removed reports nothing more for the rest
 of that run. Every account on the machine writes under its own numbered
 directory in `/tmp/cargo-tile`, and the grid reads all of them, so a build
 started by a runner account shows up under that account's name with nothing to
-configure. `cargo-tile install --all-accounts`, run as root, puts the shim in
+configure. A command the shim passes through uncaptured — `cargo tile`,
+`cargo port`, `cargo handler` — is headed by the name of the account its process
+runs as, and shares a heading with that account's captured runs in the same
+directory. `cargo-tile install --all-accounts`, run as root, puts the shim in
 front of every account's toolchains in one go.
 
 #### administering every account

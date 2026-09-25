@@ -12,6 +12,7 @@ use crate::census::CargoProcess;
 use crate::census::CompilerObservation;
 use crate::census::InvocationId;
 use crate::census::Measurement;
+use crate::census::ProcessOwner;
 use crate::census::RowProvenance;
 use crate::census::RunStart;
 use crate::census::VisibleParent;
@@ -67,7 +68,7 @@ fn invocation(pid: u32, marker: &str) -> CargoProcess {
     CargoProcess {
         invocation_id: InvocationId::for_test(pid),
         capture_membership: CaptureMembership::Outside,
-        provenance: RowProvenance::Uncaptured,
+        provenance: RowProvenance::Uncaptured(ProcessOwner::Unavailable),
         path: "/fixture/readout".to_owned(),
         directory_identity: WorkingDirectoryIdentity::Absolute("/fixture/readout".into()),
         pid,

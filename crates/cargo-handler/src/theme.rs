@@ -5,6 +5,9 @@
 //! palette this app ships lives here, so retuning cargo-handler's grid
 //! cannot move another app's panes.
 //!
+//! The summary's own colors are theme roles: [`Role`] names each one,
+//! and every built-in variant carries a value for each.
+//!
 //! [`builtins`] is what startup hands to [`tui_pane::install_theme`];
 //! user `themes/*.toml` variants layer on top, replacing a built-in
 //! when the names match. The `cargo-handler/themes/*.toml` templates
@@ -14,6 +17,7 @@
 use std::collections::BTreeMap;
 
 use ratatui::style::Color;
+use ratatui::style::Style;
 use tui_pane::Appearance;
 use tui_pane::DiskUsageTheme;
 use tui_pane::FinderTheme;
@@ -27,10 +31,147 @@ use tui_pane::Theme;
 use tui_pane::ThemeId;
 use tui_pane::ThemeVariant;
 
+use crate::constants::BUSY_ROLE;
+use crate::constants::CLAUDE_ROLE;
+use crate::constants::CODEX_ROLE;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_HC_DARK_THEME;
 use crate::constants::DEFAULT_HC_LIGHT_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::IDLE_ROLE;
+use crate::constants::SHELL_ROLE;
+use crate::constants::UNREACHABLE_ROLE;
+
+/// The summary's colors, each read from the active variant's
+/// `[variants.roles]` under [`Role::key`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Role {
+    /// The `claude` agent label.
+    Claude,
+    /// The `codex` agent label.
+    Codex,
+    /// A `busy` status.
+    Busy,
+    /// A `shell` status.
+    Shell,
+    /// An `idle` status, a status the summary does not know, and a
+    /// missing one.
+    Idle,
+    /// Why a remote machine gave no answer.
+    Unreachable,
+}
+
+impl Role {
+    /// Every role, in the order [`RolePalette`] lists them.
+    const ALL: [Self; 6] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Busy,
+        Self::Shell,
+        Self::Idle,
+        Self::Unreachable,
+    ];
+
+    /// The role's key in `[variants.roles]`.
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Claude => CLAUDE_ROLE,
+            Self::Codex => CODEX_ROLE,
+            Self::Busy => BUSY_ROLE,
+            Self::Shell => SHELL_ROLE,
+            Self::Idle => IDLE_ROLE,
+            Self::Unreachable => UNREACHABLE_ROLE,
+        }
+    }
+
+    /// The role's style in the active variant. A variant without the
+    /// role gets [`DEFAULT_DARK_ROLES`]' value.
+    pub(crate) fn style(self) -> Style {
+        tui_pane::role_style(self.key(), DEFAULT_DARK_ROLES.spec(self))
+    }
+}
+
+/// One built-in variant's value for each [`Role`].
+struct RolePalette {
+    /// [`Role::Claude`].
+    claude:      StyleSpec,
+    /// [`Role::Codex`].
+    codex:       StyleSpec,
+    /// [`Role::Busy`].
+    busy:        StyleSpec,
+    /// [`Role::Shell`].
+    shell:       StyleSpec,
+    /// [`Role::Idle`].
+    idle:        StyleSpec,
+    /// [`Role::Unreachable`].
+    unreachable: StyleSpec,
+}
+
+impl RolePalette {
+    /// The value for `role`.
+    const fn spec(&self, role: Role) -> StyleSpec {
+        match role {
+            Role::Claude => self.claude,
+            Role::Codex => self.codex,
+            Role::Busy => self.busy,
+            Role::Shell => self.shell,
+            Role::Idle => self.idle,
+            Role::Unreachable => self.unreachable,
+        }
+    }
+
+    /// Every role's value, keyed as `[variants.roles]` keys it.
+    fn map(&self) -> BTreeMap<String, StyleSpec> {
+        Role::ALL
+            .into_iter()
+            .map(|role| (role.key().to_string(), self.spec(role)))
+            .collect()
+    }
+}
+
+/// [`default_dark`]'s roles, and the value a variant without a role
+/// falls back to.
+const DEFAULT_DARK_ROLES: RolePalette = RolePalette {
+    claude:      StyleSpec::from_color(Color::Rgb(217, 119, 87)),
+    codex:       StyleSpec::from_color(Color::Rgb(175, 140, 255)),
+    busy:        StyleSpec::from_color(Color::Rgb(100, 220, 100)),
+    shell:       StyleSpec::from_color(Color::Rgb(90, 200, 220)),
+    idle:        StyleSpec::from_color(Color::Rgb(140, 140, 140)),
+    unreachable: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
+};
+
+/// [`default_light`]'s roles: the same hues, darker, for a white
+/// background.
+const DEFAULT_LIGHT_ROLES: RolePalette = RolePalette {
+    claude:      StyleSpec::from_color(Color::Rgb(190, 85, 50)),
+    codex:       StyleSpec::from_color(Color::Rgb(110, 60, 200)),
+    busy:        StyleSpec::from_color(Color::Rgb(0, 130, 0)),
+    shell:       StyleSpec::from_color(Color::Rgb(0, 120, 150)),
+    idle:        StyleSpec::from_color(Color::Rgb(120, 120, 120)),
+    unreachable: StyleSpec::from_color(Color::Rgb(190, 0, 0)),
+};
+
+/// [`high_contrast_dark`]'s roles: bright and bold, save `idle`, which
+/// stays quiet.
+const HIGH_CONTRAST_DARK_ROLES: RolePalette = RolePalette {
+    claude:      StyleSpec::bold(Color::Rgb(255, 150, 90)),
+    codex:       StyleSpec::bold(Color::LightMagenta),
+    busy:        StyleSpec::bold(Color::LightGreen),
+    shell:       StyleSpec::bold(Color::LightCyan),
+    idle:        StyleSpec::from_color(Color::Gray),
+    unreachable: StyleSpec::bold(Color::LightRed),
+};
+
+/// [`high_contrast_light`]'s roles: deep and bold, save `idle`, which
+/// stays quiet.
+const HIGH_CONTRAST_LIGHT_ROLES: RolePalette = RolePalette {
+    claude:      StyleSpec::bold(Color::Rgb(160, 60, 0)),
+    codex:       StyleSpec::bold(Color::Rgb(100, 0, 160)),
+    busy:        StyleSpec::bold(Color::Rgb(0, 100, 0)),
+    shell:       StyleSpec::bold(Color::Rgb(0, 80, 120)),
+    idle:        StyleSpec::from_color(Color::Rgb(80, 80, 80)),
+    unreachable: StyleSpec::bold(Color::Rgb(180, 0, 0)),
+};
 
 /// The variants cargo-handler compiles in, in the order the settings
 /// stepper offers them.
@@ -65,7 +206,7 @@ pub(crate) fn builtins() -> Vec<ThemeVariant> {
 /// a border is a cell two tiles share, so focus is carried by the
 /// background tint under a tile's contents instead.
 #[must_use]
-const fn default_dark() -> Theme {
+fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             // Tiles are peers meeting on shared border cells, so none of
@@ -106,14 +247,14 @@ const fn default_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(255, 255, 255)),
             high: StyleSpec::from_color(Color::Rgb(255, 100, 100)),
         },
-        roles:       BTreeMap::new(),
+        roles:       DEFAULT_DARK_ROLES.map(),
     }
 }
 
 /// Default light variant, named by [`DEFAULT_LIGHT_THEME`]. Each
 /// value is picked for legibility on a white terminal background.
 #[must_use]
-const fn default_light() -> Theme {
+fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             // Tiles are peers meeting on shared border cells, so none of
@@ -154,7 +295,7 @@ const fn default_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Rgb(90, 90, 90)),
             high: StyleSpec::from_color(Color::Rgb(200, 0, 0)),
         },
-        roles:       BTreeMap::new(),
+        roles:       DEFAULT_LIGHT_ROLES.map(),
     }
 }
 
@@ -165,7 +306,7 @@ const fn default_light() -> Theme {
 /// `LightGreen`, `LightRed`, `LightMagenta`) for maximum legibility
 /// under reduced-vision or glare conditions.
 #[must_use]
-const fn high_contrast_dark() -> Theme {
+fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             // Tiles are peers meeting on shared border cells, so none of
@@ -206,7 +347,7 @@ const fn high_contrast_dark() -> Theme {
             mid:  StyleSpec::from_color(Color::White),
             high: StyleSpec::bold(Color::LightRed),
         },
-        roles:       BTreeMap::new(),
+        roles:       HIGH_CONTRAST_DARK_ROLES.map(),
     }
 }
 
@@ -216,7 +357,7 @@ const fn high_contrast_dark() -> Theme {
 /// fields use saturated dark colors (deep red, deep green, deep blue,
 /// deep orange) chosen for AAA-grade contrast against a white canvas.
 #[must_use]
-const fn high_contrast_light() -> Theme {
+fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
             // Tiles are peers meeting on shared border cells, so none of
@@ -257,7 +398,7 @@ const fn high_contrast_light() -> Theme {
             mid:  StyleSpec::from_color(Color::Black),
             high: StyleSpec::bold(Color::Rgb(180, 0, 0)),
         },
-        roles:       BTreeMap::new(),
+        roles:       HIGH_CONTRAST_LIGHT_ROLES.map(),
     }
 }
 

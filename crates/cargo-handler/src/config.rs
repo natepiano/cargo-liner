@@ -69,6 +69,15 @@ impl TilesConfig {
     pub(crate) fn initial_rows(&self) -> usize { self.initial_rows.get() }
 }
 
+/// The machines the summary lists besides this one.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub(crate) struct MachinesConfig {
+    /// ssh host names, each probed for its agents, listed in this
+    /// order after this machine.
+    pub(crate) remote: Vec<String>,
+}
+
 /// Parsed `config.toml`. Every section defaults, so a missing file and
 /// an empty file behave the same.
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -78,6 +87,8 @@ pub(crate) struct Config {
     pub(crate) appearance: AppearanceConfig<CargoHandler>,
     /// `[tiles]` — how the tile grid grows.
     pub(crate) tiles:      TilesConfig,
+    /// `[machines]` — the remote machines the summary lists.
+    pub(crate) machines:   MachinesConfig,
 }
 
 impl AppConfig for Config {
@@ -123,6 +134,9 @@ iterm2_profile = \"cargo-handler\"
 
 [tiles]
 initial_rows = 4
+
+[machines]
+remote = []
 ";
         let written =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");

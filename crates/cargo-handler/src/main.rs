@@ -2,6 +2,7 @@
 //! framework.
 
 mod app;
+mod census;
 mod cli;
 mod config;
 mod constants;
@@ -10,6 +11,7 @@ mod interaction;
 mod keymap;
 mod render;
 mod settings;
+mod summary;
 mod terminal;
 mod theme;
 mod tiles;

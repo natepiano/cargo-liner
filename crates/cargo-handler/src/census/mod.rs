@@ -1,0 +1,295 @@
+//! The census of agents the summary lists: the top-level Claude Code
+//! and Codex sessions on this machine and on each remote machine named
+//! in `[machines] remote`.
+//!
+//! [`classify`] decides which processes count, over a process table
+//! and the session records Claude Code writes. [`scan`] reads both on
+//! this machine. [`probe`] is the JSON a machine prints about itself,
+//! and [`remote`] runs that probe on another machine over ssh.
+//! [`schedule`] runs the scans and probes on threads of their own and
+//! hands each answer to the event loop as a [`CensusUpdate`].
+
+pub(crate) mod classify;
+pub(crate) mod probe;
+pub(crate) mod remote;
+pub(crate) mod scan;
+pub(crate) mod schedule;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::PoisonError;
+use std::sync::RwLock;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+use serde::Deserialize;
+use serde::Serialize;
+use sysinfo::System;
+
+use crate::constants::CLAUDE_AGENT;
+use crate::constants::CODEX_AGENT;
+use crate::constants::LOCAL_MACHINE_FALLBACK;
+
+/// Which program an agent row is.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Agent {
+    /// A Claude Code session.
+    Claude,
+    /// A Codex session, or the Codex desktop app.
+    Codex,
+}
+
+impl Agent {
+    /// The row's `agent` cell.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Claude => CLAUDE_AGENT,
+            Self::Codex => CODEX_AGENT,
+        }
+    }
+}
+
+/// One top-level agent, as the summary lists it and as the probe
+/// prints it. The field order is the probe's JSON order.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct AgentRow {
+    /// Claude Code or Codex.
+    pub(crate) agent:     Agent,
+    /// The session's name, or what stands in for one.
+    pub(crate) name:      String,
+    /// What the session says it is doing: `idle`, `busy` or `shell`
+    /// for Claude Code, and nothing for Codex, which reports none.
+    pub(crate) status:    Option<String>,
+    /// When the agent's process started, in unix seconds.
+    pub(crate) started:   u64,
+    /// The agent's process id on its own machine.
+    pub(crate) pid:       u32,
+    /// The directory the agent runs in, with its machine's home
+    /// directory written as `~`.
+    pub(crate) directory: String,
+}
+
+/// What is known about one machine's agents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MachineState {
+    /// No answer yet.
+    Scanning,
+    /// The top-level agents, oldest first.
+    Answered(Vec<AgentRow>),
+    /// The machine gave no answer, and why.
+    Failed(String),
+}
+
+impl MachineState {
+    /// The rows the machine answered with; none before an answer or
+    /// after a failure.
+    pub(crate) fn rows(&self) -> &[AgentRow] {
+        match self {
+            Self::Answered(rows) => rows,
+            Self::Scanning | Self::Failed(_) => &[],
+        }
+    }
+}
+
+/// A remote machine before its first answer.
+static SCANNING: MachineState = MachineState::Scanning;
+
+/// One answer from the scheduler.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CensusUpdate {
+    /// This machine's agents.
+    Local(Vec<AgentRow>),
+    /// A remote machine's answer, or why there was none.
+    Remote {
+        /// The ssh name the machine is configured under.
+        host:  String,
+        /// What it answered.
+        state: MachineState,
+    },
+}
+
+/// What the summary shows: this machine and every remote that has
+/// answered, each as of its latest answer.
+#[derive(Debug)]
+pub(crate) struct Census {
+    /// This machine's heading.
+    local_name: String,
+    /// This machine's agents.
+    local:      MachineState,
+    /// Each remote's latest answer, by ssh name. A remote configured
+    /// but absent here has not answered yet.
+    remotes:    HashMap<String, MachineState>,
+}
+
+impl Census {
+    /// A census of `local_name` that nothing has answered yet.
+    pub(crate) fn new(local_name: String) -> Self {
+        Self {
+            local_name,
+            local: MachineState::Scanning,
+            remotes: HashMap::new(),
+        }
+    }
+
+    /// Record `update`, answering whether anything it says changed.
+    pub(crate) fn apply(&mut self, update: CensusUpdate) -> bool {
+        let (slot, state) = match update {
+            CensusUpdate::Local(rows) => (&mut self.local, MachineState::Answered(rows)),
+            CensusUpdate::Remote { host, state } => (
+                self.remotes.entry(host).or_insert(MachineState::Scanning),
+                state,
+            ),
+        };
+        if *slot == state {
+            return false;
+        }
+        *slot = state;
+        true
+    }
+
+    /// Forget every remote that `configured` no longer names, so one
+    /// taken out and put back starts over at `scanning`.
+    pub(crate) fn retain_remotes(&mut self, configured: &[String]) {
+        self.remotes
+            .retain(|host, _| configured.iter().any(|kept| kept == host));
+    }
+
+    /// The machines the summary draws: this one first, then each
+    /// configured remote in `configured` order.
+    pub(crate) fn machines<'a>(&'a self, configured: &'a [String]) -> Vec<Machine<'a>> {
+        let local = Machine {
+            name:  &self.local_name,
+            state: &self.local,
+        };
+        std::iter::once(local)
+            .chain(configured.iter().map(|host| Machine {
+                name:  host,
+                state: self.remotes.get(host).unwrap_or(&SCANNING),
+            }))
+            .collect()
+    }
+}
+
+/// One machine as the summary draws it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Machine<'a> {
+    /// The heading: this machine's short host name, or a remote's ssh
+    /// name.
+    pub(crate) name:  &'a str,
+    /// Its latest answer.
+    pub(crate) state: &'a MachineState,
+}
+
+/// `machines.remote` as the scheduler reads it, shared with the app so
+/// a list edited in the settings overlay applies from the next round of
+/// probes on without restarting the scheduler.
+#[derive(Clone, Debug)]
+pub(crate) struct RemoteMachines(Arc<RwLock<Vec<String>>>);
+
+impl RemoteMachines {
+    /// Share `hosts` with the scheduler.
+    pub(crate) fn new(hosts: Vec<String>) -> Self { Self(Arc::new(RwLock::new(hosts))) }
+
+    /// Replace the hosts the next round probes.
+    pub(crate) fn replace(&self, hosts: Vec<String>) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = hosts;
+    }
+
+    /// The hosts as they stand, copied out for one round.
+    pub(crate) fn snapshot(&self) -> Vec<String> {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// This machine's heading: its host name up to the first `.`.
+pub(crate) fn local_machine_name() -> String {
+    System::host_name()
+        .and_then(|name| name.split('.').next().map(str::to_string))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| LOCAL_MACHINE_FALLBACK.to_string())
+}
+
+/// The current time in unix seconds, which an agent's age is measured
+/// against.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A claude row started at `started`.
+    fn row(started: u64) -> AgentRow {
+        AgentRow {
+            agent: Agent::Claude,
+            name: "enh/handler".to_string(),
+            status: Some("busy".to_string()),
+            started,
+            pid: 428_044,
+            directory: "~/rust/handler".to_string(),
+        }
+    }
+
+    /// An update that repeats what the census already holds changes
+    /// nothing, so it asks for no repaint.
+    #[test]
+    fn only_a_changed_answer_counts_as_a_change() {
+        let mut census = Census::new("natedev".to_string());
+        assert!(census.apply(CensusUpdate::Local(vec![row(1)])));
+        assert!(!census.apply(CensusUpdate::Local(vec![row(1)])));
+        assert!(census.apply(CensusUpdate::Local(vec![row(2)])));
+
+        let failed = CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Failed("timed out".to_string()),
+        };
+        assert!(census.apply(failed.clone()));
+        assert!(!census.apply(failed));
+    }
+
+    /// This machine comes first, then the remotes in configured order,
+    /// each still `scanning` until it answers.
+    #[test]
+    fn machines_list_this_one_then_remotes_in_configured_order() {
+        let mut census = Census::new("natedev".to_string());
+        census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Answered(vec![row(1)]),
+        });
+        let configured = ["studio".to_string(), "mac".to_string()];
+
+        let machines = census.machines(&configured);
+
+        let names: Vec<_> = machines.iter().map(|machine| machine.name).collect();
+        assert_eq!(names, ["natedev", "studio", "mac"]);
+        assert_eq!(machines[0].state, &MachineState::Scanning);
+        assert_eq!(machines[1].state, &MachineState::Scanning);
+        assert_eq!(machines[2].state.rows(), [row(1)]);
+    }
+
+    /// A remote taken out of the list loses its answer, so putting it
+    /// back shows `scanning` rather than what it said before.
+    #[test]
+    fn a_remote_taken_out_forgets_its_answer() {
+        let mut census = Census::new("natedev".to_string());
+        census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Answered(vec![row(1)]),
+        });
+
+        census.retain_remotes(&[]);
+
+        let configured = ["mac".to_string()];
+        assert_eq!(
+            census.machines(&configured)[1].state,
+            &MachineState::Scanning
+        );
+    }
+}

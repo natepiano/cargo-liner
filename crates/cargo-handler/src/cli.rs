@@ -1,4 +1,6 @@
-//! The command line, which opens the grid and takes nothing else yet.
+//! The command line, which opens the grid, or with the hidden `probe`
+//! subcommand prints this machine's agents as JSON for a remote
+//! summary to read.
 //!
 //! Both spellings reach the same place. `cargo handler` works because
 //! cargo runs any `cargo-`-prefixed binary on the path as a subcommand
@@ -11,19 +13,35 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use clap::Parser;
+use clap::Subcommand;
 
+use crate::census::probe;
 use crate::constants::BINARY_NAME;
 use crate::constants::CLI_ABOUT;
+use crate::constants::PROBE_COMMAND;
 use crate::constants::SUBCOMMAND_NAME;
 use crate::terminal;
 
 /// `cargo-handler`, as the command line sees it.
 ///
-/// No options yet: parsing is what answers `--help` and `--version`
-/// and turns away anything else.
+/// No options: parsing answers `--help` and `--version`, takes the
+/// hidden `probe` subcommand, and turns away anything else.
 #[derive(Debug, Parser)]
 #[command(name = BINARY_NAME, version, about = CLI_ABOUT, long_about = None)]
-pub(crate) struct Cli {}
+pub(crate) struct Cli {
+    /// What to run in place of the grid.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// The subcommands, all hidden: each is for another cargo-handler to
+/// run, not for a person.
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Print this machine's top-level agents as JSON and exit.
+    #[command(name = PROBE_COMMAND, hide = true)]
+    Probe,
+}
 
 impl Cli {
     /// Read the command line, however this tool was reached.
@@ -31,12 +49,15 @@ impl Cli {
         Self::parse_from(without_subcommand_name(env::args_os().collect()))
     }
 
-    /// Do what the command line asked for, which is always to open the
-    /// grid.
+    /// Do what the command line asked for: open the grid, or print the
+    /// probe.
     pub(crate) fn run(self) -> ExitCode {
         // Destructured so an option added to `Cli` has to be handled here.
-        let Self {} = self;
-        terminal::run()
+        let Self { command } = self;
+        match command {
+            None => terminal::run(),
+            Some(Command::Probe) => probe::print(),
+        }
     }
 }
 
@@ -82,6 +103,18 @@ mod tests {
     #[test]
     fn reached_as_a_cargo_subcommand_it_still_parses() {
         assert!(parses(&[BINARY_NAME, SUBCOMMAND_NAME]));
+    }
+
+    /// The probe parses on its own and behind cargo's echo, and `--help`
+    /// leaves it out.
+    #[test]
+    fn the_probe_parses_and_stays_out_of_help() {
+        use clap::CommandFactory;
+
+        assert!(parses(&[BINARY_NAME, PROBE_COMMAND]));
+        assert!(parses(&[BINARY_NAME, SUBCOMMAND_NAME, PROBE_COMMAND]));
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains(PROBE_COMMAND), "{help}");
     }
 
     /// Dropping every `handler` rather than only cargo's would eat an

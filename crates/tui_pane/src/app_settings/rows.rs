@@ -31,6 +31,9 @@ pub enum SettingTarget<S> {
     Framework(FrameworkSetting),
     /// One of the app's own settings, which the app steps.
     App(S),
+    /// One of the app's own settings, typed in as text: Enter opens an
+    /// editor on the row and the app commits what was typed.
+    AppText(S),
     /// A reported value with nothing to change.
     ReadOnly,
 }
@@ -63,10 +66,16 @@ struct RowWidths {
 }
 
 impl RowWidths {
-    /// Fold one row's label and value in.
+    /// Fold one row's label and value in. A value spread over several
+    /// lines is as wide as its widest line.
     fn observe(&mut self, label: &str, value: &str, decoration: usize) {
         self.label = self.label.max(label.chars().count());
-        self.value = self.value.max(value.chars().count() + decoration);
+        let value_width = value
+            .lines()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        self.value = self.value.max(value_width + decoration);
     }
 
     /// Cells the widest row needs once every label is padded to match,
@@ -105,7 +114,18 @@ impl<S: Copy> SettingsRows<S> {
         self.push_stepper(SettingTarget::App(setting), label, value);
     }
 
-    /// Push a reported row that nothing edits.
+    /// Push a row for one of the app's own settings that the user types
+    /// in rather than steps. It reads like a [`Self::value`] row until
+    /// Enter opens the editor on it.
+    pub fn text(&mut self, setting: S, label: &str, value: String) {
+        self.widths.observe(label, &value, 0);
+        self.rows
+            .push(SettingsRow::value(self.targets.len(), label, value));
+        self.targets.push(SettingTarget::AppText(setting));
+    }
+
+    /// Push a reported row that nothing edits. Each line of `value`
+    /// starts on a line of its own, and wraps within the value column.
     pub fn value(&mut self, label: &str, value: String) {
         self.widths.observe(label, &value, 0);
         self.rows
@@ -209,6 +229,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TestSetting {
         Speed,
+        Names,
     }
 
     #[test]
@@ -233,6 +254,7 @@ mod tests {
         rows.section("Top");
         rows.initial_rows(crate::InitialRows::default());
         rows.stepper(TestSetting::Speed, "speed", "3");
+        rows.text(TestSetting::Names, "names", "a, b".to_string());
         rows.section("Info");
         rows.value("where", "here".to_string());
         let targets: Vec<_> = rows
@@ -248,9 +270,10 @@ mod tests {
             [
                 SettingTarget::Framework(FrameworkSetting::InitialRows),
                 SettingTarget::App(TestSetting::Speed),
+                SettingTarget::AppText(TestSetting::Names),
                 SettingTarget::ReadOnly,
             ]
         );
-        assert_eq!(rows.target(3), None);
+        assert_eq!(rows.target(4), None);
     }
 }

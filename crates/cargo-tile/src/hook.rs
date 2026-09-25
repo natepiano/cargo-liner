@@ -1286,12 +1286,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::constants::HANDLER_SUBCOMMAND_NAME;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_CARGO;
     use crate::constants::HOOK_TEST_DIRECTORY_COLLISION_LINK;
     use crate::constants::HOOK_TEST_REAL_CARGO;
     use crate::constants::HOOK_TEST_VERSION_ARGUMENT;
     use crate::constants::LOCK_WAIT_MARKER;
-    use crate::constants::SIBLING_SUBCOMMAND_NAME;
+    use crate::constants::PORT_SUBCOMMAND_NAME;
     use crate::constants::SUBCOMMAND_NAME;
 
     #[test]
@@ -1965,8 +1966,9 @@ mod tests {
     }
 
     #[test]
-    fn the_shim_passes_the_sibling_terminal_ui_through() {
-        assert!(shim_passes_through(SIBLING_SUBCOMMAND_NAME));
+    fn the_shim_passes_the_sibling_terminal_uis_through() {
+        assert!(shim_passes_through(PORT_SUBCOMMAND_NAME));
+        assert!(shim_passes_through(HANDLER_SUBCOMMAND_NAME));
     }
 
     #[test]

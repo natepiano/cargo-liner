@@ -86,11 +86,12 @@ pub enum AttractWork {
 /// What the reader has instructed the attract screen to do, which
 /// outranks what the roster says about it.
 ///
-/// Two answers would not be enough. The strip comes on by itself over
-/// an idle grid, so "not asked for" and "asked to go" are the same
-/// state to the roster and opposite ones to the reader -- and reading
-/// them as one is what left `a` unable to put the strip away at
-/// exactly the moment it is being watched.
+/// There is no instruction to stay away. Giving the grid back returns
+/// the screen to the roster, and it starts that the way work arriving
+/// would: the strip leaves, and over an idle grid it comes back after
+/// the same few quiet seconds it waits out then. A grid held empty for
+/// as long as the reader liked was a third state to get lost in,
+/// showing nothing and waiting on nothing.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AttractVisibilityInstruction {
     /// Follow whether the roster is idle or working.
@@ -99,9 +100,6 @@ pub enum AttractVisibilityInstruction {
     /// Show the screen over a grid with work as readily as over an
     /// empty one.
     Show,
-    /// Hide the screen even over an idle grid, where the roster would
-    /// otherwise keep it visible.
-    Hide,
 }
 
 /// Whether the attract screen is drawn over the grid or replaces it.
@@ -130,9 +128,11 @@ enum Standing {
     /// On the screen, or on its way on: the grid has nothing to show.
     Showing,
     /// On its way off, and not turning back whatever the grid does
-    /// before it gets there.
+    /// before it gets there. Work arriving starts it, and so does the
+    /// reader giving the grid back.
     Leaving,
-    /// Off the screen, with something running.
+    /// Off the screen, with something running, or just gone and not yet
+    /// read against the roster.
     Working,
     /// Off the screen, with the grid quiet since the instant held. What
     /// the screen waits out before coming back, so a command that starts
@@ -517,18 +517,20 @@ impl<P: FrameProbe> Attract<P> {
     /// next frame: the panes are drawn before the strip is, so waiting
     /// would show one frame of the grid with the strip over it -- the
     /// very look this is here to avoid.
+    ///
+    /// Giving it back hands the screen to the roster as a departure.
+    /// Handed over as it stood, an idle roster would keep the strip
+    /// exactly where it was and the key would do nothing; leaving
+    /// first puts the grid on the screen, and the roster decides from
+    /// there -- work keeps it, and an idle grid gets the strip back
+    /// once the quiet has passed.
     pub const fn toggle(&mut self) {
-        self.visibility_instruction = match self.visibility_instruction {
-            AttractVisibilityInstruction::Show => AttractVisibilityInstruction::Hide,
-            AttractVisibilityInstruction::FollowRoster | AttractVisibilityInstruction::Hide => {
-                AttractVisibilityInstruction::Show
+        match self.visibility_instruction {
+            AttractVisibilityInstruction::Show => {
+                self.visibility_instruction = AttractVisibilityInstruction::FollowRoster;
+                self.standing = Standing::Leaving;
             },
-        };
-        if matches!(
-            self.visibility_instruction,
-            AttractVisibilityInstruction::Show
-        ) {
-            self.grid_presentation = AttractGridPresentation::ReplacesGrid;
+            AttractVisibilityInstruction::FollowRoster => self.request_show(),
         }
     }
 
@@ -1052,30 +1054,15 @@ impl<P: FrameProbe> Attract<P> {
         if updates == Updates::Frozen {
             return self.grid();
         }
-        // Something actually running clears a dismissal. What was put
-        // away was the strip standing over an idle grid, and the grid
-        // has not been idle since -- so the screen re-arms and comes
-        // back by itself once this finishes, as it would have before.
-        if work == AttractWork::Running {
-            self.visibility_instruction = match self.visibility_instruction {
-                AttractVisibilityInstruction::Hide => AttractVisibilityInstruction::FollowRoster,
-                instruction => instruction,
-            };
-        }
         // Asked for, the roster does not get a say: the strip comes in
         // over whatever is on the grid and stays until it is asked to
-        // go, so it can be watched rather than only caught. Asked
-        // against, the roster does not get a say either -- an idle grid
-        // is exactly when the strip is being watched, and handing the
-        // answer back to a roster that reads idle as "come in" is what
-        // left the key unable to put it away at all.
+        // go, so it can be watched rather than only caught.
         // Read every frame, whatever the reader has said, so the
         // standing describes the roster rather than the last frame the
         // roster had the answer.
         let standing = self.stand(work, now);
         let work = match self.visibility_instruction {
             AttractVisibilityInstruction::Show => AttractWork::Idle,
-            AttractVisibilityInstruction::Hide => AttractWork::Running,
             AttractVisibilityInstruction::FollowRoster => standing,
         };
         self.faded = match work {
@@ -1323,6 +1310,17 @@ mod tests {
             attract.advance(AREA, work, Updates::Live, now);
         }
         attract.faded
+    }
+
+    /// Carry `attract` forward a frame at a time from `now` until `span`
+    /// has passed, and answer the instant it stopped at.
+    fn walk(attract: &mut Attract, work: AttractWork, mut now: Instant, span: Duration) -> Instant {
+        let end = now + span;
+        while now < end {
+            now += POLL;
+            attract.advance(AREA, work, Updates::Live, now);
+        }
+        now
     }
 
     #[test]
@@ -1699,7 +1697,7 @@ mod tests {
         attract.grid_presentation = AttractGridPresentation::ReplacesGrid;
         attract.faded = 150;
         attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
-        attract.visibility_instruction = AttractVisibilityInstruction::Hide;
+        attract.visibility_instruction = AttractVisibilityInstruction::FollowRoster;
         let fade_at_restore = attract.faded;
 
         attract.restore_configuration_before_last_replacement();
@@ -1711,28 +1709,6 @@ mod tests {
         );
         attract.advance(AREA, AttractWork::Running, Updates::Live, Instant::now());
         assert!(attract.faded < fade_at_restore);
-    }
-
-    #[test]
-    fn restore_keeps_fade_progress_and_hide_instruction_sends_the_screen_out() {
-        let mut attract = Attract::new();
-        attract.record_terminal_resize(AREA);
-        attract.visibility_instruction = AttractVisibilityInstruction::Hide;
-        attract.grid_presentation = AttractGridPresentation::ReplacesGrid;
-        attract.faded = 100;
-        attract.apply_settings(AttractSettings::MovingBand(attract.band.settings()));
-        attract.visibility_instruction = AttractVisibilityInstruction::Show;
-        let fade_at_restore = attract.faded;
-
-        attract.restore_configuration_before_last_replacement();
-
-        assert_eq!(attract.faded, fade_at_restore);
-        assert_eq!(
-            attract.visibility_instruction,
-            AttractVisibilityInstruction::Hide
-        );
-        attract.advance(AREA, AttractWork::Idle, Updates::Live, Instant::now());
-        assert!(attract.faded > fade_at_restore);
     }
 
     #[test]
@@ -1827,14 +1803,15 @@ mod tests {
         assert_eq!(attract.band, expected);
     }
 
-    /// Asking for the strip over an idle grid and then asking again has
-    /// to put it away. The roster reads an idle grid as a reason to
-    /// show the strip, and an idle grid is exactly what is underneath
-    /// it while it is being watched -- so a dismissal that handed the
-    /// answer back to the roster was overruled on the same frame, and
-    /// the key did nothing at all.
+    /// Asking for the strip over an idle grid and then asking again
+    /// gives the grid back. The roster reads an idle grid as a reason to
+    /// show the strip, so handing it the answer as it stood would be
+    /// overruled on the same frame and the key would do nothing at all.
+    /// The strip leaves first, the grid stands through the quiet, and
+    /// only then does the strip come back -- over the grid, as it does
+    /// when it comes on by itself.
     #[test]
-    fn asking_again_puts_the_strip_away_over_a_grid_with_nothing_on_it() {
+    fn asking_again_gives_the_grid_back_until_the_quiet_has_passed() {
         let mut attract = Attract::new();
 
         attract.toggle();
@@ -1845,21 +1822,31 @@ mod tests {
         );
 
         attract.toggle();
-
-        assert_eq!(
-            settle(&mut attract, AttractWork::Idle),
-            u8::MAX,
-            "and asking again sends it away, idle grid underneath or not"
+        // The quiet is counted from the frame the strip is gone, so a
+        // walk of the quiet alone ends with the grid still up.
+        let now = walk(
+            &mut attract,
+            AttractWork::Idle,
+            Instant::now(),
+            ATTRACT_RETURN_QUIET,
         );
+        assert_eq!(attract.faded, u8::MAX, "asking again sends it away");
         assert_eq!(
             attract.grid(),
             AttractGrid::Full,
             "which is what gives the panes back"
         );
+        assert_eq!(attract.keyed_mode(), None, "and the keys with them");
+
+        walk(&mut attract, AttractWork::Idle, now, ATTRACT_RETURN_QUIET);
+        assert_eq!(attract.faded, 0, "the idle grid brings it back");
+        assert_eq!(
+            attract.grid(),
+            AttractGrid::Full,
+            "over the grid rather than in place of it"
+        );
     }
 
-    /// A showing attract screen reports no notice when its backdrop wait starts,
-    /// then reports the unavailable capture at the exact grace-period boundary.
     #[test]
     fn a_screen_with_no_backdrop_to_draw_says_so_rather_than_drawing_nothing() {
         let mut attract = Attract::new();
@@ -1991,25 +1978,22 @@ mod tests {
         assert_eq!(attract.keyed_mode(), Some(attract.mode));
     }
 
-    /// A dismissal is of the strip standing over an idle grid, so work
-    /// arriving and finishing re-arms it: the grid has not been idle in
-    /// between, and the screen that comes on by itself is not something
-    /// the reader turned off for good.
+    /// Giving the grid back while work is running leaves the grid up
+    /// for as long as the work lasts.
     #[test]
-    fn work_arriving_re_arms_a_strip_that_was_put_away() {
+    fn asking_again_over_work_leaves_the_grid_up() {
         let mut attract = Attract::new();
         attract.toggle();
-        settle(&mut attract, AttractWork::Idle);
-        attract.toggle();
-        settle(&mut attract, AttractWork::Idle);
-
-        attract.advance(AREA, AttractWork::Running, Updates::Live, Instant::now());
-
         assert_eq!(
-            settle(&mut attract, AttractWork::Idle),
+            settle(&mut attract, AttractWork::Running),
             0,
-            "the strip comes back by itself once the work is done"
+            "asked for, it comes in over work"
         );
+
+        attract.toggle();
+
+        assert_eq!(settle(&mut attract, AttractWork::Running), u8::MAX);
+        assert_eq!(attract.grid(), AttractGrid::Full);
     }
 
     /// Work that turns up and goes away again inside the fade does not

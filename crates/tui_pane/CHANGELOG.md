@@ -28,6 +28,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `Pane::cycle_step`, the app-pane counterpart of `Toasts::try_consume_cycle_step`: a pane with a ring of its own gets first refusal on each Tab step.
 - `PaneBorders` decides whether neighbouring panes share the cells their borders fall on -- `Shared` is what 0.7.0 did, `Separate` gives each pane a closed box.
 - `blend_color` and `pane_background` draw text part of the way between two colours, which a cell needs because it holds three opaque bytes and nowhere to put a fourth.
+- `SettingTarget::AppText` and `SettingsRows::text` add a settings row typed in as text: Enter opens an editor on the text `SettingsHost::setting_text` answers, Enter again hands what was typed to `SettingsHost::commit_setting_text`, and Esc, or selecting another row, drops the edit. `parse_list`, `join_list`, `list_display` and `LIST_SEPARATOR` read and write such a row as a list of entries.
 
 ### Changed
 - `DriftingText`'s lanes merge into one another rather than meeting at an edge: `merged` pulls the smoothstep back toward a straight ramp by `TEXT_LANE_BODY_PERCENT`.
@@ -53,6 +54,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Restore the focused-border colour 0.7.0 removed -- `PaneChromeTheme::active_border`, `PaneChrome::active_border`, `active_border_color()` and `border_style(focused)` -- since the reasoning for dropping it holds only under `PaneBorders::Shared`.
 - `PaneChromeTheme::active_border` is `Option<StyleSpec>` and defaults to the focused title's colour, so a theme written while the key was ignored still loads.
 - Narrow `SECTION_HEADER_INDENT` to one space from two and `SECTION_ITEM_INDENT` to one from four, so a header and its items start in the same column.
+- A custom theme variant takes any `[variants.roles]` key its file leaves out from the built-in it replaces, or, under a new name, from the first built-in of its appearance.
+- `Attract` has no hidden state: giving the grid back returns the screen to the roster, which brings the attract screen back over an idle grid after the same quiet seconds it waits out when work ends.
 
 ### Fixed
 - `tui_pane` builds with default features off: the clipboard imports now sit behind the `clipboard` feature like the code that uses them.

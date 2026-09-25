@@ -25,6 +25,16 @@ pub trait SettingsHost: AppContext {
     /// Step the settings overlay's selected row one value, then write
     /// and apply the result. A read-only row does nothing.
     fn step_setting(&mut self, step: SettingStep);
+
+    /// The selected row's text when it is a row the user types in
+    /// ([`SettingTarget::AppText`](crate::SettingTarget::AppText)), for
+    /// Enter to open the editor on. `None` for every other row, where
+    /// Enter steps the value instead.
+    fn setting_text(&self) -> Option<String> { None }
+
+    /// Save `text`, typed into the selected row, then write and apply
+    /// the result.
+    fn commit_setting_text(&mut self, _text: &str) {}
 }
 
 /// Navigation scope for an app whose only list is the settings overlay.

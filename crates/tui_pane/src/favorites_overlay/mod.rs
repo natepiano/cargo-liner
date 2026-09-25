@@ -2269,7 +2269,7 @@ travel_left = "界"
         let before_adjusted_load = app.attract.configuration();
         assert_eq!(
             before_adjusted_load.visibility_instruction(),
-            AttractVisibilityInstruction::Hide
+            AttractVisibilityInstruction::FollowRoster
         );
         assert_eq!(
             before_adjusted_load.grid_presentation(),
@@ -2318,7 +2318,7 @@ travel_left = "界"
         let before_exact_load = exact_app.attract.configuration();
         assert_eq!(
             before_exact_load.visibility_instruction(),
-            AttractVisibilityInstruction::Hide
+            AttractVisibilityInstruction::FollowRoster
         );
         assert_eq!(
             before_exact_load.grid_presentation(),

@@ -341,7 +341,7 @@ mode = "future_mode"
         let before_configuration = app.attract.configuration();
         assert_eq!(
             before_configuration.visibility_instruction(),
-            AttractVisibilityInstruction::Hide
+            AttractVisibilityInstruction::FollowRoster
         );
         assert_eq!(
             before_configuration.grid_presentation(),

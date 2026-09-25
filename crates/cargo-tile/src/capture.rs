@@ -8,12 +8,12 @@
 
 use std::io;
 
+use tui_pane::LIST_SEPARATOR;
 use tui_pane::ToastStyle;
 
 use crate::app::App;
 use crate::app::CaptureStartupNotice;
 use crate::constants::CAPTURE_INSTALLED_TOAST_VISIBLE;
-use crate::constants::LIST_SEPARATOR;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::hook;

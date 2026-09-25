@@ -1937,9 +1937,7 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
     assert_eq!(other_status.root.cleanup, CaptureCleanup::AccountNextRun);
     let own_line = settings::capture_root_status(own_status);
     assert!(
-        own_line.contains("yours")
-            && own_line.contains("readable")
-            && own_line.contains("0 active captures"),
+        own_line.contains("yours") && own_line.contains("no active captures"),
         "{own_line}"
     );
     assert!(!own_line.to_lowercase().contains("cleanup"), "{own_line}");

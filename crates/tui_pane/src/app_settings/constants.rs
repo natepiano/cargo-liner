@@ -1,6 +1,6 @@
 //! Constants for the settings overlay: the values the framework's
-//! steppers walk, the widths its rows are measured with, and the
-//! labels of the rows the framework owns.
+//! steppers walk, the widths its rows are measured with, the labels of
+//! the rows the framework owns, and how a list setting reads.
 
 // stepping
 /// Values `appearance.mode` steps through, in stepper order.
@@ -44,6 +44,14 @@ pub(super) const KEYMAP_LABEL: &str = "keymap";
 pub(super) const NOTICES_SECTION: &str = "Notices";
 /// Shown in place of a path that cannot be resolved on this platform.
 pub(super) const UNRESOLVED_PATH: &str = "unavailable";
+
+// lists
+/// What separates a list setting's entries, in its row and in the text
+/// its editor opens on.
+pub const LIST_SEPARATOR: &str = ", ";
+/// Shown in place of a list setting the user has emptied, an empty row
+/// being indistinguishable from a broken one.
+pub(super) const EMPTY_LIST: &str = "none";
 
 // navigation
 /// Section heading the keymap overlay gives the navigation scope.

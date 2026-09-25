@@ -1009,8 +1009,9 @@ try:
         assert 'cargo check ' + quiet_writer[1].name + ' ' + ' '.join(arguments) in rows[0], rendered
         assert 'blocked' in rows[0], rendered
         settings = settings_screen()
-        association = 'capture association: pid ' + cargo_pid + ' via registration ' + str(quiet_writer[0].pid)
-        assert association in ' '.join(settings.replace('│', ' ').split()), settings
+        # A confirmed association is the normal case, and Settings lists
+        # only the ones that need attention.
+        assert 'ambiguous' not in settings and 'unconfirmed selection' not in settings, settings
     if scenario == 'child-source-switch':
         assert_child_source_switch(required(carrier, 'child-source-switch setup does not assign carrier'))
     if scenario == 'root-headings':
@@ -1026,10 +1027,8 @@ try:
         assert not any('[' + str(other_uid) + ']' in line for line in commands), rendered
         settings = settings_screen()
         assert str(capture_parent) in settings and '1777' in settings, settings
-        account_lines = [line for line in settings.splitlines() if 'active captures' in line]
-        assert any(account in line and 'yours' in line and 'readable' in line
-                   and '1 active captures' in line
-                   for line in account_lines), settings
+        assert any(account in line and 'yours · 1 capture ·' in line
+                   for line in settings.splitlines()), settings
         assert 'cleanup' not in settings.lower(), settings
         ignored = str(other_capture) + ': owned by ' + account + ', not by ' + str(other_uid) + ' — ignored'
         assert ignored in settings, settings

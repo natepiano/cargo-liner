@@ -216,7 +216,7 @@ auto_install = true
 
 [commands]
 excluded = [\"berth\"]
-hidden_when_idle = [\"port\"]
+hidden_when_idle = [\n    \"port\",\n    \"handler\",\n]
 
 [tiles]
 initial_rows = 4

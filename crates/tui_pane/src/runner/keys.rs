@@ -15,6 +15,7 @@ use crate::Keymap;
 use crate::Navigation;
 use crate::OverlayAction;
 use crate::SettingStep;
+use crate::SettingsCommand;
 use crate::SettingsNavigation;
 use crate::matches_open_overlay_toggle;
 use crate::overlay_is_in_text_mode;
@@ -109,17 +110,29 @@ fn dispatch_global_shortcuts_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>
     }
 }
 
-/// Keys the settings overlay owns: move the selection, step the value.
+/// Keys the settings overlay owns: move the selection, step the value,
+/// and type into a row that takes text.
 ///
-/// Movement comes from the navigation scope, so the keys that walk
-/// this list are the ones `keymap.toml` says they are. Enter and space
-/// stay here: they are this overlay's own way of saying "the next
-/// value", not a direction anyone would rebind.
-///
-/// Nothing here reaches [`crate::SettingsPane::handle_key`]: that
-/// would put the pane into its text-edit state, which the settings
-/// overlay has no commit path for.
+/// While a typed row is being edited every key is text, Enter commits
+/// it through [`SettingsHost::commit_setting_text`](crate::SettingsHost::commit_setting_text)
+/// and Esc drops it. Otherwise movement comes from the navigation
+/// scope, so the keys that walk this list are the ones `keymap.toml`
+/// says they are. Enter and space stay here: they are this overlay's
+/// own way of saying "the next value", or "edit this" on a typed row,
+/// not a direction anyone would rebind.
 fn dispatch_settings_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, bind: KeyBind) {
+    if app.framework().settings_pane.is_editing() {
+        match app.framework_mut().settings_pane.handle_text_input(bind) {
+            SettingsCommand::None => {},
+            SettingsCommand::Save => {
+                let text = app.framework().settings_pane.edited_text().to_string();
+                app.framework_mut().settings_pane.enter_browse();
+                app.commit_setting_text(&text);
+            },
+            SettingsCommand::Cancel => app.framework_mut().settings_pane.enter_browse(),
+        }
+        return;
+    }
     if keymap.overlay().action_for(&bind) == Some(OverlayAction::Cancel) {
         keymap.dispatch_framework_global(GlobalAction::Dismiss, app);
         return;
@@ -133,7 +146,10 @@ fn dispatch_settings_key<A: TerminalApp>(app: &mut A, keymap: &Keymap<A>, bind: 
         return;
     }
     if matches!(bind.code, KeyCode::Enter | KeyCode::Char(' ')) {
-        app.step_setting(SettingStep::Next);
+        match app.setting_text() {
+            Some(text) => app.framework_mut().settings_pane.begin_editing(text),
+            None => app.step_setting(SettingStep::Next),
+        }
     }
 }
 
@@ -202,6 +218,9 @@ mod tests {
         modal_open: bool,
         toggled:    bool,
         steps:      Vec<SettingStep>,
+        /// The selected row's text, when it is one the user types in.
+        text:       Option<String>,
+        committed:  Vec<String>,
     }
 
     impl TestApp {
@@ -221,6 +240,8 @@ mod tests {
                 modal_open: false,
                 toggled:    false,
                 steps:      Vec::new(),
+                text:       None,
+                committed:  Vec::new(),
             }
         }
     }
@@ -280,6 +301,10 @@ mod tests {
 
     impl SettingsHost for TestApp {
         fn step_setting(&mut self, step: SettingStep) { self.steps.push(step); }
+
+        fn setting_text(&self) -> Option<String> { self.text.clone() }
+
+        fn commit_setting_text(&mut self, text: &str) { self.committed.push(text.to_string()); }
     }
 
     impl TerminalApp for TestApp {
@@ -379,5 +404,39 @@ mod tests {
             ]
         );
         assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+    }
+
+    /// Every key typed while editing is text -- `s` included, which
+    /// would otherwise close the overlay -- until Enter commits it.
+    #[test]
+    fn enter_opens_a_text_row_and_commits_what_was_typed() {
+        let mut app = TestApp::new();
+        app.text = Some("port".to_string());
+        dispatch_key(&mut app, key(KeyCode::Char('s')));
+        dispatch_key(&mut app, key(KeyCode::Enter));
+        assert!(app.framework.settings_pane.is_editing());
+        for c in [',', ' ', 's'] {
+            dispatch_key(&mut app, key(KeyCode::Char(c)));
+        }
+        dispatch_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.committed, ["port, s"]);
+        assert!(app.steps.is_empty(), "a text row is never stepped");
+        assert!(!app.framework.settings_pane.is_editing());
+        assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+    }
+
+    #[test]
+    fn escape_drops_a_text_edit_and_a_second_escape_closes_the_overlay() {
+        let mut app = TestApp::new();
+        app.text = Some("port".to_string());
+        dispatch_key(&mut app, key(KeyCode::Char('s')));
+        dispatch_key(&mut app, key(KeyCode::Enter));
+        dispatch_key(&mut app, key(KeyCode::Char('x')));
+        dispatch_key(&mut app, key(KeyCode::Esc));
+        assert!(app.committed.is_empty());
+        assert!(!app.framework.settings_pane.is_editing());
+        assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+        dispatch_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.framework.overlay(), None);
     }
 }

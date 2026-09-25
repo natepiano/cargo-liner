@@ -94,9 +94,9 @@ fn cpu_scan_child() -> std::io::Result<()> {
     }
     let parent = std::env::current_dir()?.join("capture");
     let mut output = fs::File::create("cpu-scans")?;
-    let config = Config::default();
+    let excluded = census::ExcludedCommands::new(Config::default().commands.excluded);
     let (receiver, worker) =
-        census::spawn_with_resolver(&config, move || CaptureRoots::from_parent(&parent));
+        census::spawn_with_resolver(excluded, move || CaptureRoots::from_parent(&parent));
     let result = (|| {
         for index in 0..CPU_OBSERVATION_SCANS {
             let scan = receiver
