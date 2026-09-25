@@ -1,5 +1,6 @@
 //! Reading this machine: the session records Claude Code writes under
-//! `~/.claude/sessions`, and the process table, handed together to
+//! `~/.claude/sessions`, the process table, and the threads interactive
+//! Codex sessions started, handed together to
 //! [`classify::top_level_rows`].
 
 use std::collections::HashSet;
@@ -18,14 +19,16 @@ use super::AgentRow;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
+use super::codex;
 use crate::constants::CLAUDE_DIRNAME;
 use crate::constants::CLAUDE_SESSIONS_DIRNAME;
 use crate::constants::CODEX_AGENT;
+use crate::constants::CODEX_DIRNAME;
 use crate::constants::SESSION_RECORD_EXTENSION;
 
 /// Scans this machine for its top-level agents.
 #[derive(Debug)]
-pub(crate) struct LocalScanner {
+pub(super) struct LocalScanner {
     /// This machine's home directory: where the session records live,
     /// and what a row's directory is written against.
     home: Option<PathBuf>,
@@ -33,7 +36,7 @@ pub(crate) struct LocalScanner {
 
 impl LocalScanner {
     /// A scanner of the user running this process.
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             home: dirs::home_dir(),
         }
@@ -44,21 +47,29 @@ impl LocalScanner {
     /// Each scan reads a fresh process table, so a pid handed out again
     /// since the last scan cannot keep the command line or directory of
     /// the process that had it before.
-    pub(crate) fn scan(&self) -> Vec<AgentRow> {
+    pub(super) fn scan(&self) -> Vec<AgentRow> {
         let sessions = self
             .home
             .as_deref()
             .map(|home| read_sessions(&home.join(CLAUDE_DIRNAME).join(CLAUDE_SESSIONS_DIRNAME)))
             .unwrap_or_default();
         let processes = process_table(&sessions);
-        classify::top_level_rows(&processes, &sessions, self.home.as_deref())
+        // Codex's database is opened only while an interactive Codex runs,
+        // and read only for the span its threads could have been created in.
+        let codex_threads = self
+            .home
+            .as_deref()
+            .zip(classify::codex_thread_window(&processes))
+            .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
+            .unwrap_or_default();
+        classify::top_level_rows(&processes, &sessions, &codex_threads, self.home.as_deref())
     }
 }
 
 /// Every session record in `directory` that parses. The directory holds
 /// other files beside the records, and a record being written as it is
 /// read fails to parse; both are skipped.
-pub(crate) fn read_sessions(directory: &Path) -> Vec<SessionRecord> {
+fn read_sessions(directory: &Path) -> Vec<SessionRecord> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };

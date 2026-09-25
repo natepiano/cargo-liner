@@ -139,6 +139,8 @@ mod tests {
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::census::Agent;
+    use crate::census::AgentRow;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -172,8 +174,8 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let mut ticker = Ticker::new(receiver);
         let now = Instant::now();
-        let row = census::AgentRow {
-            agent:     census::Agent::Claude,
+        let row = AgentRow {
+            agent:     Agent::Claude,
             name:      "enh/handler".to_string(),
             status:    Some("busy".to_string()),
             started:   90,

@@ -73,7 +73,7 @@ impl Role {
     ];
 
     /// The role's key in `[variants.roles]`.
-    pub(crate) const fn key(self) -> &'static str {
+    const fn key(self) -> &'static str {
         match self {
             Self::Claude => CLAUDE_ROLE,
             Self::Codex => CODEX_ROLE,

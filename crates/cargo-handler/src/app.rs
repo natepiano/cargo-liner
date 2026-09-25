@@ -33,6 +33,8 @@ use tui_pane::VisualDeadline;
 
 use crate::census;
 use crate::census::Census;
+#[cfg(test)]
+use crate::census::CensusUpdate;
 use crate::census::RemoteMachines;
 use crate::config::CargoHandler;
 use crate::config::LoadedConfig;
@@ -163,7 +165,7 @@ impl App {
             None,
             {
                 let mut census = Census::new("natedev".to_string());
-                census.apply(census::CensusUpdate::Local(Vec::new()));
+                census.apply(CensusUpdate::Local(Vec::new()));
                 census
             },
         )

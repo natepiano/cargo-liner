@@ -78,25 +78,29 @@ pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
 
 // summary table
 /// The summary's column labels, in column order.
-pub(crate) const SUMMARY_HEADERS: [&str; 5] = ["agent", "name", "status", "age", "directory"];
+pub(crate) const SUMMARY_HEADERS: [&str; 6] =
+    ["pid", "agent", "name", "status", "age", "directory"];
+/// Index of the `pid` column in [`SUMMARY_HEADERS`].
+pub(crate) const PID_COLUMN: usize = 0;
 /// Index of the `agent` column in [`SUMMARY_HEADERS`].
-pub(crate) const AGENT_COLUMN: usize = 0;
+pub(crate) const AGENT_COLUMN: usize = 1;
 /// Index of the `name` column in [`SUMMARY_HEADERS`].
-pub(crate) const NAME_COLUMN: usize = 1;
+pub(crate) const NAME_COLUMN: usize = 2;
 /// Index of the `status` column in [`SUMMARY_HEADERS`].
-pub(crate) const STATUS_COLUMN: usize = 2;
+pub(crate) const STATUS_COLUMN: usize = 3;
 /// Index of the `age` column in [`SUMMARY_HEADERS`].
-pub(crate) const AGE_COLUMN: usize = 3;
+pub(crate) const AGE_COLUMN: usize = 4;
 /// Index of the `directory` column in [`SUMMARY_HEADERS`], the one
 /// column that takes whatever the fitted columns leave.
-pub(crate) const DIRECTORY_COLUMN: usize = 4;
+pub(crate) const DIRECTORY_COLUMN: usize = 5;
 /// Cells the `name` column grows to at most. A longer name is cut to
 /// fit and ends in [`TRUNCATION_MARK`].
 pub(crate) const NAME_COLUMN_MAX: u16 = 36;
 /// Ends a name cut to fit its column.
 pub(crate) const TRUNCATION_MARK: char = '…';
-/// Rows the column-label row at the top of the summary occupies. There
-/// is one for the whole cell, not one per machine.
+/// Rows the column-label row under a machine's heading occupies. Every
+/// machine that lists an agent has one; a machine that lists none has
+/// none.
 pub(crate) const TABLE_HEADER_HEIGHT: u16 = 1;
 /// Rows the machine heading above each machine's rows occupies.
 pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
@@ -175,6 +179,38 @@ pub(crate) const CLAUDE_DIRNAME: &str = ".claude";
 pub(crate) const CLAUDE_SESSIONS_DIRNAME: &str = "sessions";
 /// Extension of a session record; the directory holds other files too.
 pub(crate) const SESSION_RECORD_EXTENSION: &str = "json";
+/// Codex's directory under the home directory.
+pub(crate) const CODEX_DIRNAME: &str = ".codex";
+/// How the name of Codex's thread database starts. The whole name is
+/// `state_<n>.sqlite`, `<n>` counting the versions of its layout, and
+/// the highest `<n>` present is the one Codex writes.
+pub(crate) const CODEX_STATE_PREFIX: &str = "state_";
+/// Extension of Codex's thread database. Its journal files beside it
+/// carry longer ones.
+pub(crate) const CODEX_STATE_EXTENSION: &str = "sqlite";
+/// How long a read of Codex's thread database waits on a writer before
+/// giving up on the scan's names.
+pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
+/// The threads an interactive Codex created within a span of creation
+/// times: `?1` is [`CODEX_TUI_ORIGINATOR`], `?2` and `?3` the span's
+/// ends in unix milliseconds.
+pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message \
+     FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
+/// The `originator` Codex records on a thread the interactive `codex`
+/// started, as against `codex exec`, an app server's client, or the
+/// desktop app.
+pub(crate) const CODEX_TUI_ORIGINATOR: &str = "codex-tui";
+/// How long after an interactive Codex starts the thread it starts with
+/// may be created. Codex creates it during startup, after any question
+/// about trusting the directory.
+pub(crate) const CODEX_THREAD_START_WINDOW: Duration = Duration::from_secs(60);
+/// How long before an interactive Codex's recorded start its thread may
+/// be created: the process table counts a start in whole seconds from a
+/// boot time that is itself read in whole seconds.
+pub(crate) const CODEX_THREAD_START_SLACK: Duration = Duration::from_secs(1);
+/// Characters of a Codex thread's first prompt a row carries when the
+/// thread has no name. The summary cuts it again to fit its column.
+pub(crate) const CODEX_PROMPT_LABEL_MAX: usize = 80;
 /// Written in place of the home directory in a row's directory.
 pub(crate) const HOME_ABBREVIATION: &str = "~";
 /// This machine's heading when its host name cannot be read.

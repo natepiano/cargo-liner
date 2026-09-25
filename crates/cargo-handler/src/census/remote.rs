@@ -40,14 +40,14 @@ use crate::constants::TIMED_OUT_REASON;
 use crate::constants::UNREACHABLE_REASON;
 
 /// Runs the probe on a remote machine.
-pub(crate) trait RemoteRunner: Send + Sync {
+pub(super) trait RemoteRunner: Send + Sync {
     /// Run `cargo-handler probe` on `host` and say how it went.
     fn probe(&self, host: &str) -> ProbeOutcome;
 }
 
 /// How one probe went.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ProbeOutcome {
+pub(super) enum ProbeOutcome {
     /// ssh exited within [`PROBE_TIMEOUT`].
     Finished {
         /// ssh's exit status; none when a signal ended it.
@@ -63,7 +63,7 @@ pub(crate) enum ProbeOutcome {
 
 /// What `outcome` says about the machine: its rows, or why there are
 /// none.
-pub(crate) fn machine_state(outcome: ProbeOutcome) -> MachineState {
+pub(super) fn machine_state(outcome: ProbeOutcome) -> MachineState {
     let failed = |reason: &str| MachineState::Failed(reason.to_string());
     match outcome {
         ProbeOutcome::Finished {
@@ -94,7 +94,7 @@ pub(crate) fn machine_state(outcome: ProbeOutcome) -> MachineState {
 /// [`SSH_CONTROL_PATH_LIMIT`] bytes, which a Unix socket cannot bind,
 /// or when the path is not UTF-8: the probe then opens a connection of
 /// its own each time rather than failing every time.
-pub(crate) fn control_path(home: &Path) -> Option<String> {
+fn control_path(home: &Path) -> Option<String> {
     let path = home
         .join(SSH_DIRNAME)
         .join(SSH_CONTROL_SOCKET)
@@ -106,7 +106,7 @@ pub(crate) fn control_path(home: &Path) -> Option<String> {
 
 /// ssh's arguments for probing `host`, sharing a connection through
 /// `control` when there is one.
-pub(crate) fn ssh_arguments(host: &str, control: Option<&str>) -> Vec<String> {
+fn ssh_arguments(host: &str, control: Option<&str>) -> Vec<String> {
     let mut arguments: Vec<String> = SSH_BASE_OPTIONS.iter().map(ToString::to_string).collect();
     if let Some(control) = control {
         for option in [
@@ -128,7 +128,7 @@ pub(crate) fn ssh_arguments(host: &str, control: Option<&str>) -> Vec<String> {
 
 /// Probes over ssh.
 #[derive(Debug)]
-pub(crate) struct SshRunner {
+pub(super) struct SshRunner {
     /// The control socket every probe shares, when there is room for
     /// one.
     control: Option<String>,
@@ -137,7 +137,7 @@ pub(crate) struct SshRunner {
 impl SshRunner {
     /// A runner sharing connections through a socket under the user's
     /// `~/.ssh`.
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             control: dirs::home_dir().and_then(|home| control_path(&home)),
         }

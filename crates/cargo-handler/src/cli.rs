@@ -81,6 +81,8 @@ mod tests {
     use std::io;
     use std::process::Command;
 
+    use clap::CommandFactory;
+
     use super::*;
 
     /// Whether the command line parses as cargo or a shell would hand
@@ -109,8 +111,6 @@ mod tests {
     /// leaves it out.
     #[test]
     fn the_probe_parses_and_stays_out_of_help() {
-        use clap::CommandFactory;
-
         assert!(parses(&[BINARY_NAME, PROBE_COMMAND]));
         assert!(parses(&[BINARY_NAME, SUBCOMMAND_NAME, PROBE_COMMAND]));
         let help = Cli::command().render_help().to_string();

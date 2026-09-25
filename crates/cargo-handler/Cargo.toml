@@ -20,6 +20,9 @@ clap = { workspace = true }
 crossterm  = { workspace = true, features = ["use-dev-tty"] }
 dirs       = { workspace = true }
 ratatui    = { workspace = true }
+# `bundled` compiles SQLite in, so reading Codex's thread database needs
+# no system library on either platform.
+rusqlite   = { workspace = true, features = ["bundled"] }
 serde      = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sysinfo    = { workspace = true }

@@ -23,24 +23,28 @@ its last row.
 ## summary
 
 ```text
- agent   name                                  status  age     directory
  natedev · 3 agents
- claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana
- claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler
- codex   pid 3140                              —       12m     ~/rust/handler
+ pid      agent   name                                  status  age     directory
+ 1579022  claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana
+ 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler
+ 4039085  codex   codex test                            —       12m     ~/rust/handler
 
  mac · 1 agent
- claude  natemccoy-30                          idle    23h     ~
+ pid      agent   name                                  status  age     directory
+ 12055    claude  natemccoy-30                          idle    23h     ~
 ```
 
-This machine comes first, under its short host name, then each remote machine
-in config order. Within a machine the rows run oldest first. A machine with no
-agents keeps its heading (`natedev · no agents`); one that has not answered yet
-says `scanning`; one whose probe failed shows the reason in the `unreachable`
-color: `unreachable` (ssh exit 255), `cargo-handler not installed` (exit 127),
-`probe version N, expected M`, `timed out` (no answer within 10 seconds), or
-the probe's exit status. This machine is scanned every 2 seconds and each
-remote every 5; a remote whose probe is still out is skipped until it answers.
+This machine comes first, under its short host name, then each remote machine in
+config order. Each machine's heading is followed by its own column-label row,
+with the columns sized across every machine so they line up down the cell; the
+first column is the agent's pid. Within a machine the rows run oldest first. A
+machine with no agents keeps its heading (`natedev · no agents`) and has no
+label row; one that has not answered yet says `scanning`; one whose probe failed
+shows the reason in the `unreachable` color: `unreachable` (ssh exit 255),
+`cargo-handler not installed` (exit 127), `probe version N, expected M`,
+`timed out` (no answer within 10 seconds), or the probe's exit status. This
+machine is scanned every 2 seconds and each remote every 5; a remote whose probe
+is still out is skipped until it answers.
 
 Only top-level agents are listed -- the ones a person started, not the ones an
 agent started:
@@ -50,9 +54,15 @@ agent started:
   id), its status (`busy`, `shell`, `idle`, or `—` when the record has none),
   the age of the process, and the session's directory.
 - **Codex**: an interactive `codex` process -- not `codex app-server`, which
-  runs for another program. Its name is the command line after `codex`, or
-  `pid <n>`. The one exception is the ChatGPT desktop app on macOS: its
-  `codex app-server` child is listed once, named `ChatGPT`.
+  runs for another program. Its name is that of the thread it started with:
+  the thread's name, else its first prompt on one line, cut at 80 characters.
+  The thread is read from `~/.codex/state_<n>.sqlite`: the `codex-tui` thread
+  created in the process's directory from 1 second before it started to 60
+  seconds after, and when several `codex` processes share a directory, the
+  thread goes to the one that started last. Without a thread the name is the
+  command line after `codex`, or `pid <n>`. The one exception is the ChatGPT
+  desktop app on macOS: its `codex app-server` child is listed once, named
+  `ChatGPT`.
 
 A process is dropped when any of its ancestors is another agent (a `claude` or
 `codex` process) or a tmux server, since those sessions are driven by something
@@ -100,6 +110,10 @@ ctrl-k opens the full keymap editor, where Enter rebinds the selected row.
 | Esc | close the open overlay |
 
 ### attract screen and favorites
+
+The attract screen comes on by itself only when no machine lists an agent,
+after a few quiet seconds; an agent sitting `idle` still counts, since it is
+waiting on its reader. `a` shows it on demand at any time.
 
 While the attract screen was asked for with `a`, it takes the keys it binds
 ahead of the grid: `1` `2` `3` pick the animation, the arrows point it, `<` `>`

@@ -8,13 +8,18 @@
 //! A Claude Code session is found through the record it writes for its
 //! process, and counts only while that process is alive and is still
 //! Claude Code. A Codex session has no record, so an interactive Codex
-//! is any `codex` process that is not an app server. The one app server
+//! is any `codex` process that is not an app server. It is named for the
+//! thread it started with: the first thread an interactive Codex created
+//! in its directory from its start until [`CODEX_THREAD_START_WINDOW`]
+//! later, and before the next one started there. The one app server
 //! that counts is the macOS desktop app's, which stands for the app.
 //!
-//! Everything here is a pure function over a process table and the
-//! session records, so the tests drive it from fixtures.
+//! Everything here is a pure function over a process table, the
+//! session records and the Codex threads, so the tests drive it from
+//! fixtures.
 
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -22,10 +27,13 @@ use serde::Deserialize;
 
 use super::Agent;
 use super::AgentRow;
+use super::codex::CodexThread;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
 use crate::constants::CODEX_DESKTOP_APP;
+use crate::constants::CODEX_THREAD_START_SLACK;
+use crate::constants::CODEX_THREAD_START_WINDOW;
 use crate::constants::HOME_ABBREVIATION;
 use crate::constants::MISSING_VALUE;
 use crate::constants::SESSION_ID_PREFIX_LENGTH;
@@ -33,21 +41,21 @@ use crate::constants::TMUX_SERVER_NAMES;
 
 /// One process as the classification reads it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ProcessEntry {
+pub(super) struct ProcessEntry {
     /// The process id.
-    pub(crate) pid:       u32,
+    pub(super) pid:       u32,
     /// The parent's process id; none for the first process.
-    pub(crate) parent:    Option<u32>,
+    pub(super) parent:    Option<u32>,
     /// The process name: `/proc/<pid>/comm` on Linux, which a process
     /// may set for itself.
-    pub(crate) name:      String,
+    pub(super) name:      String,
     /// The whole command line, program first. Empty where it was not
     /// read.
-    pub(crate) arguments: Vec<String>,
+    pub(super) arguments: Vec<String>,
     /// When the process started, in unix seconds.
-    pub(crate) started:   u64,
+    pub(super) started:   u64,
     /// The process's working directory, where it could be read.
-    pub(crate) directory: Option<PathBuf>,
+    pub(super) directory: Option<PathBuf>,
 }
 
 impl ProcessEntry {
@@ -87,45 +95,118 @@ impl ProcessEntry {
 /// records hold more, which is ignored.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SessionRecord {
+pub(super) struct SessionRecord {
     /// The session's process.
-    pub(crate) pid:        u32,
+    pub(super) pid:        u32,
     /// The session id, whose start names a session with no name.
     #[serde(default)]
-    pub(crate) session_id: String,
+    pub(super) session_id: String,
     /// The directory the session was started in.
     #[serde(default)]
-    pub(crate) cwd:        Option<PathBuf>,
+    pub(super) cwd:        Option<PathBuf>,
     /// The session's name, where it has one.
     #[serde(default)]
-    pub(crate) name:       Option<String>,
+    pub(super) name:       Option<String>,
     /// `idle`, `busy` or `shell`, where the record says.
     #[serde(default)]
-    pub(crate) status:     Option<String>,
+    pub(super) status:     Option<String>,
 }
 
 /// The top-level agents among `processes`, oldest first, with pid
-/// breaking a tie. Directories are written against `home`.
-pub(crate) fn top_level_rows(
+/// breaking a tie. An interactive Codex is named for its thread among
+/// `codex_threads`, and directories are written against `home`.
+pub(super) fn top_level_rows(
     processes: &[ProcessEntry],
     sessions: &[SessionRecord],
+    codex_threads: &[CodexThread],
     home: Option<&Path>,
 ) -> Vec<AgentRow> {
-    let table: HashMap<u32, &ProcessEntry> = processes
-        .iter()
-        .map(|process| (process.pid, process))
-        .collect();
+    let table = pid_table(processes);
+    let threads = startup_threads(&interactive_codex(&table, processes), codex_threads);
     let mut rows: Vec<AgentRow> = sessions
         .iter()
         .filter_map(|session| claude_row(&table, session, home))
-        .chain(
-            processes
-                .iter()
-                .filter_map(|process| codex_row(&table, process, home)),
-        )
+        .chain(processes.iter().filter_map(|process| {
+            codex_row(&table, process, threads.get(&process.pid).copied(), home)
+        }))
         .collect();
     rows.sort_by_key(|row| (row.started, row.pid));
     rows
+}
+
+/// The creation times, in unix milliseconds, that a thread must fall in
+/// to be the one some top-level interactive Codex in `processes`
+/// started with; none when there is no such Codex.
+pub(super) fn codex_thread_window(processes: &[ProcessEntry]) -> Option<RangeInclusive<u64>> {
+    let table = pid_table(processes);
+    let windows: Vec<_> = interactive_codex(&table, processes)
+        .into_iter()
+        .map(thread_window)
+        .collect();
+    let from = windows.iter().map(|window| *window.start()).min()?;
+    let until = windows.iter().map(|window| *window.end()).max()?;
+    Some(from..=until)
+}
+
+/// `processes` by pid.
+fn pid_table(processes: &[ProcessEntry]) -> HashMap<u32, &ProcessEntry> {
+    processes
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect()
+}
+
+/// The top-level `codex` processes that are not app servers.
+fn interactive_codex<'a>(
+    table: &HashMap<u32, &ProcessEntry>,
+    processes: &'a [ProcessEntry],
+) -> Vec<&'a ProcessEntry> {
+    processes
+        .iter()
+        .filter(|process| {
+            process.is_codex() && !process.is_app_server() && is_top_level(table, process)
+        })
+        .collect()
+}
+
+/// The creation times, in unix milliseconds, of a thread `process`
+/// could have started with: from [`CODEX_THREAD_START_SLACK`] before its
+/// recorded start to [`CODEX_THREAD_START_WINDOW`] after.
+fn thread_window(process: &ProcessEntry) -> RangeInclusive<u64> {
+    let started = process.started.saturating_mul(1_000);
+    let slack = u64::try_from(CODEX_THREAD_START_SLACK.as_millis()).unwrap_or(u64::MAX);
+    let window = u64::try_from(CODEX_THREAD_START_WINDOW.as_millis()).unwrap_or(u64::MAX);
+    started.saturating_sub(slack)..=started.saturating_add(window)
+}
+
+/// The thread each Codex in `codex` started with, by pid.
+///
+/// A thread belongs to the Codex in its directory that started last
+/// before it within [`thread_window`], so a Codex that resumed an old
+/// thread, and so created none, does not take the first thread of one
+/// started after it. Of the threads a Codex owns, the first is the one
+/// it started with.
+fn startup_threads<'a>(
+    codex: &[&ProcessEntry],
+    threads: &'a [CodexThread],
+) -> HashMap<u32, &'a CodexThread> {
+    let mut first: HashMap<u32, &CodexThread> = HashMap::new();
+    for thread in threads {
+        let owner = codex
+            .iter()
+            .filter(|process| {
+                process.directory.as_deref() == Some(thread.cwd.as_path())
+                    && thread_window(process).contains(&thread.created_ms)
+            })
+            .max_by_key(|process| (process.started, process.pid));
+        if let Some(owner) = owner {
+            let kept = first.entry(owner.pid).or_insert(thread);
+            if thread.created_ms < kept.created_ms {
+                *kept = thread;
+            }
+        }
+    }
+    first
 }
 
 /// The row for `session`, when its process is alive, is Claude Code,
@@ -162,10 +243,13 @@ fn claude_row(
 }
 
 /// The row for `process`, when it is a top-level interactive Codex or
-/// the desktop app's app server.
+/// the desktop app's app server. An interactive Codex is named for
+/// `thread`, the one it started with, else for its command line after
+/// `codex`, else for its pid.
 fn codex_row(
     table: &HashMap<u32, &ProcessEntry>,
     process: &ProcessEntry,
+    thread: Option<&CodexThread>,
     home: Option<&Path>,
 ) -> Option<AgentRow> {
     if !process.is_codex() || !is_top_level(table, process) {
@@ -177,6 +261,8 @@ fn codex_row(
             return None;
         }
         CODEX_DESKTOP_APP.to_string()
+    } else if let Some(label) = thread.and_then(CodexThread::label) {
+        label
     } else {
         let arguments = process.arguments.get(1..).unwrap_or_default().join(" ");
         if arguments.is_empty() {
@@ -217,7 +303,7 @@ fn is_top_level(table: &HashMap<u32, &ProcessEntry>, process: &ProcessEntry) -> 
 /// `directory` as a row shows it: under `home` it starts with `~`, and
 /// the home directory itself is `~`. A directory that could not be read
 /// is [`MISSING_VALUE`].
-pub(crate) fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> String {
+fn directory_label(directory: Option<&Path>, home: Option<&Path>) -> String {
     let Some(directory) = directory else {
         return MISSING_VALUE.to_string();
     };
@@ -419,7 +505,7 @@ mod tests {
     fn natedev_lists_its_terminal_sessions_oldest_first() {
         let (processes, sessions) = natedev();
 
-        let rows = top_level_rows(&processes, &sessions, Some(Path::new(HOME)));
+        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
 
         assert_eq!(
             names(&rows),
@@ -458,7 +544,7 @@ mod tests {
         ];
         let sessions = [session(500, "gone", "idle", HOME)];
 
-        assert!(top_level_rows(&processes, &sessions, Some(Path::new(HOME))).is_empty());
+        assert!(top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME))).is_empty());
     }
 
     /// A session with no name shows the start of its id.
@@ -474,7 +560,7 @@ mod tests {
             ..session(500, "", "", HOME)
         }];
 
-        let rows = top_level_rows(&processes, &sessions, Some(Path::new(HOME)));
+        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
 
         assert_eq!(names(&rows), ["00000500"]);
         assert_eq!(rows[0].status, None);
@@ -493,7 +579,7 @@ mod tests {
             session(600, "first", "idle", HOME),
         ];
 
-        let rows = top_level_rows(&processes, &sessions, Some(Path::new(HOME)));
+        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
 
         assert_eq!(names(&rows), ["first", "second"]);
     }
@@ -506,10 +592,50 @@ mod tests {
             detailed(900, 1, "codex", 10, &["codex"], "/tmp"),
         ];
 
-        let rows = top_level_rows(&processes, &[], Some(Path::new(HOME)));
+        let rows = top_level_rows(&processes, &[], &[], Some(Path::new(HOME)));
 
         assert_eq!(names(&rows), ["pid 900"]);
         assert_eq!(rows[0].directory, "/tmp");
+    }
+
+    /// Each interactive Codex is named for the first thread created in
+    /// its directory after it started: a renamed thread by its name, one
+    /// with no name by its first prompt. A Codex that resumed a thread
+    /// does not take the thread of one started after it, a delegate's
+    /// Codex takes none, and a Codex with no thread keeps its pid.
+    #[test]
+    fn an_interactive_codex_is_named_for_the_thread_it_started() {
+        let work = "/home/natepiano/rust/handler";
+        let processes = [
+            process(1, 0, "systemd", 0),
+            detailed(10, 1, "codex", 100, &["codex", "resume"], work),
+            detailed(20, 1, "codex", 110, &["codex"], work),
+            detailed(30, 1, "codex", 120, &["codex"], HOME),
+            detailed(40, 1, "codex", 130, &["codex"], "/tmp"),
+            detailed(50, 1, "claude", 90, &["claude"], HOME),
+            detailed(60, 50, "codex", 125, &["codex"], HOME),
+        ];
+        let thread = |cwd: &str, created_ms, name: Option<&str>, prompt: &str| CodexThread {
+            cwd: PathBuf::from(cwd),
+            created_ms,
+            name: name.map(str::to_string),
+            first_prompt: prompt.to_string(),
+        };
+        let threads = [
+            thread(work, 111_800, Some("codex test"), ""),
+            thread(work, 150_000, Some("after /new"), ""),
+            thread(HOME, 121_500, None, "fix the\nbuild"),
+            thread(HOME, 126_000, Some("delegate"), ""),
+            thread("/tmp", 200_000, Some("too late"), ""),
+        ];
+
+        assert_eq!(codex_thread_window(&processes), Some(99_000..=190_000));
+        let rows = top_level_rows(&processes, &[], &threads, Some(Path::new(HOME)));
+
+        assert_eq!(
+            names(&rows),
+            ["resume", "codex test", "fix the build", "pid 40"]
+        );
     }
 
     /// The Mac as `ps` showed it: the desktop app running its Codex app
@@ -546,7 +672,7 @@ mod tests {
             session(81_020, "worker", "busy", home),
         ];
 
-        let rows = top_level_rows(&processes, &sessions, Some(Path::new(home)));
+        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(home)));
 
         assert_eq!(names(&rows), ["ChatGPT", "natemccoy-30"]);
         let desktop = &rows[0];

@@ -22,13 +22,13 @@ use crate::constants::UNREADABLE_PROBE_REASON;
 
 /// What the probe prints.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ProbeReport {
+struct ProbeReport {
     /// [`PROBE_SCHEMA`] of the build that printed it.
-    pub(crate) schema:  u32,
+    schema:  u32,
     /// The printing machine's short host name.
-    pub(crate) machine: String,
+    machine: String,
     /// Its top-level agents, oldest first.
-    pub(crate) rows:    Vec<AgentRow>,
+    rows:    Vec<AgentRow>,
 }
 
 /// The one field read before the rest, so a machine running another
@@ -60,7 +60,7 @@ pub(crate) fn print() -> ExitCode {
 
 /// The rows of a report read back from `output`, or why there are none:
 /// output that is not a report, or a report from another version.
-pub(crate) fn parse_report(output: &[u8]) -> Result<Vec<AgentRow>, String> {
+pub(super) fn parse_report(output: &[u8]) -> Result<Vec<AgentRow>, String> {
     let header: SchemaHeader =
         serde_json::from_slice(output).map_err(|_| UNREADABLE_PROBE_REASON.to_string())?;
     if header.schema != PROBE_SCHEMA {

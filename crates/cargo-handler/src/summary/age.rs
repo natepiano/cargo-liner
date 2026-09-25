@@ -9,7 +9,7 @@ use crate::constants::ZERO_AGE;
 /// `seconds` in its largest unit, with the next unit down after it when
 /// the leading value is a single digit and the next unit is not zero:
 /// `45s`, `5m 3s`, `12m`, `2h 29m`, `21h`, `3d 4h`, `12d`, `110d`.
-pub(crate) fn age_label(seconds: u64) -> String {
+pub(super) fn age_label(seconds: u64) -> String {
     let mut units = AGE_UNITS.iter().skip_while(|(size, _)| seconds < *size);
     let Some((size, suffix)) = units.next() else {
         return ZERO_AGE.to_string();

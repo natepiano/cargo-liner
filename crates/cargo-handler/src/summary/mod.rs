@@ -1,6 +1,7 @@
-//! The summary cell: one label row for the whole cell, then each
-//! machine's heading and its top-level agents, oldest first, with a
-//! blank row between machines.
+//! The summary cell: each machine's heading, then, when it lists
+//! agents, a column-label row and its top-level agents, oldest first,
+//! with a blank row between machines. Every machine's table is laid out
+//! with the same column widths, so the columns line up down the cell.
 
 pub(crate) mod age;
 
@@ -40,6 +41,7 @@ use crate::constants::MISSING_VALUE;
 use crate::constants::NAME_COLUMN;
 use crate::constants::NAME_COLUMN_MAX;
 use crate::constants::NO_AGENTS_NOTE;
+use crate::constants::PID_COLUMN;
 use crate::constants::SCANNING_NOTE;
 use crate::constants::SHELL_STATUS;
 use crate::constants::STATUS_COLUMN;
@@ -49,41 +51,34 @@ use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TRUNCATION_MARK;
 use crate::theme::Role;
 
-/// Rows the summary draws for `machines`: the label row, each machine's
-/// heading and rows, and a gap between one machine and the next.
+/// Rows the summary draws for `machines`: each machine's heading and
+/// table, and a gap between one machine and the next.
 pub(crate) fn height(machines: &[Machine<'_>]) -> usize {
     let groups: usize = machines
         .iter()
-        .map(|machine| usize::from(GROUP_HEADER_HEIGHT) + machine.state.rows().len())
+        .map(|machine| usize::from(GROUP_HEADER_HEIGHT) + table_height(machine.state.rows().len()))
         .sum();
     let gaps = machines.len().saturating_sub(1) * usize::from(GROUP_GAP_HEIGHT);
-    usize::from(TABLE_HEADER_HEIGHT) + groups + gaps
+    groups + gaps
+}
+
+/// Rows a machine's table takes for `rows` agents: none when it lists
+/// none, else its label row and the agents.
+fn table_height(rows: usize) -> usize {
+    if rows == 0 {
+        0
+    } else {
+        usize::from(TABLE_HEADER_HEIGHT) + rows
+    }
 }
 
 /// Draw `machines` into `area`, with ages measured to `now` in unix
 /// seconds.
 pub(crate) fn draw(buffer: &mut Buffer, area: Rect, machines: &[Machine<'_>], now: u64) {
-    // One label row for the whole cell: every machine's table is laid
-    // out with the same constraints and indent, so the labels stay over
-    // their columns.
+    // Every machine's table is laid out with the same constraints and
+    // indent, so its columns line up with every other machine's.
     let constraints = fitted_constraints(machines, now);
-    let label = Style::default().fg(label_color());
-    Table::new(Vec::<Row>::new(), constraints.iter().copied())
-        .header(Row::new(
-            SUMMARY_HEADERS.map(|header| Span::styled(header, label)),
-        ))
-        .column_spacing(TABLE_COLUMN_SPACING)
-        .render(
-            Rect {
-                height: TABLE_HEADER_HEIGHT.min(area.height),
-                ..indented(area)
-            },
-            buffer,
-        );
-
     let mut remaining = area;
-    remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
-    remaining.height = remaining.height.saturating_sub(TABLE_HEADER_HEIGHT);
     for machine in machines {
         if remaining.height == 0 {
             break;
@@ -94,8 +89,9 @@ pub(crate) fn draw(buffer: &mut Buffer, area: Rect, machines: &[Machine<'_>], no
     }
 }
 
-/// Draw one machine's heading and rows into the top of `area`,
-/// answering how many rows that took including the gap below it.
+/// Draw one machine's heading, and its label row and rows when it lists
+/// agents, into the top of `area`, answering how many rows that took
+/// including the gap below it.
 fn draw_machine(
     buffer: &mut Buffer,
     area: Rect,
@@ -135,25 +131,28 @@ fn draw_machine(
     );
 
     let rows = machine.state.rows();
-    let table_height = area
+    let drawn = area
         .height
         .saturating_sub(GROUP_HEADER_HEIGHT)
-        .min(u16::try_from(rows.len()).unwrap_or(u16::MAX));
+        .min(u16::try_from(table_height(rows.len())).unwrap_or(u16::MAX));
     Table::new(
         rows.iter().map(|row| agent_row(row, now)),
         constraints.iter().copied(),
     )
+    .header(Row::new(
+        SUMMARY_HEADERS.map(|header| Span::styled(header, label)),
+    ))
     .column_spacing(TABLE_COLUMN_SPACING)
     .render(
         Rect {
             y: area.y.saturating_add(GROUP_HEADER_HEIGHT),
-            height: table_height,
+            height: drawn,
             ..indented(area)
         },
         buffer,
     );
     GROUP_HEADER_HEIGHT
-        .saturating_add(table_height)
+        .saturating_add(drawn)
         .saturating_add(GROUP_GAP_HEIGHT)
 }
 
@@ -180,6 +179,7 @@ fn agent_row(row: &AgentRow, now: u64) -> Row<'static> {
     };
     let label = Style::default().fg(label_color());
     Row::new([
+        Span::styled(row.pid.to_string(), Style::default().fg(text_default())),
         Span::styled(row.agent.label(), agent_role.style()),
         Span::styled(truncated(&row.name), Style::default().fg(text_default())),
         Span::styled(status_text(row).to_string(), status_role.style()),
@@ -219,6 +219,7 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
             .collect(),
     );
     for row in machines.iter().flat_map(|machine| machine.state.rows()) {
+        widths.observe_cell_usize(PID_COLUMN, row.pid.to_string().chars().count());
         widths.observe_cell_usize(AGENT_COLUMN, row.agent.label().chars().count());
         widths.observe_cell_usize(NAME_COLUMN, row.name.chars().count());
         widths.observe_cell_usize(STATUS_COLUMN, status_text(row).chars().count());
@@ -239,8 +240,8 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
         .collect()
 }
 
-/// `area` indented one level, where the label row and every machine's
-/// rows sit, under headings at the outer level.
+/// `area` indented one level, where every machine's label row and rows
+/// sit, under headings at the outer level.
 fn indented(area: Rect) -> Rect {
     let indent = cell_width(SECTION_ITEM_INDENT);
     Rect {
@@ -269,18 +270,26 @@ mod tests {
     const HOUR: u64 = 3_600;
     /// Seconds in a minute.
     const MINUTE: u64 = 60;
-    /// The summary's width in these tests.
-    const WIDTH: u16 = 100;
+    /// The summary's width in these tests: wide enough that no
+    /// directory is cut.
+    const WIDTH: u16 = 110;
 
-    /// A row for `agent` named `name`, started `age` seconds before
-    /// [`NOW`].
-    fn row(agent: Agent, name: &str, status: Option<&str>, age: u64, directory: &str) -> AgentRow {
+    /// Process `pid`, an `agent` named `name`, started `age` seconds
+    /// before [`NOW`].
+    fn row(
+        pid: u32,
+        agent: Agent,
+        name: &str,
+        status: Option<&str>,
+        age: u64,
+        directory: &str,
+    ) -> AgentRow {
         AgentRow {
             agent,
             name: name.to_string(),
             status: status.map(str::to_string),
             started: NOW - age,
-            pid: 1,
+            pid,
             directory: directory.to_string(),
         }
     }
@@ -299,11 +308,14 @@ mod tests {
 
     /// Four machines: this one with a name past the column's cap, a busy
     /// session and a Codex with no status; a remote with one agent; a
-    /// remote whose probe failed; and one that has not answered.
+    /// remote whose probe failed; and one that has not answered. Each
+    /// machine that lists agents repeats the label row under its heading,
+    /// with the columns sized across both machines' rows.
     #[test]
-    fn machines_list_their_agents_under_one_label_row() {
+    fn each_machine_lists_its_agents_under_its_own_label_row() {
         let natedev = MachineState::Answered(vec![
             row(
+                1_579_022,
                 Agent::Claude,
                 "boss of bosses",
                 Some("idle"),
@@ -311,6 +323,7 @@ mod tests {
                 "~/rust/hana_catalyst/docs/hana",
             ),
             row(
+                2_747_564,
                 Agent::Claude,
                 "tmp cleanup then merge to berth and handler",
                 Some("shell"),
@@ -318,6 +331,7 @@ mod tests {
                 "~/rust/cargo-handler",
             ),
             row(
+                428_044,
                 Agent::Claude,
                 "enh/handler",
                 Some("busy"),
@@ -325,6 +339,7 @@ mod tests {
                 "~/rust/handler",
             ),
             row(
+                4_039_085,
                 Agent::Codex,
                 "--model gpt-5",
                 None,
@@ -333,6 +348,7 @@ mod tests {
             ),
         ]);
         let mac = MachineState::Answered(vec![row(
+            12_055,
             Agent::Claude,
             "natemccoy-30",
             Some("idle"),
@@ -368,25 +384,27 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " agent   name                                  status  age     directory",
                 " natedev · 4 agents",
-                " claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana",
-                " claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler",
-                " claude  enh/handler                           busy    1h 36m  ~/rust/handler",
-                " codex   --model gpt-5                         —       12m     ~/rust/handler",
+                " pid      agent   name                                  status  age     directory",
+                " 1579022  claude  boss of bosses                        idle    21h     ~/rust/hana_catalyst/docs/hana",
+                " 2747564  claude  tmp cleanup then merge to berth and…  shell   2h 29m  ~/rust/cargo-handler",
+                " 428044   claude  enh/handler                           busy    1h 36m  ~/rust/handler",
+                " 4039085  codex   --model gpt-5                         —       12m     ~/rust/handler",
                 "",
                 " mac · 1 agent",
-                " claude  natemccoy-30                          idle    23h     ~",
+                " pid      agent   name                                  status  age     directory",
+                " 12055    claude  natemccoy-30                          idle    23h     ~",
                 "",
                 " studio · unreachable",
                 "",
                 " pi · scanning",
             ]
         );
-        assert_eq!(buffer[(1, 2)].fg, Color::Rgb(217, 119, 87));
-        assert_eq!(buffer[(1, 5)].fg, Color::Rgb(175, 140, 255));
-        assert_eq!(buffer[(47, 4)].fg, Color::Rgb(100, 220, 100));
-        assert_eq!(buffer[(47, 5)].fg, Color::Rgb(140, 140, 140));
-        assert_eq!(buffer[(10, 10)].fg, Color::Rgb(255, 100, 100));
+        assert_eq!(buffer[(1, 2)].fg, text_default());
+        assert_eq!(buffer[(10, 2)].fg, Color::Rgb(217, 119, 87));
+        assert_eq!(buffer[(10, 5)].fg, Color::Rgb(175, 140, 255));
+        assert_eq!(buffer[(56, 4)].fg, Color::Rgb(100, 220, 100));
+        assert_eq!(buffer[(56, 5)].fg, Color::Rgb(140, 140, 140));
+        assert_eq!(buffer[(10, 11)].fg, Color::Rgb(255, 100, 100));
     }
 }

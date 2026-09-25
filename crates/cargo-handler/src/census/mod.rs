@@ -2,14 +2,16 @@
 //! and Codex sessions on this machine and on each remote machine named
 //! in `[machines] remote`.
 //!
-//! [`classify`] decides which processes count, over a process table
-//! and the session records Claude Code writes. [`scan`] reads both on
-//! this machine. [`probe`] is the JSON a machine prints about itself,
+//! [`classify`] decides which processes count, over a process table,
+//! the session records Claude Code writes, and the threads [`codex`]
+//! reads from Codex's database. [`scan`] reads all three on this
+//! machine. [`probe`] is the JSON a machine prints about itself,
 //! and [`remote`] runs that probe on another machine over ssh.
 //! [`schedule`] runs the scans and probes on threads of their own and
 //! hands each answer to the event loop as a [`CensusUpdate`].
 
 pub(crate) mod classify;
+pub(crate) mod codex;
 pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
@@ -169,6 +171,17 @@ impl Census {
             }))
             .collect()
     }
+
+    /// Whether any machine the summary draws lists an agent, idle ones
+    /// included: an idle agent is one waiting on its reader.
+    pub(crate) fn lists_an_agent(&self, configured: &[String]) -> bool {
+        !self.local.rows().is_empty()
+            || configured.iter().any(|host| {
+                self.remotes
+                    .get(host)
+                    .is_some_and(|state| !state.rows().is_empty())
+            })
+    }
 }
 
 /// One machine as the summary draws it.
@@ -272,6 +285,40 @@ mod tests {
         assert_eq!(machines[0].state, &MachineState::Scanning);
         assert_eq!(machines[1].state, &MachineState::Scanning);
         assert_eq!(machines[2].state.rows(), [row(1)]);
+    }
+
+    /// A listed agent on any drawn machine counts, idle or not; a
+    /// machine still scanning, a failed one, or a remote no longer
+    /// configured does not.
+    #[test]
+    fn any_drawn_machine_listing_an_agent_counts() {
+        let mut census = Census::new("natedev".to_string());
+        let configured = ["mac".to_string(), "studio".to_string()];
+        assert!(!census.lists_an_agent(&configured));
+
+        census.apply(CensusUpdate::Local(Vec::new()));
+        census.apply(CensusUpdate::Remote {
+            host:  "studio".to_string(),
+            state: MachineState::Failed("timed out".to_string()),
+        });
+        census.apply(CensusUpdate::Remote {
+            host:  "old".to_string(),
+            state: MachineState::Answered(vec![row(1)]),
+        });
+        assert!(!census.lists_an_agent(&configured));
+
+        let idle = AgentRow {
+            status: Some("idle".to_string()),
+            ..row(2)
+        };
+        census.apply(CensusUpdate::Remote {
+            host:  "mac".to_string(),
+            state: MachineState::Answered(vec![idle]),
+        });
+        assert!(census.lists_an_agent(&configured));
+
+        census.apply(CensusUpdate::Local(vec![row(3)]));
+        assert!(census.lists_an_agent(&[]));
     }
 
     /// A remote taken out of the list loses its answer, so putting it

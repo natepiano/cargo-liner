@@ -29,16 +29,16 @@ use crate::constants::REMOTE_PROBE_INTERVAL;
 
 /// How often the scheduler looks at each machine.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Cadence {
+struct Cadence {
     /// Between scans of this machine.
-    pub(crate) local:  Duration,
+    local:  Duration,
     /// Between probes of each remote machine.
-    pub(crate) remote: Duration,
+    remote: Duration,
 }
 
 impl Cadence {
     /// The cadence the app runs at.
-    pub(crate) const LIVE: Self = Self {
+    const LIVE: Self = Self {
         local:  LOCAL_SCAN_INTERVAL,
         remote: REMOTE_PROBE_INTERVAL,
     };
@@ -67,7 +67,7 @@ pub(crate) fn spawn(remotes: RemoteMachines) -> Receiver<CensusUpdate> {
 /// in the settings overlay is probed from the next round on. The
 /// scheduler ends at the first answer it cannot send, which is once the
 /// receiver is gone.
-pub(crate) fn spawn_with(
+fn spawn_with(
     remotes: RemoteMachines,
     runner: Arc<dyn RemoteRunner>,
     mut scan_local: impl FnMut() -> Vec<AgentRow> + Send + 'static,
