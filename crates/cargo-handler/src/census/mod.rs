@@ -1,14 +1,17 @@
-//! The census of agents the summary lists: the top-level Claude Code
-//! and Codex sessions on this machine and on each remote machine named
-//! in `[machines] remote`.
+//! The census of agents: the Claude Code and Codex sessions someone can
+//! talk to on this machine and on each remote machine named in
+//! `[machines] remote`, each with what it is running.
 //!
 //! [`classify`] decides which processes count, over a process table,
 //! the session records Claude Code writes, and the threads [`codex`]
-//! reads from Codex's database. [`scan`] reads all three on this
-//! machine. [`probe`] is the JSON a machine prints about itself,
-//! and [`remote`] runs that probe on another machine over ssh.
-//! [`schedule`] runs the scans and probes on threads of their own and
-//! hands each answer to the event loop as a [`CensusUpdate`].
+//! reads from Codex's database, and which agent opened a session held
+//! by tmux. [`tree`] lays out what each agent is running, from the
+//! process table and what [`transcript`] reads from Claude Code's
+//! transcripts. [`scan`] reads all of it on this machine. [`probe`] is
+//! the JSON a machine prints about itself, and [`remote`] runs that
+//! probe on another machine over ssh. [`schedule`] runs the scans and
+//! probes on threads of their own and hands each answer to the event
+//! loop as a [`CensusUpdate`].
 
 pub(crate) mod classify;
 pub(crate) mod codex;
@@ -16,6 +19,8 @@ pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
 pub(crate) mod schedule;
+pub(crate) mod transcript;
+pub(crate) mod tree;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,24 +57,69 @@ impl Agent {
     }
 }
 
-/// One top-level agent, as the summary lists it and as the probe
-/// prints it. The field order is the probe's JSON order.
+/// One agent someone can talk to, as the summary lists it, as its own
+/// cell draws it, and as the probe prints it. The field order is the
+/// probe's JSON order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct AgentRow {
     /// Claude Code or Codex.
-    pub(crate) agent:     Agent,
+    pub(crate) agent:       Agent,
     /// The session's name, or what stands in for one.
-    pub(crate) name:      String,
+    pub(crate) name:        String,
     /// What the session says it is doing: `idle`, `busy` or `shell`
     /// for Claude Code, and nothing for Codex, which reports none.
-    pub(crate) status:    Option<String>,
+    pub(crate) status:      Option<String>,
     /// When the agent's process started, in unix seconds.
-    pub(crate) started:   u64,
+    pub(crate) started:     u64,
     /// The agent's process id on its own machine.
-    pub(crate) pid:       u32,
+    pub(crate) pid:         u32,
     /// The directory the agent runs in, with its machine's home
     /// directory written as `~`.
-    pub(crate) directory: String,
+    pub(crate) directory:   String,
+    /// The pid of the agent that opened this one in a tmux session; none
+    /// for an agent a person started, which is what makes it top level.
+    pub(crate) launched_by: Option<u32>,
+    /// What the agent is running, in the order its cell draws it: each
+    /// row is followed by the rows it started, one level deeper.
+    pub(crate) children:    Vec<ChildRow>,
+}
+
+/// What one row of an agent's cell is.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ChildKind {
+    /// A command the agent's shell tool is running.
+    Shell,
+    /// A subagent running inside the agent's own process.
+    Subagent,
+    /// An agent this one opened in a tmux session, which has a cell of
+    /// its own.
+    Session(Agent),
+    /// A Claude Code or Codex process started under a shell or detached
+    /// from one.
+    Process(Agent),
+    /// A thread a Codex app server is running.
+    Thread,
+}
+
+/// One row of an agent's cell: something the agent started that is
+/// still running.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ChildRow {
+    /// How many levels below the agent the row sits; the rows directly
+    /// under the agent are at 0.
+    depth:   u8,
+    /// What the row is.
+    kind:    ChildKind,
+    /// Its process; none for a subagent or a thread, which have none of
+    /// their own.
+    pid:     Option<u32>,
+    /// What the row says it is doing: a shell's description or command,
+    /// a subagent's description, a session's or thread's name, or a
+    /// process's.
+    name:    String,
+    /// When it started, in unix seconds.
+    started: u64,
 }
 
 /// What is known about one machine's agents.
@@ -77,7 +127,7 @@ pub(crate) struct AgentRow {
 pub(crate) enum MachineState {
     /// No answer yet.
     Scanning,
-    /// The top-level agents, oldest first.
+    /// Every agent someone can talk to, oldest first.
     Answered(Vec<AgentRow>),
     /// The machine gave no answer, and why.
     Failed(String),
@@ -247,6 +297,8 @@ mod tests {
             started,
             pid: 428_044,
             directory: "~/rust/handler".to_string(),
+            launched_by: None,
+            children: Vec::new(),
         }
     }
 

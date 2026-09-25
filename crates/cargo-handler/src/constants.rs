@@ -179,6 +179,74 @@ pub(crate) const CLAUDE_DIRNAME: &str = ".claude";
 pub(crate) const CLAUDE_SESSIONS_DIRNAME: &str = "sessions";
 /// Extension of a session record; the directory holds other files too.
 pub(crate) const SESSION_RECORD_EXTENSION: &str = "json";
+/// The directory under [`CLAUDE_DIRNAME`] holding each session's
+/// transcript, in a directory named for where the session started.
+pub(crate) const PROJECTS_DIRNAME: &str = "projects";
+/// Extension of a transcript, one JSON object per line.
+pub(crate) const TRANSCRIPT_EXTENSION: &str = "jsonl";
+/// The `type` of a transcript line the session wrote itself.
+pub(crate) const ASSISTANT_LINE: &str = "assistant";
+/// The `type` of a transcript line carrying the reader's turn or a tool
+/// result.
+pub(crate) const USER_LINE: &str = "user";
+/// The name Claude Code gives its shell tool.
+pub(crate) const BASH_TOOL: &str = "Bash";
+/// Text every transcript line calling the shell tool holds. A line
+/// without it is read for its time alone.
+pub(crate) const BASH_TOOL_MARKER: &str = r#""name":"Bash""#;
+/// The `type` of a message block that calls a tool.
+pub(crate) const TOOL_USE_BLOCK: &str = "tool_use";
+/// The `stop_reason` of an assistant message that ends its turn.
+pub(crate) const END_TURN: &str = "end_turn";
+/// The directory beside a session's transcript, named for the session,
+/// under which its subagents' transcripts sit.
+pub(crate) const SUBAGENTS_DIRNAME: &str = "subagents";
+/// How the name of a subagent's files starts: `agent-<id>.jsonl` and
+/// `agent-<id>.meta.json`.
+pub(crate) const SUBAGENT_PREFIX: &str = "agent-";
+/// How the name of the file saying what a subagent was asked to do ends.
+pub(crate) const SUBAGENT_META_SUFFIX: &str = ".meta.json";
+/// How long a subagent's transcript may go unwritten before the
+/// subagent counts as stopped rather than working.
+pub(crate) const SUBAGENT_QUIET_LIMIT: Duration = Duration::from_mins(30);
+/// Bytes a bisection of a transcript narrows the start of a span to
+/// before reading forward line by line.
+pub(crate) const TRANSCRIPT_BISECT_GRAIN: u64 = 64 * 1024;
+/// Bytes read forward from the start of a span before the read gives
+/// up, however far the span runs.
+pub(crate) const TRANSCRIPT_SPAN_READ_LIMIT: u64 = 32 * 1024 * 1024;
+/// Bytes of a transcript's end read first when looking for its last
+/// turn.
+pub(crate) const TRANSCRIPT_TAIL_START: u64 = 64 * 1024;
+/// Bytes of a transcript's end read at most when looking for its last
+/// turn.
+pub(crate) const TRANSCRIPT_TAIL_LIMIT: u64 = 16 * 1024 * 1024;
+/// The flag Claude Code's shell tool runs its script under.
+pub(crate) const SHELL_SCRIPT_FLAG: &str = "-c";
+/// Text the script of every Claude Code shell tool call holds: it
+/// starts by sourcing a snapshot of the reader's shell from here.
+pub(crate) const SHELL_SNAPSHOT_MARKER: &str = "/shell-snapshots/snapshot-";
+/// What opens the command inside a shell tool script, which runs it
+/// quoted in single quotes.
+pub(crate) const SHELL_EVAL_OPEN: &str = "eval '";
+/// How a shell tool script writes one `'` inside the quoted command.
+pub(crate) const SHELL_QUOTED_QUOTE: &str = r"'\''";
+/// How far before a process started the transcript is read for the
+/// call that started it.
+pub(crate) const CALL_LOOKBACK: Duration = Duration::from_mins(10);
+/// How far after a process started the call that started it may be
+/// written: the process table counts a start in whole seconds, and a
+/// transcript line is written as the call goes out.
+pub(crate) const CALL_LOOKAHEAD: Duration = Duration::from_secs(5);
+/// What the command of a shell call that opened a tmux session holds.
+pub(crate) const TMUX_NEW_SESSION: &str = "new-session";
+/// How old a process must be before a scan that found no call or
+/// launcher for it stops looking. A younger one may not have had its
+/// transcript line written yet.
+pub(crate) const CALL_SEARCH_SETTLE: Duration = Duration::from_secs(30);
+/// Levels of agents under agents an agent cell's tree follows at most,
+/// so a process table that loops cannot hold the scan.
+pub(crate) const TREE_DEPTH_LIMIT: u8 = 16;
 /// Codex's directory under the home directory.
 pub(crate) const CODEX_DIRNAME: &str = ".codex";
 /// How the name of Codex's thread database starts. The whole name is
@@ -211,6 +279,32 @@ pub(crate) const CODEX_THREAD_START_SLACK: Duration = Duration::from_secs(1);
 /// Characters of a Codex thread's first prompt a row carries when the
 /// thread has no name. The summary cuts it again to fit its column.
 pub(crate) const CODEX_PROMPT_LABEL_MAX: usize = 80;
+/// Any thread, whoever started it, by its id: `?1` is the id.
+pub(crate) const CODEX_THREAD_BY_ID_QUERY: &str =
+    "SELECT cwd, created_at_ms, name, first_user_message FROM threads WHERE id = ?1";
+/// The directory under [`CODEX_DIRNAME`] holding the files Codex writes
+/// each thread's conversation to, one directory per day.
+pub(crate) const CODEX_SESSIONS_DIRNAME: &str = "sessions";
+/// How the name of a thread's conversation file starts. The whole name
+/// is `rollout-<time>-<thread id>.jsonl`.
+pub(crate) const CODEX_ROLLOUT_PREFIX: &str = "rollout-";
+/// Extension of a thread's conversation file.
+pub(crate) const CODEX_ROLLOUT_EXTENSION: &str = "jsonl";
+/// Characters in a thread id, the hyphenated UUID that ends the stem of
+/// its conversation file.
+pub(crate) const CODEX_THREAD_ID_LENGTH: usize = 36;
+/// What a `codex app-server` row is called.
+pub(crate) const CODEX_APP_SERVER_LABEL: &str = "app-server";
+/// The environment variable Claude Code sets for every process it
+/// starts, naming the Claude Code process. A Codex app server carries it
+/// after it has been moved out from under the process that started it.
+pub(crate) const CLAUDE_PID_VARIABLE: &str = "CLAUDE_PID";
+/// Where each process's open files are listed on Linux, one link per
+/// descriptor under `/proc/<pid>/fd`.
+pub(crate) const PROC_DIRNAME: &str = "/proc";
+/// The directory under a process's `/proc` entry holding its open
+/// descriptors.
+pub(crate) const PROC_FD_DIRNAME: &str = "fd";
 /// Written in place of the home directory in a row's directory.
 pub(crate) const HOME_ABBREVIATION: &str = "~";
 /// This machine's heading when its host name cannot be read.
@@ -226,7 +320,7 @@ pub(crate) const REMOTE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) const PROBE_COMMAND: &str = "probe";
 /// Version of the probe's JSON. A machine answering with another
 /// version is reported rather than read.
-pub(crate) const PROBE_SCHEMA: u32 = 1;
+pub(crate) const PROBE_SCHEMA: u32 = 2;
 /// The program the probe runs through.
 pub(crate) const SSH_PROGRAM: &str = "ssh";
 /// ssh options every probe passes: never prompt, and give up on a

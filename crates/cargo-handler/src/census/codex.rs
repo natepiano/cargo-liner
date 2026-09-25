@@ -10,12 +10,14 @@
 //! [`classify`](super::classify) makes that match; this module reads
 //! the rows it matches against.
 
+use std::collections::HashMap;
 use std::fs;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
 
 use rusqlite::Connection;
+use rusqlite::Error;
 use rusqlite::OpenFlags;
 use rusqlite::params;
 
@@ -23,6 +25,7 @@ use crate::constants::CODEX_PROMPT_LABEL_MAX;
 use crate::constants::CODEX_STATE_BUSY_TIMEOUT;
 use crate::constants::CODEX_STATE_EXTENSION;
 use crate::constants::CODEX_STATE_PREFIX;
+use crate::constants::CODEX_THREAD_BY_ID_QUERY;
 use crate::constants::CODEX_THREADS_QUERY;
 use crate::constants::CODEX_TUI_ORIGINATOR;
 use crate::constants::TRUNCATION_MARK;
@@ -85,6 +88,60 @@ pub(super) fn read_threads(codex_dir: &Path, created: &RangeInclusive<u64>) -> V
         .unwrap_or_default()
 }
 
+/// The threads among `ids` found in the newest thread database in
+/// `codex_dir`, whoever started them, by id.
+///
+/// None when there is no database or it cannot be read as this build
+/// expects; a thread's row then goes by its id.
+pub(super) fn read_threads_by_id(codex_dir: &Path, ids: &[String]) -> HashMap<String, CodexThread> {
+    if ids.is_empty() {
+        return HashMap::new();
+    }
+    state_database(codex_dir)
+        .and_then(|path| query_threads_by_id(&path, ids).ok())
+        .unwrap_or_default()
+}
+
+/// The rows [`CODEX_THREAD_BY_ID_QUERY`] finds for each of `ids` in the
+/// database at `path`, opened read-only.
+fn query_threads_by_id(
+    path: &Path,
+    ids: &[String],
+) -> rusqlite::Result<HashMap<String, CodexThread>> {
+    let connection = open_read_only(path)?;
+    let mut statement = connection.prepare(CODEX_THREAD_BY_ID_QUERY)?;
+    let mut threads = HashMap::new();
+    for id in ids {
+        let found = statement.query_row(params![id], |row| {
+            Ok(CodexThread {
+                cwd:          PathBuf::from(row.get::<_, String>(0)?),
+                created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
+                name:         row.get(2)?,
+                first_prompt: row.get(3)?,
+            })
+        });
+        match found {
+            Ok(thread) => {
+                threads.insert(id.clone(), thread);
+            },
+            Err(Error::QueryReturnedNoRows) => {},
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(threads)
+}
+
+/// The database at `path`, opened read-only, waiting on a writer for at
+/// most [`CODEX_STATE_BUSY_TIMEOUT`].
+fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(CODEX_STATE_BUSY_TIMEOUT)?;
+    Ok(connection)
+}
+
 /// The `state_<n>.sqlite` in `codex_dir` with the highest `<n>`.
 fn state_database(codex_dir: &Path) -> Option<PathBuf> {
     fs::read_dir(codex_dir)
@@ -110,11 +167,7 @@ fn state_database(codex_dir: &Path) -> Option<PathBuf> {
 /// The rows [`CODEX_THREADS_QUERY`] finds in the database at `path`,
 /// opened read-only.
 fn query_threads(path: &Path, created: &RangeInclusive<u64>) -> rusqlite::Result<Vec<CodexThread>> {
-    let connection = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    connection.busy_timeout(CODEX_STATE_BUSY_TIMEOUT)?;
+    let connection = open_read_only(path)?;
     let mut statement = connection.prepare(CODEX_THREADS_QUERY)?;
     let from = i64::try_from(*created.start()).unwrap_or(i64::MAX);
     let until = i64::try_from(*created.end()).unwrap_or(i64::MAX);
@@ -284,6 +337,68 @@ mod tests {
             .expect("the fixture table should create");
 
         assert!(read_threads(directory.path(), &(0..=u64::MAX)).is_empty());
+    }
+
+    /// Threads are read by id from the newest database whoever started
+    /// them, a mesh's included; an id with no row is left out, and no
+    /// ids, no database or a changed one read nothing.
+    #[test]
+    fn reads_threads_by_id_whoever_started_them() {
+        let directory = TempDir::new().expect("a temporary directory should open");
+        write_database(
+            directory.path(),
+            "state_4.sqlite",
+            &[StoredThread {
+                id:         "0199-named",
+                originator: CODEX_TUI_ORIGINATOR,
+                thread:     thread(1_500, Some("from the old layout"), ""),
+            }],
+        );
+        write_database(
+            directory.path(),
+            "state_5.sqlite",
+            &[
+                StoredThread {
+                    id:         "0199-named",
+                    originator: CODEX_TUI_ORIGINATOR,
+                    thread:     thread(1_500, Some("codex test"), ""),
+                },
+                StoredThread {
+                    id:         "0199-mesh",
+                    originator: "codex_mesh",
+                    thread:     thread(2_000, None, "phase 1"),
+                },
+                StoredThread {
+                    id:         "0199-other",
+                    originator: CODEX_TUI_ORIGINATOR,
+                    thread:     thread(2_500, Some("not asked for"), ""),
+                },
+            ],
+        );
+        let ids = ["0199-named", "0199-mesh", "0199-gone"].map(str::to_string);
+
+        assert_eq!(
+            read_threads_by_id(directory.path(), &ids),
+            HashMap::from([
+                (
+                    "0199-named".to_string(),
+                    thread(1_500, Some("codex test"), ""),
+                ),
+                ("0199-mesh".to_string(), thread(2_000, None, "phase 1")),
+            ])
+        );
+        assert!(read_threads_by_id(directory.path(), &[]).is_empty());
+
+        let changed = TempDir::new().expect("a temporary directory should open");
+        assert!(read_threads_by_id(changed.path(), &ids).is_empty());
+        Connection::open(changed.path().join("state_6.sqlite"))
+            .expect("the fixture database should open")
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL)",
+                [],
+            )
+            .expect("the fixture table should create");
+        assert!(read_threads_by_id(changed.path(), &ids).is_empty());
     }
 
     /// A name wins over the first prompt; a prompt stands in for a

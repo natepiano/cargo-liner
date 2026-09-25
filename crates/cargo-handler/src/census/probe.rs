@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":1,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"directory":"~/rust/handler"}]}
+//! {"schema":2,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"directory":"~/rust/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -27,7 +27,7 @@ struct ProbeReport {
     schema:  u32,
     /// The printing machine's short host name.
     machine: String,
-    /// Its top-level agents, oldest first.
+    /// Its agents, oldest first, each with what it is running.
     rows:    Vec<AgentRow>,
 }
 
@@ -82,28 +82,80 @@ pub(super) fn parse_report(output: &[u8]) -> Result<Vec<AgentRow>, String> {
 mod tests {
     use super::*;
     use crate::census::Agent;
+    use crate::census::ChildKind;
+    use crate::census::ChildRow;
 
-    /// A report of one Claude Code and one Codex row.
+    /// One row of an agent's cell.
+    fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
+        ChildRow {
+            depth,
+            kind,
+            pid,
+            name: name.to_string(),
+            started,
+        }
+    }
+
+    /// A report of one Codex row, one Claude Code row running one of
+    /// each kind of child, and a session that Claude Code row opened.
     fn report() -> ProbeReport {
         ProbeReport {
             schema:  PROBE_SCHEMA,
             machine: "mac".to_string(),
             rows:    vec![
                 AgentRow {
-                    agent:     Agent::Codex,
-                    name:      "ChatGPT".to_string(),
-                    status:    None,
-                    started:   1_790_000_000,
-                    pid:       76_130,
-                    directory: "/".to_string(),
+                    agent:       Agent::Codex,
+                    name:        "ChatGPT".to_string(),
+                    status:      None,
+                    started:     1_790_000_000,
+                    pid:         76_130,
+                    directory:   "/".to_string(),
+                    launched_by: None,
+                    children:    Vec::new(),
                 },
                 AgentRow {
-                    agent:     Agent::Claude,
-                    name:      "natemccoy-30".to_string(),
-                    status:    Some("idle".to_string()),
-                    started:   1_790_000_100,
-                    pid:       80_020,
-                    directory: "~".to_string(),
+                    agent:       Agent::Claude,
+                    name:        "natemccoy-30".to_string(),
+                    status:      Some("idle".to_string()),
+                    started:     1_790_000_100,
+                    pid:         80_020,
+                    directory:   "~".to_string(),
+                    launched_by: None,
+                    children:    vec![
+                        child(
+                            0,
+                            ChildKind::Shell,
+                            Some(80_100),
+                            "Run the mesh",
+                            1_790_000_110,
+                        ),
+                        child(
+                            1,
+                            ChildKind::Process(Agent::Codex),
+                            Some(80_200),
+                            "app-server",
+                            1_790_000_111,
+                        ),
+                        child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112),
+                        child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
+                        child(
+                            0,
+                            ChildKind::Session(Agent::Claude),
+                            Some(81_020),
+                            "worker",
+                            1_790_000_130,
+                        ),
+                    ],
+                },
+                AgentRow {
+                    agent:       Agent::Claude,
+                    name:        "worker".to_string(),
+                    status:      Some("busy".to_string()),
+                    started:     1_790_000_130,
+                    pid:         81_020,
+                    directory:   "~".to_string(),
+                    launched_by: Some(80_020),
+                    children:    Vec::new(),
                 },
             ],
         }
@@ -117,7 +169,17 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"schema":1,"machine":"mac","rows":[{"agent":"codex","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"directory":"/"},{"agent":"claude","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"directory":"~"}]}"#
+            concat!(
+                r#"{"schema":2,"machine":"mac","rows":["#,
+                r#"{"agent":"codex","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"directory":"/","launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"directory":"~","launched_by":null,"children":["#,
+                r#"{"depth":0,"kind":"shell","pid":80100,"name":"Run the mesh","started":1790000110},"#,
+                r#"{"depth":1,"kind":{"process":"codex"},"pid":80200,"name":"app-server","started":1790000111},"#,
+                r#"{"depth":2,"kind":"thread","pid":null,"name":"phase 1","started":1790000112},"#,
+                r#"{"depth":0,"kind":"subagent","pid":null,"name":"Review","started":1790000120},"#,
+                r#"{"depth":0,"kind":{"session":"claude"},"pid":81020,"name":"worker","started":1790000130}]},"#,
+                r#"{"agent":"claude","name":"worker","status":"busy","started":1790000130,"pid":81020,"directory":"~","launched_by":80020,"children":[]}]}"#,
+            )
         );
         assert_eq!(
             parse_report(format!("{json}\n").as_bytes()),
@@ -129,11 +191,11 @@ mod tests {
     /// it carries.
     #[test]
     fn another_schema_is_reported_by_version() {
-        let output = br#"{"schema":2,"machine":"mac","agents":[]}"#;
+        let output = br#"{"schema":1,"machine":"mac","rows":[]}"#;
 
         assert_eq!(
             parse_report(output),
-            Err(format!("probe version 2, expected {PROBE_SCHEMA}"))
+            Err(format!("probe version 1, expected {PROBE_SCHEMA}"))
         );
     }
 
@@ -145,6 +207,6 @@ mod tests {
 
         assert_eq!(parse_report(b"bash: warning: setlocale\n"), unreadable);
         assert_eq!(parse_report(b""), unreadable);
-        assert_eq!(parse_report(br#"{"schema":1,"machine":"mac"}"#), unreadable);
+        assert_eq!(parse_report(br#"{"schema":2,"machine":"mac"}"#), unreadable);
     }
 }

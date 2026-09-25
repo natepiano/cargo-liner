@@ -15,7 +15,9 @@ version              = "0.1.0-dev"
 workspace = true
 
 [dependencies]
-clap = { workspace = true }
+# Reads the timestamps on the lines of Claude Code's transcripts.
+chrono = { workspace = true }
+clap   = { workspace = true }
 # Level-triggered polling preserves keyboard readiness beside SIGWINCH.
 crossterm  = { workspace = true, features = ["use-dev-tty"] }
 dirs       = { workspace = true }

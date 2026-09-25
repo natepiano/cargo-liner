@@ -1,9 +1,12 @@
-//! Which processes are top-level agents.
+//! Which processes are agents someone can talk to, and which agent
+//! opened a session tmux holds.
 //!
-//! An agent is top level when nothing above it is another agent or a
-//! tmux server. Under another agent it is a delegate that agent
-//! started; under a tmux server it is a worker some tool drives
-//! rather than a session someone opened. Both are left out.
+//! An agent counts unless a process above it is another agent: under
+//! another agent it is a delegate that agent started, and its cell's
+//! tree shows it instead. An agent a tmux server holds counts too, since
+//! someone can attach to it; when another agent's transcript shows that
+//! agent opening the tmux session, [`pick_launcher`] names it as the
+//! session's launcher, and the session is no longer top level.
 //!
 //! A Claude Code session is found through the record it writes for its
 //! process, and counts only while that process is alive and is still
@@ -15,8 +18,8 @@
 //! that counts is the macOS desktop app's, which stands for the app.
 //!
 //! Everything here is a pure function over a process table, the
-//! session records and the Codex threads, so the tests drive it from
-//! fixtures.
+//! session records, the Codex threads and the shell calls read from
+//! transcripts, so the tests drive it from fixtures.
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -28,6 +31,9 @@ use serde::Deserialize;
 use super::Agent;
 use super::AgentRow;
 use super::codex::CodexThread;
+use super::transcript::BashCall;
+use crate::constants::CALL_LOOKAHEAD;
+use crate::constants::CALL_LOOKBACK;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
@@ -37,25 +43,29 @@ use crate::constants::CODEX_THREAD_START_WINDOW;
 use crate::constants::HOME_ABBREVIATION;
 use crate::constants::MISSING_VALUE;
 use crate::constants::SESSION_ID_PREFIX_LENGTH;
+use crate::constants::TMUX_NEW_SESSION;
 use crate::constants::TMUX_SERVER_NAMES;
 
 /// One process as the classification reads it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ProcessEntry {
     /// The process id.
-    pub(super) pid:       u32,
+    pub(super) pid:        u32,
     /// The parent's process id; none for the first process.
-    pub(super) parent:    Option<u32>,
+    pub(super) parent:     Option<u32>,
     /// The process name: `/proc/<pid>/comm` on Linux, which a process
     /// may set for itself.
-    pub(super) name:      String,
+    pub(super) name:       String,
     /// The whole command line, program first. Empty where it was not
     /// read.
-    pub(super) arguments: Vec<String>,
+    pub(super) arguments:  Vec<String>,
     /// When the process started, in unix seconds.
-    pub(super) started:   u64,
+    pub(super) started:    u64,
     /// The process's working directory, where it could be read.
-    pub(super) directory: Option<PathBuf>,
+    pub(super) directory:  Option<PathBuf>,
+    /// The Claude Code process named by the process's `CLAUDE_PID`,
+    /// read for `codex` processes alone.
+    pub(super) claude_pid: Option<u32>,
 }
 
 impl ProcessEntry {
@@ -63,7 +73,7 @@ impl ProcessEntry {
     /// macOS, where the name comes from the executable's path and the
     /// installed executable is named for its version, so the program
     /// named on the command line counts as well.
-    fn is_claude(&self) -> bool {
+    pub(super) fn is_claude(&self) -> bool {
         self.name == CLAUDE_AGENT
             || self
                 .arguments
@@ -73,21 +83,28 @@ impl ProcessEntry {
     }
 
     /// Whether this is any `codex` process, app server or not.
-    fn is_codex(&self) -> bool { self.name == CODEX_AGENT }
+    pub(super) fn is_codex(&self) -> bool { self.name == CODEX_AGENT }
 
     /// Whether this is a Claude Code or Codex process of any kind.
-    fn is_agent(&self) -> bool { self.is_claude() || self.is_codex() }
+    pub(super) fn is_agent(&self) -> bool { self.is_claude() || self.is_codex() }
 
     /// Whether this is a tmux server.
     fn is_tmux_server(&self) -> bool { TMUX_SERVER_NAMES.contains(&self.name.as_str()) }
 
     /// Whether this `codex` serves a client rather than taking input
     /// itself.
-    fn is_app_server(&self) -> bool {
+    pub(super) fn is_app_server(&self) -> bool {
         self.arguments
             .iter()
             .skip(1)
             .any(|argument| argument == CODEX_APP_SERVER_ARGUMENT)
+    }
+
+    /// The command line after the program, on one line; none when the
+    /// command line was not read or names the program alone.
+    pub(super) fn arguments_label(&self) -> Option<String> {
+        let arguments = self.arguments.get(1..).unwrap_or_default().join(" ");
+        (!arguments.is_empty()).then_some(arguments)
     }
 }
 
@@ -112,10 +129,27 @@ pub(super) struct SessionRecord {
     pub(super) status:     Option<String>,
 }
 
-/// The top-level agents among `processes`, oldest first, with pid
-/// breaking a tie. An interactive Codex is named for its thread among
-/// `codex_threads`, and directories are written against `home`.
-pub(super) fn top_level_rows(
+impl SessionRecord {
+    /// What a row calls the session: its name, else the start of its id.
+    pub(super) fn label(&self) -> String {
+        self.name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                self.session_id
+                    .chars()
+                    .take(SESSION_ID_PREFIX_LENGTH)
+                    .collect()
+            })
+    }
+}
+
+/// The agents among `processes` that no other agent started, oldest
+/// first, with pid breaking a tie. An interactive Codex is named for its
+/// thread among `codex_threads`, and directories are written against
+/// `home`. Every row is top level and runs nothing until the scan says
+/// otherwise.
+pub(super) fn agent_rows(
     processes: &[ProcessEntry],
     sessions: &[SessionRecord],
     codex_threads: &[CodexThread],
@@ -135,8 +169,8 @@ pub(super) fn top_level_rows(
 }
 
 /// The creation times, in unix milliseconds, that a thread must fall in
-/// to be the one some top-level interactive Codex in `processes`
-/// started with; none when there is no such Codex.
+/// to be the one some listed interactive Codex in `processes` started
+/// with; none when there is no such Codex.
 pub(super) fn codex_thread_window(processes: &[ProcessEntry]) -> Option<RangeInclusive<u64>> {
     let table = pid_table(processes);
     let windows: Vec<_> = interactive_codex(&table, processes)
@@ -149,14 +183,14 @@ pub(super) fn codex_thread_window(processes: &[ProcessEntry]) -> Option<RangeInc
 }
 
 /// `processes` by pid.
-fn pid_table(processes: &[ProcessEntry]) -> HashMap<u32, &ProcessEntry> {
+pub(super) fn pid_table(processes: &[ProcessEntry]) -> HashMap<u32, &ProcessEntry> {
     processes
         .iter()
         .map(|process| (process.pid, process))
         .collect()
 }
 
-/// The top-level `codex` processes that are not app servers.
+/// The `codex` processes under no other agent that are not app servers.
 fn interactive_codex<'a>(
     table: &HashMap<u32, &ProcessEntry>,
     processes: &'a [ProcessEntry],
@@ -164,7 +198,7 @@ fn interactive_codex<'a>(
     processes
         .iter()
         .filter(|process| {
-            process.is_codex() && !process.is_app_server() && is_top_level(table, process)
+            process.is_codex() && !process.is_app_server() && !under_an_agent(table, process)
         })
         .collect()
 }
@@ -210,40 +244,31 @@ fn startup_threads<'a>(
 }
 
 /// The row for `session`, when its process is alive, is Claude Code,
-/// and is top level.
+/// and is under no other agent.
 fn claude_row(
     table: &HashMap<u32, &ProcessEntry>,
     session: &SessionRecord,
     home: Option<&Path>,
 ) -> Option<AgentRow> {
     let process = table.get(&session.pid)?;
-    if !process.is_claude() || !is_top_level(table, process) {
+    if !process.is_claude() || under_an_agent(table, process) {
         return None;
     }
-    let name = session
-        .name
-        .clone()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| {
-            session
-                .session_id
-                .chars()
-                .take(SESSION_ID_PREFIX_LENGTH)
-                .collect()
-        });
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
-        agent: Agent::Claude,
-        name,
-        status: session.status.clone(),
-        started: process.started,
-        pid: process.pid,
-        directory: directory_label(directory, home),
+        agent:       Agent::Claude,
+        name:        session.label(),
+        status:      session.status.clone(),
+        started:     process.started,
+        pid:         process.pid,
+        directory:   directory_label(directory, home),
+        launched_by: None,
+        children:    Vec::new(),
     })
 }
 
-/// The row for `process`, when it is a top-level interactive Codex or
-/// the desktop app's app server. An interactive Codex is named for
+/// The row for `process`, when it is an interactive Codex under no other
+/// agent or the desktop app's app server. An interactive Codex is named for
 /// `thread`, the one it started with, else for its command line after
 /// `codex`, else for its pid.
 fn codex_row(
@@ -252,7 +277,7 @@ fn codex_row(
     thread: Option<&CodexThread>,
     home: Option<&Path>,
 ) -> Option<AgentRow> {
-    if !process.is_codex() || !is_top_level(table, process) {
+    if !process.is_codex() || under_an_agent(table, process) {
         return None;
     }
     let name = if process.is_app_server() {
@@ -264,12 +289,9 @@ fn codex_row(
     } else if let Some(label) = thread.and_then(CodexThread::label) {
         label
     } else {
-        let arguments = process.arguments.get(1..).unwrap_or_default().join(" ");
-        if arguments.is_empty() {
-            format!("pid {}", process.pid)
-        } else {
-            arguments
-        }
+        process
+            .arguments_label()
+            .unwrap_or_else(|| format!("pid {}", process.pid))
     };
     Some(AgentRow {
         agent: Agent::Codex,
@@ -278,26 +300,110 @@ fn codex_row(
         started: process.started,
         pid: process.pid,
         directory: directory_label(process.directory.as_deref(), home),
+        launched_by: None,
+        children: Vec::new(),
     })
 }
 
-/// Whether no process above `process` is an agent or a tmux server.
+/// Whether a process above `process` is an agent.
+pub(super) fn under_an_agent(table: &HashMap<u32, &ProcessEntry>, process: &ProcessEntry) -> bool {
+    ancestors(table, process).any(ProcessEntry::is_agent)
+}
+
+/// Whether the process `pid` is held by a tmux server: a process above
+/// it is one.
+pub(super) fn held_by_tmux(processes: &[ProcessEntry], pid: u32) -> bool {
+    let table = pid_table(processes);
+    table
+        .get(&pid)
+        .is_some_and(|process| ancestors(&table, process).any(ProcessEntry::is_tmux_server))
+}
+
+/// The processes above `process`, its parent first.
 ///
 /// The walk stops at a parent missing from the table, and after as
 /// many steps as the table has processes, so a parent link that loops
 /// cannot hold it.
-fn is_top_level(table: &HashMap<u32, &ProcessEntry>, process: &ProcessEntry) -> bool {
+fn ancestors<'a>(
+    table: &'a HashMap<u32, &'a ProcessEntry>,
+    process: &ProcessEntry,
+) -> impl Iterator<Item = &'a ProcessEntry> {
     let mut parent = process.parent;
-    for _ in 0..table.len() {
-        let Some(ancestor) = parent.and_then(|pid| table.get(&pid)) else {
-            return true;
-        };
-        if ancestor.is_agent() || ancestor.is_tmux_server() {
-            return false;
-        }
+    std::iter::from_fn(move || {
+        let ancestor = *table.get(&parent?)?;
         parent = ancestor.parent;
+        Some(ancestor)
+    })
+    .take(table.len())
+}
+
+/// A session tmux holds, as the search for the agent that opened it
+/// reads it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HeldSession<'a> {
+    /// The session's name.
+    pub(super) name:      &'a str,
+    /// The directory it runs in, written out in full, where known.
+    pub(super) directory: Option<&'a Path>,
+    /// When its process started, in unix seconds.
+    pub(super) started:   u64,
+}
+
+impl HeldSession<'_> {
+    /// The span of unix milliseconds the call that opened the session
+    /// could have been written in: from [`CALL_LOOKBACK`] before its
+    /// process started to [`CALL_LOOKAHEAD`] after.
+    pub(super) fn call_span(&self) -> RangeInclusive<u64> { call_span(self.started) }
+}
+
+/// The span of unix milliseconds the call that started a process at
+/// `started`, in unix seconds, could have been written in: from
+/// [`CALL_LOOKBACK`] before to [`CALL_LOOKAHEAD`] after.
+pub(super) fn call_span(started: u64) -> RangeInclusive<u64> {
+    let started = started.saturating_mul(1_000);
+    let lookback = u64::try_from(CALL_LOOKBACK.as_millis()).unwrap_or(u64::MAX);
+    let lookahead = u64::try_from(CALL_LOOKAHEAD.as_millis()).unwrap_or(u64::MAX);
+    started.saturating_sub(lookback)..=started.saturating_add(lookahead)
+}
+
+/// The agent whose shell call opened `held`, among `calls`, each paired
+/// with the pid of the agent that made it; none when no call opened a
+/// tmux session in [`HeldSession::call_span`].
+///
+/// A call that names the session or its directory wins over one that
+/// names neither -- a session opened in a loop is named by a variable --
+/// and among calls alike in that, the latest does.
+pub(super) fn pick_launcher(held: &HeldSession<'_>, calls: &[(u32, BashCall)]) -> Option<u32> {
+    let span = held.call_span();
+    let directory = held.directory.and_then(Path::to_str);
+    calls
+        .iter()
+        .filter(|(_, call)| span.contains(&call.at_ms) && call.command.contains(TMUX_NEW_SESSION))
+        .max_by_key(|(_, call)| {
+            let named = mentions(&call.command, held.name)
+                || directory.is_some_and(|directory| mentions(&call.command, directory));
+            (named, call.at_ms)
+        })
+        .map(|(launcher, _)| *launcher)
+}
+
+/// Whether `text` holds `word` standing on its own: with no letter,
+/// digit, `-`, `_`, `.` or `/` right before or after it, so a session
+/// named `trunk` is not found in `ui-trunk`, nor a directory in one of
+/// its subdirectories.
+fn mentions(text: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
     }
-    true
+    let continues = |character: Option<char>| {
+        character.is_some_and(|character| {
+            character.is_alphanumeric() || matches!(character, '-' | '_' | '.' | '/')
+        })
+    };
+    text.match_indices(word).any(|(start, _)| {
+        !continues(text[..start].chars().next_back())
+            && !continues(text[start + word.len()..].chars().next())
+    })
 }
 
 /// `directory` as a row shows it: under `home` it starts with `~`, and
@@ -333,6 +439,7 @@ mod tests {
             arguments: Vec::new(),
             started,
             directory: None,
+            claude_pid: None,
         }
     }
 
@@ -497,15 +604,15 @@ mod tests {
         ]
     }
 
-    /// The sessions opened in terminal windows are listed, oldest
-    /// first; those a tmux server holds, the Claude and Codex sessions
+    /// The sessions opened in terminal windows and those a tmux server
+    /// holds are listed, oldest first; the Claude and Codex sessions
     /// another Claude session started, the app servers and an ended
     /// session are not.
     #[test]
-    fn natedev_lists_its_terminal_sessions_oldest_first() {
+    fn natedev_lists_its_sessions_oldest_first() {
         let (processes, sessions) = natedev();
 
-        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
 
         assert_eq!(
             names(&rows),
@@ -514,21 +621,24 @@ mod tests {
                 "berth-fix",
                 "natedev",
                 "boss of bosses",
+                "tool-based-ui-trunk",
                 "tmp cleanup then merge to berth and handler",
                 "enh/handler",
                 "soft body physics investigation",
+                "tool-based-ui-arrange",
                 "--model gpt-5",
             ]
         );
-        let handler = &rows[5];
+        assert!(rows.iter().all(|row| row.launched_by.is_none()));
+        let handler = &rows[6];
         assert_eq!(handler.agent, Agent::Claude);
         assert_eq!(handler.status.as_deref(), Some("busy"));
         assert_eq!(handler.started, 800);
         assert_eq!(handler.pid, 428_044);
         assert_eq!(handler.directory, "~/rust/handler");
-        assert_eq!(rows[6].directory, "~");
+        assert_eq!(rows[7].directory, "~");
         assert_eq!(rows[0].directory, "/etc/nixos");
-        let codex = &rows[7];
+        let codex = &rows[9];
         assert_eq!(codex.agent, Agent::Codex);
         assert_eq!(codex.status, None);
         assert_eq!(codex.directory, "~/rust/handler");
@@ -544,7 +654,7 @@ mod tests {
         ];
         let sessions = [session(500, "gone", "idle", HOME)];
 
-        assert!(top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME))).is_empty());
+        assert!(agent_rows(&processes, &sessions, &[], Some(Path::new(HOME))).is_empty());
     }
 
     /// A session with no name shows the start of its id.
@@ -560,7 +670,7 @@ mod tests {
             ..session(500, "", "", HOME)
         }];
 
-        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
 
         assert_eq!(names(&rows), ["00000500"]);
         assert_eq!(rows[0].status, None);
@@ -579,7 +689,7 @@ mod tests {
             session(600, "first", "idle", HOME),
         ];
 
-        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
 
         assert_eq!(names(&rows), ["first", "second"]);
     }
@@ -592,7 +702,7 @@ mod tests {
             detailed(900, 1, "codex", 10, &["codex"], "/tmp"),
         ];
 
-        let rows = top_level_rows(&processes, &[], &[], Some(Path::new(HOME)));
+        let rows = agent_rows(&processes, &[], &[], Some(Path::new(HOME)));
 
         assert_eq!(names(&rows), ["pid 900"]);
         assert_eq!(rows[0].directory, "/tmp");
@@ -630,7 +740,7 @@ mod tests {
         ];
 
         assert_eq!(codex_thread_window(&processes), Some(99_000..=190_000));
-        let rows = top_level_rows(&processes, &[], &threads, Some(Path::new(HOME)));
+        let rows = agent_rows(&processes, &[], &threads, Some(Path::new(HOME)));
 
         assert_eq!(
             names(&rows),
@@ -641,7 +751,7 @@ mod tests {
     /// The Mac as `ps` showed it: the desktop app running its Codex app
     /// server, a Claude Code session whose process is named for the
     /// installed version, and one a tmux server holds, which on macOS
-    /// keeps the name `tmux`.
+    /// keeps the name `tmux` and is listed too.
     #[test]
     fn the_mac_lists_the_desktop_app_and_its_terminal_session() {
         let home = "/Users/natemccoy";
@@ -672,15 +782,114 @@ mod tests {
             session(81_020, "worker", "busy", home),
         ];
 
-        let rows = top_level_rows(&processes, &sessions, &[], Some(Path::new(home)));
+        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(home)));
 
-        assert_eq!(names(&rows), ["ChatGPT", "natemccoy-30"]);
+        assert_eq!(names(&rows), ["ChatGPT", "natemccoy-30", "worker"]);
+        assert!(held_by_tmux(&processes, 81_020));
+        assert!(!held_by_tmux(&processes, 80_020));
         let desktop = &rows[0];
         assert_eq!(desktop.agent, Agent::Codex);
         assert_eq!(desktop.status, None);
         assert_eq!(desktop.started, 1_005);
         assert_eq!(desktop.directory, "/");
         assert_eq!(rows[1].directory, "~");
+    }
+
+    /// A shell call written `offset_ms` milliseconds from [`LAUNCH`],
+    /// running `command`.
+    fn call(offset_ms: i64, command: &str) -> BashCall {
+        BashCall {
+            at_ms:       LAUNCH
+                .saturating_mul(1_000)
+                .saturating_add_signed(offset_ms),
+            command:     command.to_string(),
+            description: None,
+        }
+    }
+
+    /// The unix second each held session in the launcher tests started.
+    const LAUNCH: u64 = 1_790_000_000;
+
+    /// boss of bosses opened three sessions: trunk from a loop, whose
+    /// call names it only through a variable, one second before it
+    /// started; arrange by name four seconds before; geometry-material
+    /// two seconds before. Another agent's calls around the same times
+    /// open no tmux session, name another session, or come too late.
+    #[test]
+    fn the_launcher_is_the_agent_whose_call_opened_the_session() {
+        let boss = 1_579_022;
+        let other = 428_044;
+        let held = |name| HeldSession {
+            name,
+            directory: Some(Path::new("/home/natepiano/rust/tool-based-ui-x")),
+            started: LAUNCH,
+        };
+        let loop_call = r#"for name in trunk; do tmux new-session -d -s "tool-based-ui-$name" zsh -ic claude; done"#;
+        let trunk = [
+            (other, call(-300_000, "tmux new-session -d -s scratch")),
+            (other, call(-500, "cargo build")),
+            (boss, call(-1_000, loop_call)),
+            (other, call(6_000, "tmux new-session -d -s late")),
+        ];
+        assert_eq!(
+            pick_launcher(&held("tool-based-ui-trunk"), &trunk),
+            Some(boss)
+        );
+
+        let arrange = [
+            (
+                boss,
+                call(
+                    -4_000,
+                    "tmux new-session -d -s tool-based-ui-arrange zsh -ic claude",
+                ),
+            ),
+            (
+                other,
+                call(-1_000, "tmux new-session -d -s tool-based-ui-arranger"),
+            ),
+        ];
+        assert_eq!(
+            pick_launcher(&held("tool-based-ui-arrange"), &arrange),
+            Some(boss)
+        );
+
+        let geometry = [(
+            boss,
+            call(
+                -2_000,
+                "tmux new-session -d -s tool-based-ui-geometry-material",
+            ),
+        )];
+        assert_eq!(
+            pick_launcher(&held("tool-based-ui-geometry-material"), &geometry),
+            Some(boss)
+        );
+
+        let outside = [
+            (
+                boss,
+                call(-700_000, "tmux new-session -d -s tool-based-ui-trunk"),
+            ),
+            (
+                boss,
+                call(5_001, "tmux new-session -d -s tool-based-ui-trunk"),
+            ),
+        ];
+        assert_eq!(pick_launcher(&held("tool-based-ui-trunk"), &outside), None);
+    }
+
+    /// A name or directory counts only standing on its own, not inside
+    /// a longer name or a subdirectory.
+    #[test]
+    fn a_mention_stands_on_its_own() {
+        assert!(mentions("tmux new-session -s trunk", "trunk"));
+        assert!(mentions("--title='trunk'", "trunk"));
+        assert!(!mentions("-s ui-trunk", "trunk"));
+        assert!(!mentions("-s trunk2", "trunk"));
+        assert!(mentions("-c /home/natepiano zsh", "/home/natepiano"));
+        assert!(!mentions("-c /home/natepiano/rust", "/home/natepiano"));
+        assert!(!mentions("anything", ""));
     }
 
     /// Only the home directory's own components count: a sibling that

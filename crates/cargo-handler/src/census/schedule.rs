@@ -51,7 +51,7 @@ type InFlight = Arc<Mutex<HashSet<String>>>;
 /// Start the census of this machine and of the hosts `remotes` names,
 /// probing over ssh, and hand back the channel it answers on.
 pub(crate) fn spawn(remotes: RemoteMachines) -> Receiver<CensusUpdate> {
-    let scanner = LocalScanner::new();
+    let mut scanner = LocalScanner::new();
     spawn_with(
         remotes,
         Arc::new(SshRunner::new()),

@@ -291,6 +291,8 @@ mod tests {
             started: NOW - age,
             pid,
             directory: directory.to_string(),
+            launched_by: None,
+            children: Vec::new(),
         }
     }
 

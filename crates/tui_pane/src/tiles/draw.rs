@@ -84,6 +84,14 @@ pub trait TileCells<Id> {
     /// title, given the summary cell's whole box. None unless the app
     /// has some.
     fn summary_labels(&self, _rect: Rect) -> Vec<PaneFrameLabel> { Vec::new() }
+
+    /// The title written into the top border of the cell drawing `id`,
+    /// set against the corner the way [`summary_title`] is, and left off
+    /// while the contents are hidden. None unless the app names its
+    /// groups there.
+    ///
+    /// [`summary_title`]: Self::summary_title
+    fn group_title(&self, _id: &Id) -> Option<String> { None }
 }
 
 /// Draw `grid` into `area`, with `cells` saying what goes in each cell.
@@ -152,7 +160,16 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
                     }
                 }
             },
-            TileContent::Group(_) | TileContent::Empty(_) => {
+            // A group's title names what the cell holds, so it goes with
+            // the contents.
+            TileContent::Group(id) => match cells
+                .group_title(id)
+                .filter(|_| contents == TileGridContents::Shown)
+            {
+                Some(title) => grid_lines.add_titled(placement.frame, title),
+                None => grid_lines.add(placement.frame),
+            },
+            TileContent::Empty(_) => {
                 grid_lines.add(placement.frame);
             },
         }

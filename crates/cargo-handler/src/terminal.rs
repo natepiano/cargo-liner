@@ -175,12 +175,14 @@ mod tests {
         let mut ticker = Ticker::new(receiver);
         let now = Instant::now();
         let row = AgentRow {
-            agent:     Agent::Claude,
-            name:      "enh/handler".to_string(),
-            status:    Some("busy".to_string()),
-            started:   90,
-            pid:       428_044,
-            directory: "~/rust/handler".to_string(),
+            agent:       Agent::Claude,
+            name:        "enh/handler".to_string(),
+            status:      Some("busy".to_string()),
+            started:     90,
+            pid:         428_044,
+            directory:   "~/rust/handler".to_string(),
+            launched_by: None,
+            children:    Vec::new(),
         };
         sender
             .send(CensusUpdate::Local(vec![row.clone()]))

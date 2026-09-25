@@ -228,21 +228,23 @@ mod tests {
     /// Each way a probe ends says what it says about the machine.
     #[test]
     fn each_outcome_names_the_machine_state() {
-        let report = r#"{"schema":1,"machine":"mac","rows":[{"agent":"claude","name":"natemccoy-30","status":"idle","started":5,"pid":80020,"directory":"~"}]}"#;
+        let report = r#"{"schema":2,"machine":"mac","rows":[{"agent":"claude","name":"natemccoy-30","status":"idle","started":5,"pid":80020,"directory":"~","launched_by":null,"children":[]}]}"#;
         assert_eq!(
             machine_state(finished(Some(0), report)),
             MachineState::Answered(vec![AgentRow {
-                agent:     Agent::Claude,
-                name:      "natemccoy-30".to_string(),
-                status:    Some("idle".to_string()),
-                started:   5,
-                pid:       80_020,
-                directory: "~".to_string(),
+                agent:       Agent::Claude,
+                name:        "natemccoy-30".to_string(),
+                status:      Some("idle".to_string()),
+                started:     5,
+                pid:         80_020,
+                directory:   "~".to_string(),
+                launched_by: None,
+                children:    Vec::new(),
             }])
         );
         assert_eq!(
             machine_state(finished(Some(0), r#"{"schema":7}"#)),
-            failed("probe version 7, expected 1")
+            failed("probe version 7, expected 2")
         );
         assert_eq!(
             machine_state(finished(Some(0), "motd")),
