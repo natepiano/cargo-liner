@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `[tiles] fill` decides how the grid's cells spread over its columns, stepped under Tiles in the settings overlay. `redistribute`, the default, keeps every column within one cell of the others, the taller ones first: twelve cells stand as three columns of four, thirteen as four, three, three and three, fourteen as four, four, three and three. `add_new` fills a column at a time, so the cell that opens a new column stands in it alone. The number of columns is the same either way.
 - On KDE Plasma the attract screen animates over what is really behind the window -- the other windows standing there, over the actual wallpaper. `KWin` grants the `org.kde.KWin.ScreenShot2` interface by executable path and prompts for nothing, so `scripts/install-desktop-entry.sh` installs the entry that asks for it; without it the attract screen behaves as before.
 - The grid puts the capture shim in front of cargo as it opens, so progress bars work from the first launch and come back after `rustup update`. `[capture] auto_install = false` leaves the shim to the subcommands; removing it is never automatic.
 - The shim is written beside `cargo` and renamed across, never over the file already there, so a run part way through keeps the script it opened.

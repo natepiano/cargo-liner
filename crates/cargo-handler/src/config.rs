@@ -14,6 +14,8 @@ use tui_pane::AppConfig;
 use tui_pane::AppIdentity;
 use tui_pane::AppearanceConfig;
 use tui_pane::InitialRows;
+use tui_pane::TileFill;
+use tui_pane::TileGrowth;
 
 use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
@@ -59,14 +61,22 @@ fn test_config_path(name: &str) -> PathBuf {
 pub(crate) struct TilesConfig {
     /// Rows the grid grows to in a single column before it starts
     /// arranging itself into a square. Read through
-    /// [`TilesConfig::initial_rows`], which enforces the floor.
+    /// [`TilesConfig::growth`], which enforces the floor.
     pub(crate) initial_rows: InitialRows,
+    /// How the cells spread over the columns once there is more than
+    /// one: `add_new` or `redistribute`.
+    pub(crate) fill:         TileFill,
 }
 
 impl TilesConfig {
-    /// Rows the single column grows to, never below one; see
-    /// [`InitialRows::get`].
-    pub(crate) fn initial_rows(&self) -> usize { self.initial_rows.get() }
+    /// The grid's growth: the single column's rows, never below one
+    /// (see [`InitialRows::get`]), and the fill.
+    pub(crate) fn growth(&self) -> TileGrowth {
+        TileGrowth {
+            initial_rows: self.initial_rows.get(),
+            fill:         self.fill,
+        }
+    }
 }
 
 /// The machines the summary lists besides this one.
@@ -99,6 +109,8 @@ impl AppConfig for Config {
     fn appearance_mut(&mut self) -> &mut AppearanceConfig<CargoHandler> { &mut self.appearance }
 
     fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.tiles.initial_rows }
+
+    fn tile_fill_mut(&mut self) -> &mut TileFill { &mut self.tiles.fill }
 }
 
 /// `config.toml` as loaded, with whatever went wrong reading or
@@ -134,6 +146,7 @@ iterm2_profile = \"cargo-handler\"
 
 [tiles]
 initial_rows = 4
+fill = \"redistribute\"
 
 [machines]
 remote = []
@@ -164,5 +177,31 @@ remote = []
         assert!(restated.contains("iterm2_profile = \"cargo-handler\""));
         assert!(restated.contains("light_theme = \"Default Light\""));
         assert!(restated.contains("[tiles]"));
+    }
+
+    /// The fill a config spelling `text` loads with.
+    fn parsed_fill(text: &str) -> TileFill {
+        toml::from_str::<Config>(text)
+            .expect("a config the test wrote should parse")
+            .tiles
+            .fill
+    }
+
+    /// `tiles.fill` parses in both spellings, and a `[tiles]` table
+    /// that leaves it out gets redistribute.
+    #[test]
+    fn tile_fill_parses_both_values_and_falls_back_to_redistribute() {
+        assert_eq!(
+            parsed_fill("[tiles]\nfill = \"add_new\"\n"),
+            TileFill::AddNew
+        );
+        assert_eq!(
+            parsed_fill("[tiles]\nfill = \"redistribute\"\n"),
+            TileFill::Redistribute
+        );
+        assert_eq!(
+            parsed_fill("[tiles]\ninitial_rows = 3\n"),
+            TileFill::Redistribute
+        );
     }
 }

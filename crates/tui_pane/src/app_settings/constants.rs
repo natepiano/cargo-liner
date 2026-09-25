@@ -32,6 +32,8 @@ pub(super) const LIGHT_THEME_LABEL: &str = "light theme";
 pub(super) const DARK_THEME_LABEL: &str = "dark theme";
 /// Label of the `tiles.initial_rows` stepper.
 pub(super) const INITIAL_ROWS_LABEL: &str = "initial rows";
+/// Label of the `tiles.fill` stepper.
+pub(super) const TILE_FILL_LABEL: &str = "fill";
 /// Section listing where the app's files live.
 pub(super) const FILES_SECTION: &str = "Files";
 /// Label of the `config.toml` path row.

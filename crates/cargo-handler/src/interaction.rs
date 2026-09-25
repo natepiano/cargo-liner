@@ -109,8 +109,8 @@ mod tests {
     fn two_cell_app() -> App {
         let mut app = App::new_for_test().expect("test app should build");
         draw_frame(&mut app);
-        let initial_rows = app.loaded_config.config.tiles.initial_rows();
-        app.tiles.apply(TileAction::Add, initial_rows);
+        let growth = app.loaded_config.config.tiles.growth();
+        app.tiles.apply(TileAction::Add, growth);
         app.tiles.settle_for_test();
         draw_frame(&mut app);
         app
@@ -118,9 +118,9 @@ mod tests {
 
     /// What the cell holding the focus ring shows.
     fn focused(app: &App) -> TileContent {
-        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        let growth = app.loaded_config.config.tiles.growth();
         app.tiles
-            .placements(body(), initial_rows)
+            .placements(body(), growth)
             .into_iter()
             .find(|placement| placement.frame.is_focused())
             .map(|placement| placement.content)
@@ -129,10 +129,10 @@ mod tests {
 
     /// The middle of the cell showing `content`.
     fn middle_of(app: &App, content: &TileContent) -> Position {
-        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        let growth = app.loaded_config.config.tiles.growth();
         let rect = app
             .tiles
-            .placements(body(), initial_rows)
+            .placements(body(), growth)
             .into_iter()
             .find(|placement| &placement.content == content)
             .map(|placement| placement.frame.rect())

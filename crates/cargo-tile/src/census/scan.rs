@@ -2842,6 +2842,7 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
     use tui_pane::TABLE_CELL;
+    use tui_pane::TileGrowth;
 
     use super::*;
     use crate::app::App;
@@ -3848,7 +3849,11 @@ mod tests {
     fn assert_family_source_transitions(scans: &[Vec<CargoGroup>]) {
         let mut roster = crate::roster::Roster::new();
         let mut grid = crate::tiles::TileGrid::new();
-        grid.set_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 1);
+        let growth = TileGrowth {
+            initial_rows: 1,
+            fill:         tui_pane::TileFill::default(),
+        };
+        grid.set_layout(ratatui::layout::Rect::new(0, 0, 120, 40), growth);
         let mut expected_family = FamilyHead::NoChildren;
         for (index, scan) in scans.iter().enumerate() {
             roster.observe(scan.clone(), Instant::now());
@@ -3871,12 +3876,12 @@ mod tests {
                     rows: 3,
                 }],
             };
-            grid.sync(&demands, 1);
+            grid.sync(&demands, growth);
             if index == 0 {
                 grid.focus_cell(TABLE_CELL + 1);
             }
             assert!(
-                grid.placements(ratatui::layout::Rect::new(0, 0, 120, 40), 1)
+                grid.placements(ratatui::layout::Rect::new(0, 0, 120, 40), growth)
                     .iter()
                     .any(|placement| placement.content
                         == crate::tiles::TileContent::Group(tracked.id.clone())

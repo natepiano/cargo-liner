@@ -16,6 +16,7 @@ use super::constants::MODE_LABEL;
 use super::constants::NOTICES_SECTION;
 use super::constants::STEPPER_DECORATION_WIDTH;
 use super::constants::THEMES_LABEL;
+use super::constants::TILE_FILL_LABEL;
 use super::constants::UNRESOLVED_PATH;
 use super::step::FrameworkSetting;
 use crate::AppIdentity;
@@ -23,6 +24,7 @@ use crate::AppearanceConfig;
 use crate::InitialRows;
 use crate::SECTION_ITEM_INDENT;
 use crate::SettingsRow;
+use crate::TileFill;
 
 /// What the pane's nth selectable row edits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,6 +166,17 @@ impl<S: Copy> SettingsRows<S> {
         );
     }
 
+    /// Push the `fill` stepper, which walks `add_new` and
+    /// `redistribute`. No section: the app places it under a section of
+    /// its own.
+    pub fn tile_fill(&mut self, fill: TileFill) {
+        self.push_stepper(
+            SettingTarget::Framework(FrameworkSetting::TileFill),
+            TILE_FILL_LABEL,
+            fill.as_str(),
+        );
+    }
+
     /// Push the Files section: where `config.toml`, the `themes/`
     /// directory and `keymap.toml` live.
     pub fn files<I: AppIdentity>(&mut self) {
@@ -224,6 +237,7 @@ mod tests {
     use super::SettingTarget;
     use super::SettingsRows;
     use crate::SettingsRowIdentity;
+    use crate::TileFill;
     use crate::app_settings::FrameworkSetting;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,6 +267,7 @@ mod tests {
         let mut rows = SettingsRows::new();
         rows.section("Top");
         rows.initial_rows(crate::InitialRows::default());
+        rows.tile_fill(crate::TileFill::default());
         rows.stepper(TestSetting::Speed, "speed", "3");
         rows.text(TestSetting::Names, "names", "a, b".to_string());
         rows.section("Info");
@@ -269,11 +284,26 @@ mod tests {
             targets,
             [
                 SettingTarget::Framework(FrameworkSetting::InitialRows),
+                SettingTarget::Framework(FrameworkSetting::TileFill),
                 SettingTarget::App(TestSetting::Speed),
                 SettingTarget::AppText(TestSetting::Names),
                 SettingTarget::ReadOnly,
             ]
         );
-        assert_eq!(rows.target(4), None);
+        assert_eq!(rows.target(5), None);
+    }
+
+    /// The `fill` row shows the value the way `config.toml` spells it.
+    #[test]
+    fn the_fill_row_shows_the_file_spelling() {
+        let mut rows = SettingsRows::<TestSetting>::new();
+        rows.tile_fill(TileFill::AddNew);
+        rows.tile_fill(TileFill::Redistribute);
+        let shown: Vec<_> = rows
+            .rows()
+            .iter()
+            .map(|row| (row.label.as_str(), row.value.as_str()))
+            .collect();
+        assert_eq!(shown, [("fill", "add_new"), ("fill", "redistribute")]);
     }
 }

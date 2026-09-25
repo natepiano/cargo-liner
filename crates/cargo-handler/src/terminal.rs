@@ -154,8 +154,8 @@ mod tests {
     #[test]
     fn the_ticker_repaints_only_while_something_moves() {
         let mut app = App::new_for_test().expect("test app should build");
-        let initial_rows = app.loaded_config.config.tiles.initial_rows();
-        app.tiles.set_layout(Rect::new(0, 0, 80, 23), initial_rows);
+        let growth = app.loaded_config.config.tiles.growth();
+        app.tiles.set_layout(Rect::new(0, 0, 80, 23), growth);
         let (_sender, receiver) = mpsc::channel();
         let mut ticker = Ticker::new(receiver);
         assert_eq!(ticker.poll(&mut app, Instant::now()), Repaint::NotNeeded);

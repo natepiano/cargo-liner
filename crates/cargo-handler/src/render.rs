@@ -80,7 +80,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// empty cells and every cell's readout; [`Cells`] is what goes inside
 /// the summary and each agent's cell.
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridContents) {
-    let initial_rows = app.loaded_config.config.tiles.initial_rows();
+    let growth = app.loaded_config.config.tiles.growth();
     let cells = Cells::new(
         app.census
             .machines(&app.loaded_config.config.machines.remote),
@@ -90,7 +90,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         frame.buffer_mut(),
         &mut app.tiles,
         area,
-        initial_rows,
+        growth,
         contents,
         &cells,
     );
@@ -350,7 +350,6 @@ fraying = "leading"
         "│ natedev · no agents                                                          │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
         "│       │ ▶ mode          < auto >                                     │       │",
@@ -358,6 +357,7 @@ fraying = "leading"
         "│       │   dark theme    < Default Dark >                             │       │",
         "│       │ Tiles:                                                       │       │",
         "│       │   initial rows  < 4 >                                        │       │",
+        "│       │   fill          < redistribute >                             │       │",
         "│       │ Machines:                                                    │       │",
         "│       │   remote        none                                         │       │",
         "│       │ Files:                                                       │       │",
@@ -496,11 +496,9 @@ fraying = "leading"
     /// a drawn frame leaves it, so `+` has room for a cell.
     fn laid_out_app() -> App {
         let mut app = App::new_for_test().expect("test app should build");
-        let initial_rows = app.loaded_config.config.tiles.initial_rows();
-        app.tiles.set_layout(
-            Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT),
-            initial_rows,
-        );
+        let growth = app.loaded_config.config.tiles.growth();
+        app.tiles
+            .set_layout(Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT), growth);
         app
     }
 
@@ -691,7 +689,7 @@ fraying = "leading"
     /// measured to [`NOW`].
     fn drawn_buffer(app: &mut App) -> Buffer {
         let body = Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT);
-        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        let growth = app.loaded_config.config.tiles.growth();
         let cells = Cells::new(
             app.census
                 .machines(&app.loaded_config.config.machines.remote),
@@ -702,7 +700,7 @@ fraying = "leading"
             &mut buffer,
             &mut app.tiles,
             body,
-            initial_rows,
+            growth,
             TileGridContents::Shown,
             &cells,
         );

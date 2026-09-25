@@ -239,7 +239,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// -- which is what the grid looks like while the attract screen is
 /// arriving or leaving.
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridContents) {
-    let initial_rows = app.loaded_config.config.tiles.initial_rows();
+    let growth = app.loaded_config.config.tiles.growth();
     let cells = Cells {
         roster:           &app.roster,
         hidden_when_idle: &app.loaded_config.config.commands.hidden_when_idle,
@@ -250,7 +250,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         frame.buffer_mut(),
         &mut app.tiles,
         area,
-        initial_rows,
+        growth,
         contents,
         &cells,
     );
@@ -4366,12 +4366,12 @@ mod tests {
                 "│   dark theme        < Default Dark >                     │",
                 "│ Tiles:                                                   │",
                 "│   initial rows      < 4 >                                │",
+                "│   fill              < redistribute >                     │",
                 "│   fade seconds      < 3 >                                │",
                 "│ Capture:                                                 │",
                 "│   auto install      true                                 │",
                 "│   shared directory  /tmp/cargo-tile · created by the     │",
                 "│                     first captured cargo run             │",
-                "│ Commands:                                                │",
                 "└──────────────────────────────────────────────────────────┘",
             ],
         ),

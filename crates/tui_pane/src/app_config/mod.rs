@@ -9,8 +9,8 @@
 //! `[appearance]` table that struct carries, and [`install_theme`]
 //! resolves it against the app's built-in themes plus the user's
 //! `themes/` directory and installs the result process-wide.
-//! [`InitialRows`] is the one `[tiles]` key the framework owns; the
-//! app keeps declaring the table around it.
+//! [`InitialRows`] and [`TileFill`] are the `[tiles]` keys the
+//! framework owns; the app keeps declaring the table around them.
 //!
 //! Distinct from `settings_store`, whose `SettingsStore` round-trips a
 //! `toml::Table`: this path serializes the app's struct directly, so
@@ -22,6 +22,7 @@ mod identity;
 mod initial_rows;
 mod loaded;
 mod theme_install;
+mod tile_fill;
 
 pub use appearance::AppearanceConfig;
 pub use identity::AppIdentity;
@@ -29,3 +30,4 @@ pub use initial_rows::InitialRows;
 pub use loaded::LoadedConfig;
 pub use theme_install::install_theme;
 pub(crate) use theme_install::resolve_appearance;
+pub use tile_fill::TileFill;

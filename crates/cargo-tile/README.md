@@ -262,13 +262,21 @@ command is the display itself, and the summary is not removable at all. A comman
 arriving takes the first empty cell waiting, or opens its own. `initial_rows` is
 how tall the grid grows in a single column before it starts arranging itself into
 a square: at three, the fourth cell turns a column of three into a two-by-two,
-and from there the grid is always the smallest square that holds what is on it,
-filled a column at a time. Cells added between one rearrangement and the next
-move nothing already on the screen.
+and from there the grid opens as many columns as the smallest square that holds
+what is on it needs. `fill` says how the cells spread over those columns.
+`redistribute`, the default, keeps every column within one cell of the others,
+the taller ones on the left: twelve cells stand as three columns of four, the
+thirteenth opens a fourth column and deals the thirteen out as four, three, three
+and three, and the fourteenth makes that four, four, three and three. `add_new`
+fills a column at a time instead, so the thirteenth cell stands alone in the
+fourth column, the whole height of the grid, and cells added between one
+rearrangement and the next move nothing already on the screen. The number of
+columns is the same under both.
 
 ```toml
 [tiles]
 initial_rows = 3
+fill = "redistribute"
 fade_seconds = 3
 ```
 

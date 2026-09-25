@@ -1,5 +1,8 @@
 //! Constants for an app's configuration directory: the names of the
-//! files in it, and the `[appearance]` default no app overrides.
+//! files in it, the `[appearance]` default no app overrides, and the
+//! values the framework's `[tiles]` keys take.
+
+use super::tile_fill::TileFill;
 
 // file names
 /// App configuration file, read at startup and written back by
@@ -21,3 +24,5 @@ pub(super) const DEFAULT_APPEARANCE_MODE: &str = "auto";
 pub(super) const DEFAULT_INITIAL_ROWS: usize = 4;
 /// Ceiling the settings stepper walks `tiles.initial_rows` up to.
 pub(super) const MAX_INITIAL_ROWS: usize = 8;
+/// Values `tiles.fill` steps through, in stepper order.
+pub(super) const TILE_FILLS: [TileFill; 2] = [TileFill::AddNew, TileFill::Redistribute];

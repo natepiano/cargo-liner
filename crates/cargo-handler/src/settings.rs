@@ -1,8 +1,9 @@
 //! cargo-handler's rows in the framework settings overlay, and the
 //! stepping that edits them.
 //!
-//! The framework owns every row here: the `[appearance]` steppers,
-//! `initial rows`, the Files paths and the Notices section. This module
+//! The framework owns every row here but `remote`: the `[appearance]`
+//! steppers, `initial rows`, `fill`, the Files paths and the Notices
+//! section. This module
 //! places them. Every stepper walks its allowed values on
 //! Left/Right/Enter, writes `config.toml`, and swaps the active theme
 //! in place. Every other row reports state and is inert.
@@ -38,6 +39,7 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
 
     out.section(TILES_SETTINGS_SECTION);
     out.initial_rows(config.tiles.initial_rows);
+    out.tile_fill(config.tiles.fill);
 
     out.section(MACHINES_SETTINGS_SECTION);
     out.text(
@@ -120,6 +122,9 @@ fn notices(app: &App) -> Vec<(&'static str, &str)> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tui_pane::FrameworkSetting;
+    use tui_pane::TileFill;
+
     use super::*;
     use crate::census::CensusUpdate;
     use crate::census::MachineState;
@@ -144,5 +149,48 @@ mod tests {
             app.census.machines(&configured)[1].state,
             &MachineState::Scanning
         );
+    }
+
+    /// The value the `fill` row shows.
+    fn fill_row_value(app: &App) -> String {
+        rows(app)
+            .rows()
+            .iter()
+            .find(|row| row.label == "fill")
+            .map(|row| row.value.clone())
+            .expect("the settings list a fill row")
+    }
+
+    /// Stepping the `fill` row walks the config between its two values
+    /// and the row follows it. The save goes to the test build's fixed
+    /// config root, never the user's file.
+    #[test]
+    fn stepping_the_fill_row_walks_both_values() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let settings = rows(&app);
+        let selection = (0..settings.rows().len())
+            .find(|&selection| {
+                settings.target(selection)
+                    == Some(SettingTarget::Framework(FrameworkSetting::TileFill))
+            })
+            .expect("the settings list a fill row");
+        app.framework
+            .settings_pane
+            .viewport_mut()
+            .set_pos(selection);
+        assert_eq!(app.loaded_config.config.tiles.fill, TileFill::Redistribute);
+        assert_eq!(fill_row_value(&app), "redistribute");
+
+        cycle(&mut app, SettingStep::Next);
+        assert_eq!(app.loaded_config.config.tiles.fill, TileFill::AddNew);
+        assert_eq!(fill_row_value(&app), "add_new");
+        assert_eq!(
+            app.loaded_config.config.tiles.growth().fill,
+            TileFill::AddNew
+        );
+
+        cycle(&mut app, SettingStep::Prev);
+        assert_eq!(app.loaded_config.config.tiles.fill, TileFill::Redistribute);
+        assert_eq!(fill_row_value(&app), "redistribute");
     }
 }

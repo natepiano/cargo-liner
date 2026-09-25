@@ -3,8 +3,8 @@
 //!
 //! The app composes its rows with [`SettingsRows`], calling the
 //! framework's builders for the rows the framework owns (the three
-//! `[appearance]` steppers, `tiles.initial_rows`, the Files paths and
-//! the Notices) and adding its own sections, steppers and read-only
+//! `[appearance]` steppers, `tiles.initial_rows`, `tiles.fill`, the
+//! Files paths and the Notices) and adding its own sections, steppers and read-only
 //! values between them. Each selectable row carries a
 //! [`SettingTarget`]: a [`FrameworkSetting`] the framework steps with
 //! [`step_framework_setting`], one of the app's own settings the app

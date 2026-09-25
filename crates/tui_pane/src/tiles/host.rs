@@ -145,12 +145,18 @@ mod tests {
     use crate::TABLE_CELL;
     use crate::TileAction;
     use crate::TileContent;
+    use crate::TileFill;
+    use crate::TileGrowth;
     use crate::ToastHit;
     use crate::ToastId;
     use crate::Viewport;
 
-    /// The rows the first column holds before a second one opens.
-    const INITIAL_ROWS: usize = 4;
+    /// How the test grid grows: four rows in the first column before a
+    /// second one opens.
+    const GROWTH: TileGrowth = TileGrowth {
+        initial_rows: 4,
+        fill:         TileFill::Redistribute,
+    };
     /// Width of the rect the test grid is laid out in.
     const WIDTH: u16 = 80;
     /// Height of the rect the test grid is laid out in.
@@ -234,8 +240,8 @@ mod tests {
     /// An app whose grid holds the summary and one empty cell, settled.
     fn two_cell_app() -> TestApp {
         let mut grid = TileGrid::new();
-        grid.set_layout(area(), INITIAL_ROWS);
-        grid.apply(TileAction::Add, INITIAL_ROWS);
+        grid.set_layout(area(), GROWTH);
+        grid.apply(TileAction::Add, GROWTH);
         grid.settle_for_test();
         TestApp {
             framework: Framework::new(FocusedPane::App(TestPaneId::Grid)),
@@ -247,7 +253,7 @@ mod tests {
     /// What the cell holding the focus ring shows.
     fn focused(app: &TestApp) -> TileContent<u8> {
         app.grid
-            .placements(area(), INITIAL_ROWS)
+            .placements(area(), GROWTH)
             .into_iter()
             .find(|placement| placement.frame.is_focused())
             .map(|placement| placement.content)
@@ -258,7 +264,7 @@ mod tests {
     fn middle_of(app: &TestApp, content: &TileContent<u8>) -> Position {
         let rect = app
             .grid
-            .placements(area(), INITIAL_ROWS)
+            .placements(area(), GROWTH)
             .into_iter()
             .find(|placement| &placement.content == content)
             .map(|placement| placement.frame.rect())

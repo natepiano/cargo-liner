@@ -27,6 +27,7 @@ use super::constants::TILE_ROWS_WIDTH_LABEL;
 use super::grid::TileContent;
 use super::grid::TileDemands;
 use super::grid::TileGrid;
+use super::growth::TileGrowth;
 use crate::GridLines;
 use crate::PaneBorders;
 use crate::PaneFrameLabel;
@@ -98,7 +99,8 @@ pub trait TileCells<Id> {
     fn group_title(&self, _id: &Id) -> Option<Span<'static>> { None }
 }
 
-/// Draw `grid` into `area`, with `cells` saying what goes in each cell.
+/// Draw `grid` into `area`, its columns laid out by `growth`, with
+/// `cells` saying what goes in each cell.
 ///
 /// Records the layout, asks `cells` for each cell's rows at the width
 /// the cell will be drawn at, adds the readout row to each, and settles
@@ -117,16 +119,16 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     buffer: &mut Buffer,
     grid: &mut TileGrid<Id>,
     area: Rect,
-    initial_rows: usize,
+    growth: TileGrowth,
     contents: TileGridContents,
     cells: &impl TileCells<Id>,
 ) {
-    grid.set_layout(area, initial_rows);
-    let widths = grid.content_widths(area, initial_rows);
+    grid.set_layout(area, growth);
+    let widths = grid.content_widths(area, growth);
     let mut demands = cells.demands(&widths);
     add_readout_rows(&mut demands, &widths);
-    grid.sync(&demands, initial_rows);
-    let placements = grid.placements(area, initial_rows);
+    grid.sync(&demands, growth);
+    let placements = grid.placements(area, growth);
     let mut grid_lines = GridLines::new(area);
     for placement in &placements {
         // The ground a fading row is carried toward is the one its own

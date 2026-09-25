@@ -82,14 +82,14 @@ impl Globals<App> for AppGlobalAction {
 
 /// Run one app-global action.
 fn dispatch(action: AppGlobalAction, app: &mut App) {
-    let initial_rows = app.loaded_config.config.tiles.initial_rows();
+    let growth = app.loaded_config.config.tiles.growth();
     match action {
-        AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, initial_rows),
-        AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, initial_rows),
-        AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, initial_rows),
-        AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, initial_rows),
-        AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, initial_rows),
-        AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, initial_rows),
+        AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, growth),
+        AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, growth),
+        AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, growth),
+        AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, growth),
+        AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, growth),
+        AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, growth),
         AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
         AppGlobalAction::Attract => app.attract.toggle(),
         AppGlobalAction::RandomizeAttract => app.attract.randomize(),

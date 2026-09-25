@@ -260,10 +260,20 @@ iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone
 
 [tiles]
 initial_rows = 4                 # rows the first column grows to before the grid squares up
+fill         = "redistribute"    # redistribute / add_new: how the cells spread over the columns
 
 [machines]
 remote = []                      # ssh host names the summary probes, e.g. ["mac"]
 ```
+
+`fill` decides how many cells each column holds; the number of columns is the
+same either way. `redistribute` keeps every column within one cell of the
+others, the taller ones on the left: twelve cells stand as three columns of
+four, the thirteenth opens a fourth column and deals the thirteen out as four,
+three, three and three, and the fourteenth makes that four, four, three and
+three. `add_new` fills a column at a time, so the thirteenth cell stands alone
+in the fourth column, the whole height of the grid. The settings overlay steps
+both `initial rows` and `fill` under **Tiles**.
 
 The settings overlay edits `remote` under **Machines** as a typed list; a
 change applies from the next probe.

@@ -10,6 +10,7 @@ use crate::Appearance;
 use crate::AppearanceConfig;
 use crate::InitialRows;
 use crate::LoadedConfig;
+use crate::TileFill;
 use crate::app_config;
 use crate::registry;
 use crate::set_active_theme;
@@ -34,6 +35,8 @@ pub enum FrameworkSetting {
     DarkTheme,
     /// `tiles.initial_rows`: one through eight.
     InitialRows,
+    /// `tiles.fill`: `add_new`, `redistribute`.
+    TileFill,
 }
 
 /// Reach into an app's config for the keys the framework owns.
@@ -52,6 +55,9 @@ pub trait AppConfig: Default + DeserializeOwned + Serialize {
 
     /// `tiles.initial_rows`, for its stepper to edit.
     fn initial_rows_mut(&mut self) -> &mut InitialRows;
+
+    /// `tiles.fill`, for its stepper to edit.
+    fn tile_fill_mut(&mut self) -> &mut TileFill;
 }
 
 /// The value one step from `current`, wrapping at both ends.
@@ -104,6 +110,7 @@ pub fn step_framework_setting<C: AppConfig>(
             appearance.dark_theme = stepped(&ids, &appearance.dark_theme, step);
         },
         FrameworkSetting::InitialRows => config.initial_rows_mut().step(step),
+        FrameworkSetting::TileFill => config.tile_fill_mut().step(step),
     }
     apply_settings(loaded, theme_note);
 }
