@@ -231,21 +231,22 @@ fn search_launcher(
     rows: &[AgentRow],
     held: &AgentRow,
 ) -> Option<ProcessKey> {
-    let directory = sessions
-        .iter()
-        .find(|session| session.pid == held.pid)
-        .and_then(|session| session.cwd.clone())
-        .or_else(|| {
-            processes
-                .iter()
-                .find(|process| process.pid == held.pid)?
-                .directory
-                .clone()
-        });
+    let record = sessions.iter().find(|session| session.pid == held.pid);
+    let directory = record.and_then(|session| session.cwd.clone()).or_else(|| {
+        processes
+            .iter()
+            .find(|process| process.pid == held.pid)?
+            .directory
+            .clone()
+    });
     let session = HeldSession {
-        name:      &held.name,
-        directory: directory.as_deref(),
-        started:   held.started,
+        name:       &held.name,
+        given_name: held.agent == Agent::Claude
+            && record.is_some_and(|session| {
+                session.name.as_deref().is_some_and(|name| !name.is_empty())
+            }),
+        directory:  directory.as_deref(),
+        started:    held.started,
     };
     let span = session.call_span();
     let calls: Vec<(u32, BashCall)> = rows

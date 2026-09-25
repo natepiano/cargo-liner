@@ -31,6 +31,7 @@ use serde::Deserialize;
 use super::Agent;
 use super::AgentRow;
 use super::codex::CodexThread;
+use super::tmux;
 use super::transcript::BashCall;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
@@ -341,12 +342,17 @@ fn ancestors<'a>(
 /// reads it.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HeldSession<'a> {
-    /// The session's name.
-    pub(super) name:      &'a str,
+    /// The session's name as its row shows it.
+    pub(super) name:       &'a str,
+    /// Whether `name` is one the session was given, as a Claude Code
+    /// session's own name is, rather than a stand-in such as the start
+    /// of its id or a Codex thread's name. Only a given name rules out a
+    /// call that opened a tmux session under another literal name.
+    pub(super) given_name: bool,
     /// The directory it runs in, written out in full, where known.
-    pub(super) directory: Option<&'a Path>,
+    pub(super) directory:  Option<&'a Path>,
     /// When its process started, in unix seconds.
-    pub(super) started:   u64,
+    pub(super) started:    u64,
 }
 
 impl HeldSession<'_> {
@@ -370,21 +376,44 @@ pub(super) fn call_span(started: u64) -> RangeInclusive<u64> {
 /// with the pid of the agent that made it; none when no call opened a
 /// tmux session in [`HeldSession::call_span`].
 ///
-/// A call that names the session or its directory wins over one that
-/// names neither -- a session opened in a loop is named by a variable --
-/// and among calls alike in that, the latest does.
+/// A call that opens only sessions named by a literal other than
+/// `held`'s name is passed over. Among the rest, a call that names the
+/// session or its directory wins over one that names neither -- a
+/// session opened in a loop is named by a variable -- and among calls
+/// alike in that, the latest does.
 pub(super) fn pick_launcher(held: &HeldSession<'_>, calls: &[(u32, BashCall)]) -> Option<u32> {
     let span = held.call_span();
     let directory = held.directory.and_then(Path::to_str);
     calls
         .iter()
-        .filter(|(_, call)| span.contains(&call.at_ms) && call.command.contains(TMUX_NEW_SESSION))
+        .filter(|(_, call)| {
+            span.contains(&call.at_ms)
+                && call.command.contains(TMUX_NEW_SESSION)
+                && !opens_another_session(held, &call.command)
+        })
         .max_by_key(|(_, call)| {
             let named = mentions(&call.command, held.name)
                 || directory.is_some_and(|directory| mentions(&call.command, directory));
             (named, call.at_ms)
         })
         .map(|(launcher, _)| *launcher)
+}
+
+/// Whether `command` opens only tmux sessions named by a literal other
+/// than `held`'s name, so it cannot have opened `held`.
+///
+/// Only a name the session was given counts, and a call that mentions
+/// that name anywhere is kept: a Claude Code session is named by its
+/// own `-n`, which need not match the tmux session holding it.
+fn opens_another_session(held: &HeldSession<'_>, command: &str) -> bool {
+    if !held.given_name || mentions(command, held.name) {
+        return false;
+    }
+    let opened = tmux::opened_sessions(command);
+    !opened.is_empty()
+        && opened
+            .iter()
+            .all(|name| name.as_deref().is_some_and(|name| name != held.name))
 }
 
 /// Whether `text` holds `word` standing on its own: with no letter,
@@ -810,6 +839,16 @@ mod tests {
     /// The unix second each held session in the launcher tests started.
     const LAUNCH: u64 = 1_790_000_000;
 
+    /// A held session named `name`, started at [`LAUNCH`].
+    fn named_session(name: &str) -> HeldSession<'_> {
+        HeldSession {
+            name,
+            given_name: true,
+            directory: Some(Path::new("/home/natepiano/rust/tool-based-ui-x")),
+            started: LAUNCH,
+        }
+    }
+
     /// boss of bosses opened three sessions: trunk from a loop, whose
     /// call names it only through a variable, one second before it
     /// started; arrange by name four seconds before; geometry-material
@@ -819,11 +858,7 @@ mod tests {
     fn the_launcher_is_the_agent_whose_call_opened_the_session() {
         let boss = 1_579_022;
         let other = 428_044;
-        let held = |name| HeldSession {
-            name,
-            directory: Some(Path::new("/home/natepiano/rust/tool-based-ui-x")),
-            started: LAUNCH,
-        };
+        let held = |name| named_session(name);
         let loop_call = r#"for name in trunk; do tmux new-session -d -s "tool-based-ui-$name" zsh -ic claude; done"#;
         let trunk = [
             (other, call(-300_000, "tmux new-session -d -s scratch")),
@@ -877,6 +912,73 @@ mod tests {
             ),
         ];
         assert_eq!(pick_launcher(&held("tool-based-ui-trunk"), &outside), None);
+    }
+
+    /// A call opening a session named by a literal other than the held
+    /// session's name is passed over, even as the latest call; one
+    /// naming it by that literal wins over a later call naming nothing.
+    #[test]
+    fn a_call_naming_another_session_is_passed_over() {
+        let boss = 1_579_022;
+        let other = 428_044;
+        let held = named_session("tool-based-ui-arrange");
+
+        let elsewhere = [
+            (
+                boss,
+                call(-3_000, "tmux new-session -d -s $name zsh -ic claude"),
+            ),
+            (other, call(-1_000, "tmux new-session -d -s scratch zsh")),
+        ];
+        assert_eq!(pick_launcher(&held, &elsewhere), Some(boss));
+        assert_eq!(pick_launcher(&held, &elsewhere[1..]), None);
+
+        let own = [
+            (
+                boss,
+                call(-4_000, "tmux new-session -d -s 'tool-based-ui-arrange' zsh"),
+            ),
+            (other, call(-1_000, r#"tmux new-session -d -s "$name" zsh"#)),
+        ];
+        assert_eq!(pick_launcher(&held, &own), Some(boss));
+    }
+
+    /// A session named by a variable, bare or quoted, matches by time
+    /// alone, so the latest call wins.
+    #[test]
+    fn a_session_named_by_a_variable_matches_by_time() {
+        let boss = 1_579_022;
+        let other = 428_044;
+        let calls = [
+            (other, call(-3_000, "tmux new-session -d -s $name zsh")),
+            (boss, call(-1_000, r#"tmux new-session -d -s "$name" zsh"#)),
+        ];
+
+        assert_eq!(
+            pick_launcher(&named_session("tool-based-ui-trunk"), &calls),
+            Some(boss)
+        );
+    }
+
+    /// A literal tmux name other than the session's rules nothing out
+    /// when the call names the session elsewhere, as Claude Code's `-n`
+    /// does, or when the session has no name of its own to compare.
+    #[test]
+    fn another_literal_rules_out_only_a_session_it_cannot_be() {
+        let boss = 1_579_022;
+        let renamed = [(
+            boss,
+            call(-1_000, "tmux new-session -d -s w1 'claude -n fixer'"),
+        )];
+        assert_eq!(pick_launcher(&named_session("fixer"), &renamed), Some(boss));
+
+        let unnamed = HeldSession {
+            name: "b83cfc96",
+            given_name: false,
+            ..named_session("")
+        };
+        let worker = [(boss, call(-1_000, "tmux new-session -d -s worker claude"))];
+        assert_eq!(pick_launcher(&unnamed, &worker), Some(boss));
     }
 
     /// A name or directory counts only standing on its own, not inside

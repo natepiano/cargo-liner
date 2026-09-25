@@ -15,14 +15,18 @@ use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
 use tui_pane::TileCells;
+use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
 use tui_pane::render_status_line;
 
+use crate::agent_cell;
+use crate::agent_cell::AgentEntry;
 use crate::app::App;
 use crate::census;
 use crate::census::Machine;
+use crate::constants::AGENT_CELL_TITLE_LEAD;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
@@ -31,7 +35,7 @@ use crate::constants::SUMMARY_CELL_TITLE;
 use crate::globals::AppGlobalAction;
 use crate::settings;
 use crate::summary;
-use crate::tiles::NoGroup;
+use crate::tiles::AgentCell;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
 
@@ -72,15 +76,14 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// [`tui_pane::draw_tile_grid`] decides where each cell goes, how far
 /// through a transition it is, and draws the frames, the numbers of the
 /// empty cells and every cell's readout; [`Cells`] is what goes inside
-/// the summary.
+/// the summary and each agent's cell.
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridContents) {
     let initial_rows = app.loaded_config.config.tiles.initial_rows();
-    let cells = Cells {
-        machines: app
-            .census
+    let cells = Cells::new(
+        app.census
             .machines(&app.loaded_config.config.machines.remote),
-        now:      census::unix_now(),
-    };
+        census::unix_now(),
+    );
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
@@ -91,33 +94,77 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
     );
 }
 
-/// What the tile grid's cells hold. Only the summary has contents: the
-/// machines and their agents.
+/// What the tile grid's cells hold: the summary of every machine's
+/// agents, and a cell for each agent.
 struct Cells<'a> {
     /// This machine, then each configured remote.
     machines: Vec<Machine<'a>>,
+    /// Every agent's cell, in grid order.
+    agents:   Vec<AgentEntry<'a>>,
     /// The unix second the ages are measured to.
     now:      u64,
 }
 
-impl TileCells<NoGroup> for Cells<'_> {
+impl<'a> Cells<'a> {
+    /// The cells for `machines`, with ages measured to `now`.
+    fn new(machines: Vec<Machine<'a>>, now: u64) -> Self {
+        let agents = agent_cell::cell_order(&machines);
+        Self {
+            machines,
+            agents,
+            now,
+        }
+    }
+
+    /// The agent the cell `id` draws, while it is still listed.
+    fn agent(&self, id: &AgentCell) -> Option<&AgentEntry<'a>> {
+        self.agents.iter().find(|entry| entry.id == *id)
+    }
+}
+
+impl TileCells<AgentCell> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
-    /// Every summary row is one line at any width.
+    /// Every row of the summary and of an agent's cell is one line at any
+    /// width: a name too long for its column is cut, not wrapped.
     fn demands(&self, _widths: &[(TileContent, u16)]) -> TileDemands {
         TileDemands {
             summary: summary::height(&self.machines),
-            groups:  Vec::new(),
+            groups:  self
+                .agents
+                .iter()
+                .map(|entry| TileDemand {
+                    id:   entry.id.clone(),
+                    rows: agent_cell::height(entry.row),
+                })
+                .collect(),
         }
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, _ground: Color) {
         match content {
             TileContent::Summary => summary::draw(buffer, inner, &self.machines, self.now),
-            // No group claims a cell -- `NoGroup` has no values -- and
-            // the grid draws an empty cell's number itself.
-            TileContent::Group(_) | TileContent::Empty(_) => {},
+            TileContent::Group(id) => {
+                if let Some(entry) = self.agent(id) {
+                    agent_cell::draw(
+                        buffer,
+                        inner,
+                        entry.row,
+                        entry.launcher,
+                        entry.machine,
+                        self.now,
+                    );
+                }
+            },
+            // The grid draws an empty cell's number itself.
+            TileContent::Empty(_) => {},
         }
+    }
+
+    /// An agent's cell is titled with the agent's name.
+    fn group_title(&self, id: &AgentCell) -> Option<String> {
+        self.agent(id)
+            .map(|entry| format!("{AGENT_CELL_TITLE_LEAD}{}", entry.row.name))
     }
 }
 
@@ -171,6 +218,11 @@ mod tests {
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::census::Agent;
+    use crate::census::AgentRow;
+    use crate::census::CensusUpdate;
+    use crate::census::ChildKind;
+    use crate::census::ChildRow;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -391,6 +443,38 @@ fraying = "leading"
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
+    /// The unix second the agent cell golden measures ages to.
+    const NOW: u64 = 1_790_372_800;
+
+    /// The grid with one agent listed: the summary, then the agent's
+    /// cell, titled with its name, holding a shell running a Codex app
+    /// server with one thread, and a subagent.
+    const ONE_AGENT_CELL: [&str; BODY_ROWS] = [
+        "┌ summary──────────────────────────────────────────────────────────────────────┐",
+        "│ natedev · 1 agent                                                            │",
+        "│ pid      agent   name            status  age  directory                      │",
+        "│ 1579022  claude  boss of bosses  idle    21h  ~/rust/hana_catalyst/docs/hana │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                  content rows: 3  r/c: 11/78 │",
+        "├ boss of bosses───────────────────────────────────────────────────────────────┤",
+        "│ pid 1579022 · claude · idle · 21h · natedev                                  │",
+        "│ ~/rust/hana_catalyst/docs/hana                                               │",
+        "│                                                                              │",
+        "│ pid      kind        name                                    age             │",
+        "│ 2406969  shell       Launch the Phase 2 implementation seat  12m             │",
+        "│ 2407001    codex     app-server                              12m             │",
+        "│ —            thread  tool-based-ui-geometry-material-impl    12m             │",
+        "│ —        subagent    Survey the tile grid                    5m 3s           │",
+        "│                                                   content rows: 8  r/c: 9/78 │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+    ];
+
     fn key(character: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)
     }
@@ -540,6 +624,98 @@ fraying = "leading"
             drawn_rows(&mut app, 1),
             frame(&FAVORITES_OVERLAY, GRID_STATUS)
         );
+    }
+
+    /// boss of bosses, running a shell that runs a Codex app server with
+    /// one thread, and a subagent, started `age` seconds before [`NOW`].
+    fn boss(age: u64) -> AgentRow {
+        let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
+            depth,
+            kind,
+            pid,
+            name: name.to_string(),
+            started: NOW - age,
+        };
+        AgentRow {
+            agent:       Agent::Claude,
+            name:        "boss of bosses".to_string(),
+            status:      Some("idle".to_string()),
+            started:     NOW - age,
+            pid:         1_579_022,
+            directory:   "~/rust/hana_catalyst/docs/hana".to_string(),
+            launched_by: None,
+            children:    vec![
+                child(
+                    0,
+                    ChildKind::Shell,
+                    Some(2_406_969),
+                    "Launch the Phase 2 implementation seat",
+                    12 * 60,
+                ),
+                child(
+                    1,
+                    ChildKind::Process(Agent::Codex),
+                    Some(2_407_001),
+                    "app-server",
+                    12 * 60,
+                ),
+                child(
+                    2,
+                    ChildKind::Thread,
+                    None,
+                    "tool-based-ui-geometry-material-impl",
+                    12 * 60,
+                ),
+                child(
+                    0,
+                    ChildKind::Subagent,
+                    None,
+                    "Survey the tile grid",
+                    5 * 60 + 3,
+                ),
+            ],
+        }
+    }
+
+    /// The grid of `app` drawn into the body of an 80×24 frame with ages
+    /// measured to [`NOW`], as rows of text.
+    fn drawn_grid(app: &mut App) -> Vec<String> {
+        let body = Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT);
+        let initial_rows = app.loaded_config.config.tiles.initial_rows();
+        let cells = Cells::new(
+            app.census
+                .machines(&app.loaded_config.config.machines.remote),
+            NOW,
+        );
+        let mut buffer = Buffer::empty(body);
+        tui_pane::draw_tile_grid(
+            &mut buffer,
+            &mut app.tiles,
+            body,
+            initial_rows,
+            TileGridContents::Shown,
+            &cells,
+        );
+        (body.top()..body.bottom())
+            .map(|row| {
+                (body.left()..body.right())
+                    .filter_map(|column| buffer.cell((column, row)).map(Cell::symbol))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A listed agent opens a cell of its own below the summary, titled
+    /// with its name, holding its header and the tree of what it runs.
+    #[test]
+    fn a_listed_agent_gets_a_cell_titled_with_its_name() {
+        let mut app = laid_out_app();
+        app.census
+            .apply(CensusUpdate::Local(vec![boss(21 * 60 * 60)]));
+        drawn_grid(&mut app);
+        app.tiles.settle_for_test();
+
+        assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
     }
 
     /// Three frames after `a`, the status line says the grid is being

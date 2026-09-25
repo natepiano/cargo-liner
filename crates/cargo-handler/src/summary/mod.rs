@@ -56,7 +56,9 @@ use crate::theme::Role;
 pub(crate) fn height(machines: &[Machine<'_>]) -> usize {
     let groups: usize = machines
         .iter()
-        .map(|machine| usize::from(GROUP_HEADER_HEIGHT) + table_height(machine.state.rows().len()))
+        .map(|machine| {
+            usize::from(GROUP_HEADER_HEIGHT) + table_height(machine.state.top_level().count())
+        })
         .sum();
     let gaps = machines.len().saturating_sub(1) * usize::from(GROUP_GAP_HEIGHT);
     groups + gaps
@@ -111,9 +113,12 @@ fn draw_machine(
                 label,
             ));
         },
-        MachineState::Answered(rows) => {
+        MachineState::Answered(_) => {
             heading.push(Span::styled(
-                format!("{HEADING_SEPARATOR}{}", count_note(rows.len())),
+                format!(
+                    "{HEADING_SEPARATOR}{}",
+                    count_note(machine.state.top_level().count())
+                ),
                 label,
             ));
         },
@@ -130,7 +135,7 @@ fn draw_machine(
         buffer,
     );
 
-    let rows = machine.state.rows();
+    let rows: Vec<&AgentRow> = machine.state.top_level().collect();
     let drawn = area
         .height
         .saturating_sub(GROUP_HEADER_HEIGHT)
@@ -168,39 +173,49 @@ fn count_note(count: usize) -> String {
 
 /// One agent's table row.
 fn agent_row(row: &AgentRow, now: u64) -> Row<'static> {
-    let agent_role = match row.agent {
-        Agent::Claude => Role::Claude,
-        Agent::Codex => Role::Codex,
-    };
-    let status_role = match row.status.as_deref() {
-        Some(BUSY_STATUS) => Role::Busy,
-        Some(SHELL_STATUS) => Role::Shell,
-        _ => Role::Idle,
-    };
     let label = Style::default().fg(label_color());
     Row::new([
         Span::styled(row.pid.to_string(), Style::default().fg(text_default())),
-        Span::styled(row.agent.label(), agent_role.style()),
-        Span::styled(truncated(&row.name), Style::default().fg(text_default())),
-        Span::styled(status_text(row).to_string(), status_role.style()),
+        Span::styled(row.agent.label(), agent_role(row.agent).style()),
+        Span::styled(
+            truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
+            Style::default().fg(text_default()),
+        ),
+        Span::styled(status_text(row).to_string(), status_role(row).style()),
         Span::styled(age_label(now.saturating_sub(row.started)), label),
         Span::styled(row.directory.clone(), label),
     ])
 }
 
-/// The status cell: the status, or [`MISSING_VALUE`].
-fn status_text(row: &AgentRow) -> &str { row.status.as_deref().unwrap_or(MISSING_VALUE) }
+/// The role an agent's program is drawn in.
+pub(crate) const fn agent_role(agent: Agent) -> Role {
+    match agent {
+        Agent::Claude => Role::Claude,
+        Agent::Codex => Role::Codex,
+    }
+}
 
-/// `name` cut to [`NAME_COLUMN_MAX`] cells, ending in
-/// [`TRUNCATION_MARK`] when it was longer.
-fn truncated(name: &str) -> String {
-    let max = usize::from(NAME_COLUMN_MAX);
+/// The role an agent's status is drawn in.
+pub(crate) fn status_role(row: &AgentRow) -> Role {
+    match row.status.as_deref() {
+        Some(BUSY_STATUS) => Role::Busy,
+        Some(SHELL_STATUS) => Role::Shell,
+        _ => Role::Idle,
+    }
+}
+
+/// The status cell: the status, or [`MISSING_VALUE`].
+pub(crate) fn status_text(row: &AgentRow) -> &str { row.status.as_deref().unwrap_or(MISSING_VALUE) }
+
+/// `name` cut to `max` cells, ending in [`TRUNCATION_MARK`] when it was
+/// longer.
+pub(crate) fn truncated(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         return name.to_string();
     }
     name.chars()
-        .take(max - 1)
-        .chain(std::iter::once(TRUNCATION_MARK))
+        .take(max.saturating_sub(1))
+        .chain(std::iter::once(TRUNCATION_MARK).take(max.min(1)))
         .collect()
 }
 
@@ -218,7 +233,10 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
             })
             .collect(),
     );
-    for row in machines.iter().flat_map(|machine| machine.state.rows()) {
+    for row in machines
+        .iter()
+        .flat_map(|machine| machine.state.top_level())
+    {
         widths.observe_cell_usize(PID_COLUMN, row.pid.to_string().chars().count());
         widths.observe_cell_usize(AGENT_COLUMN, row.agent.label().chars().count());
         widths.observe_cell_usize(NAME_COLUMN, row.name.chars().count());
@@ -242,7 +260,7 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
 
 /// `area` indented one level, where every machine's label row and rows
 /// sit, under headings at the outer level.
-fn indented(area: Rect) -> Rect {
+pub(crate) fn indented(area: Rect) -> Rect {
     let indent = cell_width(SECTION_ITEM_INDENT);
     Rect {
         x: area.x.saturating_add(indent),
@@ -252,7 +270,9 @@ fn indented(area: Rect) -> Rect {
 }
 
 /// A string's width in cells, clamped into the column-width type.
-fn cell_width(text: &str) -> u16 { u16::try_from(text.chars().count()).unwrap_or(u16::MAX) }
+pub(crate) fn cell_width(text: &str) -> u16 {
+    u16::try_from(text.chars().count()).unwrap_or(u16::MAX)
+}
 
 #[cfg(test)]
 #[expect(
@@ -309,12 +329,18 @@ mod tests {
     }
 
     /// Four machines: this one with a name past the column's cap, a busy
-    /// session and a Codex with no status; a remote with one agent; a
-    /// remote whose probe failed; and one that has not answered. Each
-    /// machine that lists agents repeats the label row under its heading,
-    /// with the columns sized across both machines' rows.
+    /// session, a Codex with no status and a session another agent
+    /// launched, which is left out of the list and the count; a remote
+    /// with one agent; a remote whose probe failed; and one that has not
+    /// answered. Each machine that lists agents repeats the label row
+    /// under its heading, with the columns sized across both machines'
+    /// rows.
     #[test]
     fn each_machine_lists_its_agents_under_its_own_label_row() {
+        let launched = AgentRow {
+            launched_by: Some(1_579_022),
+            ..row(3_266_367, Agent::Claude, "trunk", None, HOUR, "~")
+        };
         let natedev = MachineState::Answered(vec![
             row(
                 1_579_022,
@@ -324,6 +350,7 @@ mod tests {
                 21 * HOUR,
                 "~/rust/hana_catalyst/docs/hana",
             ),
+            launched,
             row(
                 2_747_564,
                 Agent::Claude,

@@ -17,8 +17,8 @@ its own. Beyond `--help` and `--version` it takes one hidden subcommand,
 It takes over the terminal (alternate screen, raw mode) and draws a tile grid
 above the framework status line. The grid opens on the summary cell, which
 lists the Claude Code and Codex agents running on this machine and on the
-remote machines in the config. Every cell carries the framework's readout on
-its last row.
+remote machines in the config, and each agent gets a cell of its own showing
+what it is running. Every cell carries the framework's readout on its last row.
 
 ## summary
 
@@ -65,8 +65,84 @@ agent started:
   `ChatGPT`.
 
 A process is dropped when any of its ancestors is another agent (a `claude` or
-`codex` process) or a tmux server, since those sessions are driven by something
-other than a person at a terminal.
+`codex` process): it shows up in that agent's cell instead. An agent held by a
+tmux server is listed unless its launcher is found (see
+[launched sessions](#launched-sessions)); an agent another agent opened in tmux
+is not top level, so the summary leaves it out and it gets a cell under its
+launcher's.
+
+## agent cells
+
+```text
+ pid 3266367 · claude · busy · 23h · natedev
+ ~/rust/tool-based-ui-trunk
+ launched by boss of bosses
+
+ pid      kind        name                                         age
+ 2371669  shell       Launch the Phase 1 implementation seat       12m
+ 2372720    codex     app-server                                   12m
+ —            thread  tool-based-ui-trunk-impl                     11m
+ —        subagent    Review the permission queue                  5m 3s
+ 2424763    shell     cargo nextest run -p hana_video --no-fail-…  45s
+ 3337048  session     tool-based-ui-arrange                        30s
+```
+
+Every agent someone can talk to gets a cell, titled in its top border with its
+name (`tool-based-ui-trunk` above): each
+top-level agent, and each session another agent opened in tmux. The cells
+follow the machines in summary order; within a machine each top-level agent
+comes oldest first, followed by the sessions it opened, depth first and oldest
+first. The header gives the agent's pid, program, status, age and machine,
+colored as the summary colors them, then its directory, and for a launched
+session the agent that opened it. Below it is a table of everything the agent
+started that is still running, each row's `kind` indented two cells under the
+row that started it, with `—` for a row that has no process of its own. An
+agent running nothing says `nothing running`. A name too long for the room the
+other columns leave is cut and ends in `…`.
+
+Each kind of row comes from its own place:
+
+- **shell**: a command the agent's shell tool is running: a child of the
+  `claude` process running Claude Code's shell wrapper
+  (`zsh -c "source …/shell-snapshots/snapshot-… && eval '<command>'"`). It is
+  named by the `description` of the Bash call in the session's transcript whose
+  command is exactly the wrapper's, written at most 5 seconds after the shell
+  started; a call written without a description, or none found, leaves the
+  command itself on one line. A call found in a subagent's transcript puts the
+  shell under that subagent.
+- **claude** / **codex**: a Claude Code or Codex process found below a shell,
+  one level under it. A `codex app-server` is named `app-server`, another Codex
+  by its arguments, and a Claude Code process by its session's name. Each is
+  laid out the same way in turn. A Codex app server moved out from under the
+  shell that started it is found by the `CLAUDE_PID` in its environment, and
+  sits directly under the agent that variable names.
+- **thread**: a thread a Codex app server holds open, on Linux only: read from
+  the conversation files under `~/.codex/sessions/` among the server's open
+  files, and named from Codex's thread database.
+- **subagent**: a subagent running inside the agent, read from the
+  `subagents/` directory beside its transcript. A subagent whose transcript has
+  ended its turn, or gone 30 minutes unwritten, is no longer listed.
+- **session**: an agent this one opened in tmux, which has its own cell.
+
+### launched sessions
+
+A tmux server runs apart from whoever started it, so nothing in the process
+tree says which agent opened a session it holds. For each agent held by tmux,
+the transcripts of the Claude Code agents started before it are read for Bash
+calls from 10 minutes before it started to 5 seconds after that run tmux
+`new-session`. A call whose `new-session` commands all name their session with
+a literal `-s` other than the session's own name is passed over, unless the
+call mentions that name elsewhere, as Claude Code's `-n` would. Among the rest,
+a call naming the session or its directory wins, and then the latest. The
+agent that wrote the winning call is the launcher. This has limits:
+
+- A launch not written in the transcript of a running agent -- one typed at a
+  terminal, run from a script started elsewhere, or made by an agent that has
+  since exited -- finds no launcher, and the session is listed as top level.
+- A launch that names its session through a variable, as a loop does, is
+  matched by time alone: another agent's unnamed `new-session` written closer
+  to the session's start wins it.
+- A session with no name of its own is matched by time alone as well.
 
 ### remote machines
 

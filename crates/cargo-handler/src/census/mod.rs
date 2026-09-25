@@ -5,7 +5,8 @@
 //! [`classify`] decides which processes count, over a process table,
 //! the session records Claude Code writes, and the threads [`codex`]
 //! reads from Codex's database, and which agent opened a session held
-//! by tmux. [`tree`] lays out what each agent is running, from the
+//! by tmux, reading the sessions a shell call opens through [`tmux`].
+//! [`tree`] lays out what each agent is running, from the
 //! process table and what [`transcript`] reads from Claude Code's
 //! transcripts. [`scan`] reads all of it on this machine. [`probe`] is
 //! the JSON a machine prints about itself, and [`remote`] runs that
@@ -19,6 +20,7 @@ pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
 pub(crate) mod schedule;
+pub(crate) mod tmux;
 pub(crate) mod transcript;
 pub(crate) mod tree;
 
@@ -36,6 +38,10 @@ use sysinfo::System;
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
+use crate::constants::SESSION_KIND;
+use crate::constants::SHELL_KIND;
+use crate::constants::SUBAGENT_KIND;
+use crate::constants::THREAD_KIND;
 
 /// Which program an agent row is.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -84,10 +90,15 @@ pub(crate) struct AgentRow {
     pub(crate) children:    Vec<ChildRow>,
 }
 
+impl AgentRow {
+    /// Whether a person started this agent rather than another agent.
+    const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
+}
+
 /// What one row of an agent's cell is.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum ChildKind {
+pub(crate) enum ChildKind {
     /// A command the agent's shell tool is running.
     Shell,
     /// A subagent running inside the agent's own process.
@@ -102,24 +113,38 @@ enum ChildKind {
     Thread,
 }
 
+impl ChildKind {
+    /// The row's `kind` cell: a process by its program, anything else by
+    /// what it is.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Shell => SHELL_KIND,
+            Self::Subagent => SUBAGENT_KIND,
+            Self::Session(_) => SESSION_KIND,
+            Self::Process(agent) => agent.label(),
+            Self::Thread => THREAD_KIND,
+        }
+    }
+}
+
 /// One row of an agent's cell: something the agent started that is
 /// still running.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ChildRow {
     /// How many levels below the agent the row sits; the rows directly
     /// under the agent are at 0.
-    depth:   u8,
+    pub(crate) depth:   u8,
     /// What the row is.
-    kind:    ChildKind,
+    pub(crate) kind:    ChildKind,
     /// Its process; none for a subagent or a thread, which have none of
     /// their own.
-    pid:     Option<u32>,
+    pub(crate) pid:     Option<u32>,
     /// What the row says it is doing: a shell's description or command,
     /// a subagent's description, a session's or thread's name, or a
     /// process's.
-    name:    String,
+    pub(crate) name:    String,
     /// When it started, in unix seconds.
-    started: u64,
+    pub(crate) started: u64,
 }
 
 /// What is known about one machine's agents.
@@ -141,6 +166,12 @@ impl MachineState {
             Self::Answered(rows) => rows,
             Self::Scanning | Self::Failed(_) => &[],
         }
+    }
+
+    /// The rows a person started, oldest first: the ones the summary
+    /// lists.
+    pub(crate) fn top_level(&self) -> impl Iterator<Item = &AgentRow> {
+        self.rows().iter().filter(|row| row.is_top_level())
     }
 }
 

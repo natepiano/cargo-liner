@@ -43,7 +43,7 @@ use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::render;
 use crate::settings;
-use crate::tiles::NoGroup;
+use crate::tiles::AgentCell;
 use crate::tiles::TileGrid;
 
 /// The attract screen, with no frame log behind it.
@@ -274,7 +274,7 @@ impl TerminalApp for App {
 
 /// The tile grid is the whole body, registered under [`AppPaneId::Main`].
 impl TileGridHost for App {
-    type TileId = NoGroup;
+    type TileId = AgentCell;
 
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
 

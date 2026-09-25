@@ -1,6 +1,7 @@
 //! `cargo-handler` — a terminal UI cargo tool built on the `tui_pane`
 //! framework.
 
+mod agent_cell;
 mod app;
 mod census;
 mod cli;

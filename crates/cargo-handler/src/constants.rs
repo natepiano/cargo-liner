@@ -75,6 +75,51 @@ pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 /// The summary cell's title, set into its top border. The leading space
 /// holds the word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
+/// Leads an agent cell's title, holding the agent's name off the corner
+/// glyph the way the space leading [`SUMMARY_CELL_TITLE`] does.
+pub(crate) const AGENT_CELL_TITLE_LEAD: &str = " ";
+
+// agent cells
+/// The column labels of an agent cell's table, in column order.
+pub(crate) const CHILD_HEADERS: [&str; 4] = ["pid", "kind", "name", "age"];
+/// Index of the `pid` column in [`CHILD_HEADERS`].
+pub(crate) const CHILD_PID_COLUMN: usize = 0;
+/// Index of the `kind` column in [`CHILD_HEADERS`].
+pub(crate) const CHILD_KIND_COLUMN: usize = 1;
+/// Index of the `name` column in [`CHILD_HEADERS`], the one column cut
+/// to whatever width the fitted columns leave.
+pub(crate) const CHILD_NAME_COLUMN: usize = 2;
+/// Index of the `age` column in [`CHILD_HEADERS`].
+pub(crate) const CHILD_AGE_COLUMN: usize = 3;
+/// Cells the `kind` column is indented by for each level a row sits
+/// below the agent.
+pub(crate) const CHILD_KIND_INDENT: usize = 2;
+/// Rows the header above an agent cell's table takes: the line naming
+/// the agent's pid, program, status, age and machine, then its
+/// directory.
+pub(crate) const AGENT_HEADER_HEIGHT: u16 = 2;
+/// Rows the line naming the agent that launched a session takes.
+pub(crate) const LAUNCHER_LINE_HEIGHT: u16 = 1;
+/// Blank rows between an agent cell's header and its table.
+pub(crate) const AGENT_HEADER_GAP_HEIGHT: u16 = 1;
+/// Rows the note standing in for an empty table takes.
+pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
+/// What an agent cell says in place of its table when the agent is
+/// running nothing.
+pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
+/// Leads the agent's pid in an agent cell's header, and names a
+/// launcher known by its pid alone.
+pub(crate) const PID_LABEL: &str = "pid";
+/// Leads the name of the agent that opened a session in its cell.
+pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
+/// The `kind` of a command an agent's shell tool is running.
+pub(crate) const SHELL_KIND: &str = "shell";
+/// The `kind` of a subagent.
+pub(crate) const SUBAGENT_KIND: &str = "subagent";
+/// The `kind` of an agent another agent opened in a tmux session.
+pub(crate) const SESSION_KIND: &str = "session";
+/// The `kind` of a thread a Codex app server runs.
+pub(crate) const THREAD_KIND: &str = "thread";
 
 // summary table
 /// The summary's column labels, in column order.
@@ -238,8 +283,15 @@ pub(crate) const CALL_LOOKBACK: Duration = Duration::from_mins(10);
 /// written: the process table counts a start in whole seconds, and a
 /// transcript line is written as the call goes out.
 pub(crate) const CALL_LOOKAHEAD: Duration = Duration::from_secs(5);
-/// What the command of a shell call that opened a tmux session holds.
+/// What the command of a shell call that opened a tmux session holds,
+/// and the word naming that tmux command.
 pub(crate) const TMUX_NEW_SESSION: &str = "new-session";
+/// The flags of tmux's `new-session` that take an argument.
+pub(crate) const TMUX_ARGUMENT_FLAGS: &str = "cefFnstxy";
+/// The `new-session` flag naming the session it opens.
+pub(crate) const TMUX_SESSION_NAME_FLAG: char = 's';
+/// The word that ends a tmux command's options.
+pub(crate) const TMUX_OPTIONS_END: &str = "--";
 /// How old a process must be before a scan that found no call or
 /// launcher for it stops looking. A younger one may not have had its
 /// transcript line written yet.
