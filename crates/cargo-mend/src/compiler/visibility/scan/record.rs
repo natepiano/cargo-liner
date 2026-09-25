@@ -3,9 +3,12 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 
 use anyhow::Result;
+use rustc_hir::def::CtorKind;
 use rustc_hir::def::DefKind;
 use rustc_middle::middle::privacy::Level;
+use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::Visibility;
+use rustc_span::Symbol;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::LocalDefId;
 
@@ -1273,11 +1276,30 @@ fn facade_less_boundary_matches_callers(
 /// so the narrowed spelling satisfies one configuration and stops the other
 /// compiling; `overbroad-pub-crate` reports nothing here rather than advise it.
 ///
+/// A tuple field's name is its index, which only `.0` access writes. Building
+/// one with `Failure(code)` or matching `Failure(code)` writes the struct's
+/// name instead, so a tuple field also counts as named wherever its struct is.
+///
 /// [`collect_use_sites`]: crate::compiler::visibility::use_sites::collect_use_sites
 fn cfg_excluded_source_names_item(ctx: &VisibilityContext<'_, '_>, item: &ItemInfo<'_>) -> bool {
-    item.name.is_some_and(|name| {
-        ctx.cfg_excluded_references.reference(name) == CfgExcludedReference::Present
-    })
+    let excluded_source_names =
+        |name: &str| ctx.cfg_excluded_references.reference(name) == CfgExcludedReference::Present;
+    item.name.is_some_and(excluded_source_names)
+        || tuple_struct_name(ctx.tcx, item.def_id)
+            .is_some_and(|struct_name| excluded_source_names(struct_name.as_str()))
+}
+
+/// The name of the tuple struct that declares `def_id` as one of its fields.
+fn tuple_struct_name(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<Symbol> {
+    if tcx.def_kind(def_id) != DefKind::Field {
+        return None;
+    }
+    let parent = tcx.parent(def_id.to_def_id());
+    if tcx.def_kind(parent) != DefKind::Struct {
+        return None;
+    }
+    (tcx.adt_def(parent).non_enum_variant().ctor_kind() == Some(CtorKind::Fn))
+        .then(|| tcx.item_name(parent))
 }
 
 fn facade_is_possible(ctx: &VisibilityContext<'_, '_>, def_id: LocalDefId) -> bool {

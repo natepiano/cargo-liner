@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - The `mend:` status line now leads with cargo's own `done/total` unit counter and bar, e.g. `mend: / [=======================> ] 519/523: analyzing cargo_mend`, so tools that read cargo's progress bar, such as cargo-tile, can show progress for a `cargo mend` run. When stderr is not a terminal the line is drawn only under `CARGO_TERM_PROGRESS_WHEN=always`, and then rewritten only when its text changes; `CARGO_TERM_PROGRESS_WHEN=never` turns it off.
 
+### Fixed
+- `--fix` no longer narrows a tuple struct field that code behind an inactive `#[cfg]` uses, such as a Windows-only module that builds the struct with `Failure(code)` or reads `failure.0`. Before, the field lost its `pub(crate)` and the other target stopped compiling.
+
 ## [0.22.0] - 2026-09-23
 
 ### Added

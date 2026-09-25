@@ -1460,6 +1460,101 @@ pub(crate) fn unreferenced() -> u32 { 4 }
 }
 
 #[test]
+fn cfg_excluded_consumer_keeps_a_tuple_fields_pub_crate() {
+    let temp = tempdir().expect("create tuple field fixture dir");
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "cfg_excluded_tuple_field_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write manifest");
+    fs::create_dir_all(temp.path().join("src/platform")).expect("create platform dir");
+    fs::create_dir_all(temp.path().join("src/stream")).expect("create stream dir");
+    // `camera_stream` is mounted through `#[cfg_attr(_, path = ...)]`, so
+    // `solaris.rs` is a whole file this compilation leaves out. It builds
+    // `Constructed` through its constructor, which writes the struct's name and
+    // never the field's index, and reads `Indexed` through `.0` on a value
+    // whose type it never names. Both fields need `pub(crate)` there. `Pair`'s
+    // second field is the control: no excluded code names `Pair` or writes
+    // `.1`, so it must still be reported.
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "mod platform;\n\npub fn entry() -> i32 { platform::entry() }\n",
+    )
+    .expect("write lib");
+    fs::write(
+        temp.path().join("src/platform/mod.rs"),
+        r#"#[cfg_attr(target_os = "solaris", path = "../stream/solaris.rs")]
+#[cfg_attr(not(target_os = "solaris"), path = "../stream/other.rs")]
+mod camera_stream;
+mod decisions;
+
+pub(crate) fn entry() -> i32 { camera_stream::open() + decisions::local() }
+"#,
+    )
+    .expect("write platform");
+    fs::write(
+        temp.path().join("src/platform/decisions.rs"),
+        r#"pub(crate) struct Constructed(
+    pub(crate) i32,
+);
+pub(crate) struct Indexed(
+    pub(crate) i32,
+);
+pub(crate) struct Pair(
+    i32,
+    pub(crate) i32,
+);
+
+pub(crate) fn indexed() -> Indexed { Indexed(2) }
+
+pub(crate) fn local() -> i32 {
+    let pair = Pair(3, 4);
+    Constructed(1).0 + indexed().0 + pair.0 + pair.1
+}
+"#,
+    )
+    .expect("write decisions");
+    fs::write(
+        temp.path().join("src/stream/solaris.rs"),
+        "pub(super) fn open() -> i32 {\n    super::decisions::Constructed(5).0 + \
+         super::decisions::indexed().0\n}\n",
+    )
+    .expect("write excluded stream");
+    fs::write(
+        temp.path().join("src/stream/other.rs"),
+        "pub(super) fn open() -> i32 { 0 }\n",
+    )
+    .expect("write compiled stream");
+
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    // `overbroad-pub-crate` leaves `item` unset, so the findings are keyed by
+    // line: `decisions.rs` declares the `pub(crate)` fields of `Constructed`,
+    // `Indexed`, and `Pair` on lines 2, 5, and 9.
+    let overbroad_field_lines: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.code == DiagnosticCode::OverbroadPubCrate
+                && finding.path == "src/platform/decisions.rs"
+                && [2, 5, 9].contains(&finding.line_start)
+        })
+        .map(|finding| finding.line_start)
+        .collect();
+    assert_eq!(
+        overbroad_field_lines,
+        vec![9],
+        "the fields on lines 2 and 5 are reached from a `#[cfg]`-excluded file and keep \
+         `pub(crate)`; `Pair`'s field on line 9 is reached from nowhere excluded and must \
+         still be reported: {report:#?}",
+    );
+    assert_summary_matches_findings(&report);
+}
+
+#[test]
 fn cfg_excluded_reference_to_a_module_raises_no_review_pub_mod() {
     let temp = tempdir().expect("create cfg module fixture dir");
     fs::write(

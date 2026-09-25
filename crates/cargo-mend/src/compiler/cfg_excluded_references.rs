@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use proc_macro2::Spacing;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
 use quote::ToTokens;
@@ -49,8 +50,8 @@ enum TestCfg {
     Disabled,
 }
 
-/// Every identifier written in source that this compilation's `#[cfg]`
-/// configuration left out.
+/// Every identifier and tuple index written in source that this compilation's
+/// `#[cfg]` configuration left out.
 ///
 /// `visibility::use_sites::collect_use_sites` walks `tcx.hir_crate_items`,
 /// which holds only what survived `#[cfg]` expansion, so a consumer inside an
@@ -205,6 +206,31 @@ impl<'ast> Visit<'ast> for ExcludedNameCollector<'_> {
     }
 }
 
+/// Whether the previous token is a `.`, and which one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DotPosition {
+    /// A lone `.`, so a literal next is a tuple index.
+    FieldAccess,
+    /// The first `.` of `..` or `..=`, so the `.` next ends a range operator.
+    RangeStart,
+    Elsewhere,
+}
+
+impl DotPosition {
+    fn after(self, token: &TokenTree) -> Self {
+        let TokenTree::Punct(punct) = token else {
+            return Self::Elsewhere;
+        };
+        if punct.as_char() != '.' || self == Self::RangeStart {
+            return Self::Elsewhere;
+        }
+        match punct.spacing() {
+            Spacing::Joint => Self::RangeStart,
+            Spacing::Alone => Self::FieldAccess,
+        }
+    }
+}
+
 /// The source files rustc compiled for the local crate.
 ///
 /// A file the module tree declares but this list omits was reached through a
@@ -327,14 +353,31 @@ fn predicate_holds(predicate: &Meta, active_cfg: &ActiveCfg, test_cfg: TestCfg) 
     }
 }
 
+/// Collects every identifier in `tokens`, and every tuple index written after
+/// a field-access `.`: rustc names a tuple field by its index, so `failure.0`
+/// names the field `0` the way `failure.code` names the field `code`.
 fn collect_identifiers(tokens: &TokenStream, names: &mut FxHashSet<String>) {
+    let mut dot_position = DotPosition::Elsewhere;
     for token in tokens.clone() {
-        match token {
+        match &token {
             TokenTree::Ident(identifier) => {
                 names.insert(identifier.to_string());
             },
             TokenTree::Group(group) => collect_identifiers(&group.stream(), names),
+            // `pair.0.1` lexes its indices as the one float literal `0.1`.
+            TokenTree::Literal(literal) if dot_position == DotPosition::FieldAccess => {
+                names.extend(
+                    literal
+                        .to_string()
+                        .split('.')
+                        .filter(|index| {
+                            !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                        .map(str::to_owned),
+                );
+            },
             TokenTree::Punct(_) | TokenTree::Literal(_) => {},
         }
+        dot_position = dot_position.after(&token);
     }
 }
