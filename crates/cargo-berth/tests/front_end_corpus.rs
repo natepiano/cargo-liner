@@ -38,7 +38,7 @@ const THIS_SUITE_TEXT_COMPARED_ENTRIES: [(&str, &str); 1] = [(
 )];
 /// Corpus entries whose frozen text `tests/hooks.rs` compares against the real
 /// binary, each named beside the test that drives it.
-const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 23] = [
+const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 20] = [
     (
         "test_hooks_render_coordination_identity_recovery_actions_without_message",
         "coordination_identity_rejection_emits_its_recovery",
@@ -104,18 +104,6 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 23] = [
         "post_tool_use_reports_only_new_widening_after_an_incursion_is_answered",
     ),
     (
-        "test_recorded_incursion_preserves_lost_evidence_feedback",
-        "post_tool_use_states_lost_evidence_after_the_incursion_was_answered",
-    ),
-    (
-        "test_hooks_render_both_lost_evidence_recoveries",
-        "hooks_state_the_rewritten_trunk_evidence_recovery",
-    ),
-    (
-        "test_hooks_render_both_lost_evidence_recoveries#2",
-        "hooks_state_the_rewritten_trunk_evidence_recovery",
-    ),
-    (
         "test_hooks_render_both_lost_evidence_recoveries#3",
         "hooks_state_the_unresolvable_trunk_evidence_recovery",
     ),
@@ -142,7 +130,7 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 23] = [
 /// decided list rather than a residue. `every_corpus_entry_is_text_compared_or_named_unproven`
 /// holds the list to the corpus: a row for an entry a test now drives fails, a row for an
 /// entry the fixture does not carry fails, and an entry this list forgets fails too.
-const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 26] = [
+const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 29] = [
     UnprovenCorpusEntry::UnproducibleByThisEngine {
         name:    "test_a_nested_tag_no_table_names_still_reaches_the_advisory_route",
         because: "the frozen heading is the retired shell's fallback for a status absent from its \
@@ -291,6 +279,26 @@ const CORPUS_ENTRIES_WITHOUT_A_TEST: [UnprovenCorpusEntry; 26] = [
         because: "the SessionStart twin, naming berth_session_start-missing-envelope-validation.jq \
                   and its reconciliation repair notice; same retired artifact, same replacement \
                   asserted outside this crate",
+    },
+    UnprovenCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_hooks_render_both_lost_evidence_recoveries",
+        because: "the frozen recovery names the current trunk as the --integrated-as argument, but \
+                  lost integration evidence fires only when that trunk no longer proves the \
+                  protected tip, and resolve refuses an --integrated-as commit lacking the work; \
+                  for_lost_integration_evidence renders name_carrying_trunk_commit for a resolved \
+                  trunk instead, leaving the carrying commit for the reader to name",
+    },
+    UnprovenCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_hooks_render_both_lost_evidence_recoveries#2",
+        because: "the SessionStart twin of the same recovery: board renders \
+                  name_carrying_trunk_commit for a resolved trunk that no longer proves the \
+                  protected tip, so no board names that trunk as the --integrated-as argument",
+    },
+    UnprovenCorpusEntry::UnproducibleByThisEngine {
+        name:    "test_recorded_incursion_preserves_lost_evidence_feedback",
+        because: "the same frozen recovery after an answered incursion names the current trunk as \
+                  the --integrated-as argument, which resolve refuses because that trunk lacks \
+                  the work; drift renders name_carrying_trunk_commit for that trunk instead",
     },
 ];
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";

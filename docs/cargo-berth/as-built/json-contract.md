@@ -310,11 +310,17 @@ The sections mean:
   released reservation, protected tip, current evidence status, and whether
   trunk must resolve before the operator can confirm integration. The orphan
   `recover_with_trunk` action carries `recovery` using the existing
-  `lost_evidence_recovery` shape. With resolved trunk, it offers
-  `resolve <id> --recovered` after restoring the worktree and
-  `resolve <id> --integrated-as <trunk_oid>` after verifying merged work.
-  With unresolved trunk, it requires trunk repair before naming an integration
-  commit. When the orphan's commit is unavailable, `retire_or_abandon` carries
+  `lost_evidence_recovery` shape. When the reconciliation pass proved the work
+  in trunk, `verify_resolved_trunk` names the proving commit as `trunk_oid` and
+  offers `resolve <id> --recovered` and `resolve <id> --integrated-as <trunk_oid>`.
+  When trunk resolves but does not carry the work, `name_carrying_trunk_commit`
+  names that trunk and offers `resolve <id> --recovered`,
+  `resolve <id> --retire-orphan --why <reason>`, and
+  `resolve <id> --abandon --why <reason>`; `--integrated-as` then needs a trunk
+  commit the operator names. With unresolved trunk, it requires trunk repair
+  before naming an integration commit. The envelope-level orphan alert also
+  carries `integration_evidence`, `{ "status": "proven", "commit": <oid> }` or
+  `{ "status": "unproven" }`. When the orphan's commit is unavailable, `retire_or_abandon` carries
   both explicit `flags`, `--retire-orphan --why <reason>` and
   `--abandon --why <reason>`. A `recover` variant with a single `flag` still
   decodes. An outstanding reservation whose work is proven on the actual trunk
@@ -338,7 +344,7 @@ Board `lost_integration_evidence` entries use this tagged form:
   "protected_tip": "1111111111111111111111111111111111111111",
   "evidence_status": { "status": "trunk_rewritten" },
   "recovery": {
-    "kind": "verify_resolved_trunk",
+    "kind": "name_carrying_trunk_commit",
     "trunk_oid": "2222222222222222222222222222222222222222",
     "action": {
       "action": "resolve_integrated_as",
@@ -349,10 +355,20 @@ Board `lost_integration_evidence` entries use this tagged form:
 ```
 
 `evidence_status.status` is `not_integrated`, `trunk_rewritten`, or
-`object_unknown`. `recovery.kind = verify_resolved_trunk` includes the resolved
-`trunk_oid`. `recovery.kind = resolve_trunk_first` omits `trunk_oid` and requires
-the configured trunk to resolve before the action is usable. Both alternatives
-carry `action.action = resolve_integrated_as` and its `reservation_id`.
+`object_unknown`. `recovery.kind = verify_resolved_trunk` names, as `trunk_oid`,
+a trunk commit that carries the protected work, which is the `--integrated-as`
+argument. `recovery.kind = name_carrying_trunk_commit` names, as `trunk_oid`, the
+resolved trunk that no longer proves the work; the operator must name a trunk
+commit that carries it. A lost-evidence alert fires only when trunk no longer
+proves the tip, so with resolved trunk it always uses `name_carrying_trunk_commit`.
+`recovery.kind = resolve_trunk_first` omits `trunk_oid` and requires the
+configured trunk to resolve before the action is usable. Every alternative
+carries `action.action = resolve_integrated_as` and its `reservation_id`.
+`resolve <id> --integrated-as <commit>` refuses with exit 5 `invalid_input` a
+trunk-reachable commit that neither contains the protected tip nor carries an
+equivalent of its scoped changes, naming the commit, the protected tip, and
+`resolve <id> --retire-orphan --why <reason>`; it also refuses a commit git
+cannot compare with the protected tip.
 Released rows remain `edit_blocking_status = clear` in every alternative.
 
 The envelope-level `payload.alerts[]` form carries the same fields under

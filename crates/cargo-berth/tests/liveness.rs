@@ -1421,77 +1421,163 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     );
     assert_eq!(rejected.status.code(), Some(5));
 
+    // A trunk commit that does not carry the work is refused: accepting it would record a
+    // `RewrittenIntegration` witness that ancestry alone keeps valid from then on.
     commit_file(
         repository,
         "integrated",
-        "rewritten result\n",
-        "rewritten integration",
+        "unrelated result\n",
+        "unrelated trunk commit",
     );
-    let first_evidence = git_stdout(repository, &["rev-parse", "HEAD"]);
-    let integrated = run_berth(
+    let unrelated_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    assert_integrated_as_lacks_the_work(
         repository,
-        &[
-            "resolve",
-            &rewritten_id,
-            "--integrated-as",
-            &first_evidence,
-            "--json",
-        ],
+        &rewritten_id,
+        &unrelated_commit,
+        &unreachable_tip,
     );
-    assert!(integrated.status.success());
-    assert_eq!(json_output(&integrated)["status"], "integrated");
 
-    git(repository, &["reset", "--hard", "--quiet", "HEAD^"]);
-    // The reset is the first thing this pass sees, so it records the loss and says nothing; the
-    // next pass, reading back the row it left, is the one that reports. See
-    // `ReconciliationAction::confirmed_lost_evidence`.
-    let reblocked = run_berth(repository, &["release", &rewritten_id, "--json"]);
-    assert_eq!(json_output(&reblocked)["status"], "trunk_rewritten");
-    assert!(
-        json_output(&reblocked)["payload"]["alerts"]
-            .as_array()
-            .is_none_or(|alerts| {
-                alerts
-                    .iter()
-                    .all(|alert| alert["kind"] != "lost_integration_evidence")
-            }),
-        "one pass alone must not report integration evidence lost: {:#}",
-        json_output(&reblocked)
-    );
-    let persisted = run_berth(repository, &["release", &rewritten_id, "--json"]);
-    assert_eq!(json_output(&persisted)["status"], "trunk_rewritten");
-    assert_eq!(
-        json_output(&persisted)["payload"]["alerts"][0]["kind"],
-        "lost_integration_evidence"
-    );
-    commit_file(
+    // A trunk commit carrying identical scoped content proves the work, so reconciliation
+    // settles the reservation on that commit before any resolution runs.
+    commit_file(repository, "rewritten", "work\n", "squashed integration");
+    let squashed_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    let settled = json_output(&run_berth(
         repository,
-        "integrated-again",
-        "replacement evidence\n",
-        "replacement integration evidence",
+        &["release", &rewritten_id, "--json"],
+    ));
+    assert_eq!(settled["status"], "integrated", "{settled:#}");
+    assert_eq!(
+        settled["payload"]["data"]["evidence"]["witness"]["commit"],
+        squashed_commit.as_str()
     );
-    let replacement_evidence = git_stdout(repository, &["rev-parse", "HEAD"]);
-    let replaced = run_berth(
+
+    // The released reservation is non-blocking, so replacing its lost evidence is refused for
+    // a trunk commit lacking the work and accepted for one carrying identical scoped content.
+    lose_the_rewritten_integration_witness(repository, &rewritten_id, &unrelated_commit);
+    assert_integrated_as_lacks_the_work(
+        repository,
+        &rewritten_id,
+        &unrelated_commit,
+        &unreachable_tip,
+    );
+    commit_file(repository, "rewritten", "work\n", "squashed again");
+    let equivalent_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    replace_the_integration_evidence(repository, &rewritten_id, &equivalent_commit);
+
+    // Merging the work branch makes the protected tip an ancestor of the replacement evidence.
+    lose_the_rewritten_integration_witness(repository, &rewritten_id, &unrelated_commit);
+    git(
         repository,
         &[
-            "resolve",
-            &rewritten_id,
-            "--integrated-as",
-            &replacement_evidence,
-            "--json",
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "-m",
+            "merge the rewritten work",
+            "rewritten",
         ],
     );
-    assert!(replaced.status.success());
-    assert!(
+    let merge_commit = git_stdout(repository, &["rev-parse", "HEAD"]);
+    replace_the_integration_evidence(repository, &rewritten_id, &merge_commit);
+    assert_eq!(
         fs::read_to_string(repository.join(JOURNAL_PATH))
             .expect("journal should read")
-            .contains("\"op\":\"replace_release_disposition\"")
+            .matches("\"op\":\"replace_release_disposition\"")
+            .count(),
+        2
     );
     assert_eq!(
         run_berth(repository, &["check", "file:rewritten", "--json"])
             .status
             .code(),
         Some(0)
+    );
+}
+
+/// Reset trunk past the recorded witness and confirm the lost-evidence alert names that trunk.
+fn lose_the_rewritten_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
+    git(repository, &["reset", "--hard", "--quiet", trunk]);
+    // The reset is the first thing this pass sees, so it records the loss and says nothing; the
+    // next pass, reading back the row it left, is the one that reports. See
+    // `ReconciliationAction::confirmed_lost_evidence`.
+    let reblocked = json_output(&run_berth(
+        repository,
+        &["release", reservation_id, "--json"],
+    ));
+    assert_eq!(reblocked["status"], "trunk_rewritten");
+    assert!(
+        reblocked["payload"]["alerts"]
+            .as_array()
+            .is_none_or(|alerts| {
+                alerts
+                    .iter()
+                    .all(|alert| alert["kind"] != "lost_integration_evidence")
+            }),
+        "one pass alone must not report integration evidence lost: {reblocked:#}"
+    );
+    let persisted = json_output(&run_berth(
+        repository,
+        &["release", reservation_id, "--json"],
+    ));
+    assert_eq!(persisted["status"], "trunk_rewritten");
+    let lost_evidence = &persisted["payload"]["alerts"][0];
+    assert_eq!(lost_evidence["kind"], "lost_integration_evidence");
+    // The current trunk proves nothing, so it is named only as the trunk that lost the proof.
+    assert_eq!(
+        lost_evidence["data"]["recovery"]["kind"],
+        "name_carrying_trunk_commit"
+    );
+    assert_eq!(lost_evidence["data"]["recovery"]["trunk_oid"], trunk);
+}
+
+/// Replace a released reservation's lost evidence with a trunk commit that carries the work.
+fn replace_the_integration_evidence(repository: &Path, reservation_id: &str, commit: &str) {
+    let replaced = run_berth(
+        repository,
+        &[
+            "resolve",
+            reservation_id,
+            "--integrated-as",
+            commit,
+            "--json",
+        ],
+    );
+    assert!(replaced.status.success(), "{:#}", json_output(&replaced));
+    assert_eq!(
+        json_output(&replaced)["payload"]["data"]["disposition"]["evidence"],
+        commit
+    );
+}
+
+/// Assert `resolve --integrated-as` refuses a trunk commit that does not carry the protected work.
+fn assert_integrated_as_lacks_the_work(
+    repository: &Path,
+    reservation_id: &str,
+    commit: &str,
+    protected_tip: &str,
+) {
+    let refused = run_berth(
+        repository,
+        &[
+            "resolve",
+            reservation_id,
+            "--integrated-as",
+            commit,
+            "--json",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(5));
+    let message = json_output(&refused)["message"]
+        .as_str()
+        .expect("refusal should carry a message")
+        .to_owned();
+    assert!(message.contains(commit), "{message}");
+    assert!(message.contains(protected_tip), "{message}");
+    assert!(
+        message.contains(&format!(
+            "cargo-berth resolve {reservation_id} --retire-orphan --why <reason>"
+        )),
+        "{message}"
     );
 }
 

@@ -1818,7 +1818,7 @@
           "description": "Recovery instructions distinguished by whether the configured trunk resolved.",
           "oneOf": [
             {
-              "description": "Trunk resolved; the operator can confirm it carries the released work.",
+              "description": "A trunk commit already proves the protected work; the operator can name it.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
@@ -1829,7 +1829,31 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current configured trunk commit.",
+                  "description": "The trunk commit that carries the protected work.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "trunk_oid",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Trunk resolved but does not carry the protected work, so no trunk commit can be named.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/lost_evidence_recovery_action",
+                  "description": "The typed resolution available once a trunk commit carries the work."
+                },
+                "kind": {
+                  "const": "name_carrying_trunk_commit",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The current configured trunk commit, which does not contain the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -4435,6 +4459,41 @@
           "minLength": 1,
           "type": "string"
         },
+        "OrphanIntegrationEvidence": {
+          "description": "Whether the reconciliation pass that found an orphan proved its protected work in trunk.",
+          "oneOf": [
+            {
+              "description": "This trunk commit carries the protected work.",
+              "properties": {
+                "commit": {
+                  "type": "string"
+                },
+                "status": {
+                  "const": "proven",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "commit"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "No trunk commit was shown to carry the protected work.",
+              "properties": {
+                "status": {
+                  "const": "unproven",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "OrphanRecoveryConsequence": {
           "enum": [
             "work_recoverable",
@@ -4504,6 +4563,10 @@
               "$ref": "#/$defs/BranchRefStatus",
               "description": "Whether the acquisition-time branch reference survives."
             },
+            "integration_evidence": {
+              "$ref": "#/$defs/OrphanIntegrationEvidence",
+              "description": "Whether the same reconciliation pass proved the protected work in trunk."
+            },
             "object_availability": {
               "$ref": "#/$defs/ObjectAvailability",
               "description": "Whether git can still read the protected commit object."
@@ -4531,7 +4594,8 @@
             "branch_ref_status",
             "object_availability",
             "retention_ref",
-            "recoverability"
+            "recoverability",
+            "integration_evidence"
           ],
           "type": "object"
         },
@@ -7629,7 +7693,7 @@
           "description": "Recovery instructions distinguished by whether the configured trunk resolved.",
           "oneOf": [
             {
-              "description": "Trunk resolved; the operator can confirm it carries the released work.",
+              "description": "A trunk commit already proves the protected work; the operator can name it.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
@@ -7640,7 +7704,31 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current configured trunk commit.",
+                  "description": "The trunk commit that carries the protected work.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "trunk_oid",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Trunk resolved but does not carry the protected work, so no trunk commit can be named.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/lost_evidence_recovery_action",
+                  "description": "The typed resolution available once a trunk commit carries the work."
+                },
+                "kind": {
+                  "const": "name_carrying_trunk_commit",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The current configured trunk commit, which does not contain the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -14732,7 +14820,7 @@
           "description": "Recovery instructions distinguished by whether the configured trunk resolved.",
           "oneOf": [
             {
-              "description": "Trunk resolved; the operator can confirm it carries the released work.",
+              "description": "A trunk commit already proves the protected work; the operator can name it.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
@@ -14743,7 +14831,31 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current configured trunk commit.",
+                  "description": "The trunk commit that carries the protected work.",
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "trunk_oid",
+                "action"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Trunk resolved but does not carry the protected work, so no trunk commit can be named.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/lost_evidence_recovery_action",
+                  "description": "The typed resolution available once a trunk commit carries the work."
+                },
+                "kind": {
+                  "const": "name_carrying_trunk_commit",
+                  "type": "string"
+                },
+                "trunk_oid": {
+                  "description": "The current configured trunk commit, which does not contain the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }

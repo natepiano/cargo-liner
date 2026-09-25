@@ -3762,7 +3762,7 @@ fn lost_evidence_alert_covers_an_unknown_protected_tip() {
         .expect("an unavailable protected tip should raise an alert");
     assert_eq!(
         unknown_tip_alert["recovery"]["kind"],
-        "verify_resolved_trunk"
+        "name_carrying_trunk_commit"
     );
     assert_eq!(unknown_tip_alert["recovery"]["trunk_oid"], rewritten_trunk);
 }
@@ -4830,7 +4830,7 @@ fn assert_orphan_verdict(
     assert_eq!(alert["resolution"]["action"], action);
     if action == "recover_with_trunk" {
         let recovery = &alert["resolution"]["recovery"];
-        assert_eq!(recovery["kind"], "verify_resolved_trunk");
+        assert_eq!(recovery["kind"], "name_carrying_trunk_commit");
         assert_eq!(recovery["trunk_oid"], trunk_oid);
         assert_eq!(recovery["action"]["action"], "resolve_integrated_as");
         assert_eq!(

@@ -1113,30 +1113,25 @@ fn integrated_as_replacement_uses_invoking_worktree_actor() {
     let reservation_id = release_rewritten_reservation(repository.path());
 
     git(repository.path(), &["switch", "--quiet", "main"]);
-    let first_evidence = commit_integration_evidence(
+    // A trunk commit carrying the work settles the reservation during reconciliation, before an
+    // `--integrated-as` resolution could run, so the replacement is the operator's own record.
+    commit_integration_evidence(
         repository.path(),
-        "integrated.rs",
-        "first evidence\n",
-        "first integration evidence",
+        "rewritten.rs",
+        "original result\n",
+        "squashed integration",
     );
-    let first_resolution = resolve_integrated_as_from_linked_worktree(
-        &linked_root,
+    let settled = run_berth_with_session(
         repository.path(),
-        &reservation_id,
-        &first_evidence,
-        "release",
+        &["release", &reservation_id, "--json"],
+        "rewritten-holder",
     );
-    assert_journalled_actor(
-        &first_resolution,
-        RECORDED_INCIDENT_WORKTREE_ID,
-        RECORDED_INCIDENT_COORDINATION_RUN_ID,
-    );
-
+    assert_eq!(json_output(&settled)["status"], "integrated");
     invalidate_release_disposition(repository.path(), &reservation_id);
     let replacement_evidence = commit_integration_evidence(
         repository.path(),
-        "integrated-again.rs",
-        "replacement evidence\n",
+        "rewritten.rs",
+        "original result\n",
         "replacement integration evidence",
     );
     let replacement_event = resolve_integrated_as_from_linked_worktree(

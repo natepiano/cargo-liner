@@ -327,7 +327,10 @@ fn lost_integration_evidence_detail(
 ) -> String {
     match recovery {
         LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but trunk {trunk_oid} no longer proves protected tip {protected_tip}. If trunk {trunk_oid} contains the released work, run `cargo-berth resolve {reservation_id} --integrated-as {trunk_oid}`. Otherwise restore the work first. Inspect `cargo-berth board --json`."
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and trunk commit {trunk_oid} carries protected tip {protected_tip}. Run `cargo-berth resolve {reservation_id} --integrated-as {trunk_oid}`. Inspect `cargo-berth board --json`."
+        ),
+        LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => format!(
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but trunk {trunk_oid} no longer proves protected tip {protected_tip}. If a trunk commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TRUNK_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`."
         ),
         LostEvidenceRecovery::ResolveTrunkFirst { .. } => format!(
             "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and trunk does not currently resolve to a known object, so protected tip {protected_tip} cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`."
@@ -366,7 +369,9 @@ fn orphaned_outstanding_detail(
     );
     if let BoardOrphanResolutionAction::RecoverWithTrunk { recovery } = resolution {
         detail.push(' ');
-        detail.push_str(OrphanResolutionAction::Recover(recovery.clone()).integration_guidance());
+        detail.push_str(
+            &OrphanResolutionAction::Recover(recovery.clone()).integration_guidance(protected_tip),
+        );
     }
     detail
 }

@@ -47,6 +47,8 @@ use crate::reservation::IncursionIncident;
 use crate::reservation::IncursionIncidentStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::OrphanRetirementReason;
+use crate::reservation::PriorIntegrationStatus;
+use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
@@ -420,6 +422,7 @@ fn execute_reservation_resolution(
                     },
                 };
                 match recovery_operation(
+                    repository_root,
                     reservation,
                     resolve_request.reservation_id,
                     recovery_request,
@@ -554,6 +557,7 @@ fn validate_recovery_request(
 }
 
 fn recovery_operation(
+    repository_root: &Path,
     reservation: &Reservation,
     reservation_id: ReservationId,
     recovery_request: ReservationRecoveryDecision,
@@ -600,16 +604,20 @@ fn recovery_operation(
             ))
         },
         ReservationRecoveryDecision::IntegratedAs(trunk_commit) => {
-            let disposition = ReleaseDisposition::RewrittenIntegration(trunk_commit);
+            let disposition = ReleaseDisposition::RewrittenIntegration(trunk_commit.clone());
             let evidence_state = reservation
                 .evidence_state()
                 .map_err(RecoveryRejection::Replay)?;
-            let operation = match evidence_state {
-                ReservationEvidenceState::Outstanding { .. } => JournalOperation::Release {
-                    reservation_id,
-                    disposition: disposition.clone(),
-                },
+            let (operation, protected_tip) = match evidence_state {
+                ReservationEvidenceState::Outstanding { protected_tip, .. } => (
+                    JournalOperation::Release {
+                        reservation_id,
+                        disposition: disposition.clone(),
+                    },
+                    protected_tip,
+                ),
                 ReservationEvidenceState::Released {
+                    protected_tip,
                     disposition: superseded,
                     integration_status:
                         IntegrationEvidenceStatus::NotIntegrated
@@ -621,11 +629,14 @@ fn recovery_operation(
                     ReleaseRevalidationSubject::None
                 ) =>
                 {
-                    JournalOperation::ReplaceReleaseDisposition {
-                        reservation_id,
-                        superseded,
-                        replacement: disposition.clone(),
-                    }
+                    (
+                        JournalOperation::ReplaceReleaseDisposition {
+                            reservation_id,
+                            superseded,
+                            replacement: disposition.clone(),
+                        },
+                        protected_tip,
+                    )
                 },
                 ReservationEvidenceState::Released { .. }
                 | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
@@ -635,6 +646,12 @@ fn recovery_operation(
                     return Err(RecoveryRejection::CheckpointRequired);
                 },
             };
+            verify_integration_commit_carries_work(
+                repository_root,
+                reservation,
+                &protected_tip,
+                &trunk_commit,
+            )?;
             Ok((
                 operation,
                 ResolvePayloadSeed::Released {
@@ -654,6 +671,43 @@ fn recovery_operation(
             reservation_id,
             ReleaseDisposition::RetiredOrphan(reason),
         ),
+    }
+}
+
+/// Refuse an `--integrated-as` commit unless it contains the protected work.
+///
+/// Trunk reachability alone accepted any trunk commit, and a `RewrittenIntegration` witness is
+/// revalidated by ancestry alone afterwards, so a commit lacking the work would stand forever.
+fn verify_integration_commit_carries_work(
+    repository_root: &Path,
+    reservation: &Reservation,
+    protected_tip: &ProtectedReservationTip,
+    commit: &RewrittenIntegrationTrunkCommit,
+) -> Result<(), RecoveryRejection> {
+    match reservation::integration_status(
+        repository_root,
+        reservation.phase_start_head(),
+        reservation.scopes(),
+        protected_tip,
+        commit.as_ref(),
+        PriorIntegrationStatus::Unproven,
+    )
+    .map_err(RecoveryRejection::Git)?
+    {
+        IntegrationEvidenceStatus::Integrated { .. } => Ok(()),
+        IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten => {
+            Err(RecoveryRejection::IntegrationCommitLacksWork {
+                reservation_id: reservation.id(),
+                commit:         commit.clone(),
+                protected_tip:  protected_tip.clone(),
+            })
+        },
+        IntegrationEvidenceStatus::ObjectUnknown => {
+            Err(RecoveryRejection::IntegrationCommitUncompared {
+                commit:        commit.clone(),
+                protected_tip: protected_tip.clone(),
+            })
+        },
     }
 }
 
@@ -786,6 +840,15 @@ enum RecoveryRejection {
     AlreadyResolved,
     SameWorktreeRecovery,
     UnreachableIntegrationEvidence,
+    IntegrationCommitLacksWork {
+        reservation_id: ReservationId,
+        commit:         RewrittenIntegrationTrunkCommit,
+        protected_tip:  ProtectedReservationTip,
+    },
+    IntegrationCommitUncompared {
+        commit:        RewrittenIntegrationTrunkCommit,
+        protected_tip: ProtectedReservationTip,
+    },
     Git(GitError),
     EdgeReplay(EdgeReplayError),
 }
@@ -908,6 +971,23 @@ impl Display for RecoveryRejection {
                 .write_str("--recovered requires a replacement worktree with a new identity"),
             Self::UnreachableIntegrationEvidence => formatter.write_str(
                 "the --integrated-as commit must resolve in this repository and be reachable from trunk",
+            ),
+            Self::IntegrationCommitLacksWork {
+                reservation_id,
+                commit,
+                protected_tip,
+            } => write!(
+                formatter,
+                "the --integrated-as commit {} does not contain protected tip {protected_tip} or an equivalent of its scoped changes; name a trunk commit that carries this work, or run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>` when the work landed where git cannot match it",
+                commit.as_ref()
+            ),
+            Self::IntegrationCommitUncompared {
+                commit,
+                protected_tip,
+            } => write!(
+                formatter,
+                "git could not compare the --integrated-as commit {} with protected tip {protected_tip}, so it cannot record that commit as carrying the work",
+                commit.as_ref()
             ),
             Self::Git(error) => error.fmt(formatter),
             Self::EdgeReplay(error) => error.fmt(formatter),

@@ -12,6 +12,7 @@ use std::thread;
 
 use crate::alert;
 use crate::alert::Alert;
+use crate::alert::OrphanIntegrationEvidence;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
@@ -4058,6 +4059,13 @@ impl ReconciliationAction {
                     .reservation(alert_subject.reservation_id)
                     .map_err(ReconcileError::Replay)?,
                 alert_subject.worktree_liveness,
+                OrphanIntegrationEvidence::from(
+                    &self
+                        .repository_snapshot
+                        .reservation(alert_subject.reservation_id)
+                        .map_err(ReconcileError::MissingReadinessFact)?
+                        .evidence,
+                ),
             )?);
         }
         let orphan_recovery_evidence_queries = alerts

@@ -3085,7 +3085,10 @@ fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
         alert["data"]["evidence_status"]["status"],
         "trunk_rewritten"
     );
-    assert_eq!(alert["data"]["recovery"]["kind"], "verify_resolved_trunk");
+    assert_eq!(
+        alert["data"]["recovery"]["kind"],
+        "name_carrying_trunk_commit"
+    );
 }
 
 #[test]

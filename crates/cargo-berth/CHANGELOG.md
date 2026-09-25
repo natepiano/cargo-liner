@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An orphaned or released reservation whose protected tip is not in trunk no
+  longer suggests `cargo-berth resolve <id> --integrated-as <trunk tip>`. Both
+  notices name that trunk as not containing the work; the orphan notice offers
+  `--recovered`, `--retire-orphan`, or `--abandon`, and the lost-evidence notice
+  asks for a trunk commit that carries the work. `resolve --integrated-as`
+  refuses a trunk commit that carries neither the protected tip nor an
+  equivalent of its scoped changes.
+
 - A linked worktree added after `cargo-berth init` reads the main worktree's
   untracked `.claude/config/berth.toml` when it has none of its own, rather than
   reporting `unconfigured` and letting the edit hook allow every write in silence.

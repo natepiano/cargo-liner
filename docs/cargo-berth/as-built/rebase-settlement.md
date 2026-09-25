@@ -184,9 +184,10 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 
 ### Orphan notice
 
-`OrphanResolutionAction::new(&OrphanedOutstandingAlert, &RepositoryTrunk)` (`src/alert.rs`) uses the already-observed trunk and stores nothing new on the alert:
+`OrphanResolutionAction::new(&OrphanedOutstandingAlert, &RepositoryTrunk)` (`src/alert.rs`) uses the already-observed trunk and the alert's `OrphanIntegrationEvidence`, which reconciliation derives from the same snapshot row (`Outstanding` with `Integrated { trunk_oid, witness }` becomes `Proven(witness.resolve(trunk_oid))`, anything else `Unproven`):
 
-- `Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. })` offers `resolve <id> --recovered` and `resolve <id> --integrated-as <trunk_oid>`.
+- `Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. })`, for `Proven(commit)`, names that carrying commit and offers `resolve <id> --recovered` and `resolve <id> --integrated-as <commit>`.
+- `Recover(NameCarryingTrunkCommit { trunk_oid, .. })`, for `Unproven` with resolved trunk, offers `--recovered`, `--retire-orphan --why <reason>`, and `--abandon --why <reason>`, and states that trunk `trunk_oid` does not contain the protected tip. The current trunk is never offered as the `--integrated-as` argument, because it does not carry the work.
 - `Recover(ResolveTrunkFirst { .. })` offers `--recovered` and says trunk must resolve before an integration commit can be named.
 - `RetireOrAbandon` (verdict `CommitUnavailable`) offers `--retire-orphan --why <reason>` and `--abandon --why <reason>`.
 
@@ -197,7 +198,7 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 - No path releases a reservation whose work did not reach trunk. A rewrite map, a cherry-mark match, or a nominated candidate only nominates a location. Scoped replay must show that the whole `phase_start_head..protected_tip` is contained, and scoped work past the protected tip in the merge extent blocks release.
 - Only ordinary reconciliation settles. The committed hook appends no evidence or lifecycle records, and evidence against a proposed trunk never settles. Settlement requires `trunk_oid == actual trunk`.
 - `trunk_oid` is always the evaluated trunk, and the released commit always comes from `witness.resolve(trunk_oid)`. Code must never read the witness from `trunk_oid` directly.
-- Witness revalidation is ancestry only. A released `RewrittenIntegration` never reaches scoped replay, and only `CheckpointTip` successor subjects enter scoped comparison.
+- Witness revalidation is ancestry only. A released `RewrittenIntegration` never reaches scoped replay, and only `CheckpointTip` successor subjects enter scoped comparison. Because ancestry alone keeps the witness valid, `recovery::verify_integration_commit_carries_work` runs `integration_status` against the named commit before `resolve --integrated-as` records it, and refuses a commit that neither contains the protected tip nor carries an equivalent of its scoped changes.
 - Replay performs no git writes. Retention refs move, and rewrite markers are rewritten or deleted, only in the committed action after the append succeeds. A failed append leaves the old ref and the marker.
 - Rewrite consumers use the `created_commits` and pairs stored at capture. They never reconstruct them from current refs. No consumer may assume hook stdin carries the previous tip.
 - Proposed-trunk projection and lifecycle rules are chosen by `GateReconciliationPurpose`. `CommittedAudit` must not project settlements.

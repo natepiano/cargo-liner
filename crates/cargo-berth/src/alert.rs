@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::git::GitError;
@@ -24,6 +25,7 @@ use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
+use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::worktree::WorktreeLiveness;
 
 /// A persistent coordination condition that remains until journal state resolves it.
@@ -81,13 +83,17 @@ impl Display for Alert {
             Self::LostIntegrationEvidence(alert) => match &alert.recovery {
                 LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but trunk {} no longer proves protected tip {}. If trunk {} contains the released work, run `cargo-berth resolve {} --integrated-as {}`. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and trunk commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --json`.",
                     alert.reservation_id,
                     trunk_oid,
                     alert.protected_tip,
-                    trunk_oid,
                     alert.reservation_id,
                     trunk_oid,
+                ),
+                LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => write!(
+                    formatter,
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but trunk {} no longer proves protected tip {}. If a trunk commit carries the released work, run `cargo-berth resolve {} --integrated-as <TRUNK_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
+                    alert.reservation_id, trunk_oid, alert.protected_tip, alert.reservation_id,
                 ),
                 LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
                     formatter,
@@ -160,13 +166,22 @@ declare_wire_enum! {
 #[schemars(rename = "lost_evidence_recovery")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LostEvidenceRecovery {
-    /// Trunk resolved; the operator can confirm it carries the released work.
+    /// A trunk commit already proves the protected work; the operator can name it.
     VerifyResolvedTrunk {
-        /// The current configured trunk commit.
+        /// The trunk commit that carries the protected work.
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
         trunk_oid: GitObjectId,
         /// The typed resolution available after the operator verifies the work.
+        action:    LostEvidenceRecoveryCommand,
+    },
+    /// Trunk resolved but does not carry the protected work, so no trunk commit can be named.
+    NameCarryingTrunkCommit {
+        /// The current configured trunk commit, which does not contain the protected work.
+        #[schemars(with = "String")]
+        #[schemars(length(min = 1))]
+        trunk_oid: GitObjectId,
+        /// The typed resolution available once a trunk commit carries the work.
         action:    LostEvidenceRecoveryCommand,
     },
     /// No trunk object resolved; trunk must resolve before any repair is available.
@@ -186,6 +201,34 @@ pub(crate) enum LostEvidenceRecoveryCommand {
         #[schemars(with = "String")]
         reservation_id: ReservationId,
     },
+}
+
+/// Whether the reconciliation pass that found an orphan proved its protected work in trunk.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "status", content = "commit", rename_all = "snake_case")]
+pub(crate) enum OrphanIntegrationEvidence {
+    /// This trunk commit carries the protected work.
+    Proven(#[schemars(with = "String")] RewrittenIntegrationTrunkCommit),
+    /// No trunk commit was shown to carry the protected work.
+    Unproven,
+}
+
+impl From<&RepositoryReservationEvidence> for OrphanIntegrationEvidence {
+    fn from(evidence: &RepositoryReservationEvidence) -> Self {
+        match evidence {
+            RepositoryReservationEvidence::Outstanding {
+                integration_status:
+                    IntegrationEvidenceStatus::Integrated {
+                        trunk_oid, witness, ..
+                    },
+                ..
+            } => Self::Proven(witness.resolve(trunk_oid)),
+            RepositoryReservationEvidence::Active
+            | RepositoryReservationEvidence::Outstanding { .. }
+            | RepositoryReservationEvidence::Released { .. }
+            | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => Self::Unproven,
+        }
+    }
 }
 
 /// The disposition choices supported by an orphan's retained work and observed trunk.
@@ -210,14 +253,20 @@ impl OrphanResolutionAction {
                 let action = LostEvidenceRecoveryCommand::ResolveIntegratedAs {
                     reservation_id: orphan.reservation_id(),
                 };
-                Self::Recover(match repository_trunk {
-                    RepositoryTrunk::Resolved(trunk_oid) => {
+                Self::Recover(match (orphan.integration_evidence(), repository_trunk) {
+                    (OrphanIntegrationEvidence::Proven(carrying_commit), _) => {
                         LostEvidenceRecovery::VerifyResolvedTrunk {
+                            trunk_oid: carrying_commit.as_ref().clone(),
+                            action,
+                        }
+                    },
+                    (OrphanIntegrationEvidence::Unproven, RepositoryTrunk::Resolved(trunk_oid)) => {
+                        LostEvidenceRecovery::NameCarryingTrunkCommit {
                             trunk_oid: trunk_oid.clone(),
                             action,
                         }
                     },
-                    RepositoryTrunk::ObjectUnknown => {
+                    (OrphanIntegrationEvidence::Unproven, RepositoryTrunk::ObjectUnknown) => {
                         LostEvidenceRecovery::ResolveTrunkFirst { action }
                     },
                 })
@@ -232,6 +281,15 @@ impl OrphanResolutionAction {
                 format!("resolve {reservation_id} --recovered"),
                 format!("resolve {reservation_id} --integrated-as {trunk_oid}"),
             ],
+            Self::Recover(LostEvidenceRecovery::NameCarryingTrunkCommit { .. }) => {
+                std::iter::once(format!("resolve {reservation_id} --recovered"))
+                    .chain(
+                        Self::retirement_flags()
+                            .iter()
+                            .map(|flag| format!("resolve {reservation_id} {flag}")),
+                    )
+                    .collect()
+            },
             Self::Recover(LostEvidenceRecovery::ResolveTrunkFirst { .. }) => {
                 vec![format!("resolve {reservation_id} --recovered")]
             },
@@ -248,15 +306,19 @@ impl OrphanResolutionAction {
     }
 
     /// Explain when an integration disposition is appropriate or requires trunk repair.
-    pub(crate) const fn integration_guidance(&self) -> &'static str {
+    pub(crate) fn integration_guidance(&self, protected_tip: &ProtectedReservationTip) -> String {
         match self {
-            Self::Recover(LostEvidenceRecovery::VerifyResolvedTrunk { .. }) => {
-                "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as after verifying trunk contains the work."
-            },
+            Self::Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. }) => format!(
+                "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since trunk commit {trunk_oid} carries the work."
+            ),
+            Self::Recover(LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. }) => format!(
+                "Trunk {trunk_oid} does not contain protected tip {protected_tip}; --integrated-as needs a trunk commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than trunk."
+            ),
             Self::Recover(LostEvidenceRecovery::ResolveTrunkFirst { .. }) => {
                 "For a merged branch, resolve trunk first, then rerun to name the integration commit."
+                    .to_owned()
             },
-            Self::RetireOrAbandon => "",
+            Self::RetireOrAbandon => String::new(),
         }
     }
 }
@@ -265,17 +327,19 @@ impl OrphanResolutionAction {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct OrphanedOutstandingAlert {
     /// The reservation that still retains scopes and ordering edges.
-    reservation_id:      ReservationId,
+    reservation_id:       ReservationId,
     /// The fixed checkpoint commit whose availability was tested.
-    protected_tip:       ProtectedReservationTip,
+    protected_tip:        ProtectedReservationTip,
     /// Whether the acquisition-time branch reference survives.
-    branch_ref_status:   BranchRefStatus,
+    branch_ref_status:    BranchRefStatus,
     /// Whether git can still read the protected commit object.
-    object_availability: ObjectAvailability,
+    object_availability:  ObjectAvailability,
     /// Whether the private retention ref still protects the expected commit.
-    retention_ref:       RetentionRefStatus,
+    retention_ref:        RetentionRefStatus,
     /// The strongest recovery route established by current evidence.
-    recoverability:      RecoverabilityVerdict,
+    recoverability:       RecoverabilityVerdict,
+    /// Whether the same reconciliation pass proved the protected work in trunk.
+    integration_evidence: OrphanIntegrationEvidence,
 }
 
 impl OrphanedOutstandingAlert {
@@ -298,6 +362,11 @@ impl OrphanedOutstandingAlert {
 
     /// Return the recovery conclusion already established by reconciliation.
     pub(crate) const fn recoverability(&self) -> RecoverabilityVerdict { self.recoverability }
+
+    /// Borrow the trunk integration evidence observed alongside the orphan.
+    pub(crate) const fn integration_evidence(&self) -> &OrphanIntegrationEvidence {
+        &self.integration_evidence
+    }
 }
 
 /// Current status of the branch reference recorded at claim time.
@@ -425,8 +494,10 @@ pub(crate) fn for_lost_integration_evidence(
     let action = LostEvidenceRecoveryCommand::ResolveIntegratedAs {
         reservation_id: reservation.id(),
     };
+    // The alert fires only when trunk does not prove the work, so the resolved trunk tip is
+    // never offered as the `--integrated-as` argument.
     let recovery = match repository_trunk {
-        RepositoryTrunk::Resolved(trunk_oid) => LostEvidenceRecovery::VerifyResolvedTrunk {
+        RepositoryTrunk::Resolved(trunk_oid) => LostEvidenceRecovery::NameCarryingTrunkCommit {
             trunk_oid: trunk_oid.clone(),
             action,
         },
@@ -459,6 +530,7 @@ pub(crate) fn for_orphaned_outstanding(
     repository_root: &Path,
     reservation: &Reservation,
     worktree_liveness: WorktreeLiveness,
+    integration_evidence: OrphanIntegrationEvidence,
 ) -> Result<Vec<Alert>, GitError> {
     let ReservationLifecycle::Outstanding { protected_tip } = reservation.lifecycle() else {
         return Ok(Vec::new());
@@ -497,6 +569,7 @@ pub(crate) fn for_orphaned_outstanding(
         object_availability,
         retention_ref,
         recoverability,
+        integration_evidence,
     })])
 }
 
@@ -557,95 +630,234 @@ mod tests {
     use super::LostEvidenceRecovery;
     use super::LostEvidenceRecoveryCommand;
     use super::ObjectAvailability;
+    use super::OrphanIntegrationEvidence;
     use super::OrphanResolutionAction;
     use super::OrphanedOutstandingAlert;
     use super::RecoverabilityVerdict;
     use super::RetentionRefStatus;
+    use crate::edge::RepositoryReservationEvidence;
     use crate::edge::RepositoryTrunk;
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
+    use crate::reservation::IntegrationEvidenceStatus;
+    use crate::reservation::IntegrationProof;
+    use crate::reservation::IntegrationWitness;
+    use crate::reservation::OrphanRetirementReason;
     use crate::reservation::ProtectedReservationTip;
+    use crate::reservation::ReleaseDisposition;
+    use crate::reservation::RewrittenIntegrationTrunkCommit;
+
+    const CARRYING_COMMIT: &str = "cccccccccccccccccccccccccccccccccccccccc";
+    const PROTECTED_TIP: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const TRUNK_TIP: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[test]
     fn orphan_resolution_action() -> Result<(), Box<dyn Error>> {
         let reservation_id = ReservationId::new();
-        let trunk_oid: GitObjectId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?;
+        let trunk_oid: GitObjectId = TRUNK_TIP.parse()?;
+        let protected_tip = ProtectedReservationTip::from(PROTECTED_TIP.parse::<GitObjectId>()?);
+        let carrying_commit =
+            RewrittenIntegrationTrunkCommit::from(CARRYING_COMMIT.parse::<GitObjectId>()?);
         for recoverability in [
             RecoverabilityVerdict::RecoverableFromBranch,
             RecoverabilityVerdict::RecoverableFromProtectedTip,
             RecoverabilityVerdict::CommitUnavailable,
         ] {
-            for trunk in [
-                RepositoryTrunk::Resolved(trunk_oid.clone()),
-                RepositoryTrunk::ObjectUnknown,
+            for integration_evidence in [
+                OrphanIntegrationEvidence::Proven(carrying_commit.clone()),
+                OrphanIntegrationEvidence::Unproven,
             ] {
-                let orphan = OrphanedOutstandingAlert {
-                    reservation_id,
-                    protected_tip: ProtectedReservationTip::from(
-                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse::<GitObjectId>()?,
-                    ),
-                    branch_ref_status: BranchRefStatus::Detached,
-                    object_availability: if recoverability
-                        == RecoverabilityVerdict::CommitUnavailable
-                    {
-                        ObjectAvailability::Unavailable
-                    } else {
-                        ObjectAvailability::Available
-                    },
-                    retention_ref: RetentionRefStatus::Missing {
-                        reference: "refs/retained".to_owned(),
-                    },
-                    recoverability,
-                };
-                let action = OrphanResolutionAction::new(&orphan, &trunk);
-                let command = LostEvidenceRecoveryCommand::ResolveIntegratedAs { reservation_id };
-                let expected = match (recoverability, &trunk) {
-                    (RecoverabilityVerdict::CommitUnavailable, _) => {
-                        OrphanResolutionAction::RetireOrAbandon
-                    },
-                    (_, RepositoryTrunk::Resolved(trunk_oid)) => {
-                        OrphanResolutionAction::Recover(LostEvidenceRecovery::VerifyResolvedTrunk {
-                            trunk_oid: trunk_oid.clone(),
-                            action:    command,
-                        })
-                    },
-                    (_, RepositoryTrunk::ObjectUnknown) => {
-                        OrphanResolutionAction::Recover(LostEvidenceRecovery::ResolveTrunkFirst {
-                            action: command,
-                        })
-                    },
-                };
-                assert_eq!(action, expected);
-                let commands = action.commands(reservation_id);
-                match action {
-                    OrphanResolutionAction::RetireOrAbandon => assert_eq!(
-                        commands,
-                        [
-                            format!("resolve {reservation_id} --retire-orphan --why <reason>"),
-                            format!("resolve {reservation_id} --abandon --why <reason>"),
-                        ]
-                    ),
-                    OrphanResolutionAction::Recover(
-                        LostEvidenceRecovery::VerifyResolvedTrunk { .. },
-                    ) => assert_eq!(
-                        commands,
-                        [
-                            format!("resolve {reservation_id} --recovered"),
-                            format!("resolve {reservation_id} --integrated-as {trunk_oid}"),
-                        ]
-                    ),
-                    OrphanResolutionAction::Recover(LostEvidenceRecovery::ResolveTrunkFirst {
-                        ..
-                    }) => {
-                        assert_eq!(commands, [format!("resolve {reservation_id} --recovered")]);
-                        assert!(
-                            action
-                                .integration_guidance()
-                                .contains("resolve trunk first")
-                        );
-                    },
+                for trunk in [
+                    RepositoryTrunk::Resolved(trunk_oid.clone()),
+                    RepositoryTrunk::ObjectUnknown,
+                ] {
+                    let orphan = OrphanedOutstandingAlert {
+                        reservation_id,
+                        protected_tip: protected_tip.clone(),
+                        branch_ref_status: BranchRefStatus::Detached,
+                        object_availability: if recoverability
+                            == RecoverabilityVerdict::CommitUnavailable
+                        {
+                            ObjectAvailability::Unavailable
+                        } else {
+                            ObjectAvailability::Available
+                        },
+                        retention_ref: RetentionRefStatus::Missing {
+                            reference: "refs/retained".to_owned(),
+                        },
+                        recoverability,
+                        integration_evidence: integration_evidence.clone(),
+                    };
+                    let action = OrphanResolutionAction::new(&orphan, &trunk);
+                    let command =
+                        LostEvidenceRecoveryCommand::ResolveIntegratedAs { reservation_id };
+                    let expected = match (recoverability, &integration_evidence, &trunk) {
+                        (RecoverabilityVerdict::CommitUnavailable, _, _) => {
+                            OrphanResolutionAction::RetireOrAbandon
+                        },
+                        (_, OrphanIntegrationEvidence::Proven(commit), _) => {
+                            OrphanResolutionAction::Recover(
+                                LostEvidenceRecovery::VerifyResolvedTrunk {
+                                    trunk_oid: commit.as_ref().clone(),
+                                    action:    command,
+                                },
+                            )
+                        },
+                        (
+                            _,
+                            OrphanIntegrationEvidence::Unproven,
+                            RepositoryTrunk::Resolved(trunk_oid),
+                        ) => OrphanResolutionAction::Recover(
+                            LostEvidenceRecovery::NameCarryingTrunkCommit {
+                                trunk_oid: trunk_oid.clone(),
+                                action:    command,
+                            },
+                        ),
+                        (
+                            _,
+                            OrphanIntegrationEvidence::Unproven,
+                            RepositoryTrunk::ObjectUnknown,
+                        ) => OrphanResolutionAction::Recover(
+                            LostEvidenceRecovery::ResolveTrunkFirst { action: command },
+                        ),
+                    };
+                    assert_eq!(action, expected);
+                    assert_commands_and_guidance(&action, reservation_id, &protected_tip);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Assert the commands and guidance each action offers for one orphan.
+    fn assert_commands_and_guidance(
+        action: &OrphanResolutionAction,
+        reservation_id: ReservationId,
+        protected_tip: &ProtectedReservationTip,
+    ) {
+        let commands = action.commands(reservation_id);
+        let guidance = action.integration_guidance(protected_tip);
+        match *action {
+            OrphanResolutionAction::RetireOrAbandon => {
+                assert_eq!(
+                    commands,
+                    [
+                        format!("resolve {reservation_id} --retire-orphan --why <reason>"),
+                        format!("resolve {reservation_id} --abandon --why <reason>"),
+                    ]
+                );
+                assert_eq!(guidance, "");
+            },
+            OrphanResolutionAction::Recover(LostEvidenceRecovery::VerifyResolvedTrunk {
+                ..
+            }) => {
+                assert_eq!(
+                    commands,
+                    [
+                        format!("resolve {reservation_id} --recovered"),
+                        format!("resolve {reservation_id} --integrated-as {CARRYING_COMMIT}"),
+                    ]
+                );
+                assert_eq!(
+                    guidance,
+                    format!(
+                        "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since trunk commit {CARRYING_COMMIT} carries the work."
+                    )
+                );
+            },
+            OrphanResolutionAction::Recover(LostEvidenceRecovery::NameCarryingTrunkCommit {
+                ..
+            }) => {
+                assert_eq!(
+                    commands,
+                    [
+                        format!("resolve {reservation_id} --recovered"),
+                        format!("resolve {reservation_id} --retire-orphan --why <reason>"),
+                        format!("resolve {reservation_id} --abandon --why <reason>"),
+                    ]
+                );
+                assert_eq!(
+                    guidance,
+                    format!(
+                        "Trunk {TRUNK_TIP} does not contain protected tip {PROTECTED_TIP}; --integrated-as needs a trunk commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than trunk."
+                    )
+                );
+            },
+            OrphanResolutionAction::Recover(LostEvidenceRecovery::ResolveTrunkFirst { .. }) => {
+                assert_eq!(commands, [format!("resolve {reservation_id} --recovered")]);
+                assert_eq!(
+                    guidance,
+                    "For a merged branch, resolve trunk first, then rerun to name the integration commit."
+                );
+            },
+        }
+    }
+
+    #[test]
+    fn orphan_integration_evidence_names_the_proving_trunk_commit() -> Result<(), Box<dyn Error>> {
+        let trunk_oid: GitObjectId = TRUNK_TIP.parse()?;
+        let protected_tip = ProtectedReservationTip::from(PROTECTED_TIP.parse::<GitObjectId>()?);
+        let carrying_commit =
+            RewrittenIntegrationTrunkCommit::from(CARRYING_COMMIT.parse::<GitObjectId>()?);
+        let integrated = |witness: IntegrationWitness| IntegrationEvidenceStatus::Integrated {
+            trunk_oid: trunk_oid.clone(),
+            proof: IntegrationProof::ScopedPatchEquivalent,
+            witness,
+        };
+        let outstanding = |integration_status: IntegrationEvidenceStatus| {
+            RepositoryReservationEvidence::Outstanding {
+                protected_tip: protected_tip.clone(),
+                integration_status,
+            }
+        };
+        let cases = [
+            (
+                outstanding(integrated(IntegrationWitness::Historical(
+                    carrying_commit.clone(),
+                ))),
+                OrphanIntegrationEvidence::Proven(carrying_commit),
+            ),
+            (
+                outstanding(integrated(IntegrationWitness::EvaluatedTrunk)),
+                OrphanIntegrationEvidence::Proven(RewrittenIntegrationTrunkCommit::from(
+                    trunk_oid.clone(),
+                )),
+            ),
+            (
+                outstanding(IntegrationEvidenceStatus::NotIntegrated),
+                OrphanIntegrationEvidence::Unproven,
+            ),
+            (
+                outstanding(IntegrationEvidenceStatus::TrunkRewritten),
+                OrphanIntegrationEvidence::Unproven,
+            ),
+            (
+                outstanding(IntegrationEvidenceStatus::ObjectUnknown),
+                OrphanIntegrationEvidence::Unproven,
+            ),
+            (
+                RepositoryReservationEvidence::Released {
+                    protected_tip:      protected_tip.clone(),
+                    disposition:        ReleaseDisposition::Integrated,
+                    integration_status: integrated(IntegrationWitness::EvaluatedTrunk),
+                },
+                OrphanIntegrationEvidence::Unproven,
+            ),
+            (
+                RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
+                    disposition: ReleaseDisposition::RetiredOrphan(
+                        "the work landed on another branch".parse::<OrphanRetirementReason>()?,
+                    ),
+                },
+                OrphanIntegrationEvidence::Unproven,
+            ),
+            (
+                RepositoryReservationEvidence::Active,
+                OrphanIntegrationEvidence::Unproven,
+            ),
+        ];
+        for (evidence, expected) in cases {
+            assert_eq!(OrphanIntegrationEvidence::from(&evidence), expected);
         }
         Ok(())
     }

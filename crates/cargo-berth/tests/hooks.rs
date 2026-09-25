@@ -53,12 +53,8 @@ const AMBIENT_STALE_SESSION: &str = "ambient-stale-session";
 const BOARD_SESSION: &str = "board-session";
 const INCURSION_SESSION: &str = "incursion-session";
 const ORPHAN_SESSION_START_ENTRY: &str = "test_session_start_renders_real_orphan_recovery_actions";
-const POST_TOOL_USE_LOST_EVIDENCE_REWRITTEN_ENTRY: &str =
-    "test_hooks_render_both_lost_evidence_recoveries";
 const POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY: &str =
     "test_hooks_render_both_lost_evidence_recoveries#3";
-const POST_TOOL_USE_RECORDED_INCURSION_LOST_EVIDENCE_ENTRY: &str =
-    "test_recorded_incursion_preserves_lost_evidence_feedback";
 const POST_TOOL_USE_RECORDED_INCURSION_SILENT_ENTRY: &str =
     "test_recorded_incursion_emits_no_stop_text";
 const POST_TOOL_USE_RECORDED_INCURSION_WIDENED_ENTRY: &str =
@@ -88,8 +84,6 @@ const SESSION_START_LEDGER_UNREADABLE_DETAIL: &str =
     "Run `cargo-berth board --json` again after repairing the ledger.";
 const SESSION_START_LEDGER_UNREADABLE_SUMMARY: &str =
     "cargo-berth could not read the reservation ledger at SessionStart.";
-const SESSION_START_LOST_EVIDENCE_REWRITTEN_ENTRY: &str =
-    "test_hooks_render_both_lost_evidence_recoveries#2";
 const SESSION_START_LOST_EVIDENCE_UNRESOLVABLE_ENTRY: &str =
     "test_hooks_render_both_lost_evidence_recoveries#4";
 const SESSION_START_UNAVAILABLE_ORPHAN_ENTRY: &str =
@@ -153,8 +147,12 @@ const WIDENED_AFTER_INCURSION_SOURCE: &str = "widened.rs";
 const FROZEN_LOST_EVIDENCE_RESERVATION: &str = "reservation-lost-evidence";
 /// The protected tip the corpus froze for every lost-evidence entry.
 const FROZEN_LOST_EVIDENCE_PROTECTED_TIP: &str = "1111111111111111111111111111111111111111";
-/// The rewritten trunk commit the corpus froze for the resolved-trunk recovery.
-const FROZEN_LOST_EVIDENCE_TRUNK: &str = "2222222222222222222222222222222222222222";
+/// The summary a `PostToolUse` response states over a lost-evidence notice.
+const LOST_EVIDENCE_POST_TOOL_USE_SUMMARY: &str =
+    "cargo-berth detected lost integration evidence for released work.";
+/// The summary a `SessionStart` response states over a board carrying one lost-evidence notice.
+const LOST_EVIDENCE_SESSION_START_SUMMARY: &str =
+    "cargo-berth found 1 actionable coordination notice(s).";
 /// A well-formed object identifier no repository in this suite ever writes an object for.
 const ABSENT_TRUNK_OBJECT_ID: &str = "3333333333333333333333333333333333333333";
 /// The trunk branch every fixture repository configures.
@@ -2172,11 +2170,10 @@ struct LostIntegrationEvidence {
 impl LostIntegrationEvidence {
     /// The corpus names the released reservation and the tip it can no longer prove.
     ///
-    /// The trunk commit is restated only where the corpus froze one: a trunk that resolves
-    /// names itself in the recovery command, and a trunk that does not resolve names nothing,
-    /// so restating an absent identifier there would rewrite text the corpus never carried.
-    fn corpus_identifiers(&self, trunk: &ObservedTrunk) -> Vec<CorpusIdentifier> {
-        let mut identifiers = vec![
+    /// Only the unresolvable-trunk entries are still compared with the corpus, and a trunk that
+    /// does not resolve names nothing, so no trunk commit is restated.
+    fn corpus_identifiers(&self) -> Vec<CorpusIdentifier> {
+        vec![
             CorpusIdentifier {
                 observed: self.reservation_id.clone(),
                 frozen:   FROZEN_LOST_EVIDENCE_RESERVATION.to_owned(),
@@ -2185,14 +2182,24 @@ impl LostIntegrationEvidence {
                 observed: self.protected_tip.clone(),
                 frozen:   FROZEN_LOST_EVIDENCE_PROTECTED_TIP.to_owned(),
             },
-        ];
-        if let ObservedTrunk::Resolved(trunk_oid) = trunk {
-            identifiers.push(CorpusIdentifier {
-                observed: trunk_oid.clone(),
-                frozen:   FROZEN_LOST_EVIDENCE_TRUNK.to_owned(),
-            });
-        }
-        identifiers
+        ]
+    }
+
+    /// The notice for released work whose resolved trunk no longer proves the protected tip.
+    ///
+    /// That trunk proves nothing, so the notice names it only as the trunk that lost the proof
+    /// and leaves the `--integrated-as` argument for the reader to name.
+    fn rewritten_trunk_notice(&self, trunk: &ObservedTrunk) -> TestResult<String> {
+        let ObservedTrunk::Resolved(trunk_oid) = trunk else {
+            return Err(failure(
+                "a trunk rewritten past the tip should still resolve",
+            ));
+        };
+        let reservation_id = &self.reservation_id;
+        let protected_tip = &self.protected_tip;
+        Ok(format!(
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but trunk {trunk_oid} no longer proves protected tip {protected_tip}. If a trunk commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TRUNK_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`."
+        ))
     }
 }
 
@@ -2206,7 +2213,7 @@ enum IntegrationProofLoss {
 
 /// Whether the trunk this repository configures still names a readable commit.
 enum ObservedTrunk {
-    /// Trunk resolves, and the engine can name it in the recovery command it offers.
+    /// Trunk resolves, and the notice names it as the trunk that no longer proves the work.
     Resolved(String),
     /// Trunk names an object this repository does not hold, so no proof is possible.
     Unresolvable,
@@ -3128,14 +3135,14 @@ fn session_start_publishes_the_engine_board_report() -> TestResult {
             let id = &orphan.reservation_id;
             let tip = &orphan.protected_tip;
             let expected = format!(
-                "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --integrated-as {trunk}` after reviewing the work. Use --recovered after restoring the worktree; for a merged branch, use --integrated-as after verifying trunk contains the work."
+                "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --retire-orphan --why <reason>` or `cargo-berth resolve {id} --abandon --why <reason>` after reviewing the work. Trunk {trunk} does not contain protected tip {tip}; --integrated-as needs a trunk commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than trunk."
             );
             assert!(
                 feedback
                     .additional_context
                     .lines()
                     .any(|line| line == expected),
-                "the hook must name both exact recovery commands: {feedback:?}"
+                "the hook must name every exact recovery command: {feedback:?}"
             );
         }
     }
@@ -3459,69 +3466,68 @@ fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> Test
 
     let output = incursion.report_another_bash_call()?;
 
-    assert_post_tool_use_feedback_matches_corpus(
+    assert_hook_states_the_lost_evidence_notice(
         &output,
-        POST_TOOL_USE_RECORDED_INCURSION_LOST_EVIDENCE_ENTRY,
-        &evidence.corpus_identifiers(&trunk),
+        HookResponseEvent::PostToolUse,
+        &evidence.rewritten_trunk_notice(&trunk)?,
     )
 }
 
-/// A trunk that resolves but has moved past the tip gets the recovery that names it.
+/// A trunk that resolves but has moved past the tip is named only as the trunk that lost the
+/// proof: it does not carry the work, so it is never offered as the `--integrated-as` argument.
 #[test]
 fn hooks_state_the_rewritten_trunk_evidence_recovery() -> TestResult {
     let (evidence, trunk, _repository, _worktrees) =
         released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkRewrittenPastTheTip)?;
+    let notice = evidence.rewritten_trunk_notice(&trunk)?;
     for event in [
         HookResponseEvent::PostToolUse,
         HookResponseEvent::SessionStart,
     ] {
-        match event {
-            HookResponseEvent::PostToolUse => {
-                post_tool_use_states_the_rewritten_trunk_evidence_recovery(&evidence, &trunk)?;
-            },
-            HookResponseEvent::SessionStart => {
-                session_start_states_the_rewritten_trunk_evidence_recovery(&evidence, &trunk)?;
-            },
-        }
+        let output = match event {
+            HookResponseEvent::PostToolUse => run_post_tool_use(
+                &evidence.reporting_root,
+                &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
+            )?,
+            HookResponseEvent::SessionStart => run_session_start(
+                &evidence.reporting_root,
+                &session_start_payload(&evidence.reporting_root, Some(BOARD_SESSION)),
+                &AmbientHarnessSession::Absent,
+            )?,
+        };
+        assert_hook_states_the_lost_evidence_notice(&output, event, &notice)?;
     }
     Ok(())
 }
 
-fn post_tool_use_states_the_rewritten_trunk_evidence_recovery(
-    evidence: &LostIntegrationEvidence,
-    trunk: &ObservedTrunk,
+/// Check one hook response states the lost-evidence notice the engine renders.
+///
+/// `PostToolUse` states exactly its notice lines, so the notice is the only line it may carry.
+/// `SessionStart` publishes the engine's complete board report around the notice.
+fn assert_hook_states_the_lost_evidence_notice(
+    output: &Output,
+    event: HookResponseEvent,
+    notice: &str,
 ) -> TestResult {
-    let output = run_post_tool_use(
-        &evidence.reporting_root,
-        &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
-    )?;
-    assert_post_tool_use_feedback_matches_corpus(
-        &output,
-        POST_TOOL_USE_LOST_EVIDENCE_REWRITTEN_ENTRY,
-        &evidence.corpus_identifiers(trunk),
-    )
-}
-
-fn session_start_states_the_rewritten_trunk_evidence_recovery(
-    evidence: &LostIntegrationEvidence,
-    trunk: &ObservedTrunk,
-) -> TestResult {
-    let output = run_session_start(
-        &evidence.reporting_root,
-        &session_start_payload(&evidence.reporting_root, Some(BOARD_SESSION)),
-        &AmbientHarnessSession::Absent,
-    )?;
-    assert_session_start_feedback_matches_corpus(
-        &output,
-        SESSION_START_LOST_EVIDENCE_REWRITTEN_ENTRY,
-        &evidence.corpus_identifiers(trunk),
-    )
+    let feedback = hook_feedback(output, event, "lost integration evidence notice")?;
+    let produced_lines = feedback.additional_context.lines().collect::<Vec<_>>();
+    match event {
+        HookResponseEvent::PostToolUse => {
+            assert_eq!(produced_lines, [notice], "{feedback:?}");
+            assert_eq!(feedback.system_message, LOST_EVIDENCE_POST_TOOL_USE_SUMMARY);
+        },
+        HookResponseEvent::SessionStart => {
+            assert!(produced_lines.contains(&notice), "{feedback:?}");
+            assert_eq!(feedback.system_message, LOST_EVIDENCE_SESSION_START_SUMMARY);
+        },
+    }
+    Ok(())
 }
 
 /// A trunk that resolves to nothing cannot be named, so the recovery asks for trunk first.
 #[test]
 fn hooks_state_the_unresolvable_trunk_evidence_recovery() -> TestResult {
-    let (evidence, trunk, _repository, _worktrees) =
+    let (evidence, _, _repository, _worktrees) =
         released_work_trunk_cannot_prove(&IntegrationProofLoss::TrunkNamesAnAbsentObject)?;
     for event in [
         HookResponseEvent::PostToolUse,
@@ -3529,10 +3535,10 @@ fn hooks_state_the_unresolvable_trunk_evidence_recovery() -> TestResult {
     ] {
         match event {
             HookResponseEvent::PostToolUse => {
-                post_tool_use_states_the_unresolvable_trunk_evidence_recovery(&evidence, &trunk)?;
+                post_tool_use_states_the_unresolvable_trunk_evidence_recovery(&evidence)?;
             },
             HookResponseEvent::SessionStart => {
-                session_start_states_the_unresolvable_trunk_evidence_recovery(&evidence, &trunk)?;
+                session_start_states_the_unresolvable_trunk_evidence_recovery(&evidence)?;
             },
         }
     }
@@ -3541,7 +3547,6 @@ fn hooks_state_the_unresolvable_trunk_evidence_recovery() -> TestResult {
 
 fn post_tool_use_states_the_unresolvable_trunk_evidence_recovery(
     evidence: &LostIntegrationEvidence,
-    trunk: &ObservedTrunk,
 ) -> TestResult {
     let output = run_post_tool_use(
         &evidence.reporting_root,
@@ -3550,13 +3555,12 @@ fn post_tool_use_states_the_unresolvable_trunk_evidence_recovery(
     assert_post_tool_use_feedback_matches_corpus(
         &output,
         POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY,
-        &evidence.corpus_identifiers(trunk),
+        &evidence.corpus_identifiers(),
     )
 }
 
 fn session_start_states_the_unresolvable_trunk_evidence_recovery(
     evidence: &LostIntegrationEvidence,
-    trunk: &ObservedTrunk,
 ) -> TestResult {
     let output = run_session_start(
         &evidence.reporting_root,
@@ -3566,7 +3570,7 @@ fn session_start_states_the_unresolvable_trunk_evidence_recovery(
     assert_session_start_feedback_matches_corpus(
         &output,
         SESSION_START_LOST_EVIDENCE_UNRESOLVABLE_ENTRY,
-        &evidence.corpus_identifiers(trunk),
+        &evidence.corpus_identifiers(),
     )
 }
 
