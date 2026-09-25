@@ -1,0 +1,30 @@
+# This file exists for one reason: it is what grants cargo-handler permission
+# to capture windows. It is not a menu entry -- NoDisplay keeps it out of the
+# launcher -- and removing it does not uninstall anything.
+#
+# KWin answers org.kde.KWin.ScreenShot2 only for a process whose desktop entry
+# names that interface in X-KDE-DBUS-Restricted-Interfaces, matched by the Exec
+# path below. Without this file the attract screen's backdrop falls back to
+# drawing Plasma's wallpaper instead of the windows underneath. Nothing says so
+# on screen: KWin answers NoAuthorized, the backend takes its documented
+# fallback, and the result looks like a deliberate wallpaper.
+#
+# Exec has to name the binary exactly, because that path is what KWin matches.
+# Reinstall after moving, renaming or reinstalling the binary, and give each
+# build its own entry if you run more than one.
+#
+# Install or repair with:
+#
+#     scripts/install-desktop-entry.sh --crate cargo-handler [binary-path] [entry-name]
+#
+# KDE Plasma on Wayland only. On any other desktop this file is inert, and the
+# backdrop uses whatever its own platform backend provides.
+
+[Desktop Entry]
+Type=Application
+Name=cargo-handler
+Comment=A terminal UI cargo tool
+Exec=@EXEC@
+Terminal=true
+NoDisplay=true
+X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2

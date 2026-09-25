@@ -95,6 +95,8 @@ mod tests {
     use tui_pane::FocusedPane;
     use tui_pane::Framework;
     use tui_pane::Keymap;
+    use tui_pane::KeymapHelpRowKind;
+    use tui_pane::KeymapPane;
 
     use super::build_keymap;
     use crate::app::App;
@@ -159,4 +161,120 @@ mod tests {
             "the compact shortcut overlay must omit the inactive x Dismiss row"
         );
     }
+
+    /// Section names, TOML tables, action keys, default binds and their
+    /// order, captured from the first build: cargo-tile's rows without
+    /// its `freeze` and `process_tree` globals.
+    #[test]
+    fn keymap_overlay_rows_keep_their_order() {
+        let app = App::new_for_test().expect("test app should build");
+        let rows: Vec<String> = KeymapPane::ordered_help_rows(&app, &app.keymap)
+            .iter()
+            .map(|row| match row.row_kind {
+                KeymapHelpRowKind::Header => format!("[{}] {}", row.section, row.scope),
+                KeymapHelpRowKind::Action => format!(
+                    "{}.{} = {}",
+                    row.scope,
+                    row.action,
+                    row.bind
+                        .as_ref()
+                        .map_or_else(String::new, ToString::to_string)
+                ),
+            })
+            .collect();
+        assert_eq!(rows, EXPECTED_OVERLAY_ROWS);
+    }
+
+    /// The captured overlay rows.
+    const EXPECTED_OVERLAY_ROWS: [&str; 89] = [
+        "[Global Navigation] global",
+        "global.next_pane = tab",
+        "global.prev_pane = shift-tab",
+        "[Global Shortcuts] global",
+        "global.add_tile = +",
+        "global.dismiss = x",
+        "global.focus_up = up",
+        "global.focus_down = down",
+        "global.focus_left = left",
+        "global.focus_right = right",
+        "global.open_favorites = ctrl-o",
+        "global.open_keymap = ctrl-k",
+        "global.open_settings = s",
+        "global.quit = q",
+        "global.randomize_attract = r",
+        "global.remove_tile = -",
+        "global.restart = R",
+        "global.save_favorite = ctrl-s",
+        "global.random_favorite = m",
+        "global.open_global_shortcuts = ?",
+        "global.attract = a",
+        "global.undo_attract_replacement = u",
+        "[Navigation] navigation",
+        "navigation.half_page_down = ",
+        "navigation.half_page_up = ",
+        "navigation.end = end",
+        "navigation.home = home",
+        "navigation.down = down",
+        "navigation.left = left",
+        "navigation.right = right",
+        "navigation.up = up",
+        "navigation.page_down = pagedown",
+        "navigation.page_up = pageup",
+        "[Attract: Moving Band] attract_moving_band",
+        "attract_moving_band.cycle_fraying = v",
+        "attract_moving_band.tail_faster = ]",
+        "attract_moving_band.tail_slower = [",
+        "attract_moving_band.travel_down = down",
+        "attract_moving_band.travel_left = left",
+        "attract_moving_band.travel_right = right",
+        "attract_moving_band.travel_up = up",
+        "attract_moving_band.show_moving_band = 1",
+        "attract_moving_band.show_moving_text = 2",
+        "attract_moving_band.show_pixelate = 3",
+        "attract_moving_band.slower = <",
+        "attract_moving_band.faster = >",
+        "attract_moving_band.thinner = -",
+        "attract_moving_band.wider = +",
+        "[Attract: Moving Text] attract_moving_text",
+        "attract_moving_text.spread_narrower = [",
+        "attract_moving_text.cycle_drift = v",
+        "attract_moving_text.travel_down = down",
+        "attract_moving_text.travel_left = left",
+        "attract_moving_text.travel_right = right",
+        "attract_moving_text.travel_up = up",
+        "attract_moving_text.cycle_fill = t",
+        "attract_moving_text.spread_wider = ]",
+        "attract_moving_text.show_moving_band = 1",
+        "attract_moving_text.show_moving_text = 2",
+        "attract_moving_text.show_pixelate = 3",
+        "attract_moving_text.slower = <",
+        "attract_moving_text.faster = >",
+        "[Attract: Pixelate] attract_pixelate",
+        "attract_pixelate.cycle_resolve = v",
+        "attract_pixelate.coarser = +",
+        "attract_pixelate.sharper = -",
+        "attract_pixelate.wave_narrower = [",
+        "attract_pixelate.wave_wider = ]",
+        "attract_pixelate.cycle_fill = t",
+        "attract_pixelate.show_moving_band = 1",
+        "attract_pixelate.show_moving_text = 2",
+        "attract_pixelate.show_pixelate = 3",
+        "attract_pixelate.slower = <",
+        "attract_pixelate.faster = >",
+        "attract_pixelate.sweep_down = down",
+        "attract_pixelate.sweep_left = left",
+        "attract_pixelate.sweep_right = right",
+        "attract_pixelate.sweep_up = up",
+        "[Favorites] favorites",
+        "favorites.close = escape",
+        "favorites.delete = x",
+        "favorites.load = enter",
+        "favorites.select_next = down",
+        "favorites.select_previous = up",
+        "favorites.page_columns_right = right",
+        "favorites.page_columns_left = left",
+        "[Overlay] overlay",
+        "overlay.cancel = escape",
+        "overlay.start_edit = enter",
+    ];
 }

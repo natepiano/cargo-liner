@@ -3,6 +3,11 @@
 //! `tui_pane` finds that file, the keymap file, the favorites file and
 //! the themes directory by.
 
+#[cfg(test)]
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
+
 use serde::Deserialize;
 use serde::Serialize;
 use tui_pane::AppConfig;
@@ -14,15 +19,38 @@ use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
+#[cfg(test)]
+use crate::constants::TEST_CONFIG_ROOT;
 
 /// cargo-handler's identity for the framework's config and runner paths.
 pub(crate) enum CargoHandler {}
 
+/// In a test build, `config.toml`, `themes/` and `keymap.toml` resolve
+/// under `/<config>` instead of the OS config directory. The
+/// settings overlay is as wide as its widest row, which is one of these
+/// paths, so only a fixed root draws the same overlay on every machine.
+/// It also keeps a test from writing the user's own config or keymap.
 impl AppIdentity for CargoHandler {
     const BINARY_NAME: &'static str = BINARY_NAME;
     const CONFIG_DIRNAME: &'static str = CONFIG_DIRNAME;
     const DEFAULT_LIGHT_THEME: &'static str = DEFAULT_LIGHT_THEME;
     const DEFAULT_DARK_THEME: &'static str = DEFAULT_DARK_THEME;
+
+    #[cfg(test)]
+    fn config_path() -> Option<PathBuf> { Some(test_config_path("config.toml")) }
+
+    #[cfg(test)]
+    fn keymap_path() -> Option<PathBuf> { Some(test_config_path("keymap.toml")) }
+
+    #[cfg(test)]
+    fn themes_dir() -> Option<PathBuf> { Some(test_config_path("themes")) }
+}
+
+/// Where a test build finds `name`: in cargo-handler's directory under
+/// [`TEST_CONFIG_ROOT`].
+#[cfg(test)]
+fn test_config_path(name: &str) -> PathBuf {
+    Path::new(TEST_CONFIG_ROOT).join(CONFIG_DIRNAME).join(name)
 }
 
 /// How the tile grid grows.

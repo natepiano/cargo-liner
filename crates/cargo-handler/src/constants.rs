@@ -15,6 +15,11 @@ pub(crate) const DEFAULT_HC_LIGHT_THEME: &str = "High Contrast Light";
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
+/// What a test build uses in place of the OS config directory. It sits
+/// under the filesystem root, where a test has no permission to create
+/// it, so a test that saves a setting fails instead of writing a file.
+#[cfg(test)]
+pub(crate) const TEST_CONFIG_ROOT: &str = "/<config>";
 
 // lifecycle
 /// The binary's own name: what the command line calls itself in help

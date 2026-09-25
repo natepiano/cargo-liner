@@ -176,11 +176,13 @@ interface in `X-KDE-DBUS-Restricted-Interfaces`, matched by the `Exec` path. Wit
 every capture returns `NoAuthorized` and the backdrop is the wallpaper reconstruction
 forever. There is no prompt and no error.
 
-`crates/cargo-tile/assets/cargo-tile.desktop.in` is the entry, and carries that
-explanation in its own comments. `scripts/install-desktop-entry.sh [binary] [entry-name]`
-installs it and rebuilds KDE's cache. Because the match is on the exact path, a moved or
-reinstalled binary needs the script run again, and a second build (a worktree release
-binary, say) needs its own entry.
+Each app ships its own entry -- `crates/cargo-tile/assets/cargo-tile.desktop.in` and
+`crates/cargo-handler/assets/cargo-handler.desktop.in` -- carrying that explanation in its
+comments. `scripts/install-desktop-entry.sh [--crate <crate>] [binary] [entry-name]`
+installs one and rebuilds KDE's cache. Without `--crate`, the crate is the binary's file
+name when a template exists under it, and cargo-tile otherwise. Because the match is on the
+exact path, a moved or reinstalled binary needs the script run again, and a second build (a
+worktree release binary, say) needs its own entry.
 
 ### Window selection — `backdrop/desktop/candidate.rs`
 

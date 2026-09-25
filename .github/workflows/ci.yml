@@ -357,6 +357,7 @@ jobs:
 
   # cargo-tile reads process birth stamps through Darwin sysctl. Build and run
   # its tests here so Linux's cfg selection cannot leave that reader unchecked.
+  # cargo-handler runs here too, for the attract backdrop's macOS capture path.
   macos:
     name: macOS cargo-tile
     needs: changes
@@ -377,17 +378,17 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Build cargo-tile
-        run: cargo build -p cargo-tile --bins
+      - name: Build cargo-tile and cargo-handler
+        run: cargo build -p cargo-tile -p cargo-handler --bins
 
       - name: Build test targets
-        run: cargo nextest run -p cargo-tile --bins --tests --no-run
+        run: cargo nextest run -p cargo-tile -p cargo-handler --bins --tests --no-run
 
-      - name: Test cargo-tile
-        run: cargo nextest run --no-fail-fast -p cargo-tile --bins --tests
+      - name: Test cargo-tile and cargo-handler
+        run: cargo nextest run --no-fail-fast -p cargo-tile -p cargo-handler --bins --tests
 
-      - name: Lint cargo-tile
-        run: cargo clippy -p cargo-tile --bins --tests -- -D warnings
+      - name: Lint cargo-tile and cargo-handler
+        run: cargo clippy -p cargo-tile -p cargo-handler --bins --tests -- -D warnings
 
   # cargo-port ships to Windows users via `cargo install`, and the Unix-only
   # jobs above cannot see a `#[cfg]` mistake in a Windows code path. Compile

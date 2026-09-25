@@ -139,6 +139,25 @@ every session. If it is missing, cargo-tile does not switch at all rather than
 risk leaving the shell somewhere it cannot be brought back from. Every terminal
 that is not iTerm2 is left alone.
 
+### KDE Plasma
+
+On KDE Plasma under Wayland, the attract screen draws the windows standing
+behind the terminal only when KWin lets cargo-tile capture them, and KWin
+decides that from a desktop entry naming the binary's exact path. Without the
+entry the backdrop falls back to the wallpaper, and nothing on screen says why.
+Install the entry from a checkout of this repository:
+
+```bash
+scripts/install-desktop-entry.sh                     # the cargo-tile on PATH
+scripts/install-desktop-entry.sh target/release/cargo-tile cargo-tile-dev
+```
+
+Run it again after the binary moves or is reinstalled, and give each build an
+entry name of its own. The same script installs
+[`cargo-handler`](../cargo-handler)'s entry, which it picks for a binary named
+`cargo-handler` or when passed `--crate cargo-handler`; cargo-tile's is the
+default.
+
 ### the grid
 
 Cell one is the summary: one row per cargo command running. A command that

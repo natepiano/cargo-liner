@@ -93,3 +93,21 @@ For custom colors, copy [`themes/starter.toml`](themes/starter.toml) into
 `Cargo Handler Dark`.
 
 A stale entry in `keymap.toml` is skipped rather than refusing to start.
+
+### KDE Plasma
+
+On KDE Plasma under Wayland, the attract screen draws the windows standing
+behind the terminal only when KWin lets cargo-handler capture them, and KWin
+decides that from a desktop entry naming the binary's exact path. Without the
+entry the backdrop falls back to the wallpaper, and nothing on screen says why.
+Install the entry from a checkout of this repository:
+
+```bash
+scripts/install-desktop-entry.sh --crate cargo-handler   # the cargo-handler on PATH
+scripts/install-desktop-entry.sh target/release/cargo-handler cargo-handler-dev
+```
+
+The script installs cargo-tile's entry by default. It picks cargo-handler's
+from a binary named `cargo-handler`, so a build under any other name needs
+`--crate cargo-handler` as well. Run it again after the binary moves or is
+reinstalled, and give each build an entry name of its own.

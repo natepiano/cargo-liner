@@ -14,3 +14,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Attract favorites: `ctrl-s` saves the parameters on screen, `ctrl-o` opens the saved list, `m` shows one at random. They are kept in `favorites.toml`.
 - The framework overlays: `s` settings (appearance, initial rows, file paths, notices), ctrl-k keymap editor, `?` shortcuts.
 - `config.toml`, `keymap.toml` and `themes/` under `<os config dir>/cargo-handler/`, with four built-in themes mirrored as TOML under `themes/`.
+- On KDE Plasma the attract screen draws the windows behind the terminal once `assets/cargo-handler.desktop.in` is installed: `scripts/install-desktop-entry.sh --crate cargo-handler`, or the script given a binary named `cargo-handler`. `KWin` grants window capture by executable path, so without the entry the backdrop is the wallpaper.
