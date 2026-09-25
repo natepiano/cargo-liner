@@ -73,6 +73,7 @@ exit 37
                 "observations",
                 "config",
                 "cargo-home",
+                "tmp",
             ] {
                 fs::create_dir_all(directory.path().join(path)).expect("create fixture directory");
             }
@@ -98,6 +99,8 @@ exit 37
                 .env("RUSTUP_HOME", self.path("rustup"))
                 .env("CARGO_HOME", self.path("cargo-home"))
                 .env("XDG_CONFIG_HOME", self.path("config"))
+                // `env_clear` drops the runner's `TMPDIR`; keep child temporaries in the fixture.
+                .env("TMPDIR", self.path("tmp"))
                 .env("LIFECYCLE_CAPTURE_DIRECTORY", self.capture_directory())
                 .env("LIFECYCLE_OBSERVATIONS", self.path("observations"))
                 .current_dir(self.path("home"))

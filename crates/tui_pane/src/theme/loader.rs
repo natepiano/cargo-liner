@@ -104,26 +104,14 @@ fn scan_themes_dir(dir: &Path) -> (Vec<ThemeFamily>, Vec<FailedFile>) {
 )]
 mod tests {
     use std::io::Write;
-    use std::sync::atomic::AtomicU64;
-    use std::sync::atomic::Ordering;
+
+    use tempfile::TempDir;
 
     use super::*;
     use crate::theme;
     use crate::theme::Appearance;
 
     const SAMPLE_VARIANT_NAME: &str = "Sample Dark";
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "tui_pane_theme_loader_{label}_{n}_{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).expect("create temp themes dir");
-        dir
-    }
 
     fn write_file(path: &Path, contents: &str) {
         let mut f = fs::File::create(path).expect("create temp file");
@@ -171,9 +159,9 @@ mod tests {
 
     #[test]
     fn user_variant_overrides_builtin_with_same_name() {
-        let dir = temp_dir("override");
-        write_file(&dir.join("override.toml"), SAMPLE_FAMILY);
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), app_builtins());
+        let dir = TempDir::new().expect("create temp themes dir");
+        write_file(&dir.path().join("override.toml"), SAMPLE_FAMILY);
+        let registry = ThemeRegistry::from_dir_with_builtins(Some(dir.path()), app_builtins());
         assert_eq!(registry.len(), 2, "override must replace in place");
         assert_eq!(
             registry.status().overridden,
@@ -183,9 +171,9 @@ mod tests {
 
     #[test]
     fn parse_failure_is_recorded_not_fatal() {
-        let dir = temp_dir("badparse");
-        write_file(&dir.join("bad.toml"), "this is not = valid toml [\n");
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), app_builtins());
+        let dir = TempDir::new().expect("create temp themes dir");
+        write_file(&dir.path().join("bad.toml"), "this is not = valid toml [\n");
+        let registry = ThemeRegistry::from_dir_with_builtins(Some(dir.path()), app_builtins());
         assert_eq!(registry.len(), 2, "built-ins survive a parse error");
         assert_eq!(registry.status().failed_files.len(), 1);
         let (path, err) = &registry.status().failed_files[0];

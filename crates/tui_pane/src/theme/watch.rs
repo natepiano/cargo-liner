@@ -83,22 +83,10 @@ fn directory_fingerprint(dir: &Path) -> u64 {
 )]
 mod tests {
     use std::io::Write;
-    use std::sync::atomic::AtomicU64;
-    use std::sync::atomic::Ordering;
+
+    use tempfile::TempDir;
 
     use super::*;
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!(
-            "tui_pane_themes_watch_{label}_{n}_{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).expect("create temp themes dir");
-        dir
-    }
 
     fn write_file(path: &Path, contents: &str) {
         let mut f = fs::File::create(path).expect("create temp file");
@@ -110,9 +98,9 @@ mod tests {
 
     #[test]
     fn themes_watch_reports_initial_no_change() {
-        let dir = temp_dir("watch_initial");
-        write_file(&dir.join("a.toml"), SAMPLE_FAMILY);
-        let mut watch = ThemesWatch::new(Some(dir));
+        let dir = TempDir::new().expect("create temp themes dir");
+        write_file(&dir.path().join("a.toml"), SAMPLE_FAMILY);
+        let mut watch = ThemesWatch::new(Some(dir.path().to_path_buf()));
         assert!(
             watch.take_change().is_none(),
             "first call should not see a change"
@@ -121,10 +109,10 @@ mod tests {
 
     #[test]
     fn themes_watch_detects_new_file() {
-        let dir = temp_dir("watch_new");
-        let mut watch = ThemesWatch::new(Some(dir.clone()));
+        let dir = TempDir::new().expect("create temp themes dir");
+        let mut watch = ThemesWatch::new(Some(dir.path().to_path_buf()));
         assert!(watch.take_change().is_none());
-        write_file(&dir.join("new.toml"), SAMPLE_FAMILY);
+        write_file(&dir.path().join("new.toml"), SAMPLE_FAMILY);
         assert!(watch.take_change().is_some(), "addition should fire");
         assert!(
             watch.take_change().is_none(),
@@ -134,9 +122,9 @@ mod tests {
 
     #[test]
     fn themes_watch_ignores_non_toml() {
-        let dir = temp_dir("watch_nontoml");
-        let mut watch = ThemesWatch::new(Some(dir.clone()));
-        write_file(&dir.join("notes.md"), "ignore me");
+        let dir = TempDir::new().expect("create temp themes dir");
+        let mut watch = ThemesWatch::new(Some(dir.path().to_path_buf()));
+        write_file(&dir.path().join("notes.md"), "ignore me");
         assert!(
             watch.take_change().is_none(),
             "non-toml additions should not fire"

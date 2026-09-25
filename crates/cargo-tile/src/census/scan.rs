@@ -5138,6 +5138,10 @@ mod tests {
     fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans() {
         let config = Config::default();
         let parent = tempdir().expect("isolated capture parent");
+        // Every scan recreates the capture directory, so `parent` stays in the test
+        // body until after the worker joins; once it is removed, the child cannot be
+        // recreated.
+        let capture = parent.path().join("capture");
         let caller = thread::current().id();
         let resolutions = Arc::new(AtomicUsize::new(0));
         let worker_resolutions = Arc::clone(&resolutions);
@@ -5151,7 +5155,7 @@ mod tests {
                 .recv_timeout(WORKER_REPLY_TIMEOUT)
                 .expect("spawn must return before resolution is released");
             // No capture root is scanned; this test owns only worker scheduling.
-            CaptureRoots::from_parent(parent.path())
+            CaptureRoots::from_parent(&capture)
         });
 
         resolution_started

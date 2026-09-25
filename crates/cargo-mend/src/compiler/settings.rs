@@ -108,11 +108,8 @@ fn normalize_relative_path(path: &Path) -> String { path.to_string_lossy().repla
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
     use std::path::PathBuf;
-    use std::time::SystemTime;
-    use std::time::UNIX_EPOCH;
 
     use anyhow::Result;
     use anyhow::anyhow;
@@ -122,8 +119,8 @@ mod tests {
 
     #[test]
     fn config_relative_path_handles_nested_workspace_paths() -> Result<()> {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let workspace_root = env::temp_dir().join(format!("mend-config-root-test-{unique}"));
+        let temp = tempdir()?;
+        let workspace_root = temp.path().join("workspace");
         let file_path = workspace_root.join("mcp/src/brp_tools/tools/mod.rs");
         let parent = file_path
             .parent()

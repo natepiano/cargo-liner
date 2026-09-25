@@ -296,6 +296,34 @@ exit "$SHIM_TEST_EXIT_STATUS"
         }
     }
 
+    impl Drop for InstalledToolchain {
+        /// Scenarios leave read-only directories such as the `observations/root`
+        /// copy; restore owner access so the `TempDir` removal reaches every entry,
+        /// including after a failed assertion.
+        fn drop(&mut self) { grant_owner_access(self.directory.path()); }
+    }
+
+    /// Give the owner full access to `path` and every directory below it, without
+    /// following symlinks. Errors are ignored because this only prepares removal.
+    fn grant_owner_access(path: &Path) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if !metadata.is_dir() {
+            return;
+        }
+        let _ = fs::set_permissions(
+            path,
+            fs::Permissions::from_mode((metadata.mode() & 0o7777) | 0o700),
+        );
+        let Ok(children) = fs::read_dir(path) else {
+            return;
+        };
+        for child in children.flatten() {
+            grant_owner_access(&child.path());
+        }
+    }
+
     /// Set fixture permissions explicitly, without changing the parent process's umask.
     fn write_executable(path: &Path, contents: &str) {
         fs::write(path, contents).expect("write fixture executable");
