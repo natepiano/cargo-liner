@@ -92,6 +92,8 @@ fn init_file_subscriber(file: File, filter: EnvFilter) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -99,18 +101,13 @@ mod tests {
         if std::env::var_os(PERF_LOG_ENV).is_some() {
             return;
         }
-        let unique = format!("tui-pane-perf-log-disabled-{}", std::process::id());
-        let dir = std::env::temp_dir().join(unique);
-        let current = dir.join("current.log");
-        let previous = dir.join("previous.log");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let dir = TempDir::new().expect("create temp dir");
+        let current = dir.path().join("current.log");
+        let previous = dir.path().join("previous.log");
 
         init(&current, &previous);
 
         assert!(!current.exists());
         assert!(!previous.exists());
-
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

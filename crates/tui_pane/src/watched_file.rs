@@ -88,24 +88,11 @@ fn read_stamp(path: &Path) -> Option<Stamp> {
 )]
 mod tests {
     use std::io::Write;
-    use std::sync::atomic::AtomicU64;
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
+    use tempfile::TempDir;
+
     use super::*;
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    /// Allocate a unique path under the system temp dir for an
-    /// individual test. Files are cleaned up by the OS — and tests
-    /// never overlap because the sequence is process-global.
-    fn temp_path(label: &str) -> PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::SeqCst);
-        std::env::temp_dir().join(format!(
-            "watched_file_{label}_{n}_{}.txt",
-            std::process::id()
-        ))
-    }
 
     fn write_synced_file(path: &Path, content: &str) {
         let mut f = std::fs::File::create(path).expect("create temp file");
@@ -121,7 +108,8 @@ mod tests {
 
     #[test]
     fn take_stamp_change_returns_path_then_swallows_until_next_change() {
-        let path = temp_path("take_stamp");
+        let dir = TempDir::new().expect("create temp dir");
+        let path = dir.path().join("watched.txt");
         write_synced_file(&path, "v0");
         let mut wf = WatchedFile::new(Some(path.clone()), "seed".to_string());
         // No change yet.
@@ -133,12 +121,12 @@ mod tests {
         assert_eq!(wf.take_stamp_change(), Some(path.as_path()));
         // Subsequent call sees the same stamp again.
         assert!(wf.take_stamp_change().is_none());
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn sync_stamp_marks_caller_owned_writes_as_unchanged() {
-        let path = temp_path("sync");
+        let dir = TempDir::new().expect("create temp dir");
+        let path = dir.path().join("watched.txt");
         write_synced_file(&path, "before");
         let mut wf = WatchedFile::new(Some(path.clone()), "before".to_string());
         std::thread::sleep(Duration::from_millis(20));
@@ -147,6 +135,5 @@ mod tests {
         write_synced_file(&path, "self-written");
         wf.sync_stamp();
         assert!(wf.take_stamp_change().is_none());
-        std::fs::remove_file(&path).ok();
     }
 }

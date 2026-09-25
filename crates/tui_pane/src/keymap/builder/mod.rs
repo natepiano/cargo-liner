@@ -597,11 +597,10 @@ impl<Ctx: AppContext + 'static, State> KeymapBuilder<Ctx, State> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::env;
     use std::fs;
-    use std::process;
 
     use crossterm::event::KeyCode;
+    use tempfile::TempDir;
 
     use super::Keymap;
     use super::VimMode;
@@ -1071,14 +1070,11 @@ mod tests {
 
     #[test]
     fn vim_navigation_chords_survive_toml_home_end_overrides() {
-        let dir = env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_vim_home_end_overlay_{}.toml",
-            process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         fs::write(&path, "[navigation]\nhome = \"home\"\nend = \"end\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .vim_mode(VimMode::Enabled)
             .register_navigation::<AppNav>()
@@ -1095,8 +1091,6 @@ mod tests {
             Some(NavAction::Home),
         );
         assert_eq!(nav.action_for(&KeyBind::from('G')), Some(NavAction::End));
-
-        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -1164,11 +1158,11 @@ mod tests {
 
     #[test]
     fn toml_overlay_replaces_pane_action_keys() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = \"x\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1186,16 +1180,15 @@ mod tests {
             keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
             KeyOutcome::Unhandled,
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn toml_overlay_array_form_binds_multiple_keys() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_array_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = [\"x\", \"y\"]\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1213,18 +1206,17 @@ mod tests {
             keymap.dispatch_app_pane(TestPaneId::Foo, &KeyBind::from('y'), &mut app),
             KeyOutcome::Consumed,
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn toml_overlay_array_in_array_duplicate_rejected_at_build() {
         // Cross-action collision in the [foo] table — the same key
         // `x` is bound twice in the array for the same action.
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_dup_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = [\"x\", \"x\"]\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1233,16 +1225,15 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build();
         assert!(matches!(result, Err(KeymapError::InArrayDuplicate { .. })));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn toml_unknown_scope_surfaces_at_build() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_uscope_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[mystery]\nactivate = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1251,19 +1242,17 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build();
         assert!(matches!(result, Err(KeymapError::UnknownScope { .. })));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn cross_action_collision_in_toml_surfaces_at_build() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_xcoll_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[navigation]\nup = \"x\"\ndown = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>();
-        let _ = std::fs::remove_file(&path);
         match result {
             Err(KeymapError::CrossActionCollision { .. }) => {},
             Err(other) => panic!("expected CrossActionCollision, got {other:?}"),
@@ -1273,20 +1262,16 @@ mod tests {
 
     #[test]
     fn vim_mode_rejects_app_global_that_shadows_navigation_chord_prefix() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_vim_app_global_collision_{}.toml",
-            process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         fs::write(&path, "[global]\nfind = \"g\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .vim_mode(VimMode::Enabled)
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
             .register_globals::<AppGlobals>();
-        let _ = std::fs::remove_file(&path);
         match result {
             Err(KeymapError::CrossScopeVimCollision {
                 scope,
@@ -1306,14 +1291,11 @@ mod tests {
 
     #[test]
     fn vim_mode_rejects_framework_global_that_shadows_navigation_chord_prefix() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_vim_framework_global_collision_{}.toml",
-            process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         fs::write(&path, "[global]\nquit = \"g\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .vim_mode(VimMode::Enabled)
             .register_navigation::<AppNav>()
@@ -1321,7 +1303,6 @@ mod tests {
             .register_globals::<AppGlobals>()
             .expect("app globals skip framework-owned quit")
             .build();
-        let _ = std::fs::remove_file(&path);
         match result {
             Err(KeymapError::CrossScopeVimCollision {
                 scope,
@@ -1341,15 +1322,14 @@ mod tests {
 
     #[test]
     fn global_toml_overlay_overrides_framework_globals() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_global_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[global]\nquit = \"z\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .build()
             .expect("build must succeed");
-        let _ = std::fs::remove_file(&path);
 
         assert_eq!(
             keymap.framework_globals().action_for(&KeyBind::from('z')),
@@ -1364,24 +1344,20 @@ mod tests {
 
     #[test]
     fn shared_global_table_applies_framework_and_app_keys() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_shared_global_{}.toml",
-            process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         fs::write(
             &path,
             "[global]\nquit = \"z\"\nsettings = \"F2\"\nfind = \"?\"\n",
         )
         .expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_globals::<AppGlobals>()
             .expect("app globals must skip framework-owned keys")
             .build()
             .expect("framework globals must skip app-owned keys");
-        let _ = std::fs::remove_file(&path);
 
         assert_eq!(
             keymap.framework_globals().action_for(&KeyBind::from('z')),
@@ -1404,17 +1380,13 @@ mod tests {
 
     #[test]
     fn shared_global_table_still_rejects_truly_unknown_actions() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_shared_global_unknown_{}.toml",
-            std::process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[global]\nbogus_action = \"z\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_globals::<AppGlobals>();
-        let _ = std::fs::remove_file(&path);
 
         assert!(
             matches!(result, Err(KeymapError::UnknownAction { .. })),
@@ -1424,17 +1396,13 @@ mod tests {
 
     #[test]
     fn app_global_key_errors_without_registered_app_globals_peer() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_global_no_peer_{}.toml",
-            std::process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[global]\nfind = \"?\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .build();
-        let _ = std::fs::remove_file(&path);
 
         assert!(
             matches!(result, Err(KeymapError::UnknownAction { .. })),
@@ -1460,11 +1428,8 @@ mod tests {
                 None,
             ),
         ] {
-            let dir = std::env::temp_dir();
-            let path = dir.join(format!(
-                "tui_pane_test_overlay_{name}_{}.toml",
-                std::process::id()
-            ));
+            let dir = TempDir::new().expect("create temp keymap dir");
+            let path = dir.path().join("keymap.toml");
             std::fs::write(&path, toml).expect("write toml");
             let keymap = Keymap::<TestApp>::builder()
                 .load_toml(path.clone())
@@ -1473,7 +1438,6 @@ mod tests {
                 .expect("overlay must register")
                 .build()
                 .expect("build must succeed");
-            let _ = std::fs::remove_file(&path);
 
             assert_eq!(keymap.overlay().action_for(&key), Some(action), "{name}");
             if let Some(default_key) = replaced_default {
@@ -1488,36 +1452,28 @@ mod tests {
 
     #[test]
     fn known_overlay_unknown_action_errors() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_overlay_unknown_action_{}.toml",
-            std::process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[overlay]\nbogus_action = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_overlay();
-        let _ = std::fs::remove_file(&path);
 
         assert!(matches!(result, Err(KeymapError::UnknownAction { .. })));
     }
 
     #[test]
     fn unknown_overlay_table_still_errors_when_overlay_registered() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_test_unknown_overlay_scope_{}.toml",
-            std::process::id()
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[bogus_overlay]\nfoo = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_overlay()
             .expect("overlay must register")
             .build();
-        let _ = std::fs::remove_file(&path);
 
         assert!(matches!(result, Err(KeymapError::UnknownScope { .. })));
     }
@@ -1864,11 +1820,11 @@ mod tests {
 
     #[test]
     fn invalid_binding_in_toml_surfaces_at_build() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_bad_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nactivate = \"Bogus+nonsense\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1876,7 +1832,6 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .build();
-        let _ = std::fs::remove_file(&path);
         let err = result.expect_err("invalid binding must surface");
         assert!(
             matches!(err, KeymapError::InvalidBinding { .. }),
@@ -1886,11 +1841,11 @@ mod tests {
 
     #[test]
     fn unknown_action_in_toml_surfaces_at_build() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_uact_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nfrobnicate = \"x\"\n").expect("write toml");
         let result = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1898,7 +1853,6 @@ mod tests {
             .expect("globals register must succeed")
             .register::<FooPane>(FooPane)
             .build();
-        let _ = std::fs::remove_file(&path);
         let err = result.expect_err("unknown action must surface");
         assert!(
             matches!(err, KeymapError::UnknownAction { .. }),
@@ -1908,12 +1862,12 @@ mod tests {
 
     #[test]
     fn ignore_unknown_entries_skips_unknown_action() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_iua_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[foo]\nfrobnicate = \"x\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .ignore_unknown_entries()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1922,7 +1876,6 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed with unknown action ignored");
-        let _ = std::fs::remove_file(&path);
         assert_eq!(
             keymap.unknown_warnings(),
             ["unknown action 'frobnicate' in [foo] (ignored)"],
@@ -1938,12 +1891,12 @@ mod tests {
 
     #[test]
     fn ignore_unknown_entries_skips_unknown_scope() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tui_pane_test_ius_{}.toml", std::process::id()));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         std::fs::write(&path, "[bogus_scope]\nx = \"y\"\n").expect("write toml");
         let keymap = Keymap::<TestApp>::builder()
             .ignore_unknown_entries()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load_toml must succeed")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -1952,7 +1905,6 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build must succeed with unknown scope ignored");
-        let _ = std::fs::remove_file(&path);
         assert_eq!(
             keymap.unknown_warnings(),
             ["unknown scope [bogus_scope] (ignored)"],
@@ -1962,8 +1914,8 @@ mod tests {
 
     #[test]
     fn load_toml_missing_file_treated_as_no_overlay() {
-        let path = std::env::temp_dir().join("tui_pane_does_not_exist.toml");
-        let _ = std::fs::remove_file(&path);
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         let keymap = Keymap::<TestApp>::builder()
             .load_toml(path)
             .expect("missing file must yield Ok")

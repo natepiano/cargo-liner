@@ -661,13 +661,10 @@ impl<Ctx: AppContext + 'static> core::fmt::Debug for Keymap<Ctx> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
-    use std::env;
     use std::fs;
-    use std::process;
-    use std::time::SystemTime;
-    use std::time::UNIX_EPOCH;
 
     use crossterm::event::KeyCode;
+    use tempfile::TempDir;
 
     use super::Action;
     use super::Bindings;
@@ -922,18 +919,12 @@ mod tests {
 
     #[test]
     fn is_key_bound_to_toml_key_checks_all_bindings() {
-        let path = env::temp_dir().join(format!(
-            "tui-pane-keymap-{}-{}.toml",
-            process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time after epoch")
-                .as_nanos(),
-        ));
+        let dir = TempDir::new().expect("create temp keymap dir");
+        let path = dir.path().join("keymap.toml");
         fs::write(&path, "[foo]\nactivate = [\"Enter\", \"q\"]\n").expect("write keymap toml");
 
         let keymap = Keymap::<TestApp>::builder()
-            .load_toml(path.clone())
+            .load_toml(path)
             .expect("load toml")
             .register_navigation::<AppNav>()
             .expect("nav register must succeed")
@@ -942,7 +933,6 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
-        fs::remove_file(path).expect("remove keymap toml");
 
         assert_eq!(
             keymap.key_for_toml_key(TestPaneId::Foo, "activate"),

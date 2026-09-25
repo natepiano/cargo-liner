@@ -17,6 +17,7 @@ pub(crate) fn invalid(section: &str, key: &str, message: &str) -> SettingsError 
 mod tests {
     use std::time::Duration;
 
+    use tempfile::TempDir;
     use toml::Table;
     use toml::Value;
 
@@ -138,12 +139,8 @@ mod tests {
 
     #[test]
     fn load_for_startup_reads_table_and_toasts() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_settings_{}_{}.toml",
-            std::process::id(),
-            "startup"
-        ));
+        let dir = TempDir::new().expect("create temp settings dir");
+        let path = dir.path().join("startup.toml");
         std::fs::write(
             &path,
             "[tui]\nenabled = true\ncount = 7\nname = \"hana\"\n\n[toasts]\ndefault_timeout = 9.0\ntask_linger = 2.0\n",
@@ -171,22 +168,13 @@ mod tests {
             loaded.toast_settings.finished_task_visible.get(),
             Duration::from_secs(2)
         );
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn load_from_path_retargets_store_path() {
-        let dir = std::env::temp_dir();
-        let initial_path = dir.join(format!(
-            "tui_pane_settings_{}_{}.toml",
-            std::process::id(),
-            "initial"
-        ));
-        let reload_path = dir.join(format!(
-            "tui_pane_settings_{}_{}.toml",
-            std::process::id(),
-            "reload"
-        ));
+        let dir = TempDir::new().expect("create temp settings dir");
+        let initial_path = dir.path().join("initial.toml");
+        let reload_path = dir.path().join("reload.toml");
         std::fs::write(&initial_path, "[tui]\nname = \"initial\"\n").expect("write initial");
         std::fs::write(
             &reload_path,
@@ -216,8 +204,6 @@ mod tests {
             Duration::from_secs(6)
         );
         assert_eq!(loaded.store.path(), Some(reload_path.as_path()));
-        let _ = std::fs::remove_file(initial_path);
-        let _ = std::fs::remove_file(reload_path);
     }
 
     #[test]
@@ -301,12 +287,8 @@ mod tests {
 
     #[test]
     fn save_removes_legacy_default_timeout_and_task_linger_keys() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_settings_{}_{}.toml",
-            std::process::id(),
-            "migrate"
-        ));
+        let dir = TempDir::new().expect("create temp settings dir");
+        let path = dir.path().join("migrate.toml");
         // Seed an on-disk settings file carrying the legacy keys.
         std::fs::write(
             &path,
@@ -332,17 +314,12 @@ mod tests {
         assert!(!saved.contains("task_linger"));
         assert!(saved.contains("status_toast_visible"));
         assert!(saved.contains("finished_task_visible"));
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn save_writes_toasts_and_removes_legacy_keys() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tui_pane_settings_{}_{}.toml",
-            std::process::id(),
-            "save"
-        ));
+        let dir = TempDir::new().expect("create temp settings dir");
+        let path = dir.path().join("save.toml");
         std::fs::write(
             &path,
             "[tui]\nstatus_flash_secs = 4.0\ntask_linger_secs = 3.0\n",
@@ -369,6 +346,5 @@ mod tests {
         assert!(saved.contains("[toasts]"));
         assert!(!saved.contains("status_flash_secs"));
         assert!(!saved.contains("task_linger_secs"));
-        let _ = std::fs::remove_file(path);
     }
 }

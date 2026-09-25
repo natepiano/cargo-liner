@@ -884,11 +884,8 @@ fn extract_use_renames(
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::fs;
     use std::path::Path;
-    use std::time::SystemTime;
-    use std::time::UNIX_EPOCH;
 
     use anyhow::Result;
     use tempfile::tempdir;
@@ -1028,9 +1025,8 @@ emit!();
 
     #[test]
     fn module_path_from_source_file_treats_main_rs_as_crate_root() -> Result<()> {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temp_dir = env::temp_dir().join(format!("mend-main-root-test-{unique}"));
-        let source_dir = temp_dir.join("src");
+        let temp = tempdir()?;
+        let source_dir = temp.path().join("src");
         fs::create_dir_all(&source_dir)?;
         let main_rs = source_dir.join("main.rs");
         fs::write(&main_rs, "fn main() {}\n")?;
@@ -1039,8 +1035,6 @@ emit!();
             module_path_from_source_file(&source_dir, &main_rs),
             Some(Vec::new())
         );
-
-        fs::remove_dir_all(&temp_dir)?;
         Ok(())
     }
 }
