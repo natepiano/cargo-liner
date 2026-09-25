@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A lane merged into trunk ends its run even when its checkout holds an
+  uncommitted edit to a tracked `.claude/config/berth.toml`. Uncommitted
+  configuration changes no longer count as lane work in merge-extent or
+  enrollment observations; committed changes still do.
+- A lane whose history criss-crosses with trunk (each merged the other) gets a
+  merge extent of the paths merging it would change or conflict on, instead of
+  `merge_extent_unavailable` from `git diff --merge-base` failing with
+  "multiple merge bases found". Branch paths now come from `git merge-tree
+  --write-tree`, so a modify/delete conflict path is still protected.
+
 - An orphaned or released reservation whose protected tip is not in trunk no
   longer suggests `cargo-berth resolve <id> --integrated-as <trunk tip>`. Both
   notices name that trunk as not containing the work; the orphan notice offers

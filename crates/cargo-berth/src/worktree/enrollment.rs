@@ -298,7 +298,7 @@ fn observe_footprint(
         failure(
             root,
             WorktreeEnrollmentFailureReason::GitFailure,
-            format!("git diff --merge-base {trunk} {head}: {error}"),
+            format!("git merge-tree {trunk} {head}: {error}"),
         )
     })?;
     let working_tree = drift::observe_merge_working_tree(root).map_err(|error| {
@@ -455,10 +455,7 @@ fn remaining_work(
         failure(
             worktree.context.repository_root(),
             WorktreeEnrollmentFailureReason::GitFailure,
-            format!(
-                "git diff --merge-base {other_head} {}: {error}",
-                worktree.head
-            ),
+            format!("git merge-tree {other_head} {}: {error}", worktree.head),
         )
     })?;
     paths.extend(worktree.working_tree.tracked_paths.iter().cloned());

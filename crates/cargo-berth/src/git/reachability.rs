@@ -19,14 +19,17 @@ use serde::Serialize;
 use super::command;
 use super::constants::GIT_ANCESTOR_RANGE_INFIX;
 use super::constants::GIT_DIFF_COMMAND;
-use super::constants::GIT_DIFF_MERGE_BASE_ARG;
 use super::constants::GIT_EXCLUDE_REVISION_PREFIX;
 use super::constants::GIT_HEAD_REVISION;
 use super::constants::GIT_IGNORE_MISSING_ARG;
 use super::constants::GIT_IS_ANCESTOR_ARG;
 use super::constants::GIT_LOCAL_BRANCH_REF_PREFIX;
 use super::constants::GIT_MERGE_BASE_COMMAND;
+use super::constants::GIT_MERGE_TREE_CLEAN_EXIT_CODE;
+use super::constants::GIT_MERGE_TREE_COMMAND;
+use super::constants::GIT_MERGE_TREE_CONFLICT_EXIT_CODE;
 use super::constants::GIT_NAME_ONLY_ARG;
+use super::constants::GIT_NO_MESSAGES_ARG;
 use super::constants::GIT_NO_RENAMES_ARG;
 use super::constants::GIT_NOT_ANCESTOR_EXIT_CODE;
 use super::constants::GIT_NUL_TERMINATED_ARG;
@@ -34,6 +37,7 @@ use super::constants::GIT_PARENTS_ARG;
 use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_REV_LIST_COMMAND;
 use super::constants::GIT_STDIN_ARG;
+use super::constants::GIT_WRITE_TREE_ARG;
 use super::error;
 use super::error::GitError;
 use super::object;
@@ -339,40 +343,85 @@ pub(crate) fn branch_commit_reachability(
     )
 }
 
-/// Return the net paths this branch would bring from its merge base with trunk.
+/// Return the paths merging this branch into trunk would change, plus every conflicted path.
 ///
-/// One name-only diff excludes trunk-only changes and paths the branch changed and then
-/// restored. An integrated head therefore returns an empty set even when trunk has moved
-/// ahead. NUL delimiters preserve whitespace in names, and disabling rename detection
-/// retains both the removed and added paths. Missing objects, unrelated histories, and
-/// unreadable paths remain failures rather than evidence of an empty merge extent.
+/// `git merge-tree --write-tree` merges `head` into `trunk` as `git merge` would, including
+/// the virtual merge base git builds when criss-cross merges leave several merge bases. A
+/// name-only diff from trunk to that result tree excludes trunk-only changes, paths the branch
+/// changed and then restored, and changes trunk already carries, so an integrated head returns
+/// an empty set even when trunk has moved ahead. A conflicted path can keep trunk's content in
+/// the result tree, as a modify/delete conflict does, so the conflicted paths `merge-tree` lists
+/// after the tree id join the diff. NUL delimiters preserve whitespace in names, and disabling
+/// rename detection in the diff retains both the removed and added paths. Missing objects,
+/// unrelated histories, and unreadable output remain failures rather than evidence of an empty
+/// merge extent.
 pub(crate) fn unmerged_branch_paths(
     repository_root: &Path,
     trunk: &GitObjectId,
     head: &GitObjectId,
 ) -> Result<Vec<ReservationScopePath>, GitError> {
-    let arguments = [
+    let merge_arguments = [
+        GIT_MERGE_TREE_COMMAND.to_owned(),
+        GIT_WRITE_TREE_ARG.to_owned(),
+        GIT_NAME_ONLY_ARG.to_owned(),
+        GIT_NO_MESSAGES_ARG.to_owned(),
+        GIT_NUL_TERMINATED_ARG.to_owned(),
+        trunk.to_string(),
+        head.to_string(),
+    ];
+    let merge_output = command::git_output_dynamic(repository_root, &merge_arguments)?;
+    let merge_failure = GitError::CommandFailed {
+        command: GIT_MERGE_TREE_COMMAND,
+        stderr:  String::from_utf8_lossy(&merge_output.stderr)
+            .trim()
+            .to_owned(),
+    };
+    if !matches!(
+        merge_output.status.code(),
+        Some(GIT_MERGE_TREE_CLEAN_EXIT_CODE | GIT_MERGE_TREE_CONFLICT_EXIT_CODE)
+    ) {
+        return Err(merge_failure);
+    }
+    let merge_output = String::from_utf8(merge_output.stdout).map_err(GitError::InvalidOutput)?;
+    let mut merge_fields = merge_output.split_terminator('\0');
+    // A missing object also exits 1, the conflict status, but writes no result tree.
+    let Some(result_tree) = merge_fields.next() else {
+        return Err(merge_failure);
+    };
+    let result_tree = result_tree
+        .parse::<GitObjectId>()
+        .map_err(GitError::InvalidObjectId)?;
+    let mut paths = merge_fields
+        .map(|path| path.parse().map_err(GitError::InvalidReservationPath))
+        .collect::<Result<Vec<ReservationScopePath>, _>>()?;
+
+    let diff_arguments = [
         GIT_DIFF_COMMAND.to_owned(),
-        GIT_DIFF_MERGE_BASE_ARG.to_owned(),
         GIT_NAME_ONLY_ARG.to_owned(),
         GIT_NUL_TERMINATED_ARG.to_owned(),
         GIT_NO_RENAMES_ARG.to_owned(),
         trunk.to_string(),
-        head.to_string(),
+        result_tree.to_string(),
         GIT_PATHSPEC_SEPARATOR.to_owned(),
     ];
-    let output = command::git_output_dynamic(repository_root, &arguments)?;
-    if !output.status.success() {
+    let diff_output = command::git_output_dynamic(repository_root, &diff_arguments)?;
+    if !diff_output.status.success() {
         return Err(GitError::CommandFailed {
             command: GIT_DIFF_COMMAND,
-            stderr:  String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            stderr:  String::from_utf8_lossy(&diff_output.stderr)
+                .trim()
+                .to_owned(),
         });
     }
-    String::from_utf8(output.stdout)
+    for path in String::from_utf8(diff_output.stdout)
         .map_err(GitError::InvalidOutput)?
         .split_terminator('\0')
-        .map(|path| path.parse().map_err(GitError::InvalidReservationPath))
-        .collect()
+    {
+        paths.push(path.parse().map_err(GitError::InvalidReservationPath)?);
+    }
+    paths.sort_by_cached_key(ToString::to_string);
+    paths.dedup();
+    Ok(paths)
 }
 
 /// Return every commit that would become reachable from `proposed` but not `previous`.
@@ -1018,6 +1067,8 @@ pub(crate) enum ProtectedTipSuccessorHeadClassification {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::AheadBehind;
     use super::CandidateHeadReachability;
     use super::ProtectedTipSuccessorHeadClassification;
@@ -1032,6 +1083,9 @@ mod tests {
     use crate::git::fixture::SECONDARY_PATH;
     use crate::git::fixture::UNAVAILABLE_OBJECT_ID;
     use crate::ids::GitObjectId;
+
+    /// The lane branch whose history criss-crosses with `main`.
+    const CRISS_CROSS_LANE: &str = "lane";
 
     #[test]
     fn historical_candidate_history_survives_a_phase_start_outside_trunk_ancestry() -> FixtureResult
@@ -1258,6 +1312,43 @@ mod tests {
     }
 
     #[test]
+    fn criss_cross_branch_merge_paths_are_only_the_branch_work() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        criss_cross_lane(&fixture)?;
+        fixture.write(SECONDARY_PATH, "trunk-only change\n")?;
+        let trunk = fixture.commit("trunk after the criss-cross")?;
+        fixture.git(&["checkout", "--quiet", CRISS_CROSS_LANE])?;
+        fixture.write(PRIMARY_PATH, "lane work after the criss-cross\n")?;
+        let head = fixture.commit("lane after the criss-cross")?;
+        assert_eq!(merge_base_count(&fixture, &trunk, &head)?, 2);
+
+        assert_eq!(
+            unmerged_branch_paths(fixture.root(), &trunk, &head)?,
+            vec![PRIMARY_PATH.parse()?],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_modify_delete_conflict_path_is_a_branch_merge_path() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        criss_cross_lane(&fixture)?;
+        fixture.write(SECONDARY_PATH, "trunk keeps and modifies this path\n")?;
+        let trunk = fixture.commit("trunk modifies the path the lane deletes")?;
+        fixture.git(&["checkout", "--quiet", CRISS_CROSS_LANE])?;
+        fixture.remove(SECONDARY_PATH)?;
+        fixture.write(PRIMARY_PATH, "lane work beside the deletion\n")?;
+        let head = fixture.commit("lane deletes the path trunk modifies")?;
+
+        // The conflicted merge keeps trunk's modified file, so only the conflict record names it.
+        assert_eq!(
+            unmerged_branch_paths(fixture.root(), &trunk, &head)?,
+            vec![PRIMARY_PATH.parse()?, SECONDARY_PATH.parse()?],
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unresolvable_worktree_head_preserves_other_ahead_behind_counts() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
         let trunk = fixture.phase_start_head.clone();
@@ -1326,5 +1417,49 @@ mod tests {
             )
         ));
         Ok(())
+    }
+
+    /// Merge the lane's first commit into trunk and trunk's first commit into the lane, so any
+    /// later trunk and lane tips have two merge bases. Leaves `main` checked out.
+    fn criss_cross_lane(fixture: &PatchEquivalenceFixture) -> FixtureResult {
+        fixture.git(&["checkout", "--quiet", "-b", CRISS_CROSS_LANE])?;
+        fixture.write("lane_first.rs", "lane work trunk merges\n")?;
+        let lane_first = fixture.commit("first lane commit")?;
+        fixture.git(&["checkout", "--quiet", "main"])?;
+        fixture.write("trunk_first.rs", "trunk work the lane merges\n")?;
+        let trunk_first = fixture.commit("first trunk commit")?;
+        fixture.git(&[
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "--no-edit",
+            &lane_first.to_string(),
+        ])?;
+        fixture.git(&["checkout", "--quiet", CRISS_CROSS_LANE])?;
+        fixture.git(&[
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "--no-edit",
+            &trunk_first.to_string(),
+        ])?;
+        fixture.git(&["checkout", "--quiet", "main"])?;
+        Ok(())
+    }
+
+    fn merge_base_count(
+        fixture: &PatchEquivalenceFixture,
+        trunk: &GitObjectId,
+        head: &GitObjectId,
+    ) -> FixtureResult<usize> {
+        let output = Command::new("git")
+            .args(["merge-base", "--all", &trunk.to_string(), &head.to_string()])
+            .current_dir(fixture.root())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "git merge-base --all should succeed"
+        );
+        Ok(String::from_utf8(output.stdout)?.lines().count())
     }
 }

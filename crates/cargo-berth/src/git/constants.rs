@@ -56,8 +56,6 @@ pub(super) const GIT_COMMON_DIRECTORY_ARG: &str = "--git-common-dir";
 pub(super) const GIT_COUNT_ARG: &str = "--count";
 /// Show a merge path only when its result differs from every parent.
 pub(super) const GIT_DENSE_COMBINED_ARG: &str = "--diff-merges=dense-combined";
-/// Compare the branch against its merge base so trunk-only changes never enter its extent.
-pub(super) const GIT_DIFF_MERGE_BASE_ARG: &str = "--merge-base";
 /// Test whether an object can be read without printing it.
 pub(super) const GIT_EXISTS_ARG: &str = "-e";
 /// Follow only the first parent, so a walk stays on one branch's own line.
@@ -83,6 +81,8 @@ pub(super) const GIT_FULL_REF_FORMAT_ARG: &str = "--format=%(refname)";
 pub(super) const GIT_MERGE_BASE_ARG_PREFIX: &str = "--merge-base=";
 /// Omit merge commits, which carry no patch of their own to compare.
 pub(super) const GIT_NO_MERGES_ARG: &str = "--no-merges";
+/// Omit `merge-tree`'s informational messages, leaving the tree id and conflicted paths.
+pub(super) const GIT_NO_MESSAGES_ARG: &str = "--no-messages";
 /// Disable git's optional locks for read-only calls.
 pub(super) const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
 /// Compare renames as their deletion and addition patches.

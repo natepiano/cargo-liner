@@ -40,8 +40,8 @@ You can initialize a repository with work already in flight. `init` inspects
 every live worktree and reserves its committed changes relative to trunk plus
 its staged, unstaged, and untracked paths. Each worktree with work and no prior
 reservation gets one reservation; clean worktrees and worktrees with reservation
-history are omitted. The untracked configuration file created by `init` does not
-count as work.
+history are omitted. Uncommitted changes to the configuration file, including
+the untracked file `init` creates, do not count as work.
 
 The report lists new reservation ids, worktree roots, and branches or detached
 heads. If worktrees overlap, it names both reservations and their shared paths,

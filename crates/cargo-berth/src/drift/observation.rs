@@ -550,15 +550,24 @@ fn observe_full(
 }
 
 /// Reuse the same staged, unstaged, and untracked status partition for branch protection.
+///
+/// An uncommitted change to the berth configuration at `BerthConfig::relative_path` is
+/// repository setup, not lane work, whether the file is untracked or tracked and modified, so
+/// every partition drops it. A committed change to that file still counts through
+/// `git::unmerged_branch_paths`.
 pub(crate) fn observe_merge_working_tree(
     repository_root: &Path,
 ) -> Result<WorkingTreeFingerprint, String> {
     let mut status =
         observe_working_tree_status(repository_root).map_err(|error| error.to_string())?;
     let configuration_path = BerthConfig::relative_path();
-    status
-        .untracked
-        .retain(|path| Path::new(&path.to_string()) != configuration_path);
+    for paths in [
+        &mut status.staged,
+        &mut status.unstaged,
+        &mut status.untracked,
+    ] {
+        paths.retain(|path| Path::new(&path.to_string()) != configuration_path);
+    }
     Ok(WorkingTreeFingerprint {
         tracked_paths:   status.tracked(),
         untracked_paths: status.untracked,

@@ -1839,6 +1839,31 @@ mod merge_extent {
     }
 
     #[test]
+    fn a_merged_lane_with_an_uncommitted_configuration_edit_ends_its_run() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:branch.rs", FIRST_RUN);
+        commit(&fixture.holder, "branch.rs", "branch work\n");
+        assert_eq!(
+            snapshot(&board(fixture.trunk()), &id)["merge_extent"]["status"],
+            "protected"
+        );
+        let configuration = fixture.holder.join(".claude/config/berth.toml");
+        let edited = fs::read_to_string(&configuration).expect("tracked configuration should read")
+            + "# lane-local edit\n";
+        fs::write(&configuration, edited).expect("tracked configuration should write");
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--no-ff", "--no-edit", "holder"],
+        );
+
+        let observed = board(fixture.trunk());
+        let ended = snapshot(&observed, &id);
+        assert_eq!(ended["merge_extent"]["status"], "empty");
+        assert_eq!(ended["lifecycle"]["stage"], "released");
+        assert_eq!(ended["lifecycle"]["disposition"]["kind"], "integrated");
+    }
+
+    #[test]
     fn an_integrated_holder_behind_trunk_does_not_cover_trunk_only_changes() {
         let fixture = Repository::new();
         claim(&fixture.holder, "tree:crates", FIRST_RUN);
@@ -2778,7 +2803,7 @@ mod merge_extent {
             assert_eq!(
                 queries
                     .lines()
-                    .filter(|line| line.contains("--merge-base") && line.contains("--name-only"))
+                    .filter(|line| line.contains("merge-tree") && line.contains("--name-only"))
                     .count(),
                 expected_merge_queries,
                 "only changed keys repeat the merge query: {queries}"

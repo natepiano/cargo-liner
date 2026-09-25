@@ -53,6 +53,12 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 const STALE_RUN_ENVIRONMENT: &str = "CARGO_BERTH_TEST_STALE_RUN";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+/// The traced prefix of the merge `git::unmerged_branch_paths` computes for a holder.
+const BRANCH_PATH_MERGE_QUERY: &str = "merge-tree --write-tree --name-only ";
+/// The traced prefix of the ancestry read that decides whether a holder's run ended.
+const RUN_ENDING_ANCESTRY_QUERY: &str = "merge-base --is-ancestor ";
+/// The traced prefix of its diff from trunk to that merge's result tree.
+const BRANCH_PATH_DIFF_QUERY: &str = "diff --name-only -z --no-renames ";
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
 if [ "$1" = "--no-optional-locks" ]; then
@@ -64,7 +70,8 @@ if [ "$1" = "--no-optional-locks" ]; then
         printf '%s\n' "$command_line" >> "$CARGO_BERTH_TEST_GIT_TRACE"
     )
 fi
-if { [ "$2" = "merge-tree" ] || { [ "$2" = "rev-list" ] && [ "$3" = "--cherry-mark" ]; }; } \
+if { { [ "$2" = "merge-tree" ] && [ "$4" != "--name-only" ]; } \
+        || { [ "$2" = "rev-list" ] && [ "$3" = "--cherry-mark" ]; }; } \
     && [ -n "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" ]; then
     if [ "$CARGO_BERTH_TEST_UNAVAILABLE_TARGET" = "*" ]; then
         exit 2
@@ -1764,8 +1771,17 @@ fn predecessor_graph_has_fixed_cold_cost() {
     );
 }
 
-/// Derivation scales once per holder checkout, independently of the fixed ancestry batch.
+/// Derivation scales once per holder checkout, independently of the fixed ancestry batch. A
+/// holder whose extent is empty after doing work also pays one ancestry read to decide whether
+/// its run ended.
 fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
+    assert!(
+        queries
+            .iter()
+            .filter(|query| query.starts_with(RUN_ENDING_ANCESTRY_QUERY))
+            .count()
+            <= worktrees
+    );
     assert_eq!(
         queries
             .iter()
@@ -1776,7 +1792,7 @@ fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
     assert!(
         queries
             .iter()
-            .filter(|query| query.starts_with("diff --merge-base "))
+            .filter(|query| query.starts_with(BRANCH_PATH_MERGE_QUERY))
             .count()
             <= worktrees
     );
@@ -1785,7 +1801,11 @@ fn assert_merge_observation_budget(queries: &[String], worktrees: usize) {
 fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
     let mut commands = invocations
         .iter()
-        .filter(|line| !line.starts_with("status ") && !line.starts_with("diff --merge-base "))
+        .filter(|line| {
+            !line.starts_with("status ")
+                && !line.starts_with(RUN_ENDING_ANCESTRY_QUERY)
+                && !is_branch_path_query(line)
+        })
         .filter_map(|line| line.split_whitespace().next())
         .collect::<Vec<_>>();
     commands.sort_unstable();
@@ -2914,8 +2934,13 @@ fn git_trace(traced: &TracedBerth) -> Vec<String> {
 fn scoped_patch_comparison_count(traced: &TracedBerth) -> usize {
     git_trace(traced)
         .iter()
-        .filter(|line| line.starts_with("merge-tree "))
+        .filter(|line| line.starts_with("merge-tree ") && !is_branch_path_query(line))
         .count()
+}
+
+/// The merge-tree and result-tree diff behind one holder's committed merge-extent paths.
+fn is_branch_path_query(line: &str) -> bool {
+    line.starts_with(BRANCH_PATH_MERGE_QUERY) || line.starts_with(BRANCH_PATH_DIFF_QUERY)
 }
 
 fn scoped_patch_comparisons_for_target(

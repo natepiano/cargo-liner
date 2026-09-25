@@ -63,8 +63,9 @@ const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// Attribution and merge observations remain fixed for these two holder checkouts, including
-/// the acting HEAD read and the one diff that narrows the foreign holder to work HEAD lacks.
-const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 14;
+/// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
+/// lacks. Every branch path read is those two invocations.
+const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 16;
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =

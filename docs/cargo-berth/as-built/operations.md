@@ -16,12 +16,12 @@ When the main file is missing and `init` runs in a linked worktree with its own
 valid file, that file's `trunk`, `gate_mode`, `maximum_reservations`, and
 `maximum_ordering_edges` seed the new main file; otherwise defaults are
 written. An invalid linked file makes `init` from that worktree fail before the
-main file is written. An untracked configuration file
-at that path is excluded from enrollment and merge-extent observations; tracked
-changes still count.
+main file is written. An uncommitted configuration file at that path, untracked
+or tracked and modified, is excluded from enrollment and merge-extent
+observations; committed changes to it still count.
 
-Enrollment reserves the exact file paths the branch changed since its
-merge-base with trunk, plus its staged, unstaged, and untracked paths. Locked worktrees are eligible. Existing reservations, including
+Enrollment reserves the exact file paths merging the branch into trunk would
+change or conflict on, plus its staged, unstaged, and untracked paths. Locked worktrees are eligible. Existing reservations, including
 ended ones, prevent a worktree from being enrolled again. Re-run `init` after
 adding a worktree with commits, before its first edit, or after fixing a failed
 candidate. Enrollment at later hook contacts is not automatic.

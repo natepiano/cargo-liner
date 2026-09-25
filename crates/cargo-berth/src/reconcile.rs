@@ -18,6 +18,7 @@ use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::constants::MERGE_EXTENT_TRUNK_UNAVAILABLE;
 use crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE;
+use crate::constants::UNMERGED_BRANCH_PATH_GIT_QUERIES;
 use crate::drift;
 use crate::edge::EdgeReplayError;
 use crate::edge::IntegrationConstraintProjection;
@@ -182,7 +183,7 @@ pub(crate) struct ReconciliationGitCost {
     pub(crate) orphan_recovery_evidence_queries:     u64,
     /// Status observations shared across the reservations of each live holder.
     pub(crate) merge_extent_worktree_status_queries: u64,
-    /// Net merge-base path queries, including separation of committed paths for settlement.
+    /// Net branch path queries, including separation of committed paths for settlement.
     pub(crate) merge_extent_path_queries:            u64,
 }
 
@@ -191,8 +192,9 @@ pub(crate) struct ReconciliationGitCost {
 struct MergeExtentGitCost {
     /// Includes attempted status reads that report an observation failure.
     worktree_status_queries: u64,
-    /// Includes failed reads, fresh committed-path reads needed to settle a cached extent, and
-    /// the ancestry read that ends a clean run whose head trunk contains.
+    /// Counts both invocations of each `git::unmerged_branch_paths` read, including failed
+    /// reads and fresh committed-path reads needed to settle a cached extent, plus the ancestry
+    /// read that ends a clean run whose head trunk contains.
     path_queries:            u64,
 }
 
@@ -1948,7 +1950,7 @@ fn observe_merge_extent(
             committed_paths: CommittedMergeEvidence::Unavailable,
         });
     }
-    git_cost.path_queries += 1;
+    git_cost.path_queries += UNMERGED_BRANCH_PATH_GIT_QUERIES;
     let committed_paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
         .map_err(|error| error.to_string())?;
     let mut paths = committed_paths.clone();
