@@ -2045,7 +2045,10 @@ mod merge_extent {
                 snapshot(&after, &a_id)["lifecycle"]["disposition"]["kind"],
                 "integrated"
             );
-            assert_eq!(snapshot(&after, &a_id)["merge_extent"]["status"], "empty");
+            assert_eq!(
+                merge_extent_at_release(snapshot(&after, &a_id))["status"],
+                "empty"
+            );
 
             let check = repo.run(&b, &["check", "file:shared.txt", "--json"]);
             assert_success(&check);
@@ -2327,7 +2330,7 @@ mod merge_extent {
             assert!(status_before.is_empty());
             let integrated = board(fixture.trunk());
             assert_eq!(
-                snapshot(&integrated, &id)["merge_extent"]["status"],
+                merge_extent_at_release(snapshot(&integrated, &id))["status"],
                 "empty"
             );
             assert!(
@@ -2456,7 +2459,7 @@ mod merge_extent {
 
         let observed = board(fixture.trunk());
         let ended = snapshot(&observed, &id);
-        assert_eq!(ended["merge_extent"]["status"], "empty");
+        assert_eq!(merge_extent_at_release(ended)["status"], "empty");
         assert_eq!(ended["lifecycle"]["stage"], "released");
         assert_eq!(ended["lifecycle"]["disposition"]["kind"], "integrated");
     }
@@ -2759,7 +2762,7 @@ mod merge_extent {
 
         let empty = board(fixture.trunk());
         let reservation = snapshot(&empty, &id);
-        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(merge_extent_at_release(reservation)["status"], "empty");
         assert_eq!(reservation["edit_blocking_status"], "clear");
         assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
 
@@ -2781,7 +2784,7 @@ mod merge_extent {
             "released"
         );
         assert_eq!(
-            snapshot(&protected, &settled_id)["merge_extent"]["status"],
+            merge_extent_at_release(snapshot(&protected, &settled_id))["status"],
             "empty"
         );
         let reservation = snapshot(&protected, &id);
@@ -2796,7 +2799,7 @@ mod merge_extent {
         );
         let integrated = board(fixture.trunk());
         let reservation = snapshot(&integrated, &id);
-        assert_eq!(reservation["merge_extent"]["status"], "empty");
+        assert_eq!(merge_extent_at_release(reservation)["status"], "empty");
         assert_eq!(reservation["edit_blocking_status"], "clear");
         assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
         assert_allowed(&fixture.outsider, "file:later.rs", THIRD_RUN);
@@ -3288,7 +3291,10 @@ mod merge_extent {
         GIT.run(fixture.trunk(), ["merge", "--quiet", "--ff-only", "holder"]);
         let observed = board(fixture.trunk());
 
-        assert_eq!(snapshot(&observed, &id)["merge_extent"]["status"], "empty");
+        assert_eq!(
+            merge_extent_at_release(snapshot(&observed, &id))["status"],
+            "empty"
+        );
         assert_eq!(
             GIT.stdout(
                 fixture.trunk(),
@@ -3323,7 +3329,7 @@ mod merge_extent {
         let observed = board(fixture.trunk());
 
         assert_eq!(
-            snapshot(&observed, &subject)["merge_extent"]["status"],
+            merge_extent_at_release(snapshot(&observed, &subject))["status"],
             "empty"
         );
         assert!(
@@ -4036,7 +4042,7 @@ mod merge_extent {
         let released = board(fixture.trunk());
         assert_eq!(snapshot(&released, &id)["lifecycle"]["stage"], "released");
         assert_eq!(
-            snapshot(&released, &id)["merge_extent"]["status"],
+            merge_extent_at_release(snapshot(&released, &id))["status"],
             "unavailable"
         );
         assert_eq!(
@@ -4409,6 +4415,16 @@ mod merge_extent {
             .map(|entry| entry.get("reservation").unwrap_or(entry))
             .find(|entry| entry["reservation_id"] == id)
             .expect("reservation should have a board snapshot")
+    }
+
+    /// A released row publishes its last observed extent under `at_release`, never as live.
+    #[track_caller]
+    fn merge_extent_at_release(reservation: &Value) -> &Value {
+        assert_eq!(
+            reservation["merge_extent"]["status"], "released",
+            "{reservation}"
+        );
+        &reservation["merge_extent"]["at_release"]
     }
 
     fn scope_paths(scopes: &Value) -> BTreeSet<String> {

@@ -44,6 +44,10 @@ const BOARD_LOCKED_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
+/// The rendered report's key for a live merge extent.
+const MERGE_EXTENT_LABEL: &str = "Merge extent";
+/// The rendered report's key for a released reservation's last observed merge extent.
+const MERGE_EXTENT_AT_RELEASE_LABEL: &str = "Merge extent at release (not blocking)";
 const PENDING_BYPASS_NAME: &str =
     "cargo-berth-pending-bypass-01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a99.json";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
@@ -888,14 +892,100 @@ fn released_legacy_reservation_report_preserves_its_not_derived_declaration() {
     assert_eq!(
         report["merge_extent"],
         serde_json::json!({
-            "status": "not_derived",
-            "protection": [{"kind": "tree", "path": "src"}],
+            "status": "released",
+            "at_release": {
+                "status": "not_derived",
+                "protection": [{"kind": "tree", "path": "src"}],
+            },
         })
     );
     let complete_board = board_data(repository.path());
     let snapshot = board_reservation_snapshot(&complete_board, &id);
     assert_eq!(report["race_extent"], snapshot["race_extent"]);
     assert_eq!(report["merge_extent"], snapshot["merge_extent"]);
+}
+
+#[test]
+fn released_abandoned_reservation_reports_its_merge_extent_at_release_while_active_stays_live() {
+    let repository = initialized_repository();
+    git(repository.path(), &["add", CONFIGURATION_PATH]);
+    git(
+        repository.path(),
+        &["commit", "--quiet", "-m", "configure berth"],
+    );
+    let (_holder_directory, holder_root) = foreign_worktree(&repository, "abandoned-holder");
+    let id = reservation_id(&claim(&holder_root, "file:src/lib.rs", FIRST_RUN));
+    fs::write(holder_root.join("src/lib.rs"), "pub fn discarded() {}\n")
+        .expect("holder source should write");
+    git(&holder_root, &["add", "src/lib.rs"]);
+    git(&holder_root, &["commit", "--quiet", "-m", "holder work"]);
+    let holder_tip = git_stdout(&holder_root, &["rev-parse", "HEAD"]);
+
+    let (active, active_presentation) = reservation_report_and_presentation(repository.path(), &id);
+    assert_eq!(active["lifecycle"], serde_json::json!({"status": "active"}));
+    assert_eq!(active["merge_extent"]["status"], "protected");
+    assert_eq!(active["merge_extent"]["key"]["head"], holder_tip);
+    assert_eq!(
+        active["merge_extent"]["scopes"],
+        serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
+    );
+    assert_eq!(
+        active_presentation[MERGE_EXTENT_LABEL],
+        active["merge_extent"]
+    );
+    assert!(
+        active_presentation
+            .get(MERGE_EXTENT_AT_RELEASE_LABEL)
+            .is_none()
+    );
+
+    let resolved = run_berth_with_run(
+        &holder_root,
+        &[
+            "resolve",
+            &id,
+            "--abandon",
+            "--why",
+            "discard holder work",
+            "--json",
+        ],
+        FIRST_RUN,
+    );
+    assert!(
+        resolved.status.success(),
+        "abandon failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&resolved.stdout),
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+
+    let (released, released_presentation) =
+        reservation_report_and_presentation(repository.path(), &id);
+    assert_eq!(
+        released["lifecycle"]["status"],
+        "released_without_checkpoint"
+    );
+    assert_eq!(released["lifecycle"]["disposition"]["kind"], "abandoned");
+    let released_merge_extent = serde_json::json!({
+        "status": "released",
+        "at_release": active["merge_extent"],
+    });
+    assert_eq!(released["merge_extent"], released_merge_extent);
+    assert_eq!(
+        released_presentation[MERGE_EXTENT_AT_RELEASE_LABEL],
+        active["merge_extent"]
+    );
+    assert!(released_presentation.get(MERGE_EXTENT_LABEL).is_none());
+
+    let complete_board = board_data(repository.path());
+    let resolved_row = complete_board["resolved"]["entries"]
+        .as_array()
+        .expect("board should list resolved reservations")
+        .iter()
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .find(|snapshot| snapshot["reservation_id"] == id)
+        .expect("abandoned reservation should be a resolved row");
+    assert_eq!(resolved_row["merge_extent"], released_merge_extent);
+    assert_eq!(resolved_row["edit_blocking_status"], "clear");
 }
 
 #[test]
@@ -1826,6 +1916,14 @@ fn reservation_lifecycle(repository_root: &Path, reservation_id: &str) -> serde_
 }
 
 fn reservation_report(repository_root: &Path, reservation_id: &str) -> serde_json::Value {
+    reservation_report_and_presentation(repository_root, reservation_id).0
+}
+
+/// Read one reservation's JSON report and the rendered text that must mirror it.
+fn reservation_report_and_presentation(
+    repository_root: &Path,
+    reservation_id: &str,
+) -> (serde_json::Value, serde_json::Value) {
     let output = run_berth(
         repository_root,
         &["board", "--reservation", reservation_id, "--json"],
@@ -1858,17 +1956,25 @@ fn reservation_report(repository_root: &Path, reservation_id: &str) -> serde_jso
     );
     let data = &envelope["payload"]["data"];
     let report = rendered_board_report(&envelope, "reservation lifecycle");
+    let (merge_extent_label, merge_extent) = if data["merge_extent"]["status"] == "released" {
+        (
+            MERGE_EXTENT_AT_RELEASE_LABEL,
+            &data["merge_extent"]["at_release"],
+        )
+    } else {
+        (MERGE_EXTENT_LABEL, &data["merge_extent"])
+    };
     assert_eq!(
         report,
         serde_json::json!({
             "Reservation": reservation_id,
             "Lifecycle": data["lifecycle"],
             "Race extent": data["race_extent"],
-            "Merge extent": data["merge_extent"],
+            merge_extent_label: merge_extent,
         })
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains(ENTER_ALTERNATE_SCREEN));
-    data.clone()
+    (data.clone(), report)
 }
 
 fn assert_preserved_board_envelope_fields(

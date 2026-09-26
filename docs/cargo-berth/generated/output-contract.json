@@ -2703,8 +2703,8 @@
               "$ref": "#/$defs/ReservationLifecycle"
             },
             "merge_extent": {
-              "$ref": "#/$defs/MergeExtent",
-              "description": "The exact derived branch surface or the evidence retained on failure."
+              "$ref": "#/$defs/effective_merge_extent",
+              "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
             "purpose": {
               "$ref": "#/$defs/ReservationPurpose"
@@ -5772,8 +5772,8 @@
               "description": "Its point-in-time lifecycle reading."
             },
             "merge_extent": {
-              "$ref": "#/$defs/MergeExtent",
-              "description": "The exact derived branch surface or the evidence retained on failure."
+              "$ref": "#/$defs/effective_merge_extent",
+              "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
             "race_extent": {
               "$ref": "#/$defs/RaceExtent",
@@ -7567,6 +7567,33 @@
               "type": "object"
             }
           ]
+        },
+        "effective_merge_extent": {
+          "anyOf": [
+            {
+              "description": "Release ended this extent's protection; it refuses nothing.",
+              "properties": {
+                "at_release": {
+                  "$ref": "#/$defs/MergeExtent",
+                  "description": "The merge extent last observed before release, kept for audit."
+                },
+                "status": {
+                  "const": "released",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "at_release"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "An active or outstanding reservation's current merge protection."
+            }
+          ],
+          "description": "A reservation's merge extent as it bears on protection now, following release.\n\nReconciliation stops observing a reservation once it is released, and\n`Reservation::edit_blocking_status` answers `Clear` for every released lifecycle, so the\nstored [`MergeExtent`] of a released reservation is only its last observation before release.\n`Released` publishes that observation under its own `status` so no reader takes it for live\nprotection; `Live` serializes exactly as the [`MergeExtent`] it wraps."
         },
         "envelope_presentation": {
           "description": "Whether an envelope supplies render-ready output blocks.",
@@ -10575,8 +10602,8 @@
               "$ref": "#/$defs/ReservationLifecycle"
             },
             "merge_extent": {
-              "$ref": "#/$defs/MergeExtent",
-              "description": "The exact derived branch surface or the evidence retained on failure."
+              "$ref": "#/$defs/effective_merge_extent",
+              "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
             "purpose": {
               "$ref": "#/$defs/ReservationPurpose"
@@ -13508,8 +13535,8 @@
               "description": "Its point-in-time lifecycle reading."
             },
             "merge_extent": {
-              "$ref": "#/$defs/MergeExtent",
-              "description": "The exact derived branch surface or the evidence retained on failure."
+              "$ref": "#/$defs/effective_merge_extent",
+              "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
             "race_extent": {
               "$ref": "#/$defs/RaceExtent",
@@ -15035,6 +15062,33 @@
               "type": "object"
             }
           ]
+        },
+        "effective_merge_extent": {
+          "anyOf": [
+            {
+              "description": "Release ended this extent's protection; it refuses nothing.",
+              "properties": {
+                "at_release": {
+                  "$ref": "#/$defs/MergeExtent",
+                  "description": "The merge extent last observed before release, kept for audit."
+                },
+                "status": {
+                  "const": "released",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "at_release"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "An active or outstanding reservation's current merge protection."
+            }
+          ],
+          "description": "A reservation's merge extent as it bears on protection now, following release.\n\nReconciliation stops observing a reservation once it is released, and\n`Reservation::edit_blocking_status` answers `Clear` for every released lifecycle, so the\nstored [`MergeExtent`] of a released reservation is only its last observation before release.\n`Released` publishes that observation under its own `status` so no reader takes it for live\nprotection; `Live` serializes exactly as the [`MergeExtent`] it wraps."
         },
         "first_touch_reservation_selection_payload": {
           "description": "Typed outcomes returned when first-touch validation must select an active reservation.",
@@ -17532,8 +17586,8 @@
               "description": "Its point-in-time lifecycle reading."
             },
             "merge_extent": {
-              "$ref": "#/$defs/MergeExtent",
-              "description": "The exact derived branch surface or the evidence retained on failure."
+              "$ref": "#/$defs/effective_merge_extent",
+              "description": "The live branch surface, its evidence retained on failure, or the record kept at release."
             },
             "race_extent": {
               "$ref": "#/$defs/RaceExtent",
@@ -17689,6 +17743,33 @@
             "untracked_paths"
           ],
           "type": "object"
+        },
+        "effective_merge_extent": {
+          "anyOf": [
+            {
+              "description": "Release ended this extent's protection; it refuses nothing.",
+              "properties": {
+                "at_release": {
+                  "$ref": "#/$defs/MergeExtent",
+                  "description": "The merge extent last observed before release, kept for audit."
+                },
+                "status": {
+                  "const": "released",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "at_release"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MergeExtent",
+              "description": "An active or outstanding reservation's current merge protection."
+            }
+          ],
+          "description": "A reservation's merge extent as it bears on protection now, following release.\n\nReconciliation stops observing a reservation once it is released, and\n`Reservation::edit_blocking_status` answers `Clear` for every released lifecycle, so the\nstored [`MergeExtent`] of a released reservation is only its last observation before release.\n`Released` publishes that observation under its own `status` so no reader takes it for live\nprotection; `Live` serializes exactly as the [`MergeExtent`] it wraps."
         },
         "protected_reservation_tip": {
           "description": "The fixed checkpoint commit used for ordinary integration evidence.",

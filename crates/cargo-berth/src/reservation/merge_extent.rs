@@ -91,6 +91,27 @@ pub(crate) enum MergeExtent {
     },
 }
 
+/// A reservation's merge extent as it bears on protection now, following release.
+///
+/// Reconciliation stops observing a reservation once it is released, and
+/// `Reservation::edit_blocking_status` answers `Clear` for every released lifecycle, so the
+/// stored [`MergeExtent`] of a released reservation is only its last observation before release.
+/// `Released` publishes that observation under its own `status` so no reader takes it for live
+/// protection; `Live` serializes exactly as the [`MergeExtent`] it wraps.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "effective_merge_extent")]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum EffectiveMergeExtent {
+    /// Release ended this extent's protection; it refuses nothing.
+    Released {
+        /// The merge extent last observed before release, kept for audit.
+        at_release: MergeExtent,
+    },
+    /// An active or outstanding reservation's current merge protection.
+    #[serde(untagged)]
+    Live(MergeExtent),
+}
+
 /// Whether the selected refusal ground currently protects any paths.
 pub(crate) enum ReservationProtection<'scopes> {
     /// This ground refuses nothing.
@@ -196,5 +217,55 @@ impl MergeExtent {
     /// and not retained protection, so `Alert::MergeExtentUnavailable` must not be raised for it.
     pub(crate) const fn retains_protection(&self) -> bool {
         matches!(self.protection(), ReservationProtection::Protected(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::EffectiveMergeExtent;
+    use super::MergeExtent;
+
+    fn not_derived_merge_extent() -> Result<MergeExtent, Box<dyn std::error::Error>> {
+        Ok(serde_json::from_value(json!({
+            "status": "not_derived",
+            "protection": [{"kind": "file", "path": "src/lib.rs"}],
+        }))?)
+    }
+
+    #[test]
+    fn live_merge_extent_serializes_exactly_as_the_extent_it_wraps()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let merge_extent = not_derived_merge_extent()?;
+
+        assert_eq!(
+            serde_json::to_string(&EffectiveMergeExtent::Live(merge_extent.clone()))?,
+            serde_json::to_string(&merge_extent)?
+        );
+        let live: EffectiveMergeExtent =
+            serde_json::from_value(serde_json::to_value(&merge_extent)?)?;
+        assert_eq!(live, EffectiveMergeExtent::Live(merge_extent));
+        Ok(())
+    }
+
+    #[test]
+    fn released_merge_extent_nests_the_extent_at_release_under_its_own_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let at_release = not_derived_merge_extent()?;
+        let released = EffectiveMergeExtent::Released {
+            at_release: at_release.clone(),
+        };
+
+        let released_json = serde_json::to_value(&released)?;
+        assert_eq!(
+            released_json,
+            json!({"status": "released", "at_release": serde_json::to_value(&at_release)?})
+        );
+        assert_eq!(
+            serde_json::from_value::<EffectiveMergeExtent>(released_json)?,
+            released
+        );
+        Ok(())
     }
 }

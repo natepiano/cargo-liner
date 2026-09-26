@@ -44,6 +44,7 @@ pub(crate) use lifecycle::ReleaseDisposition;
 pub(crate) use lifecycle::ReleaseRevalidationSubject;
 pub(crate) use lifecycle::ReservationLifecycle;
 pub(crate) use lifecycle::RewrittenIntegrationTrunkCommit;
+pub(crate) use merge_extent::EffectiveMergeExtent;
 pub(crate) use merge_extent::MergeExtent;
 pub(crate) use merge_extent::MergeExtentKey;
 pub(crate) use partition::AuthorizedEditingIdentity;

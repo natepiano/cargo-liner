@@ -270,6 +270,13 @@ of generations or offsets. Reservation rows occur at
 - `freshness.status`: `fresh` or `stale`, both with `last_activity_at`.
 - `ahead_behind_main.status`: `counts` with `ahead` and `behind`; `unrelated`;
   or `unavailable`.
+- `merge_extent.status`: an active or outstanding row carries its live merge
+  extent: `not_derived` with `protection`; `empty` with `key`; `protected` with
+  `key` and `scopes`; or `unavailable` with `retained_evidence` (the
+  `not_derived`, `empty`, or `protected` form) and `failure`. A released row
+  carries `released` with `at_release`, which holds the extent last observed
+  before release. That extent refuses nothing: released rows are always
+  `edit_blocking_status = clear`.
 
 The remaining row enums are scalar strings:
 `edit_blocking_status = blocking | clear`, `visibility = active_constraint |
@@ -462,6 +469,13 @@ with `evidence`. The lifecycle payload deliberately omits current integration
 evidence. A waiting successor and either endpoint of an unresolved overlap can
 therefore be selected even though the complete board omits their reservation
 rows. The selector has no terminal representation and requires `--json`.
+
+The payload also carries `race_extent` and `merge_extent`, with the values a
+complete-board row carries: a released reservation reports `merge_extent.status
+= "released"` with the extent last observed before release under `at_release`.
+The envelope's rendered `presentation` block labels that value
+`Merge extent at release (not blocking)`, where a live extent reads
+`Merge extent`.
 
 An unknown id returns `status = "invalid_input"`, `exit_code = 5`, and the same
 envelope reservation-id rules. Its typed payload is:

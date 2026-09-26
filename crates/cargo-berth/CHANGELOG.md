@@ -40,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A linked worktree's `trunk` key no longer affects judgement; only the main worktree's key defines the repository trunk when its configuration exists.
 
+- A released reservation's `merge_extent` in `board --json` and `board --reservation <id> --json` is `{"status": "released", "at_release": <extent>}`, so the extent last observed before release no longer reads as live protection. The single-reservation text labels it `Merge extent at release (not blocking)`. Active and outstanding rows are unchanged.
+
 ### Fixed
 
 - A lane merged into trunk ends its run even when its checkout holds an

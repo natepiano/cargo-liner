@@ -62,8 +62,8 @@ use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
 use crate::reconcile::ReconciliationReport;
 use crate::reservation::EditBlockingStatus;
+use crate::reservation::EffectiveMergeExtent;
 use crate::reservation::IntegrationEvidenceStatus;
-use crate::reservation::MergeExtent;
 use crate::reservation::RaceExtent;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
@@ -194,8 +194,8 @@ pub(super) struct BoardReservationSnapshot {
     scopes:                    ReservationScopeSet,
     /// The run's effective editing scope, independent of branch integration.
     race_extent:               RaceExtent,
-    /// The exact derived branch surface or the evidence retained on failure.
-    merge_extent:              MergeExtent,
+    /// The live branch surface, its evidence retained on failure, or the record kept at release.
+    merge_extent:              EffectiveMergeExtent,
     lifecycle:                 ReservationLifecycle,
     integration_evidence:      BoardIntegrationEvidence,
     edit_blocking_status:      EditBlockingStatus,
@@ -275,7 +275,7 @@ pub(super) struct HumanReservationSnapshot<'board> {
     purpose:              &'board ReservationPurpose,
     scopes:               &'board ReservationScopeSet,
     race_extent:          &'board RaceExtent,
-    merge_extent:         &'board MergeExtent,
+    merge_extent:         &'board EffectiveMergeExtent,
     lifecycle:            &'board ReservationLifecycle,
     integration_evidence: &'board BoardIntegrationEvidence,
     edit_blocking_status: &'board EditBlockingStatus,
@@ -924,7 +924,7 @@ fn board_reservation_snapshots(
             purpose: reservation.purpose().clone(),
             scopes: reservation.scopes().clone(),
             race_extent: reservation.race_extent(),
-            merge_extent: reservation.merge_extent().clone(),
+            merge_extent: reservation.effective_merge_extent(),
             lifecycle: reservation.lifecycle().clone(),
             integration_evidence,
             edit_blocking_status: reservation.edit_blocking_status(),

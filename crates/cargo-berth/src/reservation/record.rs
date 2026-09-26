@@ -17,6 +17,7 @@ use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReservationLifecycle;
+use super::merge_extent::EffectiveMergeExtent;
 use super::merge_extent::MergeExtent;
 use super::merge_extent::ReservationProtection;
 use super::replay::ReservationReplayError;
@@ -375,6 +376,18 @@ impl Reservation {
             }
         } else {
             RaceExtent::Ended
+        }
+    }
+
+    /// Publish the merge extent as live protection, or as the record kept at release.
+    pub(crate) fn effective_merge_extent(&self) -> EffectiveMergeExtent {
+        match self.lifecycle {
+            ReservationLifecycle::Active | ReservationLifecycle::Outstanding { .. } => {
+                EffectiveMergeExtent::Live(self.merge_extent.clone())
+            },
+            ReservationLifecycle::Released { .. } => EffectiveMergeExtent::Released {
+                at_release: self.merge_extent.clone(),
+            },
         }
     }
 

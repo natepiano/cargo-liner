@@ -78,10 +78,10 @@ use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
 use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
+use crate::reservation::EffectiveMergeExtent;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationTrunkSnapshot;
 use crate::reservation::LifecycleTransitionError;
-use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::RaceExtent;
 use crate::reservation::RecordedTarget;
@@ -1012,8 +1012,8 @@ pub(crate) struct ReservationReportSnapshot {
     pub(crate) lifecycle:      ReservationLifecycleSnapshot,
     /// The run's effective editing scope, independent of branch integration.
     pub(crate) race_extent:    RaceExtent,
-    /// The exact derived branch surface or the evidence retained on failure.
-    pub(crate) merge_extent:   MergeExtent,
+    /// The live branch surface, its evidence retained on failure, or the record kept at release.
+    pub(crate) merge_extent:   EffectiveMergeExtent,
 }
 
 /// Why a named reservation lifecycle query was rejected.

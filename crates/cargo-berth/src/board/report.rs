@@ -25,6 +25,7 @@ use crate::output::ReservationReportSnapshot;
 use crate::presentation;
 use crate::presentation::EnvelopePresentation;
 use crate::reconcile::ReconciliationReport;
+use crate::reservation::EffectiveMergeExtent;
 use crate::reservation::MergeExtent;
 use crate::reservation::RaceExtent;
 use crate::reservation::ReservationLifecycleSnapshot;
@@ -80,8 +81,28 @@ struct ReservationReport<'reservation> {
     lifecycle:      &'reservation ReservationLifecycleSnapshot,
     #[serde(rename = "Race extent")]
     race_extent:    &'reservation RaceExtent,
+    #[serde(flatten)]
+    merge_extent:   HumanMergeExtent<'reservation>,
+}
+
+/// The single-reservation report's merge extent, labeled by whether it still protects anything.
+#[derive(Serialize)]
+enum HumanMergeExtent<'reservation> {
+    /// An active or outstanding reservation's current merge protection.
     #[serde(rename = "Merge extent")]
-    merge_extent:   &'reservation MergeExtent,
+    Live(&'reservation MergeExtent),
+    /// The merge extent a released reservation last observed, which refuses nothing.
+    #[serde(rename = "Merge extent at release (not blocking)")]
+    AtRelease(&'reservation MergeExtent),
+}
+
+impl<'reservation> From<&'reservation EffectiveMergeExtent> for HumanMergeExtent<'reservation> {
+    fn from(effective_merge_extent: &'reservation EffectiveMergeExtent) -> Self {
+        match effective_merge_extent {
+            EffectiveMergeExtent::Live(merge_extent) => Self::Live(merge_extent),
+            EffectiveMergeExtent::Released { at_release } => Self::AtRelease(at_release),
+        }
+    }
 }
 
 /// Render one retained reservation's lifecycle and extents without restating the complete board.
@@ -93,7 +114,7 @@ pub(crate) fn reservation_lifecycle_presentation(
         reservation_id,
         lifecycle: &snapshot.lifecycle,
         race_extent: &snapshot.race_extent,
-        merge_extent: &snapshot.merge_extent,
+        merge_extent: HumanMergeExtent::from(&snapshot.merge_extent),
     };
     serde_json::to_string_pretty(&reservation_report).map_or_else(
         |error| {
@@ -124,6 +145,6 @@ pub(crate) fn reservation_lifecycle_snapshot(
         reservation_id,
         lifecycle: ReservationLifecycleSnapshot::from(reservation.evidence_state()?),
         race_extent: reservation.race_extent(),
-        merge_extent: reservation.merge_extent().clone(),
+        merge_extent: reservation.effective_merge_extent(),
     })
 }
