@@ -6,6 +6,10 @@
 
 ## How it works
 
+### Per-target reconciliation
+
+Reconciliation reads each recorded local integration branch once, batches the reservations judged there, and derives their evidence, settlement, and merge extents against that branch. A lane that reaches its integration branch can release there; a later change made only on that branch is outside the lane's merge extent. The repository trunk still supplies trunk-level gate and ahead/behind comparisons. A missing non-trunk branch is shown as unresolved and its live reservations are judged at the repository trunk; unlanded ones receive `target_missing`. Released reservations retain their existing proofs, subject to the usual lost-evidence revalidation.
+
 ### Storage
 
 All coordination state lives in a `cargo-berth` directory under the repository's common git dir, so every worktree of one repository shares one ledger and a clone gets a fresh one. `ledger/constants.rs` names the layout:
@@ -176,7 +180,7 @@ A genuinely foreign holder in the merge-collision sense still requires a real `g
 
 Each new `Claim` records `target: ClaimTarget` alongside `trunk_at_claim`. The target is a local `refs/heads/` ref with a source: `claim_argument`, `branch_configuration`, or `repository_trunk`. Explicit claims select `--target` first, then the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config, then the repository trunk. First touch and enrollment use the setting before the trunk. An invalid own-branch or unresolved setting falls back to the trunk for automatic acquisition and records the requested value and reason; an explicit claim rejects it.
 
-Claims from older journals replay as `RecordedTarget::Unrecorded`. `init` appends one `unrecorded_targets_pinned` event when any remain, assigning the repository trunk at that moment. `retarget <reservation> --target <branch>` appends `retarget` for an unreleased holder, replacing its target and comparison commit and clearing its retained integration proof. Reconcile, release, and the gate still evaluate the repository trunk in this phase.
+Claims from older journals replay as `RecordedTarget::Unrecorded`. `init` appends one `unrecorded_targets_pinned` event when any remain, assigning the repository trunk at that moment. `retarget <reservation> --target <branch>` appends `retarget` for an unreleased holder, replacing its target and comparison commit and clearing its retained integration proof. Reconciliation evaluates each reservation at its recorded target. Release and the trunk gate still evaluate the repository trunk.
 
 ### Claiming and the first-touch path
 

@@ -52,9 +52,11 @@ there joins through the marker and reuses the reservation for covered edits.
 
 ## Integration targets
 
+Reconciliation judges each reservation at its recorded target. If an unreleased lane's non-trunk target ref disappears, the `target_missing` alert supplies `cargo-berth retarget <id> --target <branch>` and the board shows that target's commit as `"unresolved"`. Until the reservation is retargeted, the alert persists and reconciliation judges that reservation at the repository trunk. A released lane keeps its proof if its target branch is later deleted; lost evidence is reported only if the proving commits leave history and fail revalidation on two passes. The trunk gate still gates the repository trunk.
+
 `cargo-berth claim <paths> --target <local-branch>` records the integration branch for the new reservation. Without the flag, the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config takes precedence over the repository trunk. Detached HEAD uses the repository trunk. Explicit own-branch and unresolved targets return `invalid_input`; first touch and enrollment fall back to the trunk and report the reason in JSON.
 
-`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. In this phase, release, reconciliation, and the gate continue to judge against the repository trunk.
+`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. Reconciliation evaluates each reservation at its recorded target; release and the trunk gate still judge the repository trunk.
 
 ## Harness identity
 

@@ -1,5 +1,6 @@
 //! One repository observation and the reachability facts edge readiness consumes.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -8,6 +9,7 @@ use std::fmt::Formatter;
 
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
+use crate::ledger::IntegrationTarget;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
@@ -21,6 +23,27 @@ pub(crate) enum RepositoryTrunk {
     Resolved(GitObjectId),
     /// Git could not resolve the configured branch.
     ObjectUnknown,
+}
+
+/// The direct observation of one recorded integration branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TargetObservation {
+    /// The branch resolves to a commit.
+    Resolved(GitObjectId),
+    /// The branch ref is absent; its reservations are judged at the repository trunk.
+    Missing,
+    /// Git could not classify the branch.
+    ObjectUnknown,
+}
+
+impl TargetObservation {
+    /// The commit shown on the board for this branch.
+    pub(crate) fn commit(&self) -> String {
+        match self {
+            Self::Resolved(commit) => commit.to_string(),
+            Self::Missing | Self::ObjectUnknown => "unresolved".to_owned(),
+        }
+    }
 }
 
 /// Lifecycle and git evidence captured for one retained reservation.
@@ -97,20 +120,53 @@ pub(crate) enum PredecessorSuccessorIncorporation {
 /// One complete repository observation used for every edge-readiness decision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepositorySnapshot {
-    trunk:                   RepositoryTrunk,
-    reservations:            HashMap<ReservationId, RepositoryReservationSnapshot>,
-    successor_incorporation: HashMap<ReservationId, PredecessorSuccessorIncorporation>,
+    repository_trunk:             IntegrationTarget,
+    targets:                      BTreeMap<IntegrationTarget, TargetObservation>,
+    judged_targets:               BTreeMap<IntegrationTarget, RepositoryTrunk>,
+    repository_trunk_observation: RepositoryTrunk,
+    reservation_targets:          HashMap<ReservationId, IntegrationTarget>,
+    reservations:                 HashMap<ReservationId, RepositoryReservationSnapshot>,
+    successor_incorporation:      HashMap<ReservationId, PredecessorSuccessorIncorporation>,
 }
 
 impl RepositorySnapshot {
     /// Assemble one repository observation from its complete typed facts.
     pub(crate) fn new(
-        trunk: RepositoryTrunk,
+        repository_trunk: IntegrationTarget,
+        targets: BTreeMap<IntegrationTarget, TargetObservation>,
+        reservation_targets: HashMap<ReservationId, IntegrationTarget>,
         reservations: Vec<RepositoryReservationSnapshot>,
         successor_incorporation: Vec<(ReservationId, PredecessorSuccessorIncorporation)>,
     ) -> Self {
+        let trunk_observation = match targets.get(&repository_trunk) {
+            Some(TargetObservation::Resolved(commit)) => RepositoryTrunk::Resolved(commit.clone()),
+            Some(TargetObservation::Missing | TargetObservation::ObjectUnknown) | None => {
+                RepositoryTrunk::ObjectUnknown
+            },
+        };
+        let judged_targets = targets
+            .iter()
+            .map(|(target, observation)| {
+                let judged = match observation {
+                    TargetObservation::Resolved(commit) => {
+                        RepositoryTrunk::Resolved(commit.clone())
+                    },
+                    TargetObservation::Missing if target != &repository_trunk => {
+                        trunk_observation.clone()
+                    },
+                    TargetObservation::Missing | TargetObservation::ObjectUnknown => {
+                        RepositoryTrunk::ObjectUnknown
+                    },
+                };
+                (target.clone(), judged)
+            })
+            .collect();
         Self {
-            trunk,
+            repository_trunk,
+            targets,
+            judged_targets,
+            repository_trunk_observation: trunk_observation,
+            reservation_targets,
             reservations: reservations
                 .into_iter()
                 .map(|snapshot| (snapshot.reservation_id, snapshot))
@@ -128,8 +184,50 @@ impl RepositorySnapshot {
             .ok_or(MissingReadinessFact::Reservation(reservation_id))
     }
 
-    /// Borrow the one resolved-or-unknown trunk observation used for this snapshot.
-    pub(crate) const fn trunk(&self) -> &RepositoryTrunk { &self.trunk }
+    /// Borrow the configured repository trunk branch.
+    pub(crate) const fn repository_trunk_target(&self) -> &IntegrationTarget {
+        &self.repository_trunk
+    }
+
+    /// Borrow every recorded branch observation, including the repository trunk.
+    pub(crate) const fn targets(&self) -> &BTreeMap<IntegrationTarget, TargetObservation> {
+        &self.targets
+    }
+
+    /// Borrow a reservation's recorded target branch.
+    pub(crate) fn recorded_target(&self, reservation_id: ReservationId) -> &IntegrationTarget {
+        self.reservation_targets
+            .get(&reservation_id)
+            .unwrap_or(&self.repository_trunk)
+    }
+
+    /// Borrow the observation at which this reservation is judged.
+    pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &RepositoryTrunk {
+        let target = self.recorded_target(reservation_id);
+        self.judged_targets
+            .get(target)
+            .unwrap_or_else(|| self.repository_trunk())
+    }
+
+    /// Borrow the direct repository trunk observation for trunk-level rules.
+    pub(crate) const fn repository_trunk(&self) -> &RepositoryTrunk {
+        &self.repository_trunk_observation
+    }
+
+    /// Carry all target facts into a successor snapshot.
+    pub(crate) fn target_facts(
+        &self,
+    ) -> (
+        IntegrationTarget,
+        BTreeMap<IntegrationTarget, TargetObservation>,
+        HashMap<ReservationId, IntegrationTarget>,
+    ) {
+        (
+            self.repository_trunk.clone(),
+            self.targets.clone(),
+            self.reservation_targets.clone(),
+        )
+    }
 
     pub(super) fn successor_incorporation_evidence(
         &self,

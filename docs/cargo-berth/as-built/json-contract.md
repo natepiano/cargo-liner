@@ -9,6 +9,8 @@ The machine-readable v2 contract is
 generated in the `cargo-berth` test binary from the serialized DTO schemas.
 Ordinary tests regenerate it in memory and require an exact byte match.
 
+Board JSON includes a `target` view on each reservation row and a sorted top-level `targets` array. Each target entry has `ref`, its observed `commit` (or `"unresolved"`), and the ids of its non-released reservations. The array always includes the repository trunk. An unrecorded legacy claim shows the repository trunk with `source: "unrecorded"`. A vanished non-trunk target raises `target_missing`: reconcile alerts carry `kind: "target_missing"` with `data: {reservation_id, target, commands}`, while board alerts put those three fields beside `kind`. The command is `cargo-berth retarget <id> --target <branch>`.
+
 A consumer needs only the stable front-end shell documented below. Nothing in
 this contract asks it to inspect `payload`, enumerate payload kinds, correlate
 an outcome tuple, or read `output_contract_version`.

@@ -10,6 +10,7 @@ use serde::Serialize;
 use super::error::BoardError;
 use super::rows::BoardReservationSnapshot;
 use super::rows::BoardReservationVisibility;
+use crate::alert;
 use crate::alert::Alert;
 use crate::alert::BranchRefStatus;
 use crate::alert::LostEvidenceRecovery;
@@ -35,6 +36,7 @@ use crate::ledger::BypassedMergeIdentity;
 use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::SkippedDeferral;
@@ -139,6 +141,15 @@ pub(super) struct RecordedIncursionAnswer {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum BoardAlert {
+    /// An unreleased reservation's recorded integration branch no longer resolves.
+    TargetMissing {
+        /// The reservation that requires retargeting.
+        reservation_id: ReservationId,
+        /// The recorded integration branch that no longer resolves.
+        target:         IntegrationTarget,
+        /// The retarget command for the reservation.
+        commands:       Vec<String>,
+    },
     /// A failed branch observation retains the preceding protection evidence.
     MergeExtentUnavailable {
         /// The holder whose merge surface cannot currently be derived.
@@ -284,6 +295,11 @@ pub(super) fn outstanding_incursion_detail(incursion: &OutstandingIncursion) -> 
 
 pub(super) fn board_alert_detail(alert: &BoardAlert) -> String {
     match alert {
+        BoardAlert::TargetMissing {
+            reservation_id,
+            target,
+            ..
+        } => alert::target_missing_detail(*reservation_id, target),
         BoardAlert::MergeExtentUnavailable {
             reservation_id,
             failure,
@@ -550,11 +566,11 @@ pub(super) fn board_alerts(
     alerts: &[Alert],
     reservation_snapshots: &[BoardReservationSnapshot],
     unrecorded_bypasses: &[BypassOccurrenceTime],
-    repository_trunk: &RepositoryTrunk,
+    target_for: impl Fn(ReservationId) -> RepositoryTrunk,
 ) -> Result<Vec<BoardAlert>, BoardError> {
     let mut board_alerts = alerts
         .iter()
-        .map(|alert| board_alert(alert, repository_trunk))
+        .map(|alert| board_alert(alert, &target_for))
         .collect::<Result<Vec<_>, BoardError>>()?;
     board_alerts.extend(reservation_snapshots.iter().filter_map(
         |snapshot| match &snapshot.freshness {
@@ -593,9 +609,18 @@ pub(super) fn board_alerts(
 
 fn board_alert(
     alert: &Alert,
-    repository_trunk: &RepositoryTrunk,
+    target_for: &impl Fn(ReservationId) -> RepositoryTrunk,
 ) -> Result<BoardAlert, BoardError> {
     match alert {
+        Alert::TargetMissing {
+            reservation_id,
+            target,
+            commands,
+        } => Ok(BoardAlert::TargetMissing {
+            reservation_id: *reservation_id,
+            target:         target.clone(),
+            commands:       commands.clone(),
+        }),
         Alert::MergeExtentUnavailable {
             reservation_id,
             failure,
@@ -627,7 +652,11 @@ fn board_alert(
                         OrphanRecoveryConsequence::CommitsLost
                     },
                 },
-                resolution: OrphanResolutionAction::new(orphan, repository_trunk).into(),
+                resolution: OrphanResolutionAction::new(
+                    orphan,
+                    &target_for(orphan.reservation_id()),
+                )
+                .into(),
             })
         },
     }
@@ -773,12 +802,9 @@ mod tests {
         let fresh_row =
             test_support::board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
         assert!(
-            board_alerts(
-                &[],
-                std::slice::from_ref(&fresh_row),
-                &[],
-                &RepositoryTrunk::ObjectUnknown
-            )?
+            board_alerts(&[], std::slice::from_ref(&fresh_row), &[], |_| {
+                RepositoryTrunk::ObjectUnknown
+            })?
             .is_empty()
         );
 
@@ -787,7 +813,7 @@ mod tests {
             return Err(io::Error::other("new reservation should be fresh").into());
         };
         stale_row.freshness = ReservationFreshness::Stale { last_activity_at };
-        let alerts = board_alerts(&[], &[stale_row], &[], &RepositoryTrunk::ObjectUnknown)?;
+        let alerts = board_alerts(&[], &[stale_row], &[], |_| RepositoryTrunk::ObjectUnknown)?;
         assert!(matches!(
             alerts.as_slice(),
             [BoardAlert::StaleReservation {

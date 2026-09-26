@@ -629,6 +629,20 @@ impl RetainedReservationSet {
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
     }
 
+    /// Return the recorded integration branch, interpreting an old unrecorded claim at trunk.
+    pub(crate) fn target_of(
+        &self,
+        reservation_id: ReservationId,
+        repository_trunk: &IntegrationTarget,
+    ) -> Option<IntegrationTarget> {
+        self.reservation(reservation_id)
+            .ok()
+            .map(|reservation| match reservation.target() {
+                RecordedTarget::Recorded { target, .. } => target.clone(),
+                RecordedTarget::Unrecorded => repository_trunk.clone(),
+            })
+    }
+
     /// Whether any legacy claim still lacks a durable integration branch.
     pub(crate) fn has_unrecorded_targets(&self) -> bool {
         self.reservations
@@ -1803,6 +1817,37 @@ mod tests {
     const TRUNK_OID: &str = "1111111111111111111111111111111111111111";
     const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
     const SECOND_WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21";
+
+    #[test]
+    fn target_of_resolves_recorded_unrecorded_and_unknown() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let trunk =
+            IntegrationTarget::from_branch_argument("main").map_err(std::io::Error::other)?;
+        let integration = IntegrationTarget::from_branch_argument("integration")
+            .map_err(std::io::Error::other)?;
+        let claim = claim_event("presented")?;
+        let legacy = RetainedReservationSet::replay(std::slice::from_ref(&claim))?;
+        assert_eq!(
+            legacy.target_of(reservation_id, &trunk),
+            Some(trunk.clone())
+        );
+        assert_eq!(legacy.target_of(ReservationId::new(), &trunk), None);
+        let retarget = journal_event(
+            2,
+            &json!({
+                "op": "retarget", "reservation_id": RESERVATION_ID,
+                "target": "refs/heads/integration", "source": "claim_argument",
+                "target_commit": SECOND_TRUNK_OID
+            }),
+        )?;
+        let recorded = RetainedReservationSet::replay(&[claim, retarget])?;
+        assert_eq!(
+            recorded.target_of(reservation_id, &trunk),
+            Some(integration)
+        );
+        Ok(())
+    }
 
     #[test]
     fn legacy_target_is_pinned_once_and_retarget_reanchors_active_comparison()

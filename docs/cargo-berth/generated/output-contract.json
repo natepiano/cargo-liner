@@ -2164,6 +2164,37 @@
         "BoardAlert": {
           "oneOf": [
             {
+              "description": "An unreleased reservation's recorded integration branch no longer resolves.",
+              "properties": {
+                "commands": {
+                  "description": "The retarget command for the reservation.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "target_missing",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that requires retargeting."
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget",
+                  "description": "The recorded integration branch that no longer resolves."
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_id",
+                "target",
+                "commands"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A failed branch observation retains the preceding protection evidence.",
               "properties": {
                 "failure": {
@@ -2555,6 +2586,12 @@
             "settled_ordering_constraints": {
               "$ref": "#/$defs/BoardSection3"
             },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/BoardTarget"
+              },
+              "type": "array"
+            },
             "unconstrained_reservations": {
               "$ref": "#/$defs/BoardSection6"
             },
@@ -2569,6 +2606,7 @@
             "journal_position",
             "recovered_bypasses_this_invocation",
             "integration_order",
+            "targets",
             "ready_now",
             "waiting",
             "settled_ordering_constraints",
@@ -2625,12 +2663,16 @@
             "source": {
               "$ref": "#/$defs/ClaimSource"
             },
+            "target": {
+              "$ref": "#/$defs/TargetView"
+            },
             "visibility": {
               "$ref": "#/$defs/BoardReservationVisibility"
             }
           },
           "required": [
             "reservation_id",
+            "target",
             "holder",
             "source",
             "purpose",
@@ -2912,6 +2954,29 @@
           "required": [
             "journal_position",
             "entries"
+          ],
+          "type": "object"
+        },
+        "BoardTarget": {
+          "description": "A recorded integration branch and its nonterminal reservations.",
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "ref": {
+              "$ref": "#/$defs/IntegrationTarget"
+            },
+            "reservations": {
+              "items": {
+                "$ref": "#/$defs/uuid_v7_identifier"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "ref",
+            "commit",
+            "reservations"
           ],
           "type": "object"
         },
@@ -4333,11 +4398,11 @@
           "description": "Every repository fact whose movement can change the branch's merge surface.",
           "properties": {
             "head": {
-              "description": "The branch tip whose net change will reach trunk.",
+              "description": "The branch tip whose net change will reach the reservation's target.",
               "type": "string"
             },
             "trunk": {
-              "description": "Trunk movement can integrate an otherwise unchanged holder.",
+              "description": "Movement of the reservation's target can integrate an otherwise unchanged holder.",
               "type": "string"
             },
             "working_tree": {
@@ -6584,6 +6649,45 @@
         "alert": {
           "description": "A persistent coordination condition that remains until journal state resolves it.",
           "oneOf": [
+            {
+              "description": "A live reservation's recorded integration branch no longer exists.",
+              "properties": {
+                "data": {
+                  "properties": {
+                    "commands": {
+                      "description": "The retarget command that restores a resolvable integration branch.",
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "reservation_id": {
+                      "$ref": "#/$defs/uuid_v7_identifier",
+                      "description": "The unreleased reservation still assigned to the missing target."
+                    },
+                    "target": {
+                      "$ref": "#/$defs/IntegrationTarget",
+                      "description": "The recorded integration branch that no longer resolves."
+                    }
+                  },
+                  "required": [
+                    "reservation_id",
+                    "target",
+                    "commands"
+                  ],
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "target_missing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            },
             {
               "description": "A failed branch observation retains protection until the repository can answer again.",
               "properties": {
@@ -9829,6 +9933,37 @@
         "BoardAlert": {
           "oneOf": [
             {
+              "description": "An unreleased reservation's recorded integration branch no longer resolves.",
+              "properties": {
+                "commands": {
+                  "description": "The retarget command for the reservation.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "target_missing",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation that requires retargeting."
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget",
+                  "description": "The recorded integration branch that no longer resolves."
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_id",
+                "target",
+                "commands"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A failed branch observation retains the preceding protection evidence.",
               "properties": {
                 "failure": {
@@ -10220,6 +10355,12 @@
             "settled_ordering_constraints": {
               "$ref": "#/$defs/BoardSection3"
             },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/BoardTarget"
+              },
+              "type": "array"
+            },
             "unconstrained_reservations": {
               "$ref": "#/$defs/BoardSection6"
             },
@@ -10234,6 +10375,7 @@
             "journal_position",
             "recovered_bypasses_this_invocation",
             "integration_order",
+            "targets",
             "ready_now",
             "waiting",
             "settled_ordering_constraints",
@@ -10290,12 +10432,16 @@
             "source": {
               "$ref": "#/$defs/ClaimSource"
             },
+            "target": {
+              "$ref": "#/$defs/TargetView"
+            },
             "visibility": {
               "$ref": "#/$defs/BoardReservationVisibility"
             }
           },
           "required": [
             "reservation_id",
+            "target",
             "holder",
             "source",
             "purpose",
@@ -10577,6 +10723,29 @@
           "required": [
             "journal_position",
             "entries"
+          ],
+          "type": "object"
+        },
+        "BoardTarget": {
+          "description": "A recorded integration branch and its nonterminal reservations.",
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "ref": {
+              "$ref": "#/$defs/IntegrationTarget"
+            },
+            "reservations": {
+              "items": {
+                "$ref": "#/$defs/uuid_v7_identifier"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "ref",
+            "commit",
+            "reservations"
           ],
           "type": "object"
         },
@@ -11940,11 +12109,11 @@
           "description": "Every repository fact whose movement can change the branch's merge surface.",
           "properties": {
             "head": {
-              "description": "The branch tip whose net change will reach trunk.",
+              "description": "The branch tip whose net change will reach the reservation's target.",
               "type": "string"
             },
             "trunk": {
-              "description": "Trunk movement can integrate an otherwise unchanged holder.",
+              "description": "Movement of the reservation's target can integrate an otherwise unchanged holder.",
               "type": "string"
             },
             "working_tree": {
@@ -17090,11 +17259,11 @@
           "description": "Every repository fact whose movement can change the branch's merge surface.",
           "properties": {
             "head": {
-              "description": "The branch tip whose net change will reach trunk.",
+              "description": "The branch tip whose net change will reach the reservation's target.",
               "type": "string"
             },
             "trunk": {
-              "description": "Trunk movement can integrate an otherwise unchanged holder.",
+              "description": "Movement of the reservation's target can integrate an otherwise unchanged holder.",
               "type": "string"
             },
             "working_tree": {

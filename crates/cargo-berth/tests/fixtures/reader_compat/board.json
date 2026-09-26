@@ -8,6 +8,13 @@
         "journal_byte_offset": "{JOURNAL_BYTE_OFFSET}"
       },
       "recovered_bypasses_this_invocation": [],
+      "targets": [
+        {
+          "ref": "refs/heads/main",
+          "commit": "ef4cfabe274d7622a1eb203278d596bef597e395",
+          "reservations": ["01a092bc-ee51-7eb3-86dd-efd1c7f3af92"]
+        }
+      ],
       "integration_order": "undeclared",
       "ready_now": {
         "journal_position": {
@@ -63,6 +70,12 @@
             },
             "source": {
               "kind": "explicit"
+            },
+            "target": {
+              "ref": "refs/heads/main",
+              "short_name": "main",
+              "source": "unrecorded",
+              "commit": "ef4cfabe274d7622a1eb203278d596bef597e395"
             },
             "purpose": {
               "kind": "explained",

@@ -813,6 +813,11 @@ enum TargetViewSource {
 }
 
 impl TargetView {
+    /// Report the commit observed during this reconciliation pass.
+    pub(crate) fn with_observed_commit(mut self, commit: String) -> Self {
+        self.commit = commit;
+        self
+    }
     /// Display a target committed by a new claim.
     pub(crate) fn from_claim(target: &ClaimTarget, commit: &TrunkObservationAtClaim) -> Self {
         let commit = match commit {
@@ -3129,7 +3134,9 @@ impl OutputEnvelope {
             .filter(|alert| {
                 matches!(
                     alert,
-                    Alert::LostIntegrationEvidence(_) | Alert::MergeExtentUnavailable { .. }
+                    Alert::TargetMissing { .. }
+                        | Alert::LostIntegrationEvidence(_)
+                        | Alert::MergeExtentUnavailable { .. }
                 )
             })
             .map(ToString::to_string)
@@ -4156,7 +4163,9 @@ fn live_board_feedback(
         .filter(|alert| {
             matches!(
                 alert,
-                Alert::LostIntegrationEvidence(_) | Alert::MergeExtentUnavailable { .. }
+                Alert::TargetMissing { .. }
+                    | Alert::LostIntegrationEvidence(_)
+                    | Alert::MergeExtentUnavailable { .. }
             )
         })
         .map(ToString::to_string)

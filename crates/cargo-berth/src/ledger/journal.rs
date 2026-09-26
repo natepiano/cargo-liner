@@ -349,7 +349,7 @@ pub(crate) enum JournalOperation {
         source:                          ClaimSource,
         /// The claimant's non-empty explanation of the work being protected.
         purpose:                         ReservationPurpose,
-        /// The trunk commit against which later movement is measured.
+        /// The reservation's target commit against which later movement is measured.
         trunk_at_claim:                  TrunkObservationAtClaim,
         /// The selected local integration branch; absent on journals written before targets.
         #[serde(default, skip_serializing_if = "Option::is_none")]

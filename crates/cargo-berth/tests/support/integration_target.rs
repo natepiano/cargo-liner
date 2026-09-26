@@ -106,14 +106,14 @@ impl IntegrationRepository {
         fs::canonicalize(checkout).expect("canonical lane worktree")
     }
 
-    fn merge_by_commit(&self, branch: &str) {
+    pub(crate) fn merge_by_commit(&self, branch: &str) {
         git(
             &self.integration,
             &["merge", "--no-ff", "--no-edit", branch],
         );
     }
 
-    fn merge_fast_forward(&self, branch: &str) {
+    pub(crate) fn merge_fast_forward(&self, branch: &str) {
         git(&self.integration, &["merge", "--ff-only", branch]);
     }
 }

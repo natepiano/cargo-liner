@@ -92,12 +92,15 @@ pub(crate) enum CommitTargetReachability {
 }
 
 /// Candidate commits resolved by one object batch before its graph classification.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ResolvedBatchCommitCandidates(HashSet<GitObjectId>);
 
 impl ResolvedBatchCommitCandidates {
     /// Report whether the object batch resolved this candidate as a commit.
     pub(super) fn contains(&self, candidate: &GitObjectId) -> bool { self.0.contains(candidate) }
+
+    /// Combine commit availability established by independent target batches.
+    pub(crate) fn extend(&mut self, other: Self) { self.0.extend(other.0); }
 }
 
 /// One target-reachability answer and the candidate availability proved by its object batch.

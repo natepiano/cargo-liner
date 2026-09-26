@@ -5,6 +5,9 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 
@@ -71,6 +74,154 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
 #[test]
+fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
+    let repo = integration_target::IntegrationRepository::new();
+    let a = repo.lane("board-target-a", "integration");
+    let b = repo.lane("board-target-b", "integration");
+    let main_claim = integration_target::claim(repo.root(), "file:main.txt", FIRST_RUN, None);
+    let a_claim = integration_target::claim(&a, "file:a.txt", SECOND_RUN, None);
+    let b_claim =
+        integration_target::claim(&b, "file:b.txt", &uuid::Uuid::now_v7().to_string(), None);
+    for output in [&main_claim, &a_claim, &b_claim] {
+        integration_target::assert_success(output);
+    }
+    let main_id = integration_target::json(&main_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("main reservation ID")
+        .to_owned();
+    let a_id = integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("A reservation ID")
+        .to_owned();
+    let b_id = integration_target::json(&b_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("B reservation ID")
+        .to_owned();
+    let before = board_data(repo.root());
+    let target_rows = before["targets"].as_array().expect("target rows");
+    assert_eq!(target_rows.len(), 2, "{before}");
+    assert_eq!(target_rows[0]["ref"], "refs/heads/integration");
+    assert_eq!(target_rows[1]["ref"], "refs/heads/main");
+    let integration = target_rows
+        .iter()
+        .find(|target| target["ref"] == "refs/heads/integration")
+        .expect("integration target");
+    let main = target_rows
+        .iter()
+        .find(|target| target["ref"] == "refs/heads/main")
+        .expect("repository trunk target");
+    assert_eq!(
+        integration["commit"],
+        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+    );
+    assert_eq!(
+        main["commit"],
+        integration_target::git_stdout(repo.root(), &["rev-parse", "main"])
+    );
+    let mut integration_ids = vec![a_id.clone(), b_id.clone()];
+    integration_ids.sort();
+    assert_eq!(
+        integration["reservations"],
+        serde_json::json!(integration_ids)
+    );
+    assert_eq!(main["reservations"], serde_json::json!([main_id]));
+    assert_eq!(
+        board_reservation_snapshot(&before, &a_id)["target"]["ref"],
+        "refs/heads/integration"
+    );
+    assert_eq!(
+        board_reservation_snapshot(&before, &a_id)["target"]["source"],
+        "branch_configuration"
+    );
+    assert_eq!(
+        board_reservation_snapshot(&before, &main_id)["target"]["ref"],
+        "refs/heads/main"
+    );
+
+    integration_target::commit_file(&a, "a.txt", "A\n", "A work");
+    repo.merge_by_commit("board-target-a");
+    let after = board_data(repo.root());
+    assert_eq!(
+        board_reservation_snapshot(&after, &a_id)["lifecycle"]["stage"],
+        "released",
+        "{after}"
+    );
+    let integration = after["targets"]
+        .as_array()
+        .expect("target rows")
+        .iter()
+        .find(|target| target["ref"] == "refs/heads/integration")
+        .expect("integration target");
+    assert_eq!(integration["reservations"], serde_json::json!([b_id]));
+}
+
+#[test]
+fn f003_board_json_schema_requires_a_non_nullable_row_target() {
+    let contract: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/cargo-berth/generated/output-contract.json"
+    ))
+    .expect("output contract JSON");
+    let schemas = contract["schemas"].as_object().expect("output schemas");
+    let mut checked = 0;
+    for schema in schemas.values() {
+        let row = &schema["$defs"]["BoardReservationSnapshot"];
+        if row.is_null() {
+            continue;
+        }
+        checked += 1;
+        assert_eq!(
+            row["properties"]["target"]["$ref"], "#/$defs/TargetView",
+            "{row}"
+        );
+        assert!(
+            row["required"]
+                .as_array()
+                .is_some_and(|required| required.iter().any(|field| field == "target")),
+            "{row}"
+        );
+    }
+    assert!(checked > 0, "board row schema should be generated");
+}
+
+#[test]
+fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker() {
+    let repo = integration_target::IntegrationRepository::new();
+    let a = repo.lane("invoker-a", "integration");
+    let _b = repo.lane("invoker-b", "integration");
+    let claimed = integration_target::claim(&a, "file:invoker.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("reservation ID")
+        .to_owned();
+    integration_target::commit_file(&a, "invoker.txt", "lane work\n", "lane work");
+
+    let from_a = board_data(&a);
+    let from_integration = board_data(&repo.integration);
+    let from_main = board_data(repo.root());
+    for observed in [&from_integration, &from_main] {
+        assert_eq!(observed["targets"], from_a["targets"]);
+        assert_eq!(observed["alerts"]["entries"], from_a["alerts"]["entries"]);
+        let actual = board_reservation_snapshot(observed, &id);
+        let expected = board_reservation_snapshot(&from_a, &id);
+        for field in [
+            "target",
+            "integration_evidence",
+            "merge_extent",
+            "lifecycle",
+        ] {
+            assert_eq!(actual[field], expected[field], "{field} varies by invoker");
+        }
+    }
+    let row = board_reservation_snapshot(&from_a, &id);
+    assert_eq!(row["target"]["ref"], "refs/heads/integration");
+    assert_eq!(
+        row["merge_extent"]["key"]["trunk"],
+        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+    );
+}
+
+#[test]
 fn empty_board_is_headless_and_declares_no_integration_order() {
     let repository = initialized_repository();
     let json = run_berth(repository.path(), &["board", "--json"]);
@@ -84,6 +235,12 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
         envelope["payload"]["data"]["integration_order"],
         "undeclared"
     );
+    let targets = envelope["payload"]["data"]["targets"]
+        .as_array()
+        .expect("repository targets");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0]["ref"], "refs/heads/main");
+    assert_eq!(targets[0]["reservations"], serde_json::json!([]));
     assert_eq!(
         envelope["presentation"],
         serde_json::json!({
@@ -155,8 +312,28 @@ fn populated_board_presentation_carries_the_complete_board_report() {
         ("Alerts", "alerts"),
         ("Git cost", "git_cost"),
     ] {
+        let mut payload_section = board_data[payload_field].clone();
+        if matches!(
+            payload_field,
+            "ready_now" | "unconstrained_reservations" | "resolved"
+        ) {
+            for entry in payload_section["entries"]
+                .as_array_mut()
+                .expect("board entries")
+            {
+                let reservation = if entry.get("reservation").is_some() {
+                    &mut entry["reservation"]
+                } else {
+                    entry
+                };
+                reservation
+                    .as_object_mut()
+                    .expect("reservation row")
+                    .remove("target");
+            }
+        }
         assert_eq!(
-            report[report_property], board_data[payload_field],
+            report[report_property], payload_section,
             "complete board report property {report_property:?} diverged from payload field {payload_field:?}"
         );
     }
@@ -1558,6 +1735,7 @@ fn assert_complete_board_payload_sections(data: &serde_json::Value) {
             "recovered_bypasses_this_invocation",
             "resolved",
             "settled_ordering_constraints",
+            "targets",
             "unconstrained_reservations",
             "unresolved_overlaps",
             "waiting",

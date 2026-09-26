@@ -12,10 +12,10 @@ use crate::ledger::ReservationScopeSet;
 /// Every repository fact whose movement can change the branch's merge surface.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(crate) struct MergeExtentKey {
-    /// Trunk movement can integrate an otherwise unchanged holder.
+    /// Movement of the reservation's target can integrate an otherwise unchanged holder.
     #[schemars(with = "String")]
     pub(crate) trunk:        GitObjectId,
-    /// The branch tip whose net change will reach trunk.
+    /// The branch tip whose net change will reach the reservation's target.
     #[schemars(with = "String")]
     pub(crate) head:         GitObjectId,
     /// Uncommitted paths independently extend that net change.

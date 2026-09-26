@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Report `target_missing` when an unlanded live reservation's recorded branch disappears; board JSON now includes each row's `target` and a sorted top-level `targets` list.
 - Coordinate exclusive file and tree reservations across a Git repository's
   worktrees with an append-only journal and disposable projections.
 - Record directed integration order, deferred overlaps, explicit override
@@ -24,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Record each reservation's local integration target from `claim --target`, the claimant branch's `branch.<name>.cargoBerthTarget` setting, or the repository trunk; `init` pins older claims and `retarget` replaces a live target.
 
 ### Changed
+
+- Reconcile judges each reservation at its recorded target. A lane releases when it reaches its integration branch, and its merge extent holds only its own work.
 
 - A linked worktree's `trunk` key no longer affects judgement; only the main worktree's key defines the repository trunk when its configuration exists.
 
@@ -72,4 +75,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The initial release coordinates one repository at a time. It does not select
   integration order, track project phases, or provide an editor write hook.
 - The trunk gate ships in observe mode. Rejection is enabled per repository.
-

@@ -24,6 +24,7 @@ pub(crate) use snapshot::RepositoryReservationSnapshot;
 pub(crate) use snapshot::RepositorySnapshot;
 pub(crate) use snapshot::RepositoryTrunk;
 pub(crate) use snapshot::SuccessorIncorporationEvidence;
+pub(crate) use snapshot::TargetObservation;
 
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::OverlapAuthorizationReason;
@@ -479,7 +480,7 @@ mod tests {
     use super::RepositoryReservationEvidence;
     use super::RepositoryReservationSnapshot;
     use super::RepositorySnapshot;
-    use super::RepositoryTrunk;
+    use super::TargetObservation;
     use crate::ids::EdgeId;
     use crate::ids::EventId;
     use crate::ids::GitObjectId;
@@ -515,9 +516,16 @@ mod tests {
             declaration_event_id: EventId::new(),
             declaration:          EdgeDeclaration::DeferredResolution,
         };
+        let trunk = crate::ledger::IntegrationTarget::from_branch_argument("main")
+            .map_err(std::io::Error::other)?;
         let snapshot_with_predecessor_evidence = |evidence| {
             RepositorySnapshot::new(
-                RepositoryTrunk::ObjectUnknown,
+                trunk.clone(),
+                std::collections::BTreeMap::from([(
+                    trunk.clone(),
+                    TargetObservation::ObjectUnknown,
+                )]),
+                std::collections::HashMap::new(),
                 vec![
                     RepositoryReservationSnapshot {
                         reservation_id: predecessor,

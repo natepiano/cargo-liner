@@ -7,6 +7,8 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Map;
+use serde_json::Value;
 
 use super::alerts;
 use super::alerts::AvailableForcedPermit;
@@ -47,9 +49,11 @@ use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::FullRefName;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
+use crate::output::TargetView;
 use crate::presentation;
 use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
@@ -73,6 +77,7 @@ pub(crate) struct BoardModel {
     journal_position:                      BoardJournalPosition,
     recovered_bypasses_this_invocation:    RecoveredBypassesThisInvocation,
     integration_order:                     IntegrationOrderDeclaration,
+    targets:                               Vec<BoardTarget>,
     pub(super) ready_now:                  BoardSection<ReadyReservation>,
     waiting:                               BoardSection<WaitingConstraint>,
     settled_ordering_constraints:          BoardSection<SettledOrderingConstraint>,
@@ -88,6 +93,15 @@ pub(crate) struct BoardModel {
     git_cost:                              BoardGitCost,
 }
 
+/// A recorded integration branch and its nonterminal reservations.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(super) struct BoardTarget {
+    #[serde(rename = "ref")]
+    reference:    IntegrationTarget,
+    commit:       String,
+    reservations: Vec<ReservationId>,
+}
+
 /// Whether the complete board has retained facts beyond its journal position and read cost.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BoardReportContent {
@@ -97,17 +111,34 @@ enum BoardReportContent {
 
 impl<'board> From<&'board BoardModel> for CompleteBoardReport<'board> {
     fn from(board: &'board BoardModel) -> Self {
+        let visibility = HumanTargetVisibility::for_target_count(board.targets.len());
         Self {
             journal_position:                   &board.journal_position,
             recovered_bypasses_this_invocation: &board.recovered_bypasses_this_invocation,
             integration_order:                  &board.integration_order,
-            ready_now:                          &board.ready_now,
+            targets:                            match visibility {
+                HumanTargetVisibility::TrunkOnly => None,
+                HumanTargetVisibility::MultipleTargets => Some(board.targets.as_slice()),
+            },
+            ready_now:                          board.ready_now.for_human_report(|ready| {
+                HumanReadyReservation {
+                    relation:    &ready.relation,
+                    reservation: HumanReservationSnapshot::from_snapshot(
+                        &ready.reservation,
+                        visibility,
+                    ),
+                }
+            }),
             waiting:                            &board.waiting,
             settled_ordering_constraints:       &board.settled_ordering_constraints,
             unresolved_overlaps:                &board.unresolved_overlaps,
             recorded_overlap_answers:           &board.recorded_overlap_answers,
-            unconstrained_reservations:         &board.unconstrained_reservations,
-            resolved_reservations:              &board.resolved,
+            unconstrained_reservations:         board.unconstrained_reservations.for_human_report(
+                |reservation| HumanReservationSnapshot::from_snapshot(reservation, visibility),
+            ),
+            resolved_reservations:              board.resolved.for_human_report(|reservation| {
+                HumanReservationSnapshot::from_snapshot(reservation, visibility)
+            }),
             available_forced_permits:           &board.available_forced_permits,
             bypass_audit:                       &board.bypass_audit,
             outstanding_incursions:             &board.outstanding_incursions,
@@ -155,6 +186,7 @@ pub(super) enum IntegrationOrderDeclaration {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(super) struct BoardReservationSnapshot {
     pub(super) reservation_id: ReservationId,
+    target:                    TargetView,
     holder:                    ReservationHolder,
     source:                    ClaimSource,
     purpose:                   ReservationPurpose,
@@ -169,6 +201,131 @@ pub(super) struct BoardReservationSnapshot {
     pub(super) visibility:     BoardReservationVisibility,
     pub(super) freshness:      ReservationFreshness,
     ahead_behind_main:         AheadBehind,
+}
+
+/// Whether human board presentations show reservation targets.
+#[derive(Clone, Copy)]
+pub(super) enum HumanTargetVisibility {
+    TrunkOnly,
+    MultipleTargets,
+}
+
+impl HumanTargetVisibility {
+    pub(super) const fn for_target_count(count: usize) -> Self {
+        if count <= 1 {
+            Self::TrunkOnly
+        } else {
+            Self::MultipleTargets
+        }
+    }
+
+    pub(super) fn omit_json_targets(self, fields: &mut Map<String, Value>) {
+        if !matches!(self, Self::TrunkOnly) {
+            return;
+        }
+        fields.remove("targets");
+        for section in ["ready_now", "unconstrained_reservations", "resolved"] {
+            let Some(entries) = fields
+                .get_mut(section)
+                .and_then(|value| value.get_mut("entries"))
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                continue;
+            };
+            for entry in entries {
+                let reservation = if section == "ready_now" {
+                    &mut entry["reservation"]
+                } else {
+                    entry
+                };
+                if let Some(reservation) = reservation.as_object_mut() {
+                    reservation.remove("target");
+                }
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct HumanBoardSection<'board, Entry> {
+    journal_position: &'board BoardJournalPosition,
+    entries:          Vec<Entry>,
+}
+
+impl<Entry> BoardSection<Entry> {
+    fn for_human_report<'board, HumanEntry>(
+        &'board self,
+        convert: impl Fn(&'board Entry) -> HumanEntry,
+    ) -> HumanBoardSection<'board, HumanEntry> {
+        HumanBoardSection {
+            journal_position: &self.journal_position,
+            entries:          self.entries.iter().map(convert).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct HumanReservationSnapshot<'board> {
+    reservation_id:       &'board ReservationId,
+    #[serde(skip_serializing_if = "HumanRowTarget::is_omitted")]
+    target:               HumanRowTarget<'board>,
+    holder:               &'board ReservationHolder,
+    source:               &'board ClaimSource,
+    purpose:              &'board ReservationPurpose,
+    scopes:               &'board ReservationScopeSet,
+    race_extent:          &'board RaceExtent,
+    merge_extent:         &'board MergeExtent,
+    lifecycle:            &'board ReservationLifecycle,
+    integration_evidence: &'board BoardIntegrationEvidence,
+    edit_blocking_status: &'board EditBlockingStatus,
+    visibility:           &'board BoardReservationVisibility,
+    freshness:            &'board ReservationFreshness,
+    ahead_behind_main:    &'board AheadBehind,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum HumanRowTarget<'board> {
+    Visible(&'board TargetView),
+    Omitted,
+}
+
+impl HumanRowTarget<'_> {
+    const fn is_omitted(&self) -> bool { matches!(self, Self::Omitted) }
+}
+
+impl<'board> HumanReservationSnapshot<'board> {
+    const fn from_snapshot(
+        reservation: &'board BoardReservationSnapshot,
+        visibility: HumanTargetVisibility,
+    ) -> Self {
+        let target = match visibility {
+            HumanTargetVisibility::TrunkOnly => HumanRowTarget::Omitted,
+            HumanTargetVisibility::MultipleTargets => HumanRowTarget::Visible(&reservation.target),
+        };
+        Self {
+            reservation_id: &reservation.reservation_id,
+            target,
+            holder: &reservation.holder,
+            source: &reservation.source,
+            purpose: &reservation.purpose,
+            scopes: &reservation.scopes,
+            race_extent: &reservation.race_extent,
+            merge_extent: &reservation.merge_extent,
+            lifecycle: &reservation.lifecycle,
+            integration_evidence: &reservation.integration_evidence,
+            edit_blocking_status: &reservation.edit_blocking_status,
+            visibility: &reservation.visibility,
+            freshness: &reservation.freshness,
+            ahead_behind_main: &reservation.ahead_behind_main,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct HumanReadyReservation<'board> {
+    relation:    &'board ReadinessTie,
+    reservation: HumanReservationSnapshot<'board>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -470,8 +627,9 @@ impl BoardModel {
             &report.alerts,
             &reservation_snapshots,
             &report.unrecorded_bypass_occurrences,
-            report.repository_trunk(),
+            |id| report.target_for(id).clone(),
         )?;
+        let targets = board_targets(&reservations, &report.repository_snapshot);
         let git_cost = alerts::board_git_cost(
             &reservations,
             &report.constraints,
@@ -495,6 +653,7 @@ impl BoardModel {
             journal_position: position,
             recovered_bypasses_this_invocation,
             integration_order,
+            targets,
             ready_now: BoardSection::new(position, ready_now),
             waiting: BoardSection::new(position, waiting),
             settled_ordering_constraints: BoardSection::new(position, settled),
@@ -685,6 +844,30 @@ fn place_reservation_sections(
     }
 }
 
+fn board_targets(
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+) -> Vec<BoardTarget> {
+    snapshot
+        .targets()
+        .iter()
+        .map(|(reference, observation)| BoardTarget {
+            reference:    reference.clone(),
+            commit:       observation.commit(),
+            reservations: reservations
+                .iter()
+                .filter(|reservation| {
+                    !matches!(
+                        reservation.lifecycle(),
+                        ReservationLifecycle::Released { .. }
+                    ) && snapshot.recorded_target(reservation.id()) == reference
+                })
+                .map(Reservation::id)
+                .collect(),
+        })
+        .collect()
+}
+
 fn board_reservation_snapshots(
     repository_root: &Path,
     reservations: &RetainedReservationSet,
@@ -716,6 +899,20 @@ fn board_reservation_snapshots(
         let visibility = reservation_visibility(reservation);
         reservation_snapshots.push(BoardReservationSnapshot {
             reservation_id: reservation.id(),
+            target: TargetView::from_recorded(
+                reservation.target(),
+                snapshot.repository_trunk_target(),
+                reservation.comparison_snapshot(),
+            )
+            .with_observed_commit(
+                snapshot
+                    .targets()
+                    .get(snapshot.recorded_target(reservation.id()))
+                    .map_or_else(
+                        || "unresolved".to_owned(),
+                        crate::edge::TargetObservation::commit,
+                    ),
+            ),
             holder: ReservationHolder {
                 worktree_id:   reservation.actor().worktree,
                 worktree_root: reservation.worktree_root().clone(),
@@ -743,7 +940,7 @@ fn ahead_behind_by_worktree(
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
 ) -> Result<(HashMap<WorktreeId, AheadBehind>, u64), BoardError> {
-    let RepositoryTrunk::Resolved(trunk) = snapshot.trunk() else {
+    let RepositoryTrunk::Resolved(trunk) = snapshot.repository_trunk() else {
         return Ok((HashMap::new(), 0));
     };
     let mut head_by_worktree = HashMap::new();

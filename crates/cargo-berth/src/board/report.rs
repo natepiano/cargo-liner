@@ -10,10 +10,12 @@ use super::alerts::OutstandingIncursion;
 use super::alerts::RecordedIncursionAnswer;
 use super::answers::RecordedAnswer;
 use super::rows::BoardJournalPosition;
-use super::rows::BoardReservationSnapshot;
 use super::rows::BoardSection;
+use super::rows::BoardTarget;
+use super::rows::HumanBoardSection;
+use super::rows::HumanReadyReservation;
+use super::rows::HumanReservationSnapshot;
 use super::rows::IntegrationOrderDeclaration;
-use super::rows::ReadyReservation;
 use super::rows::RecoveredBypassesThisInvocation;
 use super::rows::SettledOrderingConstraint;
 use super::rows::UnresolvedOverlap;
@@ -38,8 +40,10 @@ pub(super) struct CompleteBoardReport<'board> {
     pub(super) recovered_bypasses_this_invocation: &'board RecoveredBypassesThisInvocation,
     #[serde(rename = "Integration order")]
     pub(super) integration_order:                  &'board IntegrationOrderDeclaration,
+    #[serde(rename = "Targets", skip_serializing_if = "Option::is_none")]
+    pub(super) targets:                            Option<&'board [BoardTarget]>,
     #[serde(rename = "Ready now")]
-    pub(super) ready_now:                          &'board BoardSection<ReadyReservation>,
+    pub(super) ready_now: HumanBoardSection<'board, HumanReadyReservation<'board>>,
     #[serde(rename = "Waiting")]
     pub(super) waiting:                            &'board BoardSection<WaitingConstraint>,
     #[serde(rename = "Settled ordering constraints")]
@@ -49,9 +53,10 @@ pub(super) struct CompleteBoardReport<'board> {
     #[serde(rename = "Recorded overlap answers")]
     pub(super) recorded_overlap_answers:           &'board BoardSection<RecordedAnswer>,
     #[serde(rename = "Unconstrained reservations")]
-    pub(super) unconstrained_reservations:         &'board BoardSection<BoardReservationSnapshot>,
+    pub(super) unconstrained_reservations:
+        HumanBoardSection<'board, HumanReservationSnapshot<'board>>,
     #[serde(rename = "Resolved reservations")]
-    pub(super) resolved_reservations:              &'board BoardSection<BoardReservationSnapshot>,
+    pub(super) resolved_reservations: HumanBoardSection<'board, HumanReservationSnapshot<'board>>,
     #[serde(rename = "Available forced permits")]
     pub(super) available_forced_permits:           &'board BoardSection<AvailableForcedPermit>,
     #[serde(rename = "Bypass audit")]

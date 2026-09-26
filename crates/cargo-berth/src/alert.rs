@@ -18,6 +18,7 @@ use crate::git::ReferenceLookup;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
 use crate::ledger::ClaimHeadSnapshot;
+use crate::ledger::IntegrationTarget;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseRevalidationSubject;
@@ -33,6 +34,15 @@ use crate::worktree::WorktreeLiveness;
 #[schemars(rename = "alert")]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub(crate) enum Alert {
+    /// A live reservation's recorded integration branch no longer exists.
+    TargetMissing {
+        /// The unreleased reservation still assigned to the missing target.
+        reservation_id: ReservationId,
+        /// The recorded integration branch that no longer resolves.
+        target:         IntegrationTarget,
+        /// The retarget command that restores a resolvable integration branch.
+        commands:       Vec<String>,
+    },
     /// A failed branch observation retains protection until the repository can answer again.
     MergeExtentUnavailable {
         /// The reservation whose last successful surface remains protected.
@@ -51,7 +61,8 @@ impl Alert {
     /// Return the reservation whose retained state keeps this alert active.
     pub(crate) const fn reservation_id(&self) -> ReservationId {
         match self {
-            Self::MergeExtentUnavailable { reservation_id, .. } => *reservation_id,
+            Self::TargetMissing { reservation_id, .. }
+            | Self::MergeExtentUnavailable { reservation_id, .. } => *reservation_id,
             Self::LostIntegrationEvidence(alert) => alert.reservation_id,
             Self::OrphanedOutstanding(alert) => alert.reservation_id,
         }
@@ -60,7 +71,9 @@ impl Alert {
     /// Count the git queries that established this orphan recovery verdict.
     pub(crate) const fn recovery_evidence_query_count(&self) -> u64 {
         match self {
-            Self::MergeExtentUnavailable { .. } | Self::LostIntegrationEvidence(_) => 0,
+            Self::TargetMissing { .. }
+            | Self::MergeExtentUnavailable { .. }
+            | Self::LostIntegrationEvidence(_) => 0,
             Self::OrphanedOutstanding(alert) => match alert.branch_ref_status {
                 BranchRefStatus::Present { .. } => 4,
                 BranchRefStatus::Missing { .. } => 3,
@@ -73,6 +86,11 @@ impl Alert {
 impl Display for Alert {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TargetMissing {
+                reservation_id,
+                target,
+                ..
+            } => formatter.write_str(&target_missing_detail(*reservation_id, target)),
             Self::MergeExtentUnavailable {
                 reservation_id,
                 failure,
@@ -113,6 +131,17 @@ impl Display for Alert {
             ),
         }
     }
+}
+
+/// Render the shared human guidance for a missing recorded integration branch.
+pub(crate) fn target_missing_detail(
+    reservation_id: ReservationId,
+    target: &IntegrationTarget,
+) -> String {
+    format!(
+        "TARGET MISSING: reservation {reservation_id} targets {}, which no longer resolves. Run `cargo-berth retarget {reservation_id} --target <branch>`.",
+        target.short_name()
+    )
 }
 
 /// Lost affirmative Git evidence for a terminal reservation.
@@ -364,7 +393,7 @@ impl OrphanedOutstandingAlert {
     pub(crate) const fn recoverability(&self) -> RecoverabilityVerdict { self.recoverability }
 
     /// Borrow the trunk integration evidence observed alongside the orphan.
-    pub(crate) const fn integration_evidence(&self) -> &OrphanIntegrationEvidence {
+    const fn integration_evidence(&self) -> &OrphanIntegrationEvidence {
         &self.integration_evidence
     }
 }

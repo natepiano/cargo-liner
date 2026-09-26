@@ -14,6 +14,9 @@ mod reanchoring;
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::git_command;
@@ -1647,6 +1650,267 @@ mod merge_extent {
     const JOURNAL: &str = ".git/cargo-berth/journal.ndjson";
     /// Removing only this cache forces ordinary journal replay on the next command.
     const PROJECTION: &str = ".git/cargo-berth/reservations.json";
+
+    #[test]
+    fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
+        for merge_commit in [true, false] {
+            let repo = super::integration_target::IntegrationRepository::new();
+            let a = repo.lane("lane-a", "integration");
+            let b = repo.lane("lane-b", "integration");
+            let a_claim = super::integration_target::claim(&a, "file:shared.txt", FIRST_RUN, None);
+            super::integration_target::assert_success(&a_claim);
+            let a_id =
+                super::integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+                    .as_str()
+                    .expect("lane A reservation id")
+                    .to_owned();
+            let b_claim = super::integration_target::claim(&b, "file:b.txt", SECOND_RUN, None);
+            super::integration_target::assert_success(&b_claim);
+            super::integration_target::commit_file(&a, "shared.txt", "lane A\n", "lane A work");
+            let before = integration_board(repo.root());
+            assert_eq!(
+                snapshot(&before, &a_id)["merge_extent"]["status"],
+                "protected"
+            );
+
+            if merge_commit {
+                repo.merge_by_commit("lane-a");
+            } else {
+                repo.merge_fast_forward("lane-a");
+            }
+            let after = integration_board(repo.root());
+            assert_eq!(
+                snapshot(&after, &a_id)["lifecycle"]["stage"],
+                "released",
+                "{after}"
+            );
+            assert_eq!(
+                snapshot(&after, &a_id)["lifecycle"]["disposition"]["kind"],
+                "integrated"
+            );
+            assert_eq!(snapshot(&after, &a_id)["merge_extent"]["status"], "empty");
+
+            let check = super::integration_target::run(&b, &["check", "file:shared.txt", "--json"]);
+            super::integration_target::assert_success(&check);
+            assert_eq!(super::integration_target::json(&check)["status"], "clear");
+            fs::write(b.join("shared.txt"), "lane B edits landed work\n")
+                .expect("lane B can edit the released path");
+            let edited = integration_board(repo.root());
+            assert!(
+                edited["payload"]["data"]["unresolved_overlaps"]["entries"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
+                "{edited}"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_extents_exclude_changes_already_on_the_integration_target() {
+        let repo = super::integration_target::IntegrationRepository::new();
+        super::integration_target::commit_file(
+            &repo.integration,
+            "Cargo.toml",
+            "[package]\nname = \"integration\"\nversion = \"0.1.0\"\n",
+            "integration manifest",
+        );
+        let target_tip =
+            super::integration_target::git_stdout(repo.root(), &["rev-parse", "integration"]);
+        let a = repo.lane("extent-a", "integration");
+        let b = repo.lane("extent-b", "integration");
+        let a_claim = super::integration_target::claim(&a, "file:a.txt", FIRST_RUN, None);
+        let b_claim = super::integration_target::claim(&b, "file:b.txt", SECOND_RUN, None);
+        super::integration_target::assert_success(&a_claim);
+        super::integration_target::assert_success(&b_claim);
+        let a_id = super::integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("lane A reservation id")
+            .to_owned();
+        let b_id = super::integration_target::json(&b_claim)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("lane B reservation id")
+            .to_owned();
+        super::integration_target::commit_file(&a, "a.txt", "A\n", "A work");
+        super::integration_target::commit_file(&b, "b.txt", "B\n", "B work");
+
+        let observed = integration_board(repo.root());
+        for (id, own_path) in [(&a_id, "a.txt"), (&b_id, "b.txt")] {
+            let extent = &snapshot(&observed, id)["merge_extent"];
+            assert_eq!(extent["key"]["trunk"], target_tip, "{observed}");
+            assert_eq!(
+                scope_paths(&extent["scopes"]),
+                BTreeSet::from([own_path.to_owned()])
+            );
+        }
+        assert!(
+            observed["payload"]["data"]["unresolved_overlaps"]["entries"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "{observed}"
+        );
+    }
+
+    #[test]
+    fn an_unlanded_missing_target_alerts_and_shows_an_unresolved_commit() {
+        let repo = super::integration_target::IntegrationRepository::new();
+        let lane = repo.lane("missing-target-lane", "integration");
+        let claimed = super::integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        super::integration_target::assert_success(&claimed);
+        let id = super::integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("reservation id")
+            .to_owned();
+        super::integration_target::commit_file(&lane, "lane.txt", "unlanded\n", "unlanded lane");
+        super::integration_target::git(&repo.integration, &["switch", "--quiet", "--detach"]);
+        super::integration_target::git(
+            repo.root(),
+            &["update-ref", "-d", "refs/heads/integration"],
+        );
+
+        let observed = integration_board(repo.root());
+        let row = snapshot(&observed, &id);
+        assert_eq!(row["target"]["ref"], "refs/heads/integration");
+        assert_eq!(row["target"]["commit"], "unresolved", "{observed}");
+        let command = format!("cargo-berth retarget {id} --target <branch>");
+        let expected = serde_json::json!({
+            "reservation_id": id,
+            "target": "refs/heads/integration",
+            "commands": [command],
+        });
+        let alerts = observed["payload"]["data"]["alerts"]["entries"]
+            .as_array()
+            .expect("board alerts");
+        let alert = alerts
+            .iter()
+            .find(|alert| alert["kind"] == "target_missing" && alert["reservation_id"] == id)
+            .expect("missing target alert");
+        assert_eq!(
+            alert,
+            &serde_json::json!({"kind": "target_missing", "reservation_id": id,
+            "target": "refs/heads/integration", "commands": [command]})
+        );
+        let target = observed["payload"]["data"]["targets"]
+            .as_array()
+            .expect("board targets")
+            .iter()
+            .find(|target| target["ref"] == "refs/heads/integration")
+            .expect("missing integration target row");
+        assert_eq!(target["commit"], "unresolved");
+        assert_eq!(target["reservations"], serde_json::json!([id]));
+
+        let probe =
+            super::integration_target::claim(repo.root(), "file:unrelated.txt", SECOND_RUN, None);
+        super::integration_target::assert_success(&probe);
+        let response = super::integration_target::json(&probe);
+        let reconcile_alert = response["payload"]["alerts"]
+            .as_array()
+            .expect("reconciliation alerts")
+            .iter()
+            .find(|alert| alert["kind"] == "target_missing")
+            .expect("missing target reconciliation alert");
+        assert_eq!(reconcile_alert["data"], expected);
+    }
+
+    #[test]
+    fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
+        let repo = super::integration_target::IntegrationRepository::new();
+        let lane = repo.lane("partly-landed-lane", "integration");
+        let claimed =
+            super::integration_target::claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
+        super::integration_target::assert_success(&claimed);
+        let id = super::integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("reservation id")
+            .to_owned();
+        super::integration_target::commit_file(
+            &lane,
+            "checkpoint.txt",
+            "checkpoint\n",
+            "checkpoint work",
+        );
+        let checkpoint_tip = super::integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
+        let checkpointed = super::integration_target::run(&lane, &["release", &id, "--json"]);
+        super::integration_target::assert_success(&checkpointed);
+        super::integration_target::commit_file(&lane, "later.txt", "later\n", "later work");
+        super::integration_target::git(&repo.integration, &["merge", "--ff-only", &checkpoint_tip]);
+        super::integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
+        super::integration_target::git(&repo.integration, &["switch", "--quiet", "--detach"]);
+        super::integration_target::git(
+            repo.root(),
+            &["update-ref", "-d", "refs/heads/integration"],
+        );
+
+        let observed = integration_board(repo.root());
+        let row = snapshot(&observed, &id);
+        assert_ne!(row["lifecycle"]["stage"], "released", "{observed}");
+        assert_eq!(
+            row["integration_evidence"]["status"]["status"], "integrated",
+            "{observed}"
+        );
+        assert_eq!(row["merge_extent"]["status"], "protected", "{observed}");
+        let command = format!("cargo-berth retarget {id} --target <branch>");
+        assert!(
+            observed["payload"]["data"]["alerts"]["entries"]
+                .as_array()
+                .expect("board alerts")
+                .iter()
+                .any(|alert| alert
+                    == &serde_json::json!({
+                        "kind": "target_missing",
+                        "reservation_id": id,
+                        "target": "refs/heads/integration",
+                        "commands": [command],
+                    })),
+            "{observed}"
+        );
+    }
+
+    #[test]
+    fn a_released_lane_stays_released_after_its_target_lands_on_main_and_is_deleted() {
+        let repo = super::integration_target::IntegrationRepository::new();
+        let lane = repo.lane("landed-lane", "integration");
+        let claimed = super::integration_target::claim(&lane, "file:landed.txt", FIRST_RUN, None);
+        super::integration_target::assert_success(&claimed);
+        let id = super::integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("reservation id")
+            .to_owned();
+        super::integration_target::commit_file(&lane, "landed.txt", "landed\n", "landed lane");
+        repo.merge_by_commit("landed-lane");
+        let released = integration_board(repo.root());
+        assert_eq!(
+            snapshot(&released, &id)["lifecycle"]["stage"],
+            "released",
+            "{released}"
+        );
+        super::integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
+        super::integration_target::git(&repo.integration, &["switch", "--quiet", "--detach"]);
+        super::integration_target::git(
+            repo.root(),
+            &["update-ref", "-d", "refs/heads/integration"],
+        );
+
+        let observed = integration_board(repo.root());
+        assert_eq!(
+            snapshot(&observed, &id)["lifecycle"]["stage"],
+            "released",
+            "{observed}"
+        );
+        assert!(
+            observed["payload"]["data"]["alerts"]["entries"]
+                .as_array()
+                .expect("board alerts")
+                .iter()
+                .all(|alert| alert["reservation_id"] != id),
+            "{observed}"
+        );
+    }
+
+    fn integration_board(root: &Path) -> Value {
+        let output = super::integration_target::run(root, &["board", "--json"]);
+        super::integration_target::assert_success(&output);
+        super::integration_target::json(&output)
+    }
 
     #[test]
     fn a_clean_claim_on_trunk_protects_no_paths_in_another_worktree() {

@@ -2,9 +2,11 @@
 
 ## What it is
 
-A checkpointed (`Outstanding`) reservation protects a phase interval `phase_start_head..protected_tip` until that work reaches trunk. Rebasing, amending, or resetting the branch rewrites those commits, so the protected tip is never an ancestor of trunk and the reservation used to stay outstanding until someone resolved it by hand. This feature closes that gap in three ways. Ordinary reconciliation settles an outstanding reservation on its own once git evidence proves the whole phase reached the actual trunk. The committed `reference-transaction` hook captures git's rewrite map so reconciliation can move the phase anchors onto the rewritten commits. And when the proof points at a trunk commit older than the tip, that commit is recorded as a separate integration witness. Orphan notices also name the disposition that fits the orphan's retained work and the observed trunk, rather than one generic instruction.
+A checkpointed (`Outstanding`) reservation protects a phase interval `phase_start_head..protected_tip` until that work reaches its recorded target. Rebasing, amending, or resetting the branch rewrites those commits, so the protected tip may no longer be an ancestor of the target and the reservation used to stay outstanding until someone resolved it by hand. This feature closes that gap in three ways. Ordinary reconciliation settles an outstanding reservation on its own once git evidence proves the whole phase reached the recorded target. The committed `reference-transaction` hook captures git's rewrite map so reconciliation can move the phase anchors onto the rewritten commits. And when the proof points at a target commit older than the tip, that commit is recorded as a separate integration witness. Orphan notices also name the disposition that fits the orphan's retained work and the observed target, rather than one generic instruction.
 
 ## How it works
+
+Reconciliation now judges each reservation at its recorded integration target. For a lane targeting an integration branch, reaching that branch is final: settlement releases the lane there. The retained field name `trunk_oid` denotes the target commit in this context. Merge extents and committed-path evidence are shared per worktree and target, so a change unique to the integration branch does not enter the lane's extent.
 
 ### Settlement
 
@@ -20,7 +22,7 @@ fn settlement_selection(
 ) -> SettlementSelection // Unchanged | Release(ReleaseDisposition)
 ```
 
-It releases only when evidence is `Integrated { trunk_oid, proof, witness }`, `trunk_oid` equals the resolved actual trunk, and the merge guard finds no unproven work. The disposition follows the proof:
+It releases only when evidence is `Integrated { trunk_oid, proof, witness }`, `trunk_oid` equals the reservation's resolved target observation, and the merge guard finds no unproven work. The disposition follows the proof:
 
 | `IntegrationProof` | `ReleaseDisposition` |
 | --- | --- |

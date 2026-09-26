@@ -56,6 +56,7 @@ use tui_pane::draw_clipped;
 use unicode_width::UnicodeWidthStr;
 
 use super::BoardModel;
+use super::rows::HumanTargetVisibility;
 
 const FOOTER_HEIGHT: u16 = 1;
 const HORIZONTAL_SCROLL_STEP: u16 = 4;
@@ -63,6 +64,7 @@ const OVERVIEW_FIELDS: &[&str] = &[
     "journal_position",
     "recovered_bypasses_this_invocation",
     "integration_order",
+    "targets",
     "git_cost",
 ];
 const RESERVATION_FIELDS: &[&str] = &["ready_now", "unconstrained_reservations", "resolved"];
@@ -208,8 +210,11 @@ struct BoardPaneDocument {
 impl BoardPaneDocument {
     fn from_model_fields(
         fields: Map<String, Value>,
+        visibility: HumanTargetVisibility,
     ) -> Result<Self, BoardTerminalViewOpeningFailure> {
-        let text = serde_json::to_string_pretty(&Value::Object(fields))
+        let mut rendered_fields = fields;
+        visibility.omit_json_targets(&mut rendered_fields);
+        let text = serde_json::to_string_pretty(&Value::Object(rendered_fields))
             .map_err(BoardTerminalViewOpeningFailure::ModelSerialization)?;
         let line_count = text.lines().count();
         let widest_line_width = text
@@ -246,12 +251,20 @@ impl BoardPaneDocuments {
         let Value::Object(mut unassigned) = model else {
             return Err(BoardTerminalViewOpeningFailure::SerializedModelWasNotObject);
         };
-        let overview = Self::take_document(&mut unassigned, BoardPaneId::Overview)?;
-        let reservations = Self::take_document(&mut unassigned, BoardPaneId::Reservations)?;
-        let constraints = Self::take_document(&mut unassigned, BoardPaneId::Constraints)?;
-        let answers = Self::take_document(&mut unassigned, BoardPaneId::Answers)?;
-        let incursions = Self::take_document(&mut unassigned, BoardPaneId::Incursions)?;
-        let alerts = Self::take_document(&mut unassigned, BoardPaneId::Alerts)?;
+        let visibility = HumanTargetVisibility::for_target_count(
+            unassigned
+                .get("targets")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len),
+        );
+        let overview = Self::take_document(&mut unassigned, BoardPaneId::Overview, visibility)?;
+        let reservations =
+            Self::take_document(&mut unassigned, BoardPaneId::Reservations, visibility)?;
+        let constraints =
+            Self::take_document(&mut unassigned, BoardPaneId::Constraints, visibility)?;
+        let answers = Self::take_document(&mut unassigned, BoardPaneId::Answers, visibility)?;
+        let incursions = Self::take_document(&mut unassigned, BoardPaneId::Incursions, visibility)?;
+        let alerts = Self::take_document(&mut unassigned, BoardPaneId::Alerts, visibility)?;
         if !unassigned.is_empty() {
             return Err(BoardTerminalViewOpeningFailure::UnassignedModelFields(
                 unassigned.into_iter().map(|(field, _)| field).collect(),
@@ -270,6 +283,7 @@ impl BoardPaneDocuments {
     fn take_document(
         unassigned: &mut Map<String, Value>,
         pane_id: BoardPaneId,
+        visibility: HumanTargetVisibility,
     ) -> Result<BoardPaneDocument, BoardTerminalViewOpeningFailure> {
         let mut fields = Map::new();
         for field in pane_id.model_fields() {
@@ -278,7 +292,7 @@ impl BoardPaneDocuments {
             };
             fields.insert((*field).to_owned(), value);
         }
-        BoardPaneDocument::from_model_fields(fields)
+        BoardPaneDocument::from_model_fields(fields, visibility)
     }
 
     const fn get(&self, pane_id: BoardPaneId) -> &BoardPaneDocument {
@@ -1061,6 +1075,7 @@ mod tests {
             "journal_position": position,
             "recovered_bypasses_this_invocation": recovered_bypasses,
             "integration_order": "constraints_recorded",
+            "targets": [],
             "ready_now": empty_section(),
             "waiting": empty_section(),
             "settled_ordering_constraints": empty_section(),
@@ -1106,8 +1121,12 @@ mod tests {
     #[test]
     fn every_model_fact_is_reachable_through_exact_pane_documents() {
         let model = model(&[MARKER_ID]);
-        let expected = serde_json::to_value(&model)
+        let mut expected = serde_json::to_value(&model)
             .unwrap_or_else(|error| panic!("BoardModel should serialize: {error}"));
+        expected
+            .as_object_mut()
+            .unwrap_or_else(|| panic!("board should be an object"))
+            .remove("targets");
         let documents = BoardPaneDocuments::from_model(&model)
             .unwrap_or_else(|error| panic!("model should project: {error}"));
 
@@ -1238,8 +1257,9 @@ mod tests {
         let mut fields = Map::new();
         fields.insert("path".to_owned(), Value::String("表".to_owned()));
 
-        let document = BoardPaneDocument::from_model_fields(fields)
-            .unwrap_or_else(|error| panic!("document should serialize: {error}"));
+        let document =
+            BoardPaneDocument::from_model_fields(fields, HumanTargetVisibility::MultipleTargets)
+                .unwrap_or_else(|error| panic!("document should serialize: {error}"));
         let wide_line = "  \"path\": \"表\"";
 
         assert_eq!(
@@ -1247,5 +1267,34 @@ mod tests {
             UnicodeWidthStr::width(wide_line)
         );
         assert!(document.widest_line_width > wide_line.chars().count());
+    }
+
+    #[test]
+    fn f002_trunk_only_panes_omit_reservation_targets() {
+        let mut fields = Map::new();
+        fields.insert(
+            "targets".to_owned(),
+            serde_json::json!([{"ref": "refs/heads/main"}]),
+        );
+        fields.insert(
+            "ready_now".to_owned(),
+            serde_json::json!({"entries": [{"reservation": {"target": "main"}}]}),
+        );
+        fields.insert(
+            "unconstrained_reservations".to_owned(),
+            serde_json::json!({"entries": [{"target": "main"}]}),
+        );
+        fields.insert(
+            "resolved".to_owned(),
+            serde_json::json!({"entries": [{"target": "main"}]}),
+        );
+        let trunk_only =
+            BoardPaneDocument::from_model_fields(fields.clone(), HumanTargetVisibility::TrunkOnly)
+                .unwrap_or_else(|error| panic!("trunk-only document should serialize: {error}"));
+        assert!(!trunk_only.text.contains("target"), "{}", trunk_only.text);
+        let multiple =
+            BoardPaneDocument::from_model_fields(fields, HumanTargetVisibility::MultipleTargets)
+                .unwrap_or_else(|error| panic!("multi-target document should serialize: {error}"));
+        assert!(multiple.text.contains("\"target\": \"main\""));
     }
 }

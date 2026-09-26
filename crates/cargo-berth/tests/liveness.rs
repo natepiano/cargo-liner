@@ -155,10 +155,7 @@ fn retarget_refuses_released_reservation() {
         .to_owned();
     let release = integration_target::run(&lane, &["release", &reservation_id, "--json"]);
     integration_target::assert_success(&release);
-    integration_target::git(
-        repo.root(),
-        &["merge", "--quiet", "--ff-only", "released-retarget-lane"],
-    );
+    repo.merge_fast_forward("released-retarget-lane");
     let settled = integration_target::run(repo.root(), &["board", "--json"]);
     integration_target::assert_success(&settled);
     assert!(
