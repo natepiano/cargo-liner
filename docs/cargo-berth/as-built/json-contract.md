@@ -624,13 +624,18 @@ no harness-session mapping.
 
 The response names
 `cargo-berth check --reservation <reservation-id> <path>...` as the recovery
-command, prefixed with `CARGO_BERTH_SESSION_ID=<session>` whenever the refusing
-invocation had a harness session, so the command runs verbatim from a plain
-shell that has none. The user chooses an id from `candidate_reservation_ids`;
-the named reservation must already be active for the acting coordination run
-and worktree. A valid explicit selection publishes the harness-session mapping
-onto that reservation, so the next ordinary `check` selects it without
-returning this ambiguity.
+command. When `CARGO_BERTH_SESSION_ID` named the refusing invocation's harness
+session, the command is prefixed with `CARGO_BERTH_SESSION_ID=<session>`, quoted
+for `sh`, so it runs verbatim from a plain shell that names none. When Claude
+Code named the session, through a `cargo-berth hook` payload's `session_id` or
+through `CLAUDE_CODE_SESSION_ID`, the command is printed without the prefix:
+Claude Code runs each Bash command of that session with `CLAUDE_CODE_SESSION_ID`
+set to the same id, so the plain command already binds it. An invocation with
+no harness session also prints it without the prefix. The user chooses an id
+from `candidate_reservation_ids`; the named reservation must already be active
+for the acting coordination run and worktree. A valid explicit selection
+publishes the harness-session mapping onto that reservation, so the next
+ordinary `check` selects it without returning this ambiguity.
 
 ## Drift outcomes
 

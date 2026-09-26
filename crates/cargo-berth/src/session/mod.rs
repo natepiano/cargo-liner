@@ -52,17 +52,29 @@ impl HarnessSessionId {
     /// `HARNESS_SESSION_ENVIRONMENT` yields no session rather than the Claude Code one.
     fn from_current_process() -> HarnessSessionIdentity {
         match CURRENT_PROCESS_HARNESS_SESSION.get() {
-            Some(HookHarnessSessionSelection::Session(harness_session_id)) => {
-                HarnessSessionIdentity::Available(harness_session_id.clone())
+            Some(HookHarnessSessionSelection::Session {
+                harness_session_id,
+                source,
+            }) => HarnessSessionIdentity::Available {
+                harness_session_id: harness_session_id.clone(),
+                source:             *source,
             },
             Some(HookHarnessSessionSelection::NoSession) => HarnessSessionIdentity::Unavailable,
             None => std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
-                .or_else(|| std::env::var_os(CLAUDE_CODE_SESSION_ENVIRONMENT))
-                .and_then(Self::from_environment_value)
-                .map_or(
-                    HarnessSessionIdentity::Unavailable,
-                    HarnessSessionIdentity::Available,
-                ),
+                .map(|value| (value, HarnessSessionSource::CargoBerthEnvironment))
+                .or_else(|| {
+                    std::env::var_os(CLAUDE_CODE_SESSION_ENVIRONMENT)
+                        .map(|value| (value, HarnessSessionSource::ClaudeCode))
+                })
+                .and_then(|(value, source)| {
+                    Self::from_environment_value(value).map(|harness_session_id| {
+                        HarnessSessionIdentity::Available {
+                            harness_session_id,
+                            source,
+                        }
+                    })
+                })
+                .unwrap_or(HarnessSessionIdentity::Unavailable),
         }
     }
 
@@ -75,11 +87,32 @@ impl HarnessSessionId {
     }
 }
 
+/// Who named the harness session this process runs under.
+///
+/// It decides whether a command printed for the session to run next must name the session
+/// itself. Claude Code runs every Bash command of a session with
+/// `CLAUDE_CODE_SESSION_ENVIRONMENT` set to that session's id, so such a command already
+/// binds it. `HARNESS_SESSION_ENVIRONMENT` is set by whoever ran this process, and a plain
+/// shell does not carry it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HarnessSessionSource {
+    /// Claude Code named it: a hook payload's `session_id`, since `cargo-berth hook` speaks
+    /// only Claude Code's hook protocol, or `CLAUDE_CODE_SESSION_ENVIRONMENT`.
+    ClaudeCode,
+    /// `HARNESS_SESSION_ENVIRONMENT` named it, for a command or a managed git hook.
+    CargoBerthEnvironment,
+}
+
 /// The harness session identity a private hook boundary established for this process.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HookHarnessSessionSelection {
-    /// The boundary parsed one valid harness session identifier from its payload.
-    Session(HarnessSessionId),
+    /// The boundary parsed one valid harness session identifier.
+    Session {
+        /// The session this process runs under.
+        harness_session_id: HarnessSessionId,
+        /// Who named it to the boundary.
+        source:             HarnessSessionSource,
+    },
     /// The boundary supplied no usable identifier, so this process has no session at all.
     NoSession,
 }
@@ -98,7 +131,10 @@ impl HookHarnessSessionSelection {
     pub(crate) fn for_managed_git_hook() -> Self {
         std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
             .and_then(HarnessSessionId::from_environment_value)
-            .map_or(Self::NoSession, Self::Session)
+            .map_or(Self::NoSession, |harness_session_id| Self::Session {
+                harness_session_id,
+                source: HarnessSessionSource::CargoBerthEnvironment,
+            })
     }
 }
 
@@ -114,16 +150,13 @@ pub(crate) fn select_current_process_harness_session(selection: HookHarnessSessi
     std::mem::drop(CURRENT_PROCESS_HARNESS_SESSION.set(selection));
 }
 
-/// The harness session id this process runs under, when it has one.
+/// The harness session this process runs under and who named it, or that it has none.
 ///
 /// A hook boundary's selection wins; otherwise `HARNESS_SESSION_ENVIRONMENT` is consulted,
 /// then `CLAUDE_CODE_SESSION_ENVIRONMENT` when the first is unset. A managed git hook's
 /// selection never reads `CLAUDE_CODE_SESSION_ENVIRONMENT`.
-pub(crate) fn current_process_harness_session_id() -> Option<HarnessSessionId> {
-    match HarnessSessionId::from_current_process() {
-        HarnessSessionIdentity::Available(harness_session_id) => Some(harness_session_id),
-        HarnessSessionIdentity::Unavailable => None,
-    }
+pub(crate) fn current_process_harness_session() -> HarnessSessionIdentity {
+    HarnessSessionId::from_current_process()
 }
 
 impl FromStr for HarnessSessionId {
@@ -145,11 +178,16 @@ impl FromStr for HarnessSessionId {
     }
 }
 
-/// A harness session id was absent or unsuitable for durable lookup.
+/// Whether the current invocation runs under a harness session usable for durable lookup.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum HarnessSessionIdentity {
+pub(crate) enum HarnessSessionIdentity {
     /// The current invocation supplied a valid harness session id.
-    Available(HarnessSessionId),
+    Available {
+        /// The session this process runs under.
+        harness_session_id: HarnessSessionId,
+        /// Who named it.
+        source:             HarnessSessionSource,
+    },
     /// The current invocation supplied no usable harness session id.
     Unavailable,
 }
@@ -260,7 +298,7 @@ impl SessionIdentityMappingPublication {
     pub(crate) fn for_explicit_reservation_selection(self) -> Self {
         match (self, HarnessSessionId::from_current_process()) {
             (unavailable @ Self::Unavailable { .. }, _) => unavailable,
-            (publication, HarnessSessionIdentity::Available(_)) => publication,
+            (publication, HarnessSessionIdentity::Available { .. }) => publication,
             (_, HarnessSessionIdentity::Unavailable) => {
                 Self::ExplicitSelectionAppliesOnlyToCurrentInvocation {
                     reason: ExplicitSelectionPersistenceReason::HarnessSessionUnavailable,
@@ -308,8 +346,9 @@ pub(crate) fn resolve(ledger_directory: &Path) -> SessionIdentityLookup {
 pub(crate) fn resolve_first_touch_mapping(
     ledger_directory: &Path,
 ) -> FirstTouchSessionReservationMapping {
-    let HarnessSessionIdentity::Available(harness_session_id) =
-        HarnessSessionId::from_current_process()
+    let HarnessSessionIdentity::Available {
+        harness_session_id, ..
+    } = HarnessSessionId::from_current_process()
     else {
         return FirstTouchSessionReservationMapping::HarnessSessionUnavailable;
     };
@@ -367,8 +406,9 @@ pub(crate) fn publish_reservation_identity(
     coordination_run_id: CoordinationRunId,
     reservation_id: ReservationId,
 ) -> SessionIdentityMappingPublication {
-    let HarnessSessionIdentity::Available(harness_session_id) =
-        HarnessSessionId::from_current_process()
+    let HarnessSessionIdentity::Available {
+        harness_session_id, ..
+    } = HarnessSessionId::from_current_process()
     else {
         return SessionIdentityMappingPublication::Published;
     };
@@ -385,8 +425,9 @@ pub(crate) fn publish_reservation_identity(
 pub(crate) fn remove_current_mapping(
     ledger_directory: &Path,
 ) -> Result<CurrentSessionMappingRemoval, SessionIdentityStoreError> {
-    let HarnessSessionIdentity::Available(harness_session_id) =
-        HarnessSessionId::from_current_process()
+    let HarnessSessionIdentity::Available {
+        harness_session_id, ..
+    } = HarnessSessionId::from_current_process()
     else {
         return Ok(CurrentSessionMappingRemoval::CurrentSessionUnavailable);
     };

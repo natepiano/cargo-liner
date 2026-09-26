@@ -100,8 +100,11 @@ const UNCONFIGURED_DRIFT_SESSION: &str = "unconfigured-drift-session";
 const UNMAPPED_DRIFT_SESSION: &str = "unmapped-drift-session";
 const UNREADABLE_DRIFT_SESSION: &str = "unreadable-drift-session";
 const WIDENING_SESSION: &str = "widening-session";
-/// The session the frozen corpus payload carried; the rendered recovery command names it.
+/// The session the frozen corpus payload carried.
 const AMBIGUITY_SESSION: &str = "fixture-session";
+/// The recovery command an ambiguity prints when no `CARGO_BERTH_SESSION_ID` named its session.
+const PLAIN_AMBIGUITY_RECOVERY_COMMAND: &str =
+    "cargo-berth check --reservation <reservation-id> <path>...";
 const COORDINATION_IDENTITY_EDIT_SUMMARY: &str =
     "cargo-berth rejected this edit under the current coordination identity.";
 /// The rejection kind a reservation whose session mapping outlived it is refused under.
@@ -442,6 +445,69 @@ fn a_claim_under_only_the_claude_code_session_binds_that_session() -> TestResult
     require_success(
         &output,
         "the edit the Claude Code session's claim was made for",
+    )
+}
+
+/// A pre-edit ambiguity prints a plain recovery command that resolves it as printed.
+///
+/// The hook took its session from the payload, and the Bash tool runs each command of that
+/// Claude Code session with `CLAUDE_CODE_SESSION_ID` set to the same id, so the command
+/// binds the session without a `CARGO_BERTH_SESSION_ID=` assignment. That assignment would
+/// take the command outside a `Bash(cargo-berth *)` permission rule.
+#[test]
+fn a_pre_edit_ambiguity_prints_a_plain_command_its_claude_code_session_runs() -> TestResult {
+    let repository = initialized_repository()?;
+    let older = run_berth_with_claude_code_session(
+        repository.path(),
+        &["claim", "tree:shared", "--json"],
+        CLAUDE_CODE_SESSION,
+    )?;
+    require_success(&older, "older first-touch candidate")?;
+    let newer = run_berth_with_claude_code_session(
+        repository.path(),
+        &["claim", "file:shared/child.rs", "--json"],
+        CLAUDE_CODE_SESSION,
+    )?;
+    require_success(&newer, "newer first-touch candidate")?;
+    fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))?;
+    let payload = edit_payload(
+        repository.path(),
+        "shared/child.rs",
+        Some(CLAUDE_CODE_SESSION),
+    );
+
+    let refused = run_pre_tool_use(repository.path(), &payload)?;
+    assert_eq!(refused.status.code(), Some(2));
+    let refusal = String::from_utf8(refused.stderr)?;
+    let printed_command = refusal
+        .split("Run `")
+        .nth(1)
+        .and_then(|rest| rest.split('`').next())
+        .ok_or_else(|| {
+            failure(format!(
+                "the refusal printed no recovery command: {refusal}"
+            ))
+        })?;
+    assert_eq!(printed_command, PLAIN_AMBIGUITY_RECOVERY_COMMAND);
+
+    let older_id = claimed_reservation_id(&older)?;
+    let selected = run_berth_with_claude_code_session(
+        repository.path(),
+        &[
+            "check",
+            "--reservation",
+            &older_id,
+            "file:shared/child.rs",
+            "--json",
+        ],
+        CLAUDE_CODE_SESSION,
+    )?;
+    require_success(&selected, "the printed recovery command")?;
+
+    let allowed = run_pre_tool_use(repository.path(), &payload)?;
+    require_success(
+        &allowed,
+        "the edit once the recovery command selected a reservation",
     )
 }
 

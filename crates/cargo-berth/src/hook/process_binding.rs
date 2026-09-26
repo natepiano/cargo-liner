@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use crate::session;
 use crate::session::HarnessSessionId;
+use crate::session::HarnessSessionSource;
 use crate::session::HookHarnessSessionSelection;
 
 /// How a hook chooses the directory whose repository owns its answer.
@@ -100,11 +101,14 @@ impl HarnessSessionIdentityAvailability {
     /// An absent or unusable payload identity must not fall through to an ambient
     /// `CARGO_BERTH_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`. Those variables belong to
     /// whichever session launched this hook process, so adopting either would map the
-    /// event onto another session's reservation.
+    /// event onto another session's reservation. `cargo-berth hook` speaks only Claude Code's
+    /// hook protocol, so a payload's session is the Claude Code session that sets
+    /// `CLAUDE_CODE_SESSION_ID` to the same id in each of its Bash commands.
     pub(super) fn select_for_current_process(self) {
         session::select_current_process_harness_session(match self {
-            Self::Available(harness_session_id) => {
-                HookHarnessSessionSelection::Session(harness_session_id)
+            Self::Available(harness_session_id) => HookHarnessSessionSelection::Session {
+                harness_session_id,
+                source: HarnessSessionSource::ClaudeCode,
             },
             Self::Unusable => HookHarnessSessionSelection::NoSession,
         });

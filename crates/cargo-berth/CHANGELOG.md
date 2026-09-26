@@ -72,8 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   working tree holds open, rather than re-reporting a path left unclaimed at every
   later commit on the branch.
 - The recovery command an ambiguous first touch prints now carries
-  `CARGO_BERTH_SESSION_ID=<session>`, so running it verbatim resolves the
-  ambiguity instead of publishing no mapping and refusing the next edit.
+  `CARGO_BERTH_SESSION_ID=<session>` when that variable named the session, so
+  running it verbatim resolves the ambiguity instead of publishing no mapping
+  and refusing the next edit. A session Claude Code named gets the plain
+  command, which its Bash calls already bind through `CLAUDE_CODE_SESSION_ID`.
 - An incursion observation pairs each entered path with the holders that block it.
   Carried as two independent sets, an answered path stopped matching its own
   incident as soon as an unrelated path added a holder. The `incursion` record now

@@ -91,6 +91,8 @@ use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
 use crate::session;
 use crate::session::CurrentSessionMappingRemoval;
+use crate::session::HarnessSessionIdentity;
+use crate::session::HarnessSessionSource;
 use crate::session::SessionIdentityMappingPublication;
 use crate::verb::claim::FirstTouchReservationAcquisition;
 use crate::verb::claim::FirstTouchReservationAcquisitionKind;
@@ -104,22 +106,29 @@ const BOARD_READY_MESSAGE: &str =
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
     "cargo-berth check --reservation <reservation-id> <path>...";
 
-/// The command that selects one candidate, runnable verbatim from a plain shell.
+/// The command that selects one candidate, runnable verbatim by whoever reads the refusal.
 ///
-/// An ambiguity is printed to a harness session, but a hand-run `check` has no session
-/// unless the environment names one, and without a session the explicit selection binds
-/// nothing and the next edit is refused identically. So the command carries the session
-/// this process has, quoted for `sh`.
+/// Without the refused session the explicit selection binds nothing and the next edit is
+/// refused identically, so the command must run under that session. A session Claude Code
+/// named is already bound by each Bash command that session runs, so the command stays
+/// plain: an environment assignment in front of it would take it outside a
+/// `Bash(cargo-berth *)` permission rule. A session `HARNESS_SESSION_ENVIRONMENT` named is
+/// not carried by a plain shell, so the command names it, quoted for `sh`.
 fn ambiguous_reservation_recovery_command() -> String {
-    session::current_process_harness_session_id().map_or_else(
-        || AMBIGUOUS_RESERVATION_RECOVERY_COMMAND.to_owned(),
-        |harness_session_id| {
-            format!(
-                "{HARNESS_SESSION_ENVIRONMENT}={} {AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}",
-                coordination_identity::shell_quote(harness_session_id.as_str())
-            )
-        },
-    )
+    match session::current_process_harness_session() {
+        HarnessSessionIdentity::Available {
+            harness_session_id,
+            source: HarnessSessionSource::CargoBerthEnvironment,
+        } => format!(
+            "{HARNESS_SESSION_ENVIRONMENT}={} {AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}",
+            coordination_identity::shell_quote(harness_session_id.as_str())
+        ),
+        HarnessSessionIdentity::Available {
+            source: HarnessSessionSource::ClaudeCode,
+            ..
+        }
+        | HarnessSessionIdentity::Unavailable => AMBIGUOUS_RESERVATION_RECOVERY_COMMAND.to_owned(),
+    }
 }
 /// The one sentence a fail-open edit decision states, wherever it is rendered.
 pub(crate) const LEDGER_UNREADABLE_FAIL_OPEN_MESSAGE: &str = "cargo-berth could not establish edit safety; editing is allowed because ledger loss fails open.";
