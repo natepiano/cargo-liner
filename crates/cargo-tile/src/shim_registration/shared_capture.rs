@@ -7,8 +7,6 @@ use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::LazyLock;
-use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use crate::config::Config;
@@ -48,61 +46,8 @@ fn account_at(home: &Path, name: &str) -> HookAccount {
     }
 }
 
-/// Bin unit tests receive no `CARGO_BIN_EXE_*`, and the binary is not a build dependency
-/// of its own test harness, so build it here when it is missing or older than the harness.
-fn cargo_tile() -> &'static Path {
-    static BINARY: LazyLock<PathBuf> = LazyLock::new(|| {
-        let harness = std::env::current_exe().expect("bin test executable");
-        let binary = harness
-            .parent()
-            .expect("test dependencies directory")
-            .parent()
-            .expect("profile output directory")
-            .join("cargo-tile");
-        let harness_modified: SystemTime = fs::metadata(&harness)
-            .expect("bin test executable metadata")
-            .modified()
-            .expect("bin test executable modification time");
-        if !binary.exists()
-            || fs::metadata(&binary)
-                .expect("cargo-tile executable metadata")
-                .modified()
-                .expect("cargo-tile executable modification time")
-                < harness_modified
-        {
-            let mut command =
-                Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-            command.args(["build", "-p", "cargo-tile", "--bin", "cargo-tile"]);
-            let profile = binary
-                .parent()
-                .expect("profile output directory")
-                .file_name()
-                .expect("profile directory name")
-                .to_str()
-                .expect("Cargo profile name is UTF-8");
-            match profile {
-                "debug" => {},
-                "release" => {
-                    command.arg("--release");
-                },
-                profile => {
-                    command.args(["--profile", profile]);
-                },
-            }
-            let status = command
-                .status()
-                .expect("build cargo-tile for bin unit tests");
-            assert!(status.success(), "cargo-tile build failed: {status}");
-            assert!(
-                binary.exists(),
-                "cargo-tile build succeeded but {} is missing",
-                binary.display()
-            );
-        }
-        binary
-    });
-    BINARY.as_path()
-}
+/// Cargo builds the binary before the `unit_tests` integration target and names it here.
+fn cargo_tile() -> &'static Path { Path::new(env!("CARGO_BIN_EXE_cargo-tile")) }
 
 fn original_cargo(account: &HookAccount, toolchain: &str) -> PathBuf {
     let bin = account

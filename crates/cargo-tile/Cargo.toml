@@ -14,6 +14,13 @@ version              = "0.2.78-dev"
 [lints]
 workspace = true
 
+# Unit tests run from the `unit_tests` integration target, which cargo builds after
+# this binary and gives `CARGO_BIN_EXE_cargo-tile`.
+[[bin]]
+name = "cargo-tile"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 chrono = { workspace = true }
 clap   = { workspace = true }

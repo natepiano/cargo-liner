@@ -1,6 +1,11 @@
 //! `cargo-tile` — a terminal UI cargo tool built on the `tui_pane`
 //! framework.
 
+// The tests compile from `tests/unit_tests.rs`. Explicit `--bins` or `--all-targets`
+// still build this binary as a test harness despite `test = false`; empty, it neither
+// reruns those tests nor checks their code a second time.
+#![cfg(not(test))]
+
 mod app;
 mod birth_stamp;
 mod capture;
@@ -20,8 +25,6 @@ mod root_scan;
 mod roster;
 mod sccache;
 mod settings;
-#[cfg(test)]
-mod shim_registration;
 mod terminal;
 mod theme;
 mod tiles;

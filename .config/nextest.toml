@@ -3,7 +3,7 @@
 # same run open enough families to crowd that pane off the tile grid, so the
 # test takes every slot and runs with nothing else beside it.
 [[profile.default.overrides]]
-filter           = 'package(cargo-tile) & kind(bin) & test(=shim_registration::reader_scenarios::reader_keeps_parent_family_across_its_only_childs_source_switch)'
+filter           = 'binary_id(cargo-tile::unit_tests) & test(=shim_registration::reader_scenarios::reader_keeps_parent_family_across_its_only_childs_source_switch)'
 threads-required = "num-cpus"
 # First in the run, it takes every slot before any other test holds one.
 priority = 100
@@ -15,7 +15,7 @@ max-threads = 1
 
 [[profile.default.overrides]]
 filter = """
-package(cargo-tile) & kind(bin) & (
+binary_id(cargo-tile::unit_tests) & (
     test(=shim_registration::reader_scenarios::reader_accepts_live_writer_under_different_locale_and_timezone) |
     test(=shim_registration::reader_scenarios::reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings) |
     test(=shim_registration::reader_scenarios::reader_opens_settings_when_resize_and_key_are_pending_together) |
