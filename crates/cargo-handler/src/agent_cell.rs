@@ -165,7 +165,7 @@ pub(crate) fn draw(
         summary_line(row, machine, now),
         Line::from(vec![
             Span::raw(SECTION_HEADER_INDENT),
-            Span::styled(row.directory.clone(), label),
+            Span::styled(row.directory.clone(), Style::default().fg(text_default())),
         ]),
     ];
     if let Some(launcher) = row.launched_by {
@@ -217,11 +217,12 @@ pub(crate) fn draw(
 /// values.
 fn summary_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
     let label = Style::default().fg(label_color());
+    let text = Style::default().fg(text_default());
     let separator = || Span::styled(HEADING_SEPARATOR, label);
     Line::from(vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(format!("{PID_LABEL} "), label),
-        Span::styled(row.pid.to_string(), Style::default().fg(text_default())),
+        Span::styled(row.pid.to_string(), text),
         separator(),
         Span::styled(row.agent.label(), summary::agent_role(row.agent).style()),
         separator(),
@@ -230,27 +231,26 @@ fn summary_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
             summary::status_role(row).style(),
         ),
         separator(),
-        Span::styled(age::age_label(now.saturating_sub(row.started)), label),
+        Span::styled(age::age_label(now.saturating_sub(row.started)), text),
         separator(),
         Span::styled(machine.to_string(), Style::default().fg(accent_color())),
         separator(),
-        Span::styled(summary::desktop_text(row).to_string(), label),
+        Span::styled(summary::desktop_text(row).to_string(), text),
     ])
 }
 
 /// One row of the table, its name cut to `name_width` cells.
 fn child_row(child: &ChildRow, name_width: usize, now: u64) -> Row<'static> {
-    let label = Style::default().fg(label_color());
     let text = Style::default().fg(text_default());
     let pid = child.pid.map_or_else(
-        || Span::styled(MISSING_VALUE, label),
+        || Span::styled(MISSING_VALUE, text),
         |pid| Span::styled(pid.to_string(), text),
     );
     Row::new([
         pid,
         Span::styled(kind_text(child), kind_role(child.kind).style()),
         Span::styled(summary::truncated(&child.name, name_width), text),
-        Span::styled(age::age_label(now.saturating_sub(child.started)), label),
+        Span::styled(age::age_label(now.saturating_sub(child.started)), text),
     ])
 }
 
@@ -468,7 +468,17 @@ mod tests {
         assert_eq!(buffer[(37, 0)].fg, accent_color());
         assert_eq!(role(10, 5), Role::Shell.style().fg);
         assert_eq!(role(12, 6), Role::Codex.style().fg);
-        assert_eq!(buffer[(1, 7)].fg, label_color());
+        assert_eq!(buffer[(1, 7)].fg, text_default());
+        let header = buffer[(1, 4)].fg;
+        for y in 5..=10 {
+            for x in 0..buffer.area.width {
+                assert_ne!(
+                    buffer[(x, y)].fg,
+                    header,
+                    "row {y} draws column {x} in the header color"
+                );
+            }
+        }
         assert_eq!(role(14, 7), Role::Codex.style().fg);
         assert_eq!(role(10, 8), Role::Claude.style().fg);
     }

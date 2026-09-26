@@ -197,18 +197,18 @@ fn name_style(cells: &[AgentEntry<'_>], machine: &str, row: &AgentRow) -> Style 
 
 /// One agent's table row, its name drawn in `name_style`.
 fn agent_row(row: &AgentRow, name_style: Style, now: u64) -> Row<'static> {
-    let label = Style::default().fg(label_color());
+    let text = Style::default().fg(text_default());
     Row::new([
-        Span::styled(row.pid.to_string(), Style::default().fg(text_default())),
+        Span::styled(row.pid.to_string(), text),
         Span::styled(row.agent.label(), agent_role(row.agent).style()),
         Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
             name_style,
         ),
         Span::styled(status_text(row).to_string(), status_role(row).style()),
-        Span::styled(age_label(now.saturating_sub(row.started)), label),
-        Span::styled(desktop_text(row).to_string(), label),
-        Span::styled(row.directory.clone(), label),
+        Span::styled(age_label(now.saturating_sub(row.started)), text),
+        Span::styled(desktop_text(row).to_string(), text),
+        Span::styled(row.directory.clone(), text),
     ])
 }
 
@@ -490,6 +490,16 @@ mod tests {
             ]
         );
         assert_eq!(buffer[(1, 2)].fg, text_default());
+        let header = buffer[(1, 1)].fg;
+        for y in [2, 3, 4, 5, 9] {
+            for x in 0..buffer.area.width {
+                assert_ne!(
+                    buffer[(x, y)].fg,
+                    header,
+                    "row {y} draws column {x} in the header color"
+                );
+            }
+        }
         assert_eq!(buffer[(10, 2)].fg, Color::Rgb(217, 119, 87));
         assert_eq!(buffer[(10, 5)].fg, Color::Rgb(175, 140, 255));
         assert_eq!(buffer[(56, 4)].fg, Color::Rgb(100, 220, 100));
