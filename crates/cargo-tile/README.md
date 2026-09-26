@@ -1,8 +1,8 @@
 # cargo-tile
 
-A starting template for a terminal UI built on
-[`tui_pane`](../tui_pane), the `ratatui` pane framework this workspace shares
-with [`cargo-port`](../cargo-port).
+A terminal UI cargo tool built on [`tui_pane`](../tui_pane), the `ratatui`
+pane framework this workspace shares with [`cargo-handler`](../cargo-handler)
+and [`cargo-port`](../cargo-port).
 
 ```bash
 cargo run -p cargo-tile
@@ -15,7 +15,7 @@ and the two spellings take the same arguments.
 It takes over the terminal (alternate screen, raw mode) and draws one content
 pane above the framework status line. The pane tiles into an animated grid of the
 cargo invocations running on this machine; the sections below describe how it
-behaves, and `starting a new TUI from this` covers replacing it.
+behaves.
 
 ## keys
 
@@ -49,27 +49,11 @@ written before a setting existed is rewritten at startup with the section it was
 missing, at its default. A file that fails to parse is left as it is, for
 whoever wrote the typo to fix.
 
-## starting a new TUI from this
+## starting a new TUI
 
-This crate is the workspace's TUI template — a complete `tui_pane` application
-with no application in it. The tag `app-template-v1` marks the commit to start
-from; `docs/tui_pane/as-built/app-template.md` records what it contains
-and what it deliberately leaves out.
-
-Rendering is demand-driven — a frame is painted only when an event arrives, so
-an idle app costs nothing. An app with live data marks itself dirty when that
-data changes.
-
-| to add | do this |
-| --- | --- |
-| a pane | add an `AppPaneId` variant (`app.rs`), give it a `Pane<App>` host and a `register_pane` call (`keymap.rs`), list it in `APP_PANE_DISPLAY_ORDER` so its shortcuts reach the keymap overlay, and lay it out in `render::draw_panes` |
-| a global shortcut | add a variant to `AppGlobalAction` via `tui_pane::action_enum!`, list it in `Globals::render_order`, bind a default in `Globals::defaults`, and handle it in `globals::dispatch` (`globals.rs`) |
-| a status-line slot | push a `StatusLineGlobal` in `render::draw_status_line` |
-| a setting | add a row and a `SettingId` in `settings.rs` |
-
-`AppGlobalAction` is the populated enum of cargo-tile's global shortcuts. Add
-new variants through `action_enum!`, then give each one a place in the default
-bindings and dispatcher.
+A new `tui_pane` app starts from `crates/cargo-handler` at the tag
+`app-template-v1`; `docs/tui_pane/as-built/app-template.md` records what it
+contains, how to copy it into a new crate, and what it deliberately leaves out.
 
 ## configuration
 
