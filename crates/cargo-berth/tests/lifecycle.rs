@@ -14,12 +14,12 @@ mod reanchoring;
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
-#[path = "support/integration_target.rs"]
-mod integration_target;
-
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::git_command;
+use cargo_berth_test_support::json;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -122,18 +122,24 @@ mod integration_cover {
     use std::fs;
     use std::path::PathBuf;
 
+    use cargo_berth_test_support::IntegrationRepository;
+    use cargo_berth_test_support::assert_success;
+    use cargo_berth_test_support::json;
+    use cargo_berth_test_support::reservation_row;
+    use cargo_berth_test_support::worktree_identity_and_marker_run;
+
+    use super::BERTH_EXECUTABLE;
     use super::FIRST_RUN;
     use super::SECOND_RUN;
-    use super::integration_target as target;
 
     #[test]
     fn first_lane_creates_a_cover_in_the_integration_worktree_with_its_main_diff() {
-        let repo = target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
         let lane = repo.lane("cover-lane", "integration");
-        let claimed = target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        target::assert_success(&claimed);
-        let _ = target::board(repo.root());
-        let covers = target::cover_claims(repo.root());
+        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let _ = repo.board();
+        let covers = repo.cover_claims();
         assert_eq!(covers.len(), 1, "one cover is created for integration");
         assert_eq!(
             covers[0]["source"]["covered_branch"],
@@ -145,10 +151,11 @@ mod integration_cover {
             "refs/heads/integration"
         );
         let (integration_worktree, integration_run) =
-            target::worktree_identity_and_marker_run(&repo.integration);
+            worktree_identity_and_marker_run(&repo.integration);
         assert_eq!(covers[0]["actor"]["worktree"], integration_worktree);
         assert_eq!(covers[0]["actor"]["run"], integration_run);
-        let lane_actor = target::journal(repo.root())
+        let lane_actor = repo
+            .journal()
             .into_iter()
             .find(|event| event["op"] == "claim" && event["source"]["kind"] != "cover")
             .expect("lane claim");
@@ -157,8 +164,8 @@ mod integration_cover {
             lane_actor["actor"]["worktree"]
         );
         let cover_id = covers[0]["reservation_id"].as_str().expect("cover ID");
-        let board = target::board(repo.root());
-        let cover = target::reservation_row(&board, cover_id);
+        let board = repo.board();
+        let cover = reservation_row(&board, cover_id);
         assert_eq!(cover["target"]["ref"], "refs/heads/main", "{board}");
         assert_eq!(cover["merge_extent"]["status"], "protected", "{board}");
         assert!(
@@ -169,23 +176,23 @@ mod integration_cover {
                 .any(|scope| scope["path"] == "integration.txt"),
             "the cover includes the integration branch diff: {board}"
         );
-        assert_eq!(target::cover_claims(repo.root()).len(), 1);
+        assert_eq!(repo.cover_claims().len(), 1);
     }
 
     #[test]
     fn prepared_main_hook_creates_cover_under_the_integration_checkout_actor() {
-        let repo = target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
         let integration_path = repo.integration.to_str().expect("UTF-8 worktree path");
-        target::git(
+        repo.git(
             repo.root(),
             &["worktree", "remove", "--force", integration_path],
         );
         let lane = repo.lane("gate-cover-lane", "integration");
-        let claimed = target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        target::assert_success(&claimed);
-        assert!(target::cover_claims(repo.root()).is_empty());
+        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        assert!(repo.cover_claims().is_empty());
 
-        target::git(
+        repo.git(
             repo.root(),
             &[
                 "worktree",
@@ -195,14 +202,14 @@ mod integration_cover {
                 "integration",
             ],
         );
-        target::commit_file(repo.root(), "main-only.txt", "main work\n", "advance main");
+        repo.commit_file(repo.root(), "main-only.txt", "main work\n", "advance main");
 
-        let covers = target::cover_claims(repo.root());
+        let covers = repo.cover_claims();
         let cover = covers
             .first()
             .expect("the prepared main hook creates a cover");
         let (integration_worktree, integration_run) =
-            target::worktree_identity_and_marker_run(&repo.integration);
+            worktree_identity_and_marker_run(&repo.integration);
         let main_worktree = fs::read_to_string(repo.root().join(".git/cargo-berth-worktree-id"))
             .expect("main worktree identity reads");
         assert_ne!(integration_worktree, main_worktree.trim());
@@ -214,48 +221,48 @@ mod integration_cover {
 
     #[test]
     fn empty_integration_footprint_waits_until_the_branch_has_work_to_cover() {
-        let repo = target::IntegrationRepository::new();
-        target::git(&repo.integration, &["reset", "--hard", "main"]);
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        repo.git(&repo.integration, &["reset", "--hard", "main"]);
         let lane = repo.lane("empty-cover-lane", "integration");
-        let claimed = target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        target::assert_success(&claimed);
-        let _ = target::board(repo.root());
-        assert!(target::cover_claims(repo.root()).is_empty());
+        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let _ = repo.board();
+        assert!(repo.cover_claims().is_empty());
 
-        target::commit_file(&repo.integration, "new.txt", "new\n", "integration work");
-        let _ = target::board(repo.root());
-        assert_eq!(target::cover_claims(repo.root()).len(), 1);
+        repo.commit_file(&repo.integration, "new.txt", "new\n", "integration work");
+        let _ = repo.board();
+        assert_eq!(repo.cover_claims().len(), 1);
     }
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
         for merge_commit in [true, false] {
-            let repo = target::IntegrationRepository::new();
+            let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
             let lane = repo.lane("landing-lane", "integration");
-            let claimed = target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-            target::assert_success(&claimed);
-            let _ = target::board(repo.root());
-            let lane_id = target::json(&claimed)["payload"]["data"]["reservation_id"]
+            let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+            assert_success(&claimed);
+            let _ = repo.board();
+            let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
                 .as_str()
                 .expect("lane ID")
                 .to_owned();
-            let cover_id = target::cover_claims(repo.root())[0]["reservation_id"]
+            let cover_id = repo.cover_claims()[0]["reservation_id"]
                 .as_str()
                 .expect("cover ID")
                 .to_owned();
-            target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
+            repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
             if merge_commit {
                 repo.merge_by_commit("landing-lane");
             } else {
                 repo.merge_fast_forward("landing-lane");
             }
-            let lane_landed = target::board(repo.root());
+            let lane_landed = repo.board();
             assert_eq!(
-                target::reservation_row(&lane_landed, &lane_id)["lifecycle"]["stage"],
+                reservation_row(&lane_landed, &lane_id)["lifecycle"]["stage"],
                 "released",
                 "{lane_landed}"
             );
-            let cover = target::reservation_row(&lane_landed, &cover_id);
+            let cover = reservation_row(&lane_landed, &cover_id);
             assert_eq!(cover["lifecycle"]["stage"], "active", "{lane_landed}");
             assert!(
                 cover["merge_extent"]["scopes"]
@@ -267,26 +274,26 @@ mod integration_cover {
             );
 
             if merge_commit {
-                target::git(
+                repo.git(
                     repo.root(),
                     &["merge", "--no-ff", "--no-edit", "integration"],
                 );
             } else {
-                target::git(repo.root(), &["merge", "--ff-only", "integration"]);
+                repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
             }
-            let landed = target::board(repo.root());
+            let landed = repo.board();
             assert_eq!(
-                target::reservation_row(&landed, &cover_id)["lifecycle"]["stage"],
+                reservation_row(&landed, &cover_id)["lifecycle"]["stage"],
                 "released",
                 "{landed}"
             );
             assert_eq!(
-                target::reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
+                reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
                 "released",
                 "{landed}"
             );
             repo.remove_integration_branch();
-            let deleted = target::board(repo.root());
+            let deleted = repo.board();
             assert!(
                 deleted["payload"]["data"]["alerts"]["entries"]
                     .as_array()
@@ -301,44 +308,44 @@ mod integration_cover {
 
     #[test]
     fn a_later_lane_gets_a_new_cover_after_the_previous_cover_ends() {
-        let repo = target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
         let first = repo.lane("first-cover-lane", "integration");
-        let claimed = target::claim(&first, "file:first.txt", FIRST_RUN, None);
-        target::assert_success(&claimed);
-        let _ = target::board(repo.root());
-        let first_cover = target::cover_claims(repo.root())[0]["reservation_id"]
+        let claimed = repo.claim(&first, "file:first.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let _ = repo.board();
+        let first_cover = repo.cover_claims()[0]["reservation_id"]
             .as_str()
             .expect("first cover ID")
             .to_owned();
-        target::commit_file(&first, "first.txt", "first\n", "first lane work");
+        repo.commit_file(&first, "first.txt", "first\n", "first lane work");
         repo.merge_fast_forward("first-cover-lane");
-        let _ = target::board(repo.root());
-        target::git(repo.root(), &["merge", "--ff-only", "integration"]);
-        let landed = target::board(repo.root());
+        let _ = repo.board();
+        repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+        let landed = repo.board();
         assert_eq!(
-            target::reservation_row(&landed, &first_cover)["lifecycle"]["stage"],
+            reservation_row(&landed, &first_cover)["lifecycle"]["stage"],
             "released",
             "{landed}"
         );
-        target::commit_file(
+        repo.commit_file(
             &repo.integration,
             "later.txt",
             "later\n",
             "later integration work",
         );
         let later = repo.lane("later-cover-lane", "integration");
-        let later_claim = target::claim(&later, "file:later-lane.txt", FIRST_RUN, None);
-        target::assert_success(&later_claim);
-        let _ = target::board(repo.root());
-        let covers = target::cover_claims(repo.root());
+        let later_claim = repo.claim(&later, "file:later-lane.txt", FIRST_RUN, None);
+        assert_success(&later_claim);
+        let _ = repo.board();
+        let covers = repo.cover_claims();
         assert_eq!(covers.len(), 2);
         assert_ne!(covers[0]["reservation_id"], covers[1]["reservation_id"]);
-        let board = target::board(repo.root());
+        let board = repo.board();
         let second_cover = covers[1]["reservation_id"]
             .as_str()
             .expect("second cover ID");
         assert_eq!(
-            target::reservation_row(&board, second_cover)["lifecycle"]["stage"],
+            reservation_row(&board, second_cover)["lifecycle"]["stage"],
             "active",
             "{board}"
         );
@@ -347,9 +354,9 @@ mod integration_cover {
     #[test]
     fn cover_uses_existing_marker_and_unmapped_session_joins_its_run() {
         for existing_marker in [false, true] {
-            let repo = target::IntegrationRepository::new();
+            let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
             let lane = repo.lane("session-cover-lane", "integration");
-            let marker_name = target::git_stdout(
+            let marker_name = repo.git_stdout(
                 &repo.integration,
                 &["rev-parse", "--git-path", "cargo-berth-run-id"],
             );
@@ -359,13 +366,13 @@ mod integration_cover {
             } else {
                 repo.integration.join(marker)
             };
-            let claimed = target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-            target::assert_success(&claimed);
+            let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+            assert_success(&claimed);
             if existing_marker {
                 fs::write(&marker, format!("{SECOND_RUN}\n")).expect("marker writes");
             }
-            let _ = target::board(repo.root());
-            let covers = target::cover_claims(repo.root());
+            let _ = repo.board();
+            let covers = repo.cover_claims();
             assert_eq!(covers.len(), 1);
             let run = covers[0]["actor"]["run"].as_str().expect("cover run");
             assert_eq!(
@@ -381,8 +388,8 @@ mod integration_cover {
                 &["check", "file:integration.txt", "--json"],
                 "unmapped-cover-session",
             );
-            target::assert_success(&checked);
-            let response = target::json(&checked);
+            assert_success(&checked);
+            let response = json(&checked);
             assert_eq!(response["status"], "clear", "{response}");
             assert!(
                 response["reservations"]
@@ -769,32 +776,32 @@ fn rebase_resnapshot_updates_protected_tip_and_retention_ref() {
 
 #[test]
 fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("target-rebase-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "lane.txt", "lane work\n", "lane work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    integration_target::commit_file(
+    repo.commit_file(&lane, "lane.txt", "lane work\n", "lane work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
+    repo.commit_file(
         &repo.integration,
         "new-target.txt",
         "new target work\n",
         "advance integration",
     );
-    let target_tip = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    integration_target::git(&lane, &["rebase", "integration"]);
-    let observed = integration_target::run(&lane, &["board", "--json"]);
-    integration_target::assert_success(&observed);
+    let target_tip = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    repo.git(&lane, &["rebase", "integration"]);
+    let observed = repo.run(&lane, &["board", "--json"]);
+    assert_success(&observed);
     assert_eq!(
-        integration_target::json(&observed)["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
+        json(&observed)["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
         3
     );
-    let events = integration_target::journal(repo.root());
+    let events = repo.journal();
     let reanchor = events
         .iter()
         .rev()
@@ -806,29 +813,29 @@ fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
 
 #[test]
 fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("missing-target-rebase-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "lane.txt", "lane work\n", "lane work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    integration_target::commit_file(repo.root(), "new-trunk.txt", "new trunk\n", "advance trunk");
-    let trunk_tip = integration_target::git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    repo.commit_file(&lane, "lane.txt", "lane work\n", "lane work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
+    repo.commit_file(repo.root(), "new-trunk.txt", "new trunk\n", "advance trunk");
+    let trunk_tip = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
     repo.remove_integration_branch();
-    integration_target::git(&lane, &["rebase", "main"]);
+    repo.git(&lane, &["rebase", "main"]);
 
-    let observed = integration_target::run(&lane, &["board", "--json"]);
-    integration_target::assert_success(&observed);
+    let observed = repo.run(&lane, &["board", "--json"]);
+    assert_success(&observed);
     assert_eq!(
-        integration_target::json(&observed)["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
+        json(&observed)["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
         3
     );
-    let events = integration_target::journal(repo.root());
+    let events = repo.journal();
     let reanchor = events
         .iter()
         .rev()
@@ -1967,7 +1974,9 @@ mod merge_extent {
     use std::process::Output;
 
     use cargo_berth_test_support::GitDriver;
+    use cargo_berth_test_support::IntegrationRepository;
     use cargo_berth_test_support::OptionalLocks;
+    use cargo_berth_test_support::assert_success;
     use serde_json::Value;
     use tempfile::TempDir;
     use tempfile::tempdir;
@@ -2001,20 +2010,19 @@ mod merge_extent {
     #[test]
     fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
         for merge_commit in [true, false] {
-            let repo = super::integration_target::IntegrationRepository::new();
+            let repo = IntegrationRepository::new(BERTH);
             let a = repo.lane("lane-a", "integration");
             let b = repo.lane("lane-b", "integration");
-            let a_claim = super::integration_target::claim(&a, "file:shared.txt", FIRST_RUN, None);
-            super::integration_target::assert_success(&a_claim);
-            let a_id =
-                super::integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
-                    .as_str()
-                    .expect("lane A reservation id")
-                    .to_owned();
-            let b_claim = super::integration_target::claim(&b, "file:b.txt", SECOND_RUN, None);
-            super::integration_target::assert_success(&b_claim);
-            super::integration_target::commit_file(&a, "shared.txt", "lane A\n", "lane A work");
-            let before = integration_board(repo.root());
+            let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
+            assert_success(&a_claim);
+            let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
+                .as_str()
+                .expect("lane A reservation id")
+                .to_owned();
+            let b_claim = repo.claim(&b, "file:b.txt", SECOND_RUN, None);
+            assert_success(&b_claim);
+            repo.commit_file(&a, "shared.txt", "lane A\n", "lane A work");
+            let before = repo.board();
             assert_eq!(
                 snapshot(&before, &a_id)["merge_extent"]["status"],
                 "protected"
@@ -2025,7 +2033,7 @@ mod merge_extent {
             } else {
                 repo.merge_fast_forward("lane-a");
             }
-            let after = integration_board(repo.root());
+            let after = repo.board();
             assert_eq!(
                 snapshot(&after, &a_id)["lifecycle"]["stage"],
                 "released",
@@ -2037,12 +2045,12 @@ mod merge_extent {
             );
             assert_eq!(snapshot(&after, &a_id)["merge_extent"]["status"], "empty");
 
-            let check = super::integration_target::run(&b, &["check", "file:shared.txt", "--json"]);
-            super::integration_target::assert_success(&check);
-            assert_eq!(super::integration_target::json(&check)["status"], "clear");
+            let check = repo.run(&b, &["check", "file:shared.txt", "--json"]);
+            assert_success(&check);
+            assert_eq!(json(&check)["status"], "clear");
             fs::write(b.join("shared.txt"), "lane B edits landed work\n")
                 .expect("lane B can edit the released path");
-            let edited = integration_board(repo.root());
+            let edited = repo.board();
             assert!(
                 edited["payload"]["data"]["unresolved_overlaps"]["entries"]
                     .as_array()
@@ -2054,33 +2062,32 @@ mod merge_extent {
 
     #[test]
     fn merge_extents_exclude_changes_already_on_the_integration_target() {
-        let repo = super::integration_target::IntegrationRepository::new();
-        super::integration_target::commit_file(
+        let repo = IntegrationRepository::new(BERTH);
+        repo.commit_file(
             &repo.integration,
             "Cargo.toml",
             "[package]\nname = \"integration\"\nversion = \"0.1.0\"\n",
             "integration manifest",
         );
-        let target_tip =
-            super::integration_target::git_stdout(repo.root(), &["rev-parse", "integration"]);
+        let target_tip = repo.git_stdout(repo.root(), &["rev-parse", "integration"]);
         let a = repo.lane("extent-a", "integration");
         let b = repo.lane("extent-b", "integration");
-        let a_claim = super::integration_target::claim(&a, "file:a.txt", FIRST_RUN, None);
-        let b_claim = super::integration_target::claim(&b, "file:b.txt", SECOND_RUN, None);
-        super::integration_target::assert_success(&a_claim);
-        super::integration_target::assert_success(&b_claim);
-        let a_id = super::integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+        let a_claim = repo.claim(&a, "file:a.txt", FIRST_RUN, None);
+        let b_claim = repo.claim(&b, "file:b.txt", SECOND_RUN, None);
+        assert_success(&a_claim);
+        assert_success(&b_claim);
+        let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("lane A reservation id")
             .to_owned();
-        let b_id = super::integration_target::json(&b_claim)["payload"]["data"]["reservation_id"]
+        let b_id = json(&b_claim)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("lane B reservation id")
             .to_owned();
-        super::integration_target::commit_file(&a, "a.txt", "A\n", "A work");
-        super::integration_target::commit_file(&b, "b.txt", "B\n", "B work");
+        repo.commit_file(&a, "a.txt", "A\n", "A work");
+        repo.commit_file(&b, "b.txt", "B\n", "B work");
 
-        let observed = integration_board(repo.root());
+        let observed = repo.board();
         for (id, own_path) in [(&a_id, "a.txt"), (&b_id, "b.txt")] {
             let extent = &snapshot(&observed, id)["merge_extent"];
             assert_eq!(extent["key"]["trunk"], target_tip, "{observed}");
@@ -2099,22 +2106,19 @@ mod merge_extent {
 
     #[test]
     fn an_unlanded_missing_target_alerts_and_shows_an_unresolved_commit() {
-        let repo = super::integration_target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH);
         let lane = repo.lane("missing-target-lane", "integration");
-        let claimed = super::integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        super::integration_target::assert_success(&claimed);
-        let id = super::integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let id = json(&claimed)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("reservation id")
             .to_owned();
-        super::integration_target::commit_file(&lane, "lane.txt", "unlanded\n", "unlanded lane");
-        super::integration_target::git(&repo.integration, &["switch", "--quiet", "--detach"]);
-        super::integration_target::git(
-            repo.root(),
-            &["update-ref", "-d", "refs/heads/integration"],
-        );
+        repo.commit_file(&lane, "lane.txt", "unlanded\n", "unlanded lane");
+        repo.git(&repo.integration, &["switch", "--quiet", "--detach"]);
+        repo.git(repo.root(), &["update-ref", "-d", "refs/heads/integration"]);
 
-        let observed = integration_board(repo.root());
+        let observed = repo.board();
         let row = snapshot(&observed, &id);
         assert_eq!(row["target"]["ref"], "refs/heads/integration");
         assert_eq!(row["target"]["commit"], "unresolved", "{observed}");
@@ -2145,10 +2149,9 @@ mod merge_extent {
         assert_eq!(target["commit"], "unresolved");
         assert_eq!(target["reservations"], serde_json::json!([id]));
 
-        let probe =
-            super::integration_target::claim(repo.root(), "file:unrelated.txt", SECOND_RUN, None);
-        super::integration_target::assert_success(&probe);
-        let response = super::integration_target::json(&probe);
+        let probe = repo.claim(repo.root(), "file:unrelated.txt", SECOND_RUN, None);
+        assert_success(&probe);
+        let response = json(&probe);
         let reconcile_alert = response["payload"]["alerts"]
             .as_array()
             .expect("reconciliation alerts")
@@ -2160,34 +2163,25 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = super::integration_target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH);
         let lane = repo.lane("partly-landed-lane", "integration");
-        let claimed =
-            super::integration_target::claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
-        super::integration_target::assert_success(&claimed);
-        let id = super::integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let id = json(&claimed)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("reservation id")
             .to_owned();
-        super::integration_target::commit_file(
-            &lane,
-            "checkpoint.txt",
-            "checkpoint\n",
-            "checkpoint work",
-        );
-        let checkpoint_tip = super::integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
-        let checkpointed = super::integration_target::run(&lane, &["release", &id, "--json"]);
-        super::integration_target::assert_success(&checkpointed);
-        super::integration_target::commit_file(&lane, "later.txt", "later\n", "later work");
-        super::integration_target::git(&repo.integration, &["merge", "--ff-only", &checkpoint_tip]);
-        super::integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
-        super::integration_target::git(&repo.integration, &["switch", "--quiet", "--detach"]);
-        super::integration_target::git(
-            repo.root(),
-            &["update-ref", "-d", "refs/heads/integration"],
-        );
+        repo.commit_file(&lane, "checkpoint.txt", "checkpoint\n", "checkpoint work");
+        let checkpoint_tip = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
+        let checkpointed = repo.run(&lane, &["release", &id, "--json"]);
+        assert_success(&checkpointed);
+        repo.commit_file(&lane, "later.txt", "later\n", "later work");
+        repo.git(&repo.integration, &["merge", "--ff-only", &checkpoint_tip]);
+        repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+        repo.git(&repo.integration, &["switch", "--quiet", "--detach"]);
+        repo.git(repo.root(), &["update-ref", "-d", "refs/heads/integration"]);
 
-        let observed = integration_board(repo.root());
+        let observed = repo.board();
         let row = snapshot(&observed, &id);
         assert_ne!(row["lifecycle"]["stage"], "released", "{observed}");
         assert_eq!(
@@ -2214,30 +2208,27 @@ mod merge_extent {
 
     #[test]
     fn a_released_lane_stays_released_after_its_target_lands_on_main_and_is_deleted() {
-        let repo = super::integration_target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH);
         let lane = repo.lane("landed-lane", "integration");
-        let claimed = super::integration_target::claim(&lane, "file:landed.txt", FIRST_RUN, None);
-        super::integration_target::assert_success(&claimed);
-        let id = super::integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let id = json(&claimed)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("reservation id")
             .to_owned();
-        super::integration_target::commit_file(&lane, "landed.txt", "landed\n", "landed lane");
+        repo.commit_file(&lane, "landed.txt", "landed\n", "landed lane");
         repo.merge_by_commit("landed-lane");
-        let released = integration_board(repo.root());
+        let released = repo.board();
         assert_eq!(
             snapshot(&released, &id)["lifecycle"]["stage"],
             "released",
             "{released}"
         );
-        super::integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
-        super::integration_target::git(&repo.integration, &["switch", "--quiet", "--detach"]);
-        super::integration_target::git(
-            repo.root(),
-            &["update-ref", "-d", "refs/heads/integration"],
-        );
+        repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
+        repo.git(&repo.integration, &["switch", "--quiet", "--detach"]);
+        repo.git(repo.root(), &["update-ref", "-d", "refs/heads/integration"]);
 
-        let observed = integration_board(repo.root());
+        let observed = repo.board();
         assert_eq!(
             snapshot(&observed, &id)["lifecycle"]["stage"],
             "released",
@@ -2251,12 +2242,6 @@ mod merge_extent {
                 .all(|alert| alert["reservation_id"] != id),
             "{observed}"
         );
-    }
-
-    fn integration_board(root: &Path) -> Value {
-        let output = super::integration_target::run(root, &["board", "--json"]);
-        super::integration_target::assert_success(&output);
-        super::integration_target::json(&output)
     }
 
     #[test]

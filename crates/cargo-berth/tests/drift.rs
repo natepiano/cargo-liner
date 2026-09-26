@@ -8,12 +8,12 @@
 #[path = "support/timing.rs"]
 mod timing;
 
-#[path = "support/integration_target.rs"]
-mod integration_target;
-
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::git_command;
+use cargo_berth_test_support::json;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -1576,34 +1576,32 @@ fn an_incursion_from_merged_trunk_work_says_the_phase_did_not_author_it() {
 
 #[test]
 fn merged_integration_target_commits_are_not_attributed_to_the_lane() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("target-drift-lane", "integration");
-    let claim = integration_target::claim(&lane, "file:own.txt", SECOND_RUN, None);
-    integration_target::assert_success(&claim);
-    let id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+    let claim = repo.claim(&lane, "file:own.txt", SECOND_RUN, None);
+    assert_success(&claim);
+    let id = json(&claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    let holder =
-        integration_target::claim(&repo.integration, "file:target-held.txt", FIRST_RUN, None);
-    integration_target::assert_success(&holder);
-    integration_target::commit_file(
+    let holder = repo.claim(&repo.integration, "file:target-held.txt", FIRST_RUN, None);
+    assert_success(&holder);
+    repo.commit_file(
         &repo.integration,
         "target-held.txt",
         "integration work\n",
         "new integration work",
     );
-    let target_commit = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let target_commit = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
     std::fs::write(
         repo.integration.join("target-held.txt"),
         "integration work in progress\n",
     )
     .expect("holder edit");
-    integration_target::git(&lane, &["merge", "--no-edit", "integration"]);
-    integration_target::commit_file(&lane, "own.txt", "lane work\n", "lane work");
-    let observed =
-        integration_target::run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
-    let response = integration_target::json(&observed);
+    repo.git(&lane, &["merge", "--no-edit", "integration"]);
+    repo.commit_file(&lane, "own.txt", "lane work\n", "lane work");
+    let observed = repo.run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
+    let response = json(&observed);
     assert_eq!(response["status"], "incursion", "{response}");
     let effects = response["payload"]["data"]["results"]
         .as_array()

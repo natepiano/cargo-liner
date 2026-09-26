@@ -5,11 +5,12 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
-#[path = "support/integration_target.rs"]
-mod integration_target;
-
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::json;
+use cargo_berth_test_support::reservation_row;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -48,16 +49,16 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 
 #[test]
 fn engine_cover_has_a_cover_source_and_targets_main() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("board-cover-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let _ = integration_target::board(repo.root());
-    let covers = integration_target::cover_claims(repo.root());
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let _ = repo.board();
+    let covers = repo.cover_claims();
     assert_eq!(covers.len(), 1);
     let id = covers[0]["reservation_id"].as_str().expect("cover ID");
-    let board = integration_target::board(repo.root());
-    let row = integration_target::reservation_row(&board, id);
+    let board = repo.board();
+    let row = reservation_row(&board, id);
     assert_eq!(
         row["source"],
         serde_json::json!({"kind": "cover", "covered_branch": "refs/heads/integration"}),
@@ -68,17 +69,17 @@ fn engine_cover_has_a_cover_source_and_targets_main() {
 
 #[test]
 fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("uncovered-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let _ = integration_target::board(repo.root());
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let _ = repo.board();
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("lane ID")
         .to_owned();
-    integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
-    integration_target::git(
+    repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+    repo.git(
         repo.root(),
         &[
             "worktree",
@@ -87,13 +88,13 @@ fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding
             repo.integration.to_str().expect("UTF-8 worktree"),
         ],
     );
-    integration_target::git(
+    repo.git(
         repo.root(),
         &["branch", "-f", "integration", "uncovered-lane"],
     );
-    let board = integration_target::board(repo.root());
+    let board = repo.board();
     assert_ne!(
-        integration_target::reservation_row(&board, &id)["lifecycle"]["stage"],
+        reservation_row(&board, &id)["lifecycle"]["stage"],
         "released",
         "{board}"
     );
@@ -114,9 +115,9 @@ fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding
         alerts.iter().all(|alert| alert["kind"] != "target_missing"),
         "{board}"
     );
-    let probe = integration_target::claim(repo.root(), "file:unrelated.txt", FIRST_RUN, None);
-    integration_target::assert_success(&probe);
-    let response = integration_target::json(&probe);
+    let probe = repo.claim(repo.root(), "file:unrelated.txt", FIRST_RUN, None);
+    assert_success(&probe);
+    let response = json(&probe);
     assert!(
         response["payload"]["alerts"]
             .as_array()
@@ -135,17 +136,17 @@ fn target_without_a_registered_checkout_alerts_and_keeps_merged_lane_outstanding
 
 #[test]
 fn deleted_target_uses_main_without_an_uncovered_alert() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("deleted-target-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("lane ID")
         .to_owned();
-    integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
+    repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
     repo.remove_integration_branch();
-    let before = integration_target::board(repo.root());
+    let before = repo.board();
     assert!(
         before["payload"]["data"]["alerts"]["entries"]
             .as_array()
@@ -162,13 +163,13 @@ fn deleted_target_uses_main_without_an_uncovered_alert() {
             .all(|alert| alert["kind"] != "target_uncovered"),
         "{before}"
     );
-    integration_target::git(
+    repo.git(
         repo.root(),
         &["merge", "--no-ff", "--no-edit", "deleted-target-lane"],
     );
-    let landed = integration_target::board(repo.root());
+    let landed = repo.board();
     assert_eq!(
-        integration_target::reservation_row(&landed, &id)["lifecycle"]["stage"],
+        reservation_row(&landed, &id)["lifecycle"]["stage"],
         "released",
         "{landed}"
     );
@@ -177,21 +178,21 @@ fn deleted_target_uses_main_without_an_uncovered_alert() {
 #[test]
 fn an_existing_reservation_covers_only_when_it_targets_the_integration_parent() {
     for unrelated_target in [false, true] {
-        let repo = integration_target::IntegrationRepository::new();
-        integration_target::git(repo.root(), &["branch", "other-target", "main"]);
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        repo.git(repo.root(), &["branch", "other-target", "main"]);
         let initial_target = if unrelated_target {
             "main"
         } else {
             "other-target"
         };
-        let held = integration_target::claim(
+        let held = repo.claim(
             &repo.integration,
             "file:integration.txt",
             FIRST_RUN,
             Some(initial_target),
         );
-        integration_target::assert_success(&held);
-        let held_id = integration_target::json(&held)["payload"]["data"]["reservation_id"]
+        assert_success(&held);
+        let held_id = json(&held)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("integration reservation ID")
             .to_owned();
@@ -200,38 +201,38 @@ fn an_existing_reservation_covers_only_when_it_targets_the_integration_parent() 
         } else {
             "main"
         };
-        let retargeted = integration_target::run(
+        let retargeted = repo.run(
             &repo.integration,
             &["retarget", &held_id, "--target", selected_target, "--json"],
         );
-        integration_target::assert_success(&retargeted);
+        assert_success(&retargeted);
         let lane = repo.lane("covered-by-ordinary-lane", "integration");
-        let claimed = integration_target::claim(
+        let claimed = repo.claim(
             &lane,
             "file:lane.txt",
             &uuid::Uuid::now_v7().to_string(),
             None,
         );
-        integration_target::assert_success(&claimed);
-        let _ = integration_target::board(repo.root());
+        assert_success(&claimed);
+        let _ = repo.board();
         assert_eq!(
-            integration_target::cover_claims(repo.root()).len(),
+            repo.cover_claims().len(),
             usize::from(unrelated_target),
             "only a reservation targeting main can cover integration"
         );
-        let board = integration_target::board(repo.root());
-        let row = integration_target::reservation_row(&board, &held_id);
+        let board = repo.board();
+        let row = reservation_row(&board, &held_id);
         assert_eq!(row["source"]["kind"], "explicit", "{board}");
         if !unrelated_target {
-            let lane_id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+            let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
                 .as_str()
                 .expect("lane ID")
                 .to_owned();
-            integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
+            repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
             repo.merge_fast_forward("covered-by-ordinary-lane");
-            let landed = integration_target::board(repo.root());
+            let landed = repo.board();
             assert_eq!(
-                integration_target::reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
+                reservation_row(&landed, &lane_id)["lifecycle"]["stage"],
                 "released",
                 "{landed}"
             );
@@ -268,25 +269,24 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 
 #[test]
 fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let a = repo.lane("board-target-a", "integration");
     let b = repo.lane("board-target-b", "integration");
-    let main_claim = integration_target::claim(repo.root(), "file:main.txt", FIRST_RUN, None);
-    let a_claim = integration_target::claim(&a, "file:a.txt", SECOND_RUN, None);
-    let b_claim =
-        integration_target::claim(&b, "file:b.txt", &uuid::Uuid::now_v7().to_string(), None);
+    let main_claim = repo.claim(repo.root(), "file:main.txt", FIRST_RUN, None);
+    let a_claim = repo.claim(&a, "file:a.txt", SECOND_RUN, None);
+    let b_claim = repo.claim(&b, "file:b.txt", &uuid::Uuid::now_v7().to_string(), None);
     for output in [&main_claim, &a_claim, &b_claim] {
-        integration_target::assert_success(output);
+        assert_success(output);
     }
-    let main_id = integration_target::json(&main_claim)["payload"]["data"]["reservation_id"]
+    let main_id = json(&main_claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("main reservation ID")
         .to_owned();
-    let a_id = integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+    let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("A reservation ID")
         .to_owned();
-    let b_id = integration_target::json(&b_claim)["payload"]["data"]["reservation_id"]
+    let b_id = json(&b_claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("B reservation ID")
         .to_owned();
@@ -305,11 +305,11 @@ fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
         .expect("repository trunk target");
     assert_eq!(
         integration["commit"],
-        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+        repo.git_stdout(repo.root(), &["rev-parse", "integration"])
     );
     assert_eq!(
         main["commit"],
-        integration_target::git_stdout(repo.root(), &["rev-parse", "main"])
+        repo.git_stdout(repo.root(), &["rev-parse", "main"])
     );
     let mut integration_ids = vec![a_id.clone(), b_id.clone()];
     integration_ids.sort();
@@ -317,7 +317,7 @@ fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
         integration["reservations"],
         serde_json::json!(integration_ids)
     );
-    let covers = integration_target::cover_claims(repo.root());
+    let covers = repo.cover_claims();
     assert_eq!(covers.len(), 1);
     let mut main_ids = vec![
         main_id.clone(),
@@ -341,7 +341,7 @@ fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
         "refs/heads/main"
     );
 
-    integration_target::commit_file(&a, "a.txt", "A\n", "A work");
+    repo.commit_file(&a, "a.txt", "A\n", "A work");
     repo.merge_by_commit("board-target-a");
     let after = board_data(repo.root());
     assert_eq!(
@@ -388,16 +388,16 @@ fn f003_board_json_schema_requires_a_non_nullable_row_target() {
 
 #[test]
 fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let a = repo.lane("invoker-a", "integration");
-    repo.lane("invoker-b", "integration");
-    let claimed = integration_target::claim(&a, "file:invoker.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let _ = repo.lane("invoker-b", "integration");
+    let claimed = repo.claim(&a, "file:invoker.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation ID")
         .to_owned();
-    integration_target::commit_file(&a, "invoker.txt", "lane work\n", "lane work");
+    repo.commit_file(&a, "invoker.txt", "lane work\n", "lane work");
 
     let from_a = board_data(&a);
     let from_integration = board_data(&repo.integration);
@@ -420,7 +420,7 @@ fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker()
     assert_eq!(row["target"]["ref"], "refs/heads/integration");
     assert_eq!(
         row["merge_extent"]["key"]["trunk"],
-        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+        repo.git_stdout(repo.root(), &["rev-parse", "integration"])
     );
 }
 

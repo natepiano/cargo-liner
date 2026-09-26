@@ -5,11 +5,12 @@
 
 //! Built-binary tests for claim acquisition and mutation-free edit checks.
 
-#[path = "support/integration_target.rs"]
-mod integration_target;
-
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::json;
+use cargo_berth_test_support::reservation_row;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -52,35 +53,35 @@ const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 #[test]
 fn check_uses_the_current_runs_target_when_an_older_run_is_still_outstanding() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("two-run-lane", "integration");
-    integration_target::git(&lane, &["reset", "--hard", "main"]);
-    let older = integration_target::claim(&lane, "file:older.txt", FIRST_RUN, Some("main"));
-    integration_target::assert_success(&older);
-    let older_id = integration_target::json(&older)["payload"]["data"]["reservation_id"]
+    repo.git(&lane, &["reset", "--hard", "main"]);
+    let older = repo.claim(&lane, "file:older.txt", FIRST_RUN, Some("main"));
+    assert_success(&older);
+    let older_id = json(&older)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("older reservation ID")
         .to_owned();
-    integration_target::commit_file(&lane, "older.txt", "older\n", "older work");
-    integration_target::commit_file(
+    repo.commit_file(&lane, "older.txt", "older\n", "older work");
+    repo.commit_file(
         &lane,
         "integration.txt",
         "lane version\n",
         "lane changes target path",
     );
-    let checkpoint = integration_target::run(&lane, &["release", &older_id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    let current = integration_target::claim(&lane, "file:current.txt", SECOND_RUN, None);
-    integration_target::assert_success(&current);
-    let _ = integration_target::board(repo.root());
-    let cover_id = integration_target::cover_claims(repo.root())[0]["reservation_id"]
+    let checkpoint = repo.run(&lane, &["release", &older_id, "--json"]);
+    assert_success(&checkpoint);
+    let current = repo.claim(&lane, "file:current.txt", SECOND_RUN, None);
+    assert_success(&current);
+    let _ = repo.board();
+    let cover_id = repo.cover_claims()[0]["reservation_id"]
         .as_str()
         .expect("cover reservation ID")
         .to_owned();
 
-    let check = integration_target::run(&lane, &["check", "file:integration.txt", "--json"]);
-    integration_target::assert_success(&check);
-    assert_eq!(integration_target::json(&check)["status"], "clear");
+    let check = repo.run(&lane, &["check", "file:integration.txt", "--json"]);
+    assert_success(&check);
+    assert_eq!(json(&check)["status"], "clear");
     assert!(
         !String::from_utf8_lossy(&check.stdout).contains(&cover_id),
         "current run already contains the cover's committed work"
@@ -89,37 +90,34 @@ fn check_uses_the_current_runs_target_when_an_older_run_is_still_outstanding() {
 
 #[test]
 fn sibling_lane_can_edit_landed_work_while_main_meets_the_cover() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let a = repo.lane("contained-a", "integration");
     let b = repo.lane("contained-b", "integration");
-    let a_claim = integration_target::claim(&a, "file:shared.txt", FIRST_RUN, None);
-    integration_target::assert_success(&a_claim);
-    let b_claim = integration_target::claim(&b, "file:b.txt", SECOND_RUN, None);
-    integration_target::assert_success(&b_claim);
-    let _ = integration_target::board(repo.root());
-    integration_target::commit_file(&a, "shared.txt", "landed\n", "lane A work");
+    let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
+    assert_success(&a_claim);
+    let b_claim = repo.claim(&b, "file:b.txt", SECOND_RUN, None);
+    assert_success(&b_claim);
+    let _ = repo.board();
+    repo.commit_file(&a, "shared.txt", "landed\n", "lane A work");
     repo.merge_by_commit("contained-a");
-    let observed = integration_target::board(repo.root());
-    let a_id = integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+    let observed = repo.board();
+    let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("lane A ID")
         .to_owned();
     assert_eq!(
-        integration_target::reservation_row(&observed, &a_id)["lifecycle"]["stage"],
+        reservation_row(&observed, &a_id)["lifecycle"]["stage"],
         "released",
         "{observed}"
     );
 
-    let sibling = integration_target::run(&b, &["check", "file:shared.txt", "--json"]);
-    integration_target::assert_success(&sibling);
-    assert_eq!(integration_target::json(&sibling)["status"], "clear");
+    let sibling = repo.run(&b, &["check", "file:shared.txt", "--json"]);
+    assert_success(&sibling);
+    assert_eq!(json(&sibling)["status"], "clear");
 
-    let main = integration_target::run(repo.root(), &["check", "file:shared.txt", "--json"]);
-    assert_eq!(
-        integration_target::json(&main)["status"],
-        "blocked_by_overlap"
-    );
-    let cover_id = integration_target::cover_claims(repo.root())[0]["reservation_id"]
+    let main = repo.run(repo.root(), &["check", "file:shared.txt", "--json"]);
+    assert_eq!(json(&main)["status"], "blocked_by_overlap");
+    let cover_id = repo.cover_claims()[0]["reservation_id"]
         .as_str()
         .expect("cover ID")
         .to_owned();
@@ -131,22 +129,23 @@ fn sibling_lane_can_edit_landed_work_while_main_meets_the_cover() {
 
 #[test]
 fn lane_editing_its_target_diff_records_no_cover_incursion() {
-    let repo = integration_target::IntegrationRepository::new();
-    integration_target::commit_file(
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    repo.commit_file(
         &repo.integration,
         "Cargo.toml",
         "[package]\nname = \"integration\"\nversion = \"0.1.0\"\n",
         "integration manifest",
     );
     let lane = repo.lane("target-diff-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let _ = integration_target::board(repo.root());
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let _ = repo.board();
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("lane ID")
         .to_owned();
-    let before = integration_target::journal(repo.root())
+    let before = repo
+        .journal()
         .into_iter()
         .filter(|event| event["op"] == "incursion")
         .count();
@@ -155,10 +154,10 @@ fn lane_editing_its_target_diff_records_no_cover_incursion() {
         "[package]\nname = \"lane\"\nversion = \"0.1.0\"\n",
     )
     .expect("lane manifest edits");
-    let drift =
-        integration_target::run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
-    integration_target::assert_success(&drift);
-    let after = integration_target::journal(repo.root())
+    let drift = repo.run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
+    assert_success(&drift);
+    let after = repo
+        .journal()
         .into_iter()
         .filter(|event| event["op"] == "incursion")
         .count();
@@ -170,16 +169,16 @@ fn lane_editing_its_target_diff_records_no_cover_incursion() {
 
 #[test]
 fn claim_target_precedence_and_source_are_recorded() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let explicit_lane = repo.lane("explicit-target-lane", "integration");
-    let explicit = integration_target::claim(
+    let explicit = repo.claim(
         &explicit_lane,
         "file:explicit.txt",
         FIRST_RUN,
         Some("refs/heads/main"),
     );
-    integration_target::assert_success(&explicit);
-    let explicit_payload = integration_target::json(&explicit);
+    assert_success(&explicit);
+    let explicit_payload = json(&explicit);
     assert_eq!(
         explicit_payload["payload"]["data"]["target"]["ref"],
         "refs/heads/main"
@@ -190,10 +189,9 @@ fn claim_target_precedence_and_source_are_recorded() {
     );
 
     let configured_lane = repo.lane("configured-target-lane", "integration");
-    let configured =
-        integration_target::claim(&configured_lane, "file:configured.txt", SECOND_RUN, None);
-    integration_target::assert_success(&configured);
-    let configured_payload = integration_target::json(&configured);
+    let configured = repo.claim(&configured_lane, "file:configured.txt", SECOND_RUN, None);
+    assert_success(&configured);
+    let configured_payload = json(&configured);
     assert_eq!(
         configured_payload["payload"]["data"]["target"]["ref"],
         "refs/heads/integration"
@@ -204,14 +202,13 @@ fn claim_target_precedence_and_source_are_recorded() {
     );
     assert_eq!(
         configured_payload["payload"]["data"]["target"]["commit"],
-        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+        repo.git_stdout(repo.root(), &["rev-parse", "integration"])
     );
 
-    integration_target::git(&repo.integration, &["switch", "--detach", "--quiet"]);
-    let detached =
-        integration_target::claim(&repo.integration, "file:detached.txt", THIRD_RUN, None);
-    integration_target::assert_success(&detached);
-    let detached_payload = integration_target::json(&detached);
+    repo.git(&repo.integration, &["switch", "--detach", "--quiet"]);
+    let detached = repo.claim(&repo.integration, "file:detached.txt", THIRD_RUN, None);
+    assert_success(&detached);
+    let detached_payload = json(&detached);
     assert_eq!(
         detached_payload["payload"]["data"]["target"]["ref"],
         "refs/heads/main"
@@ -221,7 +218,8 @@ fn claim_target_precedence_and_source_are_recorded() {
         "repository_trunk"
     );
 
-    let claims: Vec<_> = integration_target::journal(repo.root())
+    let claims: Vec<_> = repo
+        .journal()
         .into_iter()
         .filter(|event| event["op"] == "claim")
         .collect();
@@ -238,29 +236,25 @@ fn claim_target_precedence_and_source_are_recorded() {
 
 #[test]
 fn explicit_claim_refuses_own_and_unresolved_targets() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("refused-target-lane", "integration");
     for (target, reason) in [
         ("refused-target-lane", "own branch"),
         ("no-such-target", "resolve"),
     ] {
-        let output = integration_target::claim(&lane, "file:refused.txt", FIRST_RUN, Some(target));
+        let output = repo.claim(&lane, "file:refused.txt", FIRST_RUN, Some(target));
         assert!(!output.status.success());
-        let response = integration_target::json(&output);
+        let response = json(&output);
         assert_eq!(response["status"], "invalid_input");
         assert!(String::from_utf8_lossy(&output.stdout).contains(target));
         assert!(String::from_utf8_lossy(&output.stdout).contains(reason));
     }
-    assert!(
-        integration_target::journal(repo.root())
-            .iter()
-            .all(|event| event["op"] != "claim")
-    );
+    assert!(repo.journal().iter().all(|event| event["op"] != "claim"));
 }
 
 #[test]
 fn explicit_claim_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("malformed-claim-lane", "integration");
     for (target, message) in [
         (
@@ -273,10 +267,9 @@ fn explicit_claim_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
         ),
         ("nope", "target `nope` does not resolve to a local branch"),
     ] {
-        let output =
-            integration_target::claim(&lane, "file:claim-target.txt", FIRST_RUN, Some(target));
+        let output = repo.claim(&lane, "file:claim-target.txt", FIRST_RUN, Some(target));
         assert!(!output.status.success());
-        let response = integration_target::json(&output);
+        let response = json(&output);
         assert_eq!(response["status"], "invalid_input");
         assert_eq!(response["message"], message, "target argument: {target}");
     }
@@ -284,22 +277,22 @@ fn explicit_claim_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
 
 #[test]
 fn first_touch_invalid_branch_settings_fall_back_to_repository_trunk() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     for (branch, configured_target, reason) in [
         ("own-target-lane", "own-target-lane", "own_branch"),
         ("missing-target-lane", "no-such-target", "unresolved"),
     ] {
         let lane = repo.lane(branch, configured_target);
-        let output =
-            integration_target::run(&lane, &["check", &format!("file:{branch}.txt"), "--json"]);
-        integration_target::assert_success(&output);
-        let payload = integration_target::json(&output);
+        let output = repo.run(&lane, &["check", &format!("file:{branch}.txt"), "--json"]);
+        assert_success(&output);
+        let payload = json(&output);
         let acquired_target = &payload["payload"]["data"]["acquisition"]["target"];
         assert_eq!(acquired_target["ref"], "refs/heads/main");
         assert_eq!(acquired_target["source"], "repository_trunk");
         assert_eq!(acquired_target["fallback"]["requested"], configured_target);
         assert_eq!(acquired_target["fallback"]["reason"], reason);
-        let claims: Vec<_> = integration_target::journal(repo.root())
+        let claims: Vec<_> = repo
+            .journal()
             .into_iter()
             .filter(|event| {
                 event["op"] == "claim"

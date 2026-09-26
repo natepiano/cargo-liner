@@ -5,14 +5,15 @@
 
 //! Built-binary tests for worktree liveness, recovery, marker sweeping, and cache repair.
 
-#[path = "support/integration_target.rs"]
-mod integration_target;
-
 #[path = "support/timing.rs"]
 mod timing;
 
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::json;
+use cargo_berth_test_support::reservation_row;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -48,11 +49,11 @@ const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_RE
 
 #[test]
 fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("retarget-lane", "integration");
-    let claim = integration_target::claim(&lane, "file:retarget.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claim);
-    let reservation_id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+    let claim = repo.claim(&lane, "file:retarget.txt", FIRST_RUN, None);
+    assert_success(&claim);
+    let reservation_id = json(&claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("claim reservation ID")
         .to_owned();
@@ -60,33 +61,29 @@ fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
         ("retarget-lane", "own branch"),
         ("no-such-target", "resolve"),
     ] {
-        let output = integration_target::run(
+        let output = repo.run(
             &lane,
             &["retarget", &reservation_id, "--target", target, "--json"],
         );
         assert!(!output.status.success());
-        assert_eq!(integration_target::json(&output)["status"], "invalid_input");
+        assert_eq!(json(&output)["status"], "invalid_input");
         assert!(String::from_utf8_lossy(&output.stdout).contains(reason));
-        assert!(
-            integration_target::journal(repo.root())
-                .iter()
-                .all(|event| event["op"] != "retarget")
-        );
+        assert!(repo.journal().iter().all(|event| event["op"] != "retarget"));
     }
 
-    let target_tip = integration_target::git_stdout(repo.root(), &["rev-parse", "main"]);
-    let output = integration_target::run(
+    let target_tip = repo.git_stdout(repo.root(), &["rev-parse", "main"]);
+    let output = repo.run(
         &lane,
         &["retarget", &reservation_id, "--target", "main", "--json"],
     );
-    integration_target::assert_success(&output);
-    let response = integration_target::json(&output);
+    assert_success(&output);
+    let response = json(&output);
     assert_eq!(response["status"], "retargeted");
     assert_eq!(
         response["payload"]["data"]["target"]["ref"],
         "refs/heads/main"
     );
-    let events = integration_target::journal(repo.root());
+    let events = repo.journal();
     let retargets: Vec<_> = events
         .iter()
         .filter(|event| event["op"] == "retarget")
@@ -101,19 +98,19 @@ fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
 #[test]
 fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
     for covered in [false, true] {
-        let repo = integration_target::IntegrationRepository::new();
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
         let lane = repo.lane("cover-release-lane", "integration");
-        let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-        integration_target::assert_success(&claimed);
-        let _ = integration_target::board(repo.root());
-        let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let _ = repo.board();
+        let id = json(&claimed)["payload"]["data"]["reservation_id"]
             .as_str()
             .expect("lane ID")
             .to_owned();
-        integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
-        let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-        integration_target::assert_success(&checkpoint);
-        let waiting = integration_target::json(&checkpoint);
+        repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+        assert_success(&checkpoint);
+        let waiting = json(&checkpoint);
         assert_eq!(waiting["status"], "outstanding", "{waiting}");
         assert_eq!(waiting["payload"]["data"]["status"], "checkpointed");
         assert!(
@@ -126,7 +123,7 @@ fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
         if covered {
             repo.merge_by_commit("cover-release-lane");
         } else {
-            integration_target::git(
+            repo.git(
                 repo.root(),
                 &[
                     "worktree",
@@ -135,14 +132,14 @@ fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
                     repo.integration.to_str().expect("UTF-8 worktree"),
                 ],
             );
-            integration_target::git(
+            repo.git(
                 repo.root(),
                 &["branch", "-f", "integration", "cover-release-lane"],
             );
         }
-        let released = integration_target::run(&lane, &["release", &id, "--json"]);
-        integration_target::assert_success(&released);
-        let response = integration_target::json(&released);
+        let released = repo.run(&lane, &["release", &id, "--json"]);
+        assert_success(&released);
+        let response = json(&released);
         if covered {
             assert_eq!(response["status"], "integrated", "{response}");
         } else {
@@ -163,9 +160,9 @@ fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
                 format!("Target integration is uncovered; reservation {id} remains outstanding."),
                 "{response}"
             );
-            let board = integration_target::board(repo.root());
+            let board = repo.board();
             assert_ne!(
-                integration_target::reservation_row(&board, &id)["lifecycle"]["stage"],
+                reservation_row(&board, &id)["lifecycle"]["stage"],
                 "released",
                 "{board}"
             );
@@ -175,20 +172,20 @@ fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
 
 #[test]
 fn integrated_as_accepts_an_uncovered_target_commit() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("uncovered-recovery-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let _ = integration_target::board(repo.root());
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let _ = repo.board();
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("lane ID")
         .to_owned();
-    integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
-    let commit = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    integration_target::git(
+    repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+    let commit = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
+    repo.git(
         repo.root(),
         &[
             "worktree",
@@ -197,28 +194,28 @@ fn integrated_as_accepts_an_uncovered_target_commit() {
             repo.integration.to_str().expect("UTF-8 worktree"),
         ],
     );
-    integration_target::git(
+    repo.git(
         repo.root(),
         &["branch", "-f", "integration", "uncovered-recovery-lane"],
     );
-    let resolved = integration_target::run(
+    let resolved = repo.run(
         &lane,
         &["resolve", &id, "--integrated-as", &commit, "--json"],
     );
-    integration_target::assert_success(&resolved);
+    assert_success(&resolved);
     assert_eq!(
-        integration_target::json(&resolved)["payload"]["data"]["disposition"]["evidence"],
+        json(&resolved)["payload"]["data"]["disposition"]["evidence"],
         commit
     );
 }
 
 #[test]
 fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("malformed-retarget-lane", "integration");
-    let claim = integration_target::claim(&lane, "file:retarget.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claim);
-    let id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+    let claim = repo.claim(&lane, "file:retarget.txt", FIRST_RUN, None);
+    assert_success(&claim);
+    let id = json(&claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
@@ -233,10 +230,9 @@ fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
         ),
         ("nope", "target `nope` does not resolve to a local branch"),
     ] {
-        let output =
-            integration_target::run(&lane, &["retarget", &id, "--target", target, "--json"]);
+        let output = repo.run(&lane, &["retarget", &id, "--target", target, "--json"]);
         assert!(!output.status.success());
-        let response = integration_target::json(&output);
+        let response = json(&output);
         assert_eq!(response["status"], "invalid_input");
         assert_eq!(response["message"], message, "target argument: {target}");
     }
@@ -244,55 +240,52 @@ fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
 
 #[test]
 fn release_recognizes_a_checkpoint_on_the_reservation_target() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("target-release-lane", "integration");
-    let claim = integration_target::claim(&lane, "file:released.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claim);
-    let id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+    let claim = repo.claim(&lane, "file:released.txt", FIRST_RUN, None);
+    assert_success(&claim);
+    let id = json(&claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "released.txt", "landed\n", "release work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
+    repo.commit_file(&lane, "released.txt", "landed\n", "release work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
     assert_eq!(
-        integration_target::json(&checkpoint)["payload"]["data"]["status"],
+        json(&checkpoint)["payload"]["data"]["status"],
         "checkpointed"
     );
     repo.merge_by_commit("target-release-lane");
-    let released = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&released);
-    let response = integration_target::json(&released);
+    let released = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&released);
+    let response = json(&released);
     assert_eq!(response["status"], "integrated", "{response}");
     assert_eq!(response["payload"]["data"]["status"], "released");
 }
 
 #[test]
 fn release_uses_trunk_after_the_reservation_target_disappears() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("missing-target-release-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:landed.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:landed.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "landed.txt", "landed\n", "lane work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
+    repo.commit_file(&lane, "landed.txt", "landed\n", "lane work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
     repo.merge_by_commit("missing-target-release-lane");
-    let first_release = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&first_release);
-    assert_eq!(
-        integration_target::json(&first_release)["status"],
-        "integrated"
-    );
-    integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
+    let first_release = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&first_release);
+    assert_eq!(json(&first_release)["status"], "integrated");
+    repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
     repo.remove_integration_branch();
 
-    let released = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&released);
-    let response = integration_target::json(&released);
+    let released = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&released);
+    let response = json(&released);
     assert_eq!(response["status"], "integrated", "{response}");
     assert_eq!(response["payload"]["data"]["status"], "already_settled");
     assert_eq!(
@@ -303,86 +296,86 @@ fn release_uses_trunk_after_the_reservation_target_disappears() {
 
 #[test]
 fn released_integration_target_witness_can_be_replaced() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("replacement-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:replacement.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:replacement.txt", FIRST_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "replacement.txt", "work\n", "protected work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    let target_before = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    integration_target::commit_file(
+    repo.commit_file(&lane, "replacement.txt", "work\n", "protected work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
+    let target_before = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    repo.commit_file(
         &repo.integration,
         "replacement.txt",
         "work\n",
         "squashed integration",
     );
-    let landed = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&landed);
-    assert_eq!(integration_target::json(&landed)["status"], "integrated");
+    let landed = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&landed);
+    assert_eq!(json(&landed)["status"], "integrated");
 
-    integration_target::git(&repo.integration, &["reset", "--hard", &target_before]);
+    repo.git(&repo.integration, &["reset", "--hard", &target_before]);
     for _ in 0..2 {
-        let lost = integration_target::run(repo.root(), &["release", &id, "--json"]);
-        integration_target::assert_success(&lost);
-        assert_eq!(integration_target::json(&lost)["status"], "trunk_rewritten");
+        let lost = repo.run(repo.root(), &["release", &id, "--json"]);
+        assert_success(&lost);
+        assert_eq!(json(&lost)["status"], "trunk_rewritten");
     }
 
-    integration_target::commit_file(repo.root(), "main-only.txt", "main\n", "main only");
-    let main_only = integration_target::git_stdout(repo.root(), &["rev-parse", "HEAD"]);
-    let rejected = integration_target::run(
+    repo.commit_file(repo.root(), "main-only.txt", "main\n", "main only");
+    let main_only = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    let rejected = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &main_only, "--json"],
     );
     assert!(!rejected.status.success());
-    let rejection = integration_target::json(&rejected);
+    let rejection = json(&rejected);
     assert_eq!(rejection["status"], "invalid_input");
     assert_eq!(
         rejection["message"],
         "the --integrated-as commit must resolve in this repository and be reachable from the reservation's target"
     );
 
-    integration_target::commit_file(
+    repo.commit_file(
         &repo.integration,
         "replacement.txt",
         "work\n",
         "replacement evidence",
     );
-    let replacement = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    let resolved = integration_target::run(
+    let replacement = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let resolved = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &replacement, "--json"],
     );
-    integration_target::assert_success(&resolved);
+    assert_success(&resolved);
     assert_eq!(
-        integration_target::json(&resolved)["payload"]["data"]["disposition"]["evidence"],
+        json(&resolved)["payload"]["data"]["disposition"]["evidence"],
         replacement
     );
 }
 
 #[test]
 fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("target-orphan-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:orphan.txt", SECOND_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:orphan.txt", SECOND_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "orphan.txt", "work\n", "orphan work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    let protected_tip = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
-    integration_target::commit_file(&lane, "later.txt", "later\n", "later lane work");
-    let later_head = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
-    let before_prune = integration_target::run(repo.root(), &["board", "--json"]);
-    integration_target::assert_success(&before_prune);
-    let before_prune = integration_target::json(&before_prune);
+    repo.commit_file(&lane, "orphan.txt", "work\n", "orphan work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
+    let protected_tip = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
+    repo.commit_file(&lane, "later.txt", "later\n", "later lane work");
+    let later_head = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
+    let before_prune = repo.run(repo.root(), &["board", "--json"]);
+    assert_success(&before_prune);
+    let before_prune = json(&before_prune);
     let reservation = ["ready_now", "unconstrained_reservations"]
         .into_iter()
         .flat_map(|section| {
@@ -397,12 +390,12 @@ fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
     assert_eq!(reservation["merge_extent"]["status"], "protected");
     assert_ne!(later_head, protected_tip);
     std::fs::remove_dir_all(&lane).expect("remove lane worktree");
-    integration_target::git(repo.root(), &["worktree", "prune", "--expire", "now"]);
-    integration_target::git(repo.root(), &["branch", "-D", "target-orphan-lane"]);
+    repo.git(repo.root(), &["worktree", "prune", "--expire", "now"]);
+    repo.git(repo.root(), &["branch", "-D", "target-orphan-lane"]);
 
-    let target_before = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
-    let observed = integration_target::run(repo.root(), &["board", "--json"]);
-    let response = integration_target::json(&observed);
+    let target_before = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let observed = repo.run(repo.root(), &["board", "--json"]);
+    let response = json(&observed);
     let alert = response["payload"]["data"]["alerts"]["entries"]
         .as_array()
         .expect("alerts")
@@ -411,30 +404,30 @@ fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
         .expect("orphan alert");
     assert_eq!(alert["resolution"]["recovery"]["trunk_oid"], target_before);
 
-    integration_target::commit_file(repo.root(), "main-only.txt", "main\n", "main only");
-    let main_only = integration_target::git_stdout(repo.root(), &["rev-parse", "HEAD"]);
-    let refused = integration_target::run(
+    repo.commit_file(repo.root(), "main-only.txt", "main\n", "main only");
+    let main_only = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    let refused = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &main_only, "--json"],
     );
     assert!(!refused.status.success());
-    let refusal = integration_target::json(&refused);
+    let refusal = json(&refused);
     assert_eq!(refusal["status"], "invalid_input");
     assert_eq!(
         refusal["message"],
         "the --integrated-as commit must resolve in this repository and be reachable from the reservation's target"
     );
 
-    integration_target::git(
+    repo.git(
         &repo.integration,
         &["merge", "--no-ff", "--no-edit", &protected_tip],
     );
-    let resolved = integration_target::run(
+    let resolved = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &protected_tip, "--json"],
     );
-    integration_target::assert_success(&resolved);
-    let resolution = integration_target::json(&resolved);
+    assert_success(&resolved);
+    let resolution = json(&resolved);
     assert_eq!(
         resolution["payload"]["data"]["disposition"]["evidence"],
         protected_tip
@@ -443,19 +436,19 @@ fn orphan_alert_and_manual_recovery_use_the_reservation_target() {
 
 #[test]
 fn integrated_as_uses_trunk_after_the_reservation_target_disappears() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("missing-target-recovery-lane", "integration");
-    let claimed = integration_target::claim(&lane, "file:recovered.txt", SECOND_RUN, None);
-    integration_target::assert_success(&claimed);
-    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+    let claimed = repo.claim(&lane, "file:recovered.txt", SECOND_RUN, None);
+    assert_success(&claimed);
+    let id = json(&claimed)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("reservation id")
         .to_owned();
-    integration_target::commit_file(&lane, "recovered.txt", "work\n", "protected work");
-    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
-    integration_target::assert_success(&checkpoint);
-    integration_target::commit_file(&lane, "later.txt", "later\n", "later lane work");
-    integration_target::git(
+    repo.commit_file(&lane, "recovered.txt", "work\n", "protected work");
+    let checkpoint = repo.run(&lane, &["release", &id, "--json"]);
+    assert_success(&checkpoint);
+    repo.commit_file(&lane, "later.txt", "later\n", "later lane work");
+    repo.git(
         repo.root(),
         &[
             "worktree",
@@ -464,17 +457,16 @@ fn integrated_as_uses_trunk_after_the_reservation_target_disappears() {
             lane.to_str().expect("UTF-8 path"),
         ],
     );
-    integration_target::git(
+    repo.git(
         repo.root(),
         &["branch", "-D", "missing-target-recovery-lane"],
     );
-    integration_target::commit_file(repo.root(), "recovered.txt", "work\n", "trunk carries work");
-    let trunk_commit = integration_target::git_stdout(repo.root(), &["rev-parse", "HEAD"]);
-    let missing_target_commit =
-        integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    repo.commit_file(repo.root(), "recovered.txt", "work\n", "trunk carries work");
+    let trunk_commit = repo.git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    let missing_target_commit = repo.git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
     repo.remove_integration_branch();
 
-    let refused = integration_target::run(
+    let refused = repo.run(
         repo.root(),
         &[
             "resolve",
@@ -486,47 +478,47 @@ fn integrated_as_uses_trunk_after_the_reservation_target_disappears() {
     );
     assert!(!refused.status.success());
     assert_eq!(
-        integration_target::json(&refused)["message"],
+        json(&refused)["message"],
         "the --integrated-as commit must resolve in this repository and be reachable from trunk"
     );
 
-    let resolved = integration_target::run(
+    let resolved = repo.run(
         repo.root(),
         &["resolve", &id, "--integrated-as", &trunk_commit, "--json"],
     );
-    integration_target::assert_success(&resolved);
+    assert_success(&resolved);
     assert_eq!(
-        integration_target::json(&resolved)["payload"]["data"]["disposition"]["evidence"],
+        json(&resolved)["payload"]["data"]["disposition"]["evidence"],
         trunk_commit
     );
 }
 
 #[test]
 fn retarget_of_checkpointed_reservation_remains_outstanding() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("checkpoint-retarget-lane", "integration");
-    integration_target::commit_file(&lane, "checkpointed.txt", "work\n", "checkpointed work");
-    let claim = integration_target::claim(&lane, "file:checkpointed.txt", SECOND_RUN, None);
-    integration_target::assert_success(&claim);
-    let reservation_id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+    repo.commit_file(&lane, "checkpointed.txt", "work\n", "checkpointed work");
+    let claim = repo.claim(&lane, "file:checkpointed.txt", SECOND_RUN, None);
+    assert_success(&claim);
+    let reservation_id = json(&claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("claim reservation ID")
         .to_owned();
-    let checkpoint = integration_target::run(&lane, &["release", &reservation_id, "--json"]);
-    integration_target::assert_success(&checkpoint);
+    let checkpoint = repo.run(&lane, &["release", &reservation_id, "--json"]);
+    assert_success(&checkpoint);
     assert!(
-        integration_target::journal(repo.root())
+        repo.journal()
             .iter()
             .any(|event| event["op"] == "checkpoint" && event["reservation_id"] == reservation_id)
     );
-    let changed = integration_target::run(
+    let changed = repo.run(
         &lane,
         &["retarget", &reservation_id, "--target", "main", "--json"],
     );
-    integration_target::assert_success(&changed);
-    let board = integration_target::run(repo.root(), &["board", "--json"]);
-    integration_target::assert_success(&board);
-    let rows = &integration_target::json(&board)["payload"]["data"];
+    assert_success(&changed);
+    let board = repo.run(repo.root(), &["board", "--json"]);
+    assert_success(&board);
+    let rows = &json(&board)["payload"]["data"];
     let reservation = ["ready_now", "waiting", "unconstrained_reservations"]
         .into_iter()
         .flat_map(|section| rows[section]["entries"].as_array().into_iter().flatten())
@@ -542,41 +534,38 @@ fn retarget_of_checkpointed_reservation_remains_outstanding() {
 
 #[test]
 fn retarget_refuses_released_reservation() {
-    let repo = integration_target::IntegrationRepository::new();
+    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repo.lane("released-retarget-lane", "integration");
-    integration_target::commit_file(
+    repo.commit_file(
         &lane,
         "released-retarget.txt",
         "lane work\n",
         "work to release",
     );
-    let claim = integration_target::claim(&lane, "file:released-retarget.txt", FIRST_RUN, None);
-    integration_target::assert_success(&claim);
-    let reservation_id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+    let claim = repo.claim(&lane, "file:released-retarget.txt", FIRST_RUN, None);
+    assert_success(&claim);
+    let reservation_id = json(&claim)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("claim reservation ID")
         .to_owned();
-    let release = integration_target::run(&lane, &["release", &reservation_id, "--json"]);
-    integration_target::assert_success(&release);
+    let release = repo.run(&lane, &["release", &reservation_id, "--json"]);
+    assert_success(&release);
     repo.merge_fast_forward("released-retarget-lane");
-    let settled = integration_target::run(repo.root(), &["board", "--json"]);
-    integration_target::assert_success(&settled);
+    let settled = repo.run(repo.root(), &["board", "--json"]);
+    assert_success(&settled);
     assert!(
-        integration_target::journal(repo.root())
+        repo.journal()
             .iter()
             .any(|event| event["op"] == "release" && event["reservation_id"] == reservation_id)
     );
-    let before = integration_target::journal(repo.root()).len();
-    let retarget = integration_target::run(
+    let before = repo.journal().len();
+    let retarget = repo.run(
         &lane,
         &["retarget", &reservation_id, "--target", "main", "--json"],
     );
     assert!(!retarget.status.success());
-    assert_eq!(
-        integration_target::json(&retarget)["status"],
-        "invalid_input"
-    );
-    assert_eq!(integration_target::journal(repo.root()).len(), before);
+    assert_eq!(json(&retarget)["status"], "invalid_input");
+    assert_eq!(repo.journal().len(), before);
 }
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
