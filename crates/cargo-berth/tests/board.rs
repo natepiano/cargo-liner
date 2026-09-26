@@ -390,7 +390,7 @@ fn f003_board_json_schema_requires_a_non_nullable_row_target() {
 fn board_target_evidence_extents_lifecycle_and_alerts_do_not_depend_on_invoker() {
     let repo = integration_target::IntegrationRepository::new();
     let a = repo.lane("invoker-a", "integration");
-    let _b = repo.lane("invoker-b", "integration");
+    repo.lane("invoker-b", "integration");
     let claimed = integration_target::claim(&a, "file:invoker.txt", FIRST_RUN, None);
     integration_target::assert_success(&claimed);
     let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]

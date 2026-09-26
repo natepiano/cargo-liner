@@ -335,10 +335,6 @@ pub(super) struct DriftTransactionDecision {
     pub(super) report:     DriftReport,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "cover handling extends the existing locked classification by one case"
-)]
 pub(super) fn classify_locked(
     reservations: &RetainedReservationSet,
     subjects: &ResolvedDriftSubjects,
@@ -394,18 +390,11 @@ pub(super) fn classify_locked(
                     }
                 },
                 DriftBlockingCoverage::Foreign(conflicts) => {
-                    let blockers = conflicts
-                        .iter()
-                        .map(|conflict| conflict.reservation_id)
-                        .filter(|blocker| match &subjects.widening {
-                            DriftWideningSelection::Selected(acting_reservation_id) => {
-                                *acting_reservation_id != *blocker
-                                    || *acting_reservation_id == *reservation_id
-                            },
-                            DriftWideningSelection::NotNeeded
-                            | DriftWideningSelection::Ambiguous(_) => true,
-                        })
-                        .collect::<Vec<_>>();
+                    let blockers = blocking_reservations(
+                        conflicts.iter().map(|conflict| conflict.reservation_id),
+                        &subjects.widening,
+                        *reservation_id,
+                    );
                     if blockers.is_empty()
                         || matches!(
                             reservation.source(),
@@ -449,6 +438,23 @@ pub(super) fn classify_locked(
             scope_acquisition: DriftScopeAcquisition::Permitted,
         },
     })
+}
+
+/// Conflicting reservations that block `reservation_id`, excluding the acting widening
+/// reservation unless it is the subject itself.
+fn blocking_reservations(
+    conflicting: impl Iterator<Item = ReservationId>,
+    widening: &DriftWideningSelection,
+    reservation_id: ReservationId,
+) -> Vec<ReservationId> {
+    conflicting
+        .filter(|blocker| match widening {
+            DriftWideningSelection::Selected(acting_reservation_id) => {
+                *acting_reservation_id != *blocker || *acting_reservation_id == reservation_id
+            },
+            DriftWideningSelection::NotNeeded | DriftWideningSelection::Ambiguous(_) => true,
+        })
+        .collect()
 }
 
 /// What a refused second run's observed writes entered in the worktree it stands in.

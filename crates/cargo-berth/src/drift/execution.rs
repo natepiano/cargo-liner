@@ -98,6 +98,16 @@ enum DriftTransactionRejection {
     Selection(DriftSelectionError),
 }
 
+impl From<DriftTransactionRejection> for DriftExecutionError {
+    fn from(rejection: DriftTransactionRejection) -> Self {
+        match rejection {
+            DriftTransactionRejection::CoordinationIdentity(error) => error.into(),
+            DriftTransactionRejection::Replay(error) => Self::Replay(error),
+            DriftTransactionRejection::Selection(error) => Self::Selection(error),
+        }
+    }
+}
+
 struct DriftMutationContext<'observation> {
     request:                              DriftRequest,
     ledger:                               &'observation Ledger,
@@ -651,10 +661,6 @@ fn paths_from_scopes(
 }
 
 /// Classify the observation under the ledger lock, refusing acquisition but not observation.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the shared reconciliation actor adds one field to the existing transaction"
-)]
 fn transact_classification(
     context: &DriftMutationContext<'_>,
 ) -> Result<DriftReport, DriftExecutionError> {
@@ -749,15 +755,7 @@ fn transact_classification(
     );
     match outcome {
         Ok(LedgerCommittedActionOutcome::Appended { output: report, .. }) => Ok(report),
-        Ok(LedgerCommittedActionOutcome::Rejected(
-            DriftTransactionRejection::CoordinationIdentity(error),
-        )) => Err(error.into()),
-        Ok(LedgerCommittedActionOutcome::Rejected(DriftTransactionRejection::Replay(error))) => {
-            Err(DriftExecutionError::Replay(error))
-        },
-        Ok(LedgerCommittedActionOutcome::Rejected(DriftTransactionRejection::Selection(error))) => {
-            Err(DriftExecutionError::Selection(error))
-        },
+        Ok(LedgerCommittedActionOutcome::Rejected(rejection)) => Err(rejection.into()),
         Err(LedgerCommittedActionError::Transaction(error)) => {
             Err(DriftExecutionError::Transaction(error))
         },

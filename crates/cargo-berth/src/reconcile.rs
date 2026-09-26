@@ -155,7 +155,7 @@ pub(crate) struct ReconciliationReport {
     pub(crate) settlements:                   Vec<ReconciledSettlement>,
     /// Present integration branches whose checkout carried a fresh cover extent this pass.
     covered_targets:                          HashSet<IntegrationTarget>,
-    covers_created:                           bool,
+    cover_creation:                           CoverCreation,
     /// Mapping publication returned by the requesting reconciliation transaction.
     pub(crate) session_mapping_publication:   SessionIdentityMappingPublication,
     /// The one complete repository observation shared by edge and board consumers.
@@ -1210,10 +1210,18 @@ struct ReconciliationChanges {
     confirmed_lost_evidence: Vec<ReservationId>,
 }
 
+/// Whether a reconciliation pass created cover reservations; created covers need one more pass
+/// so they are judged in the same reconciliation.
+#[derive(Clone, Copy)]
+enum CoverCreation {
+    NoneCreated,
+    Created,
+}
+
 struct ReconciliationAction {
     active_holders:                Vec<ActiveHolder>,
     cover_marker_publications:     Vec<(WorktreeContext, CoordinationRunId)>,
-    covers_created:                bool,
+    cover_creation:                CoverCreation,
     uncovered_targets:             Vec<(IntegrationTarget, Vec<ReservationId>)>,
     covered_targets:               HashSet<IntegrationTarget>,
     cover_requirements:            HashMap<IntegrationTarget, (WorktreeId, IntegrationTarget)>,
@@ -1487,7 +1495,7 @@ fn reconcile_with_open_ledger(
     request: ReconciliationRequest,
 ) -> Result<ReconciliationReport, ReconcileError> {
     let first = reconcile_with_open_ledger_once(worktree_context, ledger, berth_config, request)?;
-    if first.covers_created {
+    if matches!(first.cover_creation, CoverCreation::Created) {
         reconcile_with_open_ledger_once(worktree_context, ledger, berth_config, request)
     } else {
         Ok(first)
@@ -2444,7 +2452,7 @@ fn build_plan(
         action:       ReconciliationAction {
             active_holders,
             cover_marker_publications: Vec::new(),
-            covers_created: false,
+            cover_creation: CoverCreation::NoneCreated,
             uncovered_targets: Vec::new(),
             covered_targets: HashSet::new(),
             cover_requirements: HashMap::new(),
@@ -2754,7 +2762,7 @@ fn append_cover_for_branch(
             run,
         },
     );
-    plan.action.covers_created = true;
+    plan.action.cover_creation = CoverCreation::Created;
     plan.action.active_holders.push(ActiveHolder {
         worktree_id:         identity.id,
         coordination_run_id: run,
@@ -5112,7 +5120,7 @@ impl ReconciliationAction {
             evidence: self.evidence,
             settlements: self.settlements,
             covered_targets: self.covered_targets,
-            covers_created: self.covers_created,
+            cover_creation: self.cover_creation,
             session_mapping_publication: SessionIdentityMappingPublication::Published,
             repository_snapshot: self.repository_snapshot,
             constraints,

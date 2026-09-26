@@ -144,6 +144,16 @@ pub(crate) enum PhaseStartSelection {
     Protected(ProtectedPhaseStartHead),
 }
 
+impl PhaseStartSelection {
+    /// The protected phase-start commit this selection names, given the observed HEAD.
+    fn protected_head(self, current_head: &GitObjectId) -> ProtectedPhaseStartHead {
+        match self {
+            Self::CurrentHead => ProtectedPhaseStartHead::from(current_head.clone()),
+            Self::Protected(protected_phase_start_head) => protected_phase_start_head,
+        }
+    }
+}
+
 struct ClaimRepositoryFacts {
     head_snapshot: ClaimHeadSnapshot,
     current_head:  GitObjectId,
@@ -537,10 +547,6 @@ enum FirstTouchClaimRejection {
     },
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "target-aware containment adds one configuration read to this claim transaction"
-)]
 fn acquire(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
@@ -565,12 +571,7 @@ fn acquire(
     let scopes = normalized_claim_scopes(declared_scopes, &source, path_case);
     let claim_repository_facts =
         ClaimRepositoryFacts::read(&worktree_context, claim_run_validation)?;
-    let phase_start_head = match phase_start {
-        PhaseStartSelection::CurrentHead => {
-            ProtectedPhaseStartHead::from(claim_repository_facts.current_head.clone())
-        },
-        PhaseStartSelection::Protected(protected_phase_start_head) => protected_phase_start_head,
-    };
+    let phase_start_head = phase_start.protected_head(&claim_repository_facts.current_head);
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {

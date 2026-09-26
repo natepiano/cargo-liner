@@ -749,7 +749,7 @@ fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
         .expect("listed prepared stdin")
         .write_all(format!("{before} {after} refs/heads/integration\n").as_bytes())
         .expect("listed prepared input writes");
-    let _listed = child
+    child
         .wait_with_output()
         .expect("listed prepared hook finishes");
     assert!(

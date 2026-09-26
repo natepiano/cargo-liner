@@ -314,8 +314,15 @@ impl ActingHeadContainment {
             .as_slice()
             .iter()
             .filter(|scope| {
-                committed_path_remains(observed, &scope.path, holder_target == acting)
-                    || key.working_tree.tracked_paths.contains(&scope.path)
+                committed_path_remains(
+                    observed,
+                    &scope.path,
+                    if holder_target == acting {
+                        HolderTargetRelation::SameTarget
+                    } else {
+                        HolderTargetRelation::OtherTarget
+                    },
+                ) || key.working_tree.tracked_paths.contains(&scope.path)
                     || key.working_tree.untracked_paths.contains(&scope.path)
             })
             .cloned()
@@ -372,13 +379,20 @@ const fn holder_target<'target>(
     }
 }
 
+/// Whether a holder's recorded target is the acting reservation's target.
+#[derive(Clone, Copy)]
+enum HolderTargetRelation {
+    SameTarget,
+    OtherTarget,
+}
+
 fn committed_path_remains(
     observed: &HolderHeadRemainder,
     path: &ReservationScopePath,
-    same_target: bool,
+    holder_target_relation: HolderTargetRelation,
 ) -> bool {
     observed.committed_paths.contains(path)
-        && (same_target
+        && (matches!(holder_target_relation, HolderTargetRelation::SameTarget)
             || match &observed.outside_target {
                 CrossTargetRemainder::NotApplicable | CrossTargetRemainder::Unavailable => true,
                 CrossTargetRemainder::Paths(paths) => paths.contains(path),
@@ -395,6 +409,7 @@ mod tests {
     use super::ContainmentTarget;
     use super::CrossTargetRemainder;
     use super::HolderHeadRemainder;
+    use super::HolderTargetRelation;
     use super::automatically_selected_target;
     use super::committed_path_remains;
     use super::holder_target;
@@ -419,13 +434,25 @@ mod tests {
             committed_paths: paths(&["Cargo.toml"])?,
             outside_target:  CrossTargetRemainder::Paths(HashSet::new()),
         };
-        assert!(!committed_path_remains(&cover, &path, false));
-        assert!(committed_path_remains(&cover, &path, true));
+        assert!(!committed_path_remains(
+            &cover,
+            &path,
+            HolderTargetRelation::OtherTarget
+        ));
+        assert!(committed_path_remains(
+            &cover,
+            &path,
+            HolderTargetRelation::SameTarget
+        ));
         let sibling = HolderHeadRemainder {
             outside_target: CrossTargetRemainder::Paths(paths(&["Cargo.toml"])?),
             ..cover
         };
-        assert!(committed_path_remains(&sibling, &path, false));
+        assert!(committed_path_remains(
+            &sibling,
+            &path,
+            HolderTargetRelation::OtherTarget
+        ));
         for remainder in [
             CrossTargetRemainder::NotApplicable,
             CrossTargetRemainder::Unavailable,
@@ -434,7 +461,11 @@ mod tests {
                 outside_target: remainder,
                 ..sibling.clone()
             };
-            assert!(committed_path_remains(&unfiltered, &path, false));
+            assert!(committed_path_remains(
+                &unfiltered,
+                &path,
+                HolderTargetRelation::OtherTarget
+            ));
         }
         Ok(())
     }
@@ -455,12 +486,20 @@ mod tests {
         assert!(!committed_path_remains(
             &holder,
             &path,
-            holder_target == &acting_target
+            if holder_target == &acting_target {
+                HolderTargetRelation::SameTarget
+            } else {
+                HolderTargetRelation::OtherTarget
+            }
         ));
         assert!(committed_path_remains(
             &holder,
             &path,
-            holder_target == &repository_trunk
+            if holder_target == &repository_trunk {
+                HolderTargetRelation::SameTarget
+            } else {
+                HolderTargetRelation::OtherTarget
+            }
         ));
         Ok(())
     }
