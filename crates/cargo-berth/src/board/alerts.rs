@@ -531,12 +531,19 @@ pub(super) fn incursion_sections(
 ) -> (Vec<OutstandingIncursion>, Vec<RecordedIncursionAnswer>) {
     let mut outstanding = Vec::new();
     let mut recorded = Vec::new();
-    let mut outstanding_counts: HashMap<ReservationId, usize> = HashMap::new();
-    for incident in reservations.outstanding_incursion_incidents() {
-        *outstanding_counts
-            .entry(incident.reservation_id())
-            .or_default() += 1;
-    }
+    // `resolve --every-incursion` answers every incident of the reservation's run and
+    // worktree, so the count names that same set.
+    let outstanding_counts: HashMap<ReservationId, usize> = reservations
+        .outstanding_incursion_incidents()
+        .filter_map(|incident| {
+            let straying = reservations.reservation(incident.reservation_id()).ok()?;
+            let count = reservations
+                .incursion_incidents_of_coordination_identity(straying)
+                .filter(|shared| matches!(shared.status(), IncursionIncidentStatus::Outstanding))
+                .count();
+            Some((incident.reservation_id(), count))
+        })
+        .collect();
     for incident in reservations.incursion_incidents() {
         match incident.status() {
             IncursionIncidentStatus::Outstanding => outstanding.push(OutstandingIncursion {

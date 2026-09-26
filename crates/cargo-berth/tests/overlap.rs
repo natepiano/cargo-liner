@@ -622,6 +622,47 @@ fn session_mapped_reservation_survives_first_touch_and_receives_widen() {
     );
 }
 
+/// An edit a same-run, same-worktree sibling already declares is covered, so first touch
+/// widens no reservation onto it.
+///
+/// A session mapped to its newest claim edited a path inside an older sibling's scope, and
+/// first touch widened the newest claim onto it, so two siblings declared the same path.
+#[test]
+fn first_touch_does_not_widen_onto_a_path_a_sibling_declares() {
+    let repository = initialized_repository();
+    let session_id = "sibling-declared-session";
+    let reservations = claim_overlapping_reservations(repository.path(), session_id);
+    reconcile_fixture(repository.path());
+    let events_before = journal_events(repository.path());
+
+    let covered = run_berth_with_session(
+        repository.path(),
+        &["check", "file:shared/other.rs", "--json"],
+        session_id,
+    );
+    let envelope = json_output(&covered);
+    let acquisition = &envelope["payload"]["data"]["acquisition"];
+
+    assert!(covered.status.success());
+    assert_eq!(envelope["status"], "clear");
+    assert_eq!(
+        acquisition["kind"], "already_held",
+        "the older sibling already declares the path: {acquisition}"
+    );
+    assert_eq!(acquisition["reservation_id"], reservations.newer);
+    assert_eq!(
+        journal_events(repository.path()),
+        events_before,
+        "no reservation widens onto a path its run already declares"
+    );
+    assert_session_mapping(
+        repository.path(),
+        session_id,
+        FIRST_RUN,
+        &reservations.newer,
+    );
+}
+
 #[test]
 fn missing_mapping_with_two_eligible_reservations_reports_ambiguity_without_mutation() {
     let repository = initialized_repository();

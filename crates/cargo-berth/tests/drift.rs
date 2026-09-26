@@ -641,16 +641,7 @@ fn incursion_incident_round_trip_deduplicates_and_resolves() {
         incident_id
     );
 
-    let resolved = run_berth(
-        incursion_repository.path(),
-        &[
-            "resolve",
-            &subject_id,
-            "--incursion",
-            &incident_id,
-            "--json",
-        ],
-    );
+    let resolved = resolve_incursion(incursion_repository.path(), &subject_id, &incident_id);
     assert!(resolved.status.success());
     let resolved_envelope = json_output(&resolved);
     assert_eq!(resolved_envelope["status"], "incursion_resolved");
@@ -698,16 +689,7 @@ fn incursion_resolution_requires_current_enrollment() {
     fs::remove_file(repository.path().join(CONFIGURATION_PATH))
         .expect("configuration should remove");
 
-    let rejected = run_berth(
-        repository.path(),
-        &[
-            "resolve",
-            &subject_id,
-            "--incursion",
-            &incident_id,
-            "--json",
-        ],
-    );
+    let rejected = resolve_incursion(repository.path(), &subject_id, &incident_id);
 
     assert_eq!(rejected.status.code(), Some(4));
     assert_eq!(json_output(&rejected)["status"], "unconfigured");
@@ -727,9 +709,11 @@ fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcome
     let subject_root = add_worktree(repository.path(), worktrees.path(), "resolve-subject");
     let foreign_root = add_worktree(repository.path(), worktrees.path(), "resolve-foreign");
     let subject_id = claim(&subject_root, "file:owned.txt", FIRST_RUN);
-    let wrong_subject_id = claim(&subject_root, "file:not-the-incident-owner.txt", FIRST_RUN);
+    let sibling_id = claim(&subject_root, "file:sibling.txt", FIRST_RUN);
     dirty_source(&foreign_root, "shared/entered.txt");
     let _foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
+    // Another run in another worktree is a different party, so the incident is not its own.
+    let wrong_subject_id = claim(&foreign_root, "file:not-the-incident-owner.txt", SECOND_RUN);
     fs::create_dir_all(subject_root.join("shared")).expect("shared directory should exist");
     fs::write(subject_root.join("shared/entered.txt"), "incursion\n")
         .expect("incursion path should write");
@@ -742,16 +726,7 @@ fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcome
         .and_then(|event| event["incident_id"].as_str().map(str::to_owned))
         .expect("drift should append an incident");
 
-    let first = run_berth(
-        &subject_root,
-        &[
-            "resolve",
-            &subject_id,
-            "--incursion",
-            &incident_id,
-            "--json",
-        ],
-    );
+    let first = resolve_incursion(&subject_root, &subject_id, &incident_id);
     assert_successful_incursion_resolution(&first, &subject_id, &incident_id, "recorded_now");
 
     let resolution_event = journal_events(repository.path())
@@ -760,16 +735,7 @@ fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcome
         .expect("the first resolve should append its decision");
     assert_eq!(resolution_event["actor"]["run"], FIRST_RUN);
 
-    let same_actor_repeat = run_berth(
-        &subject_root,
-        &[
-            "resolve",
-            &subject_id,
-            "--incursion",
-            &incident_id,
-            "--json",
-        ],
-    );
+    let same_actor_repeat = resolve_incursion(&subject_root, &subject_id, &incident_id);
     assert_successful_incursion_resolution(
         &same_actor_repeat,
         &subject_id,
@@ -777,16 +743,17 @@ fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcome
         "already_recorded_by_same_coordination_actor",
     );
 
-    let same_actor_wrong_reservation = run_berth(
-        &subject_root,
-        &[
-            "resolve",
-            &wrong_subject_id,
-            "--incursion",
-            &incident_id,
-            "--json",
-        ],
+    // A sibling of the same run and worktree shares the incident, so it answers it too.
+    let sibling_repeat = resolve_incursion(&subject_root, &sibling_id, &incident_id);
+    assert_successful_incursion_resolution(
+        &sibling_repeat,
+        &sibling_id,
+        &incident_id,
+        "already_recorded_by_same_coordination_actor",
     );
+
+    let same_actor_wrong_reservation =
+        resolve_incursion(&subject_root, &wrong_subject_id, &incident_id);
     assert_eq!(same_actor_wrong_reservation.status.code(), Some(5));
     let mismatch_envelope = json_output(&same_actor_wrong_reservation);
     assert_eq!(mismatch_envelope["status"], "invalid_input");
@@ -798,16 +765,7 @@ fn linked_worktree_resolve_reports_recorded_same_actor_and_foreign_actor_outcome
         )
     );
 
-    let foreign_actor_repeat = run_berth(
-        &foreign_root,
-        &[
-            "resolve",
-            &subject_id,
-            "--incursion",
-            &incident_id,
-            "--json",
-        ],
-    );
+    let foreign_actor_repeat = resolve_incursion(&foreign_root, &subject_id, &incident_id);
     assert_foreign_incursion_resolution_rejection(
         &foreign_actor_repeat,
         &subject_id,
@@ -1012,15 +970,10 @@ fn resolve_rejects_an_unknown_incursion_incident() {
     let repository = initialized_repository();
     let reservation_id = claim(repository.path(), "file:owned.txt", FIRST_RUN);
 
-    let rejected = run_berth(
+    let rejected = resolve_incursion(
         repository.path(),
-        &[
-            "resolve",
-            &reservation_id,
-            "--incursion",
-            "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d",
-            "--json",
-        ],
+        &reservation_id,
+        "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d",
     );
 
     assert_eq!(rejected.status.code(), Some(5));
@@ -1121,6 +1074,72 @@ fn post_commit_uses_same_run_and_worktree_reservations_as_coverage() {
         "\"op\":\"incursion\",\"reservation_id\":\"{second_id}\""
     )));
     assert!(journal.contains(&first_id));
+}
+
+/// An answer recorded for one reservation answers its same-run, same-worktree siblings.
+///
+/// A lane answered an incursion on its first reservation, then claimed more reservations
+/// under the same run in the same worktree while the entered file was still dirty. The next
+/// commit's drift charged the same entered file to every new sibling as a fresh incursion,
+/// though none of them had edited it and the overlap was already answered.
+#[test]
+fn an_answered_incursion_covers_a_sibling_claimed_after_the_answer() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let foreign_root = add_worktree(repository.path(), worktrees.path(), "answered-foreign");
+    dirty_source(&foreign_root, "shared/entered.txt");
+    let foreign_id = claim(&foreign_root, "tree:shared", SECOND_RUN);
+    let first_id = claim(repository.path(), "file:first.txt", FIRST_RUN);
+    dirty_source(repository.path(), "shared/entered.txt");
+
+    let entered = drift(repository.path(), &["--full", "--reservation", &first_id]);
+    assert_eq!(
+        json_output(&entered)["status"],
+        "incursion",
+        "the entered file should raise an incursion: {}",
+        String::from_utf8_lossy(&entered.stdout)
+    );
+    let incursion_event = journal_events(repository.path())
+        .into_iter()
+        .find(|event| event["op"] == "incursion")
+        .expect("drift should append an incursion");
+    assert_eq!(incursion_event["reservation_id"], first_id);
+    assert_eq!(
+        incursion_event["blocked_paths"][0]["holders"],
+        serde_json::json!([foreign_id])
+    );
+    let incident_id = incursion_event["incident_id"]
+        .as_str()
+        .expect("incursion should carry an incident id")
+        .to_owned();
+    let resolved = resolve_incursion(repository.path(), &first_id, &incident_id);
+    assert_successful_incursion_resolution(&resolved, &first_id, &incident_id, "recorded_now");
+
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    fs::write(repository.path().join("first.txt"), "first reservation\n")
+        .expect("first reservation path should write");
+    fs::write(repository.path().join("second.txt"), "second reservation\n")
+        .expect("second reservation path should write");
+    git(repository.path(), &["add", "first.txt", "second.txt"]);
+    let committed = git_output(repository.path(), &["commit", "-m", "both reservations"]);
+
+    assert!(committed.status.success());
+    let warning = String::from_utf8_lossy(&committed.stderr);
+    assert!(
+        !warning.to_lowercase().contains("incursion"),
+        "the answered overlap must not warn again: {warning}"
+    );
+    let incursions = journal_events(repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "incursion")
+        .collect::<Vec<_>>();
+    assert!(
+        !incursions
+            .iter()
+            .any(|event| event["reservation_id"] == second_id),
+        "the sibling shares the first reservation's answer: {incursions:?}"
+    );
+    assert_eq!(incursions.len(), 1, "only the answered incident stands");
 }
 
 #[test]
@@ -2568,15 +2587,21 @@ fn markerless_post_commit_reports_every_incursion_without_ambiguous_widens() {
         .iter()
         .filter(|event| event["op"] == "incursion")
         .collect::<Vec<_>>();
-    assert_eq!(incursion_events.len(), 2);
-    assert!(incursion_events.iter().any(|event| {
-        event["reservation_id"] == first_id
-            && event["blocked_paths"][0]["holders"] == serde_json::json!([foreign_id])
-    }));
-    assert!(incursion_events.iter().any(|event| {
-        event["reservation_id"] == second_id
-            && event["blocked_paths"][0]["holders"] == serde_json::json!([foreign_id])
-    }));
+    // Both reservations belong to one run in one worktree, so the entered path is one
+    // incursion: the earliest claim carries the incident and the sibling reports it too.
+    // The commit's markerless first touch claims under a run of its own, and its phase
+    // range holds the same entered path; the outstanding incident already answers for it.
+    let first_touch = journal_events
+        .iter()
+        .find(|event| event["op"] == "claim" && event["source"]["kind"] == "first_touch")
+        .expect("the markerless commit should claim on first touch");
+    assert_ne!(first_touch["actor"]["run"], FIRST_RUN);
+    assert_eq!(incursion_events.len(), 1);
+    assert_eq!(incursion_events[0]["reservation_id"], first_id);
+    assert_eq!(
+        incursion_events[0]["blocked_paths"][0]["holders"],
+        serde_json::json!([foreign_id])
+    );
     assert!(!journal_events.iter().any(|event| event["op"] == "widen"));
 }
 
@@ -4493,6 +4518,19 @@ fn drift(repository_root: &Path, arguments: &[&str]) -> Output {
     command_arguments.extend_from_slice(arguments);
     command_arguments.push("--json");
     run_berth(repository_root, &command_arguments)
+}
+
+fn resolve_incursion(repository_root: &Path, reservation_id: &str, incident_id: &str) -> Output {
+    run_berth(
+        repository_root,
+        &[
+            "resolve",
+            reservation_id,
+            "--incursion",
+            incident_id,
+            "--json",
+        ],
+    )
 }
 
 fn post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {

@@ -312,7 +312,7 @@ pub(crate) enum FirstTouchReservationAcquisitionKind {
     Appended,
     /// The transaction enlarged the acting run's existing first-touch reservation.
     Widened,
-    /// The existing first-touch reservation already covered every claimable path.
+    /// The acting run's reservations in this worktree already covered every claimable path.
     AlreadyHeld,
 }
 
@@ -1246,18 +1246,22 @@ fn reuse_first_touch_reservation(
             ));
         },
     };
-    let protected_scopes =
-        match partition_first_touch_protected_scopes(&protected_scopes, reservation, path_case) {
-            FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) => {
-                return already_held_first_touch(
-                    reservation,
-                    repository_trunk,
-                    protected_scopes,
-                    conflicts,
-                );
-            },
-            FirstTouchProtectedScopeOwnership::Residual(residual) => residual,
-        };
+    let protected_scopes = match partition_first_touch_protected_scopes(
+        reservations,
+        &protected_scopes,
+        reservation,
+        path_case,
+    ) {
+        FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) => {
+            return already_held_first_touch(
+                reservation,
+                repository_trunk,
+                protected_scopes,
+                conflicts,
+            );
+        },
+        FirstTouchProtectedScopeOwnership::Residual(residual) => residual,
+    };
     widen_first_touch_reservation(
         reservations,
         repository_trunk,
@@ -1330,20 +1334,39 @@ fn widen_first_touch_reservation(
     FirstTouchReservationReuse::Complete(validation)
 }
 
+/// Split the protected scopes into those the acting run already declares and the rest.
+///
+/// Every active reservation of the selected reservation's run in its worktree counts, not
+/// only the selected one. Drift already treats those siblings as one party, so an edit
+/// inside any of their scopes is covered; checking the selected reservation alone widened
+/// it onto a path a sibling declared, and two siblings then declared the same path.
 fn partition_first_touch_protected_scopes<'reservation>(
+    reservations: &RetainedReservationSet,
     protected_scopes: &ReservationScopeSet,
     reservation: &'reservation Reservation,
     path_case: PathCase,
 ) -> FirstTouchProtectedScopeOwnership<'reservation> {
+    let (worktree_id, coordination_run_id) =
+        (reservation.actor().worktree, reservation.actor().run);
     let residual = protected_scopes
         .as_slice()
         .iter()
         .filter(|candidate| {
-            !reservation
-                .scopes()
-                .as_slice()
+            !reservations
                 .iter()
-                .any(|held| held.contains(candidate, path_case))
+                .filter(|sibling| {
+                    sibling.is_active_for_coordination_run_and_worktree(
+                        coordination_run_id,
+                        worktree_id,
+                    )
+                })
+                .any(|sibling| {
+                    sibling
+                        .scopes()
+                        .as_slice()
+                        .iter()
+                        .any(|held| held.contains(candidate, path_case))
+                })
         })
         .cloned()
         .collect::<Vec<_>>();

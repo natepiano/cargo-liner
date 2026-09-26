@@ -688,7 +688,9 @@ append another journal event.
 
 `every_incursion_resolved` is the successful payload
 for `resolve --every-incursion` and carries `reservation_id` plus
-`incident_ids`.
+`incident_ids`: every outstanding incident charged to a reservation of
+`reservation_id`'s run in its worktree. A one-incident `resolve` likewise
+accepts any reservation of the incident's run in its worktree.
 
 ## The journal record
 

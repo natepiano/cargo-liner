@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An incursion recorded against one reservation now covers every reservation of
+  its run in its worktree: post-commit drift no longer charges an answered or
+  standing overlap again to each sibling the run claims later, `resolve` accepts
+  any of those reservations, and the board's `outstanding_count` counts across them.
+- A first-touch `check` no longer widens its selected reservation onto a path a
+  sibling reservation of the same run and worktree already declares; it reports
+  `already_held`.
 - A lane merged into trunk ends its run even when its checkout holds an
   uncommitted edit to a tracked `.claude/config/berth.toml`. Uncommitted
   configuration changes no longer count as lane work in merge-extent or

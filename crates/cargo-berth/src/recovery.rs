@@ -218,7 +218,10 @@ fn execute_incursion_resolution(
     }
 }
 
-/// Answer every incident outstanding for one reservation in a single disposition.
+/// Answer every incident outstanding for one reservation's run and worktree in one disposition.
+///
+/// An incident recorded against any reservation of that run in that worktree covers the
+/// entered path for all of them, so each of them answers it.
 fn execute_every_incursion_resolution(
     reservation_id: ReservationId,
 ) -> Result<ResolvePayload, RecoveryError> {
@@ -237,10 +240,17 @@ fn execute_every_incursion_resolution(
                 },
             };
             let incident_ids = reservations
-                .outstanding_incursion_incidents()
-                .filter(|incident| incident.reservation_id() == reservation_id)
-                .map(IncursionIncident::id)
-                .collect::<Vec<_>>();
+                .reservation(reservation_id)
+                .map(|reservation| {
+                    reservations
+                        .incursion_incidents_of_coordination_identity(reservation)
+                        .filter(|incident| {
+                            matches!(incident.status(), IncursionIncidentStatus::Outstanding)
+                        })
+                        .map(IncursionIncident::id)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             if incident_ids.is_empty() {
                 return ReconciliationValidation::Reject(
                     RecoveryRejection::NoOutstandingIncursion(reservation_id),
@@ -311,7 +321,12 @@ fn execute_one_incursion_resolution(
                     );
                 },
             };
-            if incident.reservation_id() != reservation_id {
+            // A sibling of the same run and worktree shares the incident, as drift reports it.
+            if !reservations.reservation(reservation_id).is_ok_and(|reservation| {
+                reservations
+                    .incursion_incidents_of_coordination_identity(reservation)
+                    .any(|shared| shared.id() == incident_id)
+            }) {
                 return TransactionValidation::Reject(
                     IncursionResolutionNotAppended::Rejected(
                         RecoveryRejection::IncursionReservationMismatch {

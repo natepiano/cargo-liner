@@ -280,7 +280,7 @@ impl DriftEffectBuilder {
         for blocked_paths in
             group_blocked_paths_by_holders(pair_incursions_with_holders(self.incursions))
         {
-            let reportable = match reservations.observe_incursion(reservation_id, &blocked_paths) {
+            let reportable = match reservations.observe_incursion(reservation, &blocked_paths) {
                 IncursionObservation::AlreadyAnswered => None,
                 IncursionObservation::AlreadyOutstanding {
                     incident_id,
@@ -348,6 +348,12 @@ pub(super) fn classify_locked(
     let mut results = Vec::new();
     let mut unattributed_paths = Vec::new();
     let mut widening_attempt = WideningAttempt::NotNeeded;
+    // An incident this pass writes for an earlier reservation must cover the reservations
+    // reported after it, as a recorded one would: its same-run, same-worktree siblings, and
+    // a first-touch or cover reservation of another run. The ledger cannot hold it until the
+    // pass appends. Reporting runs in reservation id order, so the earliest claim carries
+    // the charge.
+    let mut observed = reservations.clone();
     for reservation_id in subjects.reporting.as_slice() {
         if let ReservationPhaseHistory::PhaseStartObjectUnknown(phase_start) =
             changes.reservation_phase_history(*reservation_id)
@@ -399,10 +405,10 @@ pub(super) fn classify_locked(
                         || matches!(
                             reservation.source(),
                             ClaimSource::FirstTouch | ClaimSource::Cover { .. }
-                        ) && outstanding_incursion_covers(
-                            reservations,
+                        ) && another_run_stands_accused(
+                            &observed,
                             subjects.reporting.as_slice(),
-                            *reservation_id,
+                            reservation,
                             path,
                             &blockers,
                         )
@@ -419,7 +425,8 @@ pub(super) fn classify_locked(
             }
         });
         let (mut subject_operations, result, subject_widening_attempt) =
-            builder.finish(reservations, reservation, path_case);
+            builder.finish(&observed, reservation, path_case);
+        observed = observed.with_pending_incursions(&subject_operations)?;
         if matches!(subject_widening_attempt, WideningAttempt::Attributed) {
             widening_attempt = WideningAttempt::Attributed;
         }
@@ -568,18 +575,31 @@ fn attribute_paths(
     }
 }
 
-fn outstanding_incursion_covers(
+/// Whether another run's reservation reported in this pass already stands accused of
+/// entering `path` against every one of `blockers`.
+///
+/// Post-commit drift reports every active reservation in the worktree, whatever its run.
+/// A first touch by an unidentified editor claims under a run of its own, and a cover is
+/// made by reconciliation rather than by an edit, so either can hold in its phase range a
+/// path that another run's reservation in the same worktree already answers for. Charging
+/// it again would open a second incident for the one entered path. Incidents of the
+/// subject's own run and worktree are left to
+/// [`RetainedReservationSet::observe_incursion`], which reports under them.
+fn another_run_stands_accused(
     reservations: &RetainedReservationSet,
     reporting: &[ReservationId],
-    current_reservation_id: ReservationId,
+    subject: &Reservation,
     path: &ReservationScopePath,
     blockers: &[ReservationId],
 ) -> bool {
+    let (worktree, run) = (subject.actor().worktree, subject.actor().run);
     reservations
         .outstanding_incursion_incidents()
         .any(|incident| {
-            incident.reservation_id() != current_reservation_id
-                && reporting.contains(&incident.reservation_id())
+            reporting.contains(&incident.reservation_id())
+                && reservations
+                    .reservation(incident.reservation_id())
+                    .is_ok_and(|charged| !charged.actor().has_coordination_identity(worktree, run))
                 && incident
                     .blocked_paths()
                     .holders_of(path)

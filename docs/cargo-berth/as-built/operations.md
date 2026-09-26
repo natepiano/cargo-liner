@@ -257,8 +257,9 @@ cannot prove:
 - `--abandon --why <text>` is the only deliberate abandonment route.
 - `--retire-orphan --why <text>` is the only confirmed orphan-retirement route,
   and its disposition stays distinct from abandonment after replay.
-- `--incursion <incident-id>` answers the named outstanding incursion for the
-  positional reservation.
+- `--incursion <incident-id>` answers the named outstanding incursion. The
+  positional reservation may be any reservation of the incident's run in its
+  worktree, since drift reports the incident under each of them.
 
 `renew <reservation-id>` refreshes freshness without changing scopes, ordering
 edges, or lifecycle.

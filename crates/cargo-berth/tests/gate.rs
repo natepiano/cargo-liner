@@ -1691,9 +1691,10 @@ fn session_mapping_selects_its_reservation_while_marker_only_check_is_ambiguous(
 
     assert!(session_check.status.success());
     assert_eq!(session_envelope["status"], "clear");
+    // The sibling already declares the path, so the mapped reservation is not widened onto it.
     assert_eq!(
         session_envelope["payload"]["data"]["acquisition"]["kind"],
-        "widened"
+        "already_held"
     );
     assert_eq!(
         session_envelope["payload"]["data"]["acquisition"]["reservation_id"],
