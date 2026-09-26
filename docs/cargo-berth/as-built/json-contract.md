@@ -718,12 +718,24 @@ SHA-256 hex strings. A `scope` is `{ "path": <repository-relative string>,
     "status": "utf8",
     "path": "/Users/example/rust/cargo-tile-favorites"
   },
-  "cargo_berth_session_id": { "status": "utf8", "value": "session-4134" },
+  "cargo_berth_session_id": { "status": "unset" },
+  "claude_code_session_id": {
+    "status": "utf8",
+    "value": "5f0c2a8e-1d4b-4f7a-9c3e-8b6d2e1a4f90"
+  },
   "cargo_berth_run": { "status": "unset" },
   "git_dir": { "status": "utf8", "value": ".git/worktrees/favorites" },
   "git_common_dir": { "status": "utf8", "value": ".git" }
 }
 ```
+
+The environment fields record `CARGO_BERTH_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ID`, `CARGO_BERTH_RUN`, `GIT_DIR`, and `GIT_COMMON_DIR`.
+Either session variable can name the harness session: `CARGO_BERTH_SESSION_ID`
+when set, otherwise `CLAUDE_CODE_SESSION_ID` for any command other than
+`cargo-berth hook` and the managed git hooks. A `recorded` set may omit
+`claude_code_session_id`, meaning that input was not captured for the record;
+every other member is required, and every new mutation writes all six inputs.
 
 Each environment field is `unset`, `utf8` with its exact raw `value`,
 `too_long` with `observed_bytes`, or `non_utf8`. `invocation_directory` is
@@ -899,4 +911,5 @@ These operation fields use the following tagged values:
 An unknown `schema_version` or `op`, an omitted field required for that record,
 an empty field whose type is documented as non-empty, or an invalid tagged
 alternative makes the journal unreadable. `identity_inputs` is the one envelope
-field a record may omit; replay never skips an operation it cannot decode.
+field a record may omit, and `claude_code_session_id` the one member of a
+`recorded` set it may omit; replay never skips an operation it cannot decode.

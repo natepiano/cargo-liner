@@ -973,6 +973,7 @@ fn recorded_linked_worktree_resolve_incident_uses_the_invoking_actor() {
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
     );
 }
 
@@ -1005,6 +1006,49 @@ fn main_checkout_claim_records_the_invoking_actor_with_unset_environment() {
         &claim_event,
         repository.path(),
         &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
+    );
+}
+
+/// A session taken from `CLAUDE_CODE_SESSION_ID` is explained by the record's own inputs.
+#[test]
+fn claude_code_session_claim_records_the_claude_code_session_input() {
+    let repository = initialized_repository();
+    write_identity_markers(
+        &repository.path().join(".git"),
+        MAIN_WORKTREE_ID,
+        MAIN_COORDINATION_RUN_ID,
+    );
+
+    let claimed = run_berth_with_claude_code_session(
+        repository.path(),
+        &[
+            "claim",
+            "file:claude-code-owned.rs",
+            "--run",
+            MAIN_COORDINATION_RUN_ID,
+            "--why",
+            "Claude Code session identity fixture",
+            "--json",
+        ],
+        "claude-code-session",
+    );
+    assert!(
+        claimed.status.success(),
+        "claim failed: {}",
+        String::from_utf8_lossy(&claimed.stdout)
+    );
+    let claim_event = last_journal_operation(repository.path(), "claim");
+
+    assert_journalled_actor(&claim_event, MAIN_WORKTREE_ID, MAIN_COORDINATION_RUN_ID);
+    assert_recorded_identity_inputs(
+        &claim_event,
+        repository.path(),
+        &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "utf8", "value": "claude-code-session"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
@@ -1081,6 +1125,7 @@ fn relative_git_environment_does_not_replace_invocation_filesystem_identity() {
         repository.path(),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "utf8", "value": ".git"}),
         &serde_json::json!({"status": "utf8", "value": ".git"}),
     );
@@ -1112,6 +1157,7 @@ fn separate_git_directory_claim_records_the_invoking_actor() {
         &claim_event,
         &worktree_root,
         &serde_json::json!({"status": "utf8", "value": "separate-git-directory"}),
+        &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
@@ -1184,6 +1230,7 @@ fn submodule_claim_records_the_submodule_actor() {
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
+        &serde_json::json!({"status": "unset"}),
     );
 }
 
@@ -1243,6 +1290,7 @@ fn integrated_as_replacement_uses_invoking_worktree_actor() {
         &replacement_event,
         &linked_root,
         &serde_json::json!({"status": "utf8", "value": "replacement-operator"}),
+        &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
         &serde_json::json!({"status": "unset"}),
@@ -1640,6 +1688,7 @@ fn assert_recorded_identity_inputs(
     event: &serde_json::Value,
     invocation_directory: &Path,
     cargo_berth_session_id: &serde_json::Value,
+    claude_code_session_id: &serde_json::Value,
     cargo_berth_run: &serde_json::Value,
     git_dir: &serde_json::Value,
     git_common_dir: &serde_json::Value,
@@ -1657,6 +1706,10 @@ fn assert_recorded_identity_inputs(
     assert_eq!(
         &event["identity_inputs"]["cargo_berth_session_id"],
         cargo_berth_session_id
+    );
+    assert_eq!(
+        &event["identity_inputs"]["claude_code_session_id"],
+        claude_code_session_id
     );
     assert_eq!(
         &event["identity_inputs"]["cargo_berth_run"],
@@ -1697,6 +1750,24 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
         .env(SESSION_ENVIRONMENT, session_id)
+        .env_remove(GIT_DIRECTORY_ENVIRONMENT)
+        .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
+        .output()
+        .expect("cargo-berth should run")
+}
+
+/// Run under only `CLAUDE_CODE_SESSION_ID`, as a Claude Code session's own command does.
+fn run_berth_with_claude_code_session(
+    repository_root: &Path,
+    arguments: &[&str],
+    session_id: &str,
+) -> Output {
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, session_id)
         .env_remove(GIT_DIRECTORY_ENVIRONMENT)
         .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
         .output()

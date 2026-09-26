@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use super::constants::COORDINATION_RUN_ENVIRONMENT;
 use super::constants::CURRENT_SCHEMA_VERSION;
 use super::constants::DELETE_CONTROL_BYTE;
@@ -155,6 +156,12 @@ enum JournalMutationIdentityInputs {
         invocation_directory:   InvocationDirectoryAtMutation,
         /// The bounded `CARGO_BERTH_SESSION_ID` process environment record.
         cargo_berth_session_id: EnvironmentValueAtMutation,
+        /// The bounded `CLAUDE_CODE_SESSION_ID` process environment record.
+        #[serde(
+            default,
+            skip_serializing_if = "ClaudeCodeSessionAtMutation::was_unrecorded"
+        )]
+        claude_code_session_id: ClaudeCodeSessionAtMutation,
         /// The bounded `CARGO_BERTH_RUN` process environment record.
         cargo_berth_run:        EnvironmentValueAtMutation,
         /// The bounded `GIT_DIR` process environment record.
@@ -169,6 +176,7 @@ impl JournalMutationIdentityInputs {
         Self::Recorded {
             invocation_directory:   InvocationDirectoryAtMutation::record(),
             cargo_berth_session_id: EnvironmentValueAtMutation::record(HARNESS_SESSION_ENVIRONMENT),
+            claude_code_session_id: ClaudeCodeSessionAtMutation::record(),
             cargo_berth_run:        EnvironmentValueAtMutation::record(
                 COORDINATION_RUN_ENVIRONMENT,
             ),
@@ -255,6 +263,36 @@ impl From<String> for EnvironmentValueAtMutation {
             Self::Utf8 { value }
         }
     }
+}
+
+/// The `CLAUDE_CODE_SESSION_ID` input of a recorded identity, absent from sets recorded before it.
+///
+/// A present value decodes through `From` as its [`EnvironmentValueAtMutation`], so a malformed
+/// one reports that type's error. `untagged` governs only encoding: a recorded value is written
+/// as that same tagged object, and the field omits an unrecorded one.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "EnvironmentValueAtMutation", untagged)]
+enum ClaudeCodeSessionAtMutation {
+    /// The identity inputs were recorded before this variable was captured.
+    #[default]
+    #[serde(skip_serializing)]
+    Unrecorded,
+    /// The variable's state when the journal mutation was appended.
+    Recorded(EnvironmentValueAtMutation),
+}
+
+impl ClaudeCodeSessionAtMutation {
+    fn record() -> Self {
+        Self::Recorded(EnvironmentValueAtMutation::record(
+            CLAUDE_CODE_SESSION_ENVIRONMENT,
+        ))
+    }
+
+    const fn was_unrecorded(&self) -> bool { matches!(self, Self::Unrecorded) }
+}
+
+impl From<EnvironmentValueAtMutation> for ClaudeCodeSessionAtMutation {
+    fn from(value: EnvironmentValueAtMutation) -> Self { Self::Recorded(value) }
 }
 
 fn recorded_json_string_contents_bytes(value: &str) -> usize {
@@ -2043,19 +2081,24 @@ mod tests {
     use super::ClaimHeadCommit;
     use super::ClaimHeadSnapshot;
     use super::ClaimSource;
+    use super::ClaudeCodeSessionAtMutation;
     use super::CollisionPathSet;
     use super::CoordinationIdentityProvenance;
+    use super::EnvironmentValueAtMutation;
     use super::ExplicitWidenReason;
     use super::ForeignReservationIdSet;
     use super::FullRefName;
     use super::IncursionPathSet;
     use super::InvalidBypassedMergeIdentity;
+    use super::InvocationDirectoryAtMutation;
     use super::Journal;
     use super::JournalActor;
     use super::JournalError;
     use super::JournalEvent;
     use super::JournalMutationIdentityInputs;
     use super::JournalOperation;
+    use super::MAXIMUM_JOURNAL_RECORD_BYTES;
+    use super::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
     use super::NonEmptyReservationPurpose;
     use super::OrderingDirection;
     use super::ProjectionGeneration;
@@ -2297,7 +2340,10 @@ mod tests {
         let temporary_directory = tempdir().expect("temporary directory should exist");
         let journal_path = temporary_directory.path().join("journal.ndjson");
         let (journal, _) = Journal::open_or_create(&journal_path).expect("journal should open");
-        let journal_event = fully_populated_claim_event();
+        let journal_event = JournalEvent {
+            identity_inputs: largest_recorded_identity_inputs(),
+            ..fully_populated_claim_event()
+        };
         assert!(matches!(
             &journal_event.operation,
             JournalOperation::Claim { .. }
@@ -2311,6 +2357,13 @@ mod tests {
             .append(&journal_event)
             .expect("fully populated claim should append");
 
+        let record_bytes = fs::read(&journal_path)
+            .expect("appended journal should read")
+            .len();
+        assert!(
+            record_bytes <= MAXIMUM_JOURNAL_RECORD_BYTES,
+            "{record_bytes} record bytes exceed {MAXIMUM_JOURNAL_RECORD_BYTES}"
+        );
         assert_eq!(
             journal
                 .replay_repairing_tail()
@@ -2381,6 +2434,87 @@ mod tests {
                 },
                 "coordination_identity_provenance": "presented",
             })
+        );
+    }
+
+    #[test]
+    fn identity_inputs_recorded_before_the_claude_code_session_decode_as_unrecorded()
+    -> Result<(), serde_json::Error> {
+        let recorded_before_capture = serde_json::json!({
+            "status": "recorded",
+            "invocation_directory": {
+                "status": "utf8",
+                "path": "/Users/example/rust/cargo-berth-init",
+            },
+            "cargo_berth_session_id": {"status": "utf8", "value": "session-4134"},
+            "cargo_berth_run": {"status": "unset"},
+            "git_dir": {"status": "unset"},
+            "git_common_dir": {"status": "unset"},
+        });
+
+        let decoded = serde_json::from_value::<JournalMutationIdentityInputs>(
+            recorded_before_capture.clone(),
+        )?;
+
+        assert!(matches!(
+            decoded,
+            JournalMutationIdentityInputs::Recorded {
+                claude_code_session_id: ClaudeCodeSessionAtMutation::Unrecorded,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&decoded)?, recorded_before_capture);
+        Ok(())
+    }
+
+    #[test]
+    fn a_recorded_claude_code_session_is_written_as_its_environment_state()
+    -> Result<(), serde_json::Error> {
+        for state in [
+            EnvironmentValueAtMutation::Unset,
+            EnvironmentValueAtMutation::Utf8 {
+                value: "claude-code-session".to_owned(),
+            },
+            EnvironmentValueAtMutation::TooLong {
+                observed_bytes: 32 * 1_024,
+            },
+            EnvironmentValueAtMutation::NonUtf8,
+        ] {
+            let inputs = JournalMutationIdentityInputs::Recorded {
+                invocation_directory:   InvocationDirectoryAtMutation::Utf8 {
+                    path: "/Users/example/rust/cargo-berth-init".to_owned(),
+                },
+                cargo_berth_session_id: EnvironmentValueAtMutation::Unset,
+                claude_code_session_id: ClaudeCodeSessionAtMutation::Recorded(state.clone()),
+                cargo_berth_run:        EnvironmentValueAtMutation::Unset,
+                git_dir:                EnvironmentValueAtMutation::Unset,
+                git_common_dir:         EnvironmentValueAtMutation::Unset,
+            };
+
+            let encoded = serde_json::to_value(&inputs)?;
+
+            assert_eq!(
+                encoded["claude_code_session_id"],
+                serde_json::to_value(&state)?
+            );
+            assert_eq!(
+                serde_json::from_value::<JournalMutationIdentityInputs>(encoded)?,
+                inputs
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_claude_code_session_reports_the_environment_state_error() {
+        let error = serde_json::from_value::<ClaudeCodeSessionAtMutation>(
+            serde_json::json!({"status": "future_state"}),
+        )
+        .expect_err("an unknown environment state should not decode");
+
+        assert!(
+            error.to_string().contains("unknown variant `future_state`"),
+            "{error}"
         );
     }
 
@@ -2542,6 +2676,38 @@ mod tests {
             repository: RepoInstanceId::new(),
             worktree:   WorktreeId::new(),
             run:        CoordinationRunId::new(),
+        }
+    }
+
+    /// Every identity input retained as `utf8` at the recorded-value bound.
+    ///
+    /// No `too_long` or `non_utf8` form encodes larger, and escaping cannot enlarge a retained
+    /// value past the bound, which counts JSON-encoded bytes.
+    fn largest_recorded_identity_inputs() -> JournalMutationIdentityInputs {
+        let largest_environment_value = || {
+            let value = EnvironmentValueAtMutation::from(
+                "v".repeat(MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES),
+            );
+            assert!(matches!(value, EnvironmentValueAtMutation::Utf8 { .. }));
+            value
+        };
+        let invocation_directory = InvocationDirectoryAtMutation::from(format!(
+            "/{}",
+            "d".repeat(MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES - 1)
+        ));
+        assert!(matches!(
+            invocation_directory,
+            InvocationDirectoryAtMutation::Utf8 { .. }
+        ));
+        JournalMutationIdentityInputs::Recorded {
+            invocation_directory,
+            cargo_berth_session_id: largest_environment_value(),
+            claude_code_session_id: ClaudeCodeSessionAtMutation::Recorded(
+                largest_environment_value(),
+            ),
+            cargo_berth_run: largest_environment_value(),
+            git_dir: largest_environment_value(),
+            git_common_dir: largest_environment_value(),
         }
     }
 

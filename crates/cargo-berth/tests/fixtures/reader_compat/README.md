@@ -1,7 +1,11 @@
 # Reader compatibility fixture
 
-`journal.ndjson` is the untouched output of the current `cargo-berth` binary:
-one claim followed by the first reconciliation's `merge_extent_observed` record.
+`journal.ndjson` is frozen, untouched output of an earlier `cargo-berth` binary,
+the one built from the tree that added this fixture in commit `5c210b8e` (crate
+version `0.1.0-dev`): one claim followed by the first reconciliation's
+`merge_extent_observed` record. It is kept unchanged to prove that the current
+reader decodes records an earlier binary wrote; for example, its
+`identity_inputs` omit `claude_code_session_id`.
 Its SHA-256 is `ba5ecbffdadcc18880231ef2213d11acc7909657262200b29f338a2f8afd7427`.
 No record is synthesized by the test.
 
