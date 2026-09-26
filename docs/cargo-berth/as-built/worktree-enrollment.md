@@ -13,7 +13,7 @@
   - For `ConfigurationLookup::Own`, it writes at the invoking root.
   - `WorktreeContext::configuration_lookup()` returns `OwnThenMain` only for a linked worktree whose common git directory is named `.git`; the main root is that directory's parent. Everything else gets `Own`.
 - If a valid file already exists at the target, it is kept (`InitializationState::Existing`), and the linked worktree's file is never read.
-- If the target is missing and the invoking linked worktree has its own valid file, that file's `trunk`, `gate_mode`, `maximum_reservations` and `maximum_ordering_edges` are written into the new main file. Otherwise defaults are written. The linked file is left alone. Its limits and gate mode take precedence locally, while the main file alone supplies `trunk` once it exists.
+- If the target is missing and the invoking linked worktree has its own valid file, that file's `trunk`, `gate_mode`, `maximum_reservations` and `maximum_ordering_edges` are written into the new main file. Otherwise defaults are written. The linked file is left alone. Its limits take precedence locally, while the main file alone supplies `trunk` and `gate_mode` once it exists.
 - `read_file` returns a private `ConfigurationFilePresence::{Missing, Present(BerthConfig)}`. `read` checks the worktree's own file first; when the main file exists, its `trunk` replaces the linked value. Without a main file, the own file supplies the fallback.
 - `BerthConfig::relative_path()` (`.claude/config/berth.toml` relative to a worktree root) is `pub(crate)` so drift observation can compare against it.
 - `Ledger::initialize` calls `WorktreeContext::discover` before taking the initialization lock and passes `configuration_lookup()` to `BerthConfig::initialize`.

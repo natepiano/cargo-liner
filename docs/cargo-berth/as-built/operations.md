@@ -11,9 +11,9 @@ For what the tool is and how to use it, see the [README](../../../crates/cargo-b
 Run `cargo berth init` from any worktree to set up the ledger and hooks, then
 enroll live worktrees with existing work and no reservation history. The
 configuration lives at the main worktree's `.claude/config/berth.toml`; a linked
-worktree reads that file unless it has its own, except `trunk`: the repository
-trunk comes from the main worktree's file whenever that file exists, so every
-worktree evaluates against the same trunk. An existing main file is kept.
+worktree reads that file unless it has its own, except `trunk` and `gate_mode`:
+whenever the main worktree's file exists it alone supplies both, so every
+worktree evaluates against the same trunk under the mode the gate hook enforces. An existing main file is kept.
 When the main file is missing and `init` runs in a linked worktree with its own
 valid file, that file's `trunk`, `gate_mode`, `maximum_reservations`, and
 `maximum_ordering_edges` seed the new main file; otherwise defaults are

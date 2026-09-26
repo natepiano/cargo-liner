@@ -909,6 +909,25 @@ fn integrate_blocks_when_successor_tip_contains_held_predecessor() {
 }
 
 #[test]
+fn integrate_from_an_observing_checkout_is_blocked_under_the_main_gate_mode() {
+    let pair = target_pair(true);
+    set_gate_mode(pair.repository.root(), "enforce");
+    set_gate_mode(&pair.successor, "observe");
+
+    let blocked = integration_target::run(
+        &pair.successor,
+        &["integrate", &pair.successor_id, "--json"],
+    );
+    assert_eq!(
+        blocked.status.code(),
+        Some(2),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&blocked.stdout),
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+}
+
+#[test]
 fn held_integrate_is_blocked_even_when_target_tip_is_unchanged() {
     let repository = integration_target::IntegrationRepository::new();
     let predecessor = repository.lane("noop-a", "integration");

@@ -168,6 +168,11 @@ impl BerthConfig {
 
     /// Read and validate this worktree's configuration.
     ///
+    /// A linked worktree's own file supplies its limits, but whenever the main worktree's
+    /// file exists it alone supplies `trunk` and `gate_mode`: the gate hook is installed
+    /// once for the repository, so every worktree must judge against the same trunk
+    /// under the same policy the hook enforces.
+    ///
     /// When no file answers, the reported path is the one `cargo-berth init` should
     /// create: a linked worktree names the main worktree's file, because a file written
     /// there serves every worktree while one written in the linked worktree serves only
@@ -189,6 +194,7 @@ impl BerthConfig {
                     Self::read_file(&Self::path(main_repository_root))?
             {
                 configuration.trunk = main.trunk;
+                configuration.gate_mode = main.gate_mode;
             }
             return Ok(Enrollment::Enrolled(configuration));
         }
@@ -515,14 +521,19 @@ mod tests {
     }
 
     #[test]
-    fn linked_policy_keeps_its_limits_but_reads_main_trunk()
+    fn linked_policy_keeps_its_limits_but_reads_main_trunk_and_gate_mode()
     -> Result<(), Box<dyn std::error::Error>> {
         let main = tempdir()?;
         let linked = tempdir()?;
         write_configuration(main.path(), "main")?;
+        let main_path = BerthConfig::path(main.path());
+        fs::write(&main_path, "trunk = \"main\"\ngate_mode = \"enforce\"\n")?;
         let path = BerthConfig::path(linked.path());
         fs::create_dir_all(path.parent().ok_or("configuration parent missing")?)?;
-        fs::write(path, "trunk = \"other\"\nmaximum_reservations = 17\n")?;
+        fs::write(
+            path,
+            "trunk = \"other\"\nmaximum_reservations = 17\ngate_mode = \"observe\"\n",
+        )?;
         let Enrollment::Enrolled(configuration) =
             BerthConfig::read(&ConfigurationLookup::OwnThenMain {
                 repository_root:      linked.path(),
@@ -532,6 +543,7 @@ mod tests {
             return Err("linked policy was unconfigured".into());
         };
         assert_eq!(configuration.trunk, "main");
+        assert_eq!(configuration.gate_mode, GateMode::Enforce);
         assert_eq!(configuration.maximum_reservations, 17);
         Ok(())
     }
