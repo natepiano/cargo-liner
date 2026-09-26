@@ -48,7 +48,7 @@ Projection maintenance is `ProjectionSynchronization`, and `ProjectionError::Cac
 
 ### The journal operation union
 
-`JournalOperation` carries twenty-one variants: `Claim`, `MergeExtentObserved`, `Widen`, `Checkpoint`, `Resnapshot`, `Renew`, `Release`, `ReplaceReleaseDisposition`, `EvidenceRevalidated`, `ResolveDefer`, `Incursion`, `ResolveIncursion`, `ForcedIntegrationPermit`, `ConsumeForcedIntegrationPermit`, `Bypass`, `RebindWorktree`, `RelocateWorktree`, and the four that carry integration proof across a restart — `ScopedPatchEquivalenceChecked`, `ScopedPatchComparisonAttempted`, `SuccessorScopedPatchEquivalenceChecked`, and `SuccessorScopedPatchComparisonAttempted`. Every record also carries its actor — worktree id and coordination run id — and a `RecordedAt`.
+`JournalOperation` carries twenty-three variants: `Claim`, `MergeExtentObserved`, `Widen`, `Checkpoint`, `Resnapshot`, `Retarget`, `UnrecordedTargetsPinned`, `Renew`, `Release`, `ReplaceReleaseDisposition`, `EvidenceRevalidated`, `ResolveDefer`, `Incursion`, `ResolveIncursion`, `ForcedIntegrationPermit`, `ConsumeForcedIntegrationPermit`, `Bypass`, `RebindWorktree`, `RelocateWorktree`, and the four that carry integration proof across a restart — `ScopedPatchEquivalenceChecked`, `ScopedPatchComparisonAttempted`, `SuccessorScopedPatchEquivalenceChecked`, and `SuccessorScopedPatchComparisonAttempted`. Every record also carries its actor — worktree id and coordination run id — and a `RecordedAt`.
 
 Every record also carries `identity_inputs`: the process inputs available when its actor was resolved — the invocation directory plus `CARGO_BERTH_SESSION_ID`, `CARGO_BERTH_RUN`, `GIT_DIR`, and `GIT_COMMON_DIR`. Each is a tagged state rather than a bare string (the directory as `utf8`/`too_long`/`non_utf8`/`unavailable`, each environment value as `unset`/`utf8`/`too_long`/`non_utf8`), each is bounded at `MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES` (256 JSON-content bytes) with `too_long` retaining only `observed_bytes`, and the field is additive: records written before it omit it. These bytes are journal evidence, not replay state. A record may not exceed `MAXIMUM_JOURNAL_RECORD_BYTES` (16 KiB) including its terminating newline; the writer refuses rather than emitting a line a reader could not decode.
 
@@ -171,6 +171,12 @@ The overlap chain still consults no acting-side term, and that asymmetry stays �
 `conflicts_for_claim` and `identifies_requester` deliberately still compare the worktree alone: the first is the explicit-claim overlap query that the occupancy check already precedes, and the second decides which recorded overlap answers apply, which bind the checkout they were recorded in rather than the run that recorded them.
 
 A genuinely foreign holder in the merge-collision sense still requires a real `git worktree add`, which is what the integration tests build through their `foreign_worktree` fixture.
+
+### Recorded integration targets
+
+Each new `Claim` records `target: ClaimTarget` alongside `trunk_at_claim`. The target is a local `refs/heads/` ref with a source: `claim_argument`, `branch_configuration`, or `repository_trunk`. Explicit claims select `--target` first, then the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config, then the repository trunk. First touch and enrollment use the setting before the trunk. An invalid own-branch or unresolved setting falls back to the trunk for automatic acquisition and records the requested value and reason; an explicit claim rejects it.
+
+Claims from older journals replay as `RecordedTarget::Unrecorded`. `init` appends one `unrecorded_targets_pinned` event when any remain, assigning the repository trunk at that moment. `retarget <reservation> --target <branch>` appends `retarget` for an unreleased holder, replacing its target and comparison commit and clearing its retained integration proof. Reconcile, release, and the gate still evaluate the repository trunk in this phase.
 
 ### Claiming and the first-touch path
 

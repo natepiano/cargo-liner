@@ -39,10 +39,14 @@ use crate::ids::WorktreeId;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::ClaimTarget;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalActor;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
+use crate::ledger::TargetFallback;
+use crate::ledger::TargetSource;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 
@@ -63,6 +67,7 @@ pub(crate) struct Reservation {
     pub(super) merge_extent:                                      MergeExtent,
     pub(super) authorizations:                                    Vec<ConflictAuthorization>,
     pub(super) source:                                            ClaimSource,
+    pub(super) target:                                            RecordedTarget,
     pub(super) purpose:                                           ReservationPurpose,
     pub(super) head_snapshot:                                     ClaimHeadSnapshot,
     pub(super) phase_start_head:                                  ProtectedPhaseStartHead,
@@ -76,6 +81,29 @@ pub(crate) struct Reservation {
     pub(super) worktree_locator:                                  WorktreeAdministrativeLocator,
     pub(super) claimed_at:                                        RecordedAt,
     pub(super) last_activity_at:                                  RecordedAt,
+}
+
+/// Whether a reservation has a durable integration branch in the journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RecordedTarget {
+    /// The claim or a later mutation selected this local branch.
+    Recorded {
+        target:   IntegrationTarget,
+        source:   TargetSource,
+        fallback: Option<TargetFallback>,
+    },
+    /// A legacy claim awaits an initialization pin.
+    Unrecorded,
+}
+
+impl From<&ClaimTarget> for RecordedTarget {
+    fn from(claim_target: &ClaimTarget) -> Self {
+        Self::Recorded {
+            target:   claim_target.target.clone(),
+            source:   claim_target.source,
+            fallback: claim_target.fallback.clone(),
+        }
+    }
 }
 
 /// The complete protection and answer identity for one selected conflict ground.
@@ -94,6 +122,13 @@ pub(super) enum ConflictProtection<'reservations> {
 }
 
 impl Reservation {
+    /// The replayed target state of this reservation.
+    pub(crate) const fn target(&self) -> &RecordedTarget { &self.target }
+
+    /// The comparison commit retained with the target, or its unresolved state.
+    pub(crate) const fn comparison_snapshot(&self) -> &IntegrationTrunkSnapshot {
+        &self.integration_trunk_snapshot
+    }
     /// Return the reservation's durable identity.
     pub(crate) const fn id(&self) -> ReservationId { self.id }
 

@@ -20,7 +20,7 @@ main file is written. An uncommitted configuration file at that path, untracked
 or tracked and modified, is excluded from enrollment and merge-extent
 observations; committed changes to it still count.
 
-Enrollment reserves the exact file paths merging the branch into trunk would
+Enrollment reserves the exact file paths merging the branch into its recorded target would
 change or conflict on, plus its staged, unstaged, and untracked paths. Locked worktrees are eligible. Existing reservations, including
 ended ones, prevent a worktree from being enrolled again. Re-run `init` after
 adding a worktree with commits, before its first edit, or after fixing a failed
@@ -49,6 +49,12 @@ continue:
 Enrollment publishes a coordination-run marker in each enrolled worktree and
 leaves the invoking harness session mapping unchanged. An unmapped session
 there joins through the marker and reuses the reservation for covered edits.
+
+## Integration targets
+
+`cargo-berth claim <paths> --target <local-branch>` records the integration branch for the new reservation. Without the flag, the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config takes precedence over the repository trunk. Detached HEAD uses the repository trunk. Explicit own-branch and unresolved targets return `invalid_input`; first touch and enrollment fall back to the trunk and report the reason in JSON.
+
+`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. In this phase, release, reconciliation, and the gate continue to judge against the repository trunk.
 
 ## Harness identity
 

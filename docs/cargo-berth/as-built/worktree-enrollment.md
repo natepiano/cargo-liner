@@ -2,7 +2,7 @@
 
 ## What it is
 
-`cargo berth init` can be run in a repository where work is already under way in several worktrees. It writes the configuration at the main worktree root, where every worktree reads it. It then gives each live worktree that has never held a reservation one reservation covering its current work: every path merging its branch into trunk would change or conflict on, plus its staged, unstaged and untracked paths. When two worktrees' reservations share paths, both sides can keep editing, but integration is held until the user picks an order with `sequence`. Running `init` again is safe: it enrolls only worktrees that still have no reservation history, and it reports the overlaps that are still unresolved.
+`cargo berth init` can be run in a repository where work is already under way in several worktrees. It writes the configuration at the main worktree root, where every worktree reads it. It then gives each live worktree that has never held a reservation one reservation covering its current work: every path merging its branch into its selected target would change or conflict on, plus its staged, unstaged and untracked paths. When two worktrees' reservations share paths, both sides can keep editing, but integration is held until the user picks an order with `sequence`. Running `init` again is safe: it enrolls only worktrees that still have no reservation history, and it reports the overlaps that are still unresolved.
 
 ## How it works
 
@@ -13,8 +13,8 @@
   - For `ConfigurationLookup::Own`, it writes at the invoking root.
   - `WorktreeContext::configuration_lookup()` returns `OwnThenMain` only for a linked worktree whose common git directory is named `.git`; the main root is that directory's parent. Everything else gets `Own`.
 - If a valid file already exists at the target, it is kept (`InitializationState::Existing`), and the linked worktree's file is never read.
-- If the target is missing and the invoking linked worktree has its own valid file, that file's `trunk`, `gate_mode`, `maximum_reservations` and `maximum_ordering_edges` are written into the new main file. Otherwise defaults are written. The linked file is left alone and still takes precedence for its own worktree.
-- `read_file` returns a private `ConfigurationFilePresence::{Missing, Present(BerthConfig)}`. `read` checks the worktree's own file first, then re-reads the main root with `ConfigurationLookup::Own`.
+- If the target is missing and the invoking linked worktree has its own valid file, that file's `trunk`, `gate_mode`, `maximum_reservations` and `maximum_ordering_edges` are written into the new main file. Otherwise defaults are written. The linked file is left alone. Its limits and gate mode take precedence locally, while the main file alone supplies `trunk` once it exists.
+- `read_file` returns a private `ConfigurationFilePresence::{Missing, Present(BerthConfig)}`. `read` checks the worktree's own file first; when the main file exists, its `trunk` replaces the linked value. Without a main file, the own file supplies the fallback.
 - `BerthConfig::relative_path()` (`.claude/config/berth.toml` relative to a worktree root) is `pub(crate)` so drift observation can compare against it.
 - `Ledger::initialize` calls `WorktreeContext::discover` before taking the initialization lock and passes `configuration_lookup()` to `BerthConfig::initialize`.
 
@@ -30,7 +30,7 @@
 3. **Check history.** `reservation_history(events, worktree_id)` returns `AlreadyReserved` if any `JournalOperation::Claim` has that worktree as actor, whatever its source or lifecycle. Otherwise it returns `NeverReserved`.
 4. **Observe the footprint** (`observe_footprint`, all Git, no lock):
    - Any entry in `OPERATION_IN_PROGRESS_MARKERS` present in the administrative directory → `operation_in_progress`.
-   - HEAD via `git::head_object_id`, trunk via `git::branch_object_id(config.trunk)`. A `GitError::CommandFailed` here → `no_merge_base`; other errors → `git_failure`.
+   - HEAD via `git::head_object_id`, then the configured integration target from `branch.<name>.cargoBerthTarget` or the repository trunk; the target commit comes from `git::branch_object_id`. A `GitError::CommandFailed` here → `no_merge_base`; other errors → `git_failure`.
    - `git merge-base trunk head`. Exit code `MERGE_BASE_NO_COMMON_ANCESTOR_EXIT_CODE` (1) → `no_merge_base`; any other failure → `git_failure`.
    - Paths = `git::unmerged_branch_paths(root, trunk, head)` ∪ `drift::observe_merge_working_tree(root)` tracked ∪ untracked. The result becomes exact file scopes via `DeclaredReservationScopeSet::from_file_paths(..).into_exact_file_antichain(path_case)`. No paths → `FootprintObservation::Empty`, which is neither enrolled nor reported.
    - `git::head_attachment` gives `ClaimHeadSnapshot::Branch { full_ref, head }` or `Detached { head }`, and the display string (the full ref, or `detached at <sha>`).

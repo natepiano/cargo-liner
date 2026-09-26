@@ -207,6 +207,7 @@ impl BoardFixture {
                 reservation_id,
                 scopes: scopes.clone(),
                 source: ClaimSource::Explicit,
+                target: None,
                 purpose: ReservationPurpose::Explained(
                     "exercise typed board assembly".parse::<NonEmptyReservationPurpose>()?,
                 ),

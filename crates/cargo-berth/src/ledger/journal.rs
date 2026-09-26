@@ -26,6 +26,9 @@ use super::constants::HARNESS_SESSION_ENVIRONMENT;
 use super::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
+use super::target::ClaimTarget;
+use super::target::IntegrationTarget;
+use super::target::TargetSource;
 use crate::answer::ConflictAuthorization;
 use crate::config::InitializationState;
 use crate::coordination_identity::CoordinationIdentityProvenance;
@@ -348,6 +351,9 @@ pub(crate) enum JournalOperation {
         purpose:                         ReservationPurpose,
         /// The trunk commit against which later movement is measured.
         trunk_at_claim:                  TrunkObservationAtClaim,
+        /// The selected local integration branch; absent on journals written before targets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target:                          Option<Box<ClaimTarget>>,
         /// The branch or detached head observed when the reservation was acquired.
         head_snapshot:                   ClaimHeadSnapshot,
         /// The phase-start commit protected for later drift comparison.
@@ -399,6 +405,17 @@ pub(crate) enum JournalOperation {
         reservation_id: ReservationId,
         /// The replacement state-specific comparison points.
         snapshot:       ReservationSnapshot,
+    },
+    /// Replace a live reservation's integration branch and comparison commit.
+    Retarget {
+        reservation_id: ReservationId,
+        target: IntegrationTarget,
+        source: TargetSource,
+        target_commit: GitObjectId,
+    },
+    /// Assign the repository trunk to claims written before target recording.
+    UnrecordedTargetsPinned {
+        target: IntegrationTarget,
     },
     /// Mark a still-live reservation as recently active.
     Renew {
@@ -614,6 +631,8 @@ impl JournalOperation {
             }
             | Self::Checkpoint { .. }
             | Self::Resnapshot { .. }
+            | Self::Retarget { .. }
+            | Self::UnrecordedTargetsPinned { .. }
             | Self::Renew { .. }
             | Self::Release { .. }
             | Self::ReplaceReleaseDisposition { .. }
@@ -892,9 +911,14 @@ pub(crate) enum ClaimHeadSnapshot {
 }
 
 /// A non-empty full git reference name.
-#[derive(Clone, Debug, Eq, JsonSchema, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd)]
 #[schemars(transparent)]
 pub(crate) struct FullRefName(#[schemars(length(min = 1))] String);
+
+impl FullRefName {
+    /// The validated complete ref spelling.
+    pub(crate) fn as_str(&self) -> &str { &self.0 }
+}
 
 impl Display for FullRefName {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result { formatter.write_str(&self.0) }
@@ -2557,6 +2581,7 @@ mod tests {
                         .parse::<WorkPlanPhase>()
                         .expect("opaque work-plan phase should parse"),
                 },
+                target:                           None,
                 purpose:
                     "The ledger records durable coordination facts before a worktree claims paths."
                         .parse::<NonEmptyReservationPurpose>()

@@ -5,6 +5,9 @@
 
 //! Built-binary tests for claim acquisition and mutation-free edit checks.
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 
@@ -46,6 +49,132 @@ const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
+
+#[test]
+fn claim_target_precedence_and_source_are_recorded() {
+    let repo = integration_target::IntegrationRepository::new();
+    let explicit_lane = repo.lane("explicit-target-lane", "integration");
+    let explicit = integration_target::claim(
+        &explicit_lane,
+        "file:explicit.txt",
+        FIRST_RUN,
+        Some("refs/heads/main"),
+    );
+    integration_target::assert_success(&explicit);
+    let explicit_payload = integration_target::json(&explicit);
+    assert_eq!(
+        explicit_payload["payload"]["data"]["target"]["ref"],
+        "refs/heads/main"
+    );
+    assert_eq!(
+        explicit_payload["payload"]["data"]["target"]["source"],
+        "claim_argument"
+    );
+
+    let configured_lane = repo.lane("configured-target-lane", "integration");
+    let configured =
+        integration_target::claim(&configured_lane, "file:configured.txt", SECOND_RUN, None);
+    integration_target::assert_success(&configured);
+    let configured_payload = integration_target::json(&configured);
+    assert_eq!(
+        configured_payload["payload"]["data"]["target"]["ref"],
+        "refs/heads/integration"
+    );
+    assert_eq!(
+        configured_payload["payload"]["data"]["target"]["source"],
+        "branch_configuration"
+    );
+    assert_eq!(
+        configured_payload["payload"]["data"]["target"]["commit"],
+        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+    );
+
+    integration_target::git(&repo.integration, &["switch", "--detach", "--quiet"]);
+    let detached =
+        integration_target::claim(&repo.integration, "file:detached.txt", THIRD_RUN, None);
+    integration_target::assert_success(&detached);
+    let detached_payload = integration_target::json(&detached);
+    assert_eq!(
+        detached_payload["payload"]["data"]["target"]["ref"],
+        "refs/heads/main"
+    );
+    assert_eq!(
+        detached_payload["payload"]["data"]["target"]["source"],
+        "repository_trunk"
+    );
+
+    let claims: Vec<_> = integration_target::journal(repo.root())
+        .into_iter()
+        .filter(|event| event["op"] == "claim")
+        .collect();
+    assert_eq!(claims.len(), 3);
+    for (claim, target, source) in [
+        (&claims[0], "refs/heads/main", "claim_argument"),
+        (&claims[1], "refs/heads/integration", "branch_configuration"),
+        (&claims[2], "refs/heads/main", "repository_trunk"),
+    ] {
+        assert_eq!(claim["target"]["target"], target);
+        assert_eq!(claim["target"]["source"], source);
+    }
+}
+
+#[test]
+fn explicit_claim_refuses_own_and_unresolved_targets() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("refused-target-lane", "integration");
+    for (target, reason) in [
+        ("refused-target-lane", "own branch"),
+        ("no-such-target", "resolve"),
+    ] {
+        let output = integration_target::claim(&lane, "file:refused.txt", FIRST_RUN, Some(target));
+        assert!(!output.status.success());
+        let response = integration_target::json(&output);
+        assert_eq!(response["status"], "invalid_input");
+        assert!(String::from_utf8_lossy(&output.stdout).contains(target));
+        assert!(String::from_utf8_lossy(&output.stdout).contains(reason));
+    }
+    assert!(
+        integration_target::journal(repo.root())
+            .iter()
+            .all(|event| event["op"] != "claim")
+    );
+}
+
+#[test]
+fn first_touch_invalid_branch_settings_fall_back_to_repository_trunk() {
+    let repo = integration_target::IntegrationRepository::new();
+    for (branch, configured_target, reason) in [
+        ("own-target-lane", "own-target-lane", "own_branch"),
+        ("missing-target-lane", "no-such-target", "unresolved"),
+    ] {
+        let lane = repo.lane(branch, configured_target);
+        let output =
+            integration_target::run(&lane, &["check", &format!("file:{branch}.txt"), "--json"]);
+        integration_target::assert_success(&output);
+        let payload = integration_target::json(&output);
+        let acquired_target = &payload["payload"]["data"]["acquisition"]["target"];
+        assert_eq!(acquired_target["ref"], "refs/heads/main");
+        assert_eq!(acquired_target["source"], "repository_trunk");
+        assert_eq!(acquired_target["fallback"]["requested"], configured_target);
+        assert_eq!(acquired_target["fallback"]["reason"], reason);
+        let claims: Vec<_> = integration_target::journal(repo.root())
+            .into_iter()
+            .filter(|event| {
+                event["op"] == "claim"
+                    && event["head_snapshot"]["full_ref"] == format!("refs/heads/{branch}")
+            })
+            .collect();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0]["source"]["kind"], "first_touch");
+        assert_eq!(claims[0]["target"]["target"], "refs/heads/main");
+        assert_eq!(claims[0]["target"]["source"], "repository_trunk");
+        assert_eq!(
+            claims[0]["target"]["fallback"]["requested"],
+            configured_target
+        );
+        assert_eq!(claims[0]["target"]["fallback"]["reason"], reason);
+    }
+}
 
 #[test]
 fn blocked_claim_names_holder_provenance_and_appends_nothing() {
@@ -232,20 +361,15 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
         "already_held"
     );
     let second_acquisition = json_output(&second)["payload"]["data"]["acquisition"].clone();
+    assert_eq!(second_acquisition["target"], first_acquisition["target"]);
     assert_eq!(second_acquisition["reservation_id"], reservation_id);
     assert_eq!(
         second_acquisition["coordination_run_id"],
         coordination_run_id
     );
     assert_eq!(second_acquisition["phase_start_head"], phase_start_head);
-    assert_eq!(
-        second_acquisition["marker_publication"]["status"],
-        "published"
-    );
-    assert_eq!(
-        second_acquisition["session_mapping_publication"]["status"],
-        "published"
-    );
+    assert_publication_status(&second_acquisition, "marker_publication");
+    assert_publication_status(&second_acquisition, "session_mapping_publication");
     assert_session_mapping(
         repository.path(),
         "already-held-first-touch",
@@ -265,6 +389,7 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
     let widened_acquisition = &widened_envelope["payload"]["data"]["acquisition"];
     assert!(widened.status.success());
     assert_eq!(widened_acquisition["kind"], "widened");
+    assert_eq!(widened_acquisition["target"], first_acquisition["target"]);
     assert_eq!(widened_acquisition["reservation_id"], reservation_id);
     assert_eq!(
         widened_acquisition["coordination_run_id"],
@@ -286,6 +411,10 @@ fn clear_check_creates_then_widens_one_exact_file_reservation() {
     );
 
     assert_board_contains_every_claim_source(repository.path());
+}
+
+fn assert_publication_status(acquisition: &serde_json::Value, field: &str) {
+    assert_eq!(acquisition[field]["status"], "published");
 }
 
 #[test]

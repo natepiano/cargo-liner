@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   orphaned worktrees, rewritten integration evidence, and deferred bypass
   audit records.
 
+- Record each reservation's local integration target from `claim --target`, the claimant branch's `branch.<name>.cargoBerthTarget` setting, or the repository trunk; `init` pins older claims and `retarget` replaces a live target.
+
+### Changed
+
+- A linked worktree's `trunk` key no longer affects judgement; only the main worktree's key defines the repository trunk when its configuration exists.
+
 ### Fixed
 
 - A lane merged into trunk ends its run even when its checkout holds an

@@ -16,6 +16,7 @@ use crate::ids::ReservationId;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::ClaimTarget;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::JournalActor;
 use crate::ledger::ProtectedPhaseStartHead;
@@ -30,6 +31,7 @@ pub(super) struct ReplayedClaim<'event> {
     pub(super) id:                               ReservationId,
     pub(super) scopes:                           &'event ReservationScopeSet,
     pub(super) source:                           &'event ClaimSource,
+    pub(super) target:                           &'event Option<Box<ClaimTarget>>,
     pub(super) purpose:                          &'event ReservationPurpose,
     pub(super) trunk_at_claim:                   &'event TrunkObservationAtClaim,
     pub(super) head_snapshot:                    &'event ClaimHeadSnapshot,
@@ -68,6 +70,8 @@ pub(crate) enum ReservationReplayError {
     InvalidLifecycleTransition(ReservationId, LifecycleTransitionError),
     /// A snapshot variant disagreed with the reservation lifecycle.
     SnapshotStateMismatch(ReservationId),
+    /// A retarget operation named a released reservation.
+    RetargetRequiresUnreleased(ReservationId),
     /// An ordinary integrated disposition lacked a preceding verified status.
     IntegratedReleaseWithoutEvidence(ReservationId),
     /// Git evidence was materialized for an active reservation.
@@ -155,6 +159,11 @@ impl Display for ReservationReplayError {
             Self::SnapshotStateMismatch(reservation_id) => {
                 Self::write_holder_fault(formatter, reservation_id, "has a mismatched resnapshot")
             },
+            Self::RetargetRequiresUnreleased(reservation_id) => Self::write_holder_fault(
+                formatter,
+                reservation_id,
+                "cannot be retargeted after release",
+            ),
             Self::IntegratedReleaseWithoutEvidence(reservation_id) => Self::write_holder_fault(
                 formatter,
                 reservation_id,

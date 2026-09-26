@@ -33,6 +33,7 @@ use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::ClaimTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
@@ -43,6 +44,7 @@ use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
+use crate::ledger::TargetSelectionRequest;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeContext;
 use crate::reservation::ActingHeadContainment;
@@ -95,6 +97,8 @@ pub(crate) enum WorktreeEnrollmentFailureReason {
     NoMergeBase,
     /// A repository observation or publication failed.
     GitFailure,
+    /// The configured repository trunk is not a local branch.
+    Configuration,
     /// Git retains a registration whose checkout cannot be used.
     Unavailable,
     /// The complete claim exceeds the journal's single-record limit.
@@ -108,6 +112,7 @@ impl WorktreeEnrollmentFailureReason {
             Self::OperationInProgress => "operation_in_progress",
             Self::NoMergeBase => "no_merge_base",
             Self::GitFailure => "git_failure",
+            Self::Configuration => "configuration",
             Self::Unavailable => "unavailable",
             Self::RecordTooLarge => "record_too_large",
         }
@@ -132,6 +137,7 @@ struct EnrollmentFootprint {
     history:       ReservationHistory,
     head:          GitObjectId,
     trunk:         GitObjectId,
+    target:        ClaimTarget,
     merge_base:    GitObjectId,
     head_snapshot: ClaimHeadSnapshot,
     branch:        String,
@@ -291,8 +297,14 @@ fn observe_footprint(
     }
     let head =
         git::head_object_id(root).map_err(|error| resolution_failure(root, "HEAD", &error))?;
-    let trunk = git::branch_object_id(root, &config.trunk)
-        .map_err(|error| resolution_failure(root, &config.trunk, &error))?;
+    let attachment = git::head_attachment(root).map_err(|error| {
+        failure(
+            root,
+            WorktreeEnrollmentFailureReason::GitFailure,
+            format!("git symbolic-ref HEAD: {error}"),
+        )
+    })?;
+    let (target, trunk) = read_enrollment_target(&context, &attachment, config)?;
     let merge_base = observe_merge_base(root, &trunk, &head)?;
     let committed = git::unmerged_branch_paths(root, &trunk, &head).map_err(|error| {
         failure(
@@ -317,13 +329,7 @@ fn observe_footprint(
         return Ok(FootprintObservation::Empty);
     };
     let scopes = scopes.into_exact_file_antichain(path_case);
-    let (head_snapshot, branch) = match git::head_attachment(root).map_err(|error| {
-        failure(
-            root,
-            WorktreeEnrollmentFailureReason::GitFailure,
-            format!("git symbolic-ref HEAD: {error}"),
-        )
-    })? {
+    let (head_snapshot, branch) = match attachment {
         HeadAttachment::Branch { full_ref } => {
             let branch = full_ref.to_string();
             (
@@ -347,12 +353,50 @@ fn observe_footprint(
         history,
         head,
         trunk,
+        target,
         merge_base,
         head_snapshot,
         branch,
         scopes,
         working_tree,
     })))
+}
+
+fn read_enrollment_target(
+    context: &WorktreeContext,
+    attachment: &HeadAttachment,
+    config: &BerthConfig,
+) -> Result<(ClaimTarget, GitObjectId), WorktreeEnrollmentFailure> {
+    let root = context.repository_root();
+    let claimant_branch = match attachment {
+        HeadAttachment::Branch { full_ref } => Some(full_ref),
+        HeadAttachment::Detached => None,
+    };
+    let git_failure = |diagnostic| {
+        failure(
+            root,
+            WorktreeEnrollmentFailureReason::GitFailure,
+            diagnostic,
+        )
+    };
+    let repository_trunk = config.repository_trunk().map_err(|diagnostic| {
+        failure(
+            root,
+            WorktreeEnrollmentFailureReason::Configuration,
+            diagnostic,
+        )
+    })?;
+    let target = ledger::resolve_claim_target(
+        context.common_git_directory(),
+        claimant_branch,
+        TargetSelectionRequest::AutomaticAcquisition,
+        &repository_trunk,
+        |target| git::branch_object_id(root, target.short_name()).is_ok(),
+    )
+    .map_err(|error| git_failure(error.message()))?;
+    let commit = git::branch_object_id(root, target.target.short_name())
+        .map_err(|error| resolution_failure(root, target.target.short_name(), &error))?;
+    Ok((target, commit))
 }
 
 fn resolution_failure(root: &Path, reference: &str, error: &GitError) -> WorktreeEnrollmentFailure {
@@ -525,6 +569,7 @@ fn enroll_candidate(
                 source: ClaimSource::Enrolled,
                 purpose,
                 trunk_at_claim: candidate.trunk.clone().into(),
+                target: Some(Box::new(candidate.target.clone())),
                 head_snapshot: candidate.head_snapshot.clone(),
                 phase_start_head: candidate.merge_base.clone().into(),
                 worktree_root,

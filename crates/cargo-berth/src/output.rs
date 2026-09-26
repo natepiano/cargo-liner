@@ -55,10 +55,12 @@ use crate::ids::ReservationId;
 use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger::ClaimSource;
+use crate::ledger::ClaimTarget;
 use crate::ledger::CollisionPathSet;
 use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
@@ -67,16 +69,21 @@ use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
 use crate::ledger::SkippedIntegrationHoldSet;
+use crate::ledger::TargetFallback;
+use crate::ledger::TargetSource;
+use crate::ledger::TrunkObservationAtClaim;
 use crate::presentation;
 use crate::presentation::EmptyRenderedBlocks;
 use crate::presentation::EnvelopePresentation;
 use crate::presentation::NonEmptyRenderedBlocks;
 use crate::presentation::RenderedOutputBlock;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::IntegrationTrunkSnapshot;
 use crate::reservation::LifecycleTransitionError;
 use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::RaceExtent;
+use crate::reservation::RecordedTarget;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationLifecycleSnapshot;
@@ -402,6 +409,8 @@ pub(crate) enum CommandVerb {
     Resolve,
     /// Renew a reservation's explicit activity record.
     Renew,
+    /// Replace a live reservation's integration target.
+    Retarget,
     /// Manage the current process's disposable coordination identity.
     Identity,
 }
@@ -646,6 +655,8 @@ declare_output_contract_metadata! {
         Recovered => ("recovered", Clear);
         /// A still-live reservation recorded recent activity.
         Renewed => ("renewed", Clear);
+        /// A live reservation now names a replacement integration target.
+        Retargeted => ("retargeted", Clear);
         /// The current harness-session mapping was removed or was already absent.
         SessionMappingCleared => ("session_mapping_cleared", Clear);
         /// No harness-session identifier selected a mapping to remove.
@@ -661,6 +672,7 @@ declare_output_contract_metadata! {
         RevisionExhausted => "revision_exhausted";
         IntegrationProofSubjectRevisionExhausted => "integration_proof_subject_revision_exhausted";
         SnapshotStateMismatch => "snapshot_state_mismatch";
+        RetargetRequiresUnreleased => "retarget_requires_unreleased";
         IntegratedReleaseWithoutEvidence => "integrated_release_without_evidence";
         ActiveEvidenceRevalidation => "active_evidence_revalidation";
         ActiveScopedPatchComparison => "active_scoped_patch_comparison";
@@ -742,6 +754,8 @@ enum OutputFacts {
     Resolve(ResolvePayload),
     /// Facts returned by a renewal.
     Renew(RenewPayload),
+    /// Facts returned by `retarget`.
+    Retarget(RetargetPayload),
     /// Facts returned by coordination identity management.
     Identity(IdentityPayload),
     /// A shared coordination identity rejection returned by any validating command.
@@ -756,14 +770,128 @@ pub(crate) fn output_facts_schema() -> Schema { schemars::schema_for!(OutputFact
 #[schemars(rename = "initialization_payload")]
 struct InitializationPayload {
     /// Whether initialization created the journal or found an existing one.
-    ledger:        InitializationResource,
+    ledger:         InitializationResource,
     /// Whether initialization created the config or left an existing file intact.
-    configuration: InitializationResource,
+    configuration:  InitializationResource,
     /// Whether every registered managed hook is now in force.
-    hooks:         Vec<InitializedManagedHook>,
+    hooks:          Vec<InitializedManagedHook>,
     /// Newly reserved worktrees, pending enrollment overlaps, and candidate failures.
     #[serde(default)]
-    enrollment:    WorktreeEnrollmentReport,
+    enrollment:     WorktreeEnrollmentReport,
+    /// Legacy reservations assigned the repository trunk by this invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    targets_pinned: Option<TargetsPinnedPayload>,
+}
+
+/// Legacy claims converted to durable repository-trunk targets by `init`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct TargetsPinnedPayload {
+    target:       IntegrationTarget,
+    reservations: Vec<ReservationId>,
+}
+
+/// One integration branch and the commit observed when it was selected.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct TargetView {
+    #[serde(rename = "ref")]
+    reference:  IntegrationTarget,
+    short_name: String,
+    source:     TargetViewSource,
+    commit:     String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fallback:   Option<TargetFallback>,
+}
+
+/// The source of a target in a command response.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TargetViewSource {
+    ClaimArgument,
+    BranchConfiguration,
+    RepositoryTrunk,
+    Unrecorded,
+}
+
+impl TargetView {
+    /// Display a target committed by a new claim.
+    pub(crate) fn from_claim(target: &ClaimTarget, commit: &TrunkObservationAtClaim) -> Self {
+        let commit = match commit {
+            TrunkObservationAtClaim::Resolved(commit) => commit.to_string(),
+            TrunkObservationAtClaim::UnresolvedReference { .. } => "unresolved".to_owned(),
+        };
+        Self::new(
+            &target.target,
+            target.source,
+            commit,
+            target.fallback.clone(),
+        )
+    }
+
+    /// Display a target selected by an explicit retarget operation.
+    pub(crate) fn retargeted(target: &IntegrationTarget, commit: &GitObjectId) -> Self {
+        Self::new(
+            target,
+            TargetSource::ClaimArgument,
+            commit.to_string(),
+            None,
+        )
+    }
+
+    /// Display a replayed claim, including legacy claims awaiting a pin.
+    pub(crate) fn from_recorded(
+        target: &RecordedTarget,
+        repository_trunk: &IntegrationTarget,
+        snapshot: &IntegrationTrunkSnapshot,
+    ) -> Self {
+        let commit = match snapshot {
+            IntegrationTrunkSnapshot::AtClaim(TrunkObservationAtClaim::Resolved(commit))
+            | IntegrationTrunkSnapshot::AtCheckpoint(commit) => commit.to_string(),
+            IntegrationTrunkSnapshot::AtClaim(TrunkObservationAtClaim::UnresolvedReference {
+                ..
+            }) => "unresolved".to_owned(),
+        };
+        match target {
+            RecordedTarget::Recorded {
+                target,
+                source,
+                fallback,
+            } => Self::new(target, *source, commit, fallback.clone()),
+            RecordedTarget::Unrecorded => Self {
+                reference: repository_trunk.clone(),
+                short_name: repository_trunk.short_name().to_owned(),
+                source: TargetViewSource::Unrecorded,
+                commit,
+                fallback: None,
+            },
+        }
+    }
+
+    fn new(
+        target: &IntegrationTarget,
+        source: TargetSource,
+        commit: String,
+        fallback: Option<TargetFallback>,
+    ) -> Self {
+        let source = match source {
+            TargetSource::ClaimArgument => TargetViewSource::ClaimArgument,
+            TargetSource::BranchConfiguration => TargetViewSource::BranchConfiguration,
+            TargetSource::RepositoryTrunk => TargetViewSource::RepositoryTrunk,
+        };
+        Self {
+            reference: target.clone(),
+            short_name: target.short_name().to_owned(),
+            source,
+            commit,
+            fallback,
+        }
+    }
+}
+
+/// Result of replacing a reservation's integration branch.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct RetargetPayload {
+    reservation_id: ReservationId,
+    target:         TargetView,
 }
 
 /// The activation result for one hook in the managed-hook registry.
@@ -1078,6 +1206,8 @@ enum ClaimPayload {
     Claimed {
         /// The newly issued reservation identity.
         reservation_id:              ReservationId,
+        /// The integration branch recorded by the claim.
+        target:                      TargetView,
         /// The coordination run that owns the appended reservation.
         coordination_run_id:         CoordinationRunId,
         /// The exact durable footprint.
@@ -1530,6 +1660,7 @@ impl OutputEnvelope {
         initialization: LedgerInitialization,
         hook_installations: &[ManagedHookInstallation],
         enrollment: WorktreeEnrollmentReport,
+        targets_pinned: Option<(IntegrationTarget, Vec<ReservationId>)>,
     ) -> Self {
         let hooks = hook_installations
             .iter()
@@ -1550,6 +1681,10 @@ impl OutputEnvelope {
                 configuration: initialization.configuration.into(),
                 hooks,
                 enrollment,
+                targets_pinned: targets_pinned.map(|(target, reservations)| TargetsPinnedPayload {
+                    target,
+                    reservations,
+                }),
             })),
         }
     }
@@ -1815,6 +1950,7 @@ impl OutputEnvelope {
     /// Build the successful result for one appended claim.
     pub(crate) fn claimed(
         reservation_id: ReservationId,
+        target: TargetView,
         coordination_run_id: CoordinationRunId,
         scopes: ReservationScopeSet,
         marker_publication: CoordinationRunMarkerPublication,
@@ -1880,6 +2016,7 @@ impl OutputEnvelope {
             presentation,
             payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Claimed {
                 reservation_id,
+                target,
                 coordination_run_id,
                 scopes,
                 marker_publication,
@@ -2411,6 +2548,7 @@ impl OutputEnvelope {
             | OutputStatus::Released
             | OutputStatus::Recovered
             | OutputStatus::Renewed
+            | OutputStatus::Retargeted
             | OutputStatus::SessionMappingCleared
             | OutputStatus::SessionMappingUnavailable
             | OutputStatus::IncursionResolved => PostCommitRendering::Warning(format!(
@@ -2652,6 +2790,29 @@ impl OutputEnvelope {
         }
     }
 
+    /// Build the successful response for an integration-target replacement.
+    pub(crate) fn retargeted(reservation_id: ReservationId, target: TargetView) -> Self {
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb:                    CommandVerb::Retarget,
+            status:                  OutputStatus::Retargeted,
+            exit_code:               BerthExit::Clear,
+            reservations:            vec![reservation_id],
+            blocked_by:              Vec::new(),
+            message:                 format!(
+                "Reservation {reservation_id} now targets {}.",
+                target.short_name
+            ),
+            presentation:            EnvelopePresentation::nothing_to_show(),
+            payload:                 OutputPayload::from_facts(OutputFacts::Retarget(
+                RetargetPayload {
+                    reservation_id,
+                    target,
+                },
+            )),
+        }
+    }
+
     /// The verb this response is recorded under.
     #[cfg(test)]
     pub(crate) const fn verb(&self) -> CommandVerb { self.verb }
@@ -2694,6 +2855,7 @@ impl OutputEnvelope {
                     | OutputFacts::Integrate(_)
                     | OutputFacts::Resolve(_)
                     | OutputFacts::Renew(_)
+                    | OutputFacts::Retarget(_)
                     | OutputFacts::CoordinationIdentity(_)
                     | OutputFacts::Identity(_) => engine_result_presentation(
                         "cargo-berth rejected an unexpected live-board presentation request.",
@@ -2741,6 +2903,7 @@ impl OutputEnvelope {
             | CommandVerb::Integrate
             | CommandVerb::Resolve
             | CommandVerb::Renew
+            | CommandVerb::Retarget
             | CommandVerb::Identity => {
                 "cargo-berth rejected this command under the current coordination identity."
             },
@@ -2767,6 +2930,7 @@ impl OutputEnvelope {
                     | CommandVerb::Integrate
                     | CommandVerb::Resolve
                     | CommandVerb::Renew
+                    | CommandVerb::Retarget
                     | CommandVerb::Identity => {
                         "cargo-berth stopped on invalid reservation history."
                     },
@@ -2816,6 +2980,7 @@ impl OutputEnvelope {
             | OutputFacts::Integrate(_)
             | OutputFacts::Resolve(_)
             | OutputFacts::Renew(_)
+            | OutputFacts::Retarget(_)
             | OutputFacts::Identity(_) => PostToolUseRendering::Feedback {
                 summary: "cargo-berth rejected an unexpected PostToolUse response.".to_owned(),
                 detail:  self.message.clone(),
@@ -3202,6 +3367,7 @@ impl OutputPayload {
             | CommandVerb::Sequence
             | CommandVerb::Resolve
             | CommandVerb::Renew
+            | CommandVerb::Retarget
             | CommandVerb::Identity
             | CommandVerb::Integrate => OutputFacts::NoFacts,
         };
@@ -3341,6 +3507,7 @@ fn hook_facing_presentation(
         | CommandVerb::Integrate
         | CommandVerb::Resolve
         | CommandVerb::Renew
+        | CommandVerb::Retarget
         | CommandVerb::Identity => EnvelopePresentation::NotProvided,
     }
 }
@@ -4485,6 +4652,7 @@ mod tests {
             },
             &[],
             crate::worktree::WorktreeEnrollmentReport::default(),
+            None,
         );
 
         assert_eq!(output_envelope.status, OutputStatus::Initialized);

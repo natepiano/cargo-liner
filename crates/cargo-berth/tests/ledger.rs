@@ -5,6 +5,9 @@
 
 //! End-to-end ledger durability tests against disposable git repositories.
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 
@@ -55,6 +58,94 @@ const RUN_MARKER_FILE_NAME: &str = "cargo-berth-run-id";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const UNKNOWN_RESERVATION_ID: &str = "01a03f08-e197-7a83-9b7c-bc7c555d0c01";
 const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
+
+#[test]
+fn init_reports_invalid_configured_trunk_as_input_error() {
+    let repo = integration_target::IntegrationRepository::new();
+    integration_target::set_trunk(repo.root(), "refs/remotes/origin/main");
+    let output = integration_target::run(repo.root(), &["init", "--json"]);
+    assert!(!output.status.success());
+    let response = integration_target::json(&output);
+    assert_eq!(response["status"], "invalid_input");
+    assert!(
+        response["message"]
+            .as_str()
+            .expect("message")
+            .contains("refs/remotes/origin/main")
+    );
+}
+
+#[test]
+fn init_enrolls_lane_against_configured_target_merge_base() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("enrolled-target-lane", "integration");
+    integration_target::commit_file(&lane, "lane-work.txt", "committed lane work\n", "lane work");
+    fs::write(lane.join("dirty-lane.txt"), "uncommitted lane work\n")
+        .expect("dirty lane file writes");
+    let expected_phase_start =
+        integration_target::git_stdout(&lane, &["merge-base", "HEAD", "integration"]);
+    let expected_target_commit =
+        integration_target::git_stdout(&lane, &["rev-parse", "integration"]);
+    let output = integration_target::run(repo.root(), &["init", "--json"]);
+    integration_target::assert_success(&output);
+    let claims: Vec<_> = integration_target::journal(repo.root())
+        .into_iter()
+        .filter(|event| {
+            event["op"] == "claim"
+                && event["head_snapshot"]["full_ref"] == "refs/heads/enrolled-target-lane"
+        })
+        .collect();
+    assert_eq!(claims.len(), 1);
+    let claim = &claims[0];
+    assert_eq!(claim["source"]["kind"], "enrolled");
+    assert_eq!(claim["target"]["target"], "refs/heads/integration");
+    assert_eq!(claim["target"]["source"], "branch_configuration");
+    assert_eq!(claim["phase_start_head"], expected_phase_start);
+    assert_eq!(claim["trunk_at_claim"], expected_target_commit);
+}
+
+#[test]
+fn linked_worktree_uses_main_configuration_for_repository_trunk() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("main-trunk-lane", "integration");
+    integration_target::git(
+        repo.root(),
+        &[
+            "config",
+            "--unset",
+            "branch.main-trunk-lane.cargoBerthTarget",
+        ],
+    );
+    let linked_config = lane.join(CONFIGURATION_PATH);
+    let linked_contents = fs::read_to_string(&linked_config).expect("linked config reads");
+    assert!(linked_contents.contains("trunk = \"main\""));
+    integration_target::set_trunk(repo.root(), "integration");
+    fs::write(
+        &linked_config,
+        linked_contents.replacen("trunk = \"main\"", "trunk = \"no-such-branch\"", 1),
+    )
+    .expect("linked-only trunk edit writes");
+    assert!(
+        fs::read_to_string(repo.root().join(CONFIGURATION_PATH))
+            .expect("main config reads")
+            .contains("trunk = \"integration\"")
+    );
+    let claim = integration_target::claim(
+        &lane,
+        "file:main-config.txt",
+        MAIN_COORDINATION_RUN_ID,
+        None,
+    );
+    integration_target::assert_success(&claim);
+    let target = &integration_target::json(&claim)["payload"]["data"]["target"];
+    assert_eq!(target["ref"], "refs/heads/integration");
+    assert_eq!(target["source"], "repository_trunk");
+    let recorded = integration_target::journal(repo.root())
+        .into_iter()
+        .find(|event| event["op"] == "claim")
+        .expect("claim was recorded");
+    assert_eq!(recorded["target"]["target"], "refs/heads/integration");
+}
 
 #[test]
 fn linked_init_enrolls_three_worktrees_and_sequences_reported_overlaps() {

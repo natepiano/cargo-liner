@@ -112,6 +112,67 @@ fn post_tool_use_reads_merge_extent_fixture() -> TestResult {
     )
 }
 
+#[test]
+fn init_pins_legacy_claim_target_once_and_keeps_it_after_trunk_edit() -> TestResult {
+    let repository = fixture_repository()?;
+    let root = repository.path();
+    let before = fs::read(root.join(JOURNAL_PATH))?;
+    let first = run_reader(Path::new(BUILT_EXECUTABLE), root, &["init", "--json"])?;
+    require_readable(&first, "first migration init")?;
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    let response: Value = serde_json::from_slice(&first.stdout)?;
+    let pinned = &response["payload"]["data"]["targets_pinned"];
+    assert_eq!(pinned["target"], "refs/heads/main");
+    assert_eq!(pinned["reservations"].as_array().map(Vec::len), Some(1));
+    let after_first = fs::read(root.join(JOURNAL_PATH))?;
+    assert!(
+        after_first.starts_with(&before),
+        "migration preserves the fixture prefix"
+    );
+    let pin_events = |bytes: &[u8]| -> TestResult<Vec<Value>> {
+        Ok(String::from_utf8(bytes.to_vec())?
+            .lines()
+            .map(serde_json::from_str::<Value>)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|event| event["op"] == "unrecorded_targets_pinned")
+            .collect())
+    };
+    let pins = pin_events(&after_first)?;
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0]["target"], "refs/heads/main");
+
+    let second = run_reader(Path::new(BUILT_EXECUTABLE), root, &["init", "--json"])?;
+    require_readable(&second, "second migration init")?;
+    assert!(second.status.success());
+    assert!(
+        serde_json::from_slice::<Value>(&second.stdout)?["payload"]["data"]["targets_pinned"]
+            .is_null()
+    );
+    assert_eq!(pin_events(&fs::read(root.join(JOURNAL_PATH))?)?.len(), 1);
+
+    let branch = git_command(BUILT_EXECUTABLE)
+        .args(["branch", "replacement-trunk"])
+        .current_dir(root)
+        .output()?;
+    require_readable(&branch, "create replacement trunk")?;
+    assert!(branch.status.success());
+    let config_path = root.join(".claude/config/berth.toml");
+    let config = fs::read_to_string(&config_path)?;
+    let edited = config.replacen("trunk = \"main\"", "trunk = \"replacement-trunk\"", 1);
+    assert_ne!(edited, config, "fixture has a main trunk setting");
+    fs::write(config_path, edited)?;
+    let third = run_reader(Path::new(BUILT_EXECUTABLE), root, &["init", "--json"])?;
+    require_readable(&third, "init after trunk edit")?;
+    assert!(third.status.success());
+    assert_eq!(pin_events(&fs::read(root.join(JOURNAL_PATH))?)?, pins);
+    Ok(())
+}
+
 fn reader_executable() -> TestResult<PathBuf> {
     let executable = std::env::var_os(EXECUTABLE_ENVIRONMENT)
         .map_or_else(|| PathBuf::from(BUILT_EXECUTABLE), PathBuf::from);

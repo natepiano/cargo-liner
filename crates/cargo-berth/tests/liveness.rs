@@ -5,6 +5,9 @@
 
 //! Built-binary tests for worktree liveness, recovery, marker sweeping, and cache repair.
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 #[path = "support/timing.rs"]
 mod timing;
 
@@ -42,6 +45,139 @@ use timing::POLL_INTERVAL;
 use timing::SCHEDULING_ALLOWANCE;
 
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
+
+#[test]
+fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("retarget-lane", "integration");
+    let claim = integration_target::claim(&lane, "file:retarget.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claim);
+    let reservation_id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("claim reservation ID")
+        .to_owned();
+    for (target, reason) in [
+        ("retarget-lane", "own branch"),
+        ("no-such-target", "resolve"),
+    ] {
+        let output = integration_target::run(
+            &lane,
+            &["retarget", &reservation_id, "--target", target, "--json"],
+        );
+        assert!(!output.status.success());
+        assert_eq!(integration_target::json(&output)["status"], "invalid_input");
+        assert!(String::from_utf8_lossy(&output.stdout).contains(reason));
+        assert!(
+            integration_target::journal(repo.root())
+                .iter()
+                .all(|event| event["op"] != "retarget")
+        );
+    }
+
+    let target_tip = integration_target::git_stdout(repo.root(), &["rev-parse", "main"]);
+    let output = integration_target::run(
+        &lane,
+        &["retarget", &reservation_id, "--target", "main", "--json"],
+    );
+    integration_target::assert_success(&output);
+    let response = integration_target::json(&output);
+    assert_eq!(response["status"], "retargeted");
+    assert_eq!(
+        response["payload"]["data"]["target"]["ref"],
+        "refs/heads/main"
+    );
+    let events = integration_target::journal(repo.root());
+    let retargets: Vec<_> = events
+        .iter()
+        .filter(|event| event["op"] == "retarget")
+        .collect();
+    assert_eq!(retargets.len(), 1);
+    assert_eq!(retargets[0]["reservation_id"], reservation_id);
+    assert_eq!(retargets[0]["target"], "refs/heads/main");
+    assert_eq!(retargets[0]["source"], "claim_argument");
+    assert_eq!(retargets[0]["target_commit"], target_tip);
+}
+
+#[test]
+fn retarget_of_checkpointed_reservation_remains_outstanding() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("checkpoint-retarget-lane", "integration");
+    integration_target::commit_file(&lane, "checkpointed.txt", "work\n", "checkpointed work");
+    let claim = integration_target::claim(&lane, "file:checkpointed.txt", SECOND_RUN, None);
+    integration_target::assert_success(&claim);
+    let reservation_id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("claim reservation ID")
+        .to_owned();
+    let checkpoint = integration_target::run(&lane, &["release", &reservation_id, "--json"]);
+    integration_target::assert_success(&checkpoint);
+    assert!(
+        integration_target::journal(repo.root())
+            .iter()
+            .any(|event| event["op"] == "checkpoint" && event["reservation_id"] == reservation_id)
+    );
+    let changed = integration_target::run(
+        &lane,
+        &["retarget", &reservation_id, "--target", "main", "--json"],
+    );
+    integration_target::assert_success(&changed);
+    let board = integration_target::run(repo.root(), &["board", "--json"]);
+    integration_target::assert_success(&board);
+    let rows = &integration_target::json(&board)["payload"]["data"];
+    let reservation = ["ready_now", "waiting", "unconstrained_reservations"]
+        .into_iter()
+        .flat_map(|section| rows[section]["entries"].as_array().into_iter().flatten())
+        .map(|entry| entry.get("reservation").unwrap_or(entry))
+        .find(|entry| entry["reservation_id"] == reservation_id)
+        .expect("checkpointed reservation remains visible");
+    assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+    assert_eq!(
+        reservation["integration_evidence"]["status"]["status"],
+        "not_integrated"
+    );
+}
+
+#[test]
+fn retarget_refuses_released_reservation() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("released-retarget-lane", "integration");
+    integration_target::commit_file(
+        &lane,
+        "released-retarget.txt",
+        "lane work\n",
+        "work to release",
+    );
+    let claim = integration_target::claim(&lane, "file:released-retarget.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claim);
+    let reservation_id = integration_target::json(&claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("claim reservation ID")
+        .to_owned();
+    let release = integration_target::run(&lane, &["release", &reservation_id, "--json"]);
+    integration_target::assert_success(&release);
+    integration_target::git(
+        repo.root(),
+        &["merge", "--quiet", "--ff-only", "released-retarget-lane"],
+    );
+    let settled = integration_target::run(repo.root(), &["board", "--json"]);
+    integration_target::assert_success(&settled);
+    assert!(
+        integration_target::journal(repo.root())
+            .iter()
+            .any(|event| event["op"] == "release" && event["reservation_id"] == reservation_id)
+    );
+    let before = integration_target::journal(repo.root()).len();
+    let retarget = integration_target::run(
+        &lane,
+        &["retarget", &reservation_id, "--target", "main", "--json"],
+    );
+    assert!(!retarget.status.success());
+    assert_eq!(
+        integration_target::json(&retarget)["status"],
+        "invalid_input"
+    );
+    assert_eq!(integration_target::journal(repo.root()).len(), before);
+}
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";

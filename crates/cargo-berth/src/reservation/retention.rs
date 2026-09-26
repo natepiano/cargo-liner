@@ -25,6 +25,7 @@ use super::partition::AuthorizedEditingIdentity;
 use super::partition::DriftBlockingCoverage;
 use super::partition::WidenScopeBinding;
 use super::record::ConflictProtection;
+use super::record::RecordedTarget;
 use super::record::Reservation;
 use super::replay::ReplayedClaim;
 use super::replay::ReservationReplayError;
@@ -55,6 +56,7 @@ use crate::ledger::BlockedIncursionPathSet;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::EditAuthorization;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -65,6 +67,7 @@ use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::ScopeKind;
+use crate::ledger::TargetSource;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::scope::PathCase;
@@ -174,7 +177,7 @@ pub(super) enum RetainedProtectedTip {
 
 /// The trunk comparison point retained for the reservation's current state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum IntegrationTrunkSnapshot {
+pub(crate) enum IntegrationTrunkSnapshot {
     /// The trunk commit observed when the reservation was acquired.
     AtClaim(TrunkObservationAtClaim),
     /// The trunk commit observed with the protected tip.
@@ -626,6 +629,24 @@ impl RetainedReservationSet {
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
     }
 
+    /// Whether any legacy claim still lacks a durable integration branch.
+    pub(crate) fn has_unrecorded_targets(&self) -> bool {
+        self.reservations
+            .iter()
+            .any(|reservation| matches!(reservation.target(), RecordedTarget::Unrecorded))
+    }
+
+    /// Identities that initialization will pin in its next journal operation.
+    pub(crate) fn unrecorded_target_ids(&self) -> Vec<ReservationId> {
+        self.reservations
+            .iter()
+            .filter_map(|reservation| {
+                matches!(reservation.target(), RecordedTarget::Unrecorded)
+                    .then_some(reservation.id())
+            })
+            .collect()
+    }
+
     /// Find one retained incursion by its durable identity.
     pub(crate) fn incursion_incident(
         &self,
@@ -811,6 +832,15 @@ impl RetainedReservationSet {
             | JournalOperation::ReplaceReleaseDisposition { .. } => {
                 self.apply_holder_lifecycle_journal_event(event)
             },
+            JournalOperation::Retarget {
+                reservation_id,
+                target,
+                source,
+                target_commit,
+            } => self.apply_retarget(*reservation_id, target, *source, target_commit),
+            JournalOperation::UnrecordedTargetsPinned { target } => {
+                self.pin_unrecorded_targets(target)
+            },
             JournalOperation::Checkpoint { .. }
             | JournalOperation::Resnapshot { .. }
             | JournalOperation::EvidenceRevalidated { .. }
@@ -843,6 +873,7 @@ impl RetainedReservationSet {
                 reservation_id,
                 scopes,
                 source,
+                target,
                 purpose,
                 trunk_at_claim,
                 head_snapshot,
@@ -856,6 +887,7 @@ impl RetainedReservationSet {
                 id: *reservation_id,
                 scopes,
                 source,
+                target,
                 purpose,
                 trunk_at_claim,
                 head_snapshot,
@@ -1153,6 +1185,13 @@ impl RetainedReservationSet {
                 replayed_claim.authorization.clone(),
             ],
             source:                                            replayed_claim.source.clone(),
+            target:                                            replayed_claim
+                .target
+                .as_deref()
+                .map_or(
+                    RecordedTarget::Unrecorded,
+                    super::record::RecordedTarget::from,
+                ),
             purpose:                                           replayed_claim.purpose.clone(),
             head_snapshot:                                     replayed_claim.head_snapshot.clone(),
             phase_start_head:                                  replayed_claim
@@ -1270,6 +1309,54 @@ impl RetainedReservationSet {
         }
         reservation.advance_integration_proof_subject_revision()?;
         reservation.advance_revision()
+    }
+
+    fn apply_retarget(
+        &mut self,
+        reservation_id: ReservationId,
+        target: &IntegrationTarget,
+        source: TargetSource,
+        target_commit: &GitObjectId,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        reservation.integration_trunk_snapshot = match reservation.lifecycle {
+            ReservationLifecycle::Active => IntegrationTrunkSnapshot::AtClaim(
+                TrunkObservationAtClaim::Resolved(target_commit.clone()),
+            ),
+            ReservationLifecycle::Outstanding { .. } => {
+                IntegrationTrunkSnapshot::AtCheckpoint(target_commit.clone())
+            },
+            ReservationLifecycle::Released { .. } => {
+                return Err(ReservationReplayError::RetargetRequiresUnreleased(
+                    reservation_id,
+                ));
+            },
+        };
+        reservation.integration_status = IntegrationEvidenceStatus::NotIntegrated;
+        reservation.target = RecordedTarget::Recorded {
+            target: target.clone(),
+            source,
+            fallback: None,
+        };
+        reservation.advance_integration_proof_subject_revision()?;
+        reservation.advance_revision()
+    }
+
+    fn pin_unrecorded_targets(
+        &mut self,
+        target: &IntegrationTarget,
+    ) -> Result<(), ReservationReplayError> {
+        for reservation in &mut self.reservations {
+            if matches!(reservation.target, RecordedTarget::Unrecorded) {
+                reservation.target = RecordedTarget::Recorded {
+                    target:   target.clone(),
+                    source:   TargetSource::RepositoryTrunk,
+                    fallback: None,
+                };
+                reservation.advance_revision()?;
+            }
+        }
+        Ok(())
     }
 
     fn apply_release(
@@ -1689,10 +1776,12 @@ mod tests {
     use crate::ledger::BlockedIncursionPathSet;
     use crate::ledger::ForeignReservationIdSet;
     use crate::ledger::IncursionIncidentId;
+    use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
+    use crate::reservation::RecordedTarget;
     use crate::reservation::SuccessorScopedPatchEquivalenceVerdict as Verdict;
     use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability as Availability;
     use crate::reservation::record::ReservationEvidenceState;
@@ -1714,6 +1803,118 @@ mod tests {
     const TRUNK_OID: &str = "1111111111111111111111111111111111111111";
     const WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
     const SECOND_WORKTREE_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21";
+
+    #[test]
+    fn legacy_target_is_pinned_once_and_retarget_reanchors_active_comparison()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let main =
+            IntegrationTarget::from_branch_argument("main").map_err(std::io::Error::other)?;
+        let integration = IntegrationTarget::from_branch_argument("integration")
+            .map_err(std::io::Error::other)?;
+        let claim = claim_event("presented")?;
+        let legacy = RetainedReservationSet::replay(std::slice::from_ref(&claim))?;
+        assert!(legacy.has_unrecorded_targets());
+        assert!(matches!(
+            legacy.reservation(reservation_id)?.target(),
+            RecordedTarget::Unrecorded
+        ));
+        let pin = journal_event(
+            2,
+            &json!({"op": "unrecorded_targets_pinned", "target": "refs/heads/main"}),
+        )?;
+        let pinned = RetainedReservationSet::replay(&[claim.clone(), pin.clone()])?;
+        assert!(!pinned.has_unrecorded_targets());
+        assert!(
+            matches!(pinned.reservation(reservation_id)?.target(), RecordedTarget::Recorded { target, .. } if target == &main)
+        );
+        let retarget = journal_event(
+            3,
+            &json!({"op": "retarget", "reservation_id": RESERVATION_ID, "target": "refs/heads/integration", "source": "claim_argument", "target_commit": SECOND_TRUNK_OID}),
+        )?;
+        let replaced = RetainedReservationSet::replay(&[claim, pin, retarget])?;
+        assert!(
+            matches!(replaced.reservation(reservation_id)?.target(), RecordedTarget::Recorded { target, .. } if target == &integration)
+        );
+        assert_eq!(
+            replaced.reservation(reservation_id)?.comparison_snapshot(),
+            &super::IntegrationTrunkSnapshot::AtClaim(
+                crate::ledger::TrunkObservationAtClaim::Resolved(SECOND_TRUNK_OID.parse()?)
+            )
+        );
+        assert!(matches!(
+            replaced.reservation(reservation_id)?.target(),
+            RecordedTarget::Recorded { .. }
+        ));
+        assert_ne!(
+            pinned
+                .reservation(reservation_id)?
+                .integration_proof_subject_revision(),
+            replaced
+                .reservation(reservation_id)?
+                .integration_proof_subject_revision()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn released_reservation_rejects_retarget() -> Result<(), Box<dyn std::error::Error>> {
+        let events = lifecycle_events()?;
+        let retarget = journal_event(
+            7,
+            &json!({"op": "retarget", "reservation_id": RESERVATION_ID, "target": "refs/heads/integration", "source": "claim_argument", "target_commit": SECOND_TRUNK_OID}),
+        )?;
+        let mut released = events[..4].to_vec();
+        released.push(retarget);
+        assert!(
+            matches!(RetainedReservationSet::replay(&released), Err(super::ReservationReplayError::RetargetRequiresUnreleased(id)) if id == RESERVATION_ID.parse()?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checkpointed_retarget_resets_evidence_and_comparison_revision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, checkpoint, integrated, ..] = lifecycle_events()?;
+        let before = RetainedReservationSet::replay(&[
+            claim.clone(),
+            checkpoint.clone(),
+            integrated.clone(),
+        ])?;
+        assert!(matches!(
+            before.reservation(reservation_id)?.evidence_state()?,
+            ReservationEvidenceState::Outstanding {
+                integration_status: IntegrationEvidenceStatus::Integrated { .. },
+                ..
+            }
+        ));
+        let retarget = journal_event(
+            4,
+            &json!({"op": "retarget", "reservation_id": RESERVATION_ID, "target": "refs/heads/integration", "source": "claim_argument", "target_commit": SECOND_TRUNK_OID}),
+        )?;
+        let after = RetainedReservationSet::replay(&[claim, checkpoint, integrated, retarget])?;
+        assert_eq!(
+            after.reservation(reservation_id)?.comparison_snapshot(),
+            &super::IntegrationTrunkSnapshot::AtCheckpoint(SECOND_TRUNK_OID.parse()?)
+        );
+        assert!(matches!(
+            after.reservation(reservation_id)?.evidence_state()?,
+            ReservationEvidenceState::Outstanding {
+                integration_status: IntegrationEvidenceStatus::NotIntegrated,
+                ..
+            }
+        ));
+        assert_ne!(
+            before
+                .reservation(reservation_id)?
+                .integration_proof_subject_revision(),
+            after
+                .reservation(reservation_id)?
+                .integration_proof_subject_revision()
+        );
+        Ok(())
+    }
 
     #[test]
     fn replay_retains_active_outstanding_released_and_rewritten_states()

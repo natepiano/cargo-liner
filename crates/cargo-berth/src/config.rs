@@ -10,6 +10,8 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::ledger::IntegrationTarget;
+
 const CLAUDE_DIRECTORY: &str = ".claude";
 const CONFIGURATION_DIRECTORY: &str = "config";
 const CONFIGURATION_FILE: &str = "berth.toml";
@@ -35,10 +37,9 @@ pub(crate) enum Enrollment<T> {
 
 /// The files one worktree consults for its configuration.
 ///
-/// The configuration file is untracked and per-worktree, so `git worktree add` never
-/// carries it along. Trunk and gate policy are facts about the repository rather than
-/// about one checkout of it, so a linked worktree without a file of its own reads the
-/// main worktree's.
+/// The configuration file is untracked and per-worktree. A linked worktree reads
+/// its own limits and gate mode first, but only the main worktree's `trunk` key
+/// defines the repository trunk when the main configuration exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigurationLookup<'a> {
     /// Only the worktree's own file counts: a main worktree, or a linked worktree of a
@@ -179,7 +180,16 @@ impl BerthConfig {
             } => repository_root,
         };
         let own_path = Self::path(repository_root);
-        if let ConfigurationFilePresence::Present(configuration) = Self::read_file(&own_path)? {
+        if let ConfigurationFilePresence::Present(mut configuration) = Self::read_file(&own_path)? {
+            if let ConfigurationLookup::OwnThenMain {
+                main_repository_root,
+                ..
+            } = *lookup
+                && let ConfigurationFilePresence::Present(main) =
+                    Self::read_file(&Self::path(main_repository_root))?
+            {
+                configuration.trunk = main.trunk;
+            }
             return Ok(Enrollment::Enrolled(configuration));
         }
         match *lookup {
@@ -193,6 +203,11 @@ impl BerthConfig {
                 repository_root: main_repository_root,
             }),
         }
+    }
+
+    /// The local branch selected as repository trunk.
+    pub(crate) fn repository_trunk(&self) -> Result<IntegrationTarget, String> {
+        IntegrationTarget::from_branch_argument(&self.trunk)
     }
 
     /// Read and validate one configuration file, or report that it does not exist.
@@ -500,6 +515,28 @@ mod tests {
     }
 
     #[test]
+    fn linked_policy_keeps_its_limits_but_reads_main_trunk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        write_configuration(main.path(), "main")?;
+        let path = BerthConfig::path(linked.path());
+        fs::create_dir_all(path.parent().ok_or("configuration parent missing")?)?;
+        fs::write(path, "trunk = \"other\"\nmaximum_reservations = 17\n")?;
+        let Enrollment::Enrolled(configuration) =
+            BerthConfig::read(&ConfigurationLookup::OwnThenMain {
+                repository_root:      linked.path(),
+                main_repository_root: main.path(),
+            })?
+        else {
+            return Err("linked policy was unconfigured".into());
+        };
+        assert_eq!(configuration.trunk, "main");
+        assert_eq!(configuration.maximum_reservations, 17);
+        Ok(())
+    }
+
+    #[test]
     fn configuration_file_presence_distinguishes_missing_and_valid_files()
     -> Result<(), Box<dyn std::error::Error>> {
         let repository = tempdir()?;
@@ -663,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn a_linked_worktree_with_its_own_file_ignores_the_main_worktree()
+    fn a_linked_worktree_with_its_own_file_uses_the_main_worktree_trunk()
     -> Result<(), Box<dyn std::error::Error>> {
         let main = tempdir()?;
         let linked = tempdir()?;
@@ -677,7 +714,7 @@ mod tests {
 
         assert!(matches!(
             enrollment,
-            Enrollment::Enrolled(configuration) if configuration.trunk == "develop"
+            Enrollment::Enrolled(configuration) if configuration.trunk == "release"
         ));
         Ok(())
     }

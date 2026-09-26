@@ -109,6 +109,8 @@ impl OrderingGraph {
                 )?,
                 JournalOperation::Checkpoint { .. }
                 | JournalOperation::Resnapshot { .. }
+                | JournalOperation::Retarget { .. }
+                | JournalOperation::UnrecordedTargetsPinned { .. }
                 | JournalOperation::Renew { .. }
                 | JournalOperation::Release { .. }
                 | JournalOperation::ReplaceReleaseDisposition { .. }

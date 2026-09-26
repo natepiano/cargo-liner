@@ -438,11 +438,17 @@ Adding this payload kind does not change the serialized bytes of plain
 `cargo-berth board --json`; that command continues to return `payload.kind =
 "board"` and the complete board object documented above.
 
+## Recorded target fields
+
+A successful `claim` has `payload.data.target`; a first-touch `check` has `payload.data.acquisition.target`. The view contains `ref` (a full local branch ref), `short_name`, `source`, and `commit` (the selected target tip or `"unresolved"`). An automatic fallback adds `fallback: { "requested", "reason" }`, with `reason` equal to `own_branch` or `unresolved`. `source` is `claim_argument`, `branch_configuration`, `repository_trunk`, or `unrecorded` for an older replayed claim. `retarget` returns status `retargeted` and `payload.data: { "reservation_id", "target" }` with the same view.
+
+Journal `claim.target` is optional for old records; new claims always write it. The new `retarget` operation records `reservation_id`, `target`, `source`, and `target_commit`; `unrecorded_targets_pinned` records one `target` for every unrecorded reservation then present. Schema version remains 2.
+
 ## Initialization enrollment report
 
 `cargo-berth init --json` returns `payload.kind = "init"`. Beside `ledger`,
 `configuration`, and `hooks`, `payload.data.enrollment` reports worktree
-enrollment. It is optional when decoding and defaults to three empty arrays:
+enrollment. `enrollment` is optional when decoding and defaults to three empty arrays. When legacy claims are pinned, `payload.data.targets_pinned` is `{ "target": "refs/heads/<branch>", "reservations": ["<id>"] }`; otherwise that field is omitted:
 
 - `enrolled[]`: `{ "reservation_id", "worktree_root", "branch" }` for each
   worktree that acquired its first reservation in this invocation. `branch` is
@@ -676,10 +682,12 @@ The operation union is:
 
 | `op` | Operation fields |
 | --- | --- |
-| `claim` | `reservation_id`, `scopes`, `source`, `purpose`, `trunk_at_claim`, `head_snapshot`, `phase_start_head`, `worktree_root`, `worktree_administrative_locator`, `authorization`, `coordination_identity_provenance` |
+| `claim` | `reservation_id`, `scopes`, `source`, `purpose`, `trunk_at_claim`, optional `target`, `head_snapshot`, `phase_start_head`, `worktree_root`, `worktree_administrative_locator`, `authorization`, `coordination_identity_provenance` |
 | `widen` | `reservation_id`, `added_scopes`, `cause`, `authorization`, `edit_blocking_status` |
 | `checkpoint` | `reservation_id`, `protected_tip`, `trunk_snapshot` |
 | `resnapshot` | `reservation_id`, `snapshot` |
+| `retarget` | `reservation_id`, `target`, `source`, `target_commit` |
+| `unrecorded_targets_pinned` | `target` |
 | `renew` | `reservation_id` |
 | `release` | `reservation_id`, `disposition` |
 | `replace_release_disposition` | `reservation_id`, `superseded`, `replacement` |

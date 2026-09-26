@@ -1595,14 +1595,14 @@ fn unresolved_trunk_keeps_commit_attribution_and_marks_its_origin_unknown() {
     let entering_commit = git_stdout(&foreign_root, &["rev-parse", "HEAD"])
         .trim()
         .to_owned();
-    let configuration_path = foreign_root.join(CONFIGURATION_PATH);
-    let configuration = fs::read_to_string(&configuration_path)
-        .expect("foreign worktree configuration should read");
+    let configuration_path = repository.path().join(CONFIGURATION_PATH);
+    let configuration =
+        fs::read_to_string(&configuration_path).expect("main worktree configuration should read");
     fs::write(
         configuration_path,
         configuration.replace("\"main\"", "\"does-not-exist\""),
     )
-    .expect("foreign worktree configuration should select a missing trunk");
+    .expect("main worktree configuration should select a missing trunk");
 
     let reported = run_berth_with_run(
         &foreign_root,

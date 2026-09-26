@@ -74,16 +74,21 @@ use crate::ledger::ForcedIntegrationReason;
 use crate::ledger::FullRefName;
 use crate::ledger::GATE_DEADLINE_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::IntegrationTarget;
+use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
+use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
 use crate::ledger::NonEmptyReservationPurpose;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ScopeKind;
+use crate::ledger::TransactionValidation;
 use crate::ledger::WorkPlanReference;
+use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
@@ -95,6 +100,8 @@ use crate::recovery::ResolveDecision;
 use crate::recovery::ResolveRequest;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::OrphanRetirementReason;
+use crate::reservation::ReservationReplayError;
+use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::verb::board;
@@ -112,6 +119,7 @@ use crate::verb::integrate;
 use crate::verb::integrate::IntegrateRequest;
 use crate::verb::release;
 use crate::verb::release::ReleaseRequest;
+use crate::verb::retarget;
 use crate::verb::sequence;
 use crate::verb::sequence::SequenceRequest;
 use crate::worktree;
@@ -222,6 +230,8 @@ enum Command {
     /// Renew a reservation's activity record.
     #[command(about = "Renew a reservation", long_about = RENEW_LONG_ABOUT)]
     Renew(ReservationArguments),
+    /// Replace a live reservation's integration branch.
+    Retarget(RetargetArguments),
     /// Manage the current process's disposable coordination identity.
     Identity(IdentityArguments),
     /// Private dispatch used only by the installed git hook.
@@ -463,6 +473,9 @@ struct CheckArguments {
         .multiple(false)
 ))]
 struct ClaimArguments {
+    /// The local branch into which this reservation integrates.
+    #[arg(long, value_name = "BRANCH")]
+    target:               Option<String>,
     /// The repository paths to reserve; unprefixed paths are files, while `tree:` includes
     /// descendants.
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
@@ -543,6 +556,16 @@ struct ReservationArguments {
     /// The reservation the command concerns.
     reservation_id: ReservationId,
     /// The output representation requested for this command.
+    #[command(flatten)]
+    json_output:    JsonOutput,
+}
+
+/// A replacement integration branch for one live reservation.
+#[derive(Debug, Args)]
+struct RetargetArguments {
+    reservation_id: ReservationId,
+    #[arg(long, value_name = "BRANCH")]
+    target:         String,
     #[command(flatten)]
     json_output:    JsonOutput,
 }
@@ -804,6 +827,9 @@ impl Command {
             Self::Renew(reservation_arguments) => {
                 recovery::renew(reservation_arguments.into_renew_request())
             },
+            Self::Retarget(arguments) => {
+                retarget::execute(arguments.reservation_id, &arguments.target)
+            },
             Self::Identity(identity_arguments) => {
                 execute_identity_command(&identity_arguments.command)
             },
@@ -831,6 +857,7 @@ impl Command {
             Self::Release(reservation_arguments) | Self::Renew(reservation_arguments) => {
                 reservation_arguments.json_output.output_format()
             },
+            Self::Retarget(arguments) => arguments.json_output.output_format(),
             Self::Sequence(sequence_arguments) => sequence_arguments.json_output.output_format(),
             Self::Integrate(integrate_arguments) => integrate_arguments.json_output.output_format(),
             Self::Resolve(resolve_arguments) => resolve_arguments.json_output.output_format(),
@@ -858,6 +885,7 @@ impl Command {
             Self::Integrate(_) => CommandResultReporting::Envelope(CommandVerb::Integrate),
             Self::Resolve(_) => CommandResultReporting::Envelope(CommandVerb::Resolve),
             Self::Renew(_) => CommandResultReporting::Envelope(CommandVerb::Renew),
+            Self::Retarget(_) => CommandResultReporting::Envelope(CommandVerb::Retarget),
             Self::Identity(_) => CommandResultReporting::Envelope(CommandVerb::Identity),
             Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
                 CommandResultReporting::GitHookProtocol
@@ -888,6 +916,7 @@ impl Command {
             Self::Integrate(_) => CommandLineRoute::Integrate,
             Self::Resolve(_) => CommandLineRoute::Resolve,
             Self::Renew(_) => CommandLineRoute::Renew,
+            Self::Retarget(_) => CommandLineRoute::Retarget,
             Self::Identity(IdentityArguments {
                 command: IdentityCommand::ClearSession(_),
             }) => CommandLineRoute::IdentityClearSession,
@@ -946,6 +975,8 @@ enum CommandLineRoute {
     Resolve,
     /// `renew` refreshes a reservation's activity record.
     Renew,
+    /// `retarget` replaces a live reservation's integration branch.
+    Retarget,
     /// `identity clear-session` drops the process's disposable session mapping.
     IdentityClearSession,
     /// The private dispatch git's installed `reference-transaction` hook invokes.
@@ -1003,6 +1034,7 @@ impl InitArguments {
 impl ClaimArguments {
     fn into_claim_request(self) -> Result<ClaimRequest, String> {
         let Self {
+            target,
             paths,
             before,
             after,
@@ -1054,6 +1086,7 @@ impl ClaimArguments {
         )?;
         let overlap_authorization = overlap_authorization_request(overlap_selection);
         Ok(ClaimRequest {
+            target,
             declared_scopes,
             source,
             purpose,
@@ -1436,6 +1469,88 @@ fn execute_identity_command(identity_command: &IdentityCommand) -> OutputEnvelop
     }
 }
 
+enum TargetPinOutcome {
+    NothingToPin,
+    Pinned {
+        target:       IntegrationTarget,
+        reservations: Vec<ReservationId>,
+    },
+}
+
+impl TargetPinOutcome {
+    fn into_output_payload(self) -> Option<(IntegrationTarget, Vec<ReservationId>)> {
+        match self {
+            Self::NothingToPin => None,
+            Self::Pinned {
+                target,
+                reservations,
+            } => Some((target, reservations)),
+        }
+    }
+}
+
+enum TargetPinRejection {
+    NothingToPin,
+    Replay(ReservationReplayError),
+}
+
+enum TargetPinFailure {
+    Configuration(String),
+    Ledger(String),
+}
+
+impl TargetPinFailure {
+    fn into_output(self) -> OutputEnvelope {
+        match self {
+            Self::Configuration(error) => OutputEnvelope::invalid_input(CommandVerb::Init, &error),
+            Self::Ledger(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Init, &error),
+        }
+    }
+}
+
+fn pin_unrecorded_targets(
+    context: &WorktreeContext,
+    config: &BerthConfig,
+) -> Result<TargetPinOutcome, TargetPinFailure> {
+    let ledger = Ledger::open_from_discovered_worktree(context)
+        .map_err(|error| TargetPinFailure::Ledger(error.to_string()))?;
+    let actor = ledger::resolve_identity(context)
+        .map_err(|error| TargetPinFailure::Ledger(error.to_string()))?;
+    let target = config
+        .repository_trunk()
+        .map_err(TargetPinFailure::Configuration)?;
+    let mut pinned_ids = Vec::new();
+    let outcome = ledger
+        .transact(actor.worktree_id, actor.coordination_run_id, |state| {
+            let reservations = match RetainedReservationSet::replay(state.events()) {
+                Ok(reservations) => reservations,
+                Err(error) => {
+                    return TransactionValidation::Reject(TargetPinRejection::Replay(error));
+                },
+            };
+            if !reservations.has_unrecorded_targets() {
+                return TransactionValidation::Reject(TargetPinRejection::NothingToPin);
+            }
+            pinned_ids = reservations.unrecorded_target_ids();
+            TransactionValidation::Append(Box::new(JournalOperation::UnrecordedTargetsPinned {
+                target: target.clone(),
+            }))
+        })
+        .map_err(|error| TargetPinFailure::Ledger(error.to_string()))?;
+    match outcome {
+        LedgerTransactionOutcome::Appended { .. } => Ok(TargetPinOutcome::Pinned {
+            target,
+            reservations: pinned_ids,
+        }),
+        LedgerTransactionOutcome::Rejected(TargetPinRejection::NothingToPin) => {
+            Ok(TargetPinOutcome::NothingToPin)
+        },
+        LedgerTransactionOutcome::Rejected(TargetPinRejection::Replay(error)) => {
+            Err(TargetPinFailure::Ledger(error.to_string()))
+        },
+    }
+}
+
 fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnvelope {
     match env::current_dir() {
         Ok(invocation_directory) => match git::repository_root(&invocation_directory) {
@@ -1465,6 +1580,11 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                                     );
                                 },
                             };
+                        let targets_pinned =
+                            match pin_unrecorded_targets(&worktree_context, &berth_config) {
+                                Ok(targets_pinned) => targets_pinned,
+                                Err(error) => return error.into_output(),
+                            };
                         let trunk_reference = format!("refs/heads/{}", berth_config.trunk);
                         let hook_installations = gate::install::install_managed_hooks(
                             worktree_context.common_git_directory(),
@@ -1476,7 +1596,12 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                                 Ok(enrollment) => enrollment,
                                 Err(error) => return initialization_error(error),
                             };
-                        OutputEnvelope::initialized(initialization, &hook_installations, enrollment)
+                        OutputEnvelope::initialized(
+                            initialization,
+                            &hook_installations,
+                            enrollment,
+                            targets_pinned.into_output_payload(),
+                        )
                     },
                     Err(error) => initialization_error(error),
                 },
@@ -2126,7 +2251,7 @@ mod tests {
 
     impl CommandLineRoute {
         /// Every route the frozen interface publishes a result through, one row each.
-        const ALL: [Self; 16] = [
+        const ALL: [Self; 17] = [
             Self::Init,
             Self::Board,
             Self::Check,
@@ -2140,6 +2265,7 @@ mod tests {
             Self::Integrate,
             Self::Resolve,
             Self::Renew,
+            Self::Retarget,
             Self::IdentityClearSession,
             Self::ReferenceTransaction,
             Self::RefreshManagedHookAfterTrunkDeletion,
@@ -2184,6 +2310,14 @@ mod tests {
                     ]
                 },
                 Self::Renew => vec![BINARY_NAME, "renew", RESERVATION_ID, "--json"],
+                Self::Retarget => vec![
+                    BINARY_NAME,
+                    "retarget",
+                    RESERVATION_ID,
+                    "--target",
+                    "main",
+                    "--json",
+                ],
                 Self::IdentityClearSession => {
                     vec![BINARY_NAME, "identity", "clear-session", "--json"]
                 },
@@ -2224,6 +2358,7 @@ mod tests {
                 Self::Integrate => CommandResultReporting::Envelope(CommandVerb::Integrate),
                 Self::Resolve => CommandResultReporting::Envelope(CommandVerb::Resolve),
                 Self::Renew => CommandResultReporting::Envelope(CommandVerb::Renew),
+                Self::Retarget => CommandResultReporting::Envelope(CommandVerb::Retarget),
                 Self::IdentityClearSession => {
                     CommandResultReporting::Envelope(CommandVerb::Identity)
                 },

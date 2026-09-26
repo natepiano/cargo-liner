@@ -3749,11 +3749,16 @@
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
                   "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
                 }
               },
               "required": [
                 "kind",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "phase_start_head",
                 "marker_publication",
@@ -3788,11 +3793,16 @@
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
                   "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
                 }
               },
               "required": [
                 "kind",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "phase_start_head",
                 "marker_publication",
@@ -3827,11 +3837,16 @@
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
                   "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
                 }
               },
               "required": [
                 "kind",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "phase_start_head",
                 "marker_publication",
@@ -4170,6 +4185,10 @@
               "type": "object"
             }
           ]
+        },
+        "IntegrationTarget": {
+          "$ref": "#/$defs/FullRefName",
+          "description": "A local branch into which reserved work integrates."
         },
         "IntegrationViolation": {
           "description": "A violation identifies the entering reservation and every hold that blocks it.",
@@ -5763,6 +5782,22 @@
             }
           ]
         },
+        "RetargetPayload": {
+          "description": "Result of replacing a reservation's integration branch.",
+          "properties": {
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "target": {
+              "$ref": "#/$defs/TargetView"
+            }
+          },
+          "required": [
+            "reservation_id",
+            "target"
+          ],
+          "type": "object"
+        },
         "RetentionRefStatus": {
           "description": "Current status of the reservation's private retention reference.",
           "oneOf": [
@@ -6068,6 +6103,93 @@
           ],
           "type": "string"
         },
+        "TargetFallback": {
+          "description": "An invalid branch setting replaced by the repository trunk during automatic acquisition.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/TargetFallbackReason"
+            },
+            "requested": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requested",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TargetFallbackReason": {
+          "description": "Why an automatically selected branch setting could not be used.",
+          "enum": [
+            "own_branch",
+            "unresolved"
+          ],
+          "type": "string"
+        },
+        "TargetView": {
+          "description": "One integration branch and the commit observed when it was selected.",
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TargetFallback"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ref": {
+              "$ref": "#/$defs/IntegrationTarget"
+            },
+            "short_name": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/TargetViewSource"
+            }
+          },
+          "required": [
+            "ref",
+            "short_name",
+            "source",
+            "commit"
+          ],
+          "type": "object"
+        },
+        "TargetViewSource": {
+          "description": "The source of a target in a command response.",
+          "enum": [
+            "claim_argument",
+            "branch_configuration",
+            "repository_trunk",
+            "unrecorded"
+          ],
+          "type": "string"
+        },
+        "TargetsPinnedPayload": {
+          "description": "Legacy claims converted to durable repository-trunk targets by `init`.",
+          "properties": {
+            "reservations": {
+              "items": {
+                "$ref": "#/$defs/uuid_v7_identifier"
+              },
+              "type": "array"
+            },
+            "target": {
+              "$ref": "#/$defs/IntegrationTarget"
+            }
+          },
+          "required": [
+            "target",
+            "reservations"
+          ],
+          "type": "object"
+        },
         "UnattributedDriftPathSet": {
           "description": "The non-empty path set left unassigned by an ambiguous widening attribution.",
           "items": {
@@ -6366,6 +6488,11 @@
               "type": "string"
             },
             {
+              "const": "configuration",
+              "description": "The configured repository trunk is not a local branch.",
+              "type": "string"
+            },
+            {
               "const": "unavailable",
               "description": "Git retains a registration whose checkout cannot be used.",
               "type": "string"
@@ -6611,11 +6738,16 @@
                 "status": {
                   "const": "claimed",
                   "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The integration branch recorded by the claim."
                 }
               },
               "required": [
                 "status",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "scopes",
                 "marker_publication",
@@ -6785,6 +6917,11 @@
             {
               "const": "renew",
               "description": "Renew a reservation's explicit activity record.",
+              "type": "string"
+            },
+            {
+              "const": "retarget",
+              "description": "Replace a live reservation's integration target.",
               "type": "string"
             },
             {
@@ -7354,6 +7491,17 @@
             "ledger": {
               "$ref": "#/$defs/initialization_resource",
               "description": "Whether initialization created the journal or found an existing one."
+            },
+            "targets_pinned": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TargetsPinnedPayload"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Legacy reservations assigned the repository trunk by this invocation."
             }
           },
           "required": [
@@ -8209,6 +8357,23 @@
               "type": "object"
             },
             {
+              "description": "Facts returned by `retarget`.",
+              "properties": {
+                "data": {
+                  "$ref": "#/$defs/RetargetPayload"
+                },
+                "kind": {
+                  "const": "retarget",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Facts returned by coordination identity management.",
               "properties": {
                 "data": {
@@ -8426,6 +8591,11 @@
             {
               "const": "renewed",
               "description": "A still-live reservation recorded recent activity.",
+              "type": "string"
+            },
+            {
+              "const": "retargeted",
+              "description": "A live reservation now names a replacement integration target.",
               "type": "string"
             },
             {
@@ -8828,6 +8998,7 @@
             "revision_exhausted",
             "integration_proof_subject_revision_exhausted",
             "snapshot_state_mismatch",
+            "retarget_requires_unreleased",
             "integrated_release_without_evidence",
             "active_evidence_revalidation",
             "active_scoped_patch_comparison",
@@ -11185,11 +11356,16 @@
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
                   "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
                 }
               },
               "required": [
                 "kind",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "phase_start_head",
                 "marker_publication",
@@ -11224,11 +11400,16 @@
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
                   "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
                 }
               },
               "required": [
                 "kind",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "phase_start_head",
                 "marker_publication",
@@ -11263,11 +11444,16 @@
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
                   "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
                 }
               },
               "required": [
                 "kind",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "phase_start_head",
                 "marker_publication",
@@ -11606,6 +11792,10 @@
               "type": "object"
             }
           ]
+        },
+        "IntegrationTarget": {
+          "$ref": "#/$defs/FullRefName",
+          "description": "A local branch into which reserved work integrates."
         },
         "IntegrationViolation": {
           "description": "A violation identifies the entering reservation and every hold that blocks it.",
@@ -13121,6 +13311,22 @@
             }
           ]
         },
+        "RetargetPayload": {
+          "description": "Result of replacing a reservation's integration branch.",
+          "properties": {
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "target": {
+              "$ref": "#/$defs/TargetView"
+            }
+          },
+          "required": [
+            "reservation_id",
+            "target"
+          ],
+          "type": "object"
+        },
         "RevalidationConsequence": {
           "enum": [
             "existing_answers_still_cover_widened_scopes_no_new_edge"
@@ -13363,6 +13569,93 @@
             "both_integrations_held_until_sequence"
           ],
           "type": "string"
+        },
+        "TargetFallback": {
+          "description": "An invalid branch setting replaced by the repository trunk during automatic acquisition.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/TargetFallbackReason"
+            },
+            "requested": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requested",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "TargetFallbackReason": {
+          "description": "Why an automatically selected branch setting could not be used.",
+          "enum": [
+            "own_branch",
+            "unresolved"
+          ],
+          "type": "string"
+        },
+        "TargetView": {
+          "description": "One integration branch and the commit observed when it was selected.",
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TargetFallback"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ref": {
+              "$ref": "#/$defs/IntegrationTarget"
+            },
+            "short_name": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/TargetViewSource"
+            }
+          },
+          "required": [
+            "ref",
+            "short_name",
+            "source",
+            "commit"
+          ],
+          "type": "object"
+        },
+        "TargetViewSource": {
+          "description": "The source of a target in a command response.",
+          "enum": [
+            "claim_argument",
+            "branch_configuration",
+            "repository_trunk",
+            "unrecorded"
+          ],
+          "type": "string"
+        },
+        "TargetsPinnedPayload": {
+          "description": "Legacy claims converted to durable repository-trunk targets by `init`.",
+          "properties": {
+            "reservations": {
+              "items": {
+                "$ref": "#/$defs/uuid_v7_identifier"
+              },
+              "type": "array"
+            },
+            "target": {
+              "$ref": "#/$defs/IntegrationTarget"
+            }
+          },
+          "required": [
+            "target",
+            "reservations"
+          ],
+          "type": "object"
         },
         "UnattributedDriftPathSet": {
           "description": "The non-empty path set left unassigned by an ambiguous widening attribution.",
@@ -13662,6 +13955,11 @@
               "type": "string"
             },
             {
+              "const": "configuration",
+              "description": "The configured repository trunk is not a local branch.",
+              "type": "string"
+            },
+            {
               "const": "unavailable",
               "description": "Git retains a registration whose checkout cannot be used.",
               "type": "string"
@@ -13837,11 +14135,16 @@
                 "status": {
                   "const": "claimed",
                   "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The integration branch recorded by the claim."
                 }
               },
               "required": [
                 "status",
                 "reservation_id",
+                "target",
                 "coordination_run_id",
                 "scopes",
                 "marker_publication",
@@ -14481,6 +14784,17 @@
             "ledger": {
               "$ref": "#/$defs/initialization_resource",
               "description": "Whether initialization created the journal or found an existing one."
+            },
+            "targets_pinned": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TargetsPinnedPayload"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Legacy reservations assigned the repository trunk by this invocation."
             }
           },
           "required": [
@@ -15401,6 +15715,7 @@
             "revision_exhausted",
             "integration_proof_subject_revision_exhausted",
             "snapshot_state_mismatch",
+            "retarget_requires_unreleased",
             "integrated_release_without_evidence",
             "active_evidence_revalidation",
             "active_scoped_patch_comparison",
@@ -16260,6 +16575,23 @@
           "type": "object"
         },
         {
+          "description": "Facts returned by `retarget`.",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/RetargetPayload"
+            },
+            "kind": {
+              "const": "retarget",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Facts returned by coordination identity management.",
           "properties": {
             "data": {
@@ -16399,6 +16731,7 @@
             "revision_exhausted",
             "integration_proof_subject_revision_exhausted",
             "snapshot_state_mismatch",
+            "retarget_requires_unreleased",
             "integrated_release_without_evidence",
             "active_evidence_revalidation",
             "active_scoped_patch_comparison",
