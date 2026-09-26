@@ -202,7 +202,7 @@ fn linked_init_enrolls_three_worktrees_and_sequences_reported_overlaps() {
         .expect("unresolved pairs");
     assert_eq!(unresolved.len(), 3);
     assert!(unresolved.iter().all(|pair| pair["origin"] == "enrollment"));
-    let answers = board["recorded_overlap_answers"]["entries"]
+    let answers = board["live_overlap_answers"]["entries"]
         .as_array()
         .expect("recorded answers");
     assert!(answers.iter().any(|answer| answer["answer"] == "enrollment"
@@ -217,7 +217,7 @@ fn linked_init_enrolls_three_worktrees_and_sequences_reported_overlaps() {
         2
     );
     assert!(
-        sequenced["recorded_overlap_answers"]["entries"]
+        sequenced["live_overlap_answers"]["entries"]
             .as_array()
             .expect("answers")
             .iter()

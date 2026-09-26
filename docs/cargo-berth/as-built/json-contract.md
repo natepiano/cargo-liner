@@ -167,7 +167,7 @@ bypass:
       },
       "settled_ordering_constraints": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
       "unresolved_overlaps": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
-      "recorded_overlap_answers": {
+      "live_overlap_answers": {
         "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
         "entries": [{
           "answer": "sequence",
@@ -190,6 +190,7 @@ bypass:
           }
         }]
       },
+      "released_overlap_answer_count": 0,
       "unconstrained_reservations": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
       "resolved": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
       "available_forced_permits": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
@@ -321,15 +322,27 @@ The sections mean:
   `reason`, `origin`, and `consequence =
   "both_integrations_held_until_sequence"`. `origin` is `user_answer` for a
   `defer` answer or `enrollment` for an overlap recorded by `init` enrollment.
-- `recorded_overlap_answers`: durable `enrollment`, `sequence`, `defer`,
-  `override`, `ordering_created_from_deferral`,
-  `existing_answers_cover_every_overlap`, and `widen_without_foreign_overlap`
-  answers with their exact scopes and effects. An `enrollment` entry carries
-  `reservation_id`, `exact_approved_scopes`, `acquisition = { "origin":
-  "enrollment" }`, and `consequence`, and lists only pairs not yet resolved; a
-  resolved pair appears as `ordering_created_from_deferral`. `acquisition.origin`
-  is `claim`, `enrollment`, or `widen` (with `added_scopes`, `cause`, and
-  `edit_blocking_status`).
+- `live_overlap_answers`: durable answers to an overlap with another
+  reservation, recorded by a reservation that is still active or outstanding.
+  `answer` is `enrollment`, `sequence`, `defer`, `override`, or
+  `ordering_created_from_deferral`; each entry carries its exact scopes and
+  effects. An `enrollment` entry carries `reservation_id`,
+  `exact_approved_scopes`, `acquisition = { "origin": "enrollment" }`, and
+  `consequence`, and lists only pairs not yet resolved; a resolved pair appears
+  as `ordering_created_from_deferral`, and the `defer` answer it resolved
+  leaves the list. `acquisition.origin` is `claim`, `enrollment`, or `widen`
+  (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen appears
+  here only when it recorded a new answer. A widen onto paths no other
+  reservation holds (`authorization.kind = "no_conflict"`), or whose overlaps
+  earlier answers already cover (`existing_answers_cover_every_overlap`), is
+  scope growth: the row's `scopes` show it and the journal keeps the `widen`
+  record, but it is never listed as an answer. An answer leaves the list when
+  the reservation that recorded it is released: `reservation_id`, or `deferred`
+  for `ordering_created_from_deferral`. Any constraint it left behind stays
+  under `waiting`, `settled_ordering_constraints`, or `unresolved_overlaps`.
+- `released_overlap_answer_count`: how many recorded overlap answers belong to
+  released reservations. The board does not list them; the journal keeps each
+  one.
 - `unconstrained_reservations`: non-resolved rows not involved in a recorded
   ordering edge or unresolved deferral. These are `active` and `outstanding`
   rows; a `released` reservation is always resolved audit history.
@@ -425,13 +438,10 @@ The envelope-level `payload.alerts[]` form carries the same fields under
 `{ "kind": "lost_integration_evidence", "data": { ... } }`. Board alerts are
 flattened under `payload.data.alerts.entries[]` as shown above.
 
-Two similar answer tags are intentionally separate parts of the frozen schema.
 Journal, claim, and widen payloads use
 `authorization.kind = "existing_answers_cover_every_overlap"` for
-`ConflictAuthorization::ExistingAnswersCoverEveryOverlap`. Board JSON uses
-`recorded_overlap_answers.entries[].answer =
-"existing_answers_cover_every_overlap"` for
-`RecordedAnswer::ExistingAnswersCoverEveryOverlap`.
+`ConflictAuthorization::ExistingAnswersCoverEveryOverlap`. Board JSON has no
+counterpart: such a widen adds no entry to `live_overlap_answers`.
 
 ## Named reservation lifecycle
 

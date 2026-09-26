@@ -494,7 +494,7 @@ fn populated_board_presentation_carries_the_complete_board_report() {
     let report_object = report
         .as_object()
         .expect("complete board report should be a JSON object");
-    assert_eq!(report_object.len(), 16);
+    assert_eq!(report_object.len(), 17);
     let board_data = &envelope["payload"]["data"];
     for (report_property, payload_field) in [
         ("Journal position", "journal_position"),
@@ -510,7 +510,11 @@ fn populated_board_presentation_carries_the_complete_board_report() {
             "settled_ordering_constraints",
         ),
         ("Unresolved overlaps", "unresolved_overlaps"),
-        ("Recorded overlap answers", "recorded_overlap_answers"),
+        ("Live overlap answers", "live_overlap_answers"),
+        (
+            "Released overlap answer count",
+            "released_overlap_answer_count",
+        ),
         ("Unconstrained reservations", "unconstrained_reservations"),
         ("Resolved reservations", "resolved"),
         ("Available forced permits", "available_forced_permits"),
@@ -1224,7 +1228,7 @@ fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
         data["unresolved_overlaps"]["entries"],
         serde_json::json!([])
     );
-    let answers = data["recorded_overlap_answers"]["entries"]
+    let answers = data["live_overlap_answers"]["entries"]
         .as_array()
         .expect("answer audit should be an array");
     let resolved = answers
@@ -1248,7 +1252,7 @@ fn resolved_deferral_moves_to_answer_audit_with_both_reasons() {
         "waiting",
         "settled_ordering_constraints",
         "unresolved_overlaps",
-        "recorded_overlap_answers",
+        "live_overlap_answers",
         "alerts",
     ] {
         assert_eq!(&data[section]["journal_position"], position);
@@ -1328,7 +1332,7 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
         "waiting",
         "settled_ordering_constraints",
         "unresolved_overlaps",
-        "recorded_overlap_answers",
+        "live_overlap_answers",
         "alerts",
     ] {
         assert_eq!(&data[section]["journal_position"], position);
@@ -1400,7 +1404,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
         );
         let answered_id = reservation_id(&answered);
         let data = board_data(repository.path());
-        let answers = data["recorded_overlap_answers"]["entries"]
+        let answers = data["live_overlap_answers"]["entries"]
             .as_array()
             .expect("recorded answers should be an array");
         let answer = answers
@@ -2039,11 +2043,12 @@ fn assert_complete_board_payload_sections(data: &serde_json::Value) {
             "git_cost",
             "integration_order",
             "journal_position",
+            "live_overlap_answers",
             "outstanding_incursions",
             "ready_now",
             "recorded_incursion_answers",
-            "recorded_overlap_answers",
             "recovered_bypasses_this_invocation",
+            "released_overlap_answer_count",
             "resolved",
             "settled_ordering_constraints",
             "targets",
@@ -2058,7 +2063,7 @@ fn assert_complete_board_payload_sections(data: &serde_json::Value) {
         "waiting",
         "settled_ordering_constraints",
         "unresolved_overlaps",
-        "recorded_overlap_answers",
+        "live_overlap_answers",
         "unconstrained_reservations",
         "resolved",
         "available_forced_permits",
@@ -2645,7 +2650,7 @@ fn incursion_is_one_shared_incident_then_moves_to_answer_audit() {
 }
 
 #[test]
-fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
+fn drift_widen_under_existing_answers_adds_no_overlap_answer_or_ordering() {
     let repository = initialized_repository();
     git(repository.path(), &["add", CONFIGURATION_PATH]);
     git(
@@ -2682,36 +2687,24 @@ fn drift_widen_audit_names_existing_coverage_without_new_ordering() {
     assert!(widened.status.success());
 
     let data = board_data(repository.path());
-    let answers = data["recorded_overlap_answers"]["entries"]
+    let answers = data["live_overlap_answers"]["entries"]
         .as_array()
-        .expect("answer audit should be an array");
-    let widen = answers
-        .iter()
-        .find(|answer| answer["answer"] == "existing_answers_cover_every_overlap")
-        .expect("drift widen should have its own audit row");
-    assert_eq!(widen["reservation_id"], subject_id);
-    assert_eq!(widen["cause"]["kind"], "drift");
-    assert_eq!(widen["edit_blocking_status"], "blocking");
+        .expect("live overlap answers should be an array");
     assert_eq!(
-        widen["exact_existing_bindings"][0]["reservation_id"],
-        holder_id
+        answers.len(),
+        1,
+        "only the override should be listed as an overlap answer: {answers:?}"
     );
-    assert_eq!(
-        widen["exact_existing_bindings"][0]["scopes"][0]["path"],
-        "shared/approved.txt"
-    );
+    let answer = &answers[0];
+    assert_eq!(answer["answer"], "override");
+    assert_eq!(answer["reservation_id"], subject_id);
+    assert_eq!(answer["blocker"], holder_id);
+    assert_eq!(data["released_overlap_answer_count"], 0);
     assert_eq!(
         data["settled_ordering_constraints"]["entries"],
         serde_json::json!([])
     );
     assert_eq!(data["waiting"]["entries"], serde_json::json!([]));
-    assert_eq!(
-        answers
-            .iter()
-            .filter(|answer| answer["answer"] == "existing_answers_cover_every_overlap")
-            .count(),
-        1
-    );
     let journal =
         fs::read_to_string(repository.path().join(JOURNAL_PATH)).expect("journal should read");
     let widen_event = journal
@@ -2774,16 +2767,16 @@ fn transaction_only_post_commit_actor_never_becomes_a_holder_or_orphan() {
             .iter()
             .all(|alert| alert["kind"] != "orphaned_outstanding")
     }));
+    let subject_row = data["unconstrained_reservations"]["entries"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["reservation_id"] == subject_id))
+        .expect("the widened subject should keep its row");
+    assert!(subject_row["scopes"].as_array().is_some_and(|scopes| {
+        scopes.contains(&serde_json::json!({"path": "added.rs", "kind": "file"}))
+    }));
     assert_eq!(
-        data["recorded_overlap_answers"]["entries"]
-            .as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|entry| entry["answer"] == "widen_without_foreign_overlap")
-                    .count()
-            }),
-        Some(1)
+        data["live_overlap_answers"]["entries"],
+        serde_json::json!([])
     );
 }
 
@@ -2807,7 +2800,7 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
     ));
     dirty_source(repository.path(), "first-foreign.rs");
     dirty_source(repository.path(), "second-foreign.rs");
-    let before = board_data(repository.path())["recorded_overlap_answers"]["entries"].clone();
+    let before = board_data(repository.path())["live_overlap_answers"]["entries"].clone();
     for (foreign_id, path) in [
         (&first_foreign, "first-foreign.rs"),
         (&second_foreign, "second-foreign.rs"),
@@ -2834,7 +2827,7 @@ fn incursion_only_post_commit_runs_add_no_invented_widening_row() {
             .map(Vec::len),
         Some(2)
     );
-    assert_eq!(data["recorded_overlap_answers"]["entries"], before);
+    assert_eq!(data["live_overlap_answers"]["entries"], before);
     assert!(!data.to_string().contains("ambiguous"));
 }
 

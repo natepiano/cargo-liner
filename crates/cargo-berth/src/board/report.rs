@@ -8,7 +8,8 @@ use super::alerts::BoardGitCost;
 use super::alerts::BypassAuditEntry;
 use super::alerts::OutstandingIncursion;
 use super::alerts::RecordedIncursionAnswer;
-use super::answers::RecordedAnswer;
+use super::answers::RecordedOverlapAnswer;
+use super::answers::ReleasedOverlapAnswerCount;
 use super::rows::BoardJournalPosition;
 use super::rows::BoardSection;
 use super::rows::BoardTarget;
@@ -51,8 +52,10 @@ pub(super) struct CompleteBoardReport<'board> {
     pub(super) settled_ordering_constraints:       &'board BoardSection<SettledOrderingConstraint>,
     #[serde(rename = "Unresolved overlaps")]
     pub(super) unresolved_overlaps:                &'board BoardSection<UnresolvedOverlap>,
-    #[serde(rename = "Recorded overlap answers")]
-    pub(super) recorded_overlap_answers:           &'board BoardSection<RecordedAnswer>,
+    #[serde(rename = "Live overlap answers")]
+    pub(super) live_overlap_answers:               &'board BoardSection<RecordedOverlapAnswer>,
+    #[serde(rename = "Released overlap answer count")]
+    pub(super) released_overlap_answer_count:      &'board ReleasedOverlapAnswerCount,
     #[serde(rename = "Unconstrained reservations")]
     pub(super) unconstrained_reservations:
         HumanBoardSection<'board, HumanReservationSnapshot<'board>>,

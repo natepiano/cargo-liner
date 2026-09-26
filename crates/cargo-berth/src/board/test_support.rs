@@ -379,7 +379,7 @@ pub(super) fn answered_board(answer: OverlapAnswerFixture) -> FixtureResult<Answ
     })
 }
 
-fn conflict_authorization(
+pub(super) fn conflict_authorization(
     answer: OverlapAnswerFixture,
     blocker: &ReservationClaimFixture,
 ) -> FixtureResult<ConflictAuthorization> {

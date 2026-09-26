@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Release, lost-evidence, orphan, first-touch, edge-rewrite, and `resolve --integrated-as` text names the reservation's integration target instead of trunk, since that branch judges the work; the `--integrated-as` value is shown as `<TARGET_OID>`.
 
+- `board --json` replaces `recorded_overlap_answers` with `live_overlap_answers` and `released_overlap_answer_count`. The list holds only answers to an overlap with another reservation (`enrollment`, `sequence`, `defer`, `override`, `ordering_created_from_deferral`) recorded by a reservation that is still active or outstanding; a released reservation's answers are only counted. A widen onto paths no other reservation holds, or whose overlaps earlier answers already cover, is scope growth and no longer appears as an answer, so the `widen_without_foreign_overlap` and `existing_answers_cover_every_overlap` board entries are gone. The journal keeps every record.
+
 - A released reservation's `merge_extent` in `board --json` and `board --reservation <id> --json` is `{"status": "released", "at_release": <extent>}`, so the extent last observed before release no longer reads as live protection. The single-reservation text labels it `Merge extent at release (not blocking)`. Active and outstanding rows are unchanged.
 
 ### Fixed

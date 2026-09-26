@@ -18,7 +18,9 @@ use super::alerts::BypassAuditEntry;
 use super::alerts::OutstandingIncursion;
 use super::alerts::RecordedIncursionAnswer;
 use super::answers;
-use super::answers::RecordedAnswer;
+use super::answers::BoardOverlapAnswers;
+use super::answers::RecordedOverlapAnswer;
+use super::answers::ReleasedOverlapAnswerCount;
 use super::error::BoardError;
 use super::report::CompleteBoardReport;
 use crate::answer::OverlapAuthorizationReason;
@@ -83,7 +85,8 @@ pub(crate) struct BoardModel {
     waiting:                               BoardSection<WaitingConstraint>,
     settled_ordering_constraints:          BoardSection<SettledOrderingConstraint>,
     unresolved_overlaps:                   BoardSection<UnresolvedOverlap>,
-    pub(super) recorded_overlap_answers:   BoardSection<RecordedAnswer>,
+    pub(super) live_overlap_answers:       BoardSection<RecordedOverlapAnswer>,
+    released_overlap_answer_count:         ReleasedOverlapAnswerCount,
     pub(super) unconstrained_reservations: BoardSection<BoardReservationSnapshot>,
     pub(super) resolved:                   BoardSection<BoardReservationSnapshot>,
     available_forced_permits:              BoardSection<AvailableForcedPermit>,
@@ -133,7 +136,8 @@ impl<'board> From<&'board BoardModel> for CompleteBoardReport<'board> {
             waiting:                            &board.waiting,
             settled_ordering_constraints:       &board.settled_ordering_constraints,
             unresolved_overlaps:                &board.unresolved_overlaps,
-            recorded_overlap_answers:           &board.recorded_overlap_answers,
+            live_overlap_answers:               &board.live_overlap_answers,
+            released_overlap_answer_count:      &board.released_overlap_answer_count,
             unconstrained_reservations:         board.unconstrained_reservations.for_human_report(
                 |reservation| HumanReservationSnapshot::from_snapshot(reservation, visibility),
             ),
@@ -535,7 +539,8 @@ impl BoardModel {
             && self.waiting.entries.is_empty()
             && self.settled_ordering_constraints.entries.is_empty()
             && self.unresolved_overlaps.entries.is_empty()
-            && self.recorded_overlap_answers.entries.is_empty()
+            && self.live_overlap_answers.entries.is_empty()
+            && self.released_overlap_answer_count.is_zero()
             && self.unconstrained_reservations.entries.is_empty()
             && self.resolved.entries.is_empty()
             && self.available_forced_permits.entries.is_empty()
@@ -619,7 +624,10 @@ impl BoardModel {
             &waiting,
             &unresolved_overlaps,
         );
-        let recorded_overlap_answers = answers::recorded_answers(events, &report.constraints)?;
+        let BoardOverlapAnswers {
+            live: live_overlap_answers,
+            released: released_overlap_answer_count,
+        } = answers::board_overlap_answers(events, &report.constraints, &active_ids)?;
         let available_forced_permits = alerts::available_forced_permits(events)?;
         let bypass_audit = alerts::bypass_audit(events);
         let (outstanding_incursions, recorded_incursion_answers) =
@@ -659,7 +667,8 @@ impl BoardModel {
             waiting: BoardSection::new(position, waiting),
             settled_ordering_constraints: BoardSection::new(position, settled),
             unresolved_overlaps: BoardSection::new(position, unresolved_overlaps),
-            recorded_overlap_answers: BoardSection::new(position, recorded_overlap_answers),
+            live_overlap_answers: BoardSection::new(position, live_overlap_answers),
+            released_overlap_answer_count,
             unconstrained_reservations: BoardSection::new(position, unconstrained_reservations),
             resolved: BoardSection::new(position, resolved),
             available_forced_permits: BoardSection::new(position, available_forced_permits),

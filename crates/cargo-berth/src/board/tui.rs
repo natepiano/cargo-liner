@@ -74,7 +74,8 @@ const CONSTRAINT_FIELDS: &[&str] = &[
     "unresolved_overlaps",
 ];
 const ANSWER_FIELDS: &[&str] = &[
-    "recorded_overlap_answers",
+    "live_overlap_answers",
+    "released_overlap_answer_count",
     "available_forced_permits",
     "bypass_audit",
 ];
@@ -1080,7 +1081,8 @@ mod tests {
             "waiting": empty_section(),
             "settled_ordering_constraints": empty_section(),
             "unresolved_overlaps": empty_section(),
-            "recorded_overlap_answers": empty_section(),
+            "live_overlap_answers": empty_section(),
+            "released_overlap_answer_count": 0,
             "unconstrained_reservations": empty_section(),
             "resolved": empty_section(),
             "available_forced_permits": empty_section(),

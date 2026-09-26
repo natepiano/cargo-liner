@@ -181,10 +181,11 @@ second invocation applies that exact token. The resulting fact records the
 submitting repository, worktree, and coordination run, the reason, and the exact
 overlap. It guarantees that the answer was deliberate, reasoned, limited to the
 conflict shown, attributed to the submitting coordination identity, and visible
-on the board. It does not identify a person or prove that a human supplied the
-answer. A published binary has nowhere to send an escalation that its caller
-cannot also read. The invoking harness is responsible for enforcing a
-human-in-the-loop rule.
+on the board until the reservation that recorded it is released; the journal
+keeps it after that. It does not identify a person or prove that a human
+supplied the answer. A published binary has nowhere to send an escalation that
+its caller cannot also read. The invoking harness is responsible for enforcing
+a human-in-the-loop rule.
 
 The gate has four intentional permit paths:
 

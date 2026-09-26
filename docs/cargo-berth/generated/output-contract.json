@@ -2624,6 +2624,9 @@
             "journal_position": {
               "$ref": "#/$defs/BoardJournalPosition"
             },
+            "live_overlap_answers": {
+              "$ref": "#/$defs/BoardSection5"
+            },
             "outstanding_incursions": {
               "$ref": "#/$defs/BoardSection9"
             },
@@ -2633,11 +2636,11 @@
             "recorded_incursion_answers": {
               "$ref": "#/$defs/BoardSection10"
             },
-            "recorded_overlap_answers": {
-              "$ref": "#/$defs/BoardSection5"
-            },
             "recovered_bypasses_this_invocation": {
               "$ref": "#/$defs/RecoveredBypassesThisInvocation"
+            },
+            "released_overlap_answer_count": {
+              "$ref": "#/$defs/ReleasedOverlapAnswerCount"
             },
             "resolved": {
               "$ref": "#/$defs/BoardSection6"
@@ -2670,7 +2673,8 @@
             "waiting",
             "settled_ordering_constraints",
             "unresolved_overlaps",
-            "recorded_overlap_answers",
+            "live_overlap_answers",
+            "released_overlap_answer_count",
             "unconstrained_reservations",
             "resolved",
             "available_forced_permits",
@@ -2930,7 +2934,7 @@
           "properties": {
             "entries": {
               "items": {
-                "$ref": "#/$defs/RecordedAnswer"
+                "$ref": "#/$defs/RecordedOverlapAnswer"
               },
               "type": "array"
             },
@@ -5066,7 +5070,50 @@
           ],
           "type": "object"
         },
-        "RecordedAnswer": {
+        "RecordedAt": {
+          "description": "An RFC 3339 UTC timestamp with millisecond precision.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "RecordedIncursionAnswer": {
+          "properties": {
+            "entered_paths": {
+              "items": {
+                "$ref": "#/$defs/ReservationScopePath"
+              },
+              "type": "array"
+            },
+            "foreign_reservation_ids": {
+              "items": {
+                "$ref": "#/$defs/uuid_v7_identifier"
+              },
+              "type": "array"
+            },
+            "incident_id": {
+              "$ref": "#/$defs/IncursionIncidentId"
+            },
+            "resolution_event_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "resolved_at": {
+              "$ref": "#/$defs/RecordedAt"
+            },
+            "straying_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            }
+          },
+          "required": [
+            "incident_id",
+            "straying_reservation_id",
+            "foreign_reservation_ids",
+            "entered_paths",
+            "resolution_event_id",
+            "resolved_at"
+          ],
+          "type": "object"
+        },
+        "RecordedOverlapAnswer": {
+          "description": "One durable answer to an overlap with another reservation's scopes.\n\nA widen that overlaps no foreign reservation, or whose overlaps earlier answers already cover,\nanswers nothing: it is scope growth, kept in the journal and never listed here.",
           "oneOf": [
             {
               "properties": {
@@ -5257,120 +5304,8 @@
                 "consequence"
               ],
               "type": "object"
-            },
-            {
-              "properties": {
-                "added_scopes": {
-                  "items": {
-                    "$ref": "#/$defs/ReservationScope"
-                  },
-                  "type": "array"
-                },
-                "answer": {
-                  "const": "existing_answers_cover_every_overlap",
-                  "type": "string"
-                },
-                "cause": {
-                  "$ref": "#/$defs/WidenCause"
-                },
-                "consequence": {
-                  "$ref": "#/$defs/RevalidationConsequence"
-                },
-                "edit_blocking_status": {
-                  "$ref": "#/$defs/EditBlockingStatus"
-                },
-                "exact_existing_bindings": {
-                  "$ref": "#/$defs/AuthorizedOverlapSet"
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier"
-                }
-              },
-              "required": [
-                "answer",
-                "reservation_id",
-                "exact_existing_bindings",
-                "added_scopes",
-                "cause",
-                "edit_blocking_status",
-                "consequence"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "added_scopes": {
-                  "items": {
-                    "$ref": "#/$defs/ReservationScope"
-                  },
-                  "type": "array"
-                },
-                "answer": {
-                  "const": "widen_without_foreign_overlap",
-                  "type": "string"
-                },
-                "cause": {
-                  "$ref": "#/$defs/WidenCause"
-                },
-                "edit_blocking_status": {
-                  "$ref": "#/$defs/EditBlockingStatus"
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier"
-                }
-              },
-              "required": [
-                "answer",
-                "reservation_id",
-                "added_scopes",
-                "cause",
-                "edit_blocking_status"
-              ],
-              "type": "object"
             }
           ]
-        },
-        "RecordedAt": {
-          "description": "An RFC 3339 UTC timestamp with millisecond precision.",
-          "minLength": 1,
-          "type": "string"
-        },
-        "RecordedIncursionAnswer": {
-          "properties": {
-            "entered_paths": {
-              "items": {
-                "$ref": "#/$defs/ReservationScopePath"
-              },
-              "type": "array"
-            },
-            "foreign_reservation_ids": {
-              "items": {
-                "$ref": "#/$defs/uuid_v7_identifier"
-              },
-              "type": "array"
-            },
-            "incident_id": {
-              "$ref": "#/$defs/IncursionIncidentId"
-            },
-            "resolution_event_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "resolved_at": {
-              "$ref": "#/$defs/RecordedAt"
-            },
-            "straying_reservation_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            }
-          },
-          "required": [
-            "incident_id",
-            "straying_reservation_id",
-            "foreign_reservation_ids",
-            "entered_paths",
-            "resolution_event_id",
-            "resolved_at"
-          ],
-          "type": "object"
         },
         "RecoverabilityVerdict": {
           "description": "The recovery conclusion current git evidence supports.",
@@ -5398,6 +5333,12 @@
             "$ref": "#/$defs/PendingBypassMarkerId"
           },
           "type": "array"
+        },
+        "ReleasedOverlapAnswerCount": {
+          "description": "How many recorded overlap answers belong to reservations that are already released.\n\nThe board lists these answers only as a count; the journal keeps each one in full.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
         "RequesterCoordinationIdentity": {
           "description": "The requester's coordination identity included in an overlap proposal.",
@@ -6000,12 +5941,6 @@
               "type": "object"
             }
           ]
-        },
-        "RevalidationConsequence": {
-          "enum": [
-            "existing_answers_still_cover_widened_scopes_no_new_edge"
-          ],
-          "type": "string"
         },
         "SessionIdentityMappingPublication": {
           "description": "Whether the current command's harness-session identity was published.",
@@ -10523,6 +10458,9 @@
             "journal_position": {
               "$ref": "#/$defs/BoardJournalPosition"
             },
+            "live_overlap_answers": {
+              "$ref": "#/$defs/BoardSection5"
+            },
             "outstanding_incursions": {
               "$ref": "#/$defs/BoardSection9"
             },
@@ -10532,11 +10470,11 @@
             "recorded_incursion_answers": {
               "$ref": "#/$defs/BoardSection10"
             },
-            "recorded_overlap_answers": {
-              "$ref": "#/$defs/BoardSection5"
-            },
             "recovered_bypasses_this_invocation": {
               "$ref": "#/$defs/RecoveredBypassesThisInvocation"
+            },
+            "released_overlap_answer_count": {
+              "$ref": "#/$defs/ReleasedOverlapAnswerCount"
             },
             "resolved": {
               "$ref": "#/$defs/BoardSection6"
@@ -10569,7 +10507,8 @@
             "waiting",
             "settled_ordering_constraints",
             "unresolved_overlaps",
-            "recorded_overlap_answers",
+            "live_overlap_answers",
+            "released_overlap_answer_count",
             "unconstrained_reservations",
             "resolved",
             "available_forced_permits",
@@ -10829,7 +10768,7 @@
           "properties": {
             "entries": {
               "items": {
-                "$ref": "#/$defs/RecordedAnswer"
+                "$ref": "#/$defs/RecordedOverlapAnswer"
               },
               "type": "array"
             },
@@ -12829,7 +12768,50 @@
           ],
           "type": "object"
         },
-        "RecordedAnswer": {
+        "RecordedAt": {
+          "description": "An RFC 3339 UTC timestamp with millisecond precision.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "RecordedIncursionAnswer": {
+          "properties": {
+            "entered_paths": {
+              "items": {
+                "$ref": "#/$defs/ReservationScopePath"
+              },
+              "type": "array"
+            },
+            "foreign_reservation_ids": {
+              "items": {
+                "$ref": "#/$defs/uuid_v7_identifier"
+              },
+              "type": "array"
+            },
+            "incident_id": {
+              "$ref": "#/$defs/IncursionIncidentId"
+            },
+            "resolution_event_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            },
+            "resolved_at": {
+              "$ref": "#/$defs/RecordedAt"
+            },
+            "straying_reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier"
+            }
+          },
+          "required": [
+            "incident_id",
+            "straying_reservation_id",
+            "foreign_reservation_ids",
+            "entered_paths",
+            "resolution_event_id",
+            "resolved_at"
+          ],
+          "type": "object"
+        },
+        "RecordedOverlapAnswer": {
+          "description": "One durable answer to an overlap with another reservation's scopes.\n\nA widen that overlaps no foreign reservation, or whose overlaps earlier answers already cover,\nanswers nothing: it is scope growth, kept in the journal and never listed here.",
           "oneOf": [
             {
               "properties": {
@@ -13020,120 +13002,8 @@
                 "consequence"
               ],
               "type": "object"
-            },
-            {
-              "properties": {
-                "added_scopes": {
-                  "items": {
-                    "$ref": "#/$defs/ReservationScope"
-                  },
-                  "type": "array"
-                },
-                "answer": {
-                  "const": "existing_answers_cover_every_overlap",
-                  "type": "string"
-                },
-                "cause": {
-                  "$ref": "#/$defs/WidenCause"
-                },
-                "consequence": {
-                  "$ref": "#/$defs/RevalidationConsequence"
-                },
-                "edit_blocking_status": {
-                  "$ref": "#/$defs/EditBlockingStatus"
-                },
-                "exact_existing_bindings": {
-                  "$ref": "#/$defs/AuthorizedOverlapSet"
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier"
-                }
-              },
-              "required": [
-                "answer",
-                "reservation_id",
-                "exact_existing_bindings",
-                "added_scopes",
-                "cause",
-                "edit_blocking_status",
-                "consequence"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "added_scopes": {
-                  "items": {
-                    "$ref": "#/$defs/ReservationScope"
-                  },
-                  "type": "array"
-                },
-                "answer": {
-                  "const": "widen_without_foreign_overlap",
-                  "type": "string"
-                },
-                "cause": {
-                  "$ref": "#/$defs/WidenCause"
-                },
-                "edit_blocking_status": {
-                  "$ref": "#/$defs/EditBlockingStatus"
-                },
-                "reservation_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier"
-                }
-              },
-              "required": [
-                "answer",
-                "reservation_id",
-                "added_scopes",
-                "cause",
-                "edit_blocking_status"
-              ],
-              "type": "object"
             }
           ]
-        },
-        "RecordedAt": {
-          "description": "An RFC 3339 UTC timestamp with millisecond precision.",
-          "minLength": 1,
-          "type": "string"
-        },
-        "RecordedIncursionAnswer": {
-          "properties": {
-            "entered_paths": {
-              "items": {
-                "$ref": "#/$defs/ReservationScopePath"
-              },
-              "type": "array"
-            },
-            "foreign_reservation_ids": {
-              "items": {
-                "$ref": "#/$defs/uuid_v7_identifier"
-              },
-              "type": "array"
-            },
-            "incident_id": {
-              "$ref": "#/$defs/IncursionIncidentId"
-            },
-            "resolution_event_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "resolved_at": {
-              "$ref": "#/$defs/RecordedAt"
-            },
-            "straying_reservation_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            }
-          },
-          "required": [
-            "incident_id",
-            "straying_reservation_id",
-            "foreign_reservation_ids",
-            "entered_paths",
-            "resolution_event_id",
-            "resolved_at"
-          ],
-          "type": "object"
         },
         "RecoverabilityVerdict": {
           "description": "The recovery conclusion current git evidence supports.",
@@ -13161,6 +13031,12 @@
             "$ref": "#/$defs/PendingBypassMarkerId"
           },
           "type": "array"
+        },
+        "ReleasedOverlapAnswerCount": {
+          "description": "How many recorded overlap answers belong to reservations that are already released.\n\nThe board lists these answers only as a count; the journal keeps each one in full.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
         "RequesterCoordinationIdentity": {
           "description": "The requester's coordination identity included in an overlap proposal.",
@@ -13701,12 +13577,6 @@
             "target"
           ],
           "type": "object"
-        },
-        "RevalidationConsequence": {
-          "enum": [
-            "existing_answers_still_cover_widened_scopes_no_new_edge"
-          ],
-          "type": "string"
         },
         "SessionIdentityMappingPublication": {
           "description": "Whether the current command's harness-session identity was published.",
