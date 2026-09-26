@@ -54,6 +54,8 @@ const AMBIENT_SESSION: &str = "ambient-session";
 const AMBIENT_STALE_SESSION: &str = "ambient-stale-session";
 const BOARD_SESSION: &str = "board-session";
 const CLAUDE_CODE_SESSION: &str = "claude-code-session";
+const DEFERRING_SESSION: &str = "deferring-session";
+const HOLDER_SESSION: &str = "holder-session";
 const INCURSION_SESSION: &str = "incursion-session";
 const ORPHAN_SESSION_START_ENTRY: &str = "test_session_start_renders_real_orphan_recovery_actions";
 const POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY: &str =
@@ -421,13 +423,11 @@ fn a_claim_under_only_the_claude_code_session_binds_that_session() -> TestResult
     let repository = initialized_repository()?;
     let unmapped = run_berth(repository.path(), &["claim", "tree:shared", "--json"])?;
     require_success(&unmapped, "reservation claimed under no harness session")?;
-    let claimed = berth_command(BERTH_EXECUTABLE)
-        .args(["claim", "file:shared/child.rs", "--json"])
-        .current_dir(repository.path())
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove("CARGO_BERTH_SESSION_ID")
-        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, CLAUDE_CODE_SESSION)
-        .output()?;
+    let claimed = run_berth_with_claude_code_session(
+        repository.path(),
+        &["claim", "file:shared/child.rs", "--json"],
+        CLAUDE_CODE_SESSION,
+    )?;
     require_success(&claimed, "claim under only the Claude Code session")?;
 
     let output = run_pre_tool_use(
@@ -443,6 +443,68 @@ fn a_claim_under_only_the_claude_code_session_binds_that_session() -> TestResult
         &output,
         "the edit the Claude Code session's claim was made for",
     )
+}
+
+/// An approved `--defer` claim a Claude Code session runs directly authorizes its edit.
+///
+/// The session's pre-edit hook has already first-touched two files into one reservation
+/// when another session's reservation refuses it a third. The session answers with a
+/// `--defer` claim under only `CLAUDE_CODE_SESSION_ID`, the user approves the proposal,
+/// and the resubmitted claim appends a second reservation carrying the answer. Unless that
+/// reservation binds to the session, the hook widens the first-touch reservation, which
+/// carries no answer for the holder, and refuses the same edit again. The files the
+/// first-touch reservation holds must stay editable after the claim.
+#[test]
+fn an_approved_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResult {
+    let repository = initialized_repository()?;
+    let holder = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:shared.rs", "--json"],
+        HOLDER_SESSION,
+    )?;
+    require_success(&holder, "the other session's claim")?;
+    let holder_id = claimed_reservation_id(&holder)?;
+    dirty_source(repository.path(), "shared.rs")?;
+    let (_requester_directory, requester_root) = add_worktree(&repository, "deferring-requester")?;
+    for first_touched in ["first.rs", "second.rs"] {
+        let touched = run_pre_tool_use(
+            &requester_root,
+            &edit_payload(&requester_root, first_touched, Some(DEFERRING_SESSION)),
+        )?;
+        require_success(&touched, "the session's first-touch edit")?;
+    }
+    let mapping: Value =
+        serde_json::from_slice(&fs::read(repository.path().join(SESSION_MAPPING_PATH))?)?;
+    required_string(
+        &mapping,
+        &format!("/identities/{DEFERRING_SESSION}/reservation_id"),
+        "the mapping of the session's first-touch reservation",
+    )?;
+    let refused = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "shared.rs", Some(DEFERRING_SESSION)),
+    )?;
+    assert_refused_for_scope(&refused, "file:shared.rs", "the edit the holder refuses")?;
+
+    let deferred = defer_claim_with_claude_code_session(
+        &requester_root,
+        "shared.rs",
+        &holder_id,
+        DEFERRING_SESSION,
+    )?;
+    require_success(&deferred, "the approved defer claim")?;
+
+    for edited in ["shared.rs", "first.rs", "second.rs"] {
+        let output = run_pre_tool_use(
+            &requester_root,
+            &edit_payload(&requester_root, edited, Some(DEFERRING_SESSION)),
+        )?;
+        require_success(
+            &output,
+            &format!("the session's edit to {edited} after its approved defer claim"),
+        )?;
+    }
+    Ok(())
 }
 
 enum NormalizedEdit {
@@ -1769,6 +1831,58 @@ fn run_berth_with_session(
         .env_remove("CARGO_BERTH_RUN")
         .env("CARGO_BERTH_SESSION_ID", session_id)
         .output()?)
+}
+
+/// Run `cargo-berth` the way a Claude Code session's Bash tool does: its session named by
+/// `CLAUDE_CODE_SESSION_ID` alone.
+fn run_berth_with_claude_code_session(
+    repository_root: &Path,
+    arguments: &[&str],
+    session_id: &str,
+) -> TestResult<Output> {
+    Ok(berth_command(BERTH_EXECUTABLE)
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, session_id)
+        .output()?)
+}
+
+/// Defer `path` behind `holder_id` under only the Claude Code session, then resubmit the
+/// claim with the proposal token the user approved.
+fn defer_claim_with_claude_code_session(
+    repository_root: &Path,
+    path: &str,
+    holder_id: &str,
+    session_id: &str,
+) -> TestResult<Output> {
+    let mut arguments = vec![
+        "claim",
+        path,
+        "--defer",
+        holder_id,
+        "--why",
+        "apply a one-line fix",
+        "--overlap-why",
+        "the integration order is not known yet",
+        "--json",
+    ];
+    let proposal = run_berth_with_claude_code_session(repository_root, &arguments, session_id)?;
+    let envelope = json_output(&proposal)?;
+    if proposal.status.code() != Some(3) || envelope["status"] != "needs_user_authorization" {
+        return Err(failure(format!(
+            "the defer claim should ask for user authorization, exited with {:?}: {envelope}",
+            proposal.status.code()
+        )));
+    }
+    let proposal_token =
+        required_string(&envelope, "/payload/data/proposal_token", "defer proposal")?;
+    arguments.splice(
+        arguments.len() - 1..arguments.len() - 1,
+        ["--proposal", proposal_token],
+    );
+    run_berth_with_claude_code_session(repository_root, &arguments, session_id)
 }
 
 /// Read one reference's current commit, the way the corpus identifiers are restated from it.
