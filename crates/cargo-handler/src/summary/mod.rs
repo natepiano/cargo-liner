@@ -10,6 +10,7 @@ pub(crate) mod age;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -21,7 +22,6 @@ use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
-use tui_pane::accent_color;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
@@ -181,36 +181,39 @@ fn draw_machine(
         .saturating_add(GROUP_GAP_HEIGHT)
 }
 
-/// `machine`'s heading: its name, then how many agents it lists, that
-/// it is still being scanned, or why it could not be.
+/// `machine`'s heading: its name in bold, then how many agents it
+/// lists, that it is still being scanned, or why it could not be. The
+/// note is plain text, never the label color the table's column
+/// headers use.
 fn heading<'a>(machine: &Machine<'a>) -> Line<'a> {
-    let label = Style::default().fg(label_color());
+    let note = Style::default().fg(text_default());
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(machine.name, Style::default().fg(accent_color())),
+        Span::styled(
+            machine.name,
+            Style::default()
+                .fg(text_default())
+                .add_modifier(Modifier::BOLD),
+        ),
+        separator(),
     ];
     match machine.state {
-        MachineState::Scanning => {
-            heading.push(Span::styled(
-                format!("{HEADING_SEPARATOR}{SCANNING_NOTE}"),
-                label,
-            ));
-        },
-        MachineState::Answered(_) => {
-            heading.push(Span::styled(
-                format!(
-                    "{HEADING_SEPARATOR}{}",
-                    count_note(machine.state.top_level().count())
-                ),
-                label,
-            ));
-        },
+        MachineState::Scanning => heading.push(Span::styled(SCANNING_NOTE, note)),
+        MachineState::Answered(_) => heading.push(Span::styled(
+            count_note(machine.state.top_level().count()),
+            note,
+        )),
         MachineState::Failed(reason) => {
-            heading.push(Span::styled(HEADING_SEPARATOR, label));
             heading.push(Span::styled(reason.as_str(), Role::Unreachable.style()));
         },
     }
     Line::from(heading)
+}
+
+/// The ` · ` between facts on one line, in plain text: only a label
+/// takes the label color.
+pub(crate) fn separator() -> Span<'static> {
+    Span::styled(HEADING_SEPARATOR, Style::default().fg(text_default()))
 }
 
 /// What a heading says about a machine that answered with `count`
@@ -524,8 +527,18 @@ mod tests {
             ]
         );
         assert_eq!(buffer[(1, 2)].fg, text_default());
+        assert_eq!(buffer[(1, 0)].fg, text_default(), "the machine's name");
+        assert!(
+            buffer[(1, 0)].modifier.contains(Modifier::BOLD),
+            "the machine's name is bold"
+        );
+        assert_eq!(buffer[(9, 0)].fg, text_default(), "the separator");
+        assert_eq!(buffer[(11, 0)].fg, text_default(), "the count");
+        assert_eq!(buffer[(7, 13)].fg, text_default(), "scanning");
+        // Only the label rows take the header color: no heading, note,
+        // or row shares it.
         let header = buffer[(1, 1)].fg;
-        for y in [2, 3, 4, 5, 9] {
+        for y in [0, 2, 3, 4, 5, 7, 9, 11, 13] {
             for x in 0..buffer.area.width {
                 assert_ne!(
                     buffer[(x, y)].fg,

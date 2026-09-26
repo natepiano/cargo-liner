@@ -113,8 +113,10 @@ otherwise cut its header, its directory or a name short. The same session in a
 cell 38 columns wide, working in a longer directory:
 
 ```text
- agent    claude · pid 3266367
- status   busy · 23h
+ agent    claude
+ pid      3266367
+ status   busy
+ age      23h
  machine  natedev
  desktop  berth_fix
  ~/rust/
@@ -137,13 +139,19 @@ cell 38 columns wide, working in a longer directory:
 ```
 
 Where the header's one line would be cut, it stands as a block, one fact to a
-line after a label column: the agent and its pid, its status and age, its
-machine and its desktop, each value in the color the line gives it. A directory
+line after a label column: the agent, its pid, status, age, machine and
+desktop, each value in the color the line gives it. A directory
 too long for its line breaks after a `/`, onto as many lines as it takes. Where
 the table would cut a name, each row stands as an entry of its own: its `kind`,
 indented as the table indents it, then its age and its pid when it has one, and
 below that its name in full, indented under the `kind` and broken before a
 space or after a `/` when it is still too long.
+
+The label color is kept for labels: the block's label column, the table's
+column headers and `launched by`. Values, the `pid` before a number, the ` · `
+between facts and notes such as `nothing running` are drawn in plain text or
+their own colors, never in it, and every built-in theme gives labels a color
+nothing else uses.
 
 Each kind of row comes from its own place:
 

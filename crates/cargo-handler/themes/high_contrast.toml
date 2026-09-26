@@ -33,7 +33,7 @@ remembered = { r = 0, g = 25, b = 50 }
 accent       = { color = "LightCyan", bold = true }
 error        = { color = "LightRed", bold = true }
 inline_error = { color = "LightYellow", bold = true }
-label        = "White"
+label        = { r = 175, g = 215, b = 200 }
 success      = { color = "LightGreen", bold = true }
 warning      = { color = "LightYellow", bold = true }
 
@@ -88,7 +88,7 @@ remembered = { r = 255, g = 250, b = 220 }
 accent       = { color = { r = 0, g = 0, b = 140 }, bold = true }
 error        = { color = { r = 180, g = 0, b = 0 }, bold = true }
 inline_error = { color = { r = 140, g = 60, b = 0 }, bold = true }
-label        = "Black"
+label        = { r = 40, g = 85, b = 75 }
 success      = { color = { r = 0, g = 100, b = 0 }, bold = true }
 warning      = { color = { r = 140, g = 60, b = 0 }, bold = true }
 

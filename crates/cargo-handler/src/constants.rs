@@ -97,15 +97,16 @@ pub(crate) const CHILD_AGE_COLUMN: usize = 3;
 /// Cells the `kind` column is indented by for each level a row sits
 /// below the agent.
 pub(crate) const CHILD_KIND_INDENT: usize = 2;
-/// Labels an agent cell's header block with the agent's program and
-/// pid, one of the facts it gives when its one-line header would be
-/// cut.
+/// Labels the agent's age in an agent cell's header block.
+pub(crate) const HEADER_AGE_LABEL: &str = "age";
+/// Labels an agent cell's header block with the agent's program, one
+/// of the facts it gives when its one-line header would be cut.
 pub(crate) const HEADER_AGENT_LABEL: &str = "agent";
 /// Labels the agent's desktop in an agent cell's header block.
 pub(crate) const HEADER_DESKTOP_LABEL: &str = "desktop";
 /// Labels the machine the agent runs on in an agent cell's header block.
 pub(crate) const HEADER_MACHINE_LABEL: &str = "machine";
-/// Labels the agent's status and age in an agent cell's header block.
+/// Labels the agent's status in an agent cell's header block.
 pub(crate) const HEADER_STATUS_LABEL: &str = "status";
 /// Rows the first line of a child drawn as a stacked entry takes: its
 /// kind, age and pid, above its name.
@@ -119,8 +120,8 @@ pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
 /// What an agent cell says in place of its table when the agent is
 /// running nothing.
 pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
-/// Leads the agent's pid in an agent cell's header, and names a
-/// launcher known by its pid alone.
+/// Leads the agent's pid in an agent cell's header, labels it in the
+/// header block, and names a launcher known by its pid alone.
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";

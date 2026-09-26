@@ -31,7 +31,6 @@ use tui_pane::ColumnSpec;
 use tui_pane::ColumnWidths;
 use tui_pane::SECTION_HEADER_INDENT;
 use tui_pane::SECTION_ITEM_INDENT;
-use tui_pane::accent_color;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
@@ -46,11 +45,11 @@ use crate::constants::CHILD_KIND_COLUMN;
 use crate::constants::CHILD_KIND_INDENT;
 use crate::constants::CHILD_NAME_COLUMN;
 use crate::constants::CHILD_PID_COLUMN;
+use crate::constants::HEADER_AGE_LABEL;
 use crate::constants::HEADER_AGENT_LABEL;
 use crate::constants::HEADER_DESKTOP_LABEL;
 use crate::constants::HEADER_MACHINE_LABEL;
 use crate::constants::HEADER_STATUS_LABEL;
-use crate::constants::HEADING_SEPARATOR;
 use crate::constants::LAUNCHED_BY_LABEL;
 use crate::constants::LAUNCHER_LINE_HEIGHT;
 use crate::constants::MISSING_VALUE;
@@ -242,8 +241,11 @@ pub(crate) fn draw(
     };
     match Children::fitted(&row.children, children.width, now) {
         Children::Nothing => {
-            Paragraph::new(Line::from(Span::styled(NOTHING_RUNNING_NOTE, label)))
-                .render(children, buffer);
+            Paragraph::new(Line::from(Span::styled(
+                NOTHING_RUNNING_NOTE,
+                Style::default().fg(text_default()),
+            )))
+            .render(children, buffer);
         },
         Children::Table(constraints) => Table::new(
             row.children
@@ -282,15 +284,14 @@ fn header(row: &AgentRow, machine: &str, width: u16, now: u64) -> Vec<Line<'stat
 
 /// The header on one line: `pid <pid> · <agent> · <status> · <age> ·
 /// <machine> · <desktop>`, colored as the summary colors the same
-/// values.
+/// values. It has no label column, so no part of it takes the label
+/// color: `pid` reads as part of its value.
 fn header_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
-    let label = Style::default().fg(label_color());
     let text = Style::default().fg(text_default());
-    let separator = || Span::styled(HEADING_SEPARATOR, label);
+    let separator = summary::separator;
     Line::from(vec![
         Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(format!("{PID_LABEL} "), label),
-        Span::styled(row.pid.to_string(), text),
+        Span::styled(format!("{PID_LABEL} {}", row.pid), text),
         separator(),
         Span::styled(row.agent.label(), summary::agent_role(row.agent).style()),
         separator(),
@@ -301,51 +302,43 @@ fn header_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
         separator(),
         Span::styled(age::age_label(now.saturating_sub(row.started)), text),
         separator(),
-        Span::styled(machine.to_string(), Style::default().fg(accent_color())),
+        Span::styled(machine.to_string(), text),
         separator(),
         Span::styled(summary::desktop_text(row).to_string(), text),
     ])
 }
 
 /// The header as a block, one fact to a line after a label column:
-/// `agent <agent> · pid <pid>`, `status <status> · <age>`, `machine
-/// <machine>` and `desktop <desktop>`, each value colored as
+/// the agent, its pid, status, age, machine and desktop. Only the label
+/// column takes the label color; each value is colored as
 /// [`header_line`] colors it.
 fn header_block(row: &AgentRow, machine: &str, now: u64) -> Vec<Line<'static>> {
     let label = Style::default().fg(label_color());
     let text = Style::default().fg(text_default());
-    let separator = || Span::styled(HEADING_SEPARATOR, label);
     let facts = [
         (
             HEADER_AGENT_LABEL,
-            vec![
-                Span::styled(row.agent.label(), summary::agent_role(row.agent).style()),
-                separator(),
-                Span::styled(format!("{PID_LABEL} "), label),
-                Span::styled(row.pid.to_string(), text),
-            ],
+            Span::styled(row.agent.label(), summary::agent_role(row.agent).style()),
         ),
+        (PID_LABEL, Span::styled(row.pid.to_string(), text)),
         (
             HEADER_STATUS_LABEL,
-            vec![
-                Span::styled(
-                    summary::status_text(row).to_string(),
-                    summary::status_role(row).style(),
-                ),
-                separator(),
-                Span::styled(age::age_label(now.saturating_sub(row.started)), text),
-            ],
+            Span::styled(
+                summary::status_text(row).to_string(),
+                summary::status_role(row).style(),
+            ),
+        ),
+        (
+            HEADER_AGE_LABEL,
+            Span::styled(age::age_label(now.saturating_sub(row.started)), text),
         ),
         (
             HEADER_MACHINE_LABEL,
-            vec![Span::styled(
-                machine.to_string(),
-                Style::default().fg(accent_color()),
-            )],
+            Span::styled(machine.to_string(), text),
         ),
         (
             HEADER_DESKTOP_LABEL,
-            vec![Span::styled(summary::desktop_text(row).to_string(), text)],
+            Span::styled(summary::desktop_text(row).to_string(), text),
         ),
     ];
     let label_width = facts
@@ -356,13 +349,12 @@ fn header_block(row: &AgentRow, machine: &str, now: u64) -> Vec<Line<'static>> {
         + usize::from(TABLE_COLUMN_SPACING);
     facts
         .into_iter()
-        .map(|(name, values)| {
-            let mut spans = vec![
+        .map(|(name, value)| {
+            Line::from(vec![
                 Span::raw(SECTION_HEADER_INDENT),
                 Span::styled(format!("{name:<label_width$}"), label),
-            ];
-            spans.extend(values);
-            Line::from(spans)
+                value,
+            ])
         })
         .collect()
 }
@@ -431,11 +423,11 @@ fn child_row(child: &ChildRow, name_style: Style, now: u64) -> Row<'static> {
 /// One child as a stacked entry `width` cells across: `<kind> · <age> ·
 /// pid <pid>`, the kind indented as the table indents it and the pid
 /// left out for a child with no process, then the name in full on the
-/// lines below, indented under the kind and drawn in `name_style`.
+/// lines below, indented under the kind and drawn in `name_style`. As
+/// in [`header_line`], `pid` reads as part of its value.
 fn stacked_child(child: &ChildRow, width: u16, name_style: Style, now: u64) -> Vec<Line<'static>> {
-    let label = Style::default().fg(label_color());
     let text = Style::default().fg(text_default());
-    let separator = || Span::styled(HEADING_SEPARATOR, label);
+    let separator = summary::separator;
     let mut head = vec![
         Span::styled(kind_text(child), kind_role(child.kind).style()),
         separator(),
@@ -444,8 +436,7 @@ fn stacked_child(child: &ChildRow, width: u16, name_style: Style, now: u64) -> V
     if let Some(pid) = child.pid {
         head.extend([
             separator(),
-            Span::styled(format!("{PID_LABEL} "), label),
-            Span::styled(pid.to_string(), text),
+            Span::styled(format!("{PID_LABEL} {pid}"), text),
         ]);
     }
     let indent = name_indent(child);
@@ -538,6 +529,8 @@ fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constra
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
     use crate::census::Agent;
     use crate::census::MachineState;
@@ -732,7 +725,9 @@ mod tests {
         assert_eq!(buffer[(5, 0)].fg, text_default());
         assert_eq!(role(15, 0), Role::Claude.style().fg);
         assert_eq!(role(24, 0), Role::Busy.style().fg);
-        assert_eq!(buffer[(37, 0)].fg, accent_color());
+        assert_eq!(buffer[(1, 0)].fg, text_default(), "the pid marker");
+        assert_eq!(buffer[(13, 0)].fg, text_default(), "a separator");
+        assert_eq!(buffer[(37, 0)].fg, text_default(), "the machine");
         assert_eq!(role(10, 5), Role::Shell.style().fg);
         assert_eq!(role(12, 6), Role::Codex.style().fg);
         assert_eq!(buffer[(1, 7)].fg, text_default());
@@ -765,8 +760,10 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                " agent    claude · pid 3266367",
-                " status   busy · 23h",
+                " agent    claude",
+                " pid      3266367",
+                " status   busy",
+                " age      23h",
                 " machine  natedev",
                 " desktop  berth_fix",
                 " ~/rust/",
@@ -827,24 +824,29 @@ mod tests {
             " pid 1579022 · claude · busy · 2d · natedev · —"
         );
         assert_eq!(
-            lines(&block)[..4],
+            lines(&block)[..6],
             [
-                " agent    claude · pid 1579022",
-                " status   busy · 2d",
+                " agent    claude",
+                " pid      1579022",
+                " status   busy",
+                " age      2d",
                 " machine  natedev",
                 " desktop  —",
             ]
         );
-        let label = Some(label_color());
-        for y in 0..4 {
-            assert_eq!(Some(block[(1, y)].fg), label, "row {y}'s label");
+        let label = label_color();
+        for y in 0..6 {
+            assert_eq!(block[(1, y)].fg, label, "row {y}'s label");
+            for x in 10..block.area.width {
+                assert_ne!(block[(x, y)].fg, label, "row {y}'s value at column {x}");
+            }
         }
         assert_eq!(Some(block[(10, 0)].fg), Role::Claude.style().fg);
-        assert_eq!(block[(23, 0)].fg, text_default(), "the pid");
-        assert_eq!(Some(block[(10, 1)].fg), Role::Busy.style().fg);
-        assert_eq!(block[(17, 1)].fg, text_default(), "the age");
-        assert_eq!(block[(10, 2)].fg, accent_color(), "the machine");
-        assert_eq!(block[(10, 3)].fg, text_default(), "the desktop");
+        assert_eq!(block[(10, 1)].fg, text_default(), "the pid");
+        assert_eq!(Some(block[(10, 2)].fg), Role::Busy.style().fg);
+        assert_eq!(block[(10, 3)].fg, text_default(), "the age");
+        assert_eq!(block[(10, 4)].fg, text_default(), "the machine");
+        assert_eq!(block[(10, 5)].fg, text_default(), "the desktop");
     }
 
     /// A directory too long for its line breaks after the last `/` that
@@ -859,7 +861,7 @@ mod tests {
         let lines = lines(&drawn(&arrange, None, 18));
 
         assert_eq!(
-            lines[4..],
+            lines[6..],
             [
                 " ~/rust/",
                 " hana_catalyst/",
@@ -922,7 +924,8 @@ mod tests {
         let label = label_color();
         assert_eq!(Some(stacked[(1, 3)].fg), Role::Shell.style().fg);
         assert_eq!(stacked[(9, 3)].fg, text_default(), "the age");
-        assert_eq!(stacked[(15, 3)].fg, label, "the pid label");
+        assert_eq!(stacked[(7, 3)].fg, text_default(), "a separator");
+        assert_eq!(stacked[(15, 3)].fg, text_default(), "the pid marker");
         assert_eq!(stacked[(19, 3)].fg, text_default(), "the pid");
         assert_eq!(Some(stacked[(1, 5)].fg), Role::Claude.style().fg);
         for y in [4, 6] {
@@ -932,6 +935,66 @@ mod tests {
                     label,
                     "the name on row {y} draws column {x} in the label color"
                 );
+            }
+        }
+    }
+
+    /// The text of each run of cells drawn in `color`, row by row,
+    /// trimmed.
+    fn runs_in(buffer: &Buffer, color: Color) -> Vec<String> {
+        let mut runs = Vec::new();
+        for y in 0..buffer.area.height {
+            let mut run = String::new();
+            for x in 0..=buffer.area.width {
+                if x < buffer.area.width && buffer[(x, y)].fg == color {
+                    run.push_str(buffer[(x, y)].symbol());
+                } else if !run.trim().is_empty() {
+                    runs.push(run.trim().to_string());
+                    run.clear();
+                } else {
+                    run.clear();
+                }
+            }
+        }
+        runs
+    }
+
+    /// The label color marks labels and nothing else, so a label never
+    /// reads as part of the values beside it: at any width, every run
+    /// of it is a label, and no value, `pid` marker, note or separator
+    /// takes it.
+    #[test]
+    fn only_labels_take_the_label_color() {
+        let trunk = AgentRow {
+            directory: LONG_DIRECTORY.to_string(),
+            ..trunk()
+        };
+        let idle = agent(ARRANGE, "tool-based-ui-arrange", 2 * HOUR, Some(BOSS));
+        let labels: HashSet<&str> = [
+            HEADER_AGENT_LABEL,
+            PID_LABEL,
+            HEADER_STATUS_LABEL,
+            HEADER_AGE_LABEL,
+            HEADER_MACHINE_LABEL,
+            HEADER_DESKTOP_LABEL,
+            LAUNCHED_BY_LABEL,
+        ]
+        .into_iter()
+        .chain(CHILD_HEADERS)
+        .collect();
+        for row in [&trunk, &idle] {
+            for width in [NARROW, WIDE] {
+                let buffer = drawn(row, Some("boss of bosses"), width);
+
+                let runs = runs_in(&buffer, label_color());
+
+                assert!(!runs.is_empty(), "width {width} draws its labels");
+                for run in runs {
+                    assert!(
+                        labels.contains(run.as_str()),
+                        "{run:?} takes the label color at width {width}"
+                    );
+                }
             }
         }
     }

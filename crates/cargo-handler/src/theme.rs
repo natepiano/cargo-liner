@@ -469,7 +469,7 @@ fn high_contrast_dark() -> Theme {
             error:        StyleSpec::bold(Color::LightRed),
             inline_error: StyleSpec::bold(Color::LightYellow),
             success:      StyleSpec::bold(Color::LightGreen),
-            label:        StyleSpec::from_color(Color::White),
+            label:        StyleSpec::from_color(Color::Rgb(175, 215, 200)),
             warning:      StyleSpec::bold(Color::LightYellow),
         },
         text:        TextTheme {
@@ -520,7 +520,7 @@ fn high_contrast_light() -> Theme {
             error:        StyleSpec::bold(Color::Rgb(180, 0, 0)),
             inline_error: StyleSpec::bold(Color::Rgb(140, 60, 0)),
             success:      StyleSpec::bold(Color::Rgb(0, 100, 0)),
-            label:        StyleSpec::from_color(Color::Black),
+            label:        StyleSpec::from_color(Color::Rgb(40, 85, 75)),
             warning:      StyleSpec::bold(Color::Rgb(140, 60, 0)),
         },
         text:        TextTheme {
@@ -654,6 +654,37 @@ mod tests {
                 assert!(
                     !colors[index + 1..].contains(color),
                     "{color:?} is drawn for two hues"
+                );
+            }
+        }
+    }
+
+    /// A label is told from what it labels by color alone, so in every
+    /// built-in the label color is its own: no text, accent or role
+    /// shares it.
+    #[test]
+    fn every_builtin_keeps_the_label_color_for_labels() {
+        for variant in builtins() {
+            let theme = &variant.theme;
+            let label = theme.semantic.label.color;
+            let others = [
+                ("text", theme.text.default.color),
+                ("secondary", theme.text.secondary.color),
+                ("bright", theme.text.bright.color),
+                ("accent", theme.semantic.accent.color),
+            ]
+            .into_iter()
+            .chain(
+                theme
+                    .roles
+                    .iter()
+                    .map(|(key, spec)| (key.as_str(), spec.color)),
+            );
+            for (name, color) in others {
+                assert_ne!(
+                    color, label,
+                    "{:?} draws {name} in its label color",
+                    variant.id
                 );
             }
         }
