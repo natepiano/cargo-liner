@@ -61,8 +61,6 @@ the keymap and `?` overlays, and the status bar.
   cargo-specific.
 - `terminal.rs` is ~700 lines, of which scan and sccache draining are the
   cargo-specific part.
-- `docs/tui_pane/as-built/app-template.md` cites a tag `app-template-v1` that
-  does not exist; the template is commit `89682872`. Repoint its four citations.
 - `ThemeRegistry::from_dir_with_builtins` is still the name `cargo-tile` calls.
 
 ## Phase 1 — the grid
