@@ -35,6 +35,7 @@ use crate::drift::PostWriteFreePathProtection;
 use crate::drift::ReservationDriftResult;
 use crate::edge::EdgeDeclarationRejection;
 use crate::edge::EdgeHold;
+use crate::edge::EdgeOrderingTarget;
 use crate::edge::EdgeReadiness;
 use crate::edge::IntegrationHold;
 use crate::edge::OrderingEdge;
@@ -828,7 +829,7 @@ impl TargetView {
             &target.target,
             target.source,
             commit,
-            target.fallback().cloned(),
+            target.fallback().wire_fallback(),
         )
     }
 
@@ -860,7 +861,7 @@ impl TargetView {
                 target,
                 source,
                 fallback,
-            } => Self::new(target, *source, commit, fallback.clone()),
+            } => Self::new(target, *source, commit, fallback.wire_fallback()),
             RecordedTarget::Unrecorded => Self {
                 reference: repository_trunk.clone(),
                 short_name: repository_trunk.short_name().to_owned(),
@@ -1046,19 +1047,21 @@ enum InitializationResource {
     Existing,
 }
 
-/// Typed outcomes returned by the trunk integration gate.
+/// Typed outcomes returned by the target integration gate.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "integration_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum IntegrationPayload {
-    /// The selected reservation entered trunk after a clear decision.
+    /// The selected reservation entered its judging branch after a clear decision.
     Integrated {
-        /// The reservation whose protected work entered trunk.
+        /// The reservation whose protected work entered its judging branch.
         reservation_id: ReservationId,
-        /// The main object against which the update was validated.
+        /// The local branch moved by this integration.
+        target:         IntegrationTarget,
+        /// The target object against which the update was validated.
         #[schemars(with = "String")]
         previous:       GitObjectId,
-        /// The new main object installed by the update.
+        /// The new target object installed by the update.
         #[schemars(with = "String")]
         proposed:       GitObjectId,
         /// The journal generation validated under the decision lock.
@@ -1070,6 +1073,8 @@ pub(crate) enum IntegrationPayload {
     Blocked {
         /// The reservation the caller asked to integrate.
         reservation_id: ReservationId,
+        /// The local branch this decision would move.
+        target:         IntegrationTarget,
         /// The journal generation validated under the decision lock.
         generation:     ProjectionGeneration,
         /// Every exact hold that prevented integration.
@@ -1778,11 +1783,12 @@ impl OutputEnvelope {
     /// Build an enforcing gate denial with complete reservation and recovery context.
     pub(crate) fn integration_blocked(
         reservation_id: ReservationId,
+        target: &IntegrationTarget,
         generation: ProjectionGeneration,
         violations: Vec<IntegrationViolation>,
     ) -> Self {
         let blocked_by = integration_blockers(&violations).into_vec();
-        let message = integration_blocked_message(reservation_id, &violations);
+        let message = integration_blocked_message(reservation_id, target, &violations);
         let summary = format!("cargo-berth refused integration for reservation {reservation_id}.");
         let presentation = engine_result_presentation(&summary, &message);
         Self {
@@ -1797,6 +1803,7 @@ impl OutputEnvelope {
             payload: OutputPayload::from_facts(OutputFacts::Integrate(
                 IntegrationPayload::Blocked {
                     reservation_id,
+                    target: target.clone(),
                     generation,
                     violations,
                 },
@@ -4287,10 +4294,12 @@ fn integration_blockers(violations: &[IntegrationViolation]) -> WireOrderedReser
 
 fn integration_blocked_message(
     reservation_id: ReservationId,
+    target: &IntegrationTarget,
     violations: &[IntegrationViolation],
 ) -> String {
+    let target_name = target.short_name();
     let mut message = format!(
-        "Reservation {reservation_id} cannot enter main while its integration order is held."
+        "Reservation {reservation_id} cannot enter {target_name} while its integration order is held."
     );
     for violation in violations {
         let _ = write!(
@@ -4346,18 +4355,24 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
                         EdgeHold::PredecessorNotOnOrderingTarget {
                             evidence: UnintegratedPredecessorEvidence::NotIntegrated,
                         },
-                } if ordering_target.is_repository_trunk() => {
-                    format!("run cargo-berth integrate {predecessor}")
+                } => match ordering_target {
+                    EdgeOrderingTarget::CrossTarget { predecessor, trunk } => format!(
+                        "land {} on {} before integrating this reservation",
+                        predecessor.short_name(),
+                        trunk.short_name()
+                    ),
+                    EdgeOrderingTarget::RepositoryTrunk(_) => {
+                        format!("run cargo-berth integrate {predecessor}")
+                    },
+                    EdgeOrderingTarget::SharedTarget(target) => format!(
+                        "integrate reservation {predecessor} into {}",
+                        target.short_name()
+                    ),
+                    EdgeOrderingTarget::Unavailable => format!(
+                        "integrate reservation {predecessor} into {}",
+                        ordering_target.branch_name()
+                    ),
                 },
-                EdgeReadiness::Holding {
-                    hold:
-                        EdgeHold::PredecessorNotOnOrderingTarget {
-                            evidence: UnintegratedPredecessorEvidence::NotIntegrated,
-                        },
-                } => format!(
-                    "integrate reservation {predecessor} into {}",
-                    ordering_target.branch_name()
-                ),
                 EdgeReadiness::Holding {
                     hold:
                         EdgeHold::PredecessorNotOnOrderingTarget {
@@ -4596,13 +4611,57 @@ mod tests {
     use super::PostCommitRendering;
     use crate::config::ConfigError;
     use crate::config::InitializationState;
+    use crate::edge::EdgeHold;
+    use crate::edge::EdgeOrderingTarget;
+    use crate::edge::EdgeReadiness;
+    use crate::edge::IntegrationHold;
+    use crate::edge::OrderingReason;
+    use crate::edge::UnintegratedPredecessorEvidence;
+    use crate::ids::EdgeId;
+    use crate::ids::ReservationId;
+    use crate::ids::ReservationScopePath;
+    use crate::ledger::IntegrationTarget;
     use crate::ledger::LedgerError;
     use crate::ledger::LedgerInitialization;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ScopeKind;
     use crate::presentation::EnvelopePresentation;
     use crate::reservation::LifecycleTransitionError;
     use crate::reservation::ReservationReplayError;
 
     const REPLAY_RESERVATION_ID: &str = "01991f4d-77d8-7f5f-9a1f-000000000001";
+
+    #[test]
+    fn object_unknown_ordering_refusal_names_object_repair()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let predecessor = ReservationId::new();
+        let successor = ReservationId::new();
+        let hold = IntegrationHold::OrderingEdge {
+            edge_id: EdgeId::new(),
+            predecessor,
+            successor,
+            ordering_target: EdgeOrderingTarget::SharedTarget(
+                IntegrationTarget::from_branch_argument("integration")?,
+            ),
+            scopes: ReservationScopeSet::try_from(vec![ReservationScope {
+                path: "src/shared.rs".parse::<ReservationScopePath>()?,
+                kind: ScopeKind::File,
+            }])?,
+            reason: "predecessor first".parse::<OrderingReason>()?,
+            readiness: EdgeReadiness::Holding {
+                hold: EdgeHold::PredecessorNotOnOrderingTarget {
+                    evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
+                },
+            },
+        };
+        let rendered = super::integration_hold_message(successor, &hold);
+        assert!(
+            rendered.contains("repair the unresolvable git object, then rerun the integration")
+        );
+        assert!(!rendered.contains(&format!("integrate {predecessor}")));
+        Ok(())
+    }
 
     #[test]
     fn envelope_round_trips_with_its_additive_payload_field() {

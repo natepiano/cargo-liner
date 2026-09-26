@@ -1,10 +1,12 @@
-//! Git reference-transaction parsing and the hook's trunk-update evaluation.
+//! Git reference-transaction parsing and the hook's target-update evaluation.
 
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -19,7 +21,14 @@ use crate::config::Enrollment;
 use crate::git;
 use crate::ids::GitObjectId;
 use crate::ledger::FullRefName;
+use crate::ledger::GATE_TARGETS_FILE_NAME;
+use crate::ledger::IntegrationTarget;
+use crate::ledger::Ledger;
+use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
+use crate::reservation::RecordedTarget;
+use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedReservationSet;
 
 const LOCAL_BRANCH_REFERENCE_PREFIX: &str = "refs/heads/";
 pub(crate) const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -100,7 +109,7 @@ pub(super) struct ReferenceUpdate {
 }
 
 /// A real git object or the all-zero sentinel used at reference boundaries.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(super) enum ReferenceObject {
     Object(GitObjectId),
     Symbolic(FullRefName),
@@ -108,21 +117,29 @@ pub(super) enum ReferenceObject {
 }
 
 enum ReferenceUpdateGateSubject {
-    ProposedMainMove(ProposedMainMove),
-    NotMainEntry,
-    UnsupportedMainUpdate,
+    ProposedTargetMove(ProposedTargetMove),
+    NotTargetEntry,
+    UnsupportedTargetUpdate(IntegrationTarget),
 }
 
 #[derive(Clone)]
-pub(super) enum PreviousMain {
+pub(super) enum PreviousTargetTip {
     Existing(GitObjectId),
     Absent,
 }
 
 #[derive(Clone)]
-pub(super) struct ProposedMainMove {
-    pub(super) previous: PreviousMain,
-    pub(super) proposed: GitObjectId,
+pub(crate) struct ProposedTargetMove {
+    pub(crate) target:   IntegrationTarget,
+    pub(super) previous: PreviousTargetTip,
+    pub(crate) proposed: GitObjectId,
+}
+
+/// The checkout that invoked the managed hook, if it reported one.
+#[derive(Clone, Copy)]
+pub(crate) enum IssuingCheckout<'a> {
+    Reported(&'a Path),
+    Unreported,
 }
 
 /// Parse every stdin line into one semantic git reference transaction.
@@ -139,6 +156,16 @@ pub(crate) fn parse_reference_transaction(
 }
 
 impl ReferenceTransaction {
+    fn local_branch_updates(&self) -> Vec<&ReferenceUpdate> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ReferenceTransactionEntry::LocalBranch(update) => Some(update),
+                ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
+            })
+            .collect()
+    }
+
     /// Classify whether this transaction includes the configured trunk reference.
     pub(crate) fn trunk_reference_presence(
         &self,
@@ -239,10 +266,10 @@ fn parse_reference_object(value: &str) -> Result<ReferenceObject, ()> {
     }
 }
 
-/// Evaluate prepared trunk updates and commit their approved permit audits after Git moves the ref.
+/// Evaluate prepared target updates and commit approved permit audits after Git moves the ref.
 pub(crate) fn evaluate_reference_transaction(
     invocation_directory: &Path,
-    issuing_directory: Option<&Path>,
+    issuing_checkout: IssuingCheckout<'_>,
     transaction: &ReferenceTransaction,
     trunk_reference: &FullRefName,
 ) -> Result<Vec<GateResult>, GateError> {
@@ -260,51 +287,57 @@ pub(crate) fn evaluate_reference_transaction(
     // The managed hook exports the checkout that issued the transaction before it changes
     // directory. A hook that did not is not one this binary installed, and there is no
     // fallback to the process's own working directory.
-    let Some(issuing_directory) = issuing_directory else {
-        return Err(GateError::HookReportedNoIssuingDirectory);
+    let issuing_directory = match issuing_checkout {
+        IssuingCheckout::Reported(directory) => directory,
+        IssuingCheckout::Unreported => return Err(GateError::HookReportedNoIssuingDirectory),
     };
-    let local_branch_updates = transaction
-        .entries
-        .iter()
-        .filter_map(|entry| match entry {
-            ReferenceTransactionEntry::LocalBranch(update) => Some(update),
-            ReferenceTransactionEntry::OutsideLocalBranchNamespace => None,
-        })
-        .collect::<Vec<_>>();
-    let trunk_updates = local_branch_updates
-        .iter()
-        .copied()
-        .filter(|update| &update.reference == trunk_reference)
-        .collect::<Vec<_>>();
+    let local_branch_updates = transaction.local_branch_updates();
+    if transaction.phase == ReferenceTransactionPhase::Prepared
+        && local_branch_updates
+            .iter()
+            .all(|update| update.previous == update.proposed)
+    {
+        return Ok(Vec::new());
+    }
     // Ask the cheap ancestry question before discovering the worktree or reading any
-    // configuration. Every ordinary commit reaches here, and every ordinary commit is a
-    // fast-forward, so the common case pays one `merge-base --is-ancestor` and stops.
-    let rewrites = match transaction.phase {
-        ReferenceTransactionPhase::Committed => {
-            rewrite::branch_rewrites(issuing_directory, &local_branch_updates)?
-        },
-        ReferenceTransactionPhase::Prepared
-        | ReferenceTransactionPhase::Preparing
-        | ReferenceTransactionPhase::Aborted
-        | ReferenceTransactionPhase::Unrecognized => Vec::new(),
+    // configuration. An ordinary fast-forward then needs only the target filter before
+    // it can stop without opening the ledger.
+    let rewrites = if transaction.phase == ReferenceTransactionPhase::Committed {
+        rewrite::branch_rewrites(issuing_directory, &local_branch_updates)?
+    } else {
+        Vec::new()
     };
-    if trunk_updates.is_empty() && rewrites.is_empty() {
+    if local_branch_updates.is_empty() && rewrites.is_empty() {
         return Ok(Vec::new());
     }
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
+    let target_updates = if transaction.phase == ReferenceTransactionPhase::Committed {
+        committed_target_candidates(local_branch_updates, &worktree_context, trunk_reference)?
+    } else {
+        local_branch_updates
+    };
+    if target_updates.is_empty() && rewrites.is_empty() {
+        return Ok(Vec::new());
+    }
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured { .. } => return Ok(Vec::new()),
     };
+    let gated_updates = gated_updates(
+        &target_updates,
+        transaction.phase,
+        &worktree_context,
+        trunk_reference,
+    )?;
     let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
     let mut results = Vec::new();
-    for update in trunk_updates {
-        match update.gate_subject() {
-            ReferenceUpdateGateSubject::ProposedMainMove(update) => {
-                if update.materializes_existing_logical_trunk(
-                    worktree_context.repository_root(),
-                    &berth_config.trunk,
-                ) {
+    for update in gated_updates {
+        let target = IntegrationTarget::from_branch_argument(update.reference.as_str()).map_err(
+            |reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason.to_string())),
+        )?;
+        match update.gate_subject(target) {
+            ReferenceUpdateGateSubject::ProposedTargetMove(update) => {
+                if update.materializes_existing_logical_target(worktree_context.repository_root()) {
                     continue;
                 }
                 match transaction.phase {
@@ -333,9 +366,9 @@ pub(crate) fn evaluate_reference_transaction(
                     | ReferenceTransactionPhase::Unrecognized => {},
                 }
             },
-            ReferenceUpdateGateSubject::NotMainEntry => {},
-            ReferenceUpdateGateSubject::UnsupportedMainUpdate => {
-                return Err(GateError::UnsupportedSymbolicTrunkUpdate);
+            ReferenceUpdateGateSubject::NotTargetEntry => {},
+            ReferenceUpdateGateSubject::UnsupportedTargetUpdate(target) => {
+                return Err(GateError::UnsupportedSymbolicTargetUpdate(target));
             },
         }
     }
@@ -349,42 +382,113 @@ pub(crate) fn evaluate_reference_transaction(
     Ok(results)
 }
 
-impl ProposedMainMove {
-    fn materializes_existing_logical_trunk(&self, repository_root: &Path, trunk: &str) -> bool {
-        matches!(&self.previous, PreviousMain::Absent)
-            && git::branch_object_id(repository_root, trunk)
+fn committed_target_candidates<'transaction>(
+    updates: Vec<&'transaction ReferenceUpdate>,
+    worktree_context: &WorktreeContext,
+    trunk_reference: &FullRefName,
+) -> Result<Vec<&'transaction ReferenceUpdate>, GateError> {
+    let gate_targets_path = worktree_context
+        .ledger_directory()
+        .join(GATE_TARGETS_FILE_NAME);
+    let gate_targets = match fs::read_to_string(gate_targets_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(GateError::Ledger(LedgerError::Io(error))),
+    };
+    Ok(updates
+        .into_iter()
+        .filter(|update| {
+            update.reference == *trunk_reference
+                || gate_targets
+                    .lines()
+                    .any(|reference| reference == update.reference.as_str())
+        })
+        .collect())
+}
+
+fn gated_updates<'transaction>(
+    updates: &[&'transaction ReferenceUpdate],
+    phase: ReferenceTransactionPhase,
+    worktree_context: &WorktreeContext,
+    trunk_reference: &FullRefName,
+) -> Result<Vec<&'transaction ReferenceUpdate>, GateError> {
+    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let events = ledger.read_validated_events()?;
+    let reservations = RetainedReservationSet::replay(&events)
+        .map_err(|error| GateError::Ledger(LedgerError::ReservationReplay(error)))?;
+    let mut gated_references = vec![trunk_reference.clone()];
+    for reference in reservations.iter().filter_map(|reservation| {
+        if matches!(
+            reservation.lifecycle(),
+            ReservationLifecycle::Released { .. }
+        ) {
+            return None;
+        }
+        match reservation.target() {
+            RecordedTarget::Recorded { target, .. } => Some(target.reference().clone()),
+            RecordedTarget::Unrecorded => None,
+        }
+    }) {
+        if !gated_references.contains(&reference) {
+            gated_references.push(reference);
+        }
+    }
+    let gated_updates = updates
+        .iter()
+        .copied()
+        .filter(|update| {
+            gated_references.contains(&update.reference) && update.previous != update.proposed
+        })
+        .collect::<Vec<_>>();
+    if phase == ReferenceTransactionPhase::Prepared && gated_updates.len() > 1 {
+        return Err(GateError::MultipleGatedReferences(
+            gated_updates
+                .iter()
+                .map(|update| update.reference.clone())
+                .collect(),
+        ));
+    }
+    Ok(gated_updates)
+}
+
+impl ProposedTargetMove {
+    fn materializes_existing_logical_target(&self, repository_root: &Path) -> bool {
+        matches!(&self.previous, PreviousTargetTip::Absent)
+            && git::branch_object_id(repository_root, self.target.short_name())
                 .is_ok_and(|current| current == self.proposed)
     }
 }
 
 impl ReferenceUpdate {
-    fn gate_subject(&self) -> ReferenceUpdateGateSubject {
+    fn gate_subject(&self, target: IntegrationTarget) -> ReferenceUpdateGateSubject {
         match (&self.previous, &self.proposed) {
             (ReferenceObject::Object(previous), ReferenceObject::Object(proposed))
                 if previous != proposed =>
             {
-                ReferenceUpdateGateSubject::ProposedMainMove(ProposedMainMove {
-                    previous: PreviousMain::Existing(previous.clone()),
+                ReferenceUpdateGateSubject::ProposedTargetMove(ProposedTargetMove {
+                    target,
+                    previous: PreviousTargetTip::Existing(previous.clone()),
                     proposed: proposed.clone(),
                 })
             },
             (ReferenceObject::Absent, ReferenceObject::Object(proposed)) => {
-                ReferenceUpdateGateSubject::ProposedMainMove(ProposedMainMove {
-                    previous: PreviousMain::Absent,
+                ReferenceUpdateGateSubject::ProposedTargetMove(ProposedTargetMove {
+                    target,
+                    previous: PreviousTargetTip::Absent,
                     proposed: proposed.clone(),
                 })
             },
             (ReferenceObject::Object(_) | ReferenceObject::Absent, ReferenceObject::Absent)
             | (ReferenceObject::Object(_), ReferenceObject::Object(_)) => {
-                ReferenceUpdateGateSubject::NotMainEntry
+                ReferenceUpdateGateSubject::NotTargetEntry
             },
             (ReferenceObject::Symbolic(previous), ReferenceObject::Symbolic(proposed))
                 if previous == proposed =>
             {
-                ReferenceUpdateGateSubject::NotMainEntry
+                ReferenceUpdateGateSubject::NotTargetEntry
             },
             (ReferenceObject::Symbolic(_), _) | (_, ReferenceObject::Symbolic(_)) => {
-                ReferenceUpdateGateSubject::UnsupportedMainUpdate
+                ReferenceUpdateGateSubject::UnsupportedTargetUpdate(target)
             },
         }
     }

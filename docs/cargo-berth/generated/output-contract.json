@@ -1686,10 +1686,10 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Typed outcomes returned by the trunk integration gate.",
+      "description": "Typed outcomes returned by the target integration gate.",
       "oneOf": [
         {
-          "description": "The selected reservation entered trunk after a clear decision.",
+          "description": "The selected reservation entered its judging branch after a clear decision.",
           "properties": {
             "gate": {
               "$ref": "#/$defs/integrated_gate_outcome",
@@ -1700,25 +1700,30 @@
               "description": "The journal generation validated under the decision lock."
             },
             "previous": {
-              "description": "The main object against which the update was validated.",
+              "description": "The target object against which the update was validated.",
               "type": "string"
             },
             "proposed": {
-              "description": "The new main object installed by the update.",
+              "description": "The new target object installed by the update.",
               "type": "string"
             },
             "reservation_id": {
               "$ref": "#/$defs/uuid_v7_identifier",
-              "description": "The reservation whose protected work entered trunk."
+              "description": "The reservation whose protected work entered its judging branch."
             },
             "status": {
               "const": "integrated",
               "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/IntegrationTarget",
+              "description": "The local branch moved by this integration."
             }
           },
           "required": [
             "status",
             "reservation_id",
+            "target",
             "previous",
             "proposed",
             "generation",
@@ -1741,6 +1746,10 @@
               "const": "blocked",
               "type": "string"
             },
+            "target": {
+              "$ref": "#/$defs/IntegrationTarget",
+              "description": "The local branch this decision would move."
+            },
             "violations": {
               "description": "Every exact hold that prevented integration.",
               "items": {
@@ -1752,6 +1761,7 @@
           "required": [
             "status",
             "reservation_id",
+            "target",
             "generation",
             "violations"
           ],
@@ -7892,10 +7902,10 @@
           ]
         },
         "integration_payload": {
-          "description": "Typed outcomes returned by the trunk integration gate.",
+          "description": "Typed outcomes returned by the target integration gate.",
           "oneOf": [
             {
-              "description": "The selected reservation entered trunk after a clear decision.",
+              "description": "The selected reservation entered its judging branch after a clear decision.",
               "properties": {
                 "gate": {
                   "$ref": "#/$defs/integrated_gate_outcome",
@@ -7906,25 +7916,30 @@
                   "description": "The journal generation validated under the decision lock."
                 },
                 "previous": {
-                  "description": "The main object against which the update was validated.",
+                  "description": "The target object against which the update was validated.",
                   "type": "string"
                 },
                 "proposed": {
-                  "description": "The new main object installed by the update.",
+                  "description": "The new target object installed by the update.",
                   "type": "string"
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation whose protected work entered trunk."
+                  "description": "The reservation whose protected work entered its judging branch."
                 },
                 "status": {
                   "const": "integrated",
                   "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget",
+                  "description": "The local branch moved by this integration."
                 }
               },
               "required": [
                 "status",
                 "reservation_id",
+                "target",
                 "previous",
                 "proposed",
                 "generation",
@@ -7947,6 +7962,10 @@
                   "const": "blocked",
                   "type": "string"
                 },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget",
+                  "description": "The local branch this decision would move."
+                },
                 "violations": {
                   "description": "Every exact hold that prevented integration.",
                   "items": {
@@ -7958,6 +7977,7 @@
               "required": [
                 "status",
                 "reservation_id",
+                "target",
                 "generation",
                 "violations"
               ],
@@ -15311,10 +15331,10 @@
           ]
         },
         "integration_payload": {
-          "description": "Typed outcomes returned by the trunk integration gate.",
+          "description": "Typed outcomes returned by the target integration gate.",
           "oneOf": [
             {
-              "description": "The selected reservation entered trunk after a clear decision.",
+              "description": "The selected reservation entered its judging branch after a clear decision.",
               "properties": {
                 "gate": {
                   "$ref": "#/$defs/integrated_gate_outcome",
@@ -15325,25 +15345,30 @@
                   "description": "The journal generation validated under the decision lock."
                 },
                 "previous": {
-                  "description": "The main object against which the update was validated.",
+                  "description": "The target object against which the update was validated.",
                   "type": "string"
                 },
                 "proposed": {
-                  "description": "The new main object installed by the update.",
+                  "description": "The new target object installed by the update.",
                   "type": "string"
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation whose protected work entered trunk."
+                  "description": "The reservation whose protected work entered its judging branch."
                 },
                 "status": {
                   "const": "integrated",
                   "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget",
+                  "description": "The local branch moved by this integration."
                 }
               },
               "required": [
                 "status",
                 "reservation_id",
+                "target",
                 "previous",
                 "proposed",
                 "generation",
@@ -15366,6 +15391,10 @@
                   "const": "blocked",
                   "type": "string"
                 },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget",
+                  "description": "The local branch this decision would move."
+                },
                 "violations": {
                   "description": "Every exact hold that prevented integration.",
                   "items": {
@@ -15377,6 +15406,7 @@
               "required": [
                 "status",
                 "reservation_id",
+                "target",
                 "generation",
                 "violations"
               ],

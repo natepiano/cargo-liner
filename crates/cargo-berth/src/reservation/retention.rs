@@ -67,6 +67,7 @@ use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::ScopeKind;
+use crate::ledger::TargetSelectionOutcome;
 use crate::ledger::TargetSource;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
@@ -1350,7 +1351,7 @@ impl RetainedReservationSet {
         reservation.target = RecordedTarget::Recorded {
             target: target.clone(),
             source,
-            fallback: None,
+            fallback: TargetSelectionOutcome::Selected,
         };
         reservation.advance_integration_proof_subject_revision()?;
         reservation.advance_revision()
@@ -1365,7 +1366,7 @@ impl RetainedReservationSet {
                 reservation.target = RecordedTarget::Recorded {
                     target:   target.clone(),
                     source:   TargetSource::RepositoryTrunk,
-                    fallback: None,
+                    fallback: TargetSelectionOutcome::Selected,
                 };
                 reservation.advance_revision()?;
             }

@@ -35,6 +35,7 @@ use crate::edge::RepositorySnapshot;
 use crate::edge::SuccessorIncorporationEvidence;
 use crate::edge::TargetObservation;
 use crate::gate;
+use crate::gate::ProposedTargetMove;
 use crate::gate::RewriteCreatedCommits;
 use crate::gate::permit;
 use crate::gate::permit::CompletedRewriteSubject;
@@ -272,7 +273,7 @@ struct ReconciliationEvidenceContext<'context> {
 struct TargetIntegrationEvidenceContext<'context> {
     repository_root:                &'context Path,
     repository_trunk:               &'context JudgedTargetTip,
-    integration_reachability:       &'context BatchedIntegrationReachability,
+    integration_reachability:       &'context TargetIntegrationReachability,
     scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
 }
 
@@ -291,7 +292,7 @@ struct ObservedRepositoryFacts {
     reservation_targets:              HashMap<ReservationId, IntegrationTarget>,
     resolved_candidates:              ResolvedBatchCommitCandidates,
     repository_evidence_observations: Vec<RepositoryEvidenceObservation>,
-    trunk_reachability:               BatchedIntegrationReachability,
+    trunk_reachability:               TargetIntegrationReachability,
     /// How many times resolving the trunk queried git, reported as this reconciliation's cost.
     trunk_resolution_calls:           u64,
 }
@@ -361,7 +362,7 @@ enum IntegrationProofStanding {
 ///
 /// A tip the observed trunk now contains outranks whatever was recorded, so the proof is stated as
 /// `IntegrationProof::ProtectedTipAncestor` instead. That is not a re-derivation: the tip is one of
-/// the commits `BatchedIntegrationReachability` already classified, and the stronger proof keeps
+/// the commits `TargetIntegrationReachability` already classified, and the stronger proof keeps
 /// `settlement_selection` releasing as `ReleaseDisposition::Integrated` rather than retaining a
 /// rewritten-integration witness the repository no longer needs.
 fn reanchored_proof(
@@ -400,7 +401,7 @@ impl IntegrationProofStanding {
     fn observe(
         materialized: &IntegrationEvidenceStatus,
         trunk_snapshot: &GitObjectId,
-        integration_reachability: &BatchedIntegrationReachability,
+        integration_reachability: &TargetIntegrationReachability,
     ) -> Self {
         let Some(trunk_oid) = proving_trunk(materialized) else {
             return Self::Derive {
@@ -422,7 +423,7 @@ impl IntegrationProofStanding {
 
 /// Every integration-proof ancestor classified against one immutable trunk target.
 #[derive(Default)]
-struct BatchedIntegrationReachability {
+struct TargetIntegrationReachability {
     by_ancestor:         HashMap<GitObjectId, Reachability>,
     resolved_candidates: ResolvedBatchCommitCandidates,
     target_histories:    PhaseStartTargetFirstParentHistories,
@@ -447,7 +448,7 @@ impl<'candidates> TrunkEdgeCandidates<'candidates> {
     }
 }
 
-impl BatchedIntegrationReachability {
+impl TargetIntegrationReachability {
     fn observe_configured_trunk(
         repository_root: &Path,
         reservations: &RetainedReservationSet,
@@ -709,7 +710,7 @@ fn cross_target_predecessor_evidence(
     reservations: &RetainedReservationSet,
     snapshots: &[RepositoryReservationSnapshot],
     trunk: &JudgedTargetTip,
-    reachability: &BatchedIntegrationReachability,
+    reachability: &TargetIntegrationReachability,
 ) -> CrossTargetPredecessorEvidence {
     let by_reservation = snapshots
         .iter()
@@ -854,9 +855,10 @@ enum ScopedPatchComparisonDestination {
     },
 }
 
-struct ProposedTrunkObservation {
-    snapshot:   RepositorySnapshot,
-    operations: Vec<JournalOperation>,
+struct ProposedTargetObservation {
+    snapshot:            RepositorySnapshot,
+    operations:          Vec<JournalOperation>,
+    judged_reservations: HashSet<ReservationId>,
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -1182,11 +1184,12 @@ pub(crate) enum GateReconciliationPurpose {
     CommittedAudit,
 }
 
-/// Actual-trunk reconciliation plus proposed-trunk constraints prepared under one lock.
+/// Actual repository reconciliation plus proposed-target constraints prepared under one lock.
 pub(crate) struct GateReconciliation {
     reconciliation:            ReconciliationPlan,
     constraints:               IntegrationConstraintProjection,
     reservations:              RetainedReservationSet,
+    judged_reservations:       HashSet<ReservationId>,
     /// Unaccepted rewrite destinations still subject to the reservation's ordering holds.
     deferred_rewrite_subjects: Vec<DeferredRewriteIntegrationSubject>,
 }
@@ -1231,7 +1234,7 @@ struct ReconciliationAction {
     /// disagreement the next pass overturns is never reported at all.
     confirmed_lost_evidence:       Vec<ReservationId>,
     repository_snapshot:           RepositorySnapshot,
-    trunk_reachability:            BatchedIntegrationReachability,
+    trunk_reachability:            TargetIntegrationReachability,
     recovered_bypass_reporting:    RecoveredBypassReporting,
     recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
     pending_bypass_imports:        Vec<PendingBypassMarkerImport>,
@@ -2887,7 +2890,7 @@ fn observe_repository_facts(
                 target.clone(),
                 selected.clone(),
                 scope.spawn(move || {
-                    BatchedIntegrationReachability::observe_configured_trunk(
+                    TargetIntegrationReachability::observe_configured_trunk(
                         repository_root,
                         reservations,
                         ordering_graph,
@@ -2924,7 +2927,7 @@ fn observe_repository_facts(
             &observations,
         );
         let (trunk_observation, trunk_reachability) =
-            BatchedIntegrationReachability::observe_configured_trunk(
+            TargetIntegrationReachability::observe_configured_trunk(
                 repository_root,
                 reservations,
                 ordering_graph,
@@ -2967,12 +2970,12 @@ fn observe_target_group_evidence(
     groups: &BTreeMap<IntegrationTarget, HashSet<ReservationId>>,
     repository_trunk: &IntegrationTarget,
     observations: &BTreeMap<IntegrationTarget, TargetObservation>,
-    reachabilities: &BTreeMap<IntegrationTarget, BatchedIntegrationReachability>,
+    reachabilities: &BTreeMap<IntegrationTarget, TargetIntegrationReachability>,
     repository_root: &Path,
     budget: &mut ReconciliationScopedPatchEvaluationBudget,
 ) -> Result<Vec<RepositoryEvidenceObservation>, ReservationReplayError> {
     let mut indexed_evidence = Vec::new();
-    let unavailable_reachability = BatchedIntegrationReachability::default();
+    let unavailable_reachability = TargetIntegrationReachability::default();
     for (target, selected) in groups {
         if target != repository_trunk
             && matches!(observations.get(target), Some(TargetObservation::Missing))
@@ -3094,7 +3097,7 @@ fn scoped_patch_evaluation_order<'reservation>(
 ///
 /// Prepared decisions project actual-trunk settlements before observing the proposal. Committed
 /// audits keep replayed lifecycles so newly integrated reservations still enter the permit audit.
-/// Proposed-trunk evidence never settles reservations.
+/// Proposed-target evidence never settles reservations.
 ///
 /// Each observed trunk target uses one `cat-file` batch and one grouped `rev-list` to classify all
 /// integration-proof ancestors. Graph predecessor queries use one grouped `rev-list` for every
@@ -3109,7 +3112,7 @@ pub(crate) fn prepare_gate_reconciliation(
     worktree_context: &WorktreeContext,
     ledger_repository: RepoInstanceId,
     berth_config: &BerthConfig,
-    proposed_trunk: GitObjectId,
+    proposed_move: &ProposedTargetMove,
     purpose: GateReconciliationPurpose,
     rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<GateReconciliation, GateReconciliationError> {
@@ -3155,13 +3158,13 @@ pub(crate) fn prepare_gate_reconciliation(
             .map_err(GateReconciliationError::Reservation)?,
         GateReconciliationPurpose::CommittedAudit => reservations,
     };
-    let proposed_observation = observe_proposed_trunk(
+    let proposed_observation = observe_proposed_target(
         &reservations,
         &ordering_graph,
         RepositoryObservationScope::CurrentOrderingGraph,
         &reconciliation.action.repository_snapshot,
         worktree_context,
-        proposed_trunk,
+        proposed_move,
         &mut reconciliation_evidence_context,
     )?;
     for operation in proposed_observation.operations {
@@ -3180,64 +3183,62 @@ pub(crate) fn prepare_gate_reconciliation(
         reconciliation,
         constraints,
         reservations,
+        judged_reservations: proposed_observation.judged_reservations,
         deferred_rewrite_subjects: rewrite_preflight.deferred_subjects,
     })
 }
 
-fn reservations_judged_at_proposed_trunk(
+fn reservations_judged_at_proposed_target(
     reservations: &RetainedReservationSet,
     actual_snapshot: &RepositorySnapshot,
+    proposed_target: &IntegrationTarget,
 ) -> HashSet<ReservationId> {
     reservations
         .iter()
         .filter(|reservation| {
             let target = actual_snapshot.recorded_target(reservation.id());
-            target == actual_snapshot.repository_trunk_target()
-                || matches!(
-                    actual_snapshot.targets().get(target),
-                    Some(TargetObservation::Missing)
-                )
+            target == proposed_target
+                || (proposed_target == actual_snapshot.repository_trunk_target()
+                    && matches!(
+                        actual_snapshot.targets().get(target),
+                        Some(TargetObservation::Missing)
+                    ))
         })
         .map(Reservation::id)
         .collect()
 }
 
-fn observe_proposed_trunk(
+fn observe_proposed_target(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
     repository_observation_scope: RepositoryObservationScope,
     actual_snapshot: &RepositorySnapshot,
     worktree_context: &WorktreeContext,
-    proposed_trunk: GitObjectId,
+    proposed_move: &ProposedTargetMove,
     reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
-) -> Result<ProposedTrunkObservation, GateReconciliationError> {
-    let repository_trunk = JudgedTargetTip::Resolved(proposed_trunk.clone());
-    let selected = reservations_judged_at_proposed_trunk(reservations, actual_snapshot);
+) -> Result<ProposedTargetObservation, GateReconciliationError> {
+    let proposed_target = &proposed_move.target;
+    let target_tip = JudgedTargetTip::Resolved(proposed_move.proposed.clone());
+    let selected =
+        reservations_judged_at_proposed_target(reservations, actual_snapshot, proposed_target);
     let (trunk_target, mut targets, reservation_targets) = actual_snapshot.target_facts();
-    let target_tips = observed_predecessor_target_tips(
-        ordering_graph,
-        repository_observation_scope,
-        &trunk_target,
-        &reservation_targets,
-        &targets,
-    );
-    let integration_reachability = BatchedIntegrationReachability::observe(
-        worktree_context.repository_root(),
+    let integration_reachability = proposed_target_reachability(
         reservations,
         ordering_graph,
-        &repository_trunk,
+        repository_observation_scope,
+        actual_snapshot,
+        worktree_context,
+        proposed_move,
         &selected,
-        TrunkEdgeCandidates::including(repository_observation_scope, &target_tips),
-    )
-    .map_err(GateReconciliationError::Reservation)?;
+    )?;
     let mut target_evidence_context = TargetIntegrationEvidenceContext {
         repository_root:                worktree_context.repository_root(),
-        repository_trunk:               &repository_trunk,
+        repository_trunk:               &target_tip,
         integration_reachability:       &integration_reachability,
         scoped_patch_evaluation_budget: reconciliation_evidence_context
             .scoped_patch_evaluation_budget,
     };
-    let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &repository_trunk)
+    let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &target_tip)
         .into_iter()
         .filter(|(_, reservation)| selected.contains(&reservation.id()))
         .map(|(index, reservation)| {
@@ -3289,18 +3290,22 @@ fn observe_proposed_trunk(
     .map_err(GateReconciliationError::Reservation)?;
     operations.extend(successor_incorporation.operations);
     targets.insert(
-        trunk_target.clone(),
-        TargetObservation::Resolved(proposed_trunk),
+        proposed_target.clone(),
+        TargetObservation::Resolved(proposed_move.proposed.clone()),
     );
-    let cross_target_predecessors = cross_target_predecessor_evidence(
-        ordering_graph,
-        repository_observation_scope,
-        reservations,
-        &reservation_snapshots,
-        &repository_trunk,
-        &integration_reachability,
-    );
-    Ok(ProposedTrunkObservation {
+    let cross_target_predecessors = if proposed_target == &trunk_target {
+        cross_target_predecessor_evidence(
+            ordering_graph,
+            repository_observation_scope,
+            reservations,
+            &reservation_snapshots,
+            &target_tip,
+            &integration_reachability,
+        )
+    } else {
+        actual_snapshot.cross_target_predecessor_evidence().clone()
+    };
+    Ok(ProposedTargetObservation {
         snapshot: RepositorySnapshot::new(
             trunk_target,
             targets,
@@ -3310,10 +3315,52 @@ fn observe_proposed_trunk(
             cross_target_predecessors,
         ),
         operations,
+        judged_reservations: selected,
     })
 }
 
+fn proposed_target_reachability(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    scope: RepositoryObservationScope,
+    actual_snapshot: &RepositorySnapshot,
+    worktree_context: &WorktreeContext,
+    proposed_move: &ProposedTargetMove,
+    selected: &HashSet<ReservationId>,
+) -> Result<TargetIntegrationReachability, GateReconciliationError> {
+    let (trunk_target, targets, reservation_targets) = actual_snapshot.target_facts();
+    let target_tips = if proposed_move.target == trunk_target {
+        observed_predecessor_target_tips(
+            ordering_graph,
+            scope,
+            &trunk_target,
+            &reservation_targets,
+            &targets,
+        )
+    } else {
+        Vec::new()
+    };
+    let edge_candidates = if proposed_move.target == trunk_target {
+        TrunkEdgeCandidates::including(scope, &target_tips)
+    } else {
+        TrunkEdgeCandidates::Excluded
+    };
+    TargetIntegrationReachability::observe(
+        worktree_context.repository_root(),
+        reservations,
+        ordering_graph,
+        &JudgedTargetTip::Resolved(proposed_move.proposed.clone()),
+        selected,
+        edge_candidates,
+    )
+    .map_err(GateReconciliationError::Reservation)
+}
+
 impl GateReconciliation {
+    /// Whether this proposed branch update judges the reservation.
+    pub(crate) fn judges(&self, reservation_id: ReservationId) -> bool {
+        self.judged_reservations.contains(&reservation_id)
+    }
     /// Borrow the shared gate-and-board projection prepared at this generation.
     pub(crate) const fn constraints(&self) -> &IntegrationConstraintProjection { &self.constraints }
 
@@ -3773,7 +3820,7 @@ fn evaluate_reservation_scoped_integration(
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
     target: &GitObjectId,
-    integration_reachability: &BatchedIntegrationReachability,
+    integration_reachability: &TargetIntegrationReachability,
 ) -> ScopedPatchIntegrationEvaluation {
     evaluate_historical_then_current_trunk(
         target,
@@ -3894,7 +3941,7 @@ fn integration_status_from_retained_scoped_patch_comparison(
     witness: IntegrationWitness,
     target: &GitObjectId,
     previous_trunk: &GitObjectId,
-    integration_reachability: &BatchedIntegrationReachability,
+    integration_reachability: &TargetIntegrationReachability,
 ) -> IntegrationEvidenceStatus {
     match scoped_patch_comparison {
         DurableScopedPatchComparison::Equivalent => IntegrationEvidenceStatus::Integrated {
@@ -3919,7 +3966,7 @@ fn integration_status_from_retained_scoped_patch_comparison(
 fn deferred_integration_status(
     materialized: IntegrationEvidenceStatus,
     previous_trunk: &GitObjectId,
-    integration_reachability: &BatchedIntegrationReachability,
+    integration_reachability: &TargetIntegrationReachability,
 ) -> IntegrationEvidenceStatus {
     if proving_trunk(&materialized).is_none() {
         return materialized;
@@ -3933,7 +3980,7 @@ fn deferred_integration_status(
 /// measured against is still in the observed trunk's history.
 fn unproven_integration_status(
     previous_trunk: &GitObjectId,
-    integration_reachability: &BatchedIntegrationReachability,
+    integration_reachability: &TargetIntegrationReachability,
 ) -> IntegrationEvidenceStatus {
     match integration_reachability.for_ancestor(previous_trunk) {
         Reachability::Ancestor => IntegrationEvidenceStatus::NotIntegrated,

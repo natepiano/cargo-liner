@@ -56,17 +56,18 @@ Ordering edges use the shared target when both reservations are judged at the
 same branch. Across targets, they hold the successor until the predecessor's
 work reaches the repository trunk, unless the successor has already
 incorporated it. After trunk receives the predecessor, the successor must
-still incorporate that work. In enforce mode, a proposed trunk update that
-brings in a held successor is rejected by the reference-transaction gate.
+still incorporate that work. In enforce mode, a proposed update to any live
+integration target that brings in a held successor is rejected by the
+reference-transaction gate.
 Board instructions and gate recovery name the shared target for a same-target
 edge and the repository trunk for an edge across targets.
 
 
-Reconciliation judges each reservation at its recorded target. If an unreleased lane's non-trunk target ref disappears, the `target_missing` alert supplies `cargo-berth retarget <id> --target <branch>` and the board shows that target's commit as `"unresolved"`. Until the reservation is retargeted, the alert persists and reconciliation judges that reservation at the repository trunk. A released lane keeps its proof if its target branch is later deleted; lost evidence is reported only if the proving commits leave history and fail revalidation on two passes. The trunk gate still gates the repository trunk.
+Reconciliation judges each reservation at its recorded target. If an unreleased lane's non-trunk target ref disappears, the `target_missing` alert supplies `cargo-berth retarget <id> --target <branch>` and the board shows that target's commit as `"unresolved"`. Until the reservation is retargeted, the alert persists and reconciliation judges that reservation at the repository trunk. A released lane keeps its proof if its target branch is later deleted; lost evidence is reported only if the proving commits leave history and fail revalidation on two passes. The reference-transaction gate still gates the repository trunk, and a deleted target remains in `gate-targets`, so a prepared update recreating it is judged at its proposed commit.
 
 `cargo-berth claim <paths> --target <local-branch>` records the integration branch for the new reservation. Without the flag, the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config takes precedence over the repository trunk. Detached HEAD uses the repository trunk. Explicit own-branch and unresolved targets return `invalid_input`; first touch and enrollment fall back to the trunk and report the reason in JSON.
 
-`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. Reconciliation and release judge each reservation at its recorded target; the trunk gate still judges the repository trunk. A malformed `--target` names why it is not a local branch, while a well-formed branch without a ref reports that it does not resolve.
+`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. Reconciliation and release judge each reservation at its recorded target; the reference-transaction gate judges every live target and the repository trunk. A malformed `--target` names why it is not a local branch, while a well-formed branch without a ref reports that it does not resolve.
 
 `resolve <id> --integrated-as <commit>` accepts a carrying commit only when it is reachable from that reservation's target. Drift compares committed incursion origins with the acting session reservation's target, or each reporting reservation's target when no session reservation is mapped. Commits already on that target are attributed as upstream history.
 
@@ -81,6 +82,7 @@ Run these steps once after Phases 1–4 are installed. For example, suppose `han
 3. Set `trunk = "main"` in `.claude/config/berth.toml` and commit it on `main` and `hana`. Only the main worktree's copy supplies the repository trunk.
 4. Run `cargo-berth retarget <id> --target main` for any live reservation in the main worktree or the `hana` worktree.
 5. Run `cargo-berth board --json`. The lanes should target `hana`; the reservation in the `hana` worktree should target `main`, carry `hana`'s diff as its extent, and cover it without blocking those lanes. Reconciliation creates that cover if step 4 left no live reservation there.
+6. After installing the per-target gate, run `cargo-berth init` again. It reinstalls the managed reference-transaction hook and writes `.git/cargo-berth/gate-targets` from live journal state.
 
 Step 1 must precede step 3. Changing the trunk before the pin re-judges released lanes against `main` and raises lost-evidence alerts for their former integration proofs.
 
@@ -152,7 +154,7 @@ never refused, so an existing repository never meets this rule as a lockout.
 
 ## Bypass audit
 
-`CARGO_BERTH_BYPASS=1` permits a trunk update no matter what other gate input is
+`CARGO_BERTH_BYPASS=1` permits a gated target update no matter what other gate input is
 broken. The override is tested before the tool reads the config, journal, or Git
 evidence. The tool records an audit fact in the journal when writable, or writes
 a pending marker for a later session to recover. The fact names
@@ -182,8 +184,9 @@ way when it is invoked directly.
   journal truth. It changes no journal record and loses nothing.
 - `cargo berth init --reinitialize-after-review` is the confirmed recovery for
   a corrupt journal. It replaces journal history and the projection after the
-  user has reviewed the lost order. Reservations, ordering, answers, releases,
-  incursions, and bypass audit facts in that journal are lost.
+  user has reviewed the lost order, and clears `gate-targets` from the empty
+  replay. Reservations, ordering, answers, releases, incursions, and bypass
+  audit facts in that journal are lost.
 
 The projection-only branch reports:
 

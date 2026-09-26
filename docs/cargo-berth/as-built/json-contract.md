@@ -13,6 +13,8 @@ Board JSON includes a `target` view on each reservation row and a sorted top-lev
 
 An engine-created cover row has `source: {"kind":"cover","covered_branch":"refs/heads/<branch>"}`. Its separate `target` view names that branch's parent. An ordinary reservation serving as a cover keeps its original source. A present non-trunk target without a registered checkout raises reconcile alert `{"kind":"target_uncovered","data":{"target":"refs/heads/<branch>","waiting_reservations":["<id>"]}}`; the board alert puts `target` and `waiting_reservations` beside `kind`. Direct `release` of integrated work while the target lacks a fresh cover returns envelope status `outstanding` with release payload data `{status: "target_uncovered", reservation_id, target}` and leaves the reservation outstanding. The claim target's optional wire `fallback` field is unchanged, while the in-memory selection distinguishes selected from fell back. Schema version remains 2.
 
+`integrate` payloads with `status: "integrated"` or `status: "blocked"` include `target`, the full local ref the command would move. The hook's prepared decision uses the same target-specific ordering evidence. Existing journal wire names and schema version 2 remain unchanged.
+
 A consumer needs only the stable front-end shell documented below. Nothing in
 this contract asks it to inspect `payload`, enumerate payload kinds, correlate
 an outcome tuple, or read `output_contract_version`.

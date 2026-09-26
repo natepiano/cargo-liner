@@ -11,6 +11,8 @@ use crate::coordination_identity::CoordinationIdentityRejection;
 use crate::edge::MissingReadinessFact;
 use crate::git::GitError;
 use crate::ids::ReservationId;
+use crate::ledger::FullRefName;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::reconcile::GateReconciliationError;
@@ -45,7 +47,8 @@ pub(crate) enum GateError {
     MissingSkippedHold,
     MissingConstraintFact(MissingReadinessFact),
     HookReportedNoIssuingDirectory,
-    UnsupportedSymbolicTrunkUpdate,
+    UnsupportedSymbolicTargetUpdate(IntegrationTarget),
+    MultipleGatedReferences(Vec<FullRefName>),
 }
 
 impl Display for GateError {
@@ -61,7 +64,7 @@ impl Display for GateError {
             Self::CoordinationIdentity(rejection) => rejection.fmt(formatter),
             Self::ReservationNotEntering(reservation_id) => write!(
                 formatter,
-                "reservation {reservation_id} is not newly reachable in the proposed main update"
+                "reservation {reservation_id} is not newly reachable in the proposed target update"
             ),
             Self::NoHoldToForce(reservation_id) => write!(
                 formatter,
@@ -74,8 +77,19 @@ impl Display for GateError {
             Self::HookReportedNoIssuingDirectory => formatter.write_str(
                 "the managed reference-transaction hook did not report its issuing directory",
             ),
-            Self::UnsupportedSymbolicTrunkUpdate => formatter.write_str(
-                "the configured trunk received a symbolic-ref update instead of a commit update",
+            Self::UnsupportedSymbolicTargetUpdate(target) => write!(
+                formatter,
+                "target {} received a symbolic-ref update instead of a commit update",
+                target.short_name(),
+            ),
+            Self::MultipleGatedReferences(references) => write!(
+                formatter,
+                "one transaction would move multiple gated refs ({}); move them one at a time",
+                references
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
         }
     }

@@ -1,4 +1,4 @@
-//! Locked trunk-update decisions shared by `integrate` and the git hook.
+//! Locked target-update decisions shared by `integrate` and the git hook.
 
 mod audit;
 mod decision;
@@ -15,7 +15,9 @@ pub(crate) use decision::IntegrationRequest;
 pub(crate) use decision::IntegrationViolation;
 pub(crate) use decision::evaluate_integration;
 pub(crate) use error::GateError;
+pub(crate) use reference_transaction::IssuingCheckout;
 pub(crate) use reference_transaction::ManagedTrunkDeletion;
+pub(crate) use reference_transaction::ProposedTargetMove;
 pub(crate) use reference_transaction::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT;
 pub(crate) use reference_transaction::ReferenceTransaction;
 pub(crate) use reference_transaction::ReferenceTransactionParseError;

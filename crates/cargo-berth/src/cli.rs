@@ -53,6 +53,7 @@ use crate::gate::GateDecision;
 use crate::gate::GateError;
 use crate::gate::GateResult;
 use crate::gate::IntegrationRequest;
+use crate::gate::IssuingCheckout;
 use crate::gate::ManagedTrunkDeletion;
 use crate::gate::REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT;
 use crate::gate::ReferenceTransaction;
@@ -1708,9 +1709,12 @@ fn run_reference_transaction(
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     let gate_invocation_directory = invocation_directory.clone();
     let gate_worker = std::thread::spawn(move || {
+        let issuing_checkout = issuing_directory
+            .as_deref()
+            .map_or(IssuingCheckout::Unreported, IssuingCheckout::Reported);
         let result = gate::evaluate_reference_transaction(
             &gate_invocation_directory,
-            issuing_directory.as_deref(),
+            issuing_checkout,
             &transaction,
             &trunk_reference,
         );
@@ -2013,13 +2017,19 @@ fn exit_for_reference_transaction_results(results: Vec<GateResult>) -> ExitCode 
                     let reservation_id = violation.reservation.reservation_id;
                     let rendered = OutputEnvelope::integration_blocked(
                         reservation_id,
+                        &result.target,
                         generation,
                         vec![violation],
                     )
                     .with_alerts(result.alerts.clone())
                     .render_text();
                     write_reference_transaction_diagnostic(format_args!(
-                        "Observe-only cargo-berth trunk gate: {rendered}"
+                        "Observe-only cargo-berth {} gate: {rendered}",
+                        if result.target == result.repository_trunk {
+                            "trunk"
+                        } else {
+                            result.target.short_name()
+                        }
                     ));
                 }
             },
@@ -2034,6 +2044,7 @@ fn exit_for_reference_transaction_results(results: Vec<GateResult>) -> ExitCode 
                         "{}",
                         OutputEnvelope::integration_blocked(
                             reservation_id,
+                            &result.target,
                             generation,
                             vec![violation],
                         )
@@ -2076,6 +2087,7 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
             BerthExit::UsageError.into()
         },
         GateError::CoordinationIdentity(_)
+        | GateError::MultipleGatedReferences(_)
         | GateError::ReservationNotEntering(_)
         | GateError::NoHoldToForce(_)
         | GateError::MissingSkippedHold
@@ -2093,7 +2105,7 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
         | GateError::Reconciliation(_)
         | GateError::Planning(_)
         | GateError::MissingConstraintFact(_)
-        | GateError::UnsupportedSymbolicTrunkUpdate
+        | GateError::UnsupportedSymbolicTargetUpdate(_)
         | GateError::Git(_)
         | GateError::PermitReplay(_) => {
             write_reference_transaction_diagnostic(format_args!(

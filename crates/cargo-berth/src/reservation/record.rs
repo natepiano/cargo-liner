@@ -45,7 +45,7 @@ use crate::ledger::JournalActor;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
-use crate::ledger::TargetFallback;
+use crate::ledger::TargetSelectionOutcome;
 use crate::ledger::TargetSource;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
@@ -92,7 +92,7 @@ pub(crate) enum RecordedTarget {
     Recorded {
         target:   IntegrationTarget,
         source:   TargetSource,
-        fallback: Option<TargetFallback>,
+        fallback: TargetSelectionOutcome,
     },
     /// A legacy claim awaits an initialization pin.
     Unrecorded,
@@ -103,7 +103,7 @@ impl From<&ClaimTarget> for RecordedTarget {
         Self::Recorded {
             target:   claim_target.target.clone(),
             source:   claim_target.source,
-            fallback: claim_target.fallback().cloned(),
+            fallback: claim_target.fallback().clone(),
         }
     }
 }

@@ -12,6 +12,7 @@ use std::process::Output;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use serde_json::Value;
+use tempfile::Builder;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
@@ -34,8 +35,13 @@ pub(crate) struct IntegrationRepository {
 }
 
 impl IntegrationRepository {
-    pub(crate) fn new() -> Self {
-        let repository = tempdir().expect("repository parent");
+    pub(crate) fn new() -> Self { Self::with_repository_prefix(".tmp") }
+
+    pub(crate) fn with_repository_prefix(prefix: &str) -> Self {
+        let repository = Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .expect("repository parent");
         let worktrees = tempdir().expect("worktree parent");
         let root = repository.path();
         git(root, &["init", "--quiet", "--initial-branch=main"]);
@@ -246,6 +252,16 @@ pub(crate) fn claim(root: &Path, path: &str, run_id: &str, target: Option<&str>)
 }
 
 pub(crate) fn defer_claim(root: &Path, path: &str, run_id: &str, blocker: &str) -> Output {
+    defer_claim_to(root, path, run_id, blocker, None)
+}
+
+pub(crate) fn defer_claim_to(
+    root: &Path,
+    path: &str,
+    run_id: &str,
+    blocker: &str,
+    target: Option<&str>,
+) -> Output {
     let mut args = vec![
         "claim",
         path,
@@ -258,6 +274,9 @@ pub(crate) fn defer_claim(root: &Path, path: &str, run_id: &str, blocker: &str) 
         "--why",
         "protect deferred work",
     ];
+    if let Some(target) = target {
+        args.extend(["--target", target]);
+    }
     args.push("--json");
     let proposal = run(root, &args);
     let proposal_json = json(&proposal);

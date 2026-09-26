@@ -5,6 +5,8 @@ use std::time::Duration;
 // file names
 pub(super) const COORDINATION_RUN_MARKER_FILE_NAME: &str = "cargo-berth-run-id";
 pub(super) const COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX: &str = "retiring";
+pub(crate) const GATE_TARGETS_FILE_NAME: &str = "gate-targets";
+pub(super) const GATE_TARGETS_TEMPORARY_FILE_NAME: &str = "gate-targets.tmp";
 pub(super) const JOURNAL_FILE_NAME: &str = "journal.ndjson";
 pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
 pub(super) const PROJECTION_FILE_NAME: &str = "reservations.json";

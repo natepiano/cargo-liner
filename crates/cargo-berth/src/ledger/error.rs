@@ -10,6 +10,7 @@ use super::projection::ProjectionError;
 use crate::config::ConfigError;
 use crate::git::GitError;
 use crate::ids::InvalidUuidV7;
+use crate::reservation::ReservationReplayError;
 use crate::session::SessionIdentityStoreError;
 
 /// A failure that leaves ledger state unreadable or unpublished.
@@ -39,6 +40,10 @@ pub(crate) enum LedgerError {
     Config(ConfigError),
     /// The append-only journal could not be replayed safely.
     Journal(JournalError),
+    /// Recorded targets could not be reconstructed from the journal.
+    ReservationReplay(ReservationReplayError),
+    /// Repository policy named an invalid trunk branch.
+    InvalidRepositoryTrunk(String),
     /// A validated fact could not be encoded for the journal.
     JournalEncoding(serde_json::Error),
     /// The projection cache could not be validated or published.
@@ -96,6 +101,12 @@ impl Display for LedgerError {
             Self::Io(error) => write!(formatter, "ledger I/O failed: {error}"),
             Self::Config(error) => write!(formatter, "ledger configuration failed: {error}"),
             Self::Journal(error) => write!(formatter, "journal replay failed: {error}"),
+            Self::ReservationReplay(error) => {
+                write!(formatter, "reservation replay failed: {error}")
+            },
+            Self::InvalidRepositoryTrunk(error) => {
+                write!(formatter, "invalid repository trunk: {error}")
+            },
             Self::JournalEncoding(error) => {
                 write!(formatter, "journal encoding failed: {error}")
             },

@@ -1,4 +1,4 @@
-//! Stateful trunk integration through the same locked decision as the git hook.
+//! Stateful target integration through the same locked decision as the git hook.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -12,6 +12,8 @@ use crate::gate::GateError;
 use crate::gate::IntegrationRequest;
 use crate::git;
 use crate::ids::ReservationId;
+use crate::ledger::IntegrationTarget;
+use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::WorktreeContext;
@@ -20,16 +22,17 @@ use crate::output::IntegratedGateOutcome;
 use crate::output::IntegrationPayload;
 use crate::output::OutputEnvelope;
 use crate::reconcile::ReconcileError;
+use crate::reservation::RetainedReservationSet;
 
 /// One reservation and its inseparable normal-or-forced integration policy.
 pub(crate) struct IntegrateRequest {
-    /// The reservation whose current protected work should enter trunk.
+    /// The reservation whose current protected work should enter its judging branch.
     pub(crate) reservation_id: ReservationId,
     /// Whether ordinary policy applies or one forced permit must be issued.
     pub(crate) integration:    IntegrationRequest,
 }
 
-/// Reconcile, decide, and atomically update configured trunk when policy permits it.
+/// Reconcile, decide, and atomically update the judging branch when policy permits it.
 pub(crate) fn execute(
     integrate_request: IntegrateRequest,
     recovery_command_line: &RecoveryCommandLine,
@@ -42,22 +45,47 @@ pub(crate) fn execute(
         Ok(configuration) => configuration,
         Err(output_envelope) => return *output_envelope,
     };
-    let previous = match git::branch_object_id(&repository_root, &configuration.trunk) {
+    let target = match integration_target(
+        &repository_root,
+        &configuration,
+        integrate_request.reservation_id,
+    ) {
+        Ok(target) => target,
+        Err(output) => return *output,
+    };
+    execute_for_target(
+        integrate_request,
+        recovery_command_line,
+        &invocation_directory,
+        &repository_root,
+        target,
+    )
+}
+
+fn execute_for_target(
+    integrate_request: IntegrateRequest,
+    recovery_command_line: &RecoveryCommandLine,
+    invocation_directory: &Path,
+    repository_root: &Path,
+    target: IntegrationTarget,
+) -> OutputEnvelope {
+    let previous = match git::branch_object_id(repository_root, target.short_name()) {
         Ok(previous) => previous,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
         },
     };
-    let proposed = match git::head_object_id(&repository_root) {
+    let proposed = match git::head_object_id(repository_root) {
         Ok(proposed) => proposed,
         Err(error) => {
             return OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string());
         },
     };
     let result = match gate::evaluate_integration(
-        &invocation_directory,
+        invocation_directory,
         integrate_request.reservation_id,
         integrate_request.integration,
+        target.clone(),
         previous.clone(),
         proposed.clone(),
         recovery_command_line,
@@ -80,6 +108,7 @@ pub(crate) fn execute(
         } => {
             return OutputEnvelope::integration_blocked(
                 integrate_request.reservation_id,
+                &target,
                 generation,
                 violations,
             )
@@ -111,22 +140,67 @@ pub(crate) fn execute(
         ),
     };
     if let Err(error) =
-        git::update_local_branch(&repository_root, &configuration.trunk, &proposed, &previous)
+        git::update_local_branch(repository_root, target.short_name(), &proposed, &previous)
     {
         return OutputEnvelope::ledger_unreadable(
             CommandVerb::Integrate,
-            &format!("the validated main update failed: {error}"),
+            &format!(
+                "the validated {} update failed: {error}",
+                target.short_name()
+            ),
         )
         .with_alerts(result.alerts);
     }
     OutputEnvelope::integrated(IntegrationPayload::Integrated {
         reservation_id: integrate_request.reservation_id,
+        target,
         previous,
         proposed,
         generation,
         gate,
     })
     .with_alerts(result.alerts)
+}
+
+fn integration_target(
+    repository_root: &Path,
+    configuration: &BerthConfig,
+    reservation_id: ReservationId,
+) -> Result<IntegrationTarget, Box<OutputEnvelope>> {
+    let trunk = configuration.repository_trunk().map_err(|error| {
+        Box::new(OutputEnvelope::invalid_input(
+            CommandVerb::Integrate,
+            &error,
+        ))
+    })?;
+    let ledger = Ledger::open(repository_root)
+        .map_err(|error| Box::new(OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)))?;
+    let events = ledger
+        .read_validated_events()
+        .map_err(|error| Box::new(OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)))?;
+    let reservations = RetainedReservationSet::replay(&events).map_err(|error| {
+        Box::new(OutputEnvelope::replay_failure(
+            CommandVerb::Integrate,
+            &error,
+        ))
+    })?;
+    let recorded = reservations
+        .target_of(reservation_id, &trunk)
+        .map_err(|error| {
+            Box::new(OutputEnvelope::replay_failure(
+                CommandVerb::Integrate,
+                &error,
+            ))
+        })?;
+    let judging = recorded
+        .judging_branch(repository_root, &trunk)
+        .map_err(|error| {
+            Box::new(OutputEnvelope::ledger_unreadable(
+                CommandVerb::Integrate,
+                &error.to_string(),
+            ))
+        })?;
+    Ok(judging.target().clone())
 }
 
 /// Resolve the issuing directory and its repository without losing either identity.
@@ -208,7 +282,8 @@ fn gate_error(reservation_id: ReservationId, error: GateError) -> OutputEnvelope
         GateError::Reconciliation(_)
         | GateError::Planning(_)
         | GateError::MissingConstraintFact(_)
-        | GateError::UnsupportedSymbolicTrunkUpdate
+        | GateError::UnsupportedSymbolicTargetUpdate(_)
+        | GateError::MultipleGatedReferences(_)
         | GateError::Git(_) => {
             OutputEnvelope::ledger_unreadable(CommandVerb::Integrate, &error.to_string())
         },

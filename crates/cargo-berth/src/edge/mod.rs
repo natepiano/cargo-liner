@@ -455,9 +455,18 @@ impl OrderingEdge {
                 EdgeJudgingTarget::Unavailable => EdgeOrderingTarget::Unavailable,
             }
         } else {
-            EdgeOrderingTarget::RepositoryTrunk(
-                repository_snapshot.repository_trunk_target().clone(),
-            )
+            match repository_snapshot.judging_target(self.before) {
+                EdgeJudgingTarget::Branch(predecessor)
+                    if &predecessor == repository_snapshot.repository_trunk_target() =>
+                {
+                    EdgeOrderingTarget::RepositoryTrunk(predecessor)
+                },
+                EdgeJudgingTarget::Branch(predecessor) => EdgeOrderingTarget::CrossTarget {
+                    predecessor,
+                    trunk: repository_snapshot.repository_trunk_target().clone(),
+                },
+                EdgeJudgingTarget::Unavailable => EdgeOrderingTarget::Unavailable,
+            }
         }
     }
 

@@ -54,6 +54,10 @@ pub(crate) enum EdgeJudgingTarget {
 pub(crate) enum EdgeOrderingTarget {
     RepositoryTrunk(IntegrationTarget),
     SharedTarget(IntegrationTarget),
+    CrossTarget {
+        predecessor: IntegrationTarget,
+        trunk:       IntegrationTarget,
+    },
     #[default]
     Unavailable,
 }
@@ -62,20 +66,17 @@ impl EdgeOrderingTarget {
     pub(crate) fn branch_name(&self) -> &str {
         match self {
             Self::RepositoryTrunk(target) | Self::SharedTarget(target) => target.short_name(),
+            Self::CrossTarget { trunk, .. } => trunk.short_name(),
             Self::Unavailable => "ordering target",
         }
     }
 
     pub(crate) fn wait_name(&self) -> &str {
         match self {
-            Self::RepositoryTrunk(_) => "trunk",
+            Self::RepositoryTrunk(_) | Self::CrossTarget { .. } => "trunk",
             Self::SharedTarget(target) => target.short_name(),
             Self::Unavailable => "ordering target",
         }
-    }
-
-    pub(crate) const fn is_repository_trunk(&self) -> bool {
-        matches!(self, Self::RepositoryTrunk(_))
     }
 }
 
@@ -318,6 +319,13 @@ impl RepositorySnapshot {
     ) -> Result<&CrossTargetPredecessorReachability, MissingReadinessFact> {
         self.cross_target_predecessors
             .for_predecessor(reservation_id)
+    }
+
+    /// Retain actual trunk reachability while a non-trunk target is proposed.
+    pub(crate) const fn cross_target_predecessor_evidence(
+        &self,
+    ) -> &CrossTargetPredecessorEvidence {
+        &self.cross_target_predecessors
     }
 
     /// Carry all target facts into a successor snapshot.

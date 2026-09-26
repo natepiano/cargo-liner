@@ -1,4 +1,4 @@
-//! Auditing the forced integration permits a committed trunk move consumed.
+//! Auditing the forced integration permits a committed target move consumed.
 
 use std::path::Path;
 
@@ -6,7 +6,7 @@ use super::decision;
 use super::decision::GatePurpose;
 use super::error::GateError;
 use super::error::GateTransactionRejection;
-use super::reference_transaction::ProposedMainMove;
+use super::reference_transaction::ProposedTargetMove;
 use super::reference_transaction::ReferenceTransactionPhase;
 use crate::config::BerthConfig;
 use crate::ids::CoordinationRunId;
@@ -14,6 +14,7 @@ use crate::ledger;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
+use crate::ledger::LedgerError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
@@ -23,7 +24,7 @@ pub(super) fn commit_forced_permit_audits(
     invocation_directory: &Path,
     worktree_context: &WorktreeContext,
     berth_config: &BerthConfig,
-    update: &ProposedMainMove,
+    update: &ProposedTargetMove,
     issuing_directory: &Path,
 ) -> Result<(), GateError> {
     let purpose = GatePurpose::Hook {
@@ -32,6 +33,9 @@ pub(super) fn commit_forced_permit_audits(
     };
     purpose.identity_validation()?;
     let ledger = Ledger::open(invocation_directory)?;
+    let repository_trunk = berth_config
+        .repository_trunk()
+        .map_err(|reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason)))?;
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
@@ -49,7 +53,7 @@ pub(super) fn commit_forced_permit_audits(
                         worktree_context,
                         ledger_repository,
                         berth_config,
-                        update.proposed.clone(),
+                        update,
                         GateReconciliationPurpose::CommittedAudit,
                         rewrite_preflight,
                     ) {
@@ -71,7 +75,12 @@ pub(super) fn commit_forced_permit_audits(
                             );
                         },
                     };
-                    let entering = decision::entering_reservations(&prepared, &newly_reachable);
+                    let entering = decision::entering_reservations(
+                        &prepared,
+                        &newly_reachable,
+                        &update.target,
+                        &repository_trunk,
+                    );
                     let (_, operations) = match decision::decide(
                         state.events(),
                         prepared.constraints(),

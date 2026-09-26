@@ -62,6 +62,7 @@ const GATE_DEADLINE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GATE_DEADLINE_MS";
 const GIT_BINARY: &str = "git";
 const HOOK_PATH: &str = ".git/hooks/reference-transaction";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
+const GATE_TARGETS_PATH: &str = ".git/cargo-berth/gate-targets";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
@@ -140,6 +141,928 @@ fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
 
+struct TargetPair {
+    repository:         integration_target::IntegrationRepository,
+    predecessor:        PathBuf,
+    successor:          PathBuf,
+    predecessor_id:     String,
+    successor_id:       String,
+    integration_before: String,
+    predecessor_tip:    String,
+    successor_tip:      String,
+}
+
+fn target_pair(merge_predecessor: bool) -> TargetPair {
+    let repository = integration_target::IntegrationRepository::new();
+    let predecessor = repository.lane("target-a", "integration");
+    let successor = repository.lane("target-b", "integration");
+    let integration_before =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(
+        &predecessor,
+        "file:shared.txt",
+        FIRST_RUN,
+        Some("integration"),
+    );
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred = integration_target::defer_claim_to(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+        Some("integration"),
+    );
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    let sequenced = integration_target::run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "A lands before B",
+            "--json",
+        ],
+    );
+    integration_target::assert_success(&sequenced);
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::commit_file(&successor, "shared.txt", "B\n", "B work");
+    if merge_predecessor {
+        integration_target::git(
+            &successor,
+            &["merge", "-s", "ours", "--no-edit", "target-a"],
+        );
+    }
+    let predecessor_tip = integration_target::git_stdout(&predecessor, &["rev-parse", "HEAD"]);
+    let successor_tip = integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]);
+    TargetPair {
+        repository,
+        predecessor,
+        successor,
+        predecessor_id,
+        successor_id,
+        integration_before,
+        predecessor_tip,
+        successor_tip,
+    }
+}
+
+fn gate_targets(root: &Path) -> Vec<String> {
+    match fs::read_to_string(root.join(GATE_TARGETS_PATH)) {
+        Ok(contents) => contents.lines().map(str::to_owned).collect(),
+        Err(error) => {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::NotFound,
+                "gate targets should read: {error}"
+            );
+            Vec::new()
+        },
+    }
+}
+
+struct MainPredecessorIntegrationSuccessor {
+    repository:         integration_target::IntegrationRepository,
+    successor:          PathBuf,
+    predecessor_id:     String,
+    successor_id:       String,
+    main_before:        String,
+    integration_before: String,
+    predecessor_tip:    String,
+    successor_tip:      String,
+}
+
+fn main_predecessor_integration_successor() -> MainPredecessorIntegrationSuccessor {
+    let repository = integration_target::IntegrationRepository::new();
+    let predecessor = repository.main_lane("main-predecessor");
+    let successor = repository.lane("integration-successor", "integration");
+    let main_before = integration_target::git_stdout(repository.root(), &["rev-parse", "main"]);
+    let integration_before =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred = integration_target::defer_claim_to(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+        Some("integration"),
+    );
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "A before B",
+            "--json",
+        ],
+    ));
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+    integration_target::commit_file(&successor, "shared.txt", "B\n", "B work");
+    let predecessor_tip = integration_target::git_stdout(&predecessor, &["rev-parse", "HEAD"]);
+    let successor_tip = integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]);
+    MainPredecessorIntegrationSuccessor {
+        repository,
+        successor,
+        predecessor_id,
+        successor_id,
+        main_before,
+        integration_before,
+        predecessor_tip,
+        successor_tip,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn listed_target_in_repository_path_with_backslash_is_gated() {
+    let repository = integration_target::IntegrationRepository::with_repository_prefix("repo\\tx");
+    let predecessor = repository.lane("slash-a", "integration");
+    let successor = repository.lane("slash-b", "integration");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(
+        &predecessor,
+        "file:shared.txt",
+        FIRST_RUN,
+        Some("integration"),
+    );
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred = integration_target::defer_claim_to(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+        Some("integration"),
+    );
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "A before B",
+            "--json",
+        ],
+    ));
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::commit_file(&successor, "shared.txt", "B\n", "B work");
+    set_gate_mode(repository.root(), "enforce");
+    let before = integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    let after = integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]);
+    let denied = propose_branch(repository.root(), "integration", &before, &after);
+    assert!(
+        !denied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    assert!(String::from_utf8_lossy(&denied.stderr).contains(&successor_id));
+}
+
+#[test]
+fn trunk_gate_checks_successor_recorded_against_another_target() {
+    let pair = main_predecessor_integration_successor();
+    set_gate_mode(pair.repository.root(), "enforce");
+    let denied = propose_trunk(
+        pair.repository.root(),
+        &pair.main_before,
+        &pair.successor_tip,
+    );
+    let denial = String::from_utf8_lossy(&denied.stderr);
+    assert!(!denied.status.success(), "{denial}");
+    assert!(denial.contains(&pair.successor_id), "{denial}");
+    let landed = propose_trunk(
+        pair.repository.root(),
+        &pair.main_before,
+        &pair.predecessor_tip,
+    );
+    assert!(
+        landed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&landed.stderr)
+    );
+    integration_target::git(
+        &pair.successor,
+        &["merge", "-s", "ours", "--no-edit", "main"],
+    );
+    let incorporated = integration_target::git_stdout(&pair.successor, &["rev-parse", "HEAD"]);
+    let allowed = propose_trunk(pair.repository.root(), &pair.predecessor_tip, &incorporated);
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+}
+
+#[test]
+fn cross_target_main_predecessor_recovery_prescribes_integrate() {
+    let pair = main_predecessor_integration_successor();
+    set_gate_mode(pair.repository.root(), "enforce");
+    let denied = propose_branch(
+        pair.repository.root(),
+        "integration",
+        &pair.integration_before,
+        &pair.successor_tip,
+    );
+    let denial = String::from_utf8_lossy(&denied.stderr);
+    assert!(!denied.status.success(), "{denial}");
+    assert!(
+        denial.contains(&format!(
+            "run cargo-berth integrate {}",
+            pair.predecessor_id
+        )),
+        "{denial}"
+    );
+    assert!(!denial.contains("land main on main"), "{denial}");
+}
+
+#[test]
+fn renamed_trunk_refusal_names_its_branch() {
+    let repository = integration_target::IntegrationRepository::new();
+    integration_target::git(repository.root(), &["branch", "develop", "main"]);
+    integration_target::set_trunk(repository.root(), "develop");
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &["init", "--json"],
+    ));
+    let predecessor = repository.lane("develop-a", "develop");
+    let successor = repository.lane("develop-b", "develop");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed =
+        integration_target::claim(&predecessor, "file:shared.txt", FIRST_RUN, Some("develop"));
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred = integration_target::defer_claim_to(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+        Some("develop"),
+    );
+    integration_target::assert_success(&deferred);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &integration_target::claim_id(&deferred),
+            "--why",
+            "A before B",
+            "--json",
+        ],
+    ));
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::commit_file(&successor, "shared.txt", "B\n", "B work");
+    set_gate_mode(repository.root(), "enforce");
+    let before = integration_target::git_stdout(repository.root(), &["rev-parse", "develop"]);
+    let after = integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]);
+    let denied = propose_branch(repository.root(), "develop", &before, &after);
+    assert!(
+        !denied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("cannot enter develop"));
+}
+
+#[test]
+fn reinitialization_clears_gate_targets() {
+    let repository = integration_target::IntegrationRepository::new();
+    let lane = repository.lane("reset-target", "integration");
+    integration_target::write_file(&lane, "held.txt", "held\n");
+    integration_target::assert_success(&integration_target::claim(
+        &lane,
+        "file:held.txt",
+        FIRST_RUN,
+        Some("integration"),
+    ));
+    assert_eq!(gate_targets(repository.root()), ["refs/heads/integration"]);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &["init", "--reinitialize-after-review", "--json"],
+    ));
+    assert!(gate_targets(repository.root()).is_empty());
+}
+
+#[test]
+fn committed_hook_skips_unlisted_fast_forward_before_journal_replay() {
+    let repository = integration_target::IntegrationRepository::new();
+    let listed_lane = repository.lane("listed-source", "integration");
+    integration_target::write_file(&listed_lane, "listed.txt", "listed\n");
+    integration_target::assert_success(&integration_target::claim(
+        &listed_lane,
+        "file:listed.txt",
+        FIRST_RUN,
+        Some("integration"),
+    ));
+    let lane = repository.lane("ordinary-lane", "integration");
+    let before = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
+    integration_target::commit_file(&lane, "ordinary.txt", "ordinary\n", "ordinary work");
+    let after = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
+    let integration_before =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    integration_target::git(
+        &repository.integration,
+        &["commit", "--allow-empty", "--quiet", "-m", "listed work"],
+    );
+    let integration_after =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    let mut journal = OpenOptions::new()
+        .append(true)
+        .open(repository.root().join(JOURNAL_PATH))
+        .expect("journal opens for corruption");
+    journal.write_all(b"{}\n").expect("corrupt record writes");
+    let ordinary = run_private_hook(
+        repository.root(),
+        "committed",
+        &format!("{before} {after} refs/heads/ordinary-lane\n"),
+    );
+    assert!(
+        ordinary.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ordinary.stderr)
+    );
+    assert!(
+        ordinary.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&ordinary.stderr)
+    );
+    let listed = run_private_hook(
+        repository.root(),
+        "committed",
+        &format!("{integration_before} {integration_after} refs/heads/integration\n"),
+    );
+    assert!(
+        !listed.stderr.is_empty(),
+        "listed target should report journal corruption"
+    );
+    assert!(
+        String::from_utf8_lossy(&listed.stderr).contains("journal"),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+}
+
+#[test]
+fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
+    let default = initialized_repository();
+    assert!(gate_targets(default.path()).is_empty());
+    let repository = integration_target::IntegrationRepository::new();
+    let lane = repository.lane("target-list-lane", "integration");
+    integration_target::write_file(&lane, "listed.txt", "listed\n");
+    let claimed =
+        integration_target::claim(&lane, "file:listed.txt", FIRST_RUN, Some("integration"));
+    integration_target::assert_success(&claimed);
+    assert_eq!(gate_targets(repository.root()), ["refs/heads/integration"]);
+    fs::write(
+        repository.root().join(GATE_TARGETS_PATH),
+        "refs/heads/stale\n",
+    )
+    .expect("stale filter writes");
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &["board", "--json"],
+    ));
+    assert_eq!(gate_targets(repository.root()), ["refs/heads/integration"]);
+    let id = integration_target::claim_id(&claimed);
+    integration_target::commit_file(&lane, "listed.txt", "listed\n", "listed work");
+    integration_target::assert_success(&integration_target::run(
+        &lane,
+        &["release", &id, "--json"],
+    ));
+    repository.merge_fast_forward("target-list-lane");
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &["board", "--json"],
+    ));
+    assert!(gate_targets(repository.root()).is_empty());
+}
+
+#[test]
+fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
+    let pair = target_pair(true);
+    set_gate_mode(pair.repository.root(), "enforce");
+    let denied = propose_branch(
+        pair.repository.root(),
+        "integration",
+        &pair.integration_before,
+        &pair.successor_tip,
+    );
+    assert!(
+        !denied.status.success(),
+        "successor entered integration before A"
+    );
+    let text = String::from_utf8_lossy(&denied.stderr);
+    assert!(
+        text.contains(&format!(
+            "Reservation {} cannot enter integration while its integration order is held",
+            pair.successor_id
+        )),
+        "{text}"
+    );
+    assert!(text.contains("integration"), "{text}");
+    assert!(text.contains(&pair.predecessor_id), "{text}");
+    assert!(text.contains(&pair.successor_id), "{text}");
+    assert_eq!(
+        integration_target::git_stdout(pair.repository.root(), &["rev-parse", "integration"]),
+        pair.integration_before
+    );
+    integration_target::assert_success(&integration_target::run(
+        &pair.predecessor,
+        &["release", &pair.predecessor_id, "--json"],
+    ));
+    pair.repository.merge_fast_forward("target-a");
+    let allowed = propose_branch(
+        pair.repository.root(),
+        "integration",
+        &pair.predecessor_tip,
+        &pair.successor_tip,
+    );
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+}
+
+#[test]
+fn listed_target_recreation_is_gated_at_its_proposed_tip() {
+    let pair = target_pair(false);
+    pair.repository.remove_integration_branch();
+    assert_eq!(
+        gate_targets(pair.repository.root()),
+        ["refs/heads/integration"]
+    );
+    set_gate_mode(pair.repository.root(), "enforce");
+    let absent = "0000000000000000000000000000000000000000";
+    let denied = propose_branch(
+        pair.repository.root(),
+        "integration",
+        absent,
+        &pair.successor_tip,
+    );
+    assert!(
+        !denied.status.success(),
+        "recreated target entered B before A"
+    );
+    let text = String::from_utf8_lossy(&denied.stderr);
+    assert!(text.contains(&pair.predecessor_id), "{text}");
+    assert!(text.contains(&pair.successor_id), "{text}");
+    let admitted = propose_branch(
+        pair.repository.root(),
+        "integration",
+        absent,
+        &pair.predecessor_tip,
+    );
+    assert!(
+        admitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&admitted.stderr)
+    );
+}
+
+#[test]
+fn target_gate_observe_and_enforce_messages_name_the_target() {
+    for mode in ["observe", "enforce"] {
+        let pair = target_pair(true);
+        set_gate_mode(pair.repository.root(), mode);
+        let result = propose_branch(
+            pair.repository.root(),
+            "integration",
+            &pair.integration_before,
+            &pair.successor_tip,
+        );
+        let text = String::from_utf8_lossy(&result.stderr);
+        assert!(text.contains("integration"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "Reservation {} cannot enter integration while its integration order is held",
+                pair.successor_id
+            )),
+            "{text}"
+        );
+        if mode == "observe" {
+            assert_eq!(result.status.code(), Some(0), "{text}");
+            assert!(
+                text.contains("Observe-only cargo-berth integration gate:"),
+                "{text}"
+            );
+        } else {
+            assert!(!result.status.success(), "{text}");
+            let input = format!(
+                "{} {} refs/heads/integration\n",
+                pair.integration_before, pair.successor_tip
+            );
+            let hook = run_installed_prepared_hook(pair.repository.root(), &input);
+            assert_eq!(hook.status.code(), Some(2));
+        }
+    }
+}
+
+#[test]
+fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
+    let repository = integration_target::IntegrationRepository::new();
+    let lane = repository.lane("filter-lane", "integration");
+    let claimed =
+        integration_target::claim(&lane, "file:filter.txt", FIRST_RUN, Some("integration"));
+    integration_target::assert_success(&claimed);
+    assert_eq!(gate_targets(repository.root()), ["refs/heads/integration"]);
+    integration_target::commit_file(&lane, "filter.txt", "filter\n", "filter work");
+    let before = integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    let after = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
+
+    let shim_directory = tempdir().expect("shim directory");
+    let marker = shim_directory.path().join("invoked");
+    let shim = shim_directory.path().join("cargo-berth");
+    fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' invoked >> {}\nexit 9\n",
+            shell_single_quoted(&marker)
+        ),
+    )
+    .expect("recording shim writes");
+    let mut permissions = fs::metadata(&shim).expect("shim metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&shim, permissions).expect("shim executes");
+    let mut search_path = vec![shim_directory.path().to_path_buf()];
+    search_path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").expect("PATH exists"),
+    ));
+    let search_path = std::env::join_paths(search_path).expect("PATH joins");
+    let mut child = Command::new(repository.root().join(HOOK_PATH))
+        .arg("prepared")
+        .current_dir(repository.root())
+        .env_remove(EXECUTABLE_ENVIRONMENT)
+        .env("PATH", &search_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("prepared hook starts");
+    child
+        .stdin
+        .take()
+        .expect("prepared stdin")
+        .write_all(format!("{before} {after} refs/heads/unlisted\n").as_bytes())
+        .expect("prepared input writes");
+    let updated = child.wait_with_output().expect("prepared hook finishes");
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "unlisted prepared update started cargo-berth"
+    );
+
+    let mut child = Command::new(repository.root().join(HOOK_PATH))
+        .arg("prepared")
+        .current_dir(repository.root())
+        .env_remove(EXECUTABLE_ENVIRONMENT)
+        .env("PATH", &search_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("listed prepared hook starts");
+    child
+        .stdin
+        .take()
+        .expect("listed prepared stdin")
+        .write_all(format!("{before} {after} refs/heads/integration\n").as_bytes())
+        .expect("listed prepared input writes");
+    let _listed = child
+        .wait_with_output()
+        .expect("listed prepared hook finishes");
+    assert!(
+        marker.exists(),
+        "listed control did not start recording shim"
+    );
+}
+
+#[test]
+fn two_gated_refs_in_one_transaction_refuse_before_journal_changes() {
+    for integration_first in [false, true] {
+        let pair = target_pair(true);
+        set_gate_mode(pair.repository.root(), "enforce");
+        let main = integration_target::git_stdout(pair.repository.root(), &["rev-parse", "main"]);
+        let entries = [
+            format!("update refs/heads/main {} {main}\n", pair.predecessor_tip),
+            format!(
+                "update refs/heads/integration {} {}\n",
+                pair.successor_tip, pair.integration_before
+            ),
+        ];
+        let order = if integration_first { [1, 0] } else { [0, 1] };
+        let input = format!(
+            "start\n{}{}prepare\ncommit\n",
+            entries[order[0]], entries[order[1]]
+        );
+        let before = fs::read(pair.repository.root().join(JOURNAL_PATH))
+            .expect("journal before transaction");
+        let mut child = git_command(BERTH_EXECUTABLE)
+            .arg("update-ref")
+            .arg("--stdin")
+            .current_dir(pair.repository.root())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("transaction starts");
+        child
+            .stdin
+            .take()
+            .expect("transaction stdin")
+            .write_all(input.as_bytes())
+            .expect("transaction writes");
+        let result = child.wait_with_output().expect("transaction finishes");
+        assert!(!result.status.success(), "transaction accepted both refs");
+        let text = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            text.contains("one transaction would move multiple gated refs"),
+            "{text}"
+        );
+        assert!(text.contains("refs/heads/main"), "{text}");
+        assert!(text.contains("refs/heads/integration"), "{text}");
+        assert!(text.contains("move them one at a time"), "{text}");
+        let hook_input = format!(
+            "{main} {} refs/heads/main\n{} {} refs/heads/integration\n",
+            pair.predecessor_tip, pair.integration_before, pair.successor_tip
+        );
+        let hook = run_installed_prepared_hook(pair.repository.root(), &hook_input);
+        assert_eq!(hook.status.code(), Some(5));
+        assert_eq!(
+            fs::read(pair.repository.root().join(JOURNAL_PATH)).expect("journal after transaction"),
+            before
+        );
+    }
+}
+
+#[test]
+fn integrate_moves_the_present_target_and_missing_target_falls_back_to_main() {
+    for remove_target in [false, true] {
+        let repository = integration_target::IntegrationRepository::new();
+        let lane = repository.lane(
+            if remove_target {
+                "missing-lane"
+            } else {
+                "present-lane"
+            },
+            "integration",
+        );
+        integration_target::write_file(&lane, "work.txt", "work\n");
+        let claimed =
+            integration_target::claim(&lane, "file:work.txt", FIRST_RUN, Some("integration"));
+        integration_target::assert_success(&claimed);
+        let id = integration_target::claim_id(&claimed);
+        integration_target::commit_file(&lane, "work.txt", "work\n", "lane work");
+        let tip = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
+        let main_before = integration_target::git_stdout(repository.root(), &["rev-parse", "main"]);
+        let integration_before =
+            integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+        if remove_target {
+            repository.remove_integration_branch();
+        }
+        let integrated = integration_target::run(&lane, &["integrate", &id, "--json"]);
+        integration_target::assert_success(&integrated);
+        let moved = if remove_target { "main" } else { "integration" };
+        let envelope = integration_target::json(&integrated);
+        let data = &envelope["payload"]["data"];
+        assert_eq!(data["status"], "integrated");
+        assert_eq!(data["target"], format!("refs/heads/{moved}"));
+        let previous = if remove_target {
+            main_before.as_str()
+        } else {
+            integration_before.as_str()
+        };
+        assert_eq!(data["previous"], previous);
+        assert_eq!(data["proposed"], tip);
+        assert_eq!(
+            integration_target::git_stdout(repository.root(), &["rev-parse", moved]),
+            tip
+        );
+        if !remove_target {
+            assert_eq!(
+                integration_target::git_stdout(repository.root(), &["rev-parse", "main"]),
+                main_before
+            );
+        }
+    }
+}
+
+#[test]
+fn blocked_integrate_json_names_the_target() {
+    let pair = target_pair(false);
+    set_gate_mode(pair.repository.root(), "enforce");
+    set_gate_mode(&pair.successor, "enforce");
+    let blocked = integration_target::run(
+        &pair.successor,
+        &["integrate", &pair.successor_id, "--json"],
+    );
+    assert_eq!(
+        blocked.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&blocked.stdout)
+    );
+    let envelope = integration_target::json(&blocked);
+    let data = &envelope["payload"]["data"];
+    assert_eq!(data["status"], "blocked");
+    assert_eq!(data["target"], "refs/heads/integration");
+}
+
+#[test]
+fn integrate_blocks_when_successor_tip_contains_held_predecessor() {
+    let pair = target_pair(true);
+    set_gate_mode(pair.repository.root(), "enforce");
+    set_gate_mode(&pair.successor, "enforce");
+
+    let blocked = integration_target::run(
+        &pair.successor,
+        &["integrate", &pair.successor_id, "--json"],
+    );
+    assert_eq!(
+        blocked.status.code(),
+        Some(2),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&blocked.stdout),
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+}
+
+#[test]
+fn held_integrate_is_blocked_even_when_target_tip_is_unchanged() {
+    let repository = integration_target::IntegrationRepository::new();
+    let predecessor = repository.lane("noop-a", "integration");
+    let successor = repository.lane("noop-b", "integration");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(
+        &predecessor,
+        "file:shared.txt",
+        FIRST_RUN,
+        Some("integration"),
+    );
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred = integration_target::defer_claim_to(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+        Some("integration"),
+    );
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "A lands before B",
+            "--json",
+        ],
+    ));
+    let target_tip =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    assert_eq!(
+        integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]),
+        target_tip
+    );
+    set_gate_mode(repository.root(), "enforce");
+    set_gate_mode(&successor, "enforce");
+
+    let blocked = integration_target::run(&successor, &["integrate", &successor_id, "--json"]);
+    assert_eq!(
+        blocked.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&blocked.stdout)
+    );
+    let envelope = integration_target::json(&blocked);
+    assert_eq!(envelope["payload"]["data"]["status"], "blocked");
+    assert_eq!(
+        envelope["payload"]["data"]["target"],
+        "refs/heads/integration"
+    );
+    assert_eq!(
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]),
+        target_tip
+    );
+}
+
+#[test]
+fn trunk_gate_remembers_first_target_landing_after_target_revalidation() {
+    let repository = integration_target::IntegrationRepository::new();
+    let predecessor = repository.lane("proof-a", "integration");
+    let successor = repository.main_lane("proof-x");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(
+        &predecessor,
+        "file:shared.txt",
+        FIRST_RUN,
+        Some("integration"),
+    );
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred = integration_target::defer_claim_to(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+        Some("main"),
+    );
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "A reaches main before X",
+            "--json",
+        ],
+    ));
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "first A landing");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+    repository.merge_fast_forward("proof-a");
+    let first_landing =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    integration_target::git(repository.root(), &["merge", "--ff-only", "integration"]);
+    assert_eq!(
+        integration_target::git_stdout(repository.root(), &["rev-parse", "main"]),
+        first_landing
+    );
+
+    integration_target::commit_file(
+        &repository.integration,
+        "integration-later.txt",
+        "later\n",
+        "I revalidates A",
+    );
+    let second_landing =
+        integration_target::git_stdout(repository.root(), &["rev-parse", "integration"]);
+    assert_ne!(first_landing, second_landing);
+    integration_target::assert_success(&integration_target::run(
+        repository.root(),
+        &["board", "--json"],
+    ));
+    assert!(
+        integration_target::journal(repository.root())
+            .iter()
+            .any(|event| {
+                event["op"] == "evidence_revalidated"
+                    && event["reservation_id"] == predecessor_id
+                    && event["status"]["trunk_oid"] == second_landing
+            }),
+        "A must revalidate at I2 after I1 reaches main"
+    );
+
+    integration_target::commit_file(&successor, "shared.txt", "X\n", "X work");
+    integration_target::git(&successor, &["merge", "-s", "ours", "--no-edit", "main"]);
+    let successor_tip = integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]);
+    assert!(!GIT.succeeds(
+        repository.root(),
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &second_landing,
+            &successor_tip
+        ]
+    ));
+    set_gate_mode(repository.root(), "enforce");
+    let admitted = propose_trunk(repository.root(), &first_landing, &successor_tip);
+    assert!(
+        admitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&admitted.stderr)
+    );
+}
+
 #[test]
 fn enforce_gate_rejects_cross_target_successor_before_integration_lands_on_main() {
     let repo = integration_target::IntegrationRepository::new();
@@ -190,6 +1113,18 @@ fn enforce_gate_rejects_cross_target_successor_before_integration_lands_on_main(
     assert!(denial.contains("Ordering edge"), "{denial}");
     assert!(denial.contains(&predecessor_id), "{denial}");
     assert!(denial.contains(&successor_id), "{denial}");
+    assert!(
+        denial.contains("integration") && denial.contains("main"),
+        "{denial}"
+    );
+    assert!(
+        denial.contains("land integration on main before integrating this reservation"),
+        "{denial}"
+    );
+    assert!(
+        !denial.contains(&format!("integrate {predecessor_id}")),
+        "{denial}"
+    );
     assert_eq!(
         integration_target::git_stdout(repo.root(), &["rev-parse", "main"]),
         main
@@ -4005,7 +4940,17 @@ fn set_gate_mode(repository_root: &Path, mode: &str) {
 
 /// Propose `proposed` as the new trunk tip with the release valve unset.
 fn propose_trunk(repository_root: &Path, previous: &str, proposed: &str) -> Output {
-    update_main(repository_root, previous, proposed, ReleaseValve::Unset)
+    propose_branch(repository_root, "main", previous, proposed)
+}
+
+fn propose_branch(repository_root: &Path, branch: &str, previous: &str, proposed: &str) -> Output {
+    update_branch(
+        repository_root,
+        branch,
+        previous,
+        proposed,
+        ReleaseValve::Unset,
+    )
 }
 
 /// Put trunk back to `previous` after a permitted observation.
@@ -4042,10 +4987,25 @@ fn update_main(
     proposed: &str,
     release_valve: ReleaseValve,
 ) -> Output {
+    update_branch(repository_root, "main", previous, proposed, release_valve)
+}
+
+fn update_branch(
+    repository_root: &Path,
+    branch: &str,
+    previous: &str,
+    proposed: &str,
+    release_valve: ReleaseValve,
+) -> Output {
     let mut command = git_command(BERTH_EXECUTABLE);
     command
         .arg("--no-optional-locks")
-        .args(["update-ref", "refs/heads/main", proposed, previous])
+        .args([
+            "update-ref",
+            &format!("refs/heads/{branch}"),
+            proposed,
+            previous,
+        ])
         .current_dir(repository_root);
     if release_valve == ReleaseValve::Set {
         command.env(BYPASS_ENVIRONMENT, "1");
@@ -4193,6 +5153,25 @@ fn run_gate_with_blocked_mutation_lock(deadline_environment: &str, deadline: Dur
     );
     drop(lock_file);
     blocked
+}
+
+fn run_installed_prepared_hook(repository_root: &Path, input: &str) -> Output {
+    let mut child = Command::new(repository_root.join(HOOK_PATH))
+        .arg("prepared")
+        .current_dir(repository_root)
+        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("installed hook should start");
+    child
+        .stdin
+        .take()
+        .expect("installed hook stdin")
+        .write_all(input.as_bytes())
+        .expect("installed hook input writes");
+    child.wait_with_output().expect("installed hook finishes")
 }
 
 fn run_private_hook(repository_root: &Path, phase: &str, input: &str) -> Output {

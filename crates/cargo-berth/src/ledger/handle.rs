@@ -1,12 +1,16 @@
 //! The shared-ledger handle and the validation-controlled transactions it drives.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use super::constants::GATE_TARGETS_FILE_NAME;
+use super::constants::GATE_TARGETS_TEMPORARY_FILE_NAME;
 use super::constants::JOURNAL_FILE_NAME;
 use super::constants::LEDGER_DIRECTORY_NAME;
 use super::constants::LOCK_FILE_NAME;
@@ -34,6 +38,7 @@ use super::projection::ProjectionError;
 use super::projection::ProjectionSynchronization;
 use super::worktree_context::WorktreeContext;
 use crate::config::BerthConfig;
+use crate::config::ConfigurationLookup;
 use crate::config::Enrollment;
 use crate::config::InitializationState;
 use crate::git;
@@ -43,6 +48,9 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
+use crate::reservation::RecordedTarget;
+use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedReservationSet;
 use crate::session;
 use crate::session::CurrentSessionMappingRemoval;
 use crate::session::SessionIdentityMappingPublication;
@@ -215,7 +223,10 @@ impl Ledger {
     pub(crate) fn open_from_discovered_worktree(
         worktree_context: &WorktreeContext,
     ) -> Result<Self, LedgerError> {
-        let ledger = Self::at_common_git_directory(worktree_context.common_git_directory());
+        let ledger = Self::at_common_git_directory(
+            worktree_context.common_git_directory(),
+            worktree_context.repository_root(),
+        );
         ledger.require_existing()?;
         Ok(ledger)
     }
@@ -249,7 +260,10 @@ impl Ledger {
                 });
             },
         }
-        let ledger = Self::at_common_git_directory(worktree_context.common_git_directory());
+        let ledger = Self::at_common_git_directory(
+            worktree_context.common_git_directory(),
+            worktree_context.repository_root(),
+        );
         let events = ledger.read_validated_events()?;
         Ok(Enrollment::Enrolled(EditCheckLedgerSnapshot {
             events,
@@ -569,6 +583,11 @@ impl Ledger {
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
         Projection::from_replay(repo_instance_id, &replay)
             .publish(&ledger.paths.directory, &ledger.paths.projection)?;
+        publish_gate_targets(
+            &ledger.paths.repository_root,
+            &ledger.paths.directory,
+            &replay,
+        )?;
         fs::File::open(&ledger.paths.directory)?.sync_all()?;
         Ok(LedgerReinitialization {
             discarded_bytes,
@@ -578,10 +597,13 @@ impl Ledger {
 
     fn locate(repository_root: &Path) -> Result<Self, LedgerError> {
         let common_git_directory = git::common_directory(repository_root)?;
-        Ok(Self::at_common_git_directory(&common_git_directory))
+        Ok(Self::at_common_git_directory(
+            &common_git_directory,
+            repository_root,
+        ))
     }
 
-    fn at_common_git_directory(common_git_directory: &Path) -> Self {
+    fn at_common_git_directory(common_git_directory: &Path, repository_root: &Path) -> Self {
         let directory = common_git_directory.join(LEDGER_DIRECTORY_NAME);
         Self {
             paths: LedgerPaths {
@@ -589,6 +611,7 @@ impl Ledger {
                 lock: directory.join(LOCK_FILE_NAME),
                 projection: directory.join(PROJECTION_FILE_NAME),
                 repo_instance_id: directory.join(REPO_INSTANCE_ID_FILE_NAME),
+                repository_root: repository_root.to_path_buf(),
                 directory,
             },
         }
@@ -648,6 +671,7 @@ impl Ledger {
             journal,
             journal_initialization,
             ledger_directory: self.paths.directory.clone(),
+            repository_root: self.paths.repository_root.clone(),
             projection_synchronization,
             replay,
             repo_instance_id,
@@ -759,9 +783,83 @@ impl LedgerTransaction {
     fn publish(&self, paths: &LedgerPaths) -> Result<(), LedgerError> {
         Projection::from_replay(self.repo_instance_id, &self.replay)
             .publish(&paths.directory, &paths.projection)?;
+        publish_gate_targets(&self.repository_root, &self.ledger_directory, &self.replay)?;
         Ok(())
     }
+}
 
+fn publish_gate_targets(
+    repository_root: &Path,
+    ledger_directory: &Path,
+    replay: &JournalReplay,
+) -> Result<(), LedgerError> {
+    let worktree_context = WorktreeContext::discover(repository_root)?;
+    let main_repository_root = if worktree_context.common_git_directory().file_name()
+        == Some(std::ffi::OsStr::new(".git"))
+    {
+        worktree_context
+            .common_git_directory()
+            .parent()
+            .unwrap_or(repository_root)
+    } else {
+        repository_root
+    };
+    let configuration = BerthConfig::read(&ConfigurationLookup::Own {
+        repository_root: main_repository_root,
+    })?;
+    let Enrollment::Enrolled(configuration) = configuration else {
+        return Ok(());
+    };
+    let Ok(trunk) = configuration.repository_trunk() else {
+        return Ok(());
+    };
+    let Ok(reservations) = RetainedReservationSet::replay(&replay.events) else {
+        return Ok(());
+    };
+    let targets = reservations
+        .iter()
+        .filter(|reservation| {
+            !matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            )
+        })
+        .filter_map(|reservation| match reservation.target() {
+            RecordedTarget::Recorded { target, .. } if target != &trunk => {
+                Some(target.reference().as_str().to_owned())
+            },
+            RecordedTarget::Recorded { .. } | RecordedTarget::Unrecorded => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let contents = targets
+        .into_iter()
+        .fold(String::new(), |mut contents, target| {
+            contents.push_str(&target);
+            contents.push('\n');
+            contents
+        });
+    let path = ledger_directory.join(GATE_TARGETS_FILE_NAME);
+    match fs::read_to_string(&path) {
+        Ok(existing) if existing == contents => return Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound && contents.is_empty() => {
+            return Ok(());
+        },
+        Ok(_) | Err(_) => {},
+    }
+    let temporary_path = ledger_directory.join(GATE_TARGETS_TEMPORARY_FILE_NAME);
+    let mut temporary_file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary_path)?;
+    temporary_file.write_all(contents.as_bytes())?;
+    temporary_file.sync_all()?;
+    fs::rename(temporary_path, path)?;
+    fs::File::open(ledger_directory)?.sync_all()?;
+    Ok(())
+}
+
+impl LedgerTransaction {
     fn publish_if_rebuild_required(&self, paths: &LedgerPaths) -> Result<(), LedgerError> {
         match self.projection_synchronization {
             ProjectionSynchronization::Current => Ok(()),
@@ -802,6 +900,7 @@ struct LedgerTransaction {
     journal:                    Journal,
     journal_initialization:     InitializationState,
     ledger_directory:           PathBuf,
+    repository_root:            PathBuf,
     projection_synchronization: ProjectionSynchronization,
     replay:                     JournalReplay,
     repo_instance_id:           RepoInstanceId,
@@ -818,6 +917,7 @@ struct LedgerPaths {
     projection:       PathBuf,
     lock:             PathBuf,
     repo_instance_id: PathBuf,
+    repository_root:  PathBuf,
 }
 
 /// A projection published after a lock-free journal read requires a fresh pair of reads.

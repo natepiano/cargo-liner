@@ -17,6 +17,7 @@ use super::permit::PENDING_BYPASS_FILE_PREFIX;
 use super::permit::PENDING_BYPASS_FILE_SUFFIX;
 use crate::git;
 use crate::git::GitError;
+use crate::ledger::GATE_TARGETS_FILE_NAME;
 
 const EXECUTABLE_PERMISSIONS: u32 = 0o755;
 const POST_COMMIT_HOOK_NAME: &str = "post-commit";
@@ -281,6 +282,12 @@ impl ManagedHook {
         let pending_marker_suffix = shell_single_quoted(PENDING_BYPASS_FILE_SUFFIX);
         let policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
         let trunk_reference = shell_single_quoted(trunk_reference);
+        let gate_targets = shell_single_quoted(
+            &common_git_directory
+                .join("cargo-berth")
+                .join(GATE_TARGETS_FILE_NAME)
+                .to_string_lossy(),
+        );
         match self.dispatch {
             ManagedHookDispatch::PostCommit => format!(
                 "#!/bin/sh\n{POST_COMMIT_MARKER}\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    exit 0\nfi\n{EXECUTABLE_RESOLUTION}\nif [ ! -x \"$cargo_berth_executable\" ]; then\n    printf '%s\\n' 'cargo-berth could not check this commit drift because its executable is unavailable. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\n    exit 0\nfi\nCARGO_BERTH_POST_COMMIT=1 \"$cargo_berth_executable\" drift --full\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth could not run the post-commit drift check. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\nfi\nexit 0\n"
@@ -290,6 +297,7 @@ impl ManagedHook {
                 &pending_marker_suffix,
                 &policy_worktree,
                 &trunk_reference,
+                &gate_targets,
             ),
         }
     }
@@ -303,6 +311,8 @@ if [ -d __POLICY_WORKTREE__ ]; then
     cd __POLICY_WORKTREE__
 fi
 cargo_berth_trunk_reference=__TRUNK_REFERENCE__
+cargo_berth_gate_targets=__GATE_TARGETS__
+export cargo_berth_trunk_reference cargo_berth_gate_targets
 case "${1:-}" in
     preparing|aborted) exit 0 ;;
     prepared|committed) ;;
@@ -328,7 +338,9 @@ if [ "$transaction_buffered" -eq 1 ]; then
     LC_ALL=C grep -q '[^	 -~]' "$transaction_input"
     transaction_byte_scan_status=$?
     if [ "$transaction_byte_scan_status" -eq 1 ]; then
-        LC_ALL=C awk -v phase="$1" -v trunk="$cargo_berth_trunk_reference" '
+        cargo_berth_phase=$1
+        export cargo_berth_phase
+        LC_ALL=C awk '
         function valid_transaction_bytes(value, byte_index, byte) {
             for (byte_index = 1; byte_index <= length(value); byte_index += 1) {
                 byte = substr(value, byte_index, 1)
@@ -363,8 +375,17 @@ if [ "$transaction_buffered" -eq 1 ]; then
             return (length_ == 40 || length_ == 64) && value !~ /[^0-9a-f]/
         }
         BEGIN {
+            phase = ENVIRON["cargo_berth_phase"]
+            trunk = ENVIRON["cargo_berth_trunk_reference"]
+            gate_targets = ENVIRON["cargo_berth_gate_targets"]
             decision = 1
             tab = sprintf("%c", 9)
+            while ((getline target_ref < gate_targets) > 0) {
+                if (target_ref != "") {
+                    targets[target_ref] = 1
+                }
+            }
+            close(gate_targets)
         }
         {
             if (!valid_transaction_bytes($0) || NF != 3) {
@@ -379,7 +400,7 @@ if [ "$transaction_buffered" -eq 1 ]; then
                     decision = 0
                 }
             }
-            if (phase == "prepared" && $3 == trunk) {
+            if (phase == "prepared" && ($3 == trunk || ($3 in targets))) {
                 decision = 0
             }
         }
@@ -468,6 +489,7 @@ fn reference_transaction_script(
     pending_marker_suffix: &str,
     policy_worktree: &str,
     trunk_reference: &str,
+    gate_targets: &str,
 ) -> String {
     render_reference_transaction_template(&[
         (
@@ -480,6 +502,7 @@ fn reference_transaction_script(
         ),
         ("__POLICY_WORKTREE__", policy_worktree),
         ("__TRUNK_REFERENCE__", trunk_reference),
+        ("__GATE_TARGETS__", gate_targets),
         ("__EXECUTABLE_RESOLUTION__", EXECUTABLE_RESOLUTION),
         ("__PENDING_MARKER_PREFIX__", pending_marker_prefix),
         ("__PENDING_MARKER_SUFFIX__", pending_marker_suffix),
@@ -569,7 +592,8 @@ mod tests {
             "'refs/heads/__PENDING_MARKER_PREFIX__'",
         ];
 
-        let script = reference_transaction_script(values[0], values[1], values[2], values[3]);
+        let script =
+            reference_transaction_script(values[0], values[1], values[2], values[3], values[0]);
 
         for value in values {
             assert!(script.contains(value), "rendering changed {value}");

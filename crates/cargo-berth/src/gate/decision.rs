@@ -10,8 +10,8 @@ use serde::Serialize;
 use super::error::GateError;
 use super::error::GateTransactionRejection;
 use super::permit;
-use super::reference_transaction::PreviousMain;
-use super::reference_transaction::ProposedMainMove;
+use super::reference_transaction::PreviousTargetTip;
+use super::reference_transaction::ProposedTargetMove;
 use super::reference_transaction::ReferenceTransactionPhase;
 use crate::alert::Alert;
 use crate::config::BerthConfig;
@@ -40,11 +40,13 @@ use crate::ledger::BypassOccurrenceTime;
 use crate::ledger::BypassRecording;
 use crate::ledger::BypassedAction;
 use crate::ledger::ForcedIntegrationReason;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
+use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::SkippedDeferral;
@@ -55,6 +57,7 @@ use crate::reconcile;
 use crate::reconcile::GateReconciliation;
 use crate::reconcile::GateReconciliationError;
 use crate::reconcile::GateReconciliationPurpose;
+use crate::reconcile::ReconciliationReport;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
 
@@ -78,7 +81,7 @@ pub(crate) struct IntegrationViolation {
     pub(crate) holds:                 Vec<IntegrationHold>,
 }
 
-/// A decision made against one proposed main update at one journal generation.
+/// A decision made against one proposed target update at one journal generation.
 pub(crate) enum GateDecision {
     /// No newly entering reservation is held.
     Clear {
@@ -99,7 +102,7 @@ pub(crate) enum GateDecision {
         /// Every violation preventing this update.
         violations: Vec<IntegrationViolation>,
     },
-    /// A forced integration journalled a permit for the next matching main update.
+    /// A forced integration journalled a permit for the next matching target update.
     PermitIssued {
         /// The exact replay generation validated under the mutation lock.
         generation:          ProjectionGeneration,
@@ -121,10 +124,14 @@ pub(crate) enum GateDecision {
 
 /// A complete gate result with reconciliation alerts from the same lock hold.
 pub(crate) struct GateResult {
+    /// The local branch whose proposed tip was judged.
+    pub(crate) target:           IntegrationTarget,
+    /// The configured branch used for default-trunk message compatibility.
+    pub(crate) repository_trunk: IntegrationTarget,
     /// The integration decision.
-    pub(crate) decision: GateDecision,
+    pub(crate) decision:         GateDecision,
     /// Durable alerts produced by the preceding actual-trunk reconciliation.
-    pub(crate) alerts:   Vec<Alert>,
+    pub(crate) alerts:           Vec<Alert>,
 }
 
 #[derive(Clone)]
@@ -145,6 +152,7 @@ pub(crate) fn evaluate_integration(
     invocation_directory: &Path,
     reservation_id: ReservationId,
     request: IntegrationRequest,
+    target: IntegrationTarget,
     previous: GitObjectId,
     proposed: GitObjectId,
     recovery_command_line: &RecoveryCommandLine,
@@ -156,8 +164,9 @@ pub(crate) fn evaluate_integration(
         &worktree_context,
         recovery_command_line,
     );
-    let update = ProposedMainMove {
-        previous: PreviousMain::Existing(previous),
+    let update = ProposedTargetMove {
+        target,
+        previous: PreviousTargetTip::Existing(previous),
         proposed,
     };
     let purpose = GatePurpose::Integrate {
@@ -170,7 +179,7 @@ pub(crate) fn evaluate_integration(
 
 pub(super) fn evaluate_locked(
     invocation_directory: &Path,
-    update: &ProposedMainMove,
+    update: &ProposedTargetMove,
     purpose: &GatePurpose,
 ) -> Result<Enrollment<GateResult>, GateError> {
     let worktree_context = WorktreeContext::discover(invocation_directory)?;
@@ -185,6 +194,9 @@ pub(super) fn evaluate_locked(
         },
     };
     let identity_validation = purpose.identity_validation()?;
+    let repository_trunk = berth_config
+        .repository_trunk()
+        .map_err(|reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason)))?;
     let ledger = Ledger::open(worktree_context.repository_root())?;
     let ledger_repository = ledger.repository_identity()?;
     let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
@@ -204,7 +216,7 @@ pub(super) fn evaluate_locked(
                         &worktree_context,
                         ledger_repository,
                         &berth_config,
-                        update.proposed.clone(),
+                        update,
                         GateReconciliationPurpose::PreparedDecision,
                         rewrite_preflight,
                     ) {
@@ -229,7 +241,13 @@ pub(super) fn evaluate_locked(
                                 );
                             },
                         };
-                    let entering = entering_reservations(&prepared, &newly_reachable);
+                    let entering = entering_for_purpose(
+                        &prepared,
+                        &newly_reachable,
+                        purpose,
+                        &update.target,
+                        &repository_trunk,
+                    );
                     let (decision, operations) = match decide(
                         state.events(),
                         prepared.constraints(),
@@ -255,17 +273,30 @@ pub(super) fn evaluate_locked(
                 LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
                 LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
             })?;
-        match outcome {
-            LedgerCommittedActionOutcome::Appended {
-                output: (report, decision),
-                ..
-            } => Ok(Enrollment::Enrolled(GateResult {
-                decision,
-                alerts: report.alerts,
-            })),
-            LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
-        }
+        finish_gate_decision(outcome, &update.target, &repository_trunk)
     })
+}
+
+fn finish_gate_decision(
+    outcome: LedgerCommittedActionOutcome<
+        GateTransactionRejection,
+        (ReconciliationReport, GateDecision),
+    >,
+    target: &IntegrationTarget,
+    repository_trunk: &IntegrationTarget,
+) -> Result<Enrollment<GateResult>, GateError> {
+    match outcome {
+        LedgerCommittedActionOutcome::Appended {
+            output: (report, decision),
+            ..
+        } => Ok(Enrollment::Enrolled(GateResult {
+            target: target.clone(),
+            repository_trunk: repository_trunk.clone(),
+            decision,
+            alerts: report.alerts,
+        })),
+        LedgerCommittedActionOutcome::Rejected(rejection) => Err(rejection.into()),
+    }
 }
 
 /// Retry only rejected rewrite validation and report persistent races as contention.
@@ -305,11 +336,16 @@ fn validate_gate_identity(
 pub(super) fn entering_reservations(
     reconciliation: &GateReconciliation,
     newly_reachable: &[GitObjectId],
+    proposed_target: &IntegrationTarget,
+    repository_trunk: &IntegrationTarget,
 ) -> Vec<ReservationId> {
     reconciliation
         .constraints()
         .reservations
         .iter()
+        .filter(|reservation| {
+            proposed_target == repository_trunk || reconciliation.judges(reservation.reservation_id)
+        })
         .filter(|reservation| {
             !matches!(reservation.lifecycle, ReservationLifecycle::Released { .. })
         })
@@ -326,6 +362,33 @@ pub(super) fn entering_reservations(
             IntegrationSubject::Commit { .. } | IntegrationSubject::NotApplicable => None,
         })
         .collect()
+}
+
+fn entering_for_purpose(
+    reconciliation: &GateReconciliation,
+    newly_reachable: &[GitObjectId],
+    purpose: &GatePurpose,
+    proposed_target: &IntegrationTarget,
+    repository_trunk: &IntegrationTarget,
+) -> Vec<ReservationId> {
+    let mut entering = entering_reservations(
+        reconciliation,
+        newly_reachable,
+        proposed_target,
+        repository_trunk,
+    );
+    if let GatePurpose::Integrate { reservation_id, .. } = purpose
+        && (proposed_target == repository_trunk || reconciliation.judges(*reservation_id))
+        && reconciliation
+            .constraints()
+            .holds_for(*reservation_id)
+            .next()
+            .is_some()
+        && !entering.contains(reservation_id)
+    {
+        entering.push(*reservation_id);
+    }
+    entering
 }
 
 pub(super) fn decide(
@@ -380,13 +443,13 @@ pub(super) fn decide(
 
 pub(super) fn newly_reachable_commits(
     repository_root: &Path,
-    update: &ProposedMainMove,
+    update: &ProposedTargetMove,
 ) -> Result<Vec<GitObjectId>, GitError> {
     match &update.previous {
-        PreviousMain::Existing(previous) => {
+        PreviousTargetTip::Existing(previous) => {
             git::newly_reachable_commits(repository_root, previous, &update.proposed)
         },
-        PreviousMain::Absent => git::reachable_commits(repository_root, &update.proposed),
+        PreviousTargetTip::Absent => git::reachable_commits(repository_root, &update.proposed),
     }
 }
 

@@ -145,9 +145,18 @@ pub(crate) struct ClaimTarget {
 
 /// Whether automatic target selection used the requested branch.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum TargetSelectionOutcome {
+pub(crate) enum TargetSelectionOutcome {
     Selected,
     FellBack(TargetFallback),
+}
+
+impl TargetSelectionOutcome {
+    pub(crate) fn wire_fallback(&self) -> Option<TargetFallback> {
+        match self {
+            Self::Selected => None,
+            Self::FellBack(fallback) => Some(fallback.clone()),
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema, Serialize)]
@@ -163,7 +172,7 @@ impl Serialize for ClaimTarget {
         ClaimTargetWire {
             target:   self.target.clone(),
             source:   self.source,
-            fallback: self.fallback().cloned(),
+            fallback: self.fallback().wire_fallback(),
         }
         .serialize(serializer)
     }
@@ -191,12 +200,7 @@ impl JsonSchema for ClaimTarget {
 }
 
 impl ClaimTarget {
-    pub(crate) const fn fallback(&self) -> Option<&TargetFallback> {
-        match &self.selection {
-            TargetSelectionOutcome::Selected => None,
-            TargetSelectionOutcome::FellBack(fallback) => Some(fallback),
-        }
-    }
+    pub(crate) const fn fallback(&self) -> &TargetSelectionOutcome { &self.selection }
 }
 
 /// An invalid branch setting replaced by the repository trunk during automatic acquisition.
@@ -361,9 +365,14 @@ pub(crate) fn resolve_claim_target(
 
 #[cfg(test)]
 mod tests {
+    use super::ClaimTarget;
     use super::IntegrationTarget;
     use super::TargetArgumentRejection;
+    use super::TargetFallback;
+    use super::TargetFallbackReason;
+    use super::TargetSelectionOutcome;
     use super::TargetSelectionRequest;
+    use super::TargetSource;
     use super::branch_target_from_config_text;
     use super::resolve_claim_target;
 
@@ -418,7 +427,10 @@ mod tests {
         )
         .map_err(|error| std::io::Error::other(error.message()))?;
         assert_eq!(automatic.target, trunk);
-        assert!(automatic.fallback().is_some());
+        assert!(matches!(
+            automatic.fallback(),
+            TargetSelectionOutcome::FellBack(_)
+        ));
         Ok(())
     }
 
@@ -430,6 +442,40 @@ mod tests {
             Some("final")
         );
         assert_eq!(branch_target_from_config_text(config, "missing"), None);
+    }
+
+    #[test]
+    fn claim_target_fallback_is_semantic_while_wire_field_stays_optional()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target = IntegrationTarget::from_branch_argument("main")?;
+        let selected = ClaimTarget {
+            target:    target.clone(),
+            source:    TargetSource::RepositoryTrunk,
+            selection: TargetSelectionOutcome::Selected,
+        };
+        let selected_json = serde_json::to_value(&selected)?;
+        assert!(selected_json.get("fallback").is_none());
+        assert!(matches!(
+            selected.fallback(),
+            TargetSelectionOutcome::Selected
+        ));
+
+        let fell_back = ClaimTarget {
+            target,
+            source: TargetSource::BranchConfiguration,
+            selection: TargetSelectionOutcome::FellBack(TargetFallback {
+                requested: "missing".to_owned(),
+                reason:    TargetFallbackReason::Unresolved,
+            }),
+        };
+        let wire = serde_json::to_value(&fell_back)?;
+        assert_eq!(wire["fallback"]["requested"], "missing");
+        let replayed: ClaimTarget = serde_json::from_value(wire)?;
+        assert!(matches!(
+            replayed.fallback(),
+            TargetSelectionOutcome::FellBack(_)
+        ));
+        Ok(())
     }
 
     #[test]
