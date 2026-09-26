@@ -26,6 +26,7 @@ use tui_pane::label_color;
 use tui_pane::text_default;
 
 use self::age::age_label;
+use crate::agent_cell;
 use crate::agent_cell::AgentEntry;
 use crate::census::Agent;
 use crate::census::AgentRow;
@@ -154,8 +155,13 @@ fn draw_machine(
         .saturating_sub(GROUP_HEADER_HEIGHT)
         .min(u16::try_from(table_height(rows.len())).unwrap_or(u16::MAX));
     Table::new(
-        rows.iter()
-            .map(|row| agent_row(row, name_style(cells, machine.name, row), now)),
+        rows.iter().map(|row| {
+            agent_row(
+                row,
+                agent_cell::name_style(cells, machine.name, row.pid),
+                now,
+            )
+        }),
         constraints.iter().copied(),
     )
     .header(Row::new(
@@ -217,18 +223,6 @@ fn count_note(count: usize) -> String {
     }
 }
 
-/// The style `row`'s name is drawn in on `machine`: the hue of its cell
-/// among `cells`, or the default text color for a row with no cell.
-fn name_style(cells: &[AgentEntry<'_>], machine: &str, row: &AgentRow) -> Style {
-    cells
-        .iter()
-        .find(|cell| cell.machine == machine && cell.row.pid == row.pid)
-        .map_or_else(
-            || Style::default().fg(text_default()),
-            |cell| Role::Rainbow(cell.hue).style(),
-        )
-}
-
 /// One agent's table row, its name drawn in `name_style`.
 fn agent_row(row: &AgentRow, name_style: Style, now: u64) -> Row<'static> {
     let text = Style::default().fg(text_default());
@@ -273,7 +267,7 @@ pub(crate) fn desktop_text(row: &AgentRow) -> &str {
 
 /// `name` cut to `max` cells, ending in [`TRUNCATION_MARK`] when it was
 /// longer.
-pub(crate) fn truncated(name: &str, max: usize) -> String {
+fn truncated(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         return name.to_string();
     }
@@ -355,7 +349,6 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
-    use crate::agent_cell;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;

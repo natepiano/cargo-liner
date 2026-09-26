@@ -80,13 +80,13 @@ launcher's.
  ~/rust/tool-based-ui-trunk
  launched by boss of bosses
 
- pid      kind        name                                         age
- 2371669  shell       Launch the Phase 1 implementation seat       12m
- 2372720    codex     app-server                                   12m
- —            thread  tool-based-ui-trunk-impl                     11m
- —        subagent    Review the permission queue                  5m 3s
- 2424763    shell     cargo nextest run -p hana_video --no-fail-…  45s
- 3337048  session     tool-based-ui-arrange                        30s
+ pid      kind        name                                    age
+ 2371669  shell       Launch the Phase 1 implementation seat  12m
+ 2372720    codex     app-server                              12m
+ —            thread  tool-based-ui-trunk-impl                11m
+ —        subagent    Review the permission queue             5m 3s
+ 2424763    shell     cargo nextest run -p hana_video         45s
+ 3337048  session     tool-based-ui-arrange                   30s
 ```
 
 Every agent someone can talk to gets a cell, titled in its top border with its
@@ -97,15 +97,53 @@ comes oldest first, followed by the sessions it opened, depth first and oldest
 first. Each cell takes the next color of a rainbow in that order -- red,
 orange, yellow, green, cyan, blue, violet, then red again -- and its title and
 the agent's name in the summary are both drawn in it, so a summary row and its
-cell pair up at a glance. A launched session takes a color of its own even
+cell pair up at a glance. Inside a cell, a name with a cell of its own takes
+that cell's color too: the agent after `launched by`, and each session the
+agent opened. A launched session takes a color of its own even
 though the summary leaves it out, and when a cell closes, the cells after it
 each take the color before. The header gives the agent's pid, program, status, age, machine and
 desktop, colored as the summary colors them, then its directory, and for a launched
 session the agent that opened it. Below it is a table of everything the agent
 started that is still running, each row's `kind` indented two cells under the
 row that started it, with `—` for a row that has no process of its own. An
-agent running nothing says `nothing running`. A name too long for the room the
-other columns leave is cut and ends in `…`.
+agent running nothing says `nothing running`.
+
+A cell is laid out for its width, spending rows where a narrow cell would
+otherwise cut its header, its directory or a name short. The same session in a
+cell 38 columns wide, working in a longer directory:
+
+```text
+ agent    claude · pid 3266367
+ status   busy · 23h
+ machine  natedev
+ desktop  berth_fix
+ ~/rust/
+ tool-based-ui-geometry-material-impl
+ launched by boss of bosses
+
+ shell · 12m · pid 2371669
+   Launch the Phase 1 implementation
+   seat
+   codex · 12m · pid 2372720
+     app-server
+     thread · 11m
+       tool-based-ui-trunk-impl
+ subagent · 5m 3s
+   Review the permission queue
+   shell · 45s · pid 2424763
+     cargo nextest run -p hana_video
+ session · 30s · pid 3337048
+   tool-based-ui-arrange
+```
+
+Where the header's one line would be cut, it stands as a block, one fact to a
+line after a label column: the agent and its pid, its status and age, its
+machine and its desktop, each value in the color the line gives it. A directory
+too long for its line breaks after a `/`, onto as many lines as it takes. Where
+the table would cut a name, each row stands as an entry of its own: its `kind`,
+indented as the table indents it, then its age and its pid when it has one, and
+below that its name in full, indented under the `kind` and broken before a
+space or after a `/` when it is still too long.
 
 Each kind of row comes from its own place:
 

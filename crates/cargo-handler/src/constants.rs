@@ -90,21 +90,29 @@ pub(crate) const CHILD_HEADERS: [&str; 4] = ["pid", "kind", "name", "age"];
 pub(crate) const CHILD_PID_COLUMN: usize = 0;
 /// Index of the `kind` column in [`CHILD_HEADERS`].
 pub(crate) const CHILD_KIND_COLUMN: usize = 1;
-/// Index of the `name` column in [`CHILD_HEADERS`], the one column cut
-/// to whatever width the fitted columns leave.
+/// Index of the `name` column in [`CHILD_HEADERS`].
 pub(crate) const CHILD_NAME_COLUMN: usize = 2;
 /// Index of the `age` column in [`CHILD_HEADERS`].
 pub(crate) const CHILD_AGE_COLUMN: usize = 3;
 /// Cells the `kind` column is indented by for each level a row sits
 /// below the agent.
 pub(crate) const CHILD_KIND_INDENT: usize = 2;
-/// Rows the header above an agent cell's table takes: the line naming
-/// the agent's pid, program, status, age and machine, then its
-/// directory.
-pub(crate) const AGENT_HEADER_HEIGHT: u16 = 2;
+/// Labels an agent cell's header block with the agent's program and
+/// pid, one of the facts it gives when its one-line header would be
+/// cut.
+pub(crate) const HEADER_AGENT_LABEL: &str = "agent";
+/// Labels the agent's desktop in an agent cell's header block.
+pub(crate) const HEADER_DESKTOP_LABEL: &str = "desktop";
+/// Labels the machine the agent runs on in an agent cell's header block.
+pub(crate) const HEADER_MACHINE_LABEL: &str = "machine";
+/// Labels the agent's status and age in an agent cell's header block.
+pub(crate) const HEADER_STATUS_LABEL: &str = "status";
+/// Rows the first line of a child drawn as a stacked entry takes: its
+/// kind, age and pid, above its name.
+pub(crate) const STACKED_CHILD_HEAD_HEIGHT: u16 = 1;
 /// Rows the line naming the agent that launched a session takes.
 pub(crate) const LAUNCHER_LINE_HEIGHT: u16 = 1;
-/// Blank rows between an agent cell's header and its table.
+/// Blank rows between an agent cell's header and what it runs.
 pub(crate) const AGENT_HEADER_GAP_HEIGHT: u16 = 1;
 /// Rows the note standing in for an empty table takes.
 pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;

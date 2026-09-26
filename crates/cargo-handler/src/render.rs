@@ -127,11 +127,25 @@ impl<'a> Cells<'a> {
 impl TileCells<AgentCell> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
-    /// Every row of the summary and of an agent's cell is one line at any
-    /// width: a name too long for its column is cut, not wrapped. The
-    /// summary asks across for its widest row, which the grid widens it
-    /// toward when `tiles.widen_summary` is on.
-    fn demands(&self, _widths: &[(TileContent, u16)]) -> TileDemands {
+    /// Every row of the summary is one line at any width: a name too long
+    /// for its column is cut, not wrapped. The summary asks across for its
+    /// widest row, which the grid widens it toward when
+    /// `tiles.widen_summary` is on. An agent's cell is measured at the
+    /// width its cell has, since its header, directory and names take
+    /// more rows the narrower it is; a cell the grid has not opened yet
+    /// is measured at the narrowest width, the one it will open at.
+    fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
+        let narrowest = widths
+            .iter()
+            .map(|&(_, width)| width)
+            .min()
+            .unwrap_or_default();
+        let width_of = |id: &AgentCell| {
+            widths
+                .iter()
+                .find(|(content, _)| matches!(content, TileContent::Group(group) if group == id))
+                .map_or(narrowest, |&(_, width)| width)
+        };
         TileDemands {
             summary:       summary::height(&self.machines),
             summary_width: summary::width(&self.machines, self.now),
@@ -140,7 +154,7 @@ impl TileCells<AgentCell> for Cells<'_> {
                 .iter()
                 .map(|entry| TileDemand {
                     id:   entry.id.clone(),
-                    rows: agent_cell::height(entry.row),
+                    rows: agent_cell::height(entry, width_of(&entry.id), self.now),
                 })
                 .collect(),
         }
@@ -153,14 +167,7 @@ impl TileCells<AgentCell> for Cells<'_> {
             },
             TileContent::Group(id) => {
                 if let Some(entry) = self.agent(id) {
-                    agent_cell::draw(
-                        buffer,
-                        inner,
-                        entry.row,
-                        entry.launcher,
-                        entry.machine,
-                        self.now,
-                    );
+                    agent_cell::draw(buffer, inner, entry, &self.agents, self.now);
                 }
             },
             // The grid draws an empty cell's number itself.
@@ -235,6 +242,7 @@ mod tests {
     use crate::census::CensusUpdate;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
+    use crate::census::MachineState;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -753,6 +761,50 @@ fraying = "leading"
         assert_eq!(buffer[(19, 3)].fg, red, "the summary's name");
         assert_eq!(buffer[(2, 12)].symbol(), "b");
         assert_eq!(buffer[(2, 12)].fg, red, "the cell's title");
+    }
+
+    /// Each agent's cell asks for the rows it takes at the width its
+    /// cell has, and an agent whose cell is not open yet for the rows it
+    /// takes at the narrowest width: the width its cell will open at.
+    #[test]
+    fn an_agent_cell_asks_for_its_rows_at_its_own_width() {
+        let natedev = MachineState::Answered(vec![
+            boss(21 * 60 * 60),
+            AgentRow {
+                pid: 428_044,
+                name: "enh/handler".to_string(),
+                directory: "~/rust/handler".to_string(),
+                children: Vec::new(),
+                ..boss(20 * 60 * 60)
+            },
+        ]);
+        let cells = Cells::new(
+            vec![Machine {
+                name:  "natedev",
+                state: &natedev,
+            }],
+            NOW,
+        );
+        let [boss, handler] = [&cells.agents[0], &cells.agents[1]];
+        let narrow = 30;
+
+        let demands = cells.demands(&[
+            (TileContent::Summary, WIDTH - 2),
+            (TileContent::Group(boss.id.clone()), narrow),
+        ]);
+
+        let rows: Vec<usize> = demands.groups.iter().map(|group| group.rows).collect();
+        assert_eq!(
+            rows,
+            [
+                agent_cell::height(boss, narrow, NOW),
+                agent_cell::height(handler, narrow, NOW),
+            ]
+        );
+        assert!(
+            rows[0] > agent_cell::height(boss, WIDTH - 2, NOW),
+            "boss takes more rows narrow than wide"
+        );
     }
 
     /// Three frames after `a`, the status line says the grid is being
