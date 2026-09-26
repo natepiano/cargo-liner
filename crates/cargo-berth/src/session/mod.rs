@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::ids::CoordinationRunId;
 use crate::ids::ReservationId;
+use crate::ledger::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use crate::ledger::ClaimSource;
 use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
@@ -39,6 +40,14 @@ impl HarnessSessionId {
 
     pub(crate) fn as_str(&self) -> &str { &self.0 }
 
+    /// The harness session this process runs under.
+    ///
+    /// A hook boundary's selection wins. Otherwise `HARNESS_SESSION_ENVIRONMENT` names the
+    /// session, and only when it is unset does `CLAUDE_CODE_SESSION_ENVIRONMENT` name it:
+    /// Claude Code sets that variable to the same session id its hook payloads carry as
+    /// `session_id`, so a `cargo-berth` command a Claude Code session runs directly maps
+    /// under the key its edit hooks look up. A set but unusable
+    /// `HARNESS_SESSION_ENVIRONMENT` yields no session rather than the Claude Code one.
     fn from_current_process() -> HarnessSessionIdentity {
         match CURRENT_PROCESS_HARNESS_SESSION.get() {
             Some(HookHarnessSessionSelection::Session(harness_session_id)) => {
@@ -46,6 +55,7 @@ impl HarnessSessionId {
             },
             Some(HookHarnessSessionSelection::NoSession) => HarnessSessionIdentity::Unavailable,
             None => std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
+                .or_else(|| std::env::var_os(CLAUDE_CODE_SESSION_ENVIRONMENT))
                 .and_then(|value| value.into_string().ok())
                 .and_then(|value| value.parse().ok())
                 .map_or(
@@ -67,17 +77,19 @@ pub(crate) enum HookHarnessSessionSelection {
 
 /// Establish the harness session identity a private hook boundary read from its payload.
 ///
-/// `NoSession` is a decision, not an absence: it stops `HARNESS_SESSION_ENVIRONMENT` being
-/// consulted, so a payload without a session identity cannot adopt the session identity of
-/// whichever process launched the hook. The first selection in a process wins, and a hook
-/// binary makes exactly one before any reservation lookup.
+/// `NoSession` is a decision, not an absence: it stops `HARNESS_SESSION_ENVIRONMENT` and
+/// `CLAUDE_CODE_SESSION_ENVIRONMENT` being consulted, so a payload without a session
+/// identity cannot adopt the session identity of whichever process launched the hook. The
+/// first selection in a process wins, and a hook binary makes exactly one before any
+/// reservation lookup.
 pub(crate) fn select_current_process_harness_session(selection: HookHarnessSessionSelection) {
     std::mem::drop(CURRENT_PROCESS_HARNESS_SESSION.set(selection));
 }
 
 /// The harness session id this process runs under, when it has one.
 ///
-/// A hook boundary's selection wins; otherwise `HARNESS_SESSION_ENVIRONMENT` is consulted.
+/// A hook boundary's selection wins; otherwise `HARNESS_SESSION_ENVIRONMENT` is consulted,
+/// then `CLAUDE_CODE_SESSION_ENVIRONMENT` when the first is unset.
 pub(crate) fn current_process_harness_session_id() -> Option<HarnessSessionId> {
     match HarnessSessionId::from_current_process() {
         HarnessSessionIdentity::Available(harness_session_id) => Some(harness_session_id),

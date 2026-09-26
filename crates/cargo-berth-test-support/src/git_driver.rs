@@ -11,6 +11,8 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Output;
 
+use crate::berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
+
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
 pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 
@@ -22,12 +24,17 @@ pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 /// through git into the hook. Without this a test proves nothing about the code
 /// it was compiled from: it reports on whatever `cargo install` last left behind.
 ///
+/// The hook's `cargo-berth` would read this process's Claude Code session as its
+/// harness session, so the command clears `CLAUDE_CODE_SESSION_ENVIRONMENT`.
+///
 /// `executable` is the test crate's own `env!("CARGO_BIN_EXE_cargo-berth")`,
 /// which only that crate can expand.
 #[must_use]
 pub fn git_command(executable: &str) -> Command {
     let mut command = Command::new("git");
-    command.env(EXECUTABLE_ENVIRONMENT, executable);
+    command
+        .env(EXECUTABLE_ENVIRONMENT, executable)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT);
     command
 }
 

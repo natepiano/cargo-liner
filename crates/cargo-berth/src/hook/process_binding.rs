@@ -98,8 +98,9 @@ impl HarnessSessionIdentityAvailability {
     /// Bind this process to the payload's session identity, or to no session at all.
     ///
     /// An absent or unusable payload identity must not fall through to an ambient
-    /// `CARGO_BERTH_SESSION_ID`. That variable belongs to whichever session launched this
-    /// hook process, so adopting it would map the event onto another session's reservation.
+    /// `CARGO_BERTH_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`. Those variables belong to
+    /// whichever session launched this hook process, so adopting either would map the
+    /// event onto another session's reservation.
     pub(super) fn select_for_current_process(self) {
         session::select_current_process_harness_session(match self {
             Self::Available(harness_session_id) => {

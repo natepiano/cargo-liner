@@ -3,10 +3,10 @@
 use std::error::Error;
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 
+use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -58,7 +58,7 @@ pub(crate) fn spawn_hook_verb(
     stdin: &[u8],
     ambient_session: &AmbientHarnessSession<'_>,
 ) -> TestResult<Output> {
-    let mut command = Command::new(executable);
+    let mut command = berth_command(executable);
     command
         .args(["hook", hook_event])
         .current_dir(working_directory)

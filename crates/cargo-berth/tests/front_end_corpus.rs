@@ -9,6 +9,7 @@
 //! identity over whatever the fixture carries, so a floor on the fixture's own size
 //! carries the rest of that promise: a deletion cannot balance itself out to green.
 
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -17,7 +18,6 @@ const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::process::Output;
 
 use serde_json::Value;
@@ -657,7 +657,7 @@ fn run_git(repository: &Path, arguments: &[&str]) -> ShellOracleResult<()> {
 }
 
 fn run_berth(repository: &Path, arguments: &[&str], session_id: &str) -> ShellOracleResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository)
         .env(CARGO_BERTH_SESSION_ENVIRONMENT, session_id)

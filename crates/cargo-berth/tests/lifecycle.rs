@@ -18,6 +18,7 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
 
@@ -629,7 +630,7 @@ fn released_reservation_stays_clear_after_trunk_rewrite_without_git_on_check() {
         "fixture must contain only the released holder"
     );
     let empty_path = tempdir().expect("empty PATH should exist");
-    let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let check = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
         .env("PATH", empty_path.path())
@@ -890,7 +891,7 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
             .chain(std::env::split_paths(&original_path)),
     )
     .expect("wrapped PATH should join");
-    let mut release = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut release = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["release", &reservation_id, "--json"])
         .current_dir(repository.path())
         .env("PATH", wrapped_path)
@@ -1109,7 +1110,7 @@ fn unspawnable_git_preserves_the_complete_io_diagnostic() {
     let repository = initialized_repository();
     let empty_path = tempdir().expect("empty PATH directory should exist");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["init", "--json"])
         .current_dir(repository.path())
         .env("PATH", empty_path.path())
@@ -1217,7 +1218,7 @@ fn released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk()
     assert_eq!(json_output(&unknown)["status"], "object_unknown");
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
-    let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let check = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
         .env(RUN_ENVIRONMENT, SECOND_RUN)
@@ -1247,7 +1248,7 @@ fn released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk()
 
     fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
     assert!(run_berth(repository.path(), &["init"]).status.success());
-    let replayed_check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let replayed_check = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
         .env(RUN_ENVIRONMENT, SECOND_RUN)
@@ -1670,7 +1671,7 @@ fn run_recovery_action(action: &serde_json::Value) -> Output {
     let working_directory = action["cwd"]
         .as_str()
         .expect("a recovery action should carry a working directory");
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(&arguments)
         .current_dir(working_directory)
         .env_remove(RUN_ENVIRONMENT)
@@ -1701,7 +1702,7 @@ fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
     let ready_path = ready_directory.path().join("ready");
     // Include startup: observing readiness happens after the child's deadline starts.
     let started_at = Instant::now();
-    let mut child = Command::new(BERTH_EXECUTABLE)
+    let mut child = berth_command(BERTH_EXECUTABLE)
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1732,7 +1733,7 @@ fn run_contended_berth(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1742,7 +1743,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1752,7 +1753,7 @@ fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id
 }
 
 fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env(RUN_ENVIRONMENT, run)
@@ -1858,7 +1859,7 @@ fn run_claim_with_git_trace(
         ReferenceQueryBehavior::Observe => "",
         ReferenceQueryBehavior::FailTrunkRevision(reference) => reference,
     };
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["claim", "file:README.md", "--run", FIRST_RUN, "--json"])
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
@@ -1977,6 +1978,7 @@ mod merge_extent {
     use cargo_berth_test_support::IntegrationRepository;
     use cargo_berth_test_support::OptionalLocks;
     use cargo_berth_test_support::assert_success;
+    use cargo_berth_test_support::berth_command;
     use serde_json::Value;
     use tempfile::TempDir;
     use tempfile::tempdir;
@@ -2953,7 +2955,7 @@ mod merge_extent {
     fn a_clean_live_claim_keeps_its_session_mapping_until_the_run_ends() {
         let fixture = Repository::new();
         let session = "live-empty-merge-extent";
-        let claimed = Command::new(BERTH)
+        let claimed = berth_command(BERTH)
             .args(["claim", "file:tracked.rs", "--run", FIRST_RUN, "--json"])
             .current_dir(&fixture.holder)
             .env("CARGO_BERTH_SESSION_ID", session)
@@ -3185,7 +3187,7 @@ mod merge_extent {
     .expect("failing git wrapper should write");
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
             .expect("git wrapper should execute");
-        let repaired = Command::new(BERTH)
+        let repaired = berth_command(BERTH)
             .args(["init", "--repair-projection", "--json"])
             .current_dir(fixture.trunk())
             .env("PATH", wrapper.path())
@@ -3375,7 +3377,7 @@ mod merge_extent {
 
         for expected_merge_queries in [1, 0] {
             fs::write(&trace, "").expect("trace should reset");
-            let output = Command::new(BERTH)
+            let output = berth_command(BERTH)
                 .args(["board", "--json"])
                 .current_dir(fixture.trunk())
                 .env("PATH", &path)
@@ -3411,7 +3413,7 @@ mod merge_extent {
     fn a_retired_session_can_edit_its_predecessors_checkout_before_first_touch() {
         let fixture = Repository::new();
         let session = "retired-predecessor-session";
-        let claimed = Command::new(BERTH)
+        let claimed = berth_command(BERTH)
             .args(["claim", "file:branch.rs", "--run", FIRST_RUN, "--json"])
             .current_dir(&fixture.holder)
             .env("CARGO_BERTH_SESSION_ID", session)
@@ -3438,7 +3440,7 @@ mod merge_extent {
                 .expect("retired mappings should be JSON");
         assert!(retired_mapping["identities"].get(session).is_none());
 
-        let checked = Command::new(BERTH)
+        let checked = berth_command(BERTH)
             .args(["check", "file:branch.rs", "--json"])
             .current_dir(&fixture.holder)
             .env("CARGO_BERTH_SESSION_ID", session)
@@ -3469,7 +3471,7 @@ mod merge_extent {
             BTreeSet::from(["branch.rs".to_owned(), "staged.rs".to_owned()])
         );
         let git_directory = GIT.stdout(&fixture.holder, ["rev-parse", "--absolute-git-dir"]);
-        let contaminated = Command::new(BERTH)
+        let contaminated = berth_command(BERTH)
             .args(["board", "--json"])
             .current_dir(&fixture.outsider)
             .env("GIT_DIR", &git_directory)
@@ -4276,7 +4278,7 @@ mod merge_extent {
     }
 
     fn berth(root: &Path, arguments: &[&str], run: &str) -> Output {
-        Command::new(BERTH)
+        berth_command(BERTH)
             .args(arguments)
             .current_dir(root)
             .env("CARGO_BERTH_RUN", run)

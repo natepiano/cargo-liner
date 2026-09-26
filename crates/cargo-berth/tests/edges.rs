@@ -9,6 +9,7 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::claim_id;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
@@ -28,7 +29,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::thread;
 
@@ -3148,7 +3148,7 @@ fn json_output(output: &Output) -> serde_json::Value {
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
@@ -3177,7 +3177,7 @@ fn run_berth_with_git_trace(
             .chain(std::env::split_paths(&original_path)),
     )
     .expect("wrapped PATH should join");
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
@@ -3231,7 +3231,7 @@ fn scoped_patch_comparisons_for_target(
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
@@ -3291,7 +3291,7 @@ fn run_berth_with_stale_marker(
             .chain(std::env::split_paths(&original_path)),
     )
     .expect("wrapped PATH should join");
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env("PATH", wrapped_path)

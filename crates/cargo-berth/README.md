@@ -156,10 +156,14 @@ the facts beside it.
 stating outright. It takes its harness session identity from the payload alone: a
 payload carrying no `session_id`, or one this engine cannot read, binds the
 process to no session at all rather than falling back to the ambient
-`CARGO_BERTH_SESSION_ID`. That variable belongs to whichever session launched
-the hook process, so adopting it would let one session report on, and later
-attach itself to, another session's reservation. Having no session is an
-answer; borrowing one invents a session identity this process was never given.
+`CARGO_BERTH_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`. Those variables belong to
+whichever session launched the hook process, so adopting either would let one
+session report on, and later attach itself to, another session's reservation.
+Having no session is an answer; borrowing one invents a session identity this
+process was never given. A command other than `cargo-berth hook` does read them:
+`CARGO_BERTH_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID` when the first is unset,
+so a claim a Claude Code session runs directly maps under the id its edit hooks
+read.
 
 A Claude Code hook can execute these commands, but those harness hooks are not
 installed by this crate. A general Git user instead gets the managed

@@ -10,6 +10,8 @@ mod reader_compat_hooks;
 #[path = "support/timing.rs"]
 mod timing;
 
+use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use reader_compat_hooks::AmbientHarnessSession;
 use reader_compat_hooks::HookFeedback;
@@ -51,6 +53,7 @@ const EVIDENCE_SESSION: &str = "evidence-session";
 const AMBIENT_SESSION: &str = "ambient-session";
 const AMBIENT_STALE_SESSION: &str = "ambient-stale-session";
 const BOARD_SESSION: &str = "board-session";
+const CLAUDE_CODE_SESSION: &str = "claude-code-session";
 const INCURSION_SESSION: &str = "incursion-session";
 const ORPHAN_SESSION_START_ENTRY: &str = "test_session_start_renders_real_orphan_recovery_actions";
 const POST_TOOL_USE_LOST_EVIDENCE_UNRESOLVABLE_ENTRY: &str =
@@ -405,6 +408,41 @@ fn a_payload_without_session_identity_ignores_the_ambient_variable() -> TestResu
         "a payload naming no harness session adopted the ambient one: {refusal}"
     );
     Ok(())
+}
+
+/// A `cargo-berth claim` a Claude Code session runs directly binds to that session.
+///
+/// The Bash tool sets `CLAUDE_CODE_SESSION_ID` and not `CARGO_BERTH_SESSION_ID`, so the
+/// claim maps under the id the pre-edit hook reads from its payload's `session_id`.
+/// Without that mapping, two active reservations in one run leave the hook no single
+/// reservation to select, and it refuses the edit the claim was made for.
+#[test]
+fn a_claim_under_only_the_claude_code_session_binds_that_session() -> TestResult {
+    let repository = initialized_repository()?;
+    let unmapped = run_berth(repository.path(), &["claim", "tree:shared", "--json"])?;
+    require_success(&unmapped, "reservation claimed under no harness session")?;
+    let claimed = berth_command(BERTH_EXECUTABLE)
+        .args(["claim", "file:shared/child.rs", "--json"])
+        .current_dir(repository.path())
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, CLAUDE_CODE_SESSION)
+        .output()?;
+    require_success(&claimed, "claim under only the Claude Code session")?;
+
+    let output = run_pre_tool_use(
+        repository.path(),
+        &edit_payload(
+            repository.path(),
+            "shared/child.rs",
+            Some(CLAUDE_CODE_SESSION),
+        ),
+    )?;
+
+    require_success(
+        &output,
+        "the edit the Claude Code session's claim was made for",
+    )
 }
 
 enum NormalizedEdit {
@@ -995,7 +1033,7 @@ impl PausedHookCall {
             std::iter::once(wrapper_directory.path().to_path_buf())
                 .chain(std::env::split_paths(&original_path)),
         )?;
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        let mut child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
             .args(["hook", event])
             .current_dir(repository_root)
             .env("PATH", wrapped_path)
@@ -1551,7 +1589,7 @@ fn run_pre_tool_use(repository_root: &Path, payload: &Value) -> TestResult<Outpu
 fn pre_tool_use_honors_the_environment_bypass_and_records_it() -> TestResult<()> {
     let repository = initialized_repository()?;
     let payload = edit_payload(repository.path(), "src/lib.rs", Some("bypass-session"));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["hook", "pre-tool-use"])
         .current_dir(repository.path())
         .env("CARGO_BERTH_BYPASS", "1")
@@ -1612,7 +1650,7 @@ fn spawn_pre_tool_use_with_run(
     payload: &Value,
     coordination_run_id: &str,
 ) -> TestResult<Output> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["hook", "pre-tool-use"])
         .current_dir(repository_root)
         .env("CARGO_BERTH_RUN", coordination_run_id)
@@ -1712,7 +1750,7 @@ fn add_worktree_without_configuration(
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
@@ -1725,7 +1763,7 @@ fn run_berth_with_session(
     arguments: &[&str],
     session_id: &str,
 ) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
@@ -2423,7 +2461,7 @@ fn run_contended_hook(repository_root: &Path, event: &str, payload: &Value) -> T
     let ready_directory = TempDir::new()?;
     let ready_path = ready_directory.path().join("ready");
     let started_at = Instant::now();
-    let mut child = Command::new(BERTH_EXECUTABLE)
+    let mut child = berth_command(BERTH_EXECUTABLE)
         .args(["hook", event])
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")

@@ -12,6 +12,7 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
 
@@ -621,7 +622,7 @@ impl PausedBerthProcess {
                 .chain(std::env::split_paths(&original_path)),
         )
         .expect("wrapped PATH should join");
-        let child = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+        let child = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
             .args(arguments)
             .current_dir(repository_root)
             .env("PATH", wrapped_path)
@@ -1496,7 +1497,7 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
     resolution.wait_until_paused();
 
     let contender = run_contended_berth(
-        Command::new(BERTH_EXECUTABLE)
+        berth_command(BERTH_EXECUTABLE)
             .current_dir(repository.path())
             .args(["claim", "file:contender", "--run", SECOND_RUN, "--json"])
             .env_remove(RUN_ENVIRONMENT)
@@ -1547,7 +1548,7 @@ fn identity_clear_session_reports_mutation_lock_contention() {
     resolution.wait_until_paused();
 
     let clear_session = run_contended_berth(
-        Command::new(BERTH_EXECUTABLE)
+        berth_command(BERTH_EXECUTABLE)
             .current_dir(repository.path())
             .args(["identity", "clear-session", "--json"])
             .env_remove(RUN_ENVIRONMENT)
@@ -2236,7 +2237,7 @@ fn run_contended_berth(command: &mut Command) -> Output {
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -2246,7 +2247,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)

@@ -6,16 +6,20 @@
 //! Fixtures shared by the `cargo-berth` integration tests.
 //!
 //! Each integration test is its own crate, so what two test files share lives
-//! here: `GitDriver` runs git under one test file's policy, and
+//! here: `berth_command` starts `cargo-berth` without the test process's Claude
+//! Code session, `GitDriver` runs git under one test file's policy, and
 //! `IntegrationRepository` builds a repository whose lanes target an
 //! `integration` branch. Only a test crate of the `cargo-berth` package can
 //! expand `env!("CARGO_BIN_EXE_cargo-berth")`, so each entry point here that
 //! runs `cargo-berth`, directly or through a git hook, takes that path as its
 //! `executable`.
 
+mod berth_command;
 mod git_driver;
 mod integration_repository;
 
+pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
+pub use berth_command::berth_command;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
 pub use git_driver::GitDriver;
 pub use git_driver::OptionalLocks;

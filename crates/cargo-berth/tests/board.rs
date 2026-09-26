@@ -9,6 +9,7 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
 
@@ -1046,6 +1047,7 @@ fn human_board_uses_and_restores_an_attached_terminal() {
         .env("LINES", "30")
         .env_remove("CARGO_BERTH_RUN")
         .env_remove("CARGO_BERTH_SESSION_ID")
+        .env_remove(cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1183,7 +1185,7 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     )
     .expect("wrapped PATH should join");
 
-    let board = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let board = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["board", "--json"])
         .current_dir(repository.path())
         .env("PATH", wrapped_path)
@@ -1203,7 +1205,7 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
         "board should reach its locked repository read"
     );
 
-    let claim = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let claim = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args([
             "claim",
             "file:arrived-mid-read.rs",
@@ -6769,7 +6771,7 @@ fn run_board_with_git_wrapper(repository_root: &Path, wrapper: &str) -> TracedBo
             .chain(std::env::split_paths(&original_path)),
     )
     .expect("wrapped PATH should join");
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["board", "--json"])
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
@@ -7131,7 +7133,7 @@ fn json_output(output: &Output) -> serde_json::Value {
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
@@ -7141,7 +7143,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env("CARGO_BERTH_RUN", run)

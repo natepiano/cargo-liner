@@ -5,10 +5,12 @@
 
 //! End-to-end ledger durability tests against disposable git repositories.
 
+use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -1678,7 +1680,7 @@ fn run_berth<const ARGUMENT_COUNT: usize>(
     repository_root: &Path,
     arguments: [&str; ARGUMENT_COUNT],
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1690,7 +1692,7 @@ fn run_berth<const ARGUMENT_COUNT: usize>(
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1707,7 +1709,7 @@ fn run_berth_with_git_environment(
     git_directory: &str,
     git_common_directory: &str,
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1802,6 +1804,7 @@ fn run_printed_enrollment_sequence(root: &Path, printed: &str) {
         .env("BERTH_ENROLLMENT_TEST_EXECUTABLE", BERTH_EXECUTABLE)
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .env_remove(GIT_DIRECTORY_ENVIRONMENT)
         .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
         .current_dir(root)

@@ -11,6 +11,7 @@ mod timing;
 #[path = "support/split_rebase.rs"]
 mod split_rebase;
 
+use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -691,6 +692,7 @@ fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
         .arg("prepared")
         .current_dir(repository.root())
         .env_remove(EXECUTABLE_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .env("PATH", &search_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -718,6 +720,7 @@ fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
         .arg("prepared")
         .current_dir(repository.root())
         .env_remove(EXECUTABLE_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .env("PATH", &search_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2926,6 +2929,7 @@ fn a_trunk_bypass_without_an_invocation_directory_leaves_a_fallback_marker() {
         .args(["-c", &command])
         .env(BYPASS_ENVIRONMENT, "1")
         .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2991,6 +2995,7 @@ fn a_bypass_without_an_invocation_directory_warns_without_blocking_the_ref_updat
     let mut child = Command::new("sh")
         .args(["-c", &command])
         .env(BYPASS_ENVIRONMENT, "1")
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3188,6 +3193,7 @@ fn deferred_gate_observes_closed_stderr_then_enforces_every_entering_reservation
                     .env_remove(BYPASS_ENVIRONMENT)
                     .env_remove(RUN_ENVIRONMENT)
                     .env_remove(SESSION_ENVIRONMENT)
+                    .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
                     .stdin(Stdio::piped())
                     .spawn()
                     .expect("private gate should start with closed stderr");
@@ -5143,6 +5149,7 @@ fn run_installed_prepared_hook(repository_root: &Path, input: &str) -> Output {
         .arg("prepared")
         .current_dir(repository_root)
         .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -5229,6 +5236,7 @@ fn run_managed_hook_with_session(
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env(SESSION_ENVIRONMENT, session_id)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -5332,7 +5340,8 @@ fn run_hook_at_path(
         // machine, and a test then passes or fails on that instead of on the code
         // it was compiled from. A fixture that pins the executable in the script
         // text still wins, because pinning replaces this variable's reader.
-        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE);
+        .env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT);
     if release_valve == ReleaseValve::Set {
         command.env(BYPASS_ENVIRONMENT, "1");
     } else {
@@ -5623,6 +5632,7 @@ fn run_command_with_raw_git_behavior(
         .env_remove(BYPASS_ENVIRONMENT)
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run");
     let trace = fs::read_to_string(&trace_path).expect("raw git trace should read");
@@ -5644,7 +5654,7 @@ fn run_command_with_raw_git_behavior(
 /// code the test was compiled from, so a developer machine with an installed
 /// copy and a continuous integration machine without one agree.
 fn berth_command() -> Command {
-    let mut command = Command::new(BERTH_EXECUTABLE);
+    let mut command = cargo_berth_test_support::berth_command(BERTH_EXECUTABLE);
     command.env(EXECUTABLE_ENVIRONMENT, BERTH_EXECUTABLE);
     command
 }

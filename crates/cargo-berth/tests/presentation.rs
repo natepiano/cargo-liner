@@ -1,5 +1,6 @@
 //! Built-binary acceptance tests for render-ready reservation responses.
 
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -10,7 +11,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 
 use serde_json::Value;
@@ -978,7 +978,7 @@ fn run_git(repository_root: &Path, arguments: &[&str]) -> TestResult {
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove("CARGO_BERTH_RUN")
@@ -987,7 +987,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> TestResult<Output> {
 }
 
 fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env("CARGO_BERTH_RUN", run)
@@ -1000,7 +1000,7 @@ fn run_berth_with_session(
     arguments: &[&str],
     session_id: &str,
 ) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env(SESSION_ENVIRONMENT, session_id)

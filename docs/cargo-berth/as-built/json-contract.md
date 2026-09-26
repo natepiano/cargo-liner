@@ -572,12 +572,14 @@ supplies only the always-runnable `claim_separately_here` action.
 `payload.kind = "identity"`. A removed or already-absent mapping returns
 `status = "session_mapping_cleared"`, `exit_code = 0`, and
 `payload.data.status = "session_mapping_removed"` or
-`"session_mapping_already_absent"`. When no usable `CARGO_BERTH_SESSION_ID` is
-available, the repair did not run: the response has
+`"session_mapping_already_absent"`. The command selects the current harness
+session from `CARGO_BERTH_SESSION_ID`, or from `CLAUDE_CODE_SESSION_ID` when the
+first is unset; a set but unusable `CARGO_BERTH_SESSION_ID` selects none. When
+no usable session is selected, the repair did not run: the response has
 `status = "session_mapping_unavailable"`, `exit_code = 5`, and
 `payload.data.status = "current_session_unavailable"`. The command removes only
-the mapping selected by the current `CARGO_BERTH_SESSION_ID`; it does not remove
-other session mappings or alter reservation or journal state.
+the mapping of the selected session; it does not remove other session mappings
+or alter reservation or journal state.
 
 ## Ambiguous first-touch reservation selection
 

@@ -5,10 +5,12 @@
 
 //! Built-binary tests for claim acquisition and mutation-free edit checks.
 
+use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
 
@@ -788,6 +790,7 @@ fn the_rendered_recovery_command_resolves_the_ambiguity_that_printed_it() {
         .current_dir(repository.path())
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .env(
             "PATH",
             std::env::join_paths(search_path).expect("search path should join"),
@@ -1032,7 +1035,7 @@ fn assert_board_contains_every_claim_source(repository_root: &Path) {
 #[test]
 fn blocked_check_returns_holder_decision_facts_without_appending() {
     let repository = initialized_repository();
-    let holder = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let holder = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:shared.rs", "--json"])
         .current_dir(repository.path())
         .env(RUN_ENVIRONMENT, FIRST_RUN)
@@ -1045,7 +1048,7 @@ fn blocked_check_returns_holder_decision_facts_without_appending() {
     let journal_before = fs::read(repository.path().join(JOURNAL_PATH))
         .expect("journal should read before blocked check");
 
-    let blocked = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let blocked = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:shared.rs", "--json"])
         .current_dir(&second_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1084,7 +1087,7 @@ fn concurrent_first_touch_checks_admit_both_clean_worktrees_under_the_mutation_l
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let first_ready_path = repository.path().join("first-lock-ready");
     let second_ready_path = repository.path().join("second-lock-ready");
-    let first = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let first = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:raced.rs", "--json"])
         .current_dir(repository.path())
         .env(RUN_ENVIRONMENT, FIRST_RUN)
@@ -1093,7 +1096,7 @@ fn concurrent_first_touch_checks_admit_both_clean_worktrees_under_the_mutation_l
         .stderr(Stdio::piped())
         .spawn()
         .expect("first concurrent check should start");
-    let second = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let second = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:raced.rs", "--json"])
         .current_dir(&second_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1176,7 +1179,7 @@ fn check_in_a_linked_worktree_without_its_own_configuration_reads_the_main_workt
     reconcile_fixture(repository.path());
     fs::remove_file(second_root.join(CONFIGURATION_PATH)).expect("configuration should be removed");
 
-    let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let check = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1202,7 +1205,7 @@ fn check_does_not_replay_a_foreign_conflict_after_configuration_is_removed() {
     let main_configuration_path = repository.path().join(CONFIGURATION_PATH);
     fs::remove_file(&main_configuration_path).expect("main configuration should be removed");
 
-    let check = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let check = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(&second_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1578,7 +1581,7 @@ fn reconcile_fixture(root: &Path) {
 }
 
 fn run_check_without_git(worktree_root: &Path, path: &Path, run: Option<&str>) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_cargo-berth"));
+    let mut command = berth_command(env!("CARGO_BIN_EXE_cargo-berth"));
     command
         .args(["check", "file:src/lib.rs", "--json"])
         .current_dir(worktree_root)
@@ -1593,7 +1596,7 @@ fn run_check_without_git(worktree_root: &Path, path: &Path, run: Option<&str>) -
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)
@@ -1603,7 +1606,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(RUN_ENVIRONMENT)

@@ -51,6 +51,8 @@ pub(super) const MUTATION_LOCK_READY_PATH_ENVIRONMENT: &str =
     "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 // process context
+/// Claude Code sets this to its own session id in every command a session runs.
+pub(crate) const CLAUDE_CODE_SESSION_ENVIRONMENT: &str = "CLAUDE_CODE_SESSION_ID";
 pub(super) const COORDINATION_RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 pub(super) const GIT_COMMON_DIRECTORY_ENVIRONMENT: &str = "GIT_COMMON_DIR";
 pub(super) const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";

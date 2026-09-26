@@ -310,7 +310,8 @@ struct IdentityArguments {
 /// Operations over the current process's disposable identity sources.
 #[derive(Debug, Subcommand)]
 enum IdentityCommand {
-    /// Remove only the current `CARGO_BERTH_SESSION_ID` mapping.
+    /// Remove only the mapping of the current `CARGO_BERTH_SESSION_ID`, or of
+    /// `CLAUDE_CODE_SESSION_ID` when the first is unset.
     ClearSession(JsonOutput),
 }
 

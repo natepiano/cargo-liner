@@ -9,7 +9,6 @@
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 
 use serde_json::Value;
@@ -17,6 +16,7 @@ use tempfile::Builder;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+use crate::berth_command;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
 
@@ -224,7 +224,7 @@ impl IntegrationRepository {
     /// Panics when `cargo-berth` cannot be started.
     #[must_use]
     pub fn run(&self, checkout: &Path, arguments: &[&str]) -> Output {
-        Command::new(self.executable)
+        berth_command::berth_command(self.executable)
             .args(arguments)
             .current_dir(checkout)
             .env_remove("CARGO_BERTH_RUN")

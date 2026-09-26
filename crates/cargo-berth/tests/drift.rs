@@ -12,6 +12,7 @@ use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
 
@@ -32,7 +33,6 @@ use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
@@ -283,7 +283,7 @@ fn assert_drift_revalidates_marker_after_observation(marker_repository: &TempDir
             .chain(std::env::split_paths(&real_path)),
     )
     .expect("marker wrapper PATH should join");
-    let marker_rejection = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let marker_rejection = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args([
             "drift",
             "--full",
@@ -1061,7 +1061,7 @@ fn full_classification_reports_a_locked_widen_collision_without_journaling_it() 
     )
     .expect("wrapped PATH should join");
 
-    let collision = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let collision = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["drift", "--full", "--reservation", &subject_id, "--json"])
         .current_dir(repository.path())
         .env("PATH", wrapped_path)
@@ -2457,7 +2457,7 @@ fn a_second_run_that_read_an_unoccupied_worktree_is_refused_under_the_lock() {
     let signals = tempdir().expect("lock signal directory should exist");
     let waiting_path = signals.path().join("waiting-at-the-mutation-lock");
 
-    let second_run = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let second_run = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["drift", "--full", "--json"])
         .current_dir(repository.path())
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4173,7 +4173,7 @@ fn traced_drift(repository_root: &Path, arguments: &[&str]) -> TracedDrift {
     let mut command_arguments = vec!["drift"];
     command_arguments.extend_from_slice(arguments);
     command_arguments.push("--json");
-    let output = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(command_arguments)
         .current_dir(repository_root)
         .env("PATH", wrapped_path)
@@ -4337,7 +4337,7 @@ fn claim(repository_root: &Path, scope: &str, run: &str) -> String {
 }
 
 fn claim_with_session(repository_root: &Path, scope: &str, run: &str, session_id: &str) -> String {
-    let claimed = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let claimed = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args([
             "claim",
             scope,
@@ -4409,7 +4409,7 @@ fn post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
     let mut command_arguments = vec!["drift", "--full"];
     command_arguments.extend_from_slice(arguments);
     command_arguments.push("--json");
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(command_arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4421,7 +4421,7 @@ fn post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn cheap_post_commit_drift(repository_root: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["drift", "--json"])
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4435,7 +4435,7 @@ fn cheap_post_commit_drift(repository_root: &Path) -> Output {
 fn text_post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output {
     let mut command_arguments = vec!["drift", "--full"];
     command_arguments.extend_from_slice(arguments);
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(command_arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4447,7 +4447,7 @@ fn text_post_commit_drift(repository_root: &Path, arguments: &[&str]) -> Output 
 }
 
 fn post_commit_drift_with_session(repository_root: &Path, session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["drift", "--full", "--json"])
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4640,7 +4640,7 @@ fn claim_event_count(repository_root: &Path) -> usize {
 }
 
 fn post_commit_drift_under_run(repository_root: &Path, run: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["drift", "--full", "--json"])
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4696,7 +4696,7 @@ fn incursion_for(effects: &[serde_json::Value], path: &str) -> serde_json::Value
 }
 
 fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4708,7 +4708,7 @@ fn run_berth(repository_root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn run_berth_with_session(repository_root: &Path, arguments: &[&str], session_id: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)
@@ -4752,7 +4752,7 @@ fn assert_coordination_identity_rejection(
 }
 
 fn run_berth_with_run(repository_root: &Path, arguments: &[&str], run: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository_root)
         .env_remove(BYPASS_ENVIRONMENT)

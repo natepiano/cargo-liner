@@ -90,19 +90,30 @@ Step 1 must precede step 3. Changing the trunk before the pin re-judges released
 
 ## Harness identity
 
-`session-identities.json` sits beside the journal. A harness supplies
-`CARGO_BERTH_SESSION_ID`; the file maps that key to one coordination run and one
-active reservation. A later claim in the same harness session replaces the
-earlier reservation mapping. The mapping is best-effort auxiliary state, not a
-journal-rebuildable projection: the harness session id comes only from the
-environment of the process applying a new event and is absent from journal
-records. If the mapping is deleted or corrupt, use `CARGO_BERTH_RUN` and an
-explicit reservation id until a later claim under that harness session writes a
-new mapping.
+`session-identities.json` sits beside the journal and maps a harness session id
+to one coordination run and one active reservation. The process names its
+harness session in one of two ways:
+
+- A `cargo-berth hook` process takes it from the payload's `session_id` alone.
+  A payload without a usable one selects no session and never reads the
+  environment, which belongs to whichever session launched the hook.
+- Any other command reads `CARGO_BERTH_SESSION_ID`, then
+  `CLAUDE_CODE_SESSION_ID` when the first is unset. Claude Code sets
+  `CLAUDE_CODE_SESSION_ID` to the id its hook payloads carry as `session_id`,
+  so a claim a Claude Code session runs directly maps under the key its edit
+  hooks read. A set but unusable `CARGO_BERTH_SESSION_ID` selects no session;
+  it does not fall back to `CLAUDE_CODE_SESSION_ID`.
+
+A later claim in the same harness session replaces the earlier reservation
+mapping. The mapping is best-effort auxiliary state, not a journal-rebuildable
+projection: the harness session id comes only from the process applying a new
+event and is absent from journal records. If the mapping is deleted or corrupt,
+use `CARGO_BERTH_RUN` and an explicit reservation id until a later claim under
+that harness session writes a new mapping.
 
 Edit authorization resolves in this exact order:
 
-1. `CARGO_BERTH_SESSION_ID` through `session-identities.json`.
+1. The harness session id, selected as above, through `session-identities.json`.
 2. The explicit `CARGO_BERTH_RUN` environment override.
 3. The worktree's `cargo-berth-run-id` marker file.
 4. An unidentified result.

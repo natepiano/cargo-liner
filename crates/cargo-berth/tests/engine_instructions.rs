@@ -1,5 +1,6 @@
 //! Real-binary acceptance guard for executable engine instructions.
 
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -11,7 +12,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 
@@ -414,7 +414,7 @@ fn hook_response_envelope(output: &Output, scenario: &str) -> TestResult<Value> 
 
 /// Run one public hook verb the way the harness runs it: raw payload on standard input.
 fn run_hook_verb(repository: &Path, hook_event: &str, payload: &Value) -> TestResult<Output> {
-    let mut hook = Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    let mut hook = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(["hook", hook_event])
         .current_dir(repository)
         .env_remove(CARGO_BERTH_RUN_ENVIRONMENT)
@@ -631,7 +631,7 @@ fn run_git(repository: &Path, arguments: &[&str]) -> TestResult {
 }
 
 fn run_berth(repository: &Path, arguments: &[&str], session_id: &str) -> TestResult<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_cargo-berth"))
+    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
         .args(arguments)
         .current_dir(repository)
         .env_remove(CARGO_BERTH_RUN_ENVIRONMENT)

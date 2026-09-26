@@ -2289,7 +2289,7 @@ impl OutputEnvelope {
             CurrentSessionMappingRemoval::CurrentSessionUnavailable => (
                 OutputStatus::SessionMappingUnavailable,
                 BerthExit::UsageError,
-                "No usable CARGO_BERTH_SESSION_ID selected a session mapping. Run this recovery command from the harness session that supplied the rejected command; no session mapping changed.",
+                "No usable CARGO_BERTH_SESSION_ID or CLAUDE_CODE_SESSION_ID selected a session mapping. Run this recovery command from the harness session that supplied the rejected command; no session mapping changed.",
             ),
         };
         Self {

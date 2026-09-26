@@ -21,6 +21,7 @@ mod worktree_context;
 
 pub(crate) use authorization::EditAuthorization;
 pub(crate) use authorization::ResolvedEditAuthorization;
+pub(crate) use constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub(crate) use constants::GATE_DEADLINE_ENVIRONMENT;
 pub(crate) use constants::GATE_TARGETS_FILE_NAME;
 pub(crate) use constants::HARNESS_SESSION_ENVIRONMENT;

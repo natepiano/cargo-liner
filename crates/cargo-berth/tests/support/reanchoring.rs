@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -1911,7 +1912,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
         RewriteReadFailure::MappedComparison => "comparison",
         RewriteReadFailure::OldPhaseRange => "old_phase",
     };
-    let failed = Command::new(BERTH_EXECUTABLE)
+    let failed = berth_command(BERTH_EXECUTABLE)
         .args(["board", "--json"])
         .current_dir(fixture.root())
         .env("PATH", wrapped_path)
@@ -1974,7 +1975,7 @@ fn board(root: &Path) -> Value {
 fn board_with_rewrite_trace(root: &Path) -> Value {
     let traces = tempdir().expect("git trace directory should exist");
     let trace_path = traces.path().join("git.trace");
-    let output = Command::new(BERTH_EXECUTABLE)
+    let output = berth_command(BERTH_EXECUTABLE)
         .args(["board", "--json"])
         .current_dir(root)
         .env("GIT_TRACE", &trace_path)

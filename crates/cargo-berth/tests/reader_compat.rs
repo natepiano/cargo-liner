@@ -10,10 +10,10 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 
 use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
+use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use reader_compat_hooks::AmbientHarnessSession;
 use reader_compat_hooks::HookResponseEvent;
@@ -234,7 +234,7 @@ fn fixture_repository() -> TestResult<TempDir> {
 }
 
 fn run_reader(executable: &Path, repository: &Path, arguments: &[&str]) -> TestResult<Output> {
-    Ok(Command::new(executable)
+    Ok(berth_command(executable)
         .args(arguments)
         .current_dir(repository)
         .env_remove("CARGO_BERTH_RUN")
