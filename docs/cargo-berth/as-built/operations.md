@@ -11,7 +11,9 @@ For what the tool is and how to use it, see the [README](../../../crates/cargo-b
 Run `cargo berth init` from any worktree to set up the ledger and hooks, then
 enroll live worktrees with existing work and no reservation history. The
 configuration lives at the main worktree's `.claude/config/berth.toml`; a linked
-worktree reads that file unless it has its own. An existing main file is kept.
+worktree reads that file unless it has its own, except `trunk`: the repository
+trunk comes from the main worktree's file whenever that file exists, so every
+worktree evaluates against the same trunk. An existing main file is kept.
 When the main file is missing and `init` runs in a linked worktree with its own
 valid file, that file's `trunk`, `gate_mode`, `maximum_reservations`, and
 `maximum_ordering_edges` seed the new main file; otherwise defaults are
@@ -33,7 +35,7 @@ overlap holds integration until sequenced (reported in observe mode, rejected
 in enforce mode). Re-running `init` repeats unresolved pairs even after an
 endpoint ends. Enrollment runs end through the usual checkpoint and release
 workflow, or automatically when their checkout is clean with no remaining
-branch change at a commit trunk contains.
+branch change at a commit their recorded target contains.
 
 Failures name the worktree root and include a diagnostic. Other candidates
 continue:
@@ -41,7 +43,7 @@ continue:
 | Reason | Recovery |
 | --- | --- |
 | `operation_in_progress` | Finish or abort the rebase, merge, cherry-pick, or revert, then retry. |
-| `no_merge_base` | Ensure `HEAD` and configured trunk resolve to commits with a shared ancestor, then retry. |
+| `no_merge_base` | Ensure `HEAD` and the selected target branch resolve to commits with a shared ancestor, then retry. |
 | `git_failure` | Repair the Git command failure shown in the diagnostic, then retry. |
 | `unavailable` | Restore access to the registered worktree, or remove its stale registration through Git. |
 | `record_too_large` | Reduce the work footprint before retrying; enrollment does not split a claim across journal records. |
@@ -63,7 +65,7 @@ Board instructions and gate recovery name the shared target for a same-target
 edge and the repository trunk for an edge across targets.
 
 
-Reconciliation judges each reservation at its recorded target. If an unreleased lane's non-trunk target ref disappears, the `target_missing` alert supplies `cargo-berth retarget <id> --target <branch>` and the board shows that target's commit as `"unresolved"`. Until the reservation is retargeted, the alert persists and reconciliation judges that reservation at the repository trunk. A released lane keeps its proof if its target branch is later deleted; lost evidence is reported only if the proving commits leave history and fail revalidation on two passes. The reference-transaction gate still gates the repository trunk, and a deleted target remains in `gate-targets`, so a prepared update recreating it is judged at its proposed commit.
+Reconciliation judges each reservation at its recorded target. If an unreleased lane's non-trunk target ref disappears, the `target_missing` alert supplies `cargo-berth retarget <id> --target <branch>` and the board shows that target's commit as `"unresolved"`. Until the reservation is retargeted, the alert persists and reconciliation judges that reservation at the repository trunk. A released lane keeps its proof if its target branch is later deleted; lost evidence is reported only if the proving commits leave history and fail revalidation on two passes. A deleted target remains in `gate-targets` while unreleased reservations record it, so a prepared update recreating it is judged at its proposed commit.
 
 `cargo-berth claim <paths> --target <local-branch>` records the integration branch for the new reservation. Without the flag, the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config takes precedence over the repository trunk. Detached HEAD uses the repository trunk. Explicit own-branch and unresolved targets return `invalid_input`; first touch and enrollment fall back to the trunk and report the reason in JSON.
 
@@ -75,14 +77,14 @@ A present non-trunk target needs a cover in the worktree where it is checked out
 
 ### Migrate a uniform integration trunk to per-branch targets
 
-Run these steps once after Phases 1–4 are installed. For example, suppose `hana` currently names the integration branch and `main` is the intended repository trunk.
+Run these steps once. For example, suppose `hana` currently names the integration branch and `main` is the intended repository trunk.
 
 1. In any worktree, while `.claude/config/berth.toml` still names `hana`, run `cargo-berth init`. This pins every existing reservation, including released ones, to `hana`.
 2. Run `git config branch.<lane>.cargoBerthTarget hana` for each lane. In hana, this includes `tool-based-ui-arrange`, `tool-based-ui-geometry-material`, `tool-based-ui-trunk`, and later lanes.
 3. Set `trunk = "main"` in `.claude/config/berth.toml` and commit it on `main` and `hana`. Only the main worktree's copy supplies the repository trunk.
 4. Run `cargo-berth retarget <id> --target main` for any live reservation in the main worktree or the `hana` worktree.
 5. Run `cargo-berth board --json`. The lanes should target `hana`; the reservation in the `hana` worktree should target `main`, carry `hana`'s diff as its extent, and cover it without blocking those lanes. Reconciliation creates that cover if step 4 left no live reservation there.
-6. After installing the per-target gate, run `cargo-berth init` again. It reinstalls the managed reference-transaction hook and writes `.git/cargo-berth/gate-targets` from live journal state.
+6. Run `cargo-berth init` again. The managed reference-transaction hook carries the trunk it was installed with, so this reinstalls it with `main` and rewrites `.git/cargo-berth/gate-targets` from live journal state.
 
 Step 1 must precede step 3. Changing the trunk before the pin re-judges released lanes against `main` and raises lost-evidence alerts for their former integration proofs.
 
@@ -219,12 +221,14 @@ The reservation ledger could not be read: journal replay failed: journal schema 
 Upgrade `cargo-berth` for an unsupported schema version rather than
 reinitializing that journal.
 
-An outstanding reservation needs no command once its work reaches trunk:
-ordinary reconciliation (`board`, `check`, the post-Bash hook, the trunk gate,
-or `release`) settles it when git proves the whole scoped phase is on the
-checked-out trunk and no reserved work remains outside that proof, including
-after a rebase, amend, or reset. An orphan notice names the dispositions that
-fit the orphan and the observed trunk.
+An outstanding reservation needs no command once its work reaches its
+recorded target: ordinary reconciliation (`board`, `check`, the post-Bash hook,
+the prepared gate, or `release`) settles it when git proves the whole scoped
+phase is on that branch's current tip and no reserved work remains outside that
+proof, including after a rebase, amend, or reset. At a present non-trunk target
+it also waits for the target's cover, as above. An orphan notice names the
+dispositions that fit the orphan and the observed tip of the branch it is
+judged at.
 
 `resolve` records one of these explicit decisions for what reconciliation
 cannot prove:

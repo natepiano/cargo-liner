@@ -2,11 +2,11 @@
 
 ## What it is
 
-A checkpointed (`Outstanding`) reservation protects a phase interval `phase_start_head..protected_tip` until that work reaches its recorded target. Rebasing, amending, or resetting the branch rewrites those commits, so the protected tip may no longer be an ancestor of the target and the reservation used to stay outstanding until someone resolved it by hand. This feature closes that gap in three ways. Ordinary reconciliation settles an outstanding reservation on its own once git evidence proves the whole phase reached the recorded target. The committed `reference-transaction` hook captures git's rewrite map so reconciliation can move the phase anchors onto the rewritten commits. And when the proof points at a target commit older than the tip, that commit is recorded as a separate integration witness. Orphan notices also name the disposition that fits the orphan's retained work and the observed target, rather than one generic instruction.
+A checkpointed (`Outstanding`) reservation protects a phase interval `phase_start_head..protected_tip` until that work reaches its recorded target. Rebasing, amending, or resetting the branch rewrites those commits, so the protected tip may no longer be an ancestor of the target. Three mechanisms let such a reservation settle without a manual resolve. Ordinary reconciliation settles an outstanding reservation on its own once git evidence proves the whole phase reached the recorded target. The committed `reference-transaction` hook captures git's rewrite map so reconciliation can move the phase anchors onto the rewritten commits. And when the proof points at a target commit older than the tip, that commit is recorded as a separate integration witness. Orphan notices also name the disposition that fits the orphan's retained work and the observed tip of the branch it is judged at.
 
 ## How it works
 
-Reconciliation now judges each reservation at its recorded integration target. For a lane targeting an integration branch, reaching that branch is final: settlement releases the lane there. The retained field name `trunk_oid` denotes the target commit in this context. Merge extents and committed-path evidence are shared per worktree and target, so a change unique to the integration branch does not enter the lane's extent.
+Reconciliation judges each reservation at its judged branch: its recorded integration target, or the repository trunk when that target ref is missing. For a lane targeting an integration branch, reaching that branch is final: settlement releases the lane there once the branch has a cover, a reservation held in that branch's checkout against the branch's own target. Until then the lane stays outstanding. The retained field name `trunk_oid` denotes the judged branch's commit in this context. Merge extents and committed-path evidence are shared per worktree and target, so a change unique to the integration branch does not enter the lane's extent.
 
 ### Settlement
 
@@ -16,13 +16,13 @@ Reconciliation now judges each reservation at its recorded integration target. F
 fn settlement_selection(
     reservation: &Reservation,
     evidence: &IntegrationEvidenceStatus,
-    actual_trunk: &RepositoryTrunk,
+    actual_trunk: &JudgedTargetTip,
     merge_extent: &MergeExtent,
     committed_paths: &CommittedMergeEvidence,
 ) -> SettlementSelection // Unchanged | Release(ReleaseDisposition)
 ```
 
-It releases only when evidence is `Integrated { trunk_oid, proof, witness }`, `trunk_oid` equals the reservation's resolved target observation, and the merge guard finds no unproven work. The disposition follows the proof:
+Before asking, it skips any reservation for which `cover_is_missing(snapshot, covered_targets, id)` holds: its recorded target is a present non-trunk branch with no cover whose merge extent this pass observed at that branch's tip. A cover appended this pass counts from the next. `settlement_selection` receives `snapshot.target_for(id)`, and committed paths are read for `(worktree, recorded target)`. It releases only when evidence is `Integrated { trunk_oid, proof, witness }`, `trunk_oid` equals that resolved tip, and the merge guard finds no unproven work. The disposition follows the proof:
 
 | `IntegrationProof` | `ReleaseDisposition` |
 | --- | --- |
@@ -41,11 +41,11 @@ A settling reservation gets `EvidenceRevalidated { status }` followed by `Releas
 
 Unrelated dirt does not hold settlement, and neither does a head that moved when no committed scoped paths remain. Committed paths arrive as `CommittedMergeEvidence::{Unavailable, Observed(Vec<ReservationScopePath>)}` per holder worktree. `Unavailable` (including an orphan with no checkout) routes to `has_unproven_retained_merge_work`, which counts every retained scope path as committed.
 
-**Gate purposes.** `GateReconciliationPurpose::{PreparedDecision, CommittedAudit}` is passed by `src/gate/decision.rs` and `src/gate/audit.rs`. `PreparedDecision` projects actual-trunk settlements with `RetainedReservationSet::with_pending_settlements(&operations)` before it observes the proposed trunk and builds constraints. `CommittedAudit` keeps the replayed lifecycles so a forced checkpoint still consumes its permit. Evidence against a proposed trunk never settles.
+**Gate purposes.** `GateReconciliationPurpose::{PreparedDecision, CommittedAudit}` is passed by `src/gate/decision.rs` and `src/gate/audit.rs`. `PreparedDecision` projects actual-tip settlements with `RetainedReservationSet::with_pending_settlements(&operations)` before `observe_proposed_target` observes the proposed move of the trunk or a recorded target and builds constraints. `CommittedAudit` keeps the replayed lifecycles so a forced checkpoint still consumes its permit. Evidence against a proposed target never settles.
 
 ### Release verb
 
-`release` reconciles first. If that pass settled the requested reservation, the verb returns `Released { disposition, marker: AlreadyAbsent, session_mapping_publication }` with that reservation's alerts removed. A later call reaches `released_evidence_operation`, which appends `EvidenceRevalidated` and reports `AlreadySettled`. `Abandoned` and `RetiredOrphan` dispositions (`ReleaseRevalidationSubject::None`) are rejected as `AlreadyReleased`.
+`release` reconciles first. When the reservation's evidence is `Integrated` but `cover_is_missing` holds for it, `release` returns envelope status `outstanding` with payload `TargetUncovered { reservation_id, target }` and releases nothing. Otherwise it judges the checkpoint at the branch `IntegrationTarget::judging_branch` returns: the recorded target, or the repository trunk when that ref is missing. If the reconcile pass settled the requested reservation, the verb returns `Released { disposition, marker: AlreadyAbsent, session_mapping_publication }` with that reservation's alerts removed. A later call reaches `released_evidence_operation`, which appends `EvidenceRevalidated` and reports `AlreadySettled`. `Abandoned` and `RetiredOrphan` dispositions (`ReleaseRevalidationSubject::None`) are rejected as `AlreadyReleased`.
 
 `ReleaseRetentionPlan` (`src/verb/release.rs`) picks the ref action that runs after the append:
 
@@ -55,7 +55,7 @@ Unrelated dirt does not hold settlement, and neither does a head that moved when
 
 A repeated release after the witness has been collected therefore keeps later branch work intact.
 
-For a `ProtectedTip` subject, including an outstanding checkpoint, `revalidate_proven_integration` tries a materialized `Historical` witness first, through `RewrittenIntegrationTrunkCommit::revalidate_ancestry`. A reachable witness yields `Integrated { trunk_oid: current trunk, RewrittenWitnessAncestor, same witness }`. `ObjectUnknown` stays unknown. Only `TrunkRewritten` falls back to the `PriorIntegrationStatus::Proven` current-trunk replay. `integrated_release_operation` (empty merge extent) maps `EvaluatedTrunk` to `Integrated` with `RetainProtectedTip`, and `Historical(w)` to `RewrittenIntegration(w)` with `RetainIntegrationWitness`.
+For a `ProtectedTip` subject, including an outstanding checkpoint, `revalidate_proven_integration` tries a materialized `Historical` witness first, through `RewrittenIntegrationTrunkCommit::revalidate_ancestry`. A reachable witness yields `Integrated { trunk_oid: current judging-branch tip, RewrittenWitnessAncestor, same witness }`. `ObjectUnknown` stays unknown. Only `TrunkRewritten` falls back to the `PriorIntegrationStatus::Proven` current-tip replay. `integrated_release_operation` (empty merge extent) maps `EvaluatedTrunk` to `Integrated` with `RetainProtectedTip`, and `Historical(w)` to `RewrittenIntegration(w)` with `RetainIntegrationWitness`.
 
 ### Integration witness distinct from evaluated trunk
 
@@ -84,7 +84,7 @@ impl RewrittenIntegrationTrunkCommit {
 }
 ```
 
-`trunk_oid` always names the trunk the evidence was evaluated against, and `witness` names the commit that contains the work. `IntegrationProof::RewrittenWitnessAncestor` (wire `rewritten_witness_ancestor`) means trunk contains the witness. It makes no claim about the original checkpoint. `revalidate_ancestry` issues one ancestry query and maps `Ancestor` to `Integrated { trunk, RewrittenWitnessAncestor, Historical(self) }`, `NotAncestor` to `TrunkRewritten`, and `ObjectUnknown` to `ObjectUnknown`. It never runs the scoped replay.
+`trunk_oid` always names the judged-branch tip the evidence was evaluated against, and `witness` names the commit that contains the work. `IntegrationProof::RewrittenWitnessAncestor` (wire `rewritten_witness_ancestor`) means the judged branch contains the witness. It makes no claim about the original checkpoint. `revalidate_ancestry` issues one ancestry query and maps `Ancestor` to `Integrated { trunk, RewrittenWitnessAncestor, Historical(self) }`, `NotAncestor` to `TrunkRewritten`, and `ObjectUnknown` to `ObjectUnknown`. It never runs the scoped replay.
 
 A released `RewrittenIntegration` reservation revalidates only through that ancestry query, in `observe_released_repository_evidence` (`src/reconcile.rs`) and in `released_evidence_operation`. In `apply_release`, replaying a `RewrittenIntegration` release keeps any existing `Integrated` status. If no `Integrated` status exists, it creates `Integrated { witness, RewrittenWitnessAncestor, Historical(witness) }`. It also advances the proof-subject revision.
 
@@ -141,7 +141,7 @@ pub(crate) struct PendingBranchRewrite {
 
 Under the lock, `RewriteReconciliationPreflight::project` checks each `RewriteSubjectValidation { reservation_id, subject }` against the locked replay and then applies accepted resnapshots with `with_pending_resnapshots`, before repository observation. A changed subject rejects the transaction without appending, and `retry_rewrite_reconciliation` retries the whole attempt up to three times. Retention refs move to the accepted tips, and markers are rewritten (`update_branch_rewrite_markers`, temp file plus rename) or deleted (`delete_branch_rewrite_markers`), only in the committed action after the append succeeds.
 
-Deferred subjects stay conservative in the gate. `DeferredRewriteIntegrationSubject.rewritten_tips` follows later markers (`follow_rewrite`), and `GateReconciliation::deferred_rewrite_enters` counts the reservation as entering trunk when any nominated destination becomes reachable, so ordering holds still apply.
+Deferred subjects stay conservative in the gate. `DeferredRewriteIntegrationSubject.rewritten_tips` follows later markers (`follow_rewrite`), and `GateReconciliation::deferred_rewrite_enters` counts the reservation as entering the proposed target when any nominated destination becomes reachable, so ordering holds still apply.
 
 In the committed hook, `GateReconciliation::into_committed_hook_action(additional_operations)` keeps only `Resnapshot` and the four scoped-verdict and attempt records. It appends no evidence or lifecycle operations. `CommittedHookReconciliationAction::commit` repairs refs for outstanding resnapshot tips and publishes marker progress.
 
@@ -149,7 +149,7 @@ In the committed hook, `GateReconciliation::into_committed_hook_action(additiona
 
 ### Historical trunk candidate
 
-When the protected tip is not an ancestor of trunk, the admitted scoped evaluation for a reservation is `evaluate_reservation_scoped_integration`, which calls:
+When the protected tip is not an ancestor of the judged branch's tip, the admitted scoped evaluation for a reservation is `evaluate_reservation_scoped_integration`, which calls:
 
 ```rust
 fn evaluate_historical_then_current_trunk(
@@ -159,11 +159,11 @@ fn evaluate_historical_then_current_trunk(
 ) -> ScopedPatchIntegrationEvaluation
 ```
 
-1. `git::discover_historical_integration_candidate(repository_root, phase_start, protected_tip, target, target_histories)` (`src/git/patch.rs`) returns `HistoricalIntegrationCandidateDiscovery::{Nominated(GitObjectId), NoMatch, Unavailable}`. It takes right-only cherry-mark matches from `phase_equivalent_commits` (`rev-list --cherry-mark --left-right --right-only --no-merges <tip>...<trunk> ^<phase_start>`). `PhaseStartTargetFirstParentHistories::earliest_containing_matches` (`src/git/reachability.rs`) then walks trunk's first-parent chain after the phase start, oldest first, and nominates the first commit whose full ancestry, merge parents included, contains every match. That walk reuses the reconciliation's batched graph when its target matches and otherwise reads one `target_commit_history`. A missing parent link, or a match never located, returns `Unavailable`.
+1. `git::discover_historical_integration_candidate(repository_root, phase_start, protected_tip, target, target_histories)` (`src/git/patch.rs`) returns `HistoricalIntegrationCandidateDiscovery::{Nominated(GitObjectId), NoMatch, Unavailable}`. It takes right-only cherry-mark matches from `phase_equivalent_commits` (`rev-list --cherry-mark --left-right --right-only --no-merges <tip>...<target> ^<phase_start>`). `PhaseStartTargetFirstParentHistories::earliest_containing_matches` (`src/git/reachability.rs`) then walks the target's first-parent chain after the phase start, oldest first, and nominates the first commit whose full ancestry, merge parents included, contains every match. That walk reuses the reconciliation's batched graph when its target matches and otherwise reads one `target_commit_history`. A missing parent link, or a match never located, returns `Unavailable`.
 2. A nominated candidate is certified with `compare_scoped_patch` against the candidate. `Equivalent` returns `Equivalent(IntegrationWitness::Historical(candidate))`.
-3. Otherwise current-trunk replay runs. If it returns `Different` after discovery or certification was `Unavailable`, the result is `HistoricalEvidenceUnavailable`. Every other result maps directly.
+3. Otherwise current-tip replay runs. If it returns `Different` after discovery or certification was `Unavailable`, the result is `HistoricalEvidenceUnavailable`. Every other result maps directly.
 
-`ScopedPatchIntegrationEvaluation::{Equivalent(IntegrationWitness), Different, HistoricalEvidenceUnavailable, Unavailable}` lives in `src/reservation/evidence.rs`. It is the cached value in `ReconciliationScopedPatchEvaluationBudget`, which is keyed by `ScopedPatchEvaluationKey { phase_start_head, protected_tip, target_trunk, scopes, context, destination }`. Only `target_trunk` is the admission key, so all three steps share one admission per observed trunk, and duplicate subjects reuse the historical witness. `ScopedPatchComparisonDestination::{Trunk, Mapped { tip, destinations }}` keeps mapped comparisons in distinct cache entries while they charge the observed trunk's single slot, so a mapped tip never becomes an admission key.
+`ScopedPatchIntegrationEvaluation::{Equivalent(IntegrationWitness), Different, HistoricalEvidenceUnavailable, Unavailable}` lives in `src/reservation/evidence.rs`. It is the cached value in `ReconciliationScopedPatchEvaluationBudget`, which is keyed by `ScopedPatchEvaluationKey { phase_start_head, protected_tip, target_trunk, scopes, context, destination }`. Only `target_trunk`, the observed judged-branch tip, is the admission key, so all three steps share one admission per observed tip, and duplicate subjects reuse the historical witness. `ScopedPatchComparisonDestination::{Trunk, Mapped { tip, destinations }}` keeps mapped comparisons in distinct cache entries while they charge the observed tip's single slot, so a mapped tip never becomes an admission key.
 
 `scoped_patch_journal_update` journals `HistoricalEvidenceUnavailable` as `ScopedPatchComparisonAttempted`, never as a negative verdict. Positive verdicts journal `ScopedPatchEquivalenceChecked` with the witness.
 
@@ -186,25 +186,25 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 
 ### Orphan notice
 
-`OrphanResolutionAction::new(&OrphanedOutstandingAlert, &RepositoryTrunk)` (`src/alert.rs`) uses the already-observed trunk and the alert's `OrphanIntegrationEvidence`, which reconciliation derives from the same snapshot row (`Outstanding` with `Integrated { trunk_oid, witness }` becomes `Proven(witness.resolve(trunk_oid))`, anything else `Unproven`):
+`OrphanResolutionAction::new(&OrphanedOutstandingAlert, &JudgedTargetTip)` (`src/alert.rs`) uses the already-observed tip of the orphan's judged branch and the alert's `OrphanIntegrationEvidence`, which reconciliation derives from the same snapshot row (`Outstanding` with `Integrated { trunk_oid, witness }` becomes `Proven(witness.resolve(trunk_oid))`, anything else `Unproven`):
 
 - `Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. })`, for `Proven(commit)`, names that carrying commit and offers `resolve <id> --recovered` and `resolve <id> --integrated-as <commit>`.
-- `Recover(NameCarryingTrunkCommit { trunk_oid, .. })`, for `Unproven` with resolved trunk, offers `--recovered`, `--retire-orphan --why <reason>`, and `--abandon --why <reason>`, and states that trunk `trunk_oid` does not contain the protected tip. The current trunk is never offered as the `--integrated-as` argument, because it does not carry the work.
-- `Recover(ResolveTrunkFirst { .. })` offers `--recovered` and says trunk must resolve before an integration commit can be named.
+- `Recover(NameCarryingTrunkCommit { trunk_oid, .. })`, for `Unproven` with a resolved tip, offers `--recovered`, `--retire-orphan --why <reason>`, and `--abandon --why <reason>`, and states that `trunk_oid` does not contain the protected tip. That tip is never offered as the `--integrated-as` argument, because it does not carry the work.
+- `Recover(ResolveTrunkFirst { .. })`, for an `ObjectUnknown` tip, offers `--recovered` and says the branch must resolve before an integration commit can be named.
 - `RetireOrAbandon` (verdict `CommitUnavailable`) offers `--retire-orphan --why <reason>` and `--abandon --why <reason>`.
 
-`src/board/rows.rs` passes trunk into `board_alerts`. The wire adapter `BoardOrphanResolutionAction::{Recover { flag }, RetireOrAbandon { flags }, RecoverWithTrunk { recovery }}` (`src/board/alerts.rs`) emits `RecoverWithTrunk` for new alerts. SessionStart and post-tool notices render through the board model to `board_alert_detail`. `src/output.rs` has no orphan renderer.
+`src/board/rows.rs` passes `|id| report.target_for(id).clone()` into `board_alerts(.., target_for)`, so each orphan's action uses its own judged tip. `alert::for_lost_integration_evidence` takes the same per-reservation tip. The wire adapter `BoardOrphanResolutionAction::{Recover { flag }, RetireOrAbandon { flags }, RecoverWithTrunk { recovery }}` (`src/board/alerts.rs`) emits `RecoverWithTrunk` for new alerts. SessionStart and post-tool notices render through the board model to `board_alert_detail`. `src/output.rs` has no orphan renderer.
 
 ## Invariants
 
-- No path releases a reservation whose work did not reach trunk. A rewrite map, a cherry-mark match, or a nominated candidate only nominates a location. Scoped replay must show that the whole `phase_start_head..protected_tip` is contained, and scoped work past the protected tip in the merge extent blocks release.
-- Only ordinary reconciliation settles. The committed hook appends no evidence or lifecycle records, and evidence against a proposed trunk never settles. Settlement requires `trunk_oid == actual trunk`.
-- `trunk_oid` is always the evaluated trunk, and the released commit always comes from `witness.resolve(trunk_oid)`. Code must never read the witness from `trunk_oid` directly.
+- No path releases a reservation whose work did not reach its judged branch, and settlement at a present non-trunk target waits for that branch's cover. A rewrite map, a cherry-mark match, or a nominated candidate only nominates a location. Scoped replay must show that the whole `phase_start_head..protected_tip` is contained, and scoped work past the protected tip in the merge extent blocks release.
+- Only ordinary reconciliation settles. The committed hook appends no evidence or lifecycle records, and evidence against a proposed target never settles. Settlement requires `trunk_oid ==` the judged branch's actual tip.
+- `trunk_oid` is always the evaluated tip of the judged branch, and the released commit always comes from `witness.resolve(trunk_oid)`. Code must never read the witness from `trunk_oid` directly.
 - Witness revalidation is ancestry only. A released `RewrittenIntegration` never reaches scoped replay, and only `CheckpointTip` successor subjects enter scoped comparison. Because ancestry alone keeps the witness valid, `recovery::verify_integration_commit_carries_work` runs `integration_status` against the named commit before `resolve --integrated-as` records it, and refuses a commit that neither contains the protected tip nor carries an equivalent of its scoped changes.
 - Replay performs no git writes. Retention refs move, and rewrite markers are rewritten or deleted, only in the committed action after the append succeeds. A failed append leaves the old ref and the marker.
 - Rewrite consumers use the `created_commits` and pairs stored at capture. They never reconstruct them from current refs. No consumer may assume hook stdin carries the previous tip.
-- Proposed-trunk projection and lifecycle rules are chosen by `GateReconciliationPurpose`. `CommittedAudit` must not project settlements.
-- Git work stays bounded at one cold scoped admission per trunk target per pass. Historical discovery, certification, current-trunk replay, and mapped rewrite acceptance all share that slot.
+- Proposed-target projection and lifecycle rules are chosen by `GateReconciliationPurpose`. `CommittedAudit` must not project settlements.
+- Git work stays bounded at one cold scoped admission per observed target tip per pass. Historical discovery, certification, current-tip replay, and mapped rewrite acceptance all share that slot.
 - A historical proof that could not be evaluated is never journalled as a negative verdict. It stays retryable.
 - Older journal records and pending markers decode and replay unchanged. New fields are optional, and an absent field means preserve or legacy. Bytes under `tests/fixtures/reader_compat` stay unchanged.
 - The wire contract grows only by additive variants and fields. `output-contract.json` matches the generator byte for byte.
@@ -214,7 +214,7 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 - Settlement can happen in the prepared gate or the drift hook before `board` runs, so "a rerun appends nothing" counts from whichever pass settled. A release loop expects `released` on the settling call.
 - Every journal append republishes the session mapping, so a settled reservation's mapping entry disappears. Stale-mapping fixtures must restore stale bytes after the last append.
 - Projecting settlement in the committed audit silently drops forced-permit consumption, because `entering_reservations` in `src/gate/decision.rs` filters out released reservations.
-- A fixture that needs a reservation to stay outstanding after its work lands must dirty a reserved source. An orphan with an unavailable checkout settles automatically once its work reaches trunk.
+- A fixture that needs a reservation to stay outstanding after its work lands must dirty a reserved source. An orphan with an unavailable checkout settles automatically once its work reaches its judged branch.
 - After a re-anchor, settlement passes the merge guard only if the resnapshot moved the protected tip to the rebased head.
 - The merge guard compares dirty paths with case-insensitive overlap and committed paths with case-sensitive containment. Both choices lean toward holding.
 - Git 2.54 `--update-refs` writes each branch in its own transaction, upper branch first. Every transaction sees the same `rebase-merge/onto` and the full rewritten list, which is why pairs are filtered per branch by created commits.
@@ -231,17 +231,17 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 
 ## Why
 
-**Settlement is automatic but narrow.** Nothing else in the engine removes state on inference, but this is not inference. Git proves the full scoped phase reached the trunk actually checked out, and the merge guard proves no reserved work remains outside that proof. Tying settlement to `trunk_oid == actual trunk` keeps a proposed trunk, or a trunk that has since moved, from releasing anything.
+**Settlement is automatic but narrow.** Nothing else in the engine removes state on inference, but this is not inference. Git proves the full scoped phase reached the judged branch's actual tip, and the merge guard proves no reserved work remains outside that proof. Tying settlement to `trunk_oid ==` that actual tip keeps a proposed target, or a branch that has since moved, from releasing anything. At an integration branch the cover wait keeps a lane from releasing before the branch's own work is held against its target.
 
 **Settlement lives only in ordinary reconciliation.** The committed hook runs inside git's transaction for every local branch move and must stay cheap and non-destructive. Its audit must also see pre-settlement lifecycles, or forced permits are never consumed. The prepared gate projects settlements without owning them, so an already-landed predecessor does not block a proposed integration.
 
 **The witness is separate from the evaluated trunk.** Before the split, the only commit a proof could name was the trunk it was evaluated against, so a phase that landed several commits back could only settle at the current tip. That broke two ways: later trunk commits touching the same paths made current-tip replay fail, and the retained ref named a commit unrelated to the work. Carrying `witness` next to `trunk_oid` lets evidence say both where it was checked and where the work is, and `resolve()` keeps the legacy case as a single code path.
 
-**Rewritten integration revalidates by ancestry.** Once a witness is certified, the question is whether trunk still contains that commit, which a single ancestry query answers. Replaying the original phase again would need the checkpoint, which may already be collected, and would fail as trunk keeps editing the same files.
+**Rewritten integration revalidates by ancestry.** Once a witness is certified, the question is whether the judged branch still contains that commit, which a single ancestry query answers. Replaying the original phase again would need the checkpoint, which may already be collected, and would fail as trunk keeps editing the same files.
 
 **The rewrite map is captured at commit time and certified by replay.** Git removes the rebase state as soon as the rebase ends, so the map has to be copied while the committed transaction still sees it. Created commits are fixed then too, because later ref moves make them impossible to recompute. The map is still only a nomination: many-to-one pairs, dropped commits, and conflict-resolution splits all make endpoints wrong in ways only scoped replay detects.
 
-**Candidate discovery nominates the earliest containing commit.** The latest containing commit is the trunk tip, and its replay has already failed. The earliest first-parent commit containing every trunk-side match is the first point where the work could be whole. Cherry-mark matches are reused instead of adding a patch-id pipeline.
+**Candidate discovery nominates the earliest containing commit.** The latest containing commit is the target's tip, and its replay has already failed. The earliest first-parent commit containing every trunk-side match is the first point where the work could be whole. Cherry-mark matches are reused instead of adding a patch-id pipeline.
 
 **Contiguity counts only protected-path commits.** An unrelated commit landing between the replayed phase commits is ordinary on a shared trunk and says nothing about whether the work arrived whole. A gap made of protected-path commits does, so it still rejects.
 
@@ -249,4 +249,4 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 
 **An unavailable historical proof is recorded as an attempt.** A negative verdict is durable. Journalling one because discovery could not run would permanently hide a proof that a later pass could establish, and the round-robin attempt schedule already retries attempts fairly.
 
-**Orphan actions come from the observed trunk.** The board already resolves trunk, so building the action from it adds no git work. A payload-free `RetireOrAbandon` covers the one case where no commit can support recovery. Offering `--integrated-as <trunk_oid>` only when trunk resolved means every published command can actually run.
+**Orphan actions come from the observed judged tip.** Reconciliation already resolves every target's tip, so building the action from it adds no git work. A payload-free `RetireOrAbandon` covers the one case where no commit can support recovery. Offering `--integrated-as <trunk_oid>` only when the judged branch resolved means every published command can actually run.

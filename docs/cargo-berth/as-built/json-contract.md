@@ -11,9 +11,9 @@ Ordinary tests regenerate it in memory and require an exact byte match.
 
 Board JSON includes a `target` view on each reservation row and a sorted top-level `targets` array. Each target entry has `ref`, its observed `commit` (or `"unresolved"`), and the ids of its non-released reservations. The array always includes the repository trunk. An unrecorded legacy claim shows the repository trunk with `source: "unrecorded"`. A vanished non-trunk target raises `target_missing`: reconcile alerts carry `kind: "target_missing"` with `data: {reservation_id, target, commands}`, while board alerts put those three fields beside `kind`. The command is `cargo-berth retarget <id> --target <branch>`.
 
-An engine-created cover row has `source: {"kind":"cover","covered_branch":"refs/heads/<branch>"}`. Its separate `target` view names that branch's parent. An ordinary reservation serving as a cover keeps its original source. A present non-trunk target without a registered checkout raises reconcile alert `{"kind":"target_uncovered","data":{"target":"refs/heads/<branch>","waiting_reservations":["<id>"]}}`; the board alert puts `target` and `waiting_reservations` beside `kind`. Direct `release` of integrated work while the target lacks a fresh cover returns envelope status `outstanding` with release payload data `{status: "target_uncovered", reservation_id, target}` and leaves the reservation outstanding. The claim target's optional wire `fallback` field is unchanged, while the in-memory selection distinguishes selected from fell back. Schema version remains 2.
+An engine-created cover row has `source: {"kind":"cover","covered_branch":"refs/heads/<branch>"}`. Its separate `target` view names the covered branch's own target, the automatic selection for that branch. An ordinary reservation serving as a cover keeps its original source. A present non-trunk target that no registered checkout has checked out raises reconcile alert `{"kind":"target_uncovered","data":{"target":"refs/heads/<branch>","waiting_reservations":["<id>"]}}`; the board alert puts `target` and `waiting_reservations` beside `kind`. Direct `release` of integrated work while the target lacks a fresh cover returns envelope status `outstanding` with release payload data `{status: "target_uncovered", reservation_id, target}` and leaves the reservation outstanding.
 
-`integrate` payloads with `status: "integrated"` or `status: "blocked"` include `target`, the full local ref the command would move. The hook's prepared decision uses the same target-specific ordering evidence. Existing journal wire names and schema version 2 remain unchanged.
+`integrate` payloads with `status: "integrated"` or `status: "blocked"` include `target`, the full local ref the command would move: the reservation's judged branch, which is the repository trunk when its recorded target ref is missing. The hook's prepared decision uses the same target-specific ordering evidence.
 
 A consumer needs only the stable front-end shell documented below. Nothing in
 this contract asks it to inspect `payload`, enumerate payload kinds, correlate
@@ -110,6 +110,14 @@ bypass:
       "recovered_bypasses_this_invocation": [
         "cargo-berth-pending-bypass-readme-example.json"
       ],
+      "targets": [{
+        "ref": "refs/heads/main",
+        "commit": "3333333333333333333333333333333333333333",
+        "reservations": [
+          "01a036fa-b70a-7e72-89ae-0facf1976ed1",
+          "01a036fb-1629-7712-96b7-1672b64a151f"
+        ]
+      }],
       "integration_order": "constraints_recorded",
       "ready_now": {
         "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
@@ -124,6 +132,12 @@ bypass:
               "liveness": "live"
             },
             "source": { "kind": "work_plan", "plan": "docs/work.md", "phase": "holder" },
+            "target": {
+              "ref": "refs/heads/main",
+              "short_name": "main",
+              "source": "repository_trunk",
+              "commit": "3333333333333333333333333333333333333333"
+            },
             "purpose": { "kind": "explained", "explanation": "update the shared API" },
             "scopes": [{ "path": "crates/shared", "kind": "tree" }],
             "lifecycle": { "stage": "active" },
@@ -233,7 +247,8 @@ of generations or offsets. Reservation rows occur at
 
 - `holder.branch.kind`: `attached` with `reference`, or `detached` with `head`.
 - `source.kind`: `work_plan` with `plan` and `phase`, `first_touch`,
-  `explicit`, or `enrolled`.
+  `explicit`, `enrolled`, or `cover` with `covered_branch` (a full
+  `refs/heads/` ref).
 - `purpose.kind`: `explained` with `explanation`, or
   `not_provided_by_caller`.
 - `lifecycle.stage`: `active`; `outstanding` with `protected_tip`; or `released`
@@ -246,10 +261,12 @@ of generations or offsets. Reservation rows occur at
   `integrated` with `trunk_oid`, `proof`, and `witness`; `trunk_rewritten`; or
   `object_unknown`. Integrated `proof` is `protected_tip_ancestor`,
   `scoped_patch_equivalent`, or `rewritten_witness_ancestor`. `trunk_oid` is the
-  evaluated trunk. The witness is `{ "kind": "evaluated_trunk" }` or
+  evaluated tip of the reservation's judged branch: its recorded target, or the
+  repository trunk when that target ref is missing. The witness is
+  `{ "kind": "evaluated_trunk" }` or
   `{ "kind": "historical", "commit": "<oid>" }`; an absent witness defaults
-  to the evaluated trunk. Witness ancestry proves that trunk contains the
-  rewritten integration commit, without claiming checkpoint ancestry.
+  to the evaluated tip. Witness ancestry proves that the judged branch contains
+  the rewritten integration commit, without claiming checkpoint ancestry.
 - `freshness.status`: `fresh` or `stale`, both with `last_activity_at`.
 - `ahead_behind_main.status`: `counts` with `ahead` and `behind`; `unrelated`;
   or `unavailable`.
@@ -258,6 +275,11 @@ The remaining row enums are scalar strings:
 `edit_blocking_status = blocking | clear`, `visibility = active_constraint |
 resolved_audit`, and `holder.liveness = live |
 unavailable | orphan_candidate | orphaned | unknown`.
+
+Every row carries `target`, the view described under
+[Recorded target fields](#recorded-target-fields): `ref`, `short_name`,
+`source`, optional `fallback`, and `commit`, which here is the recorded
+target's tip observed by this read, or `"unresolved"`.
 
 `edit_blocking_status` is a lifecycle-derived projection: active reservations
 are `blocking`, outstanding reservations follow their integration evidence, and
@@ -316,27 +338,33 @@ The sections mean:
 - `recorded_incursion_answers`: durable resolutions for those incidents.
 - `alerts`: lost integration evidence and its `resolve_integrated_as` action;
   orphan recovery evidence and its `recover_with_trunk` or `retire_or_abandon` action;
-  stale reservations and their
+  `target_missing` with `reservation_id`, `target`, and `commands` (the
+  `cargo-berth retarget <id> --target <branch>` command) for an unreleased
+  reservation whose non-trunk target ref is gone; `target_uncovered` with
+  `target` and `waiting_reservations` for a present non-trunk target that no
+  registered checkout has checked out; stale reservations and their
   `resolution.action = "renew"`; or bypasses not yet recorded and an instruction
   for restoring the journal audit path. A lost-evidence alert identifies the
   released reservation, protected tip, current evidence status, and whether
-  trunk must resolve before the operator can confirm integration. The orphan
+  the judged branch must resolve before the operator can confirm integration.
+  Every recovery is computed at the reservation's own judged branch. The orphan
   `recover_with_trunk` action carries `recovery` using the existing
   `lost_evidence_recovery` shape. When the reconciliation pass proved the work
-  in trunk, `verify_resolved_trunk` names the proving commit as `trunk_oid` and
+  on the judged branch, `verify_resolved_trunk` names the proving commit as `trunk_oid` and
   offers `resolve <id> --recovered` and `resolve <id> --integrated-as <trunk_oid>`.
-  When trunk resolves but does not carry the work, `name_carrying_trunk_commit`
-  names that trunk and offers `resolve <id> --recovered`,
+  When the judged branch resolves but does not carry the work, `name_carrying_trunk_commit`
+  names that branch's tip and offers `resolve <id> --recovered`,
   `resolve <id> --retire-orphan --why <reason>`, and
-  `resolve <id> --abandon --why <reason>`; `--integrated-as` then needs a trunk
-  commit the operator names. With unresolved trunk, it requires trunk repair
-  before naming an integration commit. The envelope-level orphan alert also
+  `resolve <id> --abandon --why <reason>`; `--integrated-as` then needs a
+  commit on that branch the operator names. With an unresolved judged branch, it
+  requires repairing that branch before naming an integration commit. The envelope-level orphan alert also
   carries `integration_evidence`, `{ "status": "proven", "commit": <oid> }` or
   `{ "status": "unproven" }`. When the orphan's commit is unavailable, `retire_or_abandon` carries
   both explicit `flags`, `--retire-orphan --why <reason>` and
   `--abandon --why <reason>`. A `recover` variant with a single `flag` still
-  decodes. An outstanding reservation whose work is proven on the actual trunk
-  settles during reconciliation and raises no orphan alert. The stale action names the reservation for `renew`; the bypass alert names
+  decodes. An outstanding reservation that settles during reconciliation raises
+  no orphan alert; settlement needs its work proven at the actual tip of its
+  judged branch and, at a present non-trunk target, a cover of that branch. The stale action names the reservation for `renew`; the bypass alert names
   the recovery step.
 - `git_cost`: exact Git-call counts used to build this board.
 
@@ -368,18 +396,21 @@ Board `lost_integration_evidence` entries use this tagged form:
 
 `evidence_status.status` is `not_integrated`, `trunk_rewritten`, or
 `object_unknown`. `recovery.kind = verify_resolved_trunk` names, as `trunk_oid`,
-a trunk commit that carries the protected work, which is the `--integrated-as`
-argument. `recovery.kind = name_carrying_trunk_commit` names, as `trunk_oid`, the
-resolved trunk that no longer proves the work; the operator must name a trunk
-commit that carries it. A lost-evidence alert fires only when trunk no longer
-proves the tip, so with resolved trunk it always uses `name_carrying_trunk_commit`.
-`recovery.kind = resolve_trunk_first` omits `trunk_oid` and requires the
-configured trunk to resolve before the action is usable. Every alternative
+a commit on the judged branch that carries the protected work, which is the
+`--integrated-as` argument. `recovery.kind = name_carrying_trunk_commit` names,
+as `trunk_oid`, the judged branch's resolved tip, which no longer proves the
+work; the operator must name a commit on that branch that carries it. A
+lost-evidence alert fires only when the judged branch no longer proves the tip,
+so with a resolved tip it always uses `name_carrying_trunk_commit`.
+`recovery.kind = resolve_trunk_first` omits `trunk_oid` and requires the judged
+branch to resolve before the action is usable. Every alternative
 carries `action.action = resolve_integrated_as` and its `reservation_id`.
 `resolve <id> --integrated-as <commit>` refuses with exit 5 `invalid_input` a
-trunk-reachable commit that neither contains the protected tip nor carries an
+commit not reachable from the reservation's target (from the repository trunk
+when that target ref is missing). It also refuses a reachable commit that
+neither contains the protected tip nor carries an
 equivalent of its scoped changes, naming the commit, the protected tip, and
-`resolve <id> --retire-orphan --why <reason>`; it also refuses a commit git
+`resolve <id> --retire-orphan --why <reason>`, and a commit git
 cannot compare with the protected tip.
 Released rows remain `edit_blocking_status = clear` in every alternative.
 
@@ -454,7 +485,7 @@ Adding this payload kind does not change the serialized bytes of plain
 
 A successful `claim` has `payload.data.target`; a first-touch `check` has `payload.data.acquisition.target`. The view contains `ref` (a full local branch ref), `short_name`, `source`, and `commit` (the selected target tip or `"unresolved"`). An automatic fallback adds `fallback: { "requested", "reason" }`, with `reason` equal to `own_branch` or `unresolved`. `source` is `claim_argument`, `branch_configuration`, `repository_trunk`, or `unrecorded` for an older replayed claim. `retarget` returns status `retargeted` and `payload.data: { "reservation_id", "target" }` with the same view.
 
-Journal `claim.target` is optional for old records; new claims always write it. The new `retarget` operation records `reservation_id`, `target`, `source`, and `target_commit`; `unrecorded_targets_pinned` records one `target` for every unrecorded reservation then present. Schema version remains 2.
+Journal `claim.target` is absent only on records written before claims recorded a target, which replay as `unrecorded`; every claim the engine appends carries it. The `retarget` operation records `reservation_id`, `target`, `source`, and `target_commit`; `unrecorded_targets_pinned` records one `target` for every unrecorded reservation then present.
 
 ## Initialization enrollment report
 
@@ -471,8 +502,9 @@ enrollment. `enrollment` is optional when decoding and defaults to three empty a
   `shared_scopes` is a non-empty scope array. `sequence_commands` holds exactly
   two runnable commands, one per order.
 - `failures[]`: `{ "worktree_root", "reason", "diagnostic" }`. `reason` is
-  `operation_in_progress`, `no_merge_base`, `git_failure`, `unavailable`, or
-  `record_too_large`. One candidate's failure does not stop the others.
+  `operation_in_progress`, `no_merge_base`, `git_failure`, `configuration`,
+  `unavailable`, or `record_too_large`. One candidate's failure does not stop
+  the others.
 
 ## Coordination identity rejections
 
@@ -720,18 +752,22 @@ The operation union is:
 These operation fields use the following tagged values:
 
 - `source` is `{ "kind": "explicit" }`, `{ "kind": "first_touch" }`,
-  `{ "kind": "enrolled" }`, or `{ "kind": "work_plan", "plan": <string>,
+  `{ "kind": "enrolled" }`, `{ "kind": "cover", "covered_branch":
+  "refs/heads/<branch>" }`, or `{ "kind": "work_plan", "plan": <string>,
   "phase": <string> }`. `enrolled` marks a claim `init` made from a worktree's
-  existing changes.
+  existing changes. `cover` marks a claim reconciliation made for the checkout
+  of an integration branch, holding that branch's work against its own target.
 - `purpose` is `{ "kind": "not_provided_by_caller" }` or `{ "kind":
   "explained", "explanation": <non-empty string> }`.
 - `head_snapshot` is `{ "kind": "branch", "full_ref": <refs/... string>,
   "head": <oid> }` or `{ "kind": "detached", "head": <oid> }`.
 - `trunk_at_claim` is untagged: either a bare git object id string, meaning the
-  configured trunk resolved to that commit, or `{ "reference": <refs/... string>
-  }`, meaning the configured trunk reference existed but resolved to no commit.
-  Records written before the object form was widened are bare oid strings and
-  decode unchanged. An unresolved trunk reference is a recorded observation, not
+  reservation's selected target resolved to that commit, or `{ "reference":
+  <refs/... string> }`, meaning the target reference resolved to no commit. Only
+  the repository trunk can be recorded unresolved, because target selection
+  refuses or falls back from an unresolved non-trunk branch. Records written
+  before the object form was widened are bare oid strings and
+  decode unchanged. An unresolved reference is a recorded observation, not
   a corrupt journal: replay accepts it and later commands answer from the
   reservation's lifecycle instead of reporting the ledger unreadable.
 - `authorization.kind` is `no_conflict`; `enrollment` with `overlaps`;
@@ -756,7 +792,8 @@ These operation fields use the following tagged values:
   replayed lifecycle and integration evidence, and a released reservation is
   always effectively `clear` even when the record it replays says `blocking`.
 - `snapshot.stage` is `active` with `claim_snapshot`, or `outstanding` with
-  `protected_tip`, `trunk_oid`, and optional `phase_start_head`. An absent
+  `protected_tip`, `trunk_oid` (the judged branch's tip), and optional
+  `phase_start_head`. An absent
   `phase_start_head` keeps the reservation's existing baseline; a present one
   replaces it when reconciliation re-anchors a rewritten phase.
   A resnapshot can update only an active claim snapshot or an outstanding
@@ -771,8 +808,8 @@ These operation fields use the following tagged values:
   Integrated `proof` is `protected_tip_ancestor`, `scoped_patch_equivalent`, or
   `rewritten_witness_ancestor`. Records written before `proof` was added decode
   as `protected_tip_ancestor`. `trunk_oid` always identifies the evaluated
-  trunk. `witness` is `{ "kind": "evaluated_trunk" }` when that trunk is the
-  witness, or `{ "kind": "historical", "commit": "<oid>" }` for an earlier
+  tip of the reservation's judged branch. `witness` is
+  `{ "kind": "evaluated_trunk" }` when that tip is the witness, or `{ "kind": "historical", "commit": "<oid>" }` for an earlier
   integration commit. Older `evidence_revalidated` records without `witness`
   decode as `evaluated_trunk`. Revalidating a rewritten integration retains
   its historical commit and uses `rewritten_witness_ancestor`, even after the
@@ -783,17 +820,19 @@ These operation fields use the following tagged values:
   contiguity over commits touching protected paths. A legacy negative permits
   reevaluation; a current-version verdict replaces it, and replay in either order
   preserves the newer evaluator's verdict. Legacy positive verdicts remain usable.
-  Candidate discovery, certification, and current-trunk fallback share one observed
-  trunk budget admission. An unavailable historical proof followed by a negative
-  current-trunk replay records an attempt, allowing a later pass to retry.
+  Candidate discovery, certification, and the current-tip fallback share one
+  budget admission per observed judged-branch tip. An unavailable historical
+  proof followed by a negative current-tip replay records an attempt, allowing a
+  later pass to retry.
 - `scoped_patch_equivalence_checked` records the durable content cache. Its
   positive integer `subject` identifies the reservation's current baseline,
-  protected content, and scopes; `target` is the checked trunk object id; and
+  protected content, and scopes; `target` is the checked tip of the judged
+  branch; and
   `verdict` is `integrated`, `not_integrated`, or `trunk_rewritten`. The optional
   `witness` has the same tagged shape as integrated evidence and defaults to
   `evaluated_trunk` when absent. Positive verdicts retain it across replay and
-  delayed settlement. Settlement requires evidence evaluated against actual
-  trunk, and records the resolved witness in `rewritten_integration.evidence`.
+  delayed settlement. Settlement requires evidence evaluated against the judged
+  branch's actual tip, and records the resolved witness in `rewritten_integration.evidence`.
   The subject
   starts at `1` and
   advances whenever an input to the scoped comparison changes: its baseline,
@@ -807,7 +846,7 @@ These operation fields use the following tagged values:
   transient and never produce this operation.
 - `scoped_patch_comparison_attempted` records scheduling state when comparison
   produces transient `object_unknown`, or historical discovery or certification is
-  unavailable and current-trunk replay differs. Its `subject` and `target` use the same identities as
+  unavailable and current-tip replay differs. Its `subject` and `target` use the same identities as
   `scoped_patch_equivalence_checked`. Reconciliation runs the least-recently
   attempted uncached subject first at each target, so every subject receives a
   comparison while the transient failure remains eligible for later retries.
@@ -817,7 +856,7 @@ These operation fields use the following tagged values:
   scopes, and `successor_head` is the immutable target checked by git. `verdict`
   is `equivalent` or `different`; both outcomes are cached. Entries are invalidated
   by a predecessor subject revision and retained under a bounded successor-target
-  limit independent of the trunk-target cache.
+  limit independent of the reservation-target cache.
 - `successor_scoped_patch_comparison_attempted` records a successor comparison
   that produced transient `object_unknown`, which is never cached. One shared
   fixed budget admits one cold successor comparison per reconciliation. Pending
