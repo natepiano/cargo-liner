@@ -24,6 +24,7 @@ use crate::ledger;
 use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::IncursionIncidentId;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
@@ -33,6 +34,7 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::ReservationJudgingBranch;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeAdministrativeLocator;
 use crate::ledger::WorktreeContext;
@@ -92,7 +94,7 @@ pub(crate) enum IncursionAnswerScope {
 pub(crate) enum ReservationRecoveryDecision {
     /// Move surviving work to the invoking replacement worktree.
     Recovered,
-    /// Record a verified alternate commit already reachable from trunk.
+    /// Record a verified alternate commit already reachable from the reservation's target.
     IntegratedAs(RewrittenIntegrationTrunkCommit),
     /// Record deliberate user-confirmed abandonment.
     Abandon(AbandonmentReason),
@@ -383,19 +385,12 @@ fn execute_reservation_resolution(
     };
     let current_worktree_root = canonical_root(&worktree_context)?;
     let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let repository_trunk = configured_recovery_trunk(&berth_config)?;
     let outcome = ledger
         .transact_with_committed_action(
             journal_mutation_actor.worktree_id,
             journal_mutation_actor.coordination_run_id,
             |state| {
-                let recovery_request = match validate_recovery_request(
-                    repository_root,
-                    &berth_config.trunk,
-                    resolve_request.recovery,
-                ) {
-                    Ok(recovery_request) => recovery_request,
-                    Err(error) => return CommittedActionValidation::Reject(error),
-                };
                 let reservations = match RetainedReservationSet::replay(state.events()) {
                     Ok(reservations) => reservations,
                     Err(error) => {
@@ -420,6 +415,16 @@ fn execute_reservation_resolution(
                     Err(error) => {
                         return CommittedActionValidation::Reject(RecoveryRejection::Replay(error));
                     },
+                };
+                let recovery_request = match validate_recovery_request(
+                    repository_root,
+                    &reservations,
+                    resolve_request.reservation_id,
+                    &repository_trunk,
+                    resolve_request.recovery,
+                ) {
+                    Ok(recovery_request) => recovery_request,
+                    Err(error) => return CommittedActionValidation::Reject(error),
                 };
                 match recovery_operation(
                     repository_root,
@@ -536,24 +541,57 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum IntegrationEvidenceReachabilityBasis {
+    RepositoryTrunk,
+    ReservationTarget,
+}
+
 fn validate_recovery_request(
     repository_root: &Path,
-    trunk_branch: &str,
+    reservations: &RetainedReservationSet,
+    reservation_id: ReservationId,
+    repository_trunk: &IntegrationTarget,
     recovery_request: ReservationRecoveryDecision,
 ) -> Result<ReservationRecoveryDecision, RecoveryRejection> {
     let ReservationRecoveryDecision::IntegratedAs(trunk_commit) = recovery_request else {
         return Ok(recovery_request);
     };
-    let trunk_oid = reservation::current_trunk(repository_root, trunk_branch)
+    let target = reservations
+        .target_of(reservation_id, repository_trunk)
+        .ok_or(RecoveryRejection::UnknownReservation)?;
+    let judging_branch = target
+        .judging_branch(repository_root, repository_trunk)
         .map_err(RecoveryRejection::Git)?;
-    match git::reachability(repository_root, trunk_commit.as_ref(), &trunk_oid)
+    let reachability_basis = match judging_branch {
+        ReservationJudgingBranch::ReservationTarget(_) => {
+            IntegrationEvidenceReachabilityBasis::ReservationTarget
+        },
+        ReservationJudgingBranch::RepositoryTrunk(_)
+        | ReservationJudgingBranch::MissingTargetFallback(_) => {
+            IntegrationEvidenceReachabilityBasis::RepositoryTrunk
+        },
+    };
+    let target_oid =
+        reservation::current_trunk(repository_root, judging_branch.target().short_name())
+            .map_err(RecoveryRejection::Git)?;
+    match git::reachability(repository_root, trunk_commit.as_ref(), &target_oid)
         .map_err(RecoveryRejection::Git)?
     {
         Reachability::Ancestor => Ok(ReservationRecoveryDecision::IntegratedAs(trunk_commit)),
-        Reachability::NotAncestor | Reachability::ObjectUnknown => {
-            Err(RecoveryRejection::UnreachableIntegrationEvidence)
-        },
+        Reachability::NotAncestor | Reachability::ObjectUnknown => Err(
+            RecoveryRejection::UnreachableIntegrationEvidence(reachability_basis),
+        ),
     }
+}
+
+fn configured_recovery_trunk(config: &BerthConfig) -> Result<IntegrationTarget, RecoveryError> {
+    config.repository_trunk().map_err(|reason| {
+        RecoveryError::Config(ConfigError::InvalidValue {
+            key:   "trunk".to_owned(),
+            value: reason,
+        })
+    })
 }
 
 fn recovery_operation(
@@ -676,7 +714,7 @@ fn recovery_operation(
 
 /// Refuse an `--integrated-as` commit unless it contains the protected work.
 ///
-/// Trunk reachability alone accepted any trunk commit, and a `RewrittenIntegration` witness is
+/// Target reachability alone accepted any target commit, and a `RewrittenIntegration` witness is
 /// revalidated by ancestry alone afterwards, so a commit lacking the work would stand forever.
 fn verify_integration_commit_carries_work(
     repository_root: &Path,
@@ -839,7 +877,7 @@ enum RecoveryRejection {
     CheckpointRequired,
     AlreadyResolved,
     SameWorktreeRecovery,
-    UnreachableIntegrationEvidence,
+    UnreachableIntegrationEvidence(IntegrationEvidenceReachabilityBasis),
     IntegrationCommitLacksWork {
         reservation_id: ReservationId,
         commit:         RewrittenIntegrationTrunkCommit,
@@ -969,7 +1007,14 @@ impl Display for RecoveryRejection {
             Self::AlreadyResolved => formatter.write_str("the reservation is already resolved"),
             Self::SameWorktreeRecovery => formatter
                 .write_str("--recovered requires a replacement worktree with a new identity"),
-            Self::UnreachableIntegrationEvidence => formatter.write_str(
+            Self::UnreachableIntegrationEvidence(
+                IntegrationEvidenceReachabilityBasis::ReservationTarget,
+            ) => formatter.write_str(
+                "the --integrated-as commit must resolve in this repository and be reachable from the reservation's target",
+            ),
+            Self::UnreachableIntegrationEvidence(
+                IntegrationEvidenceReachabilityBasis::RepositoryTrunk,
+            ) => formatter.write_str(
                 "the --integrated-as commit must resolve in this repository and be reachable from trunk",
             ),
             Self::IntegrationCommitLacksWork {

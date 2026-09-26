@@ -492,6 +492,77 @@ fn rebase_resnapshot_updates_protected_tip_and_retention_ref() {
 }
 
 #[test]
+fn outstanding_rebase_uses_its_integration_target_as_the_new_anchor() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("target-rebase-lane", "integration");
+    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    integration_target::commit_file(&lane, "lane.txt", "lane work\n", "lane work");
+    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
+    integration_target::assert_success(&checkpoint);
+    integration_target::commit_file(
+        &repo.integration,
+        "new-target.txt",
+        "new target work\n",
+        "advance integration",
+    );
+    let target_tip = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    integration_target::git(&lane, &["rebase", "integration"]);
+    let observed = integration_target::run(&lane, &["board", "--json"]);
+    integration_target::assert_success(&observed);
+    assert_eq!(
+        integration_target::json(&observed)["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
+        3
+    );
+    let events = integration_target::journal(repo.root());
+    let reanchor = events
+        .iter()
+        .rev()
+        .find(|event| event["op"] == "resnapshot" && event["reservation_id"] == id)
+        .expect("rebase records a resnapshot");
+    assert_eq!(reanchor["snapshot"]["stage"], "outstanding");
+    assert_eq!(reanchor["snapshot"]["trunk_oid"], target_tip);
+}
+
+#[test]
+fn outstanding_rebase_uses_trunk_when_its_integration_target_disappears() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("missing-target-rebase-lane", "integration");
+    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("reservation id")
+        .to_owned();
+    integration_target::commit_file(&lane, "lane.txt", "lane work\n", "lane work");
+    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
+    integration_target::assert_success(&checkpoint);
+    integration_target::commit_file(repo.root(), "new-trunk.txt", "new trunk\n", "advance trunk");
+    let trunk_tip = integration_target::git_stdout(repo.root(), &["rev-parse", "HEAD"]);
+    repo.remove_integration_branch();
+    integration_target::git(&lane, &["rebase", "main"]);
+
+    let observed = integration_target::run(&lane, &["board", "--json"]);
+    integration_target::assert_success(&observed);
+    assert_eq!(
+        integration_target::json(&observed)["payload"]["data"]["git_cost"]["trunk_resolution_calls"],
+        3
+    );
+    let events = integration_target::journal(repo.root());
+    let reanchor = events
+        .iter()
+        .rev()
+        .find(|event| event["op"] == "resnapshot" && event["reservation_id"] == id)
+        .expect("rebase records a resnapshot");
+    assert_eq!(reanchor["snapshot"]["stage"], "outstanding");
+    assert_eq!(reanchor["snapshot"]["trunk_oid"], trunk_tip);
+}
+
+#[test]
 fn failed_journal_append_does_not_move_the_retention_ref() {
     let repository = initialized_repository();
     git(repository.path(), &["switch", "--quiet", "-c", "phase"]);

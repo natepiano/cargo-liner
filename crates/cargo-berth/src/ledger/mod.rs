@@ -85,6 +85,7 @@ pub(crate) use path::canonicalize_through_nearest_existing_ancestor;
 pub(crate) use path::normalize_absolute_path;
 pub(crate) use target::ClaimTarget;
 pub(crate) use target::IntegrationTarget;
+pub(crate) use target::ReservationJudgingBranch;
 pub(crate) use target::TargetFallback;
 pub(crate) use target::TargetRefusal;
 pub(crate) use target::TargetSelectionRequest;

@@ -58,11 +58,11 @@ fn execute_after_reconciliation(
     reservation_id: ReservationId,
     target_argument: &str,
 ) -> OutputEnvelope {
-    let Ok(target) = IntegrationTarget::from_branch_argument(target_argument) else {
-        return OutputEnvelope::invalid_input(
-            CommandVerb::Retarget,
-            &TargetRefusal::unresolved(target_argument).message(),
-        );
+    let target = match IntegrationTarget::from_branch_argument(target_argument) {
+        Ok(target) => target,
+        Err(reason) => {
+            return OutputEnvelope::invalid_input(CommandVerb::Retarget, &reason.to_string());
+        },
     };
     let invocation_directory = match std::env::current_dir() {
         Ok(directory) => directory,

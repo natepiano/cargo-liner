@@ -116,6 +116,19 @@ impl IntegrationRepository {
     pub(crate) fn merge_fast_forward(&self, branch: &str) {
         git(&self.integration, &["merge", "--ff-only", branch]);
     }
+
+    pub(crate) fn remove_integration_branch(&self) {
+        git(
+            self.root(),
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                self.integration.to_str().expect("UTF-8 path"),
+            ],
+        );
+        git(self.root(), &["branch", "-D", "integration"]);
+    }
 }
 
 pub(crate) fn git(root: &Path, args: &[&str]) { GIT.run(root, args); }

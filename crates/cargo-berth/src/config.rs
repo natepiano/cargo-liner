@@ -207,7 +207,7 @@ impl BerthConfig {
 
     /// The local branch selected as repository trunk.
     pub(crate) fn repository_trunk(&self) -> Result<IntegrationTarget, String> {
-        IntegrationTarget::from_branch_argument(&self.trunk)
+        IntegrationTarget::from_branch_argument(&self.trunk).map_err(|reason| reason.to_string())
     }
 
     /// Read and validate one configuration file, or report that it does not exist.

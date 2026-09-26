@@ -160,11 +160,6 @@ pub(crate) struct ReconciliationReport {
 }
 
 impl ReconciliationReport {
-    /// Return the trunk observation admitted by this reconciliation pass.
-    pub(crate) const fn repository_trunk(&self) -> &RepositoryTrunk {
-        self.repository_snapshot.repository_trunk()
-    }
-
     /// Return the observation at which this reservation was judged.
     pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &RepositoryTrunk {
         self.repository_snapshot.target_for(reservation_id)
@@ -1454,6 +1449,82 @@ struct RewrittenTipHistory {
     created:              RewriteCreatedCommits,
 }
 
+/// The branch chosen for a rewrite subject, or a Git failure that defers it.
+enum RewriteTargetJudgment {
+    Available(IntegrationTarget),
+    Unavailable,
+}
+
+/// Per-preflight branch judgments and the tip observations they select.
+#[derive(Default)]
+struct RewriteTargetObservations {
+    judgments: BTreeMap<IntegrationTarget, RewriteTargetJudgment>,
+    tips:      BTreeMap<IntegrationTarget, Result<GitObjectId, GitError>>,
+}
+
+/// Observe one recorded target only once across the rewrite subjects in a preflight.
+fn rewrite_target_judgment<'cache, ErrorType>(
+    judgments: &'cache mut BTreeMap<IntegrationTarget, RewriteTargetJudgment>,
+    recorded_target: &IntegrationTarget,
+    observe: impl FnOnce(&IntegrationTarget) -> Result<IntegrationTarget, ErrorType>,
+) -> &'cache RewriteTargetJudgment {
+    judgments.entry(recorded_target.clone()).or_insert_with(|| {
+        observe(recorded_target).map_or(
+            RewriteTargetJudgment::Unavailable,
+            RewriteTargetJudgment::Available,
+        )
+    })
+}
+
+/// Reuse one target tip observation across every rewrite subject at that branch.
+fn rewrite_target_tip<'cache, ErrorType>(
+    target_tips: &'cache mut BTreeMap<IntegrationTarget, Result<GitObjectId, ErrorType>>,
+    target: &IntegrationTarget,
+    resolution_calls: &mut u64,
+    resolve: impl FnOnce(&IntegrationTarget) -> Result<GitObjectId, ErrorType>,
+) -> &'cache Result<GitObjectId, ErrorType> {
+    target_tips.entry(target.clone()).or_insert_with(|| {
+        *resolution_calls += 1;
+        resolve(target)
+    })
+}
+
+enum RewriteTargetTip<'cache> {
+    Resolved(&'cache GitObjectId),
+    Unavailable,
+}
+
+fn rewrite_target_tip_for_reservation<'cache>(
+    repository_root: &Path,
+    reservation_id: ReservationId,
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+    observations: &'cache mut RewriteTargetObservations,
+    resolution_calls: &mut u64,
+) -> Result<RewriteTargetTip<'cache>, ReconcileError> {
+    let target = reservations
+        .target_of(reservation_id, repository_trunk)
+        .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
+        .map_err(ReconcileError::Replay)?;
+    let RewriteTargetJudgment::Available(judging_target) =
+        rewrite_target_judgment(&mut observations.judgments, &target, |target| {
+            target
+                .judging_branch(repository_root, repository_trunk)
+                .map(|judgment| judgment.target().clone())
+        })
+    else {
+        return Ok(RewriteTargetTip::Unavailable);
+    };
+    Ok(rewrite_target_tip(
+        &mut observations.tips,
+        judging_target,
+        resolution_calls,
+        |target| git::branch_object_id(repository_root, target.short_name()),
+    )
+    .as_ref()
+    .map_or(RewriteTargetTip::Unavailable, RewriteTargetTip::Resolved))
+}
+
 /// Read ready maps and check protected contents while no ledger mutation lock is held.
 pub(crate) fn prepare_rewrite_reconciliation(
     worktree_context: &WorktreeContext,
@@ -1473,11 +1544,13 @@ pub(crate) fn prepare_rewrite_reconciliation(
     }
     let mut reservations = RetainedReservationSet::replay(&ledger.read_validated_events()?)
         .map_err(ReconcileError::Replay)?;
-    preflight.trunk_resolution_calls = 1;
-    let Ok(trunk) = git::branch_object_id(worktree_context.repository_root(), &berth_config.trunk)
-    else {
-        return Ok(preflight);
-    };
+    let repository_trunk = berth_config.repository_trunk().map_err(|reason| {
+        ReconcileError::Config(ConfigError::InvalidValue {
+            key:   "trunk".to_owned(),
+            value: reason,
+        })
+    })?;
+    let mut target_observations = RewriteTargetObservations::default();
     let mut earlier_map_deferred = false;
     for mut marker in markers {
         for subject in &mut preflight.deferred_subjects {
@@ -1519,7 +1592,8 @@ pub(crate) fn prepare_rewrite_reconciliation(
             &mut marker,
             &histories,
             &mut reservations,
-            &trunk,
+            &repository_trunk,
+            &mut target_observations,
             &mut preflight,
         )?;
         if deferred {
@@ -1617,7 +1691,8 @@ fn import_rewrite_candidates(
     marker: &mut PendingBranchRewriteMarker,
     histories: &[RewrittenTipHistory],
     reservations: &mut RetainedReservationSet,
-    trunk: &GitObjectId,
+    repository_trunk: &IntegrationTarget,
+    target_observations: &mut RewriteTargetObservations,
     preflight: &mut RewriteReconciliationPreflight,
 ) -> Result<bool, ReconcileError> {
     let mut deferred = false;
@@ -1655,11 +1730,24 @@ fn import_rewrite_candidates(
         {
             continue;
         }
+        let target_tip = rewrite_target_tip_for_reservation(
+            repository_root,
+            reservation_id,
+            reservations,
+            repository_trunk,
+            target_observations,
+            &mut preflight.trunk_resolution_calls,
+        )?;
+        let RewriteTargetTip::Resolved(target_tip) = target_tip else {
+            deferred = true;
+            preflight.defer_subject(reservation, marker, interval.destinations.into_iter());
+            continue;
+        };
         let comparison = compare_mapped_phase(
             repository_root,
             reservation,
             protected_tip,
-            trunk,
+            target_tip,
             &interval,
             &mut preflight.budget,
         );
@@ -1674,7 +1762,7 @@ fn import_rewrite_candidates(
                             interval.phase_start_head,
                         )),
                         protected_tip:    ProtectedReservationTip::from(interval.protected_tip),
-                        trunk_oid:        trunk.clone(),
+                        trunk_oid:        target_tip.clone(),
                     },
                 };
                 preflight
@@ -1709,19 +1797,19 @@ fn import_rewrite_candidates(
     Ok(deferred)
 }
 
-/// Charge rewrite acceptance to actual trunk while comparing the mapped destination.
+/// Charge rewrite acceptance to the reservation's target while comparing the mapped destination.
 fn compare_mapped_phase(
     repository_root: &Path,
     reservation: &Reservation,
     protected_tip: &ProtectedReservationTip,
-    trunk: &GitObjectId,
+    target_tip: &GitObjectId,
     interval: &MappedPhaseInterval,
     budget: &mut ReconciliationScopedPatchEvaluationBudget,
 ) -> ScopedPatchComparisonObservation {
     let key = ScopedPatchEvaluationKey {
         phase_start_head: reservation.phase_start_head().as_ref().clone(),
         protected_tip:    protected_tip.as_ref().clone(),
-        target_trunk:     trunk.clone(),
+        target_trunk:     target_tip.clone(),
         scopes:           reservation
             .scopes()
             .as_slice()
@@ -4510,6 +4598,8 @@ impl From<ReconciliationPlanningError> for ReconcileError {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::process::Command;
 
     use serde_json::Value;
     use serde_json::json;
@@ -4517,9 +4607,12 @@ mod tests {
     use super::HistoricalIntegrationCandidateDiscovery;
     use super::HistoricalIntegrationCandidateDiscovery as Discovery;
     use super::ReconciliationScopedPatchEvaluationBudget;
+    use super::RewriteTargetJudgment;
     use super::ScopedPatchComparisonDestination;
     use super::ScopedPatchEvaluationKey;
     use super::SettlementSelection;
+    use super::rewrite_target_judgment;
+    use super::rewrite_target_tip;
     use crate::edge::RepositoryTrunk;
     use crate::gate::permit::PendingBranchRewriteMarker;
     use crate::git::Reachability;
@@ -4527,7 +4620,9 @@ mod tests {
     use crate::git::ScopedPatchComparison as Comparison;
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
+    use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
+    use crate::ledger::ReservationJudgingBranch;
     use crate::output::CommandVerb;
     use crate::reservation::IntegrationEvidenceObservation;
     use crate::reservation::IntegrationEvidenceStatus;
@@ -4545,6 +4640,92 @@ mod tests {
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn rewrite_target_tips_are_resolved_once_per_distinct_branch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let integration = IntegrationTarget::from_branch_argument("integration")?;
+        let other = IntegrationTarget::from_branch_argument("other")?;
+        let integration_tip = TRUNK.parse::<GitObjectId>()?;
+        let other_tip = TIP.parse::<GitObjectId>()?;
+        let mut judgments = BTreeMap::new();
+        let mut existence_checks = 0;
+        for _ in 0..2 {
+            let judgment = rewrite_target_judgment(&mut judgments, &integration, |target| {
+                existence_checks += 1;
+                Ok::<_, ()>(target.clone())
+            });
+            assert!(
+                matches!(judgment, RewriteTargetJudgment::Available(target) if target == &integration)
+            );
+        }
+        let mut tips = BTreeMap::<_, Result<GitObjectId, ()>>::new();
+        let mut calls = 0;
+        assert_eq!(
+            rewrite_target_tip(&mut tips, &integration, &mut calls, |_| {
+                Ok(integration_tip.clone())
+            }),
+            &Ok(integration_tip.clone())
+        );
+        assert_eq!(
+            rewrite_target_tip(&mut tips, &integration, &mut calls, |_| Err(())),
+            &Ok(integration_tip)
+        );
+        assert_eq!(
+            rewrite_target_tip(&mut tips, &other, &mut calls, |_| Ok(other_tip.clone())),
+            &Ok(other_tip)
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(existence_checks, 1);
+        let repository_trunk = IntegrationTarget::from_branch_argument("main")?;
+        assert!(!tips.contains_key(&repository_trunk));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_rewrite_target_resolves_the_trunk_tip_once() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let repository = tempfile::tempdir()?;
+        let initialized = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repository.path())
+            .output()?;
+        assert!(initialized.status.success());
+        let integration = IntegrationTarget::from_branch_argument("integration")?;
+        let repository_trunk = IntegrationTarget::from_branch_argument("main")?;
+        let mut judgments = BTreeMap::new();
+        let mut existence_checks = 0;
+        let trunk_tip = TRUNK.parse::<GitObjectId>()?;
+        let mut tips = BTreeMap::<_, Result<GitObjectId, ()>>::new();
+        let mut calls = 0;
+        for _ in 0..2 {
+            let judgment = rewrite_target_judgment(&mut judgments, &integration, |target| {
+                existence_checks += 1;
+                target
+                    .judging_branch(repository.path(), &repository_trunk)
+                    .map(|judgment| {
+                        assert!(matches!(
+                            judgment,
+                            ReservationJudgingBranch::MissingTargetFallback(_)
+                        ));
+                        judgment.target().clone()
+                    })
+            });
+            let RewriteTargetJudgment::Available(judging_target) = judgment else {
+                return Err(std::io::Error::other("missing target must use trunk").into());
+            };
+            assert_eq!(
+                rewrite_target_tip(&mut tips, judging_target, &mut calls, |_| {
+                    Ok(trunk_tip.clone())
+                }),
+                &Ok(trunk_tip.clone())
+            );
+        }
+        assert_eq!(calls, 1);
+        assert_eq!(existence_checks, 1);
+        assert!(!tips.contains_key(&integration));
+        Ok(())
+    }
 
     #[test]
     fn ancestry_precedes_candidate_and_current_trunk_inside_one_admitted_evaluation()

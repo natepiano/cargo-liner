@@ -1,5 +1,9 @@
 //! The branch selected for a reservation when it is acquired.
 
+use std::error::Error;
+use std::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -9,6 +13,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::FullRefName;
+use crate::git;
+use crate::git::GitError;
+use crate::git::ReferenceLookup;
 
 /// A local branch into which reserved work integrates.
 #[derive(Clone, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize)]
@@ -34,13 +41,13 @@ impl<'de> Deserialize<'de> for IntegrationTarget {
 
 impl IntegrationTarget {
     /// Parse a short local branch name or its complete local ref.
-    pub(crate) fn from_branch_argument(value: &str) -> Result<Self, String> {
+    pub(crate) fn from_branch_argument(value: &str) -> Result<Self, TargetArgumentRejection> {
         let branch = value.strip_prefix("refs/heads/").unwrap_or(value);
         if branch.starts_with("refs/") || branch.is_empty() {
-            return Err(format!("target `{value}` is not a local branch"));
+            return Err(TargetArgumentRejection::NotLocalBranch(value.to_owned()));
         }
         let reference = FullRefName::from_str(&format!("refs/heads/{branch}"))
-            .map_err(|_| format!("target `{value}` is not a valid local branch"))?;
+            .map_err(|_| TargetArgumentRejection::InvalidBranchName(value.to_owned()))?;
         Ok(Self(reference))
     }
 
@@ -54,7 +61,64 @@ impl IntegrationTarget {
             .strip_prefix("refs/heads/")
             .unwrap_or_default()
     }
+
+    /// Select the branch that judges a reservation after a target ref disappears.
+    pub(crate) fn judging_branch<'target>(
+        &'target self,
+        repository_root: &Path,
+        repository_trunk: &'target Self,
+    ) -> Result<ReservationJudgingBranch<'target>, GitError> {
+        if self == repository_trunk {
+            return Ok(ReservationJudgingBranch::RepositoryTrunk(repository_trunk));
+        }
+        match git::reference_lookup(repository_root, self.reference().as_str())? {
+            ReferenceLookup::Present(_) => Ok(ReservationJudgingBranch::ReservationTarget(self)),
+            ReferenceLookup::Missing => Ok(ReservationJudgingBranch::MissingTargetFallback(
+                repository_trunk,
+            )),
+        }
+    }
 }
+
+/// The local branch whose tip currently judges a reservation's integration evidence.
+#[derive(Clone, Copy)]
+pub(crate) enum ReservationJudgingBranch<'target> {
+    RepositoryTrunk(&'target IntegrationTarget),
+    ReservationTarget(&'target IntegrationTarget),
+    MissingTargetFallback(&'target IntegrationTarget),
+}
+
+impl<'target> ReservationJudgingBranch<'target> {
+    pub(crate) const fn target(&self) -> &'target IntegrationTarget {
+        match self {
+            Self::RepositoryTrunk(target)
+            | Self::ReservationTarget(target)
+            | Self::MissingTargetFallback(target) => target,
+        }
+    }
+}
+
+/// Why a target argument cannot name a local branch.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum TargetArgumentRejection {
+    NotLocalBranch(String),
+    InvalidBranchName(String),
+}
+
+impl Display for TargetArgumentRejection {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotLocalBranch(argument) => {
+                write!(formatter, "target `{argument}` is not a local branch")
+            },
+            Self::InvalidBranchName(argument) => {
+                write!(formatter, "target `{argument}` is not a valid local branch")
+            },
+        }
+    }
+}
+
+impl Error for TargetArgumentRejection {}
 
 /// The input that selected a claim's integration branch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -102,35 +166,30 @@ pub(crate) enum TargetSelectionRequest<'a> {
 
 /// An explicit target that cannot be recorded.
 #[derive(Debug)]
-pub(crate) struct TargetRefusal {
-    requested: String,
-    reason:    TargetFallbackReason,
+pub(crate) enum TargetRefusal {
+    OwnBranch(String),
+    Unresolved(String),
+    InvalidArgument(TargetArgumentRejection),
 }
 
 impl TargetRefusal {
-    pub(crate) fn unresolved(requested: &str) -> Self {
-        Self {
-            requested: requested.to_owned(),
-            reason:    TargetFallbackReason::Unresolved,
-        }
-    }
+    pub(crate) fn unresolved(requested: &str) -> Self { Self::Unresolved(requested.to_owned()) }
 
-    pub(crate) fn own_branch(requested: &str) -> Self {
-        Self {
-            requested: requested.to_owned(),
-            reason:    TargetFallbackReason::OwnBranch,
-        }
+    pub(crate) fn own_branch(requested: &str) -> Self { Self::OwnBranch(requested.to_owned()) }
+
+    pub(crate) const fn invalid_argument(reason: TargetArgumentRejection) -> Self {
+        Self::InvalidArgument(reason)
     }
 
     pub(crate) fn message(&self) -> String {
-        match self.reason {
-            TargetFallbackReason::OwnBranch => {
-                format!("target `{}` is the claimant's own branch", self.requested)
+        match self {
+            Self::OwnBranch(requested) => {
+                format!("target `{requested}` is the claimant's own branch")
             },
-            TargetFallbackReason::Unresolved => format!(
-                "target `{}` does not resolve to a local branch",
-                self.requested
-            ),
+            Self::Unresolved(requested) => {
+                format!("target `{requested}` does not resolve to a local branch")
+            },
+            Self::InvalidArgument(reason) => reason.to_string(),
         }
     }
 }
@@ -225,7 +284,13 @@ pub(crate) fn resolve_claim_target(
                 fallback: Some(TargetFallback { requested, reason }),
             })
         },
-        Some(reason) => Err(TargetRefusal { requested, reason }),
+        Some(reason) => match target {
+            Err(argument_rejection) => Err(TargetRefusal::invalid_argument(argument_rejection)),
+            Ok(_) => Err(match reason {
+                TargetFallbackReason::OwnBranch => TargetRefusal::own_branch(&requested),
+                TargetFallbackReason::Unresolved => TargetRefusal::unresolved(&requested),
+            }),
+        },
         None => target
             .map_err(|_| TargetRefusal::unresolved(&requested))
             .map(|target| ClaimTarget {
@@ -239,6 +304,7 @@ pub(crate) fn resolve_claim_target(
 #[cfg(test)]
 mod tests {
     use super::IntegrationTarget;
+    use super::TargetArgumentRejection;
     use super::TargetSelectionRequest;
     use super::branch_target_from_config_text;
     use super::resolve_claim_target;
@@ -326,6 +392,22 @@ mod tests {
         assert!(
             serde_json::from_str::<IntegrationTarget>("\"refs/remotes/origin/integration\"")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn malformed_target_arguments_keep_their_rejection_reason() {
+        assert_eq!(
+            IntegrationTarget::from_branch_argument("refs/tags/v1"),
+            Err(TargetArgumentRejection::NotLocalBranch(
+                "refs/tags/v1".to_owned()
+            ))
+        );
+        assert_eq!(
+            IntegrationTarget::from_branch_argument("bad branch"),
+            Err(TargetArgumentRejection::InvalidBranchName(
+                "bad branch".to_owned()
+            ))
         );
     }
 }

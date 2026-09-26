@@ -46,8 +46,6 @@ pub(super) enum IncursionAttributionActivity {
     PathLog,
     /// Read phase-range membership from one ancestry graph.
     CommitGraph,
-    /// Classify target commits against the independently resolved trunk basis.
-    OriginMembership,
 }
 
 impl Display for IncursionAttributionActivity {
@@ -55,7 +53,6 @@ impl Display for IncursionAttributionActivity {
         formatter.write_str(match self {
             Self::PathLog => "read incursion path history",
             Self::CommitGraph => "read incursion ancestry",
-            Self::OriginMembership => "classify incursion commit origin",
         })
     }
 }

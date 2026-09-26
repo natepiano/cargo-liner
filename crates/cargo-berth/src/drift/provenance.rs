@@ -3,6 +3,7 @@
 //! Read once, before the ledger lock; classification asks the batch when each path was
 //! committed, and the report is named from it after the lock without a further git read.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -13,6 +14,7 @@ use super::git_output::DriftFingerprintError;
 use super::git_output::IncursionAttributionActivity;
 use super::git_output::IncursionAttributionAnchorState;
 use super::git_output::IncursionPathCommit;
+use super::identity::DriftActingIdentity;
 use super::observation::FullPhaseHistoryObservation;
 use super::observation::ObservedDriftChanges;
 use super::observation::ReservationPhaseHistory;
@@ -22,6 +24,7 @@ use super::report::DriftReport;
 use super::report::IncursionCommit;
 use super::report::IncursionCommitOrigin;
 use super::report::ReservationDriftResult;
+use crate::edge::RepositorySnapshot;
 use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::git::IncursionPathLogInvocation;
@@ -31,6 +34,7 @@ use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::IncursionPathSet;
+use crate::ledger::IntegrationTarget;
 use crate::reservation::RetainedReservationSet;
 
 struct IncursionAttributionSubjectAnchor {
@@ -53,11 +57,13 @@ struct IncursionAnchorAttribution {
 ///
 /// Read once, before the ledger lock, over the paths the pre-lock pass found foreign holders
 /// for. Classification asks it when each such path was last committed, and the report is
-/// named from it afterwards, so the three batched git reads happen once per invocation.
+/// named from it afterwards. Path and range history are batched once per invocation;
+/// origin membership is read once for each distinct recorded target.
 pub(super) struct IncursionAttributionBatch {
     anchors:           HashMap<GitObjectId, IncursionAnchorAttribution>,
     commits:           Vec<IncursionPathCommit>,
-    origin_membership: IncursionCommitOriginMembership,
+    origin_targets:    HashMap<ReservationId, IntegrationTarget>,
+    origin_membership: BTreeMap<IntegrationTarget, IncursionCommitOriginMembership>,
 }
 
 enum IncursionCommitOriginMembership {
@@ -88,11 +94,14 @@ pub(super) fn read_committed_foreign_paths(
     repository_root: &Path,
     reservations: &RetainedReservationSet,
     changes: &ObservedDriftChanges,
-    repository_trunk: &RepositoryTrunk,
+    acting_identity: DriftActingIdentity,
+    repository_snapshot: &RepositorySnapshot,
     committed_foreign_paths: &[(ReservationId, ReservationScopePath)],
 ) -> Result<Option<IncursionAttributionBatch>, DriftFingerprintError> {
     let mut anchors = Vec::new();
     let mut paths = Vec::new();
+    let mut origin_targets = HashMap::new();
+    let mut distinct_targets = BTreeMap::new();
     for (reservation_id, path) in committed_foreign_paths {
         let Ok(reservation) = reservations.reservation(*reservation_id) else {
             continue;
@@ -102,6 +111,14 @@ pub(super) fn read_committed_foreign_paths(
             anchors.push(phase_start.clone());
         }
         paths.push(path.clone());
+        let origin_reservation = origin_reservation_for_path(acting_identity, *reservation_id);
+        let target = repository_snapshot
+            .recorded_target(origin_reservation)
+            .clone();
+        distinct_targets
+            .entry(target.clone())
+            .or_insert_with(|| repository_snapshot.target_for(origin_reservation).clone());
+        origin_targets.insert(*reservation_id, target);
     }
     ordering::normalize_paths(&mut paths);
     if paths.is_empty() {
@@ -111,7 +128,7 @@ pub(super) fn read_committed_foreign_paths(
         return Ok(None);
     };
     let FullPhaseHistoryObservation::Anchored {
-        target,
+        target: observed_tip,
         anchor_states,
     } = full_changes.phase_history()
     else {
@@ -127,16 +144,45 @@ pub(super) fn read_committed_foreign_paths(
             object_id,
         })
         .collect();
-    attribution_batch(
+    let mut batch = attribution_batch(
         repository_root,
-        repository_trunk,
         &IncursionAttributionSubjects {
-            target: target.clone(),
+            target: observed_tip.clone(),
             anchors,
             paths,
         },
-    )
-    .map(Some)
+    )?;
+    if batch
+        .anchors
+        .values()
+        .any(|anchor| anchor.state == IncursionAttributionAnchorState::UsableAncestor)
+    {
+        batch.origin_membership = distinct_targets
+            .into_iter()
+            .map(|(target, observation)| {
+                let membership = IncursionCommitOriginMembership::observe(
+                    repository_root,
+                    &observation,
+                    observed_tip,
+                );
+                (target, membership)
+            })
+            .collect();
+    }
+    batch.origin_targets = origin_targets;
+    Ok(Some(batch))
+}
+
+const fn origin_reservation_for_path(
+    acting_identity: DriftActingIdentity,
+    reporting_reservation: ReservationId,
+) -> ReservationId {
+    match acting_identity {
+        DriftActingIdentity::Session { reservation, .. } => reservation,
+        DriftActingIdentity::Run { .. } | DriftActingIdentity::Unidentified { .. } => {
+            reporting_reservation
+        },
+    }
 }
 
 /// When one path was last committed to inside the phase range starting at `phase_start`.
@@ -213,8 +259,13 @@ pub(super) fn name_incursion_commits(
                 .filter_map(|holder_id| reservations.reservation(*holder_id).ok())
                 .map(|holder| holder.claimed_at().clone())
                 .min();
-            *commits =
-                commits_for_paths(batch, phase_start, &selected_paths, earliest_claim.as_ref());
+            *commits = commits_for_paths(
+                batch,
+                *reservation_id,
+                phase_start,
+                &selected_paths,
+                earliest_claim.as_ref(),
+            );
         }
     }
 }
@@ -233,7 +284,6 @@ fn committed_incursion_paths(
 
 fn attribution_batch(
     repository_root: &Path,
-    origin_basis: &RepositoryTrunk,
     subjects: &IncursionAttributionSubjects,
 ) -> Result<IncursionAttributionBatch, DriftFingerprintError> {
     let mut anchors = subjects
@@ -257,7 +307,8 @@ fn attribution_batch(
         return Ok(IncursionAttributionBatch {
             anchors,
             commits: Vec::new(),
-            origin_membership: IncursionCommitOriginMembership::CannotClassifyOrigin,
+            origin_targets: HashMap::new(),
+            origin_membership: BTreeMap::new(),
         });
     }
     let subject_anchor_ids = subjects
@@ -265,7 +316,7 @@ fn attribution_batch(
         .iter()
         .map(|anchor| anchor.object_id.clone())
         .collect::<Vec<_>>();
-    let (commits, range_commits_by_anchor, origin_membership) = thread::scope(|scope| {
+    let (commits, range_commits_by_anchor) = thread::scope(|scope| {
         let path_log_worker = scope.spawn(|| {
             let path_log_invocation: IncursionPathLogInvocation =
                 git::incursion_path_log(repository_root, &subjects.target, &subjects.paths);
@@ -278,13 +329,6 @@ fn attribution_batch(
         let commit_graph_worker = scope.spawn(|| {
             git::incursion_range_commits(repository_root, &subject_anchor_ids, &subjects.target)
         });
-        let origin_membership_worker = scope.spawn(|| {
-            IncursionCommitOriginMembership::observe(
-                repository_root,
-                origin_basis,
-                &subjects.target,
-            )
-        });
         let commits = path_log_worker.join().map_err(|_| {
             DriftFingerprintError::IncursionAttributionWorkerPanicked {
                 activity: IncursionAttributionActivity::PathLog,
@@ -295,12 +339,7 @@ fn attribution_batch(
                 activity: IncursionAttributionActivity::CommitGraph,
             }
         })??;
-        let origin_membership = origin_membership_worker.join().map_err(|_| {
-            DriftFingerprintError::IncursionAttributionWorkerPanicked {
-                activity: IncursionAttributionActivity::OriginMembership,
-            }
-        })?;
-        Ok::<_, DriftFingerprintError>((commits, range_commits_by_anchor, origin_membership))
+        Ok::<_, DriftFingerprintError>((commits, range_commits_by_anchor))
     })?;
     for (anchor, range_commits) in subject_anchor_ids.iter().zip(range_commits_by_anchor) {
         if let Some(attribution) = anchors.get_mut(anchor) {
@@ -310,7 +349,8 @@ fn attribution_batch(
     Ok(IncursionAttributionBatch {
         anchors,
         commits,
-        origin_membership,
+        origin_targets: HashMap::new(),
+        origin_membership: BTreeMap::new(),
     })
 }
 
@@ -321,6 +361,7 @@ fn attribution_batch(
 /// same path — so the message does not accuse it.
 fn commits_for_paths(
     batch: &IncursionAttributionBatch,
+    reservation_id: ReservationId,
     phase_start: &GitObjectId,
     selected_paths: &[ReservationScopePath],
     earliest_claim: Option<&RecordedAt>,
@@ -348,7 +389,13 @@ fn commits_for_paths(
             }
             ordering::normalize_paths(&mut paths);
             Some(IncursionCommit {
-                origin: commit_origin(&batch.origin_membership, &commit.commit),
+                origin: batch
+                    .origin_targets
+                    .get(&reservation_id)
+                    .and_then(|target| batch.origin_membership.get(target))
+                    .map_or(IncursionCommitOrigin::Unknown, |membership| {
+                        commit_origin(membership, &commit.commit)
+                    }),
                 commit: commit.commit.clone(),
                 subject: commit.subject.clone(),
                 paths,
@@ -357,7 +404,7 @@ fn commits_for_paths(
         .collect()
 }
 
-/// Whether trunk already carried a commit, so this phase received it rather than wrote it.
+/// Whether the reservation's target already carried a commit before this phase received it.
 fn commit_origin(
     origin_membership: &IncursionCommitOriginMembership,
     commit: &GitObjectId,
@@ -370,5 +417,79 @@ fn commit_origin(
         },
         IncursionCommitOriginMembership::Classified(_) => IncursionCommitOrigin::AlreadyOnTrunk,
         IncursionCommitOriginMembership::CannotClassifyOrigin => IncursionCommitOrigin::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+    use std::collections::HashMap;
+
+    use super::origin_reservation_for_path;
+    use crate::drift::identity::DriftActingIdentity;
+    use crate::edge::RepositorySnapshot;
+    use crate::edge::TargetObservation;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger::IntegrationTarget;
+
+    #[test]
+    fn origin_targets_batch_by_session_or_reporting_reservations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let trunk = IntegrationTarget::from_branch_argument("main")?;
+        let integration = IntegrationTarget::from_branch_argument("integration")?;
+        let session = ReservationId::new();
+        let reporting = ReservationId::new();
+        let other = ReservationId::new();
+        let snapshot = RepositorySnapshot::new(
+            trunk.clone(),
+            BTreeMap::from([
+                (trunk.clone(), TargetObservation::ObjectUnknown),
+                (integration.clone(), TargetObservation::ObjectUnknown),
+            ]),
+            HashMap::from([
+                (session, integration.clone()),
+                (reporting, trunk.clone()),
+                (other, integration.clone()),
+            ]),
+            Vec::new(),
+            Vec::new(),
+        );
+        let session_identity = DriftActingIdentity::Session {
+            run:         CoordinationRunId::new(),
+            reservation: session,
+            worktree:    WorktreeId::new(),
+        };
+        let run_identity = DriftActingIdentity::Run {
+            run:      CoordinationRunId::new(),
+            worktree: WorktreeId::new(),
+        };
+        let session_origins = [reporting, other]
+            .into_iter()
+            .map(|id| {
+                snapshot
+                    .recorded_target(origin_reservation_for_path(session_identity, id))
+                    .clone()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            session_origins,
+            std::collections::BTreeSet::from([integration.clone()])
+        );
+        let run_origins = [reporting, other]
+            .into_iter()
+            .map(|id| {
+                snapshot
+                    .recorded_target(origin_reservation_for_path(run_identity, id))
+                    .clone()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            run_origins,
+            std::collections::BTreeSet::from([trunk, integration])
+        );
+        Ok(())
     }
 }

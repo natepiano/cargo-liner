@@ -56,7 +56,9 @@ Reconciliation judges each reservation at its recorded target. If an unreleased 
 
 `cargo-berth claim <paths> --target <local-branch>` records the integration branch for the new reservation. Without the flag, the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config takes precedence over the repository trunk. Detached HEAD uses the repository trunk. Explicit own-branch and unresolved targets return `invalid_input`; first touch and enrollment fall back to the trunk and report the reason in JSON.
 
-`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. Reconciliation evaluates each reservation at its recorded target; release and the trunk gate still judge the repository trunk.
+`cargo-berth retarget <reservation> --target <local-branch>` changes an unreleased reservation's recorded target and resets its integration evidence. `init` pins old reservations that have no recorded target to the current repository trunk once; repeated `init` does not append another pin. Reconciliation and release judge each reservation at its recorded target; the trunk gate still judges the repository trunk. A malformed `--target` names why it is not a local branch, while a well-formed branch without a ref reports that it does not resolve.
+
+`resolve <id> --integrated-as <commit>` accepts a carrying commit only when it is reachable from that reservation's target. Drift compares committed incursion origins with the acting session reservation's target, or each reporting reservation's target when no session reservation is mapped. Commits already on that target are attributed as upstream history.
 
 ## Harness identity
 
@@ -202,7 +204,7 @@ cannot prove:
 
 - `--recovered` rebinds a reservation to the worktree running the command.
 - `--integrated-as <trunk-oid>` records a verified alternate commit already
-  reachable from trunk.
+  reachable from the reservation's target.
 - `--abandon --why <text>` is the only deliberate abandonment route.
 - `--retire-orphan --why <text>` is the only confirmed orphan-retirement route,
   and its disposition stays distinct from abandonment after replay.

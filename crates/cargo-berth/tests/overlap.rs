@@ -141,6 +141,30 @@ fn explicit_claim_refuses_own_and_unresolved_targets() {
 }
 
 #[test]
+fn explicit_claim_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("malformed-claim-lane", "integration");
+    for (target, message) in [
+        (
+            "refs/tags/v1",
+            "target `refs/tags/v1` is not a local branch",
+        ),
+        (
+            "bad..branch",
+            "target `bad..branch` is not a valid local branch",
+        ),
+        ("nope", "target `nope` does not resolve to a local branch"),
+    ] {
+        let output =
+            integration_target::claim(&lane, "file:claim-target.txt", FIRST_RUN, Some(target));
+        assert!(!output.status.success());
+        let response = integration_target::json(&output);
+        assert_eq!(response["status"], "invalid_input");
+        assert_eq!(response["message"], message, "target argument: {target}");
+    }
+}
+
+#[test]
 fn first_touch_invalid_branch_settings_fall_back_to_repository_trunk() {
     let repo = integration_target::IntegrationRepository::new();
     for (branch, configured_target, reason) in [

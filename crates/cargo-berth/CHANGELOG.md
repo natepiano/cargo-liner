@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `release`, `resolve --integrated-as`, drift attribution, and rebase re-anchoring judge a reservation at its recorded target; malformed `--target` now names why it is not a local branch.
+
 - Reconcile judges each reservation at its recorded target. A lane releases when it reaches its integration branch, and its merge extent holds only its own work.
 
 - A linked worktree's `trunk` key no longer affects judgement; only the main worktree's key defines the repository trunk when its configuration exists.

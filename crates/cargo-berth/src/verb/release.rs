@@ -21,6 +21,7 @@ use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::CommittedActionValidation;
 use crate::ledger::CoordinationRunMarkerRemoval;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
@@ -65,7 +66,7 @@ pub(crate) struct ReleaseRequest {
 #[derive(Clone, Copy)]
 struct ReleaseTransactionContext<'context> {
     repository_root:      &'context Path,
-    trunk_branch:         &'context str,
+    repository_trunk:     &'context IntegrationTarget,
     reservation_id:       ReservationId,
     invoking_worktree_id: WorktreeId,
     lifecycle_admission:  ReleaseLifecycleAdmission,
@@ -207,6 +208,12 @@ fn execute_release(
         },
     };
     let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let repository_trunk = berth_config.repository_trunk().map_err(|reason| {
+        ReleaseError::Config(ConfigError::InvalidValue {
+            key:   "trunk".to_owned(),
+            value: reason,
+        })
+    })?;
     if lifecycle_admission == ReleaseLifecycleAdmission::ActiveCheckpointOnly {
         let worktree_identity = ledger::worktree_identity(
             worktree_context.administrative_directory(),
@@ -229,7 +236,7 @@ fn execute_release(
                     &state,
                     ReleaseTransactionContext {
                         repository_root: worktree_context.repository_root(),
-                        trunk_branch: &berth_config.trunk,
+                        repository_trunk: &repository_trunk,
                         reservation_id: release_request.reservation_id,
                         invoking_worktree_id: journal_mutation_actor.worktree_id,
                         lifecycle_admission,
@@ -327,6 +334,15 @@ fn validate_release_transaction(
         },
         Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
     };
+    let Some(target) = reservations.target_of(context.reservation_id, context.repository_trunk)
+    else {
+        return CommittedActionValidation::Reject(ReleaseRejection::UnknownReservation);
+    };
+    let judging_branch =
+        match target.judging_branch(context.repository_root, context.repository_trunk) {
+            Ok(judging_branch) => judging_branch,
+            Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Git(error)),
+        };
     let marker_plan = marker_plan_for(
         &reservations,
         reservation.actor().run,
@@ -345,7 +361,7 @@ fn validate_release_transaction(
     }
     let release_append = match operation_for_state(
         context.repository_root,
-        context.trunk_branch,
+        judging_branch.target().short_name(),
         context.invoking_worktree_id,
         reservation,
         evidence_state,
@@ -389,7 +405,7 @@ fn release_retention_deletions(
 
 fn operation_for_state(
     repository_root: &Path,
-    trunk_branch: &str,
+    target_branch: &str,
     invoking_worktree_id: WorktreeId,
     reservation: &Reservation,
     evidence_state: ReservationEvidenceState,
@@ -397,7 +413,7 @@ fn operation_for_state(
     let reservation_id = reservation.id();
     let release_repository_context = ReleaseRepositoryContext {
         repository_root,
-        trunk_branch,
+        target_branch,
         holder_worktree: HolderWorktree::classify(
             invoking_worktree_id,
             reservation.actor().worktree,
@@ -448,7 +464,7 @@ fn checkpoint_operation(
     }
     let checkpoint_commits: ReservationCheckpointCommits = git::reservation_checkpoint_commits(
         release_repository_context.repository_root,
-        release_repository_context.trunk_branch,
+        release_repository_context.target_branch,
     )
     .map_err(ReleaseRejection::Git)?;
     let protected_tip = ProtectedReservationTip::from(checkpoint_commits.protected_tip);
@@ -479,7 +495,7 @@ fn outstanding_operation(
     let reservation_id = reservation.id();
     let Ok(current_trunk) = reservation::current_trunk(
         release_repository_context.repository_root,
-        release_repository_context.trunk_branch,
+        release_repository_context.target_branch,
     ) else {
         return Ok(evidence_operation(
             reservation,
@@ -683,7 +699,7 @@ fn released_evidence_operation(
     }
     let Ok(current_trunk) = reservation::current_trunk(
         release_repository_context.repository_root,
-        release_repository_context.trunk_branch,
+        release_repository_context.target_branch,
     ) else {
         return Ok(already_settled_operation(
             reservation,
@@ -774,7 +790,7 @@ fn already_settled_operation(
 
 struct ReleaseRepositoryContext<'repository> {
     repository_root:  &'repository Path,
-    trunk_branch:     &'repository str,
+    target_branch:    &'repository str,
     holder_worktree:  HolderWorktree,
     phase_start_head: &'repository ProtectedPhaseStartHead,
     scopes:           &'repository ReservationScopeSet,

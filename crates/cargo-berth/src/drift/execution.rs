@@ -39,7 +39,7 @@ use crate::coordination_identity::CoordinationIdentityValidationContext;
 use crate::coordination_identity::CoordinationIdentityValidationError;
 use crate::coordination_identity::IssuingWorktreeRun;
 use crate::coordination_identity::RecoveryCommandLine;
-use crate::edge::RepositoryTrunk;
+use crate::edge::RepositorySnapshot;
 use crate::git;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -142,14 +142,13 @@ pub(crate) fn execute(
         ledger,
         observation,
     } = reconciled_drift_preflight;
-    let repository_trunk = reconciliation_report.repository_trunk().clone();
     let output_envelope = match observation.and_then(|prepared| {
         execute_inner(
             request,
             &worktree_context,
             &ledger,
             prepared,
-            &repository_trunk,
+            &reconciliation_report.repository_snapshot,
             recovery_command_line,
         )
     }) {
@@ -260,7 +259,7 @@ fn execute_inner(
     worktree_context: &WorktreeContext,
     ledger: &Ledger,
     prepared: PreparedDriftExecution,
-    repository_trunk: &RepositoryTrunk,
+    repository_snapshot: &RepositorySnapshot,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<DriftReport>, DriftExecutionError> {
     let ObservedDriftExecution {
@@ -327,20 +326,18 @@ fn execute_inner(
         return Ok(Enrollment::Enrolled(report));
     }
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
-    // Git is read here, before the lock; the locked replay reuses this observation.
-    let acting_head_containment = ActingHeadContainment::observe(
-        &initial_reservations,
-        worktree_context.repository_root(),
-        resolved_edit_authorization.worktree_id,
+    let (initial_reservations, acting_head_containment) = prepared_acting_head_containment(
+        initial_reservations,
+        worktree_context,
+        resolved_edit_authorization,
     );
-    let initial_reservations =
-        initial_reservations.with_acting_head_containment(acting_head_containment.clone());
     let pre_lock_foreign_path_classification = classify_foreign_paths_before_lock(
         worktree_context,
         &initial_reservations,
         initial_subjects.reporting.as_slice(),
         &observation,
-        repository_trunk,
+        acting_identity,
+        repository_snapshot,
         path_case,
     )?;
     let mutation_context = DriftMutationContext {
@@ -393,6 +390,21 @@ fn execute_inner(
     Ok(Enrollment::Enrolled(report))
 }
 
+/// Read acting-head containment before the lock and carry it into the replay.
+fn prepared_acting_head_containment(
+    reservations: RetainedReservationSet,
+    worktree_context: &WorktreeContext,
+    resolved_edit_authorization: ResolvedEditAuthorization,
+) -> (RetainedReservationSet, ActingHeadContainment) {
+    let containment = ActingHeadContainment::observe(
+        &reservations,
+        worktree_context.repository_root(),
+        resolved_edit_authorization.worktree_id,
+    );
+    let reservations = reservations.with_acting_head_containment(containment.clone());
+    (reservations, containment)
+}
+
 /// Refuse a drift invocation whose resolved identity is stale, then name what it acts as.
 ///
 /// Only the staleness questions a session mapping or a worktree marker raises are answered
@@ -413,7 +425,8 @@ fn classify_foreign_paths_before_lock(
     reservations: &RetainedReservationSet,
     reporting: &[ReservationId],
     observation: &FingerprintObservation,
-    repository_trunk: &RepositoryTrunk,
+    acting_identity: DriftActingIdentity,
+    repository_snapshot: &RepositorySnapshot,
     path_case: PathCase,
 ) -> Result<PreLockForeignPathClassification, DriftExecutionError> {
     let classification = PreLockForeignPathClassification::build(
@@ -426,7 +439,8 @@ fn classify_foreign_paths_before_lock(
         worktree_context.repository_root(),
         reservations,
         &observation.changes,
-        repository_trunk,
+        acting_identity,
+        repository_snapshot,
         &classification.committed_foreign_paths(),
     )?;
     Ok(classification.with_committed_history(committed_history))
