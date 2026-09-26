@@ -376,26 +376,26 @@
           "oneOf": [
             {
               "const": "protected_tip_ancestor",
-              "description": "Current trunk contains the protected commit itself.",
+              "description": "The integration target contains the protected commit itself.",
               "type": "string"
             },
             {
               "const": "rewritten_witness_ancestor",
-              "description": "Current trunk contains the verified rewritten-integration witness.",
+              "description": "The integration target contains the verified rewritten-integration witness.",
               "type": "string"
             },
             {
               "const": "scoped_patch_equivalent",
-              "description": "Current trunk contains every protected scoped patch under an equivalent commit identity.",
+              "description": "The integration target contains every protected scoped patch under an equivalent\ncommit identity.",
               "type": "string"
             }
           ]
         },
         "integration_witness": {
-          "description": "Which trunk commit witnesses the protected work within an evaluated trunk.",
+          "description": "Which integration-target commit witnesses the protected work within the evaluated target.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The evaluated trunk itself witnesses integration.",
+              "description": "The evaluated integration-target commit itself witnesses integration.",
               "properties": {
                 "kind": {
                   "const": "evaluated_trunk",
@@ -408,7 +408,7 @@
               "type": "object"
             },
             {
-              "description": "An earlier verified trunk commit witnesses rewritten integration.",
+              "description": "An earlier verified integration-target commit witnesses rewritten integration.",
               "properties": {
                 "commit": {
                   "minLength": 1,
@@ -429,10 +429,10 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "What the current trunk proves about retained reservation evidence.",
+      "description": "What the reservation's integration target proves about retained reservation evidence.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
       "oneOf": [
         {
-          "description": "The protected commit is not reachable from current trunk.",
+          "description": "The protected commit is not reachable from the integration target.",
           "properties": {
             "status": {
               "const": "not_integrated",
@@ -445,7 +445,7 @@
           "type": "object"
         },
         {
-          "description": "Current trunk contains the protected integration evidence.",
+          "description": "The integration target contains the protected integration evidence.",
           "properties": {
             "proof": {
               "$ref": "#/$defs/integration_proof",
@@ -457,7 +457,7 @@
               "type": "string"
             },
             "trunk_oid": {
-              "description": "The current trunk commit that was checked.",
+              "description": "The integration-target commit that was checked.",
               "minLength": 1,
               "type": "string"
             },
@@ -466,7 +466,7 @@
               "default": {
                 "kind": "evaluated_trunk"
               },
-              "description": "The commit witnessing integration within the evaluated trunk."
+              "description": "The commit witnessing integration within the evaluated integration target."
             }
           },
           "required": [
@@ -476,7 +476,7 @@
           "type": "object"
         },
         {
-          "description": "Trunk no longer contains evidence that was previously verified.",
+          "description": "The integration target no longer contains evidence that was previously verified.",
           "properties": {
             "status": {
               "const": "trunk_rewritten",
@@ -627,7 +627,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk contains the predecessor; the successor has not incorporated it.",
+              "description": "The ordering target contains the predecessor; the successor has not incorporated it.",
               "properties": {
                 "reason": {
                   "const": "awaiting_successor_incorporation",
@@ -1201,16 +1201,16 @@
           "type": "object"
         },
         "UnintegratedPredecessorEvidence": {
-          "description": "Why current trunk does not prove a predecessor's protected evidence.",
+          "description": "Why the edge's ordering target does not prove a predecessor's protected evidence.",
           "oneOf": [
             {
               "const": "not_integrated",
-              "description": "Trunk does not contain the protected tip yet; wait for it to land.",
+              "description": "The ordering target does not contain the protected tip yet; wait for it to land.",
               "type": "string"
             },
             {
               "const": "trunk_rewritten",
-              "description": "A trunk rewrite invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
+              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
               "type": "string"
             },
             {
@@ -1560,7 +1560,7 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
-              "description": "Git proved the protected work reached trunk.",
+              "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
                   "const": "integrated",
@@ -1573,7 +1573,7 @@
               "type": "object"
             },
             {
-              "description": "An alternate trunk commit witnesses verified rewritten integration.",
+              "description": "An alternate integration-target commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -1794,17 +1794,17 @@
       "oneOf": [
         {
           "const": "protected_tip_ancestor",
-          "description": "Current trunk contains the protected commit itself.",
+          "description": "The integration target contains the protected commit itself.",
           "type": "string"
         },
         {
           "const": "rewritten_witness_ancestor",
-          "description": "Current trunk contains the verified rewritten-integration witness.",
+          "description": "The integration target contains the verified rewritten-integration witness.",
           "type": "string"
         },
         {
           "const": "scoped_patch_equivalent",
-          "description": "Current trunk contains every protected scoped patch under an equivalent commit identity.",
+          "description": "The integration target contains every protected scoped patch under an equivalent\ncommit identity.",
           "type": "string"
         }
       ],
@@ -1812,10 +1812,10 @@
     },
     "integration_witness": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Which trunk commit witnesses the protected work within an evaluated trunk.",
+      "description": "Which integration-target commit witnesses the protected work within the evaluated target.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
       "oneOf": [
         {
-          "description": "The evaluated trunk itself witnesses integration.",
+          "description": "The evaluated integration-target commit itself witnesses integration.",
           "properties": {
             "kind": {
               "const": "evaluated_trunk",
@@ -1828,7 +1828,7 @@
           "type": "object"
         },
         {
-          "description": "An earlier verified trunk commit witnesses rewritten integration.",
+          "description": "An earlier verified integration-target commit witnesses rewritten integration.",
           "properties": {
             "commit": {
               "minLength": 1,
@@ -1851,10 +1851,10 @@
     "lost_integration_evidence_alert": {
       "$defs": {
         "lost_evidence_recovery": {
-          "description": "Recovery instructions distinguished by whether the configured trunk resolved.",
+          "description": "Recovery instructions distinguished by whether the reservation's integration target resolved.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "A trunk commit already proves the protected work; the operator can name it.",
+              "description": "An integration-target commit already proves the protected work; the operator can name it.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
@@ -1865,7 +1865,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit that carries the protected work.",
+                  "description": "The integration-target commit that carries the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -1878,18 +1878,18 @@
               "type": "object"
             },
             {
-              "description": "Trunk resolved but does not carry the protected work, so no trunk commit can be named.",
+              "description": "The integration target resolved without the protected work, so no commit of it can be named.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
-                  "description": "The typed resolution available once a trunk commit carries the work."
+                  "description": "The typed resolution available once an integration-target commit carries the work."
                 },
                 "kind": {
                   "const": "name_carrying_trunk_commit",
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current configured trunk commit, which does not contain the protected work.",
+                  "description": "The integration target's current commit, which does not contain the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -1902,11 +1902,11 @@
               "type": "object"
             },
             {
-              "description": "No trunk object resolved; trunk must resolve before any repair is available.",
+              "description": "No integration-target object resolved, so no repair is available until the target resolves.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
-                  "description": "The typed resolution that becomes available after trunk resolves."
+                  "description": "The typed resolution that becomes available after the integration target resolves."
                 },
                 "kind": {
                   "const": "resolve_trunk_first",
@@ -1925,7 +1925,7 @@
           "description": "The reservation recovery command represented without a stringly typed flag.",
           "oneOf": [
             {
-              "description": "Replace lost Git-backed evidence with an operator-verified trunk commit.",
+              "description": "Replace lost Git-backed evidence with an operator-verified integration-target commit.",
               "properties": {
                 "action": {
                   "const": "resolve_integrated_as",
@@ -1944,10 +1944,10 @@
           ]
         },
         "lost_integration_evidence_status": {
-          "description": "A non-affirmative integration status eligible for a lost-evidence alert.",
+          "description": "A non-affirmative integration status eligible for a lost-evidence alert.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these\nwire names means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The protected work is not reachable from the configured trunk.",
+              "description": "The protected work is not reachable from the reservation's integration target.",
               "properties": {
                 "status": {
                   "const": "not_integrated",
@@ -1960,7 +1960,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk no longer contains evidence that was verified earlier.",
+              "description": "The integration target no longer contains evidence that was verified earlier.",
               "properties": {
                 "status": {
                   "const": "trunk_rewritten",
@@ -2006,7 +2006,7 @@
         },
         "recovery": {
           "$ref": "#/$defs/lost_evidence_recovery",
-          "description": "The recovery path selected by whether trunk resolved."
+          "description": "The recovery path selected by whether the reservation's integration target resolved."
         },
         "reservation_id": {
           "description": "The released reservation whose evidence no longer proves integration.",
@@ -3704,7 +3704,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk contains the predecessor; the successor has not incorporated it.",
+              "description": "The ordering target contains the predecessor; the successor has not incorporated it.",
               "properties": {
                 "reason": {
                   "const": "awaiting_successor_incorporation",
@@ -4620,10 +4620,10 @@
           "type": "string"
         },
         "OrphanIntegrationEvidence": {
-          "description": "Whether the reconciliation pass that found an orphan proved its protected work in trunk.",
+          "description": "Whether the reconciliation pass that found an orphan proved its protected work in the\nreservation's integration target.",
           "oneOf": [
             {
-              "description": "This trunk commit carries the protected work.",
+              "description": "This integration-target commit carries the protected work.",
               "properties": {
                 "commit": {
                   "type": "string"
@@ -4640,7 +4640,7 @@
               "type": "object"
             },
             {
-              "description": "No trunk commit was shown to carry the protected work.",
+              "description": "No integration-target commit was shown to carry the protected work.",
               "properties": {
                 "status": {
                   "const": "unproven",
@@ -4725,7 +4725,7 @@
             },
             "integration_evidence": {
               "$ref": "#/$defs/OrphanIntegrationEvidence",
-              "description": "Whether the same reconciliation pass proved the protected work in trunk."
+              "description": "Whether the same reconciliation pass proved the protected work in the integration target."
             },
             "object_availability": {
               "$ref": "#/$defs/ObjectAvailability",
@@ -6340,16 +6340,16 @@
           "type": "array"
         },
         "UnintegratedPredecessorEvidence": {
-          "description": "Why current trunk does not prove a predecessor's protected evidence.",
+          "description": "Why the edge's ordering target does not prove a predecessor's protected evidence.",
           "oneOf": [
             {
               "const": "not_integrated",
-              "description": "Trunk does not contain the protected tip yet; wait for it to land.",
+              "description": "The ordering target does not contain the protected tip yet; wait for it to land.",
               "type": "string"
             },
             {
               "const": "trunk_rewritten",
-              "description": "A trunk rewrite invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
+              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
               "type": "string"
             },
             {
@@ -7118,7 +7118,7 @@
             },
             {
               "const": "integrate",
-              "description": "Integrate a reservation into trunk.",
+              "description": "Integrate a reservation into its integration target.",
               "type": "string"
             },
             {
@@ -7827,10 +7827,10 @@
           ]
         },
         "integration_evidence_status": {
-          "description": "What the current trunk proves about retained reservation evidence.",
+          "description": "What the reservation's integration target proves about retained reservation evidence.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The protected commit is not reachable from current trunk.",
+              "description": "The protected commit is not reachable from the integration target.",
               "properties": {
                 "status": {
                   "const": "not_integrated",
@@ -7843,7 +7843,7 @@
               "type": "object"
             },
             {
-              "description": "Current trunk contains the protected integration evidence.",
+              "description": "The integration target contains the protected integration evidence.",
               "properties": {
                 "proof": {
                   "$ref": "#/$defs/integration_proof",
@@ -7855,7 +7855,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current trunk commit that was checked.",
+                  "description": "The integration-target commit that was checked.",
                   "minLength": 1,
                   "type": "string"
                 },
@@ -7864,7 +7864,7 @@
                   "default": {
                     "kind": "evaluated_trunk"
                   },
-                  "description": "The commit witnessing integration within the evaluated trunk."
+                  "description": "The commit witnessing integration within the evaluated integration target."
                 }
               },
               "required": [
@@ -7874,7 +7874,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk no longer contains evidence that was previously verified.",
+              "description": "The integration target no longer contains evidence that was previously verified.",
               "properties": {
                 "status": {
                   "const": "trunk_rewritten",
@@ -8008,26 +8008,26 @@
           "oneOf": [
             {
               "const": "protected_tip_ancestor",
-              "description": "Current trunk contains the protected commit itself.",
+              "description": "The integration target contains the protected commit itself.",
               "type": "string"
             },
             {
               "const": "rewritten_witness_ancestor",
-              "description": "Current trunk contains the verified rewritten-integration witness.",
+              "description": "The integration target contains the verified rewritten-integration witness.",
               "type": "string"
             },
             {
               "const": "scoped_patch_equivalent",
-              "description": "Current trunk contains every protected scoped patch under an equivalent commit identity.",
+              "description": "The integration target contains every protected scoped patch under an equivalent\ncommit identity.",
               "type": "string"
             }
           ]
         },
         "integration_witness": {
-          "description": "Which trunk commit witnesses the protected work within an evaluated trunk.",
+          "description": "Which integration-target commit witnesses the protected work within the evaluated target.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The evaluated trunk itself witnesses integration.",
+              "description": "The evaluated integration-target commit itself witnesses integration.",
               "properties": {
                 "kind": {
                   "const": "evaluated_trunk",
@@ -8040,7 +8040,7 @@
               "type": "object"
             },
             {
-              "description": "An earlier verified trunk commit witnesses rewritten integration.",
+              "description": "An earlier verified integration-target commit witnesses rewritten integration.",
               "properties": {
                 "commit": {
                   "minLength": 1,
@@ -8060,10 +8060,10 @@
           ]
         },
         "lost_evidence_recovery": {
-          "description": "Recovery instructions distinguished by whether the configured trunk resolved.",
+          "description": "Recovery instructions distinguished by whether the reservation's integration target resolved.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "A trunk commit already proves the protected work; the operator can name it.",
+              "description": "An integration-target commit already proves the protected work; the operator can name it.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
@@ -8074,7 +8074,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit that carries the protected work.",
+                  "description": "The integration-target commit that carries the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -8087,18 +8087,18 @@
               "type": "object"
             },
             {
-              "description": "Trunk resolved but does not carry the protected work, so no trunk commit can be named.",
+              "description": "The integration target resolved without the protected work, so no commit of it can be named.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
-                  "description": "The typed resolution available once a trunk commit carries the work."
+                  "description": "The typed resolution available once an integration-target commit carries the work."
                 },
                 "kind": {
                   "const": "name_carrying_trunk_commit",
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current configured trunk commit, which does not contain the protected work.",
+                  "description": "The integration target's current commit, which does not contain the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -8111,11 +8111,11 @@
               "type": "object"
             },
             {
-              "description": "No trunk object resolved; trunk must resolve before any repair is available.",
+              "description": "No integration-target object resolved, so no repair is available until the target resolves.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
-                  "description": "The typed resolution that becomes available after trunk resolves."
+                  "description": "The typed resolution that becomes available after the integration target resolves."
                 },
                 "kind": {
                   "const": "resolve_trunk_first",
@@ -8134,7 +8134,7 @@
           "description": "The reservation recovery command represented without a stringly typed flag.",
           "oneOf": [
             {
-              "description": "Replace lost Git-backed evidence with an operator-verified trunk commit.",
+              "description": "Replace lost Git-backed evidence with an operator-verified integration-target commit.",
               "properties": {
                 "action": {
                   "const": "resolve_integrated_as",
@@ -8165,7 +8165,7 @@
             },
             "recovery": {
               "$ref": "#/$defs/lost_evidence_recovery",
-              "description": "The recovery path selected by whether trunk resolved."
+              "description": "The recovery path selected by whether the reservation's integration target resolved."
             },
             "reservation_id": {
               "description": "The released reservation whose evidence no longer proves integration.",
@@ -8181,10 +8181,10 @@
           "type": "object"
         },
         "lost_integration_evidence_status": {
-          "description": "A non-affirmative integration status eligible for a lost-evidence alert.",
+          "description": "A non-affirmative integration status eligible for a lost-evidence alert.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these\nwire names means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The protected work is not reachable from the configured trunk.",
+              "description": "The protected work is not reachable from the reservation's integration target.",
               "properties": {
                 "status": {
                   "const": "not_integrated",
@@ -8197,7 +8197,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk no longer contains evidence that was verified earlier.",
+              "description": "The integration target no longer contains evidence that was verified earlier.",
               "properties": {
                 "status": {
                   "const": "trunk_rewritten",
@@ -8787,12 +8787,12 @@
             },
             {
               "const": "integrated",
-              "description": "Current trunk contains the reservation's integration evidence.",
+              "description": "The reservation's integration target contains its integration evidence.",
               "type": "string"
             },
             {
               "const": "trunk_rewritten",
-              "description": "Current trunk no longer contains previously verified evidence.",
+              "description": "The reservation's integration target no longer contains previously verified evidence.",
               "type": "string"
             },
             {
@@ -8903,7 +8903,7 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
-              "description": "Git proved the protected work reached trunk.",
+              "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
                   "const": "integrated",
@@ -8916,7 +8916,7 @@
               "type": "object"
             },
             {
-              "description": "An alternate trunk commit witnesses verified rewritten integration.",
+              "description": "An alternate integration-target commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -8972,7 +8972,7 @@
           ]
         },
         "release_payload": {
-          "description": "Typed state transitions and evidence results returned by `release`.",
+          "description": "Typed state transitions and evidence results returned by `release`.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
               "description": "Integration is proved, but the present target lacks a fresh cover.",
@@ -9019,7 +9019,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit observed at checkpoint.",
+                  "description": "The integration-target commit observed at checkpoint.",
                   "type": "string"
                 }
               },
@@ -9053,7 +9053,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit observed with the replacement.",
+                  "description": "The integration-target commit observed with the replacement.",
                   "type": "string"
                 }
               },
@@ -9071,7 +9071,7 @@
               "properties": {
                 "evidence": {
                   "$ref": "#/$defs/integration_evidence_status",
-                  "description": "What current trunk proves."
+                  "description": "What the reservation's integration target proves."
                 },
                 "marker": {
                   "$ref": "#/$defs/coordination_run_marker_retirement",
@@ -9103,7 +9103,7 @@
                 },
                 "evidence": {
                   "$ref": "#/$defs/integration_evidence_status",
-                  "description": "What current trunk still proves about it."
+                  "description": "What the reservation's integration target still proves about it."
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
@@ -11518,7 +11518,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk contains the predecessor; the successor has not incorporated it.",
+              "description": "The ordering target contains the predecessor; the successor has not incorporated it.",
               "properties": {
                 "reason": {
                   "const": "awaiting_successor_incorporation",
@@ -14014,16 +14014,16 @@
           "type": "array"
         },
         "UnintegratedPredecessorEvidence": {
-          "description": "Why current trunk does not prove a predecessor's protected evidence.",
+          "description": "Why the edge's ordering target does not prove a predecessor's protected evidence.",
           "oneOf": [
             {
               "const": "not_integrated",
-              "description": "Trunk does not contain the protected tip yet; wait for it to land.",
+              "description": "The ordering target does not contain the protected tip yet; wait for it to land.",
               "type": "string"
             },
             {
               "const": "trunk_rewritten",
-              "description": "A trunk rewrite invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
+              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
               "type": "string"
             },
             {
@@ -15256,10 +15256,10 @@
           ]
         },
         "integration_evidence_status": {
-          "description": "What the current trunk proves about retained reservation evidence.",
+          "description": "What the reservation's integration target proves about retained reservation evidence.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The protected commit is not reachable from current trunk.",
+              "description": "The protected commit is not reachable from the integration target.",
               "properties": {
                 "status": {
                   "const": "not_integrated",
@@ -15272,7 +15272,7 @@
               "type": "object"
             },
             {
-              "description": "Current trunk contains the protected integration evidence.",
+              "description": "The integration target contains the protected integration evidence.",
               "properties": {
                 "proof": {
                   "$ref": "#/$defs/integration_proof",
@@ -15284,7 +15284,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current trunk commit that was checked.",
+                  "description": "The integration-target commit that was checked.",
                   "minLength": 1,
                   "type": "string"
                 },
@@ -15293,7 +15293,7 @@
                   "default": {
                     "kind": "evaluated_trunk"
                   },
-                  "description": "The commit witnessing integration within the evaluated trunk."
+                  "description": "The commit witnessing integration within the evaluated integration target."
                 }
               },
               "required": [
@@ -15303,7 +15303,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk no longer contains evidence that was previously verified.",
+              "description": "The integration target no longer contains evidence that was previously verified.",
               "properties": {
                 "status": {
                   "const": "trunk_rewritten",
@@ -15437,26 +15437,26 @@
           "oneOf": [
             {
               "const": "protected_tip_ancestor",
-              "description": "Current trunk contains the protected commit itself.",
+              "description": "The integration target contains the protected commit itself.",
               "type": "string"
             },
             {
               "const": "rewritten_witness_ancestor",
-              "description": "Current trunk contains the verified rewritten-integration witness.",
+              "description": "The integration target contains the verified rewritten-integration witness.",
               "type": "string"
             },
             {
               "const": "scoped_patch_equivalent",
-              "description": "Current trunk contains every protected scoped patch under an equivalent commit identity.",
+              "description": "The integration target contains every protected scoped patch under an equivalent\ncommit identity.",
               "type": "string"
             }
           ]
         },
         "integration_witness": {
-          "description": "Which trunk commit witnesses the protected work within an evaluated trunk.",
+          "description": "Which integration-target commit witnesses the protected work within the evaluated target.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The evaluated trunk itself witnesses integration.",
+              "description": "The evaluated integration-target commit itself witnesses integration.",
               "properties": {
                 "kind": {
                   "const": "evaluated_trunk",
@@ -15469,7 +15469,7 @@
               "type": "object"
             },
             {
-              "description": "An earlier verified trunk commit witnesses rewritten integration.",
+              "description": "An earlier verified integration-target commit witnesses rewritten integration.",
               "properties": {
                 "commit": {
                   "minLength": 1,
@@ -15489,10 +15489,10 @@
           ]
         },
         "lost_evidence_recovery": {
-          "description": "Recovery instructions distinguished by whether the configured trunk resolved.",
+          "description": "Recovery instructions distinguished by whether the reservation's integration target resolved.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "A trunk commit already proves the protected work; the operator can name it.",
+              "description": "An integration-target commit already proves the protected work; the operator can name it.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
@@ -15503,7 +15503,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit that carries the protected work.",
+                  "description": "The integration-target commit that carries the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -15516,18 +15516,18 @@
               "type": "object"
             },
             {
-              "description": "Trunk resolved but does not carry the protected work, so no trunk commit can be named.",
+              "description": "The integration target resolved without the protected work, so no commit of it can be named.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
-                  "description": "The typed resolution available once a trunk commit carries the work."
+                  "description": "The typed resolution available once an integration-target commit carries the work."
                 },
                 "kind": {
                   "const": "name_carrying_trunk_commit",
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The current configured trunk commit, which does not contain the protected work.",
+                  "description": "The integration target's current commit, which does not contain the protected work.",
                   "minLength": 1,
                   "type": "string"
                 }
@@ -15540,11 +15540,11 @@
               "type": "object"
             },
             {
-              "description": "No trunk object resolved; trunk must resolve before any repair is available.",
+              "description": "No integration-target object resolved, so no repair is available until the target resolves.",
               "properties": {
                 "action": {
                   "$ref": "#/$defs/lost_evidence_recovery_action",
-                  "description": "The typed resolution that becomes available after trunk resolves."
+                  "description": "The typed resolution that becomes available after the integration target resolves."
                 },
                 "kind": {
                   "const": "resolve_trunk_first",
@@ -15563,7 +15563,7 @@
           "description": "The reservation recovery command represented without a stringly typed flag.",
           "oneOf": [
             {
-              "description": "Replace lost Git-backed evidence with an operator-verified trunk commit.",
+              "description": "Replace lost Git-backed evidence with an operator-verified integration-target commit.",
               "properties": {
                 "action": {
                   "const": "resolve_integrated_as",
@@ -15582,10 +15582,10 @@
           ]
         },
         "lost_integration_evidence_status": {
-          "description": "A non-affirmative integration status eligible for a lost-evidence alert.",
+          "description": "A non-affirmative integration status eligible for a lost-evidence alert.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these\nwire names means whichever branch judged the reservation.",
           "oneOf": [
             {
-              "description": "The protected work is not reachable from the configured trunk.",
+              "description": "The protected work is not reachable from the reservation's integration target.",
               "properties": {
                 "status": {
                   "const": "not_integrated",
@@ -15598,7 +15598,7 @@
               "type": "object"
             },
             {
-              "description": "Trunk no longer contains evidence that was verified earlier.",
+              "description": "The integration target no longer contains evidence that was verified earlier.",
               "properties": {
                 "status": {
                   "const": "trunk_rewritten",
@@ -15774,7 +15774,7 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
-              "description": "Git proved the protected work reached trunk.",
+              "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
                   "const": "integrated",
@@ -15787,7 +15787,7 @@
               "type": "object"
             },
             {
-              "description": "An alternate trunk commit witnesses verified rewritten integration.",
+              "description": "An alternate integration-target commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -15843,7 +15843,7 @@
           ]
         },
         "release_payload": {
-          "description": "Typed state transitions and evidence results returned by `release`.",
+          "description": "Typed state transitions and evidence results returned by `release`.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
             {
               "description": "Integration is proved, but the present target lacks a fresh cover.",
@@ -15890,7 +15890,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit observed at checkpoint.",
+                  "description": "The integration-target commit observed at checkpoint.",
                   "type": "string"
                 }
               },
@@ -15924,7 +15924,7 @@
                   "type": "string"
                 },
                 "trunk_oid": {
-                  "description": "The trunk commit observed with the replacement.",
+                  "description": "The integration-target commit observed with the replacement.",
                   "type": "string"
                 }
               },
@@ -15942,7 +15942,7 @@
               "properties": {
                 "evidence": {
                   "$ref": "#/$defs/integration_evidence_status",
-                  "description": "What current trunk proves."
+                  "description": "What the reservation's integration target proves."
                 },
                 "marker": {
                   "$ref": "#/$defs/coordination_run_marker_retirement",
@@ -15974,7 +15974,7 @@
                 },
                 "evidence": {
                   "$ref": "#/$defs/integration_evidence_status",
-                  "description": "What current trunk still proves about it."
+                  "description": "What the reservation's integration target still proves about it."
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
@@ -17019,7 +17019,7 @@
       "description": "A verified or user-confirmed terminal reservation outcome.",
       "oneOf": [
         {
-          "description": "Git proved the protected work reached trunk.",
+          "description": "Git proved the protected work reached the reservation's integration target.",
           "properties": {
             "kind": {
               "const": "integrated",
@@ -17032,7 +17032,7 @@
           "type": "object"
         },
         {
-          "description": "An alternate trunk commit witnesses verified rewritten integration.",
+          "description": "An alternate integration-target commit witnesses verified rewritten integration.",
           "properties": {
             "evidence": {
               "minLength": 1,
@@ -17229,7 +17229,7 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
-              "description": "Git proved the protected work reached trunk.",
+              "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
                   "const": "integrated",
@@ -17242,7 +17242,7 @@
               "type": "object"
             },
             {
-              "description": "An alternate trunk commit witnesses verified rewritten integration.",
+              "description": "An alternate integration-target commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -17699,7 +17699,7 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
-              "description": "Git proved the protected work reached trunk.",
+              "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
                   "const": "integrated",
@@ -17712,7 +17712,7 @@
               "type": "object"
             },
             {
-              "description": "An alternate trunk commit witnesses verified rewritten integration.",
+              "description": "An alternate integration-target commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,
@@ -17958,7 +17958,7 @@
           "description": "A verified or user-confirmed terminal reservation outcome.",
           "oneOf": [
             {
-              "description": "Git proved the protected work reached trunk.",
+              "description": "Git proved the protected work reached the reservation's integration target.",
               "properties": {
                 "kind": {
                   "const": "integrated",
@@ -17971,7 +17971,7 @@
               "type": "object"
             },
             {
-              "description": "An alternate trunk commit witnesses verified rewritten integration.",
+              "description": "An alternate integration-target commit witnesses verified rewritten integration.",
               "properties": {
                 "evidence": {
                   "minLength": 1,

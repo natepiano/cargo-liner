@@ -178,7 +178,7 @@ pub(crate) struct LostIntegrationEvidenceAlert {
     protected_tip:   ProtectedReservationTip,
     /// What the current repository observation proves about the released evidence.
     evidence_status: LostIntegrationEvidenceStatus,
-    /// The recovery path selected by whether trunk resolved.
+    /// The recovery path selected by whether the reservation's integration target resolved.
     recovery:        LostEvidenceRecovery,
 }
 
@@ -194,51 +194,57 @@ impl LostIntegrationEvidenceAlert {
         &self.evidence_status
     }
 
-    /// Borrow the recovery path supported by the current trunk observation.
+    /// Borrow the recovery path supported by the current integration-target observation.
     pub(crate) const fn recovery(&self) -> &LostEvidenceRecovery { &self.recovery }
 }
 
 declare_wire_enum! {
     /// A non-affirmative integration status eligible for a lost-evidence alert.
+    ///
+    /// A target branch that no longer resolves is judged by trunk instead, and `trunk` in these
+    /// wire names means whichever branch judged the reservation.
     #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
     #[schemars(rename = "lost_integration_evidence_status")]
     #[serde(tag = "status", rename_all = "snake_case")]
     pub(crate) enum LostIntegrationEvidenceStatus {
-        /// The protected work is not reachable from the configured trunk.
+        /// The protected work is not reachable from the reservation's integration target.
         NotIntegrated => "not_integrated";
-        /// Trunk no longer contains evidence that was verified earlier.
+        /// The integration target no longer contains evidence that was verified earlier.
         TrunkRewritten => "trunk_rewritten";
         /// Git could not resolve an object required by the evidence query.
         ObjectUnknown => "object_unknown";
     }
 }
 
-/// Recovery instructions distinguished by whether the configured trunk resolved.
+/// Recovery instructions distinguished by whether the reservation's integration target resolved.
+///
+/// A target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire
+/// names means whichever branch judged the reservation.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "lost_evidence_recovery")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LostEvidenceRecovery {
-    /// A trunk commit already proves the protected work; the operator can name it.
+    /// An integration-target commit already proves the protected work; the operator can name it.
     VerifyResolvedTrunk {
-        /// The trunk commit that carries the protected work.
+        /// The integration-target commit that carries the protected work.
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
         trunk_oid: GitObjectId,
         /// The typed resolution available after the operator verifies the work.
         action:    LostEvidenceRecoveryCommand,
     },
-    /// Trunk resolved but does not carry the protected work, so no trunk commit can be named.
+    /// The integration target resolved without the protected work, so no commit of it can be named.
     NameCarryingTrunkCommit {
-        /// The current configured trunk commit, which does not contain the protected work.
+        /// The integration target's current commit, which does not contain the protected work.
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
         trunk_oid: GitObjectId,
-        /// The typed resolution available once a trunk commit carries the work.
+        /// The typed resolution available once an integration-target commit carries the work.
         action:    LostEvidenceRecoveryCommand,
     },
-    /// No trunk object resolved; trunk must resolve before any repair is available.
+    /// No integration-target object resolved, so no repair is available until the target resolves.
     ResolveTrunkFirst {
-        /// The typed resolution that becomes available after trunk resolves.
+        /// The typed resolution that becomes available after the integration target resolves.
         action: LostEvidenceRecoveryCommand,
     },
 }
@@ -248,20 +254,21 @@ pub(crate) enum LostEvidenceRecovery {
 #[schemars(rename = "lost_evidence_recovery_action")]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub(crate) enum LostEvidenceRecoveryCommand {
-    /// Replace lost Git-backed evidence with an operator-verified trunk commit.
+    /// Replace lost Git-backed evidence with an operator-verified integration-target commit.
     ResolveIntegratedAs {
         #[schemars(with = "String")]
         reservation_id: ReservationId,
     },
 }
 
-/// Whether the reconciliation pass that found an orphan proved its protected work in trunk.
+/// Whether the reconciliation pass that found an orphan proved its protected work in the
+/// reservation's integration target.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", content = "commit", rename_all = "snake_case")]
 pub(crate) enum OrphanIntegrationEvidence {
-    /// This trunk commit carries the protected work.
+    /// This integration-target commit carries the protected work.
     Proven(#[schemars(with = "String")] RewrittenIntegrationTrunkCommit),
-    /// No trunk commit was shown to carry the protected work.
+    /// No integration-target commit was shown to carry the protected work.
     Unproven,
 }
 
@@ -283,10 +290,10 @@ impl From<&RepositoryReservationEvidence> for OrphanIntegrationEvidence {
     }
 }
 
-/// The disposition choices supported by an orphan's retained work and observed trunk.
+/// The disposition choices supported by an orphan's retained work and observed integration target.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OrphanResolutionAction {
-    /// Recover retained work, or confirm its integration against the observed trunk.
+    /// Recover retained work, or confirm its integration against the observed integration target.
     Recover(LostEvidenceRecovery),
     /// The unavailable commit requires explicit retirement or abandonment.
     RetireOrAbandon,
@@ -357,7 +364,7 @@ impl OrphanResolutionAction {
         ["--retire-orphan --why <reason>", "--abandon --why <reason>"]
     }
 
-    /// Explain when an integration disposition is appropriate or requires trunk repair.
+    /// Explain when an integration disposition is appropriate or requires target repair.
     pub(crate) fn integration_guidance(&self, protected_tip: &ProtectedReservationTip) -> String {
         match self {
             Self::Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. }) => format!(
@@ -390,7 +397,7 @@ pub(crate) struct OrphanedOutstandingAlert {
     retention_ref:        RetentionRefStatus,
     /// The strongest recovery route established by current evidence.
     recoverability:       RecoverabilityVerdict,
-    /// Whether the same reconciliation pass proved the protected work in trunk.
+    /// Whether the same reconciliation pass proved the protected work in the integration target.
     integration_evidence: OrphanIntegrationEvidence,
 }
 
@@ -415,7 +422,7 @@ impl OrphanedOutstandingAlert {
     /// Return the recovery conclusion already established by reconciliation.
     pub(crate) const fn recoverability(&self) -> RecoverabilityVerdict { self.recoverability }
 
-    /// Borrow the trunk integration evidence observed alongside the orphan.
+    /// Borrow the integration-target evidence observed alongside the orphan.
     const fn integration_evidence(&self) -> &OrphanIntegrationEvidence {
         &self.integration_evidence
     }

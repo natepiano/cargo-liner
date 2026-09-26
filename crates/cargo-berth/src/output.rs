@@ -404,7 +404,7 @@ pub(crate) enum CommandVerb {
     Release,
     /// Record an ordering relationship.
     Sequence,
-    /// Integrate a reservation into trunk.
+    /// Integrate a reservation into its integration target.
     Integrate,
     /// Resolve a stuck reservation after inspecting its condition.
     Resolve,
@@ -644,9 +644,9 @@ declare_output_contract_metadata! {
         MissingDeferral => ("missing_deferral", BlockedByOrdering);
         /// The reservation now has a protected checkpoint awaiting integration.
         Outstanding => ("outstanding", Clear);
-        /// Current trunk contains the reservation's integration evidence.
+        /// The reservation's integration target contains its integration evidence.
         Integrated => ("integrated", Clear);
-        /// Current trunk no longer contains previously verified evidence.
+        /// The reservation's integration target no longer contains previously verified evidence.
         TrunkRewritten => ("trunk_rewritten", Clear);
         /// Git could not resolve an object needed to verify integration.
         ObjectUnknown => ("object_unknown", Clear);
@@ -1425,6 +1425,9 @@ enum FirstTouchReservationSelectionPayload {
 }
 
 /// Typed state transitions and evidence results returned by `release`.
+///
+/// A target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire
+/// names means whichever branch judged the reservation.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "release_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -1440,7 +1443,7 @@ pub(crate) enum ReleasePayload {
         reservation_id:              ReservationId,
         /// The fixed commit retained for integration checks.
         protected_tip:               ProtectedReservationTip,
-        /// The trunk commit observed at checkpoint.
+        /// The integration-target commit observed at checkpoint.
         #[schemars(with = "String")]
         trunk_oid:                   GitObjectId,
         /// What happened to the worktree coordination-run marker.
@@ -1454,7 +1457,7 @@ pub(crate) enum ReleasePayload {
         reservation_id: ReservationId,
         /// The replacement fixed commit.
         protected_tip:  ProtectedReservationTip,
-        /// The trunk commit observed with the replacement.
+        /// The integration-target commit observed with the replacement.
         #[schemars(with = "String")]
         trunk_oid:      GitObjectId,
         /// What happened to the worktree coordination-run marker.
@@ -1464,7 +1467,7 @@ pub(crate) enum ReleasePayload {
     EvidenceRevalidated {
         /// The reservation whose evidence was checked.
         reservation_id: ReservationId,
-        /// What current trunk proves.
+        /// What the reservation's integration target proves.
         evidence:       IntegrationEvidenceStatus,
         /// What happened to the worktree coordination-run marker.
         marker:         CoordinationRunMarkerRetirement,
@@ -1475,7 +1478,7 @@ pub(crate) enum ReleasePayload {
         reservation_id: ReservationId,
         /// The disposition it already retains.
         disposition:    ReleaseDisposition,
-        /// What current trunk still proves about it.
+        /// What the reservation's integration target still proves about it.
         evidence:       IntegrationEvidenceStatus,
     },
     /// A verified or user-confirmed disposition was appended.
@@ -1516,7 +1519,8 @@ impl ReleasePayload {
     }
 }
 
-/// Report what trunk currently proves, whatever disposition the reservation retains.
+/// Report what the integration target currently proves, whatever disposition the reservation
+/// retains.
 const fn integration_evidence_status(evidence: &IntegrationEvidenceStatus) -> OutputStatus {
     match evidence {
         IntegrationEvidenceStatus::Integrated { .. } => OutputStatus::Integrated,

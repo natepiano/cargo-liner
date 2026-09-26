@@ -27,12 +27,13 @@ declare_wire_enum! {
     #[schemars(rename = "integration_proof")]
     #[serde(rename_all = "snake_case")]
     pub(crate) enum IntegrationProof {
-        /// Current trunk contains the protected commit itself.
+        /// The integration target contains the protected commit itself.
         #[default]
         ProtectedTipAncestor => "protected_tip_ancestor";
-        /// Current trunk contains the verified rewritten-integration witness.
+        /// The integration target contains the verified rewritten-integration witness.
         RewrittenWitnessAncestor => "rewritten_witness_ancestor";
-        /// Current trunk contains every protected scoped patch under an equivalent commit identity.
+        /// The integration target contains every protected scoped patch under an equivalent
+        /// commit identity.
         ScopedPatchEquivalent => "scoped_patch_equivalent";
     }
 }
@@ -149,15 +150,18 @@ impl ReservationLifecycle {
     }
 }
 
-/// Which trunk commit witnesses the protected work within an evaluated trunk.
+/// Which integration-target commit witnesses the protected work within the evaluated target.
+///
+/// A target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire
+/// names means whichever branch judged the reservation.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "integration_witness")]
 #[serde(tag = "kind", content = "commit", rename_all = "snake_case")]
 pub(crate) enum IntegrationWitness {
-    /// The evaluated trunk itself witnesses integration.
+    /// The evaluated integration-target commit itself witnesses integration.
     #[default]
     EvaluatedTrunk,
-    /// An earlier verified trunk commit witnesses rewritten integration.
+    /// An earlier verified integration-target commit witnesses rewritten integration.
     Historical(
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
@@ -166,7 +170,8 @@ pub(crate) enum IntegrationWitness {
 }
 
 impl IntegrationWitness {
-    /// Resolve the witness identity against the trunk used for this evaluation.
+    /// Resolve the witness identity against the integration-target commit used for this
+    /// evaluation.
     pub(crate) fn resolve(&self, evaluated_trunk: &GitObjectId) -> RewrittenIntegrationTrunkCommit {
         match self {
             Self::EvaluatedTrunk => RewrittenIntegrationTrunkCommit::from(evaluated_trunk.clone()),
@@ -175,27 +180,30 @@ impl IntegrationWitness {
     }
 }
 
-/// What the current trunk proves about retained reservation evidence.
+/// What the reservation's integration target proves about retained reservation evidence.
+///
+/// A target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire
+/// names means whichever branch judged the reservation.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[schemars(rename = "integration_evidence_status")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum IntegrationEvidenceStatus {
-    /// The protected commit is not reachable from current trunk.
+    /// The protected commit is not reachable from the integration target.
     NotIntegrated,
-    /// Current trunk contains the protected integration evidence.
+    /// The integration target contains the protected integration evidence.
     Integrated {
-        /// The current trunk commit that was checked.
+        /// The integration-target commit that was checked.
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
         trunk_oid: GitObjectId,
         /// The git fact that established integration.
         #[serde(default)]
         proof:     IntegrationProof,
-        /// The commit witnessing integration within the evaluated trunk.
+        /// The commit witnessing integration within the evaluated integration target.
         #[serde(default)]
         witness:   IntegrationWitness,
     },
-    /// Trunk no longer contains evidence that was previously verified.
+    /// The integration target no longer contains evidence that was previously verified.
     TrunkRewritten,
     /// Git could not resolve the object needed for the reachability query.
     ObjectUnknown,
@@ -231,9 +239,9 @@ declare_wire_enum! {
 #[schemars(rename = "release_disposition")]
 #[serde(tag = "kind", content = "evidence", rename_all = "snake_case")]
 pub(crate) enum ReleaseDisposition {
-    /// Git proved the protected work reached trunk.
+    /// Git proved the protected work reached the reservation's integration target.
     Integrated,
-    /// An alternate trunk commit witnesses verified rewritten integration.
+    /// An alternate integration-target commit witnesses verified rewritten integration.
     RewrittenIntegration(
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
@@ -254,7 +262,7 @@ pub(crate) enum ReleaseDisposition {
 }
 
 impl ReleaseDisposition {
-    /// Return whether future trunk checks may invalidate this disposition.
+    /// Return whether future integration-target checks may invalidate this disposition.
     pub(crate) const fn revalidation_subject(&self) -> ReleaseRevalidationSubject<'_> {
         match self {
             Self::Integrated => ReleaseRevalidationSubject::ProtectedTip,
@@ -271,7 +279,7 @@ impl ReleaseDisposition {
 pub(crate) enum ReleaseRevalidationSubject<'reservation> {
     /// Ordinary integration continues to use the retained protected tip.
     ProtectedTip,
-    /// Rewritten integration requires ancestry of its verified trunk witness.
+    /// Rewritten integration requires ancestry of its verified integration-target witness.
     RewrittenIntegration(&'reservation RewrittenIntegrationTrunkCommit),
     /// A deliberate retirement has no future git evidence to revalidate.
     None,
@@ -362,7 +370,7 @@ impl OrphanRetirementReason {
     pub(crate) fn derived() -> Self { Self(DERIVED_ORPHAN_RETIREMENT_REASON.to_owned()) }
 }
 
-/// The verified trunk commit witnessing rewritten integration.
+/// The verified integration-target commit witnessing rewritten integration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct RewrittenIntegrationTrunkCommit(GitObjectId);

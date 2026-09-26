@@ -557,17 +557,17 @@ pub(crate) enum EdgeHold {
         /// Which unproven case applies, and therefore how it is resolved.
         evidence: UnintegratedPredecessorEvidence,
     },
-    /// Trunk contains the predecessor; the successor has not incorporated it.
+    /// The ordering target contains the predecessor; the successor has not incorporated it.
     AwaitingSuccessorIncorporation,
 }
 
-/// Why current trunk does not prove a predecessor's protected evidence.
+/// Why the edge's ordering target does not prove a predecessor's protected evidence.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum UnintegratedPredecessorEvidence {
-    /// Trunk does not contain the protected tip yet; wait for it to land.
+    /// The ordering target does not contain the protected tip yet; wait for it to land.
     NotIntegrated,
-    /// A trunk rewrite invalidated the recorded evidence; re-record it with
+    /// A rewrite of the ordering target invalidated the recorded evidence; re-record it with
     /// `resolve --integrated-as <trunk-oid>`.
     TrunkRewritten,
     /// A commit involved in the check does not resolve; repair the repository.

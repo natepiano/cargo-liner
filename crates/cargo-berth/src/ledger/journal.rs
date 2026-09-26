@@ -453,7 +453,8 @@ pub(crate) enum JournalOperation {
         reservation_id: ReservationId,
         /// The semantic revision of the checked baseline, content, and scopes.
         subject:        IntegrationProofSubjectRevision,
-        /// The trunk object checked by git.
+        /// The commit of the reservation's integration target checked by git, or trunk's
+        /// when that target no longer resolves.
         target:         GitObjectId,
         /// The definitive content verdict produced by the check.
         verdict:        ScopedPatchEquivalenceVerdict,
@@ -470,7 +471,8 @@ pub(crate) enum JournalOperation {
         reservation_id: ReservationId,
         /// The semantic revision of the compared baseline, content, and scopes.
         subject:        IntegrationProofSubjectRevision,
-        /// The trunk object supplied to the comparison.
+        /// The commit of the reservation's integration target supplied to the comparison, or
+        /// trunk's when that target no longer resolves.
         target:         GitObjectId,
     },
     /// Record one definitive scoped-content verdict for a successor head.
