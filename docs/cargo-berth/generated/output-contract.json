@@ -609,7 +609,7 @@
               "type": "object"
             },
             {
-              "description": "The predecessor has a protected tip that current trunk does not prove.",
+              "description": "The predecessor is not on the edge's ordering target: the shared target for a\nsame-target edge, or the repository trunk across targets.",
               "properties": {
                 "evidence": {
                   "$ref": "#/$defs/UnintegratedPredecessorEvidence",
@@ -3676,7 +3676,7 @@
               "type": "object"
             },
             {
-              "description": "The predecessor has a protected tip that current trunk does not prove.",
+              "description": "The predecessor is not on the edge's ordering target: the shared target for a\nsame-target edge, or the repository trunk across targets.",
               "properties": {
                 "evidence": {
                   "$ref": "#/$defs/UnintegratedPredecessorEvidence",
@@ -11480,7 +11480,7 @@
               "type": "object"
             },
             {
-              "description": "The predecessor has a protected tip that current trunk does not prove.",
+              "description": "The predecessor is not on the edge's ordering target: the shared target for a\nsame-target edge, or the repository trunk across targets.",
               "properties": {
                 "evidence": {
                   "$ref": "#/$defs/UnintegratedPredecessorEvidence",

@@ -77,6 +77,8 @@ pub(crate) struct Reservation {
     pub(super) retained_protected_tip:                            RetainedProtectedTip,
     pub(super) integration_trunk_snapshot:                        IntegrationTrunkSnapshot,
     pub(super) integration_status:                                IntegrationEvidenceStatus,
+    /// Every commit that has proved this reservation's work at its target.
+    pub(super) target_proof_commits:                              Vec<GitObjectId>,
     pub(super) worktree_root:                                     CanonicalWorktreeRoot,
     pub(super) worktree_locator:                                  WorktreeAdministrativeLocator,
     pub(super) claimed_at:                                        RecordedAt,
@@ -122,6 +124,16 @@ pub(super) enum ConflictProtection<'reservations> {
 }
 
 impl Reservation {
+    /// Keep a prior landing commit reachable after a later target revalidation moves the proof.
+    pub(super) fn retain_target_proof(&mut self, status: &IntegrationEvidenceStatus) {
+        if let IntegrationEvidenceStatus::Integrated { trunk_oid, .. } = status
+            && !self.target_proof_commits.contains(trunk_oid)
+        {
+            self.target_proof_commits.push(trunk_oid.clone());
+        }
+    }
+
+    pub(crate) fn target_proof_commits(&self) -> &[GitObjectId] { &self.target_proof_commits }
     /// The replayed target state of this reservation.
     pub(crate) const fn target(&self) -> &RecordedTarget { &self.target }
 

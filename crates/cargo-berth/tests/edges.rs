@@ -5,6 +5,9 @@
 
 //! Built-binary tests for ordering-edge replay, locked mutation, and limits.
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 
@@ -85,6 +88,307 @@ if { { [ "$2" = "merge-tree" ] && [ "$4" != "--name-only" ]; } \
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
+
+#[test]
+fn same_target_edge_waits_for_predecessor_to_reach_integration() {
+    let repo = integration_target::IntegrationRepository::new();
+    let predecessor = repo.lane("same-target-a", "integration");
+    let successor = repo.lane("same-target-b", "integration");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred =
+        integration_target::defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+
+    let ordered = sequence(
+        repo.root(),
+        &predecessor_id,
+        &successor_id,
+        "A reaches I first",
+    );
+    integration_target::assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}
+        })
+    );
+    let waiting = integration_target::board(repo.root());
+    let row = waiting["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("waiting entries")
+        .iter()
+        .find(|row| row["successor"] == successor_id)
+        .expect("successor waiting row");
+    assert_eq!(
+        row["action"]["instruction"],
+        "wait for the predecessor to reach integration"
+    );
+    assert!(
+        waiting["presentation"]
+            .to_string()
+            .contains("predecessor to reach integration")
+    );
+    for root in [repo.root(), successor.as_path()] {
+        let configuration = root.join(CONFIGURATION_PATH);
+        let contents = fs::read_to_string(&configuration).expect("gate configuration reads");
+        assert!(contents.contains("gate_mode = \"observe\""));
+        fs::write(
+            configuration,
+            contents.replace("gate_mode = \"observe\"", "gate_mode = \"enforce\""),
+        )
+        .expect("gate configuration writes");
+    }
+    let denied = integration_target::run(&successor, &["integrate", &successor_id, "--json"]);
+    let denied_json = integration_target::json(&denied);
+    assert_eq!(
+        denied_json["status"], "blocked_by_ordering",
+        "{denied_json}"
+    );
+    assert!(
+        denied_json["message"]
+            .as_str()
+            .expect("denial message")
+            .contains(&format!(
+                "integrate reservation {predecessor_id} into integration"
+            ))
+    );
+
+    repo.merge_by_commit("same-target-a");
+    let board = integration_target::board(repo.root());
+    assert_eq!(
+        waiting_action_for(&board, &successor_id),
+        "successor_must_incorporate_predecessor"
+    );
+    let row = board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("waiting entries")
+        .iter()
+        .find(|row| row["successor"] == successor_id)
+        .expect("successor waiting row");
+    assert!(
+        row["action"]["instruction"]
+            .as_str()
+            .expect("instruction")
+            .contains("current integration")
+    );
+    assert_ne!(
+        integration_target::git_stdout(repo.root(), &["rev-parse", "main"]),
+        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"])
+    );
+    integration_target::git(&successor, &["merge", "--no-edit", "integration"]);
+    let board = integration_target::board(repo.root());
+    assert!(settled_edge_for(&board, &successor_id), "{board}");
+}
+
+#[test]
+fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence() {
+    let repo = integration_target::IntegrationRepository::new();
+    let predecessor = repo.lane("active-cross-a", "integration");
+    let successor = repo.main_lane("active-cross-x");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let predecessor_id = integration_target::claim_id(&integration_target::claim(
+        &predecessor,
+        "file:shared.txt",
+        FIRST_RUN,
+        None,
+    ));
+    let successor_id = integration_target::claim_id(&integration_target::defer_claim(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+    ));
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    repo.merge_by_commit("active-cross-a");
+
+    let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "A before X");
+    integration_target::assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "holding", "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}})
+    );
+}
+
+#[test]
+fn cross_target_edge_keeps_earlier_landed_proof_after_target_revalidation() {
+    let repo = integration_target::IntegrationRepository::new();
+    let predecessor = repo.lane("landed-proof-a", "integration");
+    let successor = repo.main_lane("landed-proof-x");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let predecessor_id = integration_target::claim_id(&integration_target::claim(
+        &predecessor,
+        "file:shared.txt",
+        FIRST_RUN,
+        None,
+    ));
+    let successor_id = integration_target::claim_id(&integration_target::defer_claim(
+        &successor,
+        "file:shared.txt",
+        SECOND_RUN,
+        &predecessor_id,
+    ));
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+    integration_target::git(&repo.integration, &["merge", "--squash", "landed-proof-a"]);
+    integration_target::git(
+        &repo.integration,
+        &["commit", "--quiet", "-m", "first landing"],
+    );
+    let first_landing = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    let first_board = integration_target::board(repo.root());
+    assert_eq!(
+        integration_target::reservation_row(&first_board, &predecessor_id)["integration_evidence"]
+            ["status"]["trunk_oid"],
+        first_landing
+    );
+    integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
+
+    integration_target::commit_file(
+        &repo.integration,
+        "later.txt",
+        "later\n",
+        "later target commit",
+    );
+    let later_landing = integration_target::git_stdout(&repo.integration, &["rev-parse", "HEAD"]);
+    assert_ne!(first_landing, later_landing);
+    let revalidated = integration_target::board(repo.root());
+    assert_eq!(
+        integration_target::reservation_row(&revalidated, &predecessor_id)["integration_evidence"]
+            ["status"]["trunk_oid"],
+        later_landing,
+        "revalidation must carry the earlier proof onto the later target tip"
+    );
+
+    let ordered = sequence(
+        repo.root(),
+        &predecessor_id,
+        &successor_id,
+        "landed A before X",
+    );
+    integration_target::assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "holding", "hold": {"reason": "awaiting_successor_incorporation"}})
+    );
+}
+
+#[test]
+fn cross_target_edge_waits_for_integration_to_land_on_main_then_successor() {
+    let repo = integration_target::IntegrationRepository::new();
+    let predecessor = repo.lane("cross-target-a", "integration");
+    let successor = repo.main_lane("cross-target-x");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred =
+        integration_target::defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+    repo.merge_by_commit("cross-target-a");
+
+    let ordered = sequence(
+        repo.root(),
+        &predecessor_id,
+        &successor_id,
+        "A lands before X",
+    );
+    integration_target::assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({
+            "state": "holding",
+            "hold": {"reason": "predecessor_not_on_trunk", "evidence": "not_integrated"}
+        }),
+        "the board wire name stays stable while I already contains A"
+    );
+    let board = integration_target::board(repo.root());
+    assert_eq!(
+        waiting_action_for(&board, &successor_id),
+        "predecessor_not_integrated"
+    );
+
+    integration_target::git(repo.root(), &["merge", "--ff-only", "integration"]);
+    let board = integration_target::board(repo.root());
+    assert_eq!(
+        waiting_action_for(&board, &successor_id),
+        "successor_must_incorporate_predecessor"
+    );
+    integration_target::git(&successor, &["merge", "--no-edit", "main"]);
+    let board = integration_target::board(repo.root());
+    assert!(settled_edge_for(&board, &successor_id), "{board}");
+}
+
+#[test]
+fn cross_target_edge_is_fulfilled_when_successor_merges_outstanding_predecessor() {
+    let repo = integration_target::IntegrationRepository::new();
+    let predecessor = repo.lane("early-a", "integration");
+    let successor = repo.main_lane("early-x");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred =
+        integration_target::defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+    integration_target::git(&successor, &["merge", "--no-edit", "early-a"]);
+    let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "X contains A");
+    integration_target::assert_success(&ordered);
+    assert_eq!(
+        json_output(&ordered)["payload"]["data"]["readiness"],
+        serde_json::json!({"state": "fulfilled"})
+    );
+    assert_eq!(
+        integration_target::git_stdout(repo.root(), &["rev-parse", "main"]),
+        integration_target::git_stdout(&repo.integration, &["merge-base", "main", "integration"])
+    );
+}
+
+fn waiting_action_for<'board>(board: &'board serde_json::Value, successor_id: &str) -> &'board str {
+    board["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("waiting entries")
+        .iter()
+        .find(|row| row["successor"] == successor_id)
+        .expect("successor has a waiting edge")["action"]["reason"]
+        .as_str()
+        .expect("waiting action reason")
+}
+
+fn settled_edge_for(board: &serde_json::Value, successor_id: &str) -> bool {
+    board["payload"]["data"]["settled_ordering_constraints"]["entries"]
+        .as_array()
+        .expect("settled edge entries")
+        .iter()
+        .any(|row| {
+            row["successor"] == successor_id
+                && row["settlement"] == "fulfilled_successor_contains_predecessor"
+        })
+}
 
 #[derive(Clone, Copy)]
 enum AbandonedEndpoint {

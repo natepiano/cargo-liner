@@ -1221,6 +1221,7 @@ impl RetainedReservationSet {
             ),
             integration_status:
                 IntegrationEvidenceStatus::NotIntegrated,
+            target_proof_commits:                              Vec::new(),
             worktree_root:                                     replayed_claim.worktree_root.clone(),
             worktree_locator:                                  replayed_claim
                 .worktree_locator
@@ -1399,6 +1400,7 @@ impl RetainedReservationSet {
                     witness:   IntegrationWitness::Historical(trunk_commit.clone()),
                 };
             }
+            reservation.retain_target_proof(&reservation.integration_status.clone());
             reservation.advance_integration_proof_subject_revision()?;
         }
         match disposition {
@@ -1444,6 +1446,7 @@ impl RetainedReservationSet {
                 }
             },
         }
+        reservation.retain_target_proof(status);
         reservation.integration_status = status.clone();
         reservation.advance_revision()
     }
@@ -1578,6 +1581,7 @@ impl RetainedReservationSet {
                 proof:     IntegrationProof::RewrittenWitnessAncestor,
                 witness:   IntegrationWitness::Historical(trunk_commit.clone()),
             };
+            reservation.retain_target_proof(&reservation.integration_status.clone());
         }
         reservation.advance_integration_proof_subject_revision()?;
         reservation.advance_revision()

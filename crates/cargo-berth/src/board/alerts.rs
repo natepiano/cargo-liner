@@ -20,9 +20,9 @@ use crate::alert::OrphanResolutionAction;
 use crate::alert::RecoverabilityVerdict;
 use crate::alert::RetentionRefStatus;
 use crate::edge::IntegrationConstraintProjection;
+use crate::edge::JudgedTargetTip;
 use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositorySnapshot;
-use crate::edge::RepositoryTrunk;
 use crate::gate::permit;
 use crate::ids::EventId;
 use crate::ids::ForcedIntegrationPermitId;
@@ -582,7 +582,7 @@ pub(super) fn board_alerts(
     alerts: &[Alert],
     reservation_snapshots: &[BoardReservationSnapshot],
     unrecorded_bypasses: &[BypassOccurrenceTime],
-    target_for: impl Fn(ReservationId) -> RepositoryTrunk,
+    target_for: impl Fn(ReservationId) -> JudgedTargetTip,
 ) -> Result<Vec<BoardAlert>, BoardError> {
     let mut board_alerts = alerts
         .iter()
@@ -625,7 +625,7 @@ pub(super) fn board_alerts(
 
 fn board_alert(
     alert: &Alert,
-    target_for: &impl Fn(ReservationId) -> RepositoryTrunk,
+    target_for: &impl Fn(ReservationId) -> JudgedTargetTip,
 ) -> Result<BoardAlert, BoardError> {
     match alert {
         Alert::TargetMissing {
@@ -795,7 +795,7 @@ mod tests {
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
-    use crate::edge::RepositoryTrunk;
+    use crate::edge::JudgedTargetTip;
     use crate::reservation::ReservationFreshness;
 
     #[test]
@@ -826,7 +826,7 @@ mod tests {
             test_support::board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
         assert!(
             board_alerts(&[], std::slice::from_ref(&fresh_row), &[], |_| {
-                RepositoryTrunk::ObjectUnknown
+                JudgedTargetTip::ObjectUnknown
             })?
             .is_empty()
         );
@@ -836,7 +836,7 @@ mod tests {
             return Err(io::Error::other("new reservation should be fresh").into());
         };
         stale_row.freshness = ReservationFreshness::Stale { last_activity_at };
-        let alerts = board_alerts(&[], &[stale_row], &[], |_| RepositoryTrunk::ObjectUnknown)?;
+        let alerts = board_alerts(&[], &[stale_row], &[], |_| JudgedTargetTip::ObjectUnknown)?;
         assert!(matches!(
             alerts.as_slice(),
             [BoardAlert::StaleReservation {

@@ -5,6 +5,9 @@
 
 //! End-to-end tests for installation, enforcement, release valves, and gate cost.
 
+#[path = "support/integration_target.rs"]
+mod integration_target;
+
 #[path = "support/timing.rs"]
 mod timing;
 
@@ -136,6 +139,66 @@ if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "remove_after_target
 fi
 exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 "#;
+
+#[test]
+fn enforce_gate_rejects_cross_target_successor_before_integration_lands_on_main() {
+    let repo = integration_target::IntegrationRepository::new();
+    let predecessor = repo.lane("gate-a", "integration");
+    let successor = repo.main_lane("gate-x");
+    integration_target::write_file(&predecessor, "shared.txt", "A\n");
+    let claimed = integration_target::claim(&predecessor, "file:shared.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let predecessor_id = integration_target::claim_id(&claimed);
+    let deferred =
+        integration_target::defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id);
+    integration_target::assert_success(&deferred);
+    let successor_id = integration_target::claim_id(&deferred);
+    integration_target::commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    integration_target::assert_success(&integration_target::run(
+        &predecessor,
+        &["release", &predecessor_id, "--json"],
+    ));
+    repo.merge_by_commit("gate-a");
+    let sequenced = integration_target::run(
+        repo.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "A lands before X",
+            "--json",
+        ],
+    );
+    integration_target::assert_success(&sequenced);
+    assert_eq!(
+        integration_target::json(&sequenced)["payload"]["data"]["readiness"]["hold"]["reason"],
+        "predecessor_not_on_trunk"
+    );
+
+    integration_target::commit_file(&successor, "shared.txt", "X\n", "X work");
+    set_gate_mode(repo.root(), "enforce");
+    let main = integration_target::git_stdout(repo.root(), &["rev-parse", "main"]);
+    let successor_tip = integration_target::git_stdout(&successor, &["rev-parse", "HEAD"]);
+    let rejected = propose_trunk(repo.root(), &main, &successor_tip);
+    assert!(
+        !rejected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    let denial = String::from_utf8_lossy(&rejected.stderr);
+    assert!(denial.contains("Ordering edge"), "{denial}");
+    assert!(denial.contains(&predecessor_id), "{denial}");
+    assert!(denial.contains(&successor_id), "{denial}");
+    assert_eq!(
+        integration_target::git_stdout(repo.root(), &["rev-parse", "main"]),
+        main
+    );
+    assert_ne!(
+        integration_target::git_stdout(repo.root(), &["rev-parse", "integration"]),
+        main
+    );
+}
 
 #[test]
 fn enrollment_authorizes_both_edits_but_holds_integration_under_each_gate_policy() {

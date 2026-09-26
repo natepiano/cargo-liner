@@ -2,7 +2,7 @@
 
 ## What it is
 
-`cargo-berth` is a reservation engine for repositories worked on through several git worktrees at once. When more than one worktree edits the same repository, two failures recur: two workers edit the same file and discover it at merge time, and work lands on trunk in an order that breaks a dependency neither worker recorded. `cargo-berth` gives those facts a home. A worktree announces the repo-relative paths it is about to touch, the tool answers whether those paths are free, and if they are it records the claim in the same locked step that decided it. Ordering between overlapping reservations is recorded as edges, integration is gated on the predecessor actually reaching trunk, and both answers are enforced by git hooks rather than by convention. The interface is repo-relative paths and reservation ids; there is no separate board file to keep in sync, because every fact the tool reports is either journalled or recomputed from git.
+`cargo-berth` is a reservation engine for repositories worked on through several git worktrees at once. When more than one worktree edits the same repository, two failures recur: two workers edit the same file and discover it at merge time, and work lands on trunk in an order that breaks a dependency neither worker recorded. `cargo-berth` gives those facts a home. A worktree announces the repo-relative paths it is about to touch, the tool answers whether those paths are free, and if they are it records the claim in the same locked step that decided it. Ordering between overlapping reservations is recorded as edges, integration is gated on the predecessor reaching the edge's ordering target, and both answers are enforced by git hooks rather than by convention. The interface is repo-relative paths and reservation ids; there is no separate board file to keep in sync, because every fact the tool reports is either journalled or recomputed from git.
 
 ## How it works
 
@@ -265,6 +265,8 @@ pub(crate) enum EdgeReadiness {
 ```
 
 `holds_successor()` is one structural match over that enum, so there is exactly one place that decides whether an edge blocks. `EdgeHold` carries `UnintegratedPredecessorEvidence` — the concrete git fact that keeps the hold alive. Readiness asked about a reservation that the snapshot does not carry produces `MissingReadinessFact`, which fails closed with exit 4 rather than assuming the edge is clear. Cycles are refused at `sequence` time.
+
+An edge between reservations judged at the same branch uses that branch's integration evidence. An edge across branches waits for the predecessor's protected tip or any commit that previously proved its integration at its target to reach the repository trunk. Retaining earlier proof commits matters when the target advances or rewrites after one of those commits has landed on trunk. The edge can fulfill sooner when the successor incorporates the predecessor directly. Once the predecessor reaches trunk, the successor still waits until its head incorporates that work. `RepositorySnapshot` compares recorded branch identities, with a missing target falling back to trunk and an unreadable target remaining unavailable; equal branch tips do not make two branches the same target. Reconciliation derives cross-target evidence from each completed reservation snapshot, extending the trunk's existing reachability batch for commits introduced during the pass. The gate derives the same evidence for a proposed trunk tip.
 
 ### Liveness and reconciliation
 

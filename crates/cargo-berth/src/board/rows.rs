@@ -25,13 +25,14 @@ use crate::answer::OverlapAuthorizationReason;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeDeclaration;
 use crate::edge::EdgeHold;
+use crate::edge::EdgeOrderingTarget;
 use crate::edge::EdgeReadiness;
 use crate::edge::IntegrationConstraintProjection;
 use crate::edge::IntegrationDeferralStatus;
+use crate::edge::JudgedTargetTip;
 use crate::edge::OrderingReason;
 use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositorySnapshot;
-use crate::edge::RepositoryTrunk;
 use crate::edge::UnintegratedPredecessorEvidence;
 use crate::git;
 use crate::git::AheadBehind;
@@ -738,7 +739,7 @@ fn declared_ordering_constraints(
                     successor:            edge.successor,
                     scopes:               edge.scopes.clone(),
                     reason:               edge.reason.clone(),
-                    action:               waiting_action(hold),
+                    action:               waiting_action(hold, &edge.ordering_target),
                     provenance:           edge.declaration,
                     declaration_event_id: edge.declaration_event_id,
                 });
@@ -940,7 +941,7 @@ fn ahead_behind_by_worktree(
     reservations: &RetainedReservationSet,
     snapshot: &RepositorySnapshot,
 ) -> Result<(HashMap<WorktreeId, AheadBehind>, u64), BoardError> {
-    let RepositoryTrunk::Resolved(trunk) = snapshot.repository_trunk() else {
+    let JudgedTargetTip::Resolved(trunk) = snapshot.repository_trunk() else {
         return Ok((HashMap::new(), 0));
     };
     let mut head_by_worktree = HashMap::new();
@@ -995,32 +996,40 @@ fn holder_branch(snapshot: &ClaimHeadSnapshot) -> HolderBranch {
     }
 }
 
-pub(super) fn waiting_action(hold: EdgeHold) -> WaitingAction {
+pub(super) fn waiting_action(
+    hold: EdgeHold,
+    ordering_target: &EdgeOrderingTarget,
+) -> WaitingAction {
     match hold {
         EdgeHold::AwaitingPredecessorCheckpoint => WaitingAction::PredecessorCheckpoint {
             instruction: "wait for the predecessor to reach a checkpoint; nobody can act yet"
                 .to_owned(),
         },
-        EdgeHold::PredecessorNotOnTrunk {
+        EdgeHold::PredecessorNotOnOrderingTarget {
             evidence: UnintegratedPredecessorEvidence::NotIntegrated,
         } => WaitingAction::PredecessorNotIntegrated {
-            instruction: "wait for the predecessor to reach trunk".to_owned(),
+            instruction: format!(
+                "wait for the predecessor to reach {}",
+                ordering_target.wait_name()
+            ),
         },
-        EdgeHold::PredecessorNotOnTrunk {
+        EdgeHold::PredecessorNotOnOrderingTarget {
             evidence: UnintegratedPredecessorEvidence::TrunkRewritten,
         } => WaitingAction::TrunkEvidenceRewritten {
-            instruction: "re-record evidence invalidated by the trunk rewrite".to_owned(),
+            instruction:  "re-record evidence invalidated by the trunk rewrite".to_owned(),
             resolve_flag: "resolve --integrated-as <trunk-oid>".to_owned(),
         },
-        EdgeHold::PredecessorNotOnTrunk {
+        EdgeHold::PredecessorNotOnOrderingTarget {
             evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
         } => WaitingAction::PredecessorObjectUnknown {
             instruction: "repair the predecessor object that does not resolve".to_owned(),
         },
         EdgeHold::AwaitingSuccessorIncorporation => {
             WaitingAction::SuccessorMustIncorporatePredecessor {
-                instruction: "rebase this worktree onto current main; only the reader's own rebase clears this hold"
-                    .to_owned(),
+                instruction: format!(
+                    "rebase this worktree onto current {}; only the reader's own rebase clears this hold",
+                    ordering_target.branch_name()
+                ),
             }
         },
     }

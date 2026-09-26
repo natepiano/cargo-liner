@@ -52,6 +52,16 @@ there joins through the marker and reuses the reservation for covered edits.
 
 ## Integration targets
 
+Ordering edges use the shared target when both reservations are judged at the
+same branch. Across targets, they hold the successor until the predecessor's
+work reaches the repository trunk, unless the successor has already
+incorporated it. After trunk receives the predecessor, the successor must
+still incorporate that work. In enforce mode, a proposed trunk update that
+brings in a held successor is rejected by the reference-transaction gate.
+Board instructions and gate recovery name the shared target for a same-target
+edge and the repository trunk for an edge across targets.
+
+
 Reconciliation judges each reservation at its recorded target. If an unreleased lane's non-trunk target ref disappears, the `target_missing` alert supplies `cargo-berth retarget <id> --target <branch>` and the board shows that target's commit as `"unresolved"`. Until the reservation is retargeted, the alert persists and reconciliation judges that reservation at the repository trunk. A released lane keeps its proof if its target branch is later deleted; lost evidence is reported only if the proving commits leave history and fail revalidation on two passes. The trunk gate still gates the repository trunk.
 
 `cargo-berth claim <paths> --target <local-branch>` records the integration branch for the new reservation. Without the flag, the claimant branch's `branch.<name>.cargoBerthTarget` setting in the common Git config takes precedence over the repository trunk. Detached HEAD uses the repository trunk. Explicit own-branch and unresolved targets return `invalid_input`; first touch and enrollment fall back to the trunk and report the reason in JSON.

@@ -273,8 +273,14 @@ The sections mean:
   `predecessor_not_integrated`, `trunk_evidence_rewritten`,
   `predecessor_object_unknown`, or `successor_must_incorporate_predecessor`.
   The actions respectively tell the user to wait for a checkpoint, wait for the
-  checkpoint to reach trunk, record rewritten evidence with the supplied
+  checkpoint to reach the edge's ordering branch, record rewritten evidence with the supplied
   `resolve_flag`, restore the missing Git object, or incorporate the predecessor.
+  Edge readiness keeps the wire reason `predecessor_not_on_trunk` with
+  `evidence = not_integrated | trunk_rewritten | object_unknown`. It means the
+  predecessor has not reached the edge's ordering target: the shared branch
+  for a same-target edge, or the repository trunk for a cross-target edge.
+  After a cross-target predecessor reaches trunk, a successor that has not
+  incorporated it reports `awaiting_successor_incorporation`.
 - `settled_ordering_constraints`: cancelled, fulfilled, or inactive-successor
   edges, tagged `cancelled_constraint_ended`,
   `fulfilled_successor_contains_predecessor`, or

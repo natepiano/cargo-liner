@@ -21,15 +21,17 @@ use crate::constants::MERGE_EXTENT_TRUNK_UNAVAILABLE;
 use crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE;
 use crate::constants::UNMERGED_BRANCH_PATH_GIT_QUERIES;
 use crate::drift;
+use crate::edge::CrossTargetPredecessorEvidence;
+use crate::edge::CrossTargetPredecessorReachability;
 use crate::edge::EdgeReplayError;
 use crate::edge::IntegrationConstraintProjection;
+use crate::edge::JudgedTargetTip;
 use crate::edge::MissingReadinessFact;
 use crate::edge::OrderingGraph;
 use crate::edge::PredecessorSuccessorIncorporation;
 use crate::edge::RepositoryReservationEvidence;
 use crate::edge::RepositoryReservationSnapshot;
 use crate::edge::RepositorySnapshot;
-use crate::edge::RepositoryTrunk;
 use crate::edge::SuccessorIncorporationEvidence;
 use crate::edge::TargetObservation;
 use crate::gate;
@@ -179,7 +181,7 @@ impl ReconciliationReport {
     }
 
     /// Return the observation at which this reservation was judged.
-    pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &RepositoryTrunk {
+    pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &JudgedTargetTip {
         self.repository_snapshot.target_for(reservation_id)
     }
 }
@@ -269,7 +271,7 @@ struct ReconciliationEvidenceContext<'context> {
 
 struct TargetIntegrationEvidenceContext<'context> {
     repository_root:                &'context Path,
-    repository_trunk:               &'context RepositoryTrunk,
+    repository_trunk:               &'context JudgedTargetTip,
     integration_reachability:       &'context BatchedIntegrationReachability,
     scoped_patch_evaluation_budget: &'context mut ReconciliationScopedPatchEvaluationBudget,
 }
@@ -289,6 +291,7 @@ struct ObservedRepositoryFacts {
     reservation_targets:              HashMap<ReservationId, IntegrationTarget>,
     resolved_candidates:              ResolvedBatchCommitCandidates,
     repository_evidence_observations: Vec<RepositoryEvidenceObservation>,
+    trunk_reachability:               BatchedIntegrationReachability,
     /// How many times resolving the trunk queried git, reported as this reconciliation's cost.
     trunk_resolution_calls:           u64,
 }
@@ -425,6 +428,25 @@ struct BatchedIntegrationReachability {
     target_histories:    PhaseStartTargetFirstParentHistories,
 }
 
+/// Edge ancestors added only when the batch judges the repository trunk.
+#[derive(Clone, Copy)]
+enum TrunkEdgeCandidates<'candidates> {
+    Excluded,
+    Included {
+        scope:       RepositoryObservationScope,
+        target_tips: &'candidates [GitObjectId],
+    },
+}
+
+impl<'candidates> TrunkEdgeCandidates<'candidates> {
+    const fn including(
+        scope: RepositoryObservationScope,
+        target_tips: &'candidates [GitObjectId],
+    ) -> Self {
+        Self::Included { scope, target_tips }
+    }
+}
+
 impl BatchedIntegrationReachability {
     fn observe_configured_trunk(
         repository_root: &Path,
@@ -432,9 +454,14 @@ impl BatchedIntegrationReachability {
         ordering_graph: &OrderingGraph,
         trunk_branch: &str,
         selected_reservations: &HashSet<ReservationId>,
+        edge_candidates: TrunkEdgeCandidates<'_>,
     ) -> Result<(TargetObservation, Self), ReservationReplayError> {
-        let candidate_ancestors =
-            Self::candidate_ancestors(reservations, ordering_graph, selected_reservations)?;
+        let candidate_ancestors = Self::candidate_ancestors(
+            reservations,
+            ordering_graph,
+            selected_reservations,
+            edge_candidates,
+        )?;
         let observation =
             git::branch_commit_reachability(repository_root, trunk_branch, &candidate_ancestors);
         let Ok(observation) = observation else {
@@ -503,18 +530,23 @@ impl BatchedIntegrationReachability {
         repository_root: &Path,
         reservations: &RetainedReservationSet,
         ordering_graph: &OrderingGraph,
-        repository_trunk: &RepositoryTrunk,
+        repository_trunk: &JudgedTargetTip,
         selected_reservations: &HashSet<ReservationId>,
+        edge_candidates: TrunkEdgeCandidates<'_>,
     ) -> Result<Self, ReservationReplayError> {
-        let RepositoryTrunk::Resolved(target) = repository_trunk else {
+        let JudgedTargetTip::Resolved(target) = repository_trunk else {
             return Ok(Self {
                 by_ancestor:         HashMap::new(),
                 resolved_candidates: git::ResolvedBatchCommitCandidates::default(),
                 target_histories:    git::PhaseStartTargetFirstParentHistories::default(),
             });
         };
-        let candidate_ancestors =
-            Self::candidate_ancestors(reservations, ordering_graph, selected_reservations)?;
+        let candidate_ancestors = Self::candidate_ancestors(
+            reservations,
+            ordering_graph,
+            selected_reservations,
+            edge_candidates,
+        )?;
         let reachability =
             git::reachability_to_target(repository_root, &candidate_ancestors, target)
                 .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; candidate_ancestors.len()]);
@@ -529,6 +561,7 @@ impl BatchedIntegrationReachability {
         reservations: &RetainedReservationSet,
         ordering_graph: &OrderingGraph,
         selected_reservations: &HashSet<ReservationId>,
+        edge_candidates: TrunkEdgeCandidates<'_>,
     ) -> Result<Vec<GitObjectId>, ReservationReplayError> {
         let mut candidate_ancestors = HashSet::new();
         for reservation in reservations
@@ -576,6 +609,30 @@ impl BatchedIntegrationReachability {
                 | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {},
             }
         }
+        if let TrunkEdgeCandidates::Included { scope, target_tips } = edge_candidates {
+            candidate_ancestors.extend(target_tips.iter().cloned());
+            for predecessor_id in observed_predecessors(ordering_graph, scope) {
+                let predecessor = reservations.reservation(predecessor_id)?;
+                candidate_ancestors.extend(predecessor.target_proof_commits().iter().cloned());
+                match predecessor.evidence_state()? {
+                    ReservationEvidenceState::Outstanding {
+                        protected_tip,
+                        integration_status,
+                        ..
+                    }
+                    | ReservationEvidenceState::Released {
+                        protected_tip,
+                        integration_status,
+                        ..
+                    } => {
+                        candidate_ancestors.insert(protected_tip.as_ref().clone());
+                        candidate_ancestors.extend(proving_trunk(&integration_status).cloned());
+                    },
+                    ReservationEvidenceState::Active { .. }
+                    | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {},
+                }
+            }
+        }
         Ok(candidate_ancestors.into_iter().collect())
     }
 
@@ -586,12 +643,165 @@ impl BatchedIntegrationReachability {
             .unwrap_or(Reachability::ObjectUnknown)
     }
 
+    /// Classify commits introduced by this reconciliation after the first trunk batch.
+    fn extend_for_snapshot(
+        &mut self,
+        repository_root: &Path,
+        trunk: &JudgedTargetTip,
+        snapshots: &[RepositoryReservationSnapshot],
+        reservations: &RetainedReservationSet,
+        ordering_graph: &OrderingGraph,
+        scope: RepositoryObservationScope,
+    ) -> Result<(), ReservationReplayError> {
+        let mut additional = Vec::new();
+        for predecessor_id in observed_predecessors(ordering_graph, scope) {
+            let Some(snapshot) = snapshots
+                .iter()
+                .find(|snapshot| snapshot.reservation_id == predecessor_id)
+            else {
+                continue;
+            };
+            let protected_tip = match &snapshot.evidence {
+                RepositoryReservationEvidence::Outstanding { protected_tip, .. }
+                | RepositoryReservationEvidence::Released { protected_tip, .. } => protected_tip,
+                RepositoryReservationEvidence::Active
+                | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => continue,
+            };
+            additional.push(protected_tip.as_ref().clone());
+            additional.extend(
+                reservations
+                    .reservation(predecessor_id)?
+                    .target_proof_commits()
+                    .iter()
+                    .cloned(),
+            );
+        }
+        let mut seen = HashSet::new();
+        additional
+            .retain(|commit| !self.by_ancestor.contains_key(commit) && seen.insert(commit.clone()));
+        if additional.is_empty() {
+            return Ok(());
+        }
+        let reachability = match trunk {
+            JudgedTargetTip::Resolved(target) => {
+                git::reachability_to_target(repository_root, &additional, target)
+                    .unwrap_or_else(|_| vec![Reachability::ObjectUnknown; additional.len()])
+            },
+            JudgedTargetTip::ObjectUnknown => vec![Reachability::ObjectUnknown; additional.len()],
+        };
+        self.by_ancestor
+            .extend(additional.into_iter().zip(reachability));
+        Ok(())
+    }
+
     fn target_history_after_phase_start(
         &self,
         phase_start: &GitObjectId,
     ) -> ScopedPatchTargetHistory<'_> {
         self.target_histories.after_phase_start(phase_start)
     }
+}
+
+/// Classify graph predecessors at the repository trunk using the trunk's existing batch.
+fn cross_target_predecessor_evidence(
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
+    reservations: &RetainedReservationSet,
+    snapshots: &[RepositoryReservationSnapshot],
+    trunk: &JudgedTargetTip,
+    reachability: &BatchedIntegrationReachability,
+) -> CrossTargetPredecessorEvidence {
+    let by_reservation = snapshots
+        .iter()
+        .map(|snapshot| (snapshot.reservation_id, &snapshot.evidence))
+        .collect::<HashMap<_, _>>();
+    let evidence = observed_predecessors(ordering_graph, repository_observation_scope)
+        .into_iter()
+        .filter_map(|predecessor_id| {
+            let evidence = by_reservation.get(&predecessor_id)?;
+            let (protected_tip, integration_status) = match evidence {
+                RepositoryReservationEvidence::Outstanding {
+                    protected_tip,
+                    integration_status,
+                }
+                | RepositoryReservationEvidence::Released {
+                    protected_tip,
+                    integration_status,
+                    ..
+                } => (protected_tip, integration_status),
+                RepositoryReservationEvidence::Active
+                | RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => return None,
+            };
+            let outcome = match trunk {
+                JudgedTargetTip::Resolved(trunk_oid) => {
+                    let tip = reachability.for_ancestor(protected_tip.as_ref());
+                    let proof_commits = reservations
+                        .reservation(predecessor_id)
+                        .map(crate::reservation::Reservation::target_proof_commits)
+                        .unwrap_or_default();
+                    let proofs = proof_commits
+                        .iter()
+                        .map(|commit| reachability.for_ancestor(commit))
+                        .chain(
+                            proving_trunk(integration_status)
+                                .map(|commit| reachability.for_ancestor(commit)),
+                        );
+                    let proof_reachability = proofs.collect::<Vec<_>>();
+                    if tip == Reachability::Ancestor
+                        || proof_reachability.contains(&Reachability::Ancestor)
+                    {
+                        CrossTargetPredecessorReachability::OnTrunk(trunk_oid.clone())
+                    } else if tip == Reachability::ObjectUnknown
+                        || proof_reachability.contains(&Reachability::ObjectUnknown)
+                    {
+                        CrossTargetPredecessorReachability::ObjectUnknown
+                    } else {
+                        CrossTargetPredecessorReachability::NotOnTrunk
+                    }
+                },
+                JudgedTargetTip::ObjectUnknown => CrossTargetPredecessorReachability::ObjectUnknown,
+            };
+            Some((predecessor_id, outcome))
+        })
+        .collect();
+    CrossTargetPredecessorEvidence::new(evidence)
+}
+
+/// Predecessors from the durable graph and a sequence request not yet appended to it.
+fn observed_predecessors(
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
+) -> HashSet<ReservationId> {
+    let mut predecessors = ordering_graph
+        .predecessors()
+        .map(|predecessor| predecessor.reservation_id)
+        .collect::<HashSet<_>>();
+    if let RepositoryObservationScope::RequestedOrderingEdge { before, .. } =
+        repository_observation_scope
+    {
+        predecessors.insert(before);
+    }
+    predecessors
+}
+
+/// Current tips that can become newly materialized integration proofs this pass.
+fn observed_predecessor_target_tips(
+    ordering_graph: &OrderingGraph,
+    scope: RepositoryObservationScope,
+    repository_trunk: &IntegrationTarget,
+    reservation_targets: &HashMap<ReservationId, IntegrationTarget>,
+    targets: &BTreeMap<IntegrationTarget, TargetObservation>,
+) -> Vec<GitObjectId> {
+    observed_predecessors(ordering_graph, scope)
+        .into_iter()
+        .filter_map(|id| reservation_targets.get(&id))
+        .filter(|target| *target != repository_trunk)
+        .filter_map(|target| targets.get(target))
+        .filter_map(|observation| match observation {
+            TargetObservation::Resolved(commit) => Some(commit.clone()),
+            TargetObservation::Missing | TargetObservation::ObjectUnknown => None,
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -1021,6 +1231,7 @@ struct ReconciliationAction {
     /// disagreement the next pass overturns is never reported at all.
     confirmed_lost_evidence:       Vec<ReservationId>,
     repository_snapshot:           RepositorySnapshot,
+    trunk_reachability:            BatchedIntegrationReachability,
     recovered_bypass_reporting:    RecoveredBypassReporting,
     recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
     pending_bypass_imports:        Vec<PendingBypassMarkerImport>,
@@ -2077,7 +2288,7 @@ fn observe_merge_extent(
     planned: &[JournalOperation],
     git_cost: &mut MergeExtentGitCost,
 ) -> Result<HolderMergeProtection, String> {
-    let RepositoryTrunk::Resolved(trunk) = snapshot.target_for(reservation.id()) else {
+    let JudgedTargetTip::Resolved(trunk) = snapshot.target_for(reservation.id()) else {
         return Err(MERGE_EXTENT_TRUNK_UNAVAILABLE.to_owned());
     };
     let holder = snapshot
@@ -2176,10 +2387,12 @@ fn build_plan(
         reservation_targets,
         resolved_candidates,
         repository_evidence_observations,
+        trunk_reachability,
         trunk_resolution_calls,
     } = observe_repository_facts(
         reservations,
         ordering_graph,
+        repository_observation_scope,
         worktree_context,
         reconciliation_evidence_context,
     )?;
@@ -2197,12 +2410,22 @@ fn build_plan(
         &worktree_registry,
         repository_evidence_observations,
     )?;
+    let observed_trunk = JudgedTargetTip::repository_trunk(&targets, &repository_trunk);
+    let cross_target_predecessors = cross_target_predecessor_evidence(
+        ordering_graph,
+        repository_observation_scope,
+        reservations,
+        &reservation_snapshots,
+        &observed_trunk,
+        &trunk_reachability,
+    );
     let repository_snapshot = RepositorySnapshot::new(
         repository_trunk,
         targets,
         reservation_targets,
         reservation_snapshots.clone(),
         Vec::new(),
+        cross_target_predecessors,
     );
     let active_holders = reservations
         .iter()
@@ -2234,6 +2457,7 @@ fn build_plan(
             evidence: changes.evidence,
             confirmed_lost_evidence: changes.confirmed_lost_evidence,
             repository_snapshot,
+            trunk_reachability,
             recovered_bypass_reporting: RecoveredBypassReporting::Defer,
             recovered_bypass_markers: Vec::new(),
             pending_bypass_imports: Vec::new(),
@@ -2326,6 +2550,26 @@ fn complete_reconciliation_plan(
         context.successor_scoped_patch_evaluation_budget,
     )?;
     plan.operations.extend(successors.operations);
+    replace_completed_repository_snapshot(
+        reservations,
+        ordering_graph,
+        observation_scope,
+        snapshots,
+        successors.by_predecessor,
+        plan,
+    )?;
+    Ok(())
+}
+
+/// Rebuild the edge view from the reservation states the completed plan will commit.
+fn replace_completed_repository_snapshot(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    observation_scope: RepositoryObservationScope,
+    mut snapshots: Vec<RepositoryReservationSnapshot>,
+    successor_incorporation: Vec<(ReservationId, PredecessorSuccessorIncorporation)>,
+    plan: &mut ReconciliationPlan,
+) -> Result<(), ReservationReplayError> {
     let (repository_trunk, mut targets, mut reservation_targets) =
         plan.action.repository_snapshot.target_facts();
     for operation in &plan.operations {
@@ -2357,12 +2601,30 @@ fn complete_reconciliation_plan(
             });
         }
     }
+    let observed_trunk = JudgedTargetTip::repository_trunk(&targets, &repository_trunk);
+    plan.action.trunk_reachability.extend_for_snapshot(
+        &plan.action.repository_root,
+        &observed_trunk,
+        &snapshots,
+        reservations,
+        ordering_graph,
+        observation_scope,
+    )?;
+    let cross_target_predecessors = cross_target_predecessor_evidence(
+        ordering_graph,
+        observation_scope,
+        reservations,
+        &snapshots,
+        &observed_trunk,
+        &plan.action.trunk_reachability,
+    );
     plan.action.repository_snapshot = RepositorySnapshot::new(
         repository_trunk,
         targets,
         reservation_targets,
         snapshots,
-        successors.by_predecessor,
+        successor_incorporation,
+        cross_target_predecessors,
     );
     Ok(())
 }
@@ -2560,11 +2822,41 @@ fn cover_is_missing(
         && !covered_targets.contains(target)
 }
 
-/// Read the worktree registry, trunk reachability, and per-reservation repository evidence in one
-/// pass, so every judgement the plan then makes is measured against the same repository.
+/// Recorded reservation identities partitioned by their integration branch.
+struct TargetReservationGroups {
+    groups:           BTreeMap<IntegrationTarget, HashSet<ReservationId>>,
+    recorded_targets: HashMap<ReservationId, IntegrationTarget>,
+}
+
+/// Replay target assignments once before observing any branch.
+fn group_reservations_by_target(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+) -> Result<TargetReservationGroups, ReservationReplayError> {
+    let mut groups = BTreeMap::new();
+    groups
+        .entry(repository_trunk.clone())
+        .or_insert_with(HashSet::new);
+    let mut recorded_targets = HashMap::new();
+    for reservation in reservations.iter() {
+        let target = reservations.target_of(reservation.id(), repository_trunk)?;
+        groups
+            .entry(target.clone())
+            .or_default()
+            .insert(reservation.id());
+        recorded_targets.insert(reservation.id(), target);
+    }
+    Ok(TargetReservationGroups {
+        groups,
+        recorded_targets,
+    })
+}
+
+/// Read branch reachability and reservation evidence for one repository observation.
 fn observe_repository_facts(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
     worktree_context: &WorktreeContext,
     reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
 ) -> Result<ObservedRepositoryFacts, ReconciliationBuildError> {
@@ -2580,17 +2872,10 @@ fn observe_repository_facts(
                     value: reconciliation_evidence_context.berth_config.trunk.clone(),
                 })
             })?;
-        let mut groups: BTreeMap<IntegrationTarget, HashSet<ReservationId>> = BTreeMap::new();
-        groups.entry(repository_trunk.clone()).or_default();
-        let mut reservation_targets = HashMap::new();
-        for reservation in reservations.iter() {
-            let target = reservations.target_of(reservation.id(), &repository_trunk)?;
-            groups
-                .entry(target.clone())
-                .or_default()
-                .insert(reservation.id());
-            reservation_targets.insert(reservation.id(), target);
-        }
+        let TargetReservationGroups {
+            mut groups,
+            recorded_targets: reservation_targets,
+        } = group_reservations_by_target(reservations, &repository_trunk)?;
         let mut target_jobs = Vec::new();
         for (target, selected) in &groups {
             if target == &repository_trunk {
@@ -2608,6 +2893,7 @@ fn observe_repository_facts(
                         ordering_graph,
                         &branch,
                         &selected,
+                        TrunkEdgeCandidates::Excluded,
                     )
                 }),
             ));
@@ -2630,6 +2916,13 @@ fn observe_repository_facts(
             reachabilities.insert(target, reachability);
         }
         let trunk_reservations = groups.get(&repository_trunk).cloned().unwrap_or_default();
+        let target_tips = observed_predecessor_target_tips(
+            ordering_graph,
+            repository_observation_scope,
+            &repository_trunk,
+            &reservation_targets,
+            &observations,
+        );
         let (trunk_observation, trunk_reachability) =
             BatchedIntegrationReachability::observe_configured_trunk(
                 repository_root,
@@ -2637,6 +2930,7 @@ fn observe_repository_facts(
                 ordering_graph,
                 repository_trunk.short_name(),
                 &trunk_reservations,
+                TrunkEdgeCandidates::including(repository_observation_scope, &target_tips),
             )?;
         resolved_candidates.extend(trunk_reachability.resolved_candidates.clone());
         observations.insert(repository_trunk.clone(), trunk_observation);
@@ -2650,6 +2944,7 @@ fn observe_repository_facts(
             repository_root,
             reconciliation_evidence_context.scoped_patch_evaluation_budget,
         )?;
+        let trunk_reachability = reachabilities.remove(&repository_trunk).unwrap_or_default();
         let worktree_registry = worktree_registry
             .join()
             .map_err(|_| WorktreeRegistryError::ObservationWorkerPanicked)??;
@@ -2660,6 +2955,7 @@ fn observe_repository_facts(
             reservation_targets,
             resolved_candidates,
             repository_evidence_observations,
+            trunk_reachability,
             trunk_resolution_calls: groups.len() as u64,
         })
     })
@@ -2693,13 +2989,13 @@ fn observe_target_group_evidence(
             observations
                 .get(judged_target)
                 .map_or(
-                    RepositoryTrunk::ObjectUnknown,
+                    JudgedTargetTip::ObjectUnknown,
                     |observation| match observation {
                         TargetObservation::Resolved(commit) => {
-                            RepositoryTrunk::Resolved(commit.clone())
+                            JudgedTargetTip::Resolved(commit.clone())
                         },
                         TargetObservation::Missing | TargetObservation::ObjectUnknown => {
-                            RepositoryTrunk::ObjectUnknown
+                            JudgedTargetTip::ObjectUnknown
                         },
                     },
                 );
@@ -2784,10 +3080,10 @@ fn reconcile_observed_reservations(
 
 fn scoped_patch_evaluation_order<'reservation>(
     reservations: &'reservation RetainedReservationSet,
-    repository_trunk: &RepositoryTrunk,
+    repository_trunk: &JudgedTargetTip,
 ) -> Vec<(usize, &'reservation Reservation)> {
     let mut evaluation_order = reservations.iter().enumerate().collect::<Vec<_>>();
-    if let RepositoryTrunk::Resolved(target) = repository_trunk {
+    if let JudgedTargetTip::Resolved(target) = repository_trunk {
         evaluation_order
             .sort_by_key(|(_, reservation)| reservation.scoped_patch_evaluation_priority(target));
     }
@@ -2888,17 +3184,11 @@ pub(crate) fn prepare_gate_reconciliation(
     })
 }
 
-fn observe_proposed_trunk(
+fn reservations_judged_at_proposed_trunk(
     reservations: &RetainedReservationSet,
-    ordering_graph: &OrderingGraph,
-    repository_observation_scope: RepositoryObservationScope,
     actual_snapshot: &RepositorySnapshot,
-    worktree_context: &WorktreeContext,
-    proposed_trunk: GitObjectId,
-    reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
-) -> Result<ProposedTrunkObservation, GateReconciliationError> {
-    let repository_trunk = RepositoryTrunk::Resolved(proposed_trunk.clone());
-    let selected = reservations
+) -> HashSet<ReservationId> {
+    reservations
         .iter()
         .filter(|reservation| {
             let target = actual_snapshot.recorded_target(reservation.id());
@@ -2909,13 +3199,35 @@ fn observe_proposed_trunk(
                 )
         })
         .map(Reservation::id)
-        .collect::<HashSet<_>>();
+        .collect()
+}
+
+fn observe_proposed_trunk(
+    reservations: &RetainedReservationSet,
+    ordering_graph: &OrderingGraph,
+    repository_observation_scope: RepositoryObservationScope,
+    actual_snapshot: &RepositorySnapshot,
+    worktree_context: &WorktreeContext,
+    proposed_trunk: GitObjectId,
+    reconciliation_evidence_context: &mut ReconciliationEvidenceContext<'_>,
+) -> Result<ProposedTrunkObservation, GateReconciliationError> {
+    let repository_trunk = JudgedTargetTip::Resolved(proposed_trunk.clone());
+    let selected = reservations_judged_at_proposed_trunk(reservations, actual_snapshot);
+    let (trunk_target, mut targets, reservation_targets) = actual_snapshot.target_facts();
+    let target_tips = observed_predecessor_target_tips(
+        ordering_graph,
+        repository_observation_scope,
+        &trunk_target,
+        &reservation_targets,
+        &targets,
+    );
     let integration_reachability = BatchedIntegrationReachability::observe(
         worktree_context.repository_root(),
         reservations,
         ordering_graph,
         &repository_trunk,
         &selected,
+        TrunkEdgeCandidates::including(repository_observation_scope, &target_tips),
     )
     .map_err(GateReconciliationError::Reservation)?;
     let mut target_evidence_context = TargetIntegrationEvidenceContext {
@@ -2976,10 +3288,17 @@ fn observe_proposed_trunk(
     )
     .map_err(GateReconciliationError::Reservation)?;
     operations.extend(successor_incorporation.operations);
-    let (trunk_target, mut targets, reservation_targets) = actual_snapshot.target_facts();
     targets.insert(
         trunk_target.clone(),
         TargetObservation::Resolved(proposed_trunk),
+    );
+    let cross_target_predecessors = cross_target_predecessor_evidence(
+        ordering_graph,
+        repository_observation_scope,
+        reservations,
+        &reservation_snapshots,
+        &repository_trunk,
+        &integration_reachability,
     );
     Ok(ProposedTrunkObservation {
         snapshot: RepositorySnapshot::new(
@@ -2988,6 +3307,7 @@ fn observe_proposed_trunk(
             reservation_targets,
             reservation_snapshots,
             successor_incorporation.by_predecessor,
+            cross_target_predecessors,
         ),
         operations,
     })
@@ -3267,14 +3587,14 @@ fn observe_released_repository_evidence(
         ReleaseRevalidationSubject::RewrittenIntegration(trunk_commit) => {
             IntegrationStatusObservation::new(
                 match target_evidence_context.repository_trunk {
-                    RepositoryTrunk::Resolved(trunk) => {
+                    JudgedTargetTip::Resolved(trunk) => {
                         trunk_commit.revalidate_ancestry(trunk, |witness| {
                             target_evidence_context
                                 .integration_reachability
                                 .for_ancestor(witness)
                         })
                     },
-                    RepositoryTrunk::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
+                    JudgedTargetTip::ObjectUnknown => IntegrationEvidenceStatus::ObjectUnknown,
                 },
                 EvidenceRevalidationObservation::Apply,
                 ScopedPatchComparisonJournalUpdate::Unchanged,
@@ -3305,7 +3625,7 @@ fn revalidate_protected_tip(
     trunk_snapshot: &GitObjectId,
     materialized: IntegrationEvidenceStatus,
 ) -> IntegrationStatusObservation {
-    let RepositoryTrunk::Resolved(current_trunk_oid) = target_evidence_context.repository_trunk
+    let JudgedTargetTip::Resolved(current_trunk_oid) = target_evidence_context.repository_trunk
     else {
         return IntegrationStatusObservation::new(
             IntegrationEvidenceStatus::ObjectUnknown,
@@ -3721,7 +4041,7 @@ enum SettlementSelection {
 fn settlement_selection(
     reservation: &Reservation,
     evidence: &IntegrationEvidenceStatus,
-    actual_trunk: &RepositoryTrunk,
+    actual_trunk: &JudgedTargetTip,
     merge_extent: &MergeExtent,
     committed_paths: &CommittedMergeEvidence,
 ) -> SettlementSelection {
@@ -3748,7 +4068,7 @@ fn settlement_selection(
             proof,
             witness,
         },
-        RepositoryTrunk::Resolved(actual),
+        JudgedTargetTip::Resolved(actual),
     ) = (evidence, actual_trunk)
     else {
         return SettlementSelection::Unchanged;
@@ -4949,7 +5269,7 @@ mod tests {
     use super::SettlementSelection;
     use super::rewrite_target_judgment;
     use super::rewrite_target_tip;
-    use crate::edge::RepositoryTrunk;
+    use crate::edge::JudgedTargetTip;
     use crate::gate::permit::PendingBranchRewriteMarker;
     use crate::git::Reachability;
     use crate::git::ScopedPatchComparison;
@@ -5220,8 +5540,8 @@ mod tests {
     fn settlement_selection() -> Result<(), Box<dyn std::error::Error>> {
         let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
         let [claim, checkpoint] = checkpoint_events()?;
-        let actual_trunk = RepositoryTrunk::Resolved(TRUNK.parse()?);
-        let other_trunk = RepositoryTrunk::Resolved(TIP.parse()?);
+        let actual_trunk = JudgedTargetTip::Resolved(TRUNK.parse()?);
+        let other_trunk = JudgedTargetTip::Resolved(TIP.parse()?);
         let extent = later_work_extent()?;
         for proof in [
             IntegrationProof::ProtectedTipAncestor,
@@ -5343,7 +5663,7 @@ mod tests {
                 super::settlement_selection(
                     reservation,
                     &evidence,
-                    &RepositoryTrunk::Resolved(trunk.parse()?),
+                    &JudgedTargetTip::Resolved(trunk.parse()?),
                     reservation.merge_extent(),
                     &super::CommittedMergeEvidence::Unavailable,
                 ),

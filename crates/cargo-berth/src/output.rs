@@ -4331,6 +4331,7 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
         IntegrationHold::OrderingEdge {
             edge_id,
             predecessor,
+            ordering_target,
             scopes,
             reason,
             readiness,
@@ -4342,13 +4343,24 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
                 } => format!("run cargo-berth release {predecessor} after checkpointing it"),
                 EdgeReadiness::Holding {
                     hold:
-                        EdgeHold::PredecessorNotOnTrunk {
+                        EdgeHold::PredecessorNotOnOrderingTarget {
                             evidence: UnintegratedPredecessorEvidence::NotIntegrated,
                         },
-                } => format!("run cargo-berth integrate {predecessor}"),
+                } if ordering_target.is_repository_trunk() => {
+                    format!("run cargo-berth integrate {predecessor}")
+                },
                 EdgeReadiness::Holding {
                     hold:
-                        EdgeHold::PredecessorNotOnTrunk {
+                        EdgeHold::PredecessorNotOnOrderingTarget {
+                            evidence: UnintegratedPredecessorEvidence::NotIntegrated,
+                        },
+                } => format!(
+                    "integrate reservation {predecessor} into {}",
+                    ordering_target.branch_name()
+                ),
+                EdgeReadiness::Holding {
+                    hold:
+                        EdgeHold::PredecessorNotOnOrderingTarget {
                             evidence: UnintegratedPredecessorEvidence::TrunkRewritten,
                         },
                 } => format!(
@@ -4356,14 +4368,16 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
                 ),
                 EdgeReadiness::Holding {
                     hold:
-                        EdgeHold::PredecessorNotOnTrunk {
+                        EdgeHold::PredecessorNotOnOrderingTarget {
                             evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
                         },
                 } => "repair the unresolvable git object, then rerun the integration".to_owned(),
                 EdgeReadiness::Holding {
                     hold: EdgeHold::AwaitingSuccessorIncorporation,
-                } => "rebase this worktree onto current main so it incorporates the predecessor"
-                    .to_owned(),
+                } => format!(
+                    "rebase this worktree onto current {} so it incorporates the predecessor",
+                    ordering_target.branch_name()
+                ),
                 EdgeReadiness::Cancelled | EdgeReadiness::Fulfilled => {
                     "rerun the gate because this edge is no longer holding".to_owned()
                 },

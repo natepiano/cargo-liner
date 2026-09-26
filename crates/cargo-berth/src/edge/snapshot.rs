@@ -16,13 +16,101 @@ use crate::reservation::ReleaseDisposition;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
 
-/// Whether the configured trunk resolved during repository observation.
+/// Commit availability at the branch where a reservation is judged.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum RepositoryTrunk {
-    /// The configured branch resolved to this commit.
+pub(crate) enum JudgedTargetTip {
+    /// The judging branch resolved to this commit.
     Resolved(GitObjectId),
-    /// Git could not resolve the configured branch.
+    /// Git could not resolve the judging branch.
     ObjectUnknown,
+}
+
+impl JudgedTargetTip {
+    /// Read the repository trunk's tip from its branch observation.
+    pub(crate) fn repository_trunk(
+        targets: &BTreeMap<IntegrationTarget, TargetObservation>,
+        trunk: &IntegrationTarget,
+    ) -> Self {
+        match targets.get(trunk) {
+            Some(TargetObservation::Resolved(commit)) => Self::Resolved(commit.clone()),
+            Some(TargetObservation::Missing | TargetObservation::ObjectUnknown) | None => {
+                Self::ObjectUnknown
+            },
+        }
+    }
+}
+
+/// The branch identity that judges a reservation's integration evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum EdgeJudgingTarget {
+    /// A resolved recorded branch, or the trunk replacing a missing branch.
+    Branch(IntegrationTarget),
+    /// The recorded branch could not be classified.
+    Unavailable,
+}
+
+/// The branch an ordering edge requires, with its relationship to the repository trunk.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum EdgeOrderingTarget {
+    RepositoryTrunk(IntegrationTarget),
+    SharedTarget(IntegrationTarget),
+    #[default]
+    Unavailable,
+}
+
+impl EdgeOrderingTarget {
+    pub(crate) fn branch_name(&self) -> &str {
+        match self {
+            Self::RepositoryTrunk(target) | Self::SharedTarget(target) => target.short_name(),
+            Self::Unavailable => "ordering target",
+        }
+    }
+
+    pub(crate) fn wait_name(&self) -> &str {
+        match self {
+            Self::RepositoryTrunk(_) => "trunk",
+            Self::SharedTarget(target) => target.short_name(),
+            Self::Unavailable => "ordering target",
+        }
+    }
+
+    pub(crate) const fn is_repository_trunk(&self) -> bool {
+        matches!(self, Self::RepositoryTrunk(_))
+    }
+}
+
+/// Whether a protected predecessor or its integration proof has reached the repository trunk.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CrossTargetPredecessorReachability {
+    /// The predecessor's work is reachable at this observed trunk commit.
+    OnTrunk(GitObjectId),
+    /// Neither protected evidence commit is reachable from the trunk.
+    NotOnTrunk,
+    /// A required commit or the trunk observation could not be classified.
+    ObjectUnknown,
+}
+
+/// Trunk-level evidence for graph predecessors, keyed by reservation identity.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CrossTargetPredecessorEvidence(
+    HashMap<ReservationId, CrossTargetPredecessorReachability>,
+);
+
+impl CrossTargetPredecessorEvidence {
+    pub(crate) const fn new(
+        evidence: HashMap<ReservationId, CrossTargetPredecessorReachability>,
+    ) -> Self {
+        Self(evidence)
+    }
+
+    fn for_predecessor(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<&CrossTargetPredecessorReachability, MissingReadinessFact> {
+        self.0
+            .get(&reservation_id)
+            .ok_or(MissingReadinessFact::CrossTargetPredecessor(reservation_id))
+    }
 }
 
 /// The direct observation of one recorded integration branch.
@@ -122,11 +210,12 @@ pub(crate) enum PredecessorSuccessorIncorporation {
 pub(crate) struct RepositorySnapshot {
     repository_trunk:             IntegrationTarget,
     targets:                      BTreeMap<IntegrationTarget, TargetObservation>,
-    judged_targets:               BTreeMap<IntegrationTarget, RepositoryTrunk>,
-    repository_trunk_observation: RepositoryTrunk,
+    judged_targets:               BTreeMap<IntegrationTarget, JudgedTargetTip>,
+    repository_trunk_observation: JudgedTargetTip,
     reservation_targets:          HashMap<ReservationId, IntegrationTarget>,
     reservations:                 HashMap<ReservationId, RepositoryReservationSnapshot>,
     successor_incorporation:      HashMap<ReservationId, PredecessorSuccessorIncorporation>,
+    cross_target_predecessors:    CrossTargetPredecessorEvidence,
 }
 
 impl RepositorySnapshot {
@@ -137,25 +226,21 @@ impl RepositorySnapshot {
         reservation_targets: HashMap<ReservationId, IntegrationTarget>,
         reservations: Vec<RepositoryReservationSnapshot>,
         successor_incorporation: Vec<(ReservationId, PredecessorSuccessorIncorporation)>,
+        cross_target_predecessors: CrossTargetPredecessorEvidence,
     ) -> Self {
-        let trunk_observation = match targets.get(&repository_trunk) {
-            Some(TargetObservation::Resolved(commit)) => RepositoryTrunk::Resolved(commit.clone()),
-            Some(TargetObservation::Missing | TargetObservation::ObjectUnknown) | None => {
-                RepositoryTrunk::ObjectUnknown
-            },
-        };
+        let trunk_observation = JudgedTargetTip::repository_trunk(&targets, &repository_trunk);
         let judged_targets = targets
             .iter()
             .map(|(target, observation)| {
                 let judged = match observation {
                     TargetObservation::Resolved(commit) => {
-                        RepositoryTrunk::Resolved(commit.clone())
+                        JudgedTargetTip::Resolved(commit.clone())
                     },
                     TargetObservation::Missing if target != &repository_trunk => {
                         trunk_observation.clone()
                     },
                     TargetObservation::Missing | TargetObservation::ObjectUnknown => {
-                        RepositoryTrunk::ObjectUnknown
+                        JudgedTargetTip::ObjectUnknown
                     },
                 };
                 (target.clone(), judged)
@@ -172,6 +257,7 @@ impl RepositorySnapshot {
                 .map(|snapshot| (snapshot.reservation_id, snapshot))
                 .collect(),
             successor_incorporation: successor_incorporation.into_iter().collect(),
+            cross_target_predecessors,
         }
     }
 
@@ -202,7 +288,7 @@ impl RepositorySnapshot {
     }
 
     /// Borrow the observation at which this reservation is judged.
-    pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &RepositoryTrunk {
+    pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &JudgedTargetTip {
         let target = self.recorded_target(reservation_id);
         self.judged_targets
             .get(target)
@@ -210,8 +296,28 @@ impl RepositorySnapshot {
     }
 
     /// Borrow the direct repository trunk observation for trunk-level rules.
-    pub(crate) const fn repository_trunk(&self) -> &RepositoryTrunk {
+    pub(crate) const fn repository_trunk(&self) -> &JudgedTargetTip {
         &self.repository_trunk_observation
+    }
+
+    /// Return the branch identity used to judge this reservation, independent of its tip.
+    pub(crate) fn judging_target(&self, reservation_id: ReservationId) -> EdgeJudgingTarget {
+        let target = self.recorded_target(reservation_id);
+        match self.targets.get(target) {
+            Some(TargetObservation::Resolved(_)) => EdgeJudgingTarget::Branch(target.clone()),
+            Some(TargetObservation::Missing) => {
+                EdgeJudgingTarget::Branch(self.repository_trunk.clone())
+            },
+            Some(TargetObservation::ObjectUnknown) | None => EdgeJudgingTarget::Unavailable,
+        }
+    }
+
+    pub(super) fn cross_target_predecessor(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<&CrossTargetPredecessorReachability, MissingReadinessFact> {
+        self.cross_target_predecessors
+            .for_predecessor(reservation_id)
     }
 
     /// Carry all target facts into a successor snapshot.
@@ -263,6 +369,8 @@ impl RepositorySnapshot {
 pub(crate) enum MissingReadinessFact {
     /// The snapshot contains no entry for this reservation.
     Reservation(ReservationId),
+    /// The snapshot lacks trunk reachability for a cross-target predecessor.
+    CrossTargetPredecessor(ReservationId),
     /// The snapshot contains no incorporation result for this protected predecessor.
     PredecessorIncorporation(ReservationId),
     /// A classified predecessor omitted one of its direct successor heads.
@@ -281,6 +389,10 @@ impl Display for MissingReadinessFact {
                 formatter,
                 "repository snapshot has no reservation {reservation_id}"
             ),
+            Self::CrossTargetPredecessor(reservation_id) => write!(
+                formatter,
+                "repository snapshot has no trunk evidence for predecessor {reservation_id}"
+            ),
             Self::PredecessorIncorporation(reservation_id) => write!(
                 formatter,
                 "repository snapshot has no successor-incorporation evidence for {reservation_id}"
@@ -297,3 +409,85 @@ impl Display for MissingReadinessFact {
 }
 
 impl Error for MissingReadinessFact {}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::collections::HashMap;
+    use std::error::Error;
+
+    use super::CrossTargetPredecessorEvidence;
+    use super::EdgeJudgingTarget;
+    use super::RepositorySnapshot;
+    use super::TargetObservation;
+    use crate::ids::GitObjectId;
+    use crate::ids::ReservationId;
+    use crate::ledger::IntegrationTarget;
+
+    #[test]
+    fn judging_target_uses_branch_identity_and_missing_target_fallback()
+    -> Result<(), Box<dyn Error>> {
+        let trunk = IntegrationTarget::from_branch_argument("main")?;
+        let first = IntegrationTarget::from_branch_argument("integration-first")?;
+        let second = IntegrationTarget::from_branch_argument("integration-second")?;
+        let missing = IntegrationTarget::from_branch_argument("deleted")?;
+        let unknown = IntegrationTarget::from_branch_argument("unreadable")?;
+        let shared_tip: GitObjectId = "0123456789abcdef0123456789abcdef01234567".parse()?;
+        let trunk_id = ReservationId::new();
+        let first_id = ReservationId::new();
+        let second_id = ReservationId::new();
+        let missing_id = ReservationId::new();
+        let unknown_id = ReservationId::new();
+        let snapshot = RepositorySnapshot::new(
+            trunk.clone(),
+            BTreeMap::from([
+                (
+                    trunk.clone(),
+                    TargetObservation::Resolved(shared_tip.clone()),
+                ),
+                (
+                    first.clone(),
+                    TargetObservation::Resolved(shared_tip.clone()),
+                ),
+                (second.clone(), TargetObservation::Resolved(shared_tip)),
+                (missing.clone(), TargetObservation::Missing),
+                (unknown.clone(), TargetObservation::ObjectUnknown),
+            ]),
+            HashMap::from([
+                (trunk_id, trunk.clone()),
+                (first_id, first.clone()),
+                (second_id, second.clone()),
+                (missing_id, missing),
+                (unknown_id, unknown),
+            ]),
+            Vec::new(),
+            Vec::new(),
+            CrossTargetPredecessorEvidence::default(),
+        );
+        assert_eq!(
+            snapshot.judging_target(trunk_id),
+            EdgeJudgingTarget::Branch(trunk.clone())
+        );
+        assert_eq!(
+            snapshot.judging_target(missing_id),
+            EdgeJudgingTarget::Branch(trunk)
+        );
+        assert_eq!(
+            snapshot.judging_target(unknown_id),
+            EdgeJudgingTarget::Unavailable
+        );
+        assert_eq!(
+            snapshot.judging_target(first_id),
+            EdgeJudgingTarget::Branch(first)
+        );
+        assert_eq!(
+            snapshot.judging_target(second_id),
+            EdgeJudgingTarget::Branch(second)
+        );
+        assert_ne!(
+            snapshot.judging_target(first_id),
+            snapshot.judging_target(second_id)
+        );
+        Ok(())
+    }
+}

@@ -24,8 +24,8 @@ use super::report::DriftReport;
 use super::report::IncursionCommit;
 use super::report::IncursionCommitOrigin;
 use super::report::ReservationDriftResult;
+use crate::edge::JudgedTargetTip;
 use crate::edge::RepositorySnapshot;
-use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::git::IncursionPathLogInvocation;
 use crate::ids::CommitterTime;
@@ -74,10 +74,10 @@ enum IncursionCommitOriginMembership {
 impl IncursionCommitOriginMembership {
     fn observe(
         repository_root: &Path,
-        origin_basis: &RepositoryTrunk,
+        origin_basis: &JudgedTargetTip,
         target: &GitObjectId,
     ) -> Self {
-        let RepositoryTrunk::Resolved(origin_basis) = origin_basis else {
+        let JudgedTargetTip::Resolved(origin_basis) = origin_basis else {
             return Self::CannotClassifyOrigin;
         };
         git::commits_outside_origin_basis(repository_root, origin_basis, target)
@@ -456,6 +456,7 @@ mod tests {
             ]),
             Vec::new(),
             Vec::new(),
+            crate::edge::CrossTargetPredecessorEvidence::default(),
         );
         let session_identity = DriftActingIdentity::Session {
             run:         CoordinationRunId::new(),

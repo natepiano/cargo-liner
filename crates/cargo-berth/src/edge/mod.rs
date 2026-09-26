@@ -17,12 +17,16 @@ pub(crate) use graph::PreparedOrderingEdge;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+pub(crate) use snapshot::CrossTargetPredecessorEvidence;
+pub(crate) use snapshot::CrossTargetPredecessorReachability;
+pub(crate) use snapshot::EdgeJudgingTarget;
+pub(crate) use snapshot::EdgeOrderingTarget;
+pub(crate) use snapshot::JudgedTargetTip;
 pub(crate) use snapshot::MissingReadinessFact;
 pub(crate) use snapshot::PredecessorSuccessorIncorporation;
 pub(crate) use snapshot::RepositoryReservationEvidence;
 pub(crate) use snapshot::RepositoryReservationSnapshot;
 pub(crate) use snapshot::RepositorySnapshot;
-pub(crate) use snapshot::RepositoryTrunk;
 pub(crate) use snapshot::SuccessorIncorporationEvidence;
 pub(crate) use snapshot::TargetObservation;
 
@@ -175,6 +179,9 @@ pub(crate) struct IntegrationOrderingConstraint {
     pub(crate) predecessor:          ReservationId,
     /// The reservation constrained by this relationship.
     pub(crate) successor:            ReservationId,
+    /// Branch whose history orders this edge; presentation only.
+    #[serde(skip)]
+    pub(crate) ordering_target:      EdgeOrderingTarget,
     /// The exact approved overlap scopes that justified this relationship.
     pub(crate) scopes:               ReservationScopeSet,
     /// Why the order was selected.
@@ -264,17 +271,20 @@ pub(crate) enum IntegrationHold {
     /// A derived ordering edge still holds its successor.
     OrderingEdge {
         /// The stable edge identity.
-        edge_id:     EdgeId,
+        edge_id:         EdgeId,
         /// The reservation that must be incorporated first.
-        predecessor: ReservationId,
+        predecessor:     ReservationId,
         /// The reservation this hold blocks.
-        successor:   ReservationId,
+        successor:       ReservationId,
+        /// Branch whose history orders this edge; presentation only.
+        #[serde(skip)]
+        ordering_target: EdgeOrderingTarget,
         /// The exact approved overlap scopes that justified this edge.
-        scopes:      ReservationScopeSet,
+        scopes:          ReservationScopeSet,
         /// Why the order was selected.
-        reason:      OrderingReason,
+        reason:          OrderingReason,
         /// The structurally holding readiness value and its precise recovery case.
-        readiness:   EdgeReadiness,
+        readiness:       EdgeReadiness,
     },
     /// A defer answer holds both named endpoints until a direction is selected.
     DeferredOverlap {
@@ -366,42 +376,145 @@ impl OrderingEdge {
             }
             | RepositoryReservationEvidence::Released {
                 integration_status, ..
-            } => match integration_status {
-                IntegrationEvidenceStatus::Integrated { .. } => {
-                    match repository_snapshot
-                        .successor_incorporation_evidence(self.before, self.after)?
-                    {
-                        SuccessorIncorporationEvidence::ProtectedTipAncestor
-                        | SuccessorIncorporationEvidence::IntegratedTrunkAncestor
-                        | SuccessorIncorporationEvidence::ScopedPatchEquivalent => {
-                            Ok(EdgeReadiness::Fulfilled)
-                        },
-                        SuccessorIncorporationEvidence::NotIncorporated
-                        | SuccessorIncorporationEvidence::ObjectUnknown => {
-                            Ok(EdgeReadiness::Holding {
-                                hold: EdgeHold::AwaitingSuccessorIncorporation,
-                            })
-                        },
-                    }
+            } => self.checkpoint_readiness(repository_snapshot, integration_status),
+            RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
+                Ok(EdgeReadiness::Cancelled)
+            },
+        }
+    }
+
+    fn checkpoint_readiness(
+        &self,
+        repository_snapshot: &RepositorySnapshot,
+        integration_status: &IntegrationEvidenceStatus,
+    ) -> Result<EdgeReadiness, MissingReadinessFact> {
+        let shared_target = self.shares_judging_target(repository_snapshot);
+        let evidence = if shared_target {
+            PredecessorOrderingEvidence::from(integration_status)
+        } else {
+            self.cross_target_evidence(repository_snapshot)?
+        };
+        match evidence {
+            PredecessorOrderingEvidence::NotOnTarget(reason) if shared_target => {
+                Ok(EdgeReadiness::Holding {
+                    hold: EdgeHold::PredecessorNotOnOrderingTarget { evidence: reason },
+                })
+            },
+            evidence => match repository_snapshot
+                .successor_incorporation_evidence(self.before, self.after)?
+            {
+                SuccessorIncorporationEvidence::ProtectedTipAncestor
+                | SuccessorIncorporationEvidence::IntegratedTrunkAncestor
+                | SuccessorIncorporationEvidence::ScopedPatchEquivalent => {
+                    Ok(EdgeReadiness::Fulfilled)
                 },
-                IntegrationEvidenceStatus::NotIntegrated => Ok(EdgeReadiness::Holding {
-                    hold: EdgeHold::PredecessorNotOnTrunk {
-                        evidence: UnintegratedPredecessorEvidence::NotIntegrated,
+                SuccessorIncorporationEvidence::NotIncorporated => Ok(match evidence {
+                    PredecessorOrderingEvidence::OnTarget => EdgeReadiness::Holding {
+                        hold: EdgeHold::AwaitingSuccessorIncorporation,
+                    },
+                    PredecessorOrderingEvidence::NotOnTarget(reason) => EdgeReadiness::Holding {
+                        hold: EdgeHold::PredecessorNotOnOrderingTarget { evidence: reason },
                     },
                 }),
-                IntegrationEvidenceStatus::TrunkRewritten => Ok(EdgeReadiness::Holding {
-                    hold: EdgeHold::PredecessorNotOnTrunk {
-                        evidence: UnintegratedPredecessorEvidence::TrunkRewritten,
+                SuccessorIncorporationEvidence::ObjectUnknown => Ok(match evidence {
+                    PredecessorOrderingEvidence::OnTarget => EdgeReadiness::Holding {
+                        hold: EdgeHold::AwaitingSuccessorIncorporation,
                     },
-                }),
-                IntegrationEvidenceStatus::ObjectUnknown => Ok(EdgeReadiness::Holding {
-                    hold: EdgeHold::PredecessorNotOnTrunk {
-                        evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
+                    PredecessorOrderingEvidence::NotOnTarget(_) => EdgeReadiness::Holding {
+                        hold: EdgeHold::PredecessorNotOnOrderingTarget {
+                            evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
+                        },
                     },
                 }),
             },
-            RepositoryReservationEvidence::ReleasedWithoutCheckpoint { .. } => {
-                Ok(EdgeReadiness::Cancelled)
+        }
+    }
+
+    fn shares_judging_target(&self, repository_snapshot: &RepositorySnapshot) -> bool {
+        matches!(
+            (
+                repository_snapshot.judging_target(self.before),
+                repository_snapshot.judging_target(self.after),
+            ),
+            (
+                snapshot::EdgeJudgingTarget::Branch(before),
+                snapshot::EdgeJudgingTarget::Branch(after)
+            ) if before == after
+        )
+    }
+
+    fn ordering_target(&self, repository_snapshot: &RepositorySnapshot) -> EdgeOrderingTarget {
+        if self.shares_judging_target(repository_snapshot) {
+            match repository_snapshot.judging_target(self.before) {
+                EdgeJudgingTarget::Branch(target)
+                    if &target == repository_snapshot.repository_trunk_target() =>
+                {
+                    EdgeOrderingTarget::RepositoryTrunk(target)
+                },
+                EdgeJudgingTarget::Branch(target) => EdgeOrderingTarget::SharedTarget(target),
+                EdgeJudgingTarget::Unavailable => EdgeOrderingTarget::Unavailable,
+            }
+        } else {
+            EdgeOrderingTarget::RepositoryTrunk(
+                repository_snapshot.repository_trunk_target().clone(),
+            )
+        }
+    }
+
+    fn cross_target_evidence(
+        &self,
+        repository_snapshot: &RepositorySnapshot,
+    ) -> Result<PredecessorOrderingEvidence, MissingReadinessFact> {
+        if matches!(
+            repository_snapshot.judging_target(self.before),
+            snapshot::EdgeJudgingTarget::Unavailable
+        ) || matches!(
+            repository_snapshot.judging_target(self.after),
+            snapshot::EdgeJudgingTarget::Unavailable
+        ) {
+            return Ok(PredecessorOrderingEvidence::NotOnTarget(
+                UnintegratedPredecessorEvidence::ObjectUnknown,
+            ));
+        }
+        Ok(
+            match repository_snapshot.cross_target_predecessor(self.before)? {
+                CrossTargetPredecessorReachability::OnTrunk(_) => {
+                    PredecessorOrderingEvidence::OnTarget
+                },
+                CrossTargetPredecessorReachability::NotOnTrunk => {
+                    PredecessorOrderingEvidence::NotOnTarget(
+                        UnintegratedPredecessorEvidence::NotIntegrated,
+                    )
+                },
+                CrossTargetPredecessorReachability::ObjectUnknown => {
+                    PredecessorOrderingEvidence::NotOnTarget(
+                        UnintegratedPredecessorEvidence::ObjectUnknown,
+                    )
+                },
+            },
+        )
+    }
+}
+
+/// Whether a predecessor has reached the branch that orders this edge.
+#[derive(Clone, Copy)]
+enum PredecessorOrderingEvidence {
+    OnTarget,
+    NotOnTarget(UnintegratedPredecessorEvidence),
+}
+
+impl From<&IntegrationEvidenceStatus> for PredecessorOrderingEvidence {
+    fn from(status: &IntegrationEvidenceStatus) -> Self {
+        match status {
+            IntegrationEvidenceStatus::Integrated { .. } => Self::OnTarget,
+            IntegrationEvidenceStatus::NotIntegrated => {
+                Self::NotOnTarget(UnintegratedPredecessorEvidence::NotIntegrated)
+            },
+            IntegrationEvidenceStatus::TrunkRewritten => {
+                Self::NotOnTarget(UnintegratedPredecessorEvidence::TrunkRewritten)
+            },
+            IntegrationEvidenceStatus::ObjectUnknown => {
+                Self::NotOnTarget(UnintegratedPredecessorEvidence::ObjectUnknown)
             },
         }
     }
@@ -428,8 +541,10 @@ pub(crate) enum EdgeReadiness {
 pub(crate) enum EdgeHold {
     /// The predecessor has no protected checkpoint to be reachable from.
     AwaitingPredecessorCheckpoint,
-    /// The predecessor has a protected tip that current trunk does not prove.
-    PredecessorNotOnTrunk {
+    /// The predecessor is not on the edge's ordering target: the shared target for a
+    /// same-target edge, or the repository trunk across targets.
+    #[serde(rename = "predecessor_not_on_trunk")]
+    PredecessorNotOnOrderingTarget {
         /// Which unproven case applies, and therefore how it is resolved.
         evidence: UnintegratedPredecessorEvidence,
     },
@@ -471,16 +586,21 @@ impl Error for EmptyOrderingReason {}
 mod tests {
     use std::error::Error;
 
+    use super::CrossTargetPredecessorEvidence;
+    use super::CrossTargetPredecessorReachability;
     use super::EdgeDeclaration;
     use super::EdgeHold;
     use super::EdgeReadiness;
     use super::OrderingEdge;
     use super::OrderingOverlapScopeSet;
     use super::OrderingReason;
+    use super::PredecessorSuccessorIncorporation;
     use super::RepositoryReservationEvidence;
     use super::RepositoryReservationSnapshot;
     use super::RepositorySnapshot;
+    use super::SuccessorIncorporationEvidence;
     use super::TargetObservation;
+    use super::UnintegratedPredecessorEvidence;
     use crate::ids::EdgeId;
     use crate::ids::EventId;
     use crate::ids::GitObjectId;
@@ -489,6 +609,7 @@ mod tests {
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
+    use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::ReleaseDisposition;
     use crate::worktree::WorktreeHead;
     use crate::worktree::WorktreeLiveness;
@@ -541,6 +662,7 @@ mod tests {
                     },
                 ],
                 Vec::new(),
+                super::CrossTargetPredecessorEvidence::default(),
             )
         };
 
@@ -564,6 +686,79 @@ mod tests {
         ))?;
         assert_eq!(abandoned_readiness, EdgeReadiness::Cancelled);
         assert!(!abandoned_readiness.holds_successor());
+        Ok(())
+    }
+
+    #[test]
+    fn cross_target_unknown_successor_read_preserves_unknown_hold() -> Result<(), Box<dyn Error>> {
+        let predecessor = ReservationId::new();
+        let successor = ReservationId::new();
+        let head = LIVE_HEAD.parse::<GitObjectId>()?;
+        let trunk = crate::ledger::IntegrationTarget::from_branch_argument("main")
+            .map_err(std::io::Error::other)?;
+        let integration = crate::ledger::IntegrationTarget::from_branch_argument("integration")
+            .map_err(std::io::Error::other)?;
+        let edge = OrderingEdge {
+            edge_id:              EdgeId::new(),
+            before:               predecessor,
+            after:                successor,
+            scopes:               OrderingOverlapScopeSet(ReservationScopeSet::try_from(vec![
+                ReservationScope {
+                    path: RETAINED_SCOPE_PATH.parse::<ReservationScopePath>()?,
+                    kind: ScopeKind::File,
+                },
+            ])?),
+            reason:               OrderingReason("predecessor lands first".to_owned()),
+            declaration_event_id: EventId::new(),
+            declaration:          EdgeDeclaration::DeferredResolution,
+        };
+        let snapshot = RepositorySnapshot::new(
+            trunk.clone(),
+            std::collections::BTreeMap::from([
+                (trunk.clone(), TargetObservation::Resolved(head.clone())),
+                (
+                    integration.clone(),
+                    TargetObservation::Resolved(head.clone()),
+                ),
+            ]),
+            std::collections::HashMap::from([(predecessor, integration), (successor, trunk)]),
+            vec![
+                RepositoryReservationSnapshot {
+                    reservation_id:    predecessor,
+                    worktree_liveness: WorktreeLiveness::Live,
+                    worktree_head:     WorktreeHead::Resolved(head.clone()),
+                    evidence:          RepositoryReservationEvidence::Outstanding {
+                        protected_tip:      head.clone().into(),
+                        integration_status: IntegrationEvidenceStatus::NotIntegrated,
+                    },
+                },
+                RepositoryReservationSnapshot {
+                    reservation_id:    successor,
+                    worktree_liveness: WorktreeLiveness::Live,
+                    worktree_head:     WorktreeHead::Resolved(head.clone()),
+                    evidence:          RepositoryReservationEvidence::Active,
+                },
+            ],
+            vec![(
+                predecessor,
+                PredecessorSuccessorIncorporation::Classified(std::collections::HashMap::from([(
+                    head,
+                    SuccessorIncorporationEvidence::ObjectUnknown,
+                )])),
+            )],
+            CrossTargetPredecessorEvidence::new(std::collections::HashMap::from([(
+                predecessor,
+                CrossTargetPredecessorReachability::NotOnTrunk,
+            )])),
+        );
+        assert_eq!(
+            edge.readiness(&snapshot)?,
+            EdgeReadiness::Holding {
+                hold: EdgeHold::PredecessorNotOnOrderingTarget {
+                    evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
+                },
+            }
+        );
         Ok(())
     }
 }

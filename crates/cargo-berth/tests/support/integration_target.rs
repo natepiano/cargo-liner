@@ -82,6 +82,14 @@ impl IntegrationRepository {
     pub(crate) fn root(&self) -> &Path { self.repository.path() }
 
     pub(crate) fn lane(&self, branch: &str, target: &str) -> PathBuf {
+        self.lane_from(branch, "integration", target)
+    }
+
+    pub(crate) fn main_lane(&self, branch: &str) -> PathBuf {
+        self.lane_from(branch, "main", "main")
+    }
+
+    fn lane_from(&self, branch: &str, base: &str, target: &str) -> PathBuf {
         let checkout = self.worktrees.path().join(branch);
         git(
             self.root(),
@@ -92,7 +100,7 @@ impl IntegrationRepository {
                 "-b",
                 branch,
                 checkout.to_str().expect("UTF-8 path"),
-                "integration",
+                base,
             ],
         );
         git(
@@ -136,11 +144,15 @@ pub(crate) fn git(root: &Path, args: &[&str]) { GIT.run(root, args); }
 pub(crate) fn git_stdout(root: &Path, args: &[&str]) -> String { GIT.stdout(root, args) }
 
 pub(crate) fn commit_file(root: &Path, path: &str, contents: &str, message: &str) {
+    write_file(root, path, contents);
+    git(root, &["add", path]);
+    git(root, &["commit", "--quiet", "-m", message]);
+}
+
+pub(crate) fn write_file(root: &Path, path: &str, contents: &str) {
     let file = root.join(path);
     fs::create_dir_all(file.parent().expect("file parent")).expect("file parent exists");
     fs::write(file, contents).expect("fixture file writes");
-    git(root, &["add", path]);
-    git(root, &["commit", "--quiet", "-m", message]);
 }
 
 pub(crate) fn run(root: &Path, args: &[&str]) -> Output {
@@ -231,6 +243,41 @@ pub(crate) fn claim(root: &Path, path: &str, run_id: &str, target: Option<&str>)
         args.extend(["--target", target]);
     }
     run(root, &args)
+}
+
+pub(crate) fn defer_claim(root: &Path, path: &str, run_id: &str, blocker: &str) -> Output {
+    let mut args = vec![
+        "claim",
+        path,
+        "--run",
+        run_id,
+        "--defer",
+        blocker,
+        "--overlap-why",
+        "the order needs a decision",
+        "--why",
+        "protect deferred work",
+    ];
+    args.push("--json");
+    let proposal = run(root, &args);
+    let proposal_json = json(&proposal);
+    assert_eq!(
+        proposal_json["status"], "needs_user_authorization",
+        "{proposal_json}"
+    );
+    let token = proposal_json["payload"]["data"]["proposal_token"]
+        .as_str()
+        .expect("deferred claim proposal token")
+        .to_owned();
+    args.splice(args.len() - 1..args.len() - 1, ["--proposal", &token]);
+    run(root, &args)
+}
+
+pub(crate) fn claim_id(output: &Output) -> String {
+    json(output)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("claim reservation ID")
+        .to_owned()
 }
 
 pub(crate) fn set_trunk(root: &Path, branch: &str) {

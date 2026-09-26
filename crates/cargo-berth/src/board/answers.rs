@@ -17,6 +17,7 @@ use crate::answer::OverlapAuthorizationReason;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeReadiness;
 use crate::edge::IntegrationConstraintProjection;
+use crate::edge::IntegrationOrderingConstraint;
 use crate::edge::OrderingReason;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
@@ -133,10 +134,10 @@ struct AccumulatedDeferralApprovals {
     deferral_reasons:      Vec<OverlapAuthorizationReason>,
 }
 
-fn ordering_consequence(readiness: EdgeReadiness) -> OrderingConsequence {
-    match readiness {
+fn ordering_consequence(edge: &IntegrationOrderingConstraint) -> OrderingConsequence {
+    match edge.readiness {
         EdgeReadiness::Holding { hold } => OrderingConsequence::Holding {
-            action: rows::waiting_action(hold),
+            action: rows::waiting_action(hold, &edge.ordering_target),
         },
         EdgeReadiness::Cancelled => OrderingConsequence::Cancelled,
         EdgeReadiness::Fulfilled => OrderingConsequence::Fulfilled,
@@ -238,7 +239,7 @@ pub(super) fn recorded_answers(
                     exact_approved_scopes,
                     deferral_reasons,
                     ordering_reason: reason.clone(),
-                    consequence: ordering_consequence(edge.readiness),
+                    consequence: ordering_consequence(edge),
                 });
             },
             _ => {},
@@ -386,7 +387,7 @@ fn append_authorization_answer(
                 exact_approved_scopes: overlaps.clone(),
                 authorization_reason: reason.clone(),
                 acquisition,
-                consequence: ordering_consequence(edge.readiness),
+                consequence: ordering_consequence(edge),
             });
         },
         ConflictAuthorization::Defer {

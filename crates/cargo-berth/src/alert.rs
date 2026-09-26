@@ -9,8 +9,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::edge::JudgedTargetTip;
 use crate::edge::RepositoryReservationEvidence;
-use crate::edge::RepositoryTrunk;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
@@ -296,7 +296,7 @@ impl OrphanResolutionAction {
     /// Select recovery guidance without making another repository observation.
     pub(crate) fn new(
         orphan: &OrphanedOutstandingAlert,
-        repository_trunk: &RepositoryTrunk,
+        repository_trunk: &JudgedTargetTip,
     ) -> Self {
         match orphan.recoverability() {
             RecoverabilityVerdict::CommitUnavailable => Self::RetireOrAbandon,
@@ -312,13 +312,13 @@ impl OrphanResolutionAction {
                             action,
                         }
                     },
-                    (OrphanIntegrationEvidence::Unproven, RepositoryTrunk::Resolved(trunk_oid)) => {
+                    (OrphanIntegrationEvidence::Unproven, JudgedTargetTip::Resolved(trunk_oid)) => {
                         LostEvidenceRecovery::NameCarryingTrunkCommit {
                             trunk_oid: trunk_oid.clone(),
                             action,
                         }
                     },
-                    (OrphanIntegrationEvidence::Unproven, RepositoryTrunk::ObjectUnknown) => {
+                    (OrphanIntegrationEvidence::Unproven, JudgedTargetTip::ObjectUnknown) => {
                         LostEvidenceRecovery::ResolveTrunkFirst { action }
                     },
                 })
@@ -519,7 +519,7 @@ enum BranchProtectedTipStatus {
 /// Derive an alert when a released Git-backed disposition has no affirmative proof.
 pub(crate) fn for_lost_integration_evidence(
     reservation: &Reservation,
-    repository_trunk: &RepositoryTrunk,
+    repository_trunk: &JudgedTargetTip,
 ) -> Result<Vec<Alert>, ReservationReplayError> {
     let ReservationEvidenceState::Released {
         protected_tip,
@@ -549,11 +549,11 @@ pub(crate) fn for_lost_integration_evidence(
     // The alert fires only when trunk does not prove the work, so the resolved trunk tip is
     // never offered as the `--integrated-as` argument.
     let recovery = match repository_trunk {
-        RepositoryTrunk::Resolved(trunk_oid) => LostEvidenceRecovery::NameCarryingTrunkCommit {
+        JudgedTargetTip::Resolved(trunk_oid) => LostEvidenceRecovery::NameCarryingTrunkCommit {
             trunk_oid: trunk_oid.clone(),
             action,
         },
-        RepositoryTrunk::ObjectUnknown => LostEvidenceRecovery::ResolveTrunkFirst { action },
+        JudgedTargetTip::ObjectUnknown => LostEvidenceRecovery::ResolveTrunkFirst { action },
     };
     Ok(vec![Alert::LostIntegrationEvidence(
         LostIntegrationEvidenceAlert {
@@ -687,8 +687,8 @@ mod tests {
     use super::OrphanedOutstandingAlert;
     use super::RecoverabilityVerdict;
     use super::RetentionRefStatus;
+    use crate::edge::JudgedTargetTip;
     use crate::edge::RepositoryReservationEvidence;
-    use crate::edge::RepositoryTrunk;
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
     use crate::reservation::IntegrationEvidenceStatus;
@@ -720,8 +720,8 @@ mod tests {
                 OrphanIntegrationEvidence::Unproven,
             ] {
                 for trunk in [
-                    RepositoryTrunk::Resolved(trunk_oid.clone()),
-                    RepositoryTrunk::ObjectUnknown,
+                    JudgedTargetTip::Resolved(trunk_oid.clone()),
+                    JudgedTargetTip::ObjectUnknown,
                 ] {
                     let orphan = OrphanedOutstandingAlert {
                         reservation_id,
@@ -758,7 +758,7 @@ mod tests {
                         (
                             _,
                             OrphanIntegrationEvidence::Unproven,
-                            RepositoryTrunk::Resolved(trunk_oid),
+                            JudgedTargetTip::Resolved(trunk_oid),
                         ) => OrphanResolutionAction::Recover(
                             LostEvidenceRecovery::NameCarryingTrunkCommit {
                                 trunk_oid: trunk_oid.clone(),
@@ -768,7 +768,7 @@ mod tests {
                         (
                             _,
                             OrphanIntegrationEvidence::Unproven,
-                            RepositoryTrunk::ObjectUnknown,
+                            JudgedTargetTip::ObjectUnknown,
                         ) => OrphanResolutionAction::Recover(
                             LostEvidenceRecovery::ResolveTrunkFirst { action: command },
                         ),
