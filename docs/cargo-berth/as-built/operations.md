@@ -77,13 +77,13 @@ A present non-trunk target needs a cover in the worktree where it is checked out
 
 ### Migrate a uniform integration trunk to per-branch targets
 
-Run these steps once. For example, suppose `hana` currently names the integration branch and `main` is the intended repository trunk.
+Run these steps once. In the hana repository, `init/catalyst` currently names the integration branch (checked out in `hana_catalyst`) and `main` (checked out in the main worktree, `hana`) is the intended repository trunk.
 
-1. In any worktree, while `.claude/config/berth.toml` still names `hana`, run `cargo-berth init`. This pins every existing reservation, including released ones, to `hana`.
-2. Run `git config branch.<lane>.cargoBerthTarget hana` for each lane. In hana, this includes `tool-based-ui-arrange`, `tool-based-ui-geometry-material`, `tool-based-ui-trunk`, and later lanes.
-3. Set `trunk = "main"` in `.claude/config/berth.toml` and commit it on `main` and `hana`. Only the main worktree's copy supplies the repository trunk.
-4. Run `cargo-berth retarget <id> --target main` for any live reservation in the main worktree or the `hana` worktree.
-5. Run `cargo-berth board --json`. The lanes should target `hana`; the reservation in the `hana` worktree should target `main`, carry `hana`'s diff as its extent, and cover it without blocking those lanes. Reconciliation creates that cover if step 4 left no live reservation there.
+1. In any worktree, while `.claude/config/berth.toml` still names `init/catalyst`, run `cargo-berth init`. This pins every existing reservation, including released ones, to `init/catalyst`.
+2. Run `git config branch.<lane>.cargoBerthTarget init/catalyst` for each lane that merges into `init/catalyst`, such as `tool-based-ui-geometry-material` and `tool-based-ui-trunk`. A lane stacked on another lane names that lane instead: `tool-based-ui-material` merges into `tool-based-ui-geometry-material`.
+3. Set `trunk = "main"` in `.claude/config/berth.toml` and commit it on `main` and `init/catalyst`. Only the main worktree's copy supplies the repository trunk.
+4. Run `cargo-berth retarget <id> --target main` for any live reservation in the main worktree or the `hana_catalyst` worktree.
+5. Run `cargo-berth board --json`. The lanes should target `init/catalyst` (or their parent lane); the reservation in the `hana_catalyst` worktree should target `main`, carry `init/catalyst`'s diff as its extent, and cover it without blocking those lanes. Reconciliation creates that cover if step 4 left no live reservation there.
 6. Run `cargo-berth init` again. The managed reference-transaction hook carries the trunk it was installed with, so this reinstalls it with `main` and rewrites `.git/cargo-berth/gate-targets` from live journal state.
 
 Step 1 must precede step 3. Changing the trunk before the pin re-judges released lanes against `main` and raises lost-evidence alerts for their former integration proofs.
