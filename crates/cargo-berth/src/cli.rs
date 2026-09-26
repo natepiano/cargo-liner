@@ -105,6 +105,8 @@ use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
+use crate::session;
+use crate::session::HookHarnessSessionSelection;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::board::BoardOutputSelection;
@@ -412,6 +414,15 @@ enum PostCommitHookRequest {
     NotRequested,
 }
 
+/// Who ran this `cargo-berth` process, which decides where its harness session comes from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandInvocation {
+    /// Git ran it from a managed hook, passing on the environment of whichever process ran git.
+    ManagedGitHook,
+    /// A person, a harness session, or a harness hook ran `cargo-berth` itself.
+    Direct,
+}
+
 /// How a completed command response is rendered for its caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandResponseRendering {
@@ -419,6 +430,31 @@ enum CommandResponseRendering {
     OutputEnvelope(CliOutputFormat),
     /// Emit only the installed post-commit hook warning.
     PostCommitWarning,
+}
+
+impl CommandInvocation {
+    /// Bind a managed git hook's process to `CARGO_BERTH_SESSION_ID` alone before any lookup.
+    ///
+    /// A direct invocation selects nothing here: an ordinary command keeps the
+    /// `CLAUDE_CODE_SESSION_ID` fallback, and a harness hook selects from its payload once it
+    /// has read it.
+    fn select_harness_session(self) {
+        match self {
+            Self::ManagedGitHook => session::select_current_process_harness_session(
+                HookHarnessSessionSelection::for_managed_git_hook(),
+            ),
+            Self::Direct => {},
+        }
+    }
+}
+
+impl From<PostCommitHookRequest> for CommandInvocation {
+    fn from(post_commit_hook_request: PostCommitHookRequest) -> Self {
+        match post_commit_hook_request {
+            PostCommitHookRequest::Requested => Self::ManagedGitHook,
+            PostCommitHookRequest::NotRequested => Self::Direct,
+        }
+    }
 }
 
 impl From<bool> for CliOutputFormat {
@@ -725,6 +761,7 @@ impl Cli {
 
     /// Execute the parsed command and return its published process exit status.
     fn run(self) -> ExitCode {
+        self.command.invocation().select_harness_session();
         let command = match self.command {
             Command::ReferenceTransaction(arguments) => {
                 return run_reference_transaction(arguments.phase, arguments.trunk_reference);
@@ -868,6 +905,28 @@ impl Command {
             },
             Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
                 CliOutputFormat::Text
+            },
+        }
+    }
+
+    /// Report who ran this process, which decides where its harness session comes from.
+    fn invocation(&self) -> CommandInvocation {
+        match self {
+            Self::Init(_)
+            | Self::Board(_)
+            | Self::Check(_)
+            | Self::Hook(_)
+            | Self::Claim(_)
+            | Self::Release(_)
+            | Self::Sequence(_)
+            | Self::Integrate(_)
+            | Self::Resolve(_)
+            | Self::Renew(_)
+            | Self::Retarget(_)
+            | Self::Identity(_) => CommandInvocation::Direct,
+            Self::Drift(_) => post_commit_hook_request().into(),
+            Self::ReferenceTransaction(_) | Self::RefreshManagedHookAfterTrunkDeletion(_) => {
+                CommandInvocation::ManagedGitHook
             },
         }
     }

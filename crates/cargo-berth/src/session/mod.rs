@@ -1,6 +1,7 @@
 //! Durable harness-session identity mappings beside the shared journal.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -42,7 +43,8 @@ impl HarnessSessionId {
 
     /// The harness session this process runs under.
     ///
-    /// A hook boundary's selection wins. Otherwise `HARNESS_SESSION_ENVIRONMENT` names the
+    /// A hook boundary's selection wins: a harness hook's payload, or a managed git hook's
+    /// `HARNESS_SESSION_ENVIRONMENT` alone. Otherwise `HARNESS_SESSION_ENVIRONMENT` names the
     /// session, and only when it is unset does `CLAUDE_CODE_SESSION_ENVIRONMENT` name it:
     /// Claude Code sets that variable to the same session id its hook payloads carry as
     /// `session_id`, so a `cargo-berth` command a Claude Code session runs directly maps
@@ -56,13 +58,20 @@ impl HarnessSessionId {
             Some(HookHarnessSessionSelection::NoSession) => HarnessSessionIdentity::Unavailable,
             None => std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
                 .or_else(|| std::env::var_os(CLAUDE_CODE_SESSION_ENVIRONMENT))
-                .and_then(|value| value.into_string().ok())
-                .and_then(|value| value.parse().ok())
+                .and_then(Self::from_environment_value)
                 .map_or(
                     HarnessSessionIdentity::Unavailable,
                     HarnessSessionIdentity::Available,
                 ),
         }
+    }
+
+    /// Parse one environment variable's value, which must be UTF-8 and a usable id.
+    fn from_environment_value(value: OsString) -> Option<Self> {
+        value
+            .into_string()
+            .ok()
+            .and_then(|value| value.parse().ok())
     }
 }
 
@@ -75,13 +84,32 @@ pub(crate) enum HookHarnessSessionSelection {
     NoSession,
 }
 
-/// Establish the harness session identity a private hook boundary read from its payload.
+impl HookHarnessSessionSelection {
+    /// The selection for a process git started from one of its managed hooks.
+    ///
+    /// Git hands a hook the environment of whichever process ran git, and Claude Code sets
+    /// `CLAUDE_CODE_SESSION_ENVIRONMENT` in every command a session runs. A session that
+    /// holds a reservation in a lane worktree and runs `git merge --ff-only` from the trunk
+    /// checkout would otherwise have the `reference-transaction` gate validate that landing
+    /// as the session's own command in the wrong worktree and refuse it; post-commit drift
+    /// would likewise widen the session's reservation for a commit the session only ran git
+    /// for. So a managed git hook reads `HARNESS_SESSION_ENVIRONMENT` alone, which a caller
+    /// sets on purpose, and an unset or unusable value selects no session.
+    pub(crate) fn for_managed_git_hook() -> Self {
+        std::env::var_os(HARNESS_SESSION_ENVIRONMENT)
+            .and_then(HarnessSessionId::from_environment_value)
+            .map_or(Self::NoSession, Self::Session)
+    }
+}
+
+/// Establish the harness session identity a private hook boundary selected.
 ///
-/// `NoSession` is a decision, not an absence: it stops `HARNESS_SESSION_ENVIRONMENT` and
-/// `CLAUDE_CODE_SESSION_ENVIRONMENT` being consulted, so a payload without a session
-/// identity cannot adopt the session identity of whichever process launched the hook. The
-/// first selection in a process wins, and a hook binary makes exactly one before any
-/// reservation lookup.
+/// A harness hook selects from its payload; a managed git hook selects
+/// [`HookHarnessSessionSelection::for_managed_git_hook`]. `NoSession` is a decision, not an
+/// absence: it stops `HARNESS_SESSION_ENVIRONMENT` and `CLAUDE_CODE_SESSION_ENVIRONMENT`
+/// being consulted, so a hook without a session identity of its own cannot adopt the
+/// session identity of whichever process launched it. The first selection in a process
+/// wins, and a hook process makes exactly one before any reservation lookup.
 pub(crate) fn select_current_process_harness_session(selection: HookHarnessSessionSelection) {
     std::mem::drop(CURRENT_PROCESS_HARNESS_SESSION.set(selection));
 }
@@ -89,7 +117,8 @@ pub(crate) fn select_current_process_harness_session(selection: HookHarnessSessi
 /// The harness session id this process runs under, when it has one.
 ///
 /// A hook boundary's selection wins; otherwise `HARNESS_SESSION_ENVIRONMENT` is consulted,
-/// then `CLAUDE_CODE_SESSION_ENVIRONMENT` when the first is unset.
+/// then `CLAUDE_CODE_SESSION_ENVIRONMENT` when the first is unset. A managed git hook's
+/// selection never reads `CLAUDE_CODE_SESSION_ENVIRONMENT`.
 pub(crate) fn current_process_harness_session_id() -> Option<HarnessSessionId> {
     match HarnessSessionId::from_current_process() {
         HarnessSessionIdentity::Available(harness_session_id) => Some(harness_session_id),

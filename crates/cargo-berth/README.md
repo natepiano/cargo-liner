@@ -163,7 +163,9 @@ Having no session is an answer; borrowing one invents a session identity this
 process was never given. A command other than `cargo-berth hook` does read them:
 `CARGO_BERTH_SESSION_ID`, then `CLAUDE_CODE_SESSION_ID` when the first is unset,
 so a claim a Claude Code session runs directly maps under the id its edit hooks
-read.
+read. The managed git hooks are the exception: the `reference-transaction` gate
+and post-commit drift read `CARGO_BERTH_SESSION_ID` alone, because git hands its
+hooks the environment of whichever process ran git.
 
 A Claude Code hook can execute these commands, but those harness hooks are not
 installed by this crate. A general Git user instead gets the managed

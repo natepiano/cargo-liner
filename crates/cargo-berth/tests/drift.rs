@@ -8,6 +8,7 @@
 #[path = "support/timing.rs"]
 mod timing;
 
+use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
@@ -2784,6 +2785,59 @@ fn session_mapping_attributes_post_commit_widening_with_two_active_reservations(
     )));
 }
 
+/// Post-commit drift does not adopt the Claude Code session that ran `git commit`.
+///
+/// Git hands its hooks the environment of whichever process ran git, and Claude Code sets
+/// `CLAUDE_CODE_SESSION_ID` in every command its session runs. The session maps the first
+/// of two reservations the worktree's marked run holds, and the session mapping is
+/// consulted before the marker: adopting it, drift would widen the first reservation for
+/// a commit the session only ran git for. Post-commit drift reads `CARGO_BERTH_SESSION_ID`
+/// alone, so the marked run leaves the commit ambiguous between the two reservations, the
+/// hook warning names both, and nothing widens.
+#[test]
+fn post_commit_drift_under_only_the_claude_code_session_does_not_adopt_it() {
+    let repository = initialized_repository();
+    let session_id = "post-commit-claude-code-session";
+    let first_id =
+        claim_with_claude_code_session(repository.path(), "file:first.txt", FIRST_RUN, session_id);
+    let mapping: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository.path().join(SESSION_MAPPING_PATH))
+            .expect("session mapping should read"),
+    )
+    .expect("session mapping should decode");
+    assert_eq!(
+        mapping["identities"][session_id]["reservation_id"],
+        first_id
+    );
+    let second_id = claim(repository.path(), "file:second.txt", FIRST_RUN);
+    fs::write(repository.path().join("outside.txt"), "outside\n")
+        .expect("outside path should write");
+    git(repository.path(), &["add", "outside.txt"]);
+
+    let committed = git_output_with_claude_code_session(
+        repository.path(),
+        &["commit", "--quiet", "-m", "outside both scopes"],
+        session_id,
+    );
+
+    let warning = String::from_utf8_lossy(&committed.stderr);
+    assert!(committed.status.success(), "commit failed: {warning}");
+    assert!(
+        !journal_events(repository.path())
+            .iter()
+            .any(|event| event["op"] == "widen"),
+        "post-commit drift adopted the Claude Code session that ran git: {warning}"
+    );
+    assert!(
+        warning.contains(&first_id),
+        "post-commit hook warning: {warning}"
+    );
+    assert!(
+        warning.contains(&second_id),
+        "post-commit hook warning: {warning}"
+    );
+}
+
 /// Where the holder standing over a widening subject's scopes is, and in what state.
 ///
 /// A widening asks the one foreignness question the pre-edit hook asks, so a same-worktree
@@ -4361,6 +4415,42 @@ fn claim_with_session(repository_root: &Path, scope: &str, run: &str, session_id
         .to_owned()
 }
 
+/// Claim under only `CLAUDE_CODE_SESSION_ID`, as a Claude Code session's own command does.
+fn claim_with_claude_code_session(
+    repository_root: &Path,
+    scope: &str,
+    run: &str,
+    session_id: &str,
+) -> String {
+    let claimed = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
+        .args([
+            "claim",
+            scope,
+            "--run",
+            run,
+            "--why",
+            "test Claude Code session work",
+            "--json",
+        ])
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(POST_COMMIT_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("Claude Code session claim should run");
+    assert!(
+        claimed.status.success(),
+        "claim failed: {}",
+        String::from_utf8_lossy(&claimed.stdout)
+    );
+    json_output(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("claim should return a reservation id")
+        .to_owned()
+}
+
 fn claim_with_override(repository_root: &Path, scope: &str, run: &str, holder_id: &str) -> String {
     let arguments = [
         "claim",
@@ -4786,4 +4876,25 @@ fn git_output_with_environment(
     value: &str,
 ) -> Output {
     GIT.output_with_environment(repository_root, arguments, name, value)
+}
+
+/// Run git under only `CLAUDE_CODE_SESSION_ID`, as a Claude Code session's own git command.
+///
+/// Every other session and run variable is cleared first, so the hooks git runs see only
+/// the variable Claude Code sets.
+fn git_output_with_claude_code_session(
+    repository_root: &Path,
+    arguments: &[&str],
+    session_id: &str,
+) -> Output {
+    git_command(BERTH_EXECUTABLE)
+        .arg("--no-optional-locks")
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, session_id)
+        .output()
+        .expect("git should run")
 }

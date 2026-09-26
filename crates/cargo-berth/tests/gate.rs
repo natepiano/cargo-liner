@@ -1904,6 +1904,135 @@ fn managed_gate_accepts_a_linked_worktree_session_owned_by_that_worktree() {
     );
 }
 
+/// A Claude Code session's `git merge --ff-only` from the trunk checkout lands its lane.
+///
+/// Git hands its hooks the environment of whichever process ran git, and Claude Code sets
+/// `CLAUDE_CODE_SESSION_ID` in every command its session runs. A session holding a
+/// reservation in a lane that fast-forwards the trunk from the trunk checkout therefore
+/// starts the reference-transaction gate with that variable set. The gate reads
+/// `CARGO_BERTH_SESSION_ID` alone, so it does not validate the landing as the session's own
+/// command run in the wrong worktree, and the trunk moves to the lane tip.
+#[test]
+fn a_trunk_fast_forward_under_only_the_claude_code_session_is_not_that_sessions_command() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+
+    let fast_forward = fast_forward_trunk_to_a_session_lane(
+        repository.path(),
+        worktrees.path(),
+        CLAUDE_CODE_SESSION_ENVIRONMENT,
+    );
+
+    let diagnostic = String::from_utf8_lossy(&fast_forward.merged.stderr);
+    assert!(
+        fast_forward.merged.status.success(),
+        "the gate refused a fast-forward the Claude Code session only ran git for: {diagnostic}"
+    );
+    assert_eq!(
+        git_stdout(repository.path(), &["rev-parse", "refs/heads/main"]),
+        fast_forward.lane_tip
+    );
+    assert!(!diagnostic.contains("but this command ran in"));
+}
+
+/// A trunk fast-forward under `CARGO_BERTH_SESSION_ID` is still that session's command.
+///
+/// A caller sets `CARGO_BERTH_SESSION_ID` on purpose, so the reference-transaction gate
+/// validates the landing as the named session's command. That session's reservation is
+/// active in the lane while the merge ran in the trunk checkout, so the gate refuses the
+/// landing with the worktree mismatch and the trunk stays where it was.
+#[test]
+fn a_trunk_fast_forward_under_the_berth_session_still_reports_the_session_worktree_mismatch() {
+    let repository = initialized_repository();
+    let worktrees = tempdir().expect("worktree parent should exist");
+
+    let fast_forward = fast_forward_trunk_to_a_session_lane(
+        repository.path(),
+        worktrees.path(),
+        SESSION_ENVIRONMENT,
+    );
+
+    let diagnostic = String::from_utf8_lossy(&fast_forward.merged.stderr);
+    assert!(
+        !fast_forward.merged.status.success(),
+        "the gate permitted a fast-forward run outside the session's worktree"
+    );
+    assert!(diagnostic.contains("is active in"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("but this command ran in"),
+        "{diagnostic}"
+    );
+    assert_eq!(
+        git_stdout(repository.path(), &["rev-parse", "refs/heads/main"]),
+        fast_forward.trunk_before
+    );
+}
+
+/// The trunk checkout's `git merge --ff-only` onto a lane whose reservation a session holds.
+struct SessionLaneFastForward {
+    /// The trunk tip before the merge.
+    trunk_before: String,
+    /// The lane tip a completed merge moves the trunk to.
+    lane_tip:     String,
+    /// What git reported for the merge.
+    merged:       Output,
+}
+
+/// Claim and commit in a lane under one session variable, then fast-forward the trunk to it.
+///
+/// The claim runs in the lane with only `session_environment` naming the session, and the
+/// merge runs from the trunk checkout with that same variable in git's environment, as it
+/// is when the session itself runs git there.
+fn fast_forward_trunk_to_a_session_lane(
+    repository_root: &Path,
+    worktree_parent: &Path,
+    session_environment: &str,
+) -> SessionLaneFastForward {
+    let session_id = "trunk-fast-forward-session";
+    let lane_branch = "fast-forward-lane";
+    let lane_root = add_worktree(repository_root, worktree_parent, lane_branch);
+    let claimed = run_berth_with_environment(
+        &lane_root,
+        &[
+            "claim",
+            "file:tests/lane.rs",
+            "--run",
+            FIRST_RUN,
+            "--why",
+            "hold the lane the trunk fast-forwards to",
+            "--json",
+        ],
+        session_environment,
+        session_id,
+    );
+    assert!(
+        claimed.status.success(),
+        "lane claim failed: {}",
+        String::from_utf8_lossy(&claimed.stderr)
+    );
+    let mapping: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository_root.join(SESSION_MAPPING_PATH)).expect("session mapping should read"),
+    )
+    .expect("session mapping should decode");
+    assert_eq!(
+        mapping["identities"][session_id]["reservation_id"],
+        reservation_id(&claimed)
+    );
+    let lane_tip = commit_work(&lane_root, "tests/lane.rs", "// lane work\n", "lane work");
+    let trunk_before = git_stdout(repository_root, &["rev-parse", "refs/heads/main"]);
+    let merged = git_output_with_session(
+        repository_root,
+        &["merge", "--ff-only", lane_branch],
+        session_environment,
+        session_id,
+    );
+    SessionLaneFastForward {
+        trunk_before,
+        lane_tip,
+        merged,
+    }
+}
+
 #[test]
 fn a_managed_hook_that_does_not_report_its_issuing_directory_requires_reinitialization() {
     let repository = initialized_repository();
@@ -6336,6 +6465,29 @@ fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, ar
 
 fn git_output(repository_root: &Path, arguments: &[&str]) -> Output {
     GIT.output(repository_root, arguments)
+}
+
+/// Run git with exactly one session variable set, as a harness session's own git command.
+///
+/// Every other session and run variable is cleared first, so neither this process's
+/// environment nor a fixture's reaches the hooks git runs.
+fn git_output_with_session(
+    repository_root: &Path,
+    arguments: &[&str],
+    session_environment: &str,
+    session_id: &str,
+) -> Output {
+    git_command(BERTH_EXECUTABLE)
+        .arg("--no-optional-locks")
+        .args(arguments)
+        .current_dir(repository_root)
+        .env_remove(BYPASS_ENVIRONMENT)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+        .env(session_environment, session_id)
+        .output()
+        .expect("git should run")
 }
 
 fn git_binary() -> PathBuf {

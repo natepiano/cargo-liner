@@ -92,11 +92,18 @@ Step 1 must precede step 3. Changing the trunk before the pin re-judges released
 
 `session-identities.json` sits beside the journal and maps a harness session id
 to one coordination run and one active reservation. The process names its
-harness session in one of two ways:
+harness session in one of three ways:
 
 - A `cargo-berth hook` process takes it from the payload's `session_id` alone.
   A payload without a usable one selects no session and never reads the
   environment, which belongs to whichever session launched the hook.
+- A managed git hook process — the `reference-transaction` gate, its
+  `__refresh-managed-hook-after-trunk-deletion` worker, and post-commit
+  `drift` — reads `CARGO_BERTH_SESSION_ID` alone. Git hands its hooks the
+  environment of whichever process ran git, so a Claude Code session that runs
+  `git merge` or `git commit` would otherwise make the gate judge the landing,
+  or drift widen for the commit, as that session's own command. An unset or
+  unusable value selects no session.
 - Any other command reads `CARGO_BERTH_SESSION_ID`, then
   `CLAUDE_CODE_SESSION_ID` when the first is unset. Claude Code sets
   `CLAUDE_CODE_SESSION_ID` to the id its hook payloads carry as `session_id`,
