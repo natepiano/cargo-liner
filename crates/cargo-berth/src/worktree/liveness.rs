@@ -18,6 +18,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::constants::BRANCH_FIELD_PREFIX;
 use super::constants::HEAD_FIELD_PREFIX;
 use super::constants::LOCKED_FIELD;
 use super::constants::PRUNABLE_FIELD;
@@ -36,6 +37,7 @@ use crate::ids::InvalidGitObjectId;
 use crate::ids::RepoInstanceId;
 use crate::ids::WorktreeId;
 use crate::ledger::CanonicalWorktreeRoot;
+use crate::ledger::FullRefName;
 use crate::ledger::LedgerError;
 use crate::ledger::RegisteredWorktreeAvailability;
 use crate::ledger::WorktreeContext;
@@ -100,10 +102,18 @@ pub(crate) enum WorktreeEnrollmentCandidate {
 }
 
 struct WorktreeRegistration {
-    root:     PathBuf,
-    state:    WorktreeRegistrationState,
-    head:     WorktreeHead,
-    location: RegisteredWorktreeLocation,
+    root:       PathBuf,
+    state:      WorktreeRegistrationState,
+    head:       WorktreeHead,
+    attachment: WorktreeBranchAttachment,
+    location:   RegisteredWorktreeLocation,
+}
+
+/// The branch attachment reported for a registered checkout.
+enum WorktreeBranchAttachment {
+    Attached(FullRefName),
+    Detached,
+    Unreported,
 }
 
 enum RegisteredWorktreeLocation {
@@ -177,6 +187,20 @@ impl WorktreeRegistry {
                 },
             )
             .collect()
+    }
+
+    /// Find the registered checkout with this local branch attached.
+    pub(crate) fn context_for_branch(&self, branch: &FullRefName) -> Option<&WorktreeContext> {
+        self.registrations.iter().find_map(|registration| {
+            if let WorktreeBranchAttachment::Attached(attached) = &registration.attachment
+                && attached == branch
+                && let RegisteredWorktreeLocation::Discovered { context, .. } =
+                    &registration.location
+            {
+                return Some(context);
+            }
+            None
+        })
     }
 
     /// Classify one recorded holder without treating any absence as abandonment.
@@ -319,6 +343,7 @@ impl WorktreeRegistry {
                 .map_err(WorktreeRegistryError::InvalidPathEncoding)?;
             let mut state = WorktreeRegistrationState::Available;
             let mut head = WorktreeHead::Unavailable;
+            let mut attachment = WorktreeBranchAttachment::Unreported;
             for field in fields.by_ref() {
                 if field.is_empty() {
                     break;
@@ -331,6 +356,16 @@ impl WorktreeRegistry {
                             .parse()
                             .map_err(WorktreeRegistryError::InvalidHead)?,
                     );
+                } else if let Some(branch) = field.strip_prefix(BRANCH_FIELD_PREFIX.as_bytes()) {
+                    attachment = std::str::from_utf8(branch)
+                        .ok()
+                        .and_then(|branch| branch.parse().ok())
+                        .map_or(
+                            WorktreeBranchAttachment::Unreported,
+                            WorktreeBranchAttachment::Attached,
+                        );
+                } else if field == b"detached" {
+                    attachment = WorktreeBranchAttachment::Detached;
                 } else if field.starts_with(LOCKED_FIELD.as_bytes()) {
                     state = WorktreeRegistrationState::Locked;
                 } else if field.starts_with(PRUNABLE_FIELD.as_bytes())
@@ -343,6 +378,7 @@ impl WorktreeRegistry {
                 root,
                 state,
                 head,
+                attachment,
                 location: RegisteredWorktreeLocation::Unavailable,
             });
         }

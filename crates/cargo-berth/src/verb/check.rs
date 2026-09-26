@@ -289,10 +289,10 @@ fn decide(
         .map_err(CheckDecisionError::ReservationReplay)?;
     let resolved_edit_authorization = ledger::resolve_identity(snapshot.worktree_context())
         .map_err(CheckDecisionError::Ledger)?;
-    let acting_head_containment = ActingHeadContainment::observe(
+    let acting_head_containment = ActingHeadContainment::observe_for_actor(
         &reservations,
-        snapshot.worktree_context().repository_root(),
-        resolved_edit_authorization.worktree_id,
+        snapshot.worktree_context(),
+        resolved_edit_authorization,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(

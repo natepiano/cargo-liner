@@ -572,6 +572,23 @@
                 "kind"
               ],
               "type": "object"
+            },
+            {
+              "description": "A reservation for the complete work on an integration branch.",
+              "properties": {
+                "covered_branch": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                },
+                "kind": {
+                  "const": "cover",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "covered_branch"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -672,6 +689,11 @@
               "type": "object"
             }
           ]
+        },
+        "FullRefName": {
+          "description": "A non-empty full git reference name.",
+          "minLength": 1,
+          "type": "string"
         },
         "GitObjectId": {
           "description": "A full lowercase hexadecimal git object identifier in either object format.",
@@ -854,6 +876,10 @@
               "type": "object"
             }
           ]
+        },
+        "IntegrationTarget": {
+          "$ref": "#/$defs/FullRefName",
+          "description": "A local branch into which reserved work integrates."
         },
         "IntegrationViolation": {
           "description": "A violation identifies the entering reservation and every hold that blocks it.",
@@ -2195,6 +2221,29 @@
               "type": "object"
             },
             {
+              "properties": {
+                "kind": {
+                  "const": "target_uncovered",
+                  "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                },
+                "waiting_reservations": {
+                  "items": {
+                    "$ref": "#/$defs/uuid_v7_identifier"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "target",
+                "waiting_reservations"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A failed branch observation retains the preceding protection evidence.",
               "properties": {
                 "failure": {
@@ -3288,6 +3337,23 @@
               },
               "required": [
                 "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A reservation for the complete work on an integration branch.",
+              "properties": {
+                "covered_branch": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                },
+                "kind": {
+                  "const": "cover",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "covered_branch"
               ],
               "type": "object"
             }
@@ -6689,6 +6755,38 @@
               "type": "object"
             },
             {
+              "description": "A present integration branch has waiting reservations but no registered checkout.",
+              "properties": {
+                "data": {
+                  "properties": {
+                    "target": {
+                      "$ref": "#/$defs/IntegrationTarget"
+                    },
+                    "waiting_reservations": {
+                      "items": {
+                        "$ref": "#/$defs/uuid_v7_identifier"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "waiting_reservations"
+                  ],
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "target_uncovered",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A failed branch observation retains protection until the repository can answer again.",
               "properties": {
                 "data": {
@@ -8857,6 +8955,27 @@
           "description": "Typed state transitions and evidence results returned by `release`.",
           "oneOf": [
             {
+              "description": "Integration is proved, but the present target lacks a fresh cover.",
+              "properties": {
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "status": {
+                  "const": "target_uncovered",
+                  "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "target"
+              ],
+              "type": "object"
+            },
+            {
               "description": "An active reservation recorded its first protected checkpoint.",
               "properties": {
                 "marker": {
@@ -9964,6 +10083,29 @@
               "type": "object"
             },
             {
+              "properties": {
+                "kind": {
+                  "const": "target_uncovered",
+                  "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                },
+                "waiting_reservations": {
+                  "items": {
+                    "$ref": "#/$defs/uuid_v7_identifier"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "target",
+                "waiting_reservations"
+              ],
+              "type": "object"
+            },
+            {
               "description": "A failed branch observation retains the preceding protection evidence.",
               "properties": {
                 "failure": {
@@ -10999,6 +11141,23 @@
               },
               "required": [
                 "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A reservation for the complete work on an integration branch.",
+              "properties": {
+                "covered_branch": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                },
+                "kind": {
+                  "const": "cover",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "covered_branch"
               ],
               "type": "object"
             }
@@ -15656,6 +15815,27 @@
         "release_payload": {
           "description": "Typed state transitions and evidence results returned by `release`.",
           "oneOf": [
+            {
+              "description": "Integration is proved, but the present target lacks a fresh cover.",
+              "properties": {
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "status": {
+                  "const": "target_uncovered",
+                  "type": "string"
+                },
+                "target": {
+                  "$ref": "#/$defs/IntegrationTarget"
+                }
+              },
+              "required": [
+                "status",
+                "reservation_id",
+                "target"
+              ],
+              "type": "object"
+            },
             {
               "description": "An active reservation recorded its first protected checkpoint.",
               "properties": {

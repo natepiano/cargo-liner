@@ -60,6 +60,20 @@ Reconciliation judges each reservation at its recorded target. If an unreleased 
 
 `resolve <id> --integrated-as <commit>` accepts a carrying commit only when it is reachable from that reservation's target. Drift compares committed incursion origins with the acting session reservation's target, or each reporting reservation's target when no session reservation is mapped. Commits already on that target are attributed as upstream history.
 
+A present non-trunk target needs a cover in the worktree where it is checked out. Any live reservation there aimed at the target's parent serves as the cover; otherwise reconciliation claims the target branch's full diff and dirty paths. A lane reaches a final integrated release at that target only after the cover has a fresh extent at the target's current tip. Direct `release` at an uncovered target leaves the lane outstanding and names the target; explicit `resolve --integrated-as` remains available. If the target has no registered checkout, `target_uncovered` lists its waiting reservations. A deleted target instead raises `target_missing` and is judged at the repository trunk.
+
+### Migrate a uniform integration trunk to per-branch targets
+
+Run these steps once after Phases 1–4 are installed. For example, suppose `hana` currently names the integration branch and `main` is the intended repository trunk.
+
+1. In any worktree, while `.claude/config/berth.toml` still names `hana`, run `cargo-berth init`. This pins every existing reservation, including released ones, to `hana`.
+2. Run `git config branch.<lane>.cargoBerthTarget hana` for each lane. In hana, this includes `tool-based-ui-arrange`, `tool-based-ui-geometry-material`, `tool-based-ui-trunk`, and later lanes.
+3. Set `trunk = "main"` in `.claude/config/berth.toml` and commit it on `main` and `hana`. Only the main worktree's copy supplies the repository trunk.
+4. Run `cargo-berth retarget <id> --target main` for any live reservation in the main worktree or the `hana` worktree.
+5. Run `cargo-berth board --json`. The lanes should target `hana`; the reservation in the `hana` worktree should target `main`, carry `hana`'s diff as its extent, and cover it without blocking those lanes. Reconciliation creates that cover if step 4 left no live reservation there.
+
+Step 1 must precede step 3. Changing the trunk before the pin re-judges released lanes against `main` and raises lost-evidence alerts for their former integration proofs.
+
 ## Harness identity
 
 `session-identities.json` sits beside the journal. A harness supplies

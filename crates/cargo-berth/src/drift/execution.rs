@@ -396,10 +396,10 @@ fn prepared_acting_head_containment(
     worktree_context: &WorktreeContext,
     resolved_edit_authorization: ResolvedEditAuthorization,
 ) -> (RetainedReservationSet, ActingHeadContainment) {
-    let containment = ActingHeadContainment::observe(
+    let containment = ActingHeadContainment::observe_for_actor(
         &reservations,
-        worktree_context.repository_root(),
-        resolved_edit_authorization.worktree_id,
+        worktree_context,
+        resolved_edit_authorization,
     );
     let reservations = reservations.with_acting_head_containment(containment.clone());
     (reservations, containment)
@@ -651,6 +651,10 @@ fn paths_from_scopes(
 }
 
 /// Classify the observation under the ledger lock, refusing acquisition but not observation.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the shared reconciliation actor adds one field to the existing transaction"
+)]
 fn transact_classification(
     context: &DriftMutationContext<'_>,
 ) -> Result<DriftReport, DriftExecutionError> {
@@ -731,6 +735,7 @@ fn transact_classification(
                     report.scope_acquisition = acquisition;
                     ReconciliationValidation::Apply {
                         operations:             decision.operations,
+                        cover_actors:           std::collections::HashMap::default(),
                         recoverable_operations: Vec::new(),
                         action:                 report,
                     }

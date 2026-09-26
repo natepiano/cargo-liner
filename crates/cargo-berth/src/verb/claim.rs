@@ -199,6 +199,7 @@ struct ClaimValidationContext {
     overlap_authorization:  OverlapAuthorizationRequest,
     maximum_reservations:   u32,
     maximum_ordering_edges: u32,
+    repository_trunk:       IntegrationTarget,
 }
 
 enum ClaimRunValidationError {
@@ -536,6 +537,10 @@ enum FirstTouchClaimRejection {
     },
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "target-aware containment adds one configuration read to this claim transaction"
+)]
 fn acquire(
     claim_request: ClaimRequest,
     recovery_command_line: &RecoveryCommandLine,
@@ -608,6 +613,9 @@ fn acquire(
     );
     let target_view =
         TargetView::from_claim(&prepared_claim.target, &prepared_claim.trunk_at_claim);
+    let repository_trunk = berth_config
+        .repository_trunk()
+        .map_err(ClaimError::InvalidRepositoryTrunk)?;
     let outcome = ledger.transact(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
@@ -625,6 +633,7 @@ fn acquire(
                     overlap_authorization,
                     maximum_reservations: berth_config.maximum_reservations,
                     maximum_ordering_edges: berth_config.maximum_ordering_edges,
+                    repository_trunk,
                 },
             )
         },
@@ -645,7 +654,7 @@ fn normalized_claim_scopes(
     path_case: PathCase,
 ) -> ReservationScopeSet {
     match source {
-        ClaimSource::FirstTouch | ClaimSource::Enrolled => {
+        ClaimSource::FirstTouch | ClaimSource::Enrolled | ClaimSource::Cover { .. } => {
             scopes.into_exact_file_antichain(path_case)
         },
         ClaimSource::WorkPlan { .. } | ClaimSource::Explicit => {
@@ -960,6 +969,7 @@ fn validate_claim_transaction(
         overlap_authorization,
         maximum_reservations,
         maximum_ordering_edges,
+        repository_trunk,
     } = context;
     let reservations = match RetainedReservationSet::replay(state.events()) {
         Ok(reservations) => reservations,
@@ -967,8 +977,10 @@ fn validate_claim_transaction(
     };
     let acting_head_containment = ActingHeadContainment::observe(
         &reservations,
-        worktree_context.repository_root(),
+        &worktree_context,
         worktree_id,
+        &prepared_claim.target.target,
+        &repository_trunk,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(error) = run_validation.validate(
@@ -1038,8 +1050,10 @@ fn validate_first_touch_transaction(
     };
     let acting_head_containment = ActingHeadContainment::observe(
         &reservations,
-        worktree_context.repository_root(),
+        &worktree_context,
         worktree_id,
+        &prepared_claim.target.target,
+        &repository_trunk,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(rejection) = validate_first_touch_run(
@@ -1839,6 +1853,20 @@ fn read_reference_from_files(
         reference,
         SymbolicReferenceDepth::ROOT,
     )
+}
+
+/// Resolve a local branch from loose or packed refs without starting Git.
+pub(crate) fn reference_tip_from_files(
+    common_git_directory: &Path,
+    reference: &str,
+) -> Result<Option<GitObjectId>, ()> {
+    match read_reference_from_files(common_git_directory, reference) {
+        FilesystemReferenceResolution::Resolved(commit) => Ok(Some(commit)),
+        FilesystemReferenceResolution::RequiresGitResolution {
+            rejection_if_git_reports_missing: ClaimError::MissingReference(_),
+        } => Ok(None),
+        FilesystemReferenceResolution::RequiresGitResolution { .. } => Err(()),
+    }
 }
 
 fn read_reference_from_files_at_depth(

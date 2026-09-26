@@ -11,6 +11,8 @@ Ordinary tests regenerate it in memory and require an exact byte match.
 
 Board JSON includes a `target` view on each reservation row and a sorted top-level `targets` array. Each target entry has `ref`, its observed `commit` (or `"unresolved"`), and the ids of its non-released reservations. The array always includes the repository trunk. An unrecorded legacy claim shows the repository trunk with `source: "unrecorded"`. A vanished non-trunk target raises `target_missing`: reconcile alerts carry `kind: "target_missing"` with `data: {reservation_id, target, commands}`, while board alerts put those three fields beside `kind`. The command is `cargo-berth retarget <id> --target <branch>`.
 
+An engine-created cover row has `source: {"kind":"cover","covered_branch":"refs/heads/<branch>"}`. Its separate `target` view names that branch's parent. An ordinary reservation serving as a cover keeps its original source. A present non-trunk target without a registered checkout raises reconcile alert `{"kind":"target_uncovered","data":{"target":"refs/heads/<branch>","waiting_reservations":["<id>"]}}`; the board alert puts `target` and `waiting_reservations` beside `kind`. Direct `release` of integrated work while the target lacks a fresh cover returns envelope status `outstanding` with release payload data `{status: "target_uncovered", reservation_id, target}` and leaves the reservation outstanding. The claim target's optional wire `fallback` field is unchanged, while the in-memory selection distinguishes selected from fell back. Schema version remains 2.
+
 A consumer needs only the stable front-end shell documented below. Nothing in
 this contract asks it to inspect `payload`, enumerate payload kinds, correlate
 an outcome tuple, or read `output_contract_version`.

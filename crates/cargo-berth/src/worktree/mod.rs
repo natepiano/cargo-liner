@@ -6,6 +6,7 @@ mod identity;
 pub(crate) mod liveness;
 
 pub(crate) use enrollment::WorktreeEnrollmentReport;
+pub(crate) use enrollment::cover_claim;
 pub(crate) use enrollment::enroll_worktrees;
 pub(crate) use liveness::WorktreeHead;
 pub(crate) use liveness::WorktreeLiveness;

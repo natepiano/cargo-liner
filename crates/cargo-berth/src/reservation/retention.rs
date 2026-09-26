@@ -634,9 +634,8 @@ impl RetainedReservationSet {
         &self,
         reservation_id: ReservationId,
         repository_trunk: &IntegrationTarget,
-    ) -> Option<IntegrationTarget> {
+    ) -> Result<IntegrationTarget, ReservationReplayError> {
         self.reservation(reservation_id)
-            .ok()
             .map(|reservation| match reservation.target() {
                 RecordedTarget::Recorded { target, .. } => target.clone(),
                 RecordedTarget::Unrecorded => repository_trunk.clone(),
@@ -1828,11 +1827,8 @@ mod tests {
             .map_err(std::io::Error::other)?;
         let claim = claim_event("presented")?;
         let legacy = RetainedReservationSet::replay(std::slice::from_ref(&claim))?;
-        assert_eq!(
-            legacy.target_of(reservation_id, &trunk),
-            Some(trunk.clone())
-        );
-        assert_eq!(legacy.target_of(ReservationId::new(), &trunk), None);
+        assert_eq!(legacy.target_of(reservation_id, &trunk)?, trunk.clone());
+        assert!(legacy.target_of(ReservationId::new(), &trunk).is_err());
         let retarget = journal_event(
             2,
             &json!({
@@ -1842,10 +1838,7 @@ mod tests {
             }),
         )?;
         let recorded = RetainedReservationSet::replay(&[claim, retarget])?;
-        assert_eq!(
-            recorded.target_of(reservation_id, &trunk),
-            Some(integration)
-        );
+        assert_eq!(recorded.target_of(reservation_id, &trunk)?, integration);
         Ok(())
     }
 

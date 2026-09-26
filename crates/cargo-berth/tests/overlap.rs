@@ -51,6 +51,124 @@ const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 #[test]
+fn check_uses_the_current_runs_target_when_an_older_run_is_still_outstanding() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("two-run-lane", "integration");
+    integration_target::git(&lane, &["reset", "--hard", "main"]);
+    let older = integration_target::claim(&lane, "file:older.txt", FIRST_RUN, Some("main"));
+    integration_target::assert_success(&older);
+    let older_id = integration_target::json(&older)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("older reservation ID")
+        .to_owned();
+    integration_target::commit_file(&lane, "older.txt", "older\n", "older work");
+    integration_target::commit_file(
+        &lane,
+        "integration.txt",
+        "lane version\n",
+        "lane changes target path",
+    );
+    let checkpoint = integration_target::run(&lane, &["release", &older_id, "--json"]);
+    integration_target::assert_success(&checkpoint);
+    let current = integration_target::claim(&lane, "file:current.txt", SECOND_RUN, None);
+    integration_target::assert_success(&current);
+    let _ = integration_target::board(repo.root());
+    let cover_id = integration_target::cover_claims(repo.root())[0]["reservation_id"]
+        .as_str()
+        .expect("cover reservation ID")
+        .to_owned();
+
+    let check = integration_target::run(&lane, &["check", "file:integration.txt", "--json"]);
+    integration_target::assert_success(&check);
+    assert_eq!(integration_target::json(&check)["status"], "clear");
+    assert!(
+        !String::from_utf8_lossy(&check.stdout).contains(&cover_id),
+        "current run already contains the cover's committed work"
+    );
+}
+
+#[test]
+fn sibling_lane_can_edit_landed_work_while_main_meets_the_cover() {
+    let repo = integration_target::IntegrationRepository::new();
+    let a = repo.lane("contained-a", "integration");
+    let b = repo.lane("contained-b", "integration");
+    let a_claim = integration_target::claim(&a, "file:shared.txt", FIRST_RUN, None);
+    integration_target::assert_success(&a_claim);
+    let b_claim = integration_target::claim(&b, "file:b.txt", SECOND_RUN, None);
+    integration_target::assert_success(&b_claim);
+    let _ = integration_target::board(repo.root());
+    integration_target::commit_file(&a, "shared.txt", "landed\n", "lane A work");
+    repo.merge_by_commit("contained-a");
+    let observed = integration_target::board(repo.root());
+    let a_id = integration_target::json(&a_claim)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("lane A ID")
+        .to_owned();
+    assert_eq!(
+        integration_target::reservation_row(&observed, &a_id)["lifecycle"]["stage"],
+        "released",
+        "{observed}"
+    );
+
+    let sibling = integration_target::run(&b, &["check", "file:shared.txt", "--json"]);
+    integration_target::assert_success(&sibling);
+    assert_eq!(integration_target::json(&sibling)["status"], "clear");
+
+    let main = integration_target::run(repo.root(), &["check", "file:shared.txt", "--json"]);
+    assert_eq!(
+        integration_target::json(&main)["status"],
+        "blocked_by_overlap"
+    );
+    let cover_id = integration_target::cover_claims(repo.root())[0]["reservation_id"]
+        .as_str()
+        .expect("cover ID")
+        .to_owned();
+    assert!(
+        String::from_utf8_lossy(&main.stdout).contains(&cover_id),
+        "main meets the integration cover"
+    );
+}
+
+#[test]
+fn lane_editing_its_target_diff_records_no_cover_incursion() {
+    let repo = integration_target::IntegrationRepository::new();
+    integration_target::commit_file(
+        &repo.integration,
+        "Cargo.toml",
+        "[package]\nname = \"integration\"\nversion = \"0.1.0\"\n",
+        "integration manifest",
+    );
+    let lane = repo.lane("target-diff-lane", "integration");
+    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let _ = integration_target::board(repo.root());
+    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("lane ID")
+        .to_owned();
+    let before = integration_target::journal(repo.root())
+        .into_iter()
+        .filter(|event| event["op"] == "incursion")
+        .count();
+    fs::write(
+        lane.join("Cargo.toml"),
+        "[package]\nname = \"lane\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("lane manifest edits");
+    let drift =
+        integration_target::run(&lane, &["drift", "--full", "--reservation", &id, "--json"]);
+    integration_target::assert_success(&drift);
+    let after = integration_target::journal(repo.root())
+        .into_iter()
+        .filter(|event| event["op"] == "incursion")
+        .count();
+    assert_eq!(
+        after, before,
+        "target cover does not protect against its own lane"
+    );
+}
+
+#[test]
 fn claim_target_precedence_and_source_are_recorded() {
     let repo = integration_target::IntegrationRepository::new();
     let explicit_lane = repo.lane("explicit-target-lane", "integration");

@@ -291,7 +291,7 @@ pub(crate) fn apply_journal_event(
     let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
     let publication = match &event.operation {
         JournalOperation::Claim {
-            source: ClaimSource::Enrolled,
+            source: ClaimSource::Enrolled | ClaimSource::Cover { .. },
             ..
         } => Ok(()),
         JournalOperation::Claim { reservation_id, .. }

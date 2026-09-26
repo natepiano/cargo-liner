@@ -1,5 +1,6 @@
 //! The branch selected for a reservation when it is acquired.
 
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
@@ -9,6 +10,8 @@ use std::path::Path;
 use std::str::FromStr;
 
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -133,12 +136,67 @@ pub(crate) enum TargetSource {
 }
 
 /// A target selected when a claim was appended.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClaimTarget {
-    pub(crate) target:   IntegrationTarget,
-    pub(crate) source:   TargetSource,
+    pub(crate) target: IntegrationTarget,
+    pub(crate) source: TargetSource,
+    selection:         TargetSelectionOutcome,
+}
+
+/// Whether automatic target selection used the requested branch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TargetSelectionOutcome {
+    Selected,
+    FellBack(TargetFallback),
+}
+
+#[derive(Deserialize, JsonSchema, Serialize)]
+struct ClaimTargetWire {
+    target:   IntegrationTarget,
+    source:   TargetSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) fallback: Option<TargetFallback>,
+    fallback: Option<TargetFallback>,
+}
+
+impl Serialize for ClaimTarget {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ClaimTargetWire {
+            target:   self.target.clone(),
+            source:   self.source,
+            fallback: self.fallback().cloned(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClaimTarget {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ClaimTargetWire::deserialize(deserializer)?;
+        Ok(Self {
+            target:    wire.target,
+            source:    wire.source,
+            selection: wire.fallback.map_or(
+                TargetSelectionOutcome::Selected,
+                TargetSelectionOutcome::FellBack,
+            ),
+        })
+    }
+}
+
+impl JsonSchema for ClaimTarget {
+    fn schema_name() -> Cow<'static, str> { "ClaimTarget".into() }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        ClaimTargetWire::json_schema(generator)
+    }
+}
+
+impl ClaimTarget {
+    pub(crate) const fn fallback(&self) -> Option<&TargetFallback> {
+        match &self.selection {
+            TargetSelectionOutcome::Selected => None,
+            TargetSelectionOutcome::FellBack(fallback) => Some(fallback),
+        }
+    }
 }
 
 /// An invalid branch setting replaced by the repository trunk during automatic acquisition.
@@ -262,9 +320,9 @@ pub(crate) fn resolve_claim_target(
             (setting, TargetSource::BranchConfiguration)
         } else {
             return Ok(ClaimTarget {
-                target:   repository_trunk.clone(),
-                source:   TargetSource::RepositoryTrunk,
-                fallback: None,
+                target:    repository_trunk.clone(),
+                source:    TargetSource::RepositoryTrunk,
+                selection: TargetSelectionOutcome::Selected,
             });
         };
     let target = IntegrationTarget::from_branch_argument(&requested);
@@ -279,9 +337,9 @@ pub(crate) fn resolve_claim_target(
     match reason {
         Some(reason) if matches!(request, TargetSelectionRequest::AutomaticAcquisition) => {
             Ok(ClaimTarget {
-                target:   repository_trunk.clone(),
-                source:   TargetSource::RepositoryTrunk,
-                fallback: Some(TargetFallback { requested, reason }),
+                target:    repository_trunk.clone(),
+                source:    TargetSource::RepositoryTrunk,
+                selection: TargetSelectionOutcome::FellBack(TargetFallback { requested, reason }),
             })
         },
         Some(reason) => match target {
@@ -296,7 +354,7 @@ pub(crate) fn resolve_claim_target(
             .map(|target| ClaimTarget {
                 target,
                 source,
-                fallback: None,
+                selection: TargetSelectionOutcome::Selected,
             }),
     }
 }
@@ -360,7 +418,7 @@ mod tests {
         )
         .map_err(|error| std::io::Error::other(error.message()))?;
         assert_eq!(automatic.target, trunk);
-        assert!(automatic.fallback.is_some());
+        assert!(automatic.fallback().is_some());
         Ok(())
     }
 

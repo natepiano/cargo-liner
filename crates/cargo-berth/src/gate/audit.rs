@@ -82,9 +82,11 @@ pub(super) fn commit_forced_permit_audits(
                         Ok(decision) => decision,
                         Err(error) => return ReconciliationValidation::Reject(error),
                     };
-                    let (operations, action) = prepared.into_committed_hook_action(operations);
+                    let (operations, cover_actors, action) =
+                        prepared.into_committed_hook_action(operations);
                     ReconciliationValidation::Apply {
                         operations,
+                        cover_actors,
                         recoverable_operations: Vec::new(),
                         action,
                     }

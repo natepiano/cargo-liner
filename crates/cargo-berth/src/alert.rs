@@ -43,6 +43,11 @@ pub(crate) enum Alert {
         /// The retarget command that restores a resolvable integration branch.
         commands:       Vec<String>,
     },
+    /// A present integration branch has waiting reservations but no registered checkout.
+    TargetUncovered {
+        target:               IntegrationTarget,
+        waiting_reservations: Vec<ReservationId>,
+    },
     /// A failed branch observation retains protection until the repository can answer again.
     MergeExtentUnavailable {
         /// The reservation whose last successful surface remains protected.
@@ -59,10 +64,14 @@ pub(crate) enum Alert {
 
 impl Alert {
     /// Return the reservation whose retained state keeps this alert active.
-    pub(crate) const fn reservation_id(&self) -> ReservationId {
+    pub(crate) fn reservation_id(&self) -> ReservationId {
         match self {
             Self::TargetMissing { reservation_id, .. }
             | Self::MergeExtentUnavailable { reservation_id, .. } => *reservation_id,
+            Self::TargetUncovered {
+                waiting_reservations,
+                ..
+            } => waiting_reservations[0],
             Self::LostIntegrationEvidence(alert) => alert.reservation_id,
             Self::OrphanedOutstanding(alert) => alert.reservation_id,
         }
@@ -72,6 +81,7 @@ impl Alert {
     pub(crate) const fn recovery_evidence_query_count(&self) -> u64 {
         match self {
             Self::TargetMissing { .. }
+            | Self::TargetUncovered { .. }
             | Self::MergeExtentUnavailable { .. }
             | Self::LostIntegrationEvidence(_) => 0,
             Self::OrphanedOutstanding(alert) => match alert.branch_ref_status {
@@ -91,6 +101,19 @@ impl Display for Alert {
                 target,
                 ..
             } => formatter.write_str(&target_missing_detail(*reservation_id, target)),
+            Self::TargetUncovered {
+                target,
+                waiting_reservations,
+            } => write!(
+                formatter,
+                "Target {} has no registered worktree cover; reservations {} remain outstanding.",
+                target.short_name(),
+                waiting_reservations
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::MergeExtentUnavailable {
                 reservation_id,
                 failure,

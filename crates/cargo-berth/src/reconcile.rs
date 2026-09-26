@@ -68,7 +68,10 @@ use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger;
 use crate::ledger::BypassOccurrenceTime;
+use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
+use crate::ledger::CoverClaimActor;
+use crate::ledger::ExistingCoordinationRun;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
@@ -86,7 +89,9 @@ use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
 use crate::ledger::ScopeKind;
+use crate::ledger::TargetSelectionRequest;
 use crate::ledger::TransactionValidation;
+use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
@@ -118,7 +123,9 @@ use crate::reservation::ScopedPatchIntegrationEvaluation;
 use crate::reservation::ScopedPatchTargetVerdictAvailability;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
 use crate::reservation::SuccessorScopedPatchTargetVerdictAvailability;
+use crate::scope::PathCase;
 use crate::session::SessionIdentityMappingPublication;
+use crate::worktree;
 use crate::worktree::WorktreeHead;
 use crate::worktree::WorktreeLiveness;
 use crate::worktree::WorktreeMarkerSweepContext;
@@ -143,6 +150,9 @@ pub(crate) struct ReconciliationReport {
     pub(crate) evidence:                      Vec<ReconciledEvidence>,
     /// Reservations released by this actual-trunk reconciliation transaction.
     pub(crate) settlements:                   Vec<ReconciledSettlement>,
+    /// Present integration branches whose checkout carried a fresh cover extent this pass.
+    covered_targets:                          HashSet<IntegrationTarget>,
+    covers_created:                           bool,
     /// Mapping publication returned by the requesting reconciliation transaction.
     pub(crate) session_mapping_publication:   SessionIdentityMappingPublication,
     /// The one complete repository observation shared by edge and board consumers.
@@ -160,6 +170,14 @@ pub(crate) struct ReconciliationReport {
 }
 
 impl ReconciliationReport {
+    pub(crate) fn cover_is_missing(&self, reservation_id: ReservationId) -> bool {
+        cover_is_missing(
+            &self.repository_snapshot,
+            &self.covered_targets,
+            reservation_id,
+        )
+    }
+
     /// Return the observation at which this reservation was judged.
     pub(crate) fn target_for(&self, reservation_id: ReservationId) -> &RepositoryTrunk {
         self.repository_snapshot.target_for(reservation_id)
@@ -236,8 +254,9 @@ pub(crate) struct ReconciledSettlement {
 }
 
 struct ReconciliationPlan {
-    operations: Vec<JournalOperation>,
-    action:     ReconciliationAction,
+    operations:   Vec<JournalOperation>,
+    cover_actors: HashMap<ReservationId, CoverClaimActor>,
+    action:       ReconciliationAction,
 }
 
 struct ReconciliationEvidenceContext<'context> {
@@ -980,6 +999,11 @@ struct ReconciliationChanges {
 
 struct ReconciliationAction {
     active_holders:                Vec<ActiveHolder>,
+    cover_marker_publications:     Vec<(WorktreeContext, CoordinationRunId)>,
+    covers_created:                bool,
+    uncovered_targets:             Vec<(IntegrationTarget, Vec<ReservationId>)>,
+    covered_targets:               HashSet<IntegrationTarget>,
+    cover_requirements:            HashMap<IntegrationTarget, (WorktreeId, IntegrationTarget)>,
     marker_contexts:               Vec<WorktreeMarkerSweepContext>,
     repository_root:               PathBuf,
     retention_repairs:             Vec<ReservationRetentionRefRepair>,
@@ -1008,6 +1032,16 @@ struct ReconciliationAction {
     trunk_resolution_calls:        u64,
     merge_extent_git_cost:         MergeExtentGitCost,
     settlements:                   Vec<ReconciledSettlement>,
+}
+
+impl ReconciliationAction {
+    fn cover_is_missing(&self, reservation_id: ReservationId) -> bool {
+        cover_is_missing(
+            &self.repository_snapshot,
+            &self.covered_targets,
+            reservation_id,
+        )
+    }
 }
 
 /// Which commit batch establishes availability for the final retention repairs.
@@ -1238,6 +1272,20 @@ fn reconcile_with_open_ledger(
     berth_config: &BerthConfig,
     request: ReconciliationRequest,
 ) -> Result<ReconciliationReport, ReconcileError> {
+    let first = reconcile_with_open_ledger_once(worktree_context, ledger, berth_config, request)?;
+    if first.covers_created {
+        reconcile_with_open_ledger_once(worktree_context, ledger, berth_config, request)
+    } else {
+        Ok(first)
+    }
+}
+
+fn reconcile_with_open_ledger_once(
+    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
+    berth_config: &BerthConfig,
+    request: ReconciliationRequest,
+) -> Result<ReconciliationReport, ReconcileError> {
     let ledger_repository = ledger.repository_identity()?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
@@ -1259,6 +1307,7 @@ fn reconcile_with_open_ledger(
                     ) {
                         Ok(prepared) => ReconciliationValidation::Apply {
                             operations:             prepared.operations,
+                            cover_actors:           prepared.cover_actors,
                             recoverable_operations: prepared.recoverable_operations,
                             action:                 prepared.action,
                         },
@@ -1504,7 +1553,6 @@ fn rewrite_target_tip_for_reservation<'cache>(
 ) -> Result<RewriteTargetTip<'cache>, ReconcileError> {
     let target = reservations
         .target_of(reservation_id, repository_trunk)
-        .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
         .map_err(ReconcileError::Replay)?;
     let RewriteTargetJudgment::Available(judging_target) =
         rewrite_target_judgment(&mut observations.judgments, &target, |target| {
@@ -1842,6 +1890,7 @@ fn compare_mapped_phase(
 
 struct PreparedReconciliationTransaction {
     operations:             Vec<JournalOperation>,
+    cover_actors:           HashMap<ReservationId, CoverClaimActor>,
     recoverable_operations: Vec<JournalOperation>,
     action:                 ReconciliationAction,
 }
@@ -1908,6 +1957,7 @@ fn prepare_reconciliation_transaction(
         pending_bypasses.take_unrecorded_occurrences();
     Ok(PreparedReconciliationTransaction {
         operations: reconciliation_plan.operations,
+        cover_actors: reconciliation_plan.cover_actors,
         recoverable_operations,
         action: reconciliation_plan.action,
     })
@@ -1934,6 +1984,7 @@ struct HolderMergeProtection {
 struct MergeExtentReconciliation {
     operations:          Vec<JournalOperation>,
     committed_by_holder: HashMap<(WorktreeId, IntegrationTarget), CommittedMergeEvidence>,
+    observed_by_holder:  HashMap<(WorktreeId, IntegrationTarget), MergeExtent>,
 }
 
 /// Share status and net branch reads across every reservation in the same holder checkout.
@@ -1992,8 +2043,18 @@ fn derive_merge_extents(
             });
         }
     }
+    let observed_by_holder = observed_by_worktree
+        .iter()
+        .filter_map(|(key, observation)| {
+            observation
+                .as_ref()
+                .ok()
+                .map(|observation| (key.clone(), observation.extent.clone()))
+        })
+        .collect();
     Ok(MergeExtentReconciliation {
         operations,
+        observed_by_holder,
         committed_by_holder: observed_by_worktree
             .into_iter()
             .map(|(holder, observation)| {
@@ -2152,9 +2213,15 @@ fn build_plan(
         })
         .collect();
     let mut plan = ReconciliationPlan {
-        operations: changes.operations,
-        action:     ReconciliationAction {
+        operations:   changes.operations,
+        cover_actors: HashMap::new(),
+        action:       ReconciliationAction {
             active_holders,
+            cover_marker_publications: Vec::new(),
+            covers_created: false,
+            uncovered_targets: Vec::new(),
+            covered_targets: HashSet::new(),
+            cover_requirements: HashMap::new(),
             marker_contexts: worktree_registry.marker_sweep_contexts(common_git_directory),
             repository_root: repository_root.to_path_buf(),
             retention_repairs: changes.retention_repairs,
@@ -2180,6 +2247,7 @@ fn build_plan(
     complete_reconciliation_plan(
         reservations,
         ordering_graph,
+        &worktree_registry,
         repository_observation_scope,
         reservation_snapshots,
         reconciliation_evidence_context,
@@ -2192,17 +2260,20 @@ fn build_plan(
 fn complete_reconciliation_plan(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
+    worktree_registry: &WorktreeRegistry,
     observation_scope: RepositoryObservationScope,
     mut snapshots: Vec<RepositoryReservationSnapshot>,
     context: &mut ReconciliationEvidenceContext<'_>,
     plan: &mut ReconciliationPlan,
 ) -> Result<(), ReservationReplayError> {
+    append_cover_claims(reservations, worktree_registry, plan);
     let extents = derive_merge_extents(
         reservations,
         &plan.action.repository_snapshot,
         &plan.operations,
         &mut plan.action.merge_extent_git_cost,
     )?;
+    plan.action.covered_targets = covered_targets_for_pass(reservations, &extents, plan);
     plan.operations.extend(extents.operations);
     append_evidence_operations(reservations, plan)?;
     append_settlement_operations(
@@ -2255,8 +2326,37 @@ fn complete_reconciliation_plan(
         context.successor_scoped_patch_evaluation_budget,
     )?;
     plan.operations.extend(successors.operations);
-    let (repository_trunk, targets, reservation_targets) =
+    let (repository_trunk, mut targets, mut reservation_targets) =
         plan.action.repository_snapshot.target_facts();
+    for operation in &plan.operations {
+        if let JournalOperation::Claim {
+            reservation_id,
+            source: ClaimSource::Cover { .. },
+            target: Some(target),
+            trunk_at_claim,
+            head_snapshot,
+            ..
+        } = operation
+        {
+            reservation_targets.insert(*reservation_id, target.target.clone());
+            if let TrunkObservationAtClaim::Resolved(commit) = trunk_at_claim {
+                targets
+                    .entry(target.target.clone())
+                    .or_insert_with(|| TargetObservation::Resolved(commit.clone()));
+            }
+            let head = match head_snapshot {
+                ClaimHeadSnapshot::Branch { head, .. } | ClaimHeadSnapshot::Detached { head } => {
+                    head.as_ref().clone()
+                },
+            };
+            snapshots.push(RepositoryReservationSnapshot {
+                reservation_id:    *reservation_id,
+                worktree_liveness: WorktreeLiveness::Live,
+                worktree_head:     WorktreeHead::Resolved(head),
+                evidence:          RepositoryReservationEvidence::Active,
+            });
+        }
+    }
     plan.action.repository_snapshot = RepositorySnapshot::new(
         repository_trunk,
         targets,
@@ -2265,6 +2365,199 @@ fn complete_reconciliation_plan(
         successors.by_predecessor,
     );
     Ok(())
+}
+
+/// Give each checked-out integration branch a reservation against its own target.
+fn append_cover_claims(
+    reservations: &RetainedReservationSet,
+    registry: &WorktreeRegistry,
+    plan: &mut ReconciliationPlan,
+) {
+    let snapshot = &plan.action.repository_snapshot;
+    let repository_trunk = snapshot.repository_trunk_target().clone();
+    let waiting = waiting_cover_targets(reservations, snapshot);
+    for (branch, reservation_ids) in waiting {
+        let Some(context) = registry.context_for_branch(branch.reference()) else {
+            plan.action
+                .uncovered_targets
+                .push((branch, reservation_ids));
+            continue;
+        };
+        append_cover_for_branch(reservations, context, &branch, &repository_trunk, plan);
+    }
+}
+
+fn waiting_cover_targets(
+    reservations: &RetainedReservationSet,
+    snapshot: &RepositorySnapshot,
+) -> BTreeMap<IntegrationTarget, Vec<ReservationId>> {
+    let repository_trunk = snapshot.repository_trunk_target();
+    let mut waiting: BTreeMap<IntegrationTarget, Vec<ReservationId>> = BTreeMap::new();
+    for reservation in reservations.iter() {
+        if matches!(
+            reservation.lifecycle(),
+            ReservationLifecycle::Released { .. }
+        ) {
+            continue;
+        }
+        let target = snapshot.recorded_target(reservation.id());
+        if target != repository_trunk
+            && matches!(
+                snapshot.targets().get(target),
+                Some(TargetObservation::Resolved(_))
+            )
+        {
+            waiting
+                .entry(target.clone())
+                .or_default()
+                .push(reservation.id());
+        }
+    }
+    waiting
+}
+
+fn append_cover_for_branch(
+    reservations: &RetainedReservationSet,
+    context: &WorktreeContext,
+    branch: &IntegrationTarget,
+    repository_trunk: &IntegrationTarget,
+    plan: &mut ReconciliationPlan,
+) {
+    let Ok(identity) =
+        ledger::worktree_identity(context.administrative_directory(), context.worktree_kind())
+    else {
+        return;
+    };
+    let parent = ledger::resolve_claim_target(
+        context.common_git_directory(),
+        Some(branch.reference()),
+        TargetSelectionRequest::AutomaticAcquisition,
+        repository_trunk,
+        |candidate| {
+            git::branch_object_id(context.repository_root(), candidate.short_name()).is_ok()
+        },
+    );
+    let Ok(parent) = parent else {
+        return;
+    };
+    plan.action
+        .cover_requirements
+        .insert(branch.clone(), (identity.id, parent.target.clone()));
+    let has_cover = reservations.iter().any(|reservation| {
+        reservation.actor().worktree == identity.id
+            && !matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            )
+            && reservations
+                .target_of(reservation.id(), repository_trunk)
+                .is_ok_and(|recorded| recorded == parent.target)
+    });
+    if has_cover {
+        return;
+    }
+    let Ok(parent_commit) =
+        git::branch_object_id(context.repository_root(), parent.target.short_name())
+    else {
+        return;
+    };
+    let Ok(path_case) = PathCase::read(context.common_git_directory()) else {
+        return;
+    };
+    let Ok(Some(operation)) = worktree::cover_claim(
+        context.clone(),
+        identity.id,
+        branch.clone(),
+        parent,
+        parent_commit,
+        path_case,
+    ) else {
+        return;
+    };
+    let JournalOperation::Claim { reservation_id, .. } = &operation else {
+        return;
+    };
+    let (run, publish) = match context.existing_coordination_run() {
+        Ok(ExistingCoordinationRun::Present(run)) => (run, false),
+        Ok(ExistingCoordinationRun::Absent) => (CoordinationRunId::new(), true),
+        Err(_) => return,
+    };
+    plan.cover_actors.insert(
+        *reservation_id,
+        CoverClaimActor {
+            worktree: identity.id,
+            run,
+        },
+    );
+    plan.action.covers_created = true;
+    plan.action.active_holders.push(ActiveHolder {
+        worktree_id:         identity.id,
+        coordination_run_id: run,
+    });
+    if publish {
+        plan.action
+            .cover_marker_publications
+            .push((context.clone(), run));
+    }
+    plan.operations.push(operation);
+}
+
+/// A cover counts only when this pass observed its holder against the branch's current tip.
+fn covered_targets_for_pass(
+    reservations: &RetainedReservationSet,
+    extents: &MergeExtentReconciliation,
+    plan: &ReconciliationPlan,
+) -> HashSet<IntegrationTarget> {
+    plan.action
+        .cover_requirements
+        .iter()
+        .filter_map(|(branch, (worktree, parent))| {
+            let Some(TargetObservation::Resolved(branch_tip)) =
+                plan.action.repository_snapshot.targets().get(branch)
+            else {
+                return None;
+            };
+            let extent = extents
+                .observed_by_holder
+                .get(&(*worktree, parent.clone()))?;
+            let key = match extent {
+                MergeExtent::Protected { key, .. } | MergeExtent::Empty { key } => key,
+                MergeExtent::NotDerived { .. } | MergeExtent::Unavailable { .. } => return None,
+            };
+            if key.head != *branch_tip {
+                return None;
+            }
+            reservations
+                .iter()
+                .any(|reservation| {
+                    reservation.actor().worktree == *worktree
+                        && !matches!(
+                            reservation.lifecycle(),
+                            ReservationLifecycle::Released { .. }
+                        )
+                        && plan
+                            .action
+                            .repository_snapshot
+                            .recorded_target(reservation.id())
+                            == parent
+                })
+                .then(|| branch.clone())
+        })
+        .collect()
+}
+
+fn cover_is_missing(
+    repository_snapshot: &RepositorySnapshot,
+    covered_targets: &HashSet<IntegrationTarget>,
+    reservation_id: ReservationId,
+) -> bool {
+    let target = repository_snapshot.recorded_target(reservation_id);
+    target != repository_snapshot.repository_trunk_target()
+        && matches!(
+            repository_snapshot.targets().get(target),
+            Some(TargetObservation::Resolved(_))
+        )
+        && !covered_targets.contains(target)
 }
 
 /// Read the worktree registry, trunk reachability, and per-reservation repository evidence in one
@@ -2291,9 +2584,7 @@ fn observe_repository_facts(
         groups.entry(repository_trunk.clone()).or_default();
         let mut reservation_targets = HashMap::new();
         for reservation in reservations.iter() {
-            let target = reservations
-                .target_of(reservation.id(), &repository_trunk)
-                .ok_or_else(|| ReservationReplayError::UnknownReservation(reservation.id()))?;
+            let target = reservations.target_of(reservation.id(), &repository_trunk)?;
             groups
                 .entry(target.clone())
                 .or_default()
@@ -2728,7 +3019,11 @@ impl GateReconciliation {
     pub(crate) fn into_committed_hook_action(
         self,
         additional_operations: Vec<JournalOperation>,
-    ) -> (Vec<JournalOperation>, CommittedHookReconciliationAction) {
+    ) -> (
+        Vec<JournalOperation>,
+        HashMap<ReservationId, CoverClaimActor>,
+        CommittedHookReconciliationAction,
+    ) {
         let mut operations = self
             .reconciliation
             .operations
@@ -2763,6 +3058,8 @@ impl GateReconciliation {
         operations.extend(additional_operations);
         (
             operations,
+            // The committed audit retains no claim from the reconciliation plan.
+            HashMap::new(),
             CommittedHookReconciliationAction {
                 repository_root: self.reconciliation.action.repository_root,
                 retention_repairs,
@@ -2777,10 +3074,15 @@ impl GateReconciliation {
         mut self,
         additional_operations: Vec<JournalOperation>,
         decision: Decision,
-    ) -> (Vec<JournalOperation>, GateReconciliationAction<Decision>) {
+    ) -> (
+        Vec<JournalOperation>,
+        HashMap<ReservationId, CoverClaimActor>,
+        GateReconciliationAction<Decision>,
+    ) {
         self.reconciliation.operations.extend(additional_operations);
         (
             self.reconciliation.operations,
+            self.reconciliation.cover_actors,
             GateReconciliationAction {
                 reconciliation: self.reconciliation.action,
                 decision,
@@ -3471,6 +3773,9 @@ fn append_settlement_operations(
 ) -> Result<(), ReservationReplayError> {
     let mut settled = HashMap::new();
     for reservation in reservations.iter() {
+        if reconciliation.action.cover_is_missing(reservation.id()) {
+            continue;
+        }
         let ReservationEvidenceState::Outstanding {
             integration_status, ..
         } = reservation.evidence_state()?
@@ -3567,6 +3872,9 @@ fn append_merged_run_endings(
 ) -> Vec<MergedRunEnding> {
     let mut merged_runs = Vec::new();
     for reservation in reservations.iter() {
+        if reconciliation.action.cover_is_missing(reservation.id()) {
+            continue;
+        }
         if !matches!(reservation.lifecycle(), ReservationLifecycle::Active) {
             continue;
         }
@@ -3588,8 +3896,10 @@ fn append_merged_run_endings(
         };
         // Enrollment requires a nonempty observed footprint. Its immutable source preserves
         // that evidence even if a preceding drift or gate already recorded an empty extent.
-        let did_work = matches!(reservation.source(), ClaimSource::Enrolled)
-            || reservation.merge_extent().observed_unmerged_work()
+        let did_work = matches!(
+            reservation.source(),
+            ClaimSource::Enrolled | ClaimSource::Cover { .. }
+        ) || reservation.merge_extent().observed_unmerged_work()
             || key.head != *reservation.phase_start_head().as_ref();
         if !did_work {
             continue;
@@ -4335,6 +4645,25 @@ fn reservation_alerts(
 }
 
 impl ReconciliationAction {
+    fn finish_cover_markers(
+        marker_contexts: &[WorktreeMarkerSweepContext],
+        active_holders: &[ActiveHolder],
+        cover_marker_publications: &[(WorktreeContext, CoordinationRunId)],
+    ) -> Result<(), ReconcileError> {
+        for marker_context in marker_contexts {
+            marker_context.sweep_coordination_run_marker(|worktree_id, coordination_run_id| {
+                active_holders.iter().any(|active_holder| {
+                    active_holder.worktree_id == worktree_id
+                        && active_holder.coordination_run_id == coordination_run_id
+                })
+            })?;
+        }
+        for (context, run) in cover_marker_publications {
+            context.publish_coordination_run_marker(*run)?;
+        }
+        Ok(())
+    }
+
     fn commit(
         mut self,
         state: &ReplayedLedgerState<'_>,
@@ -4365,19 +4694,24 @@ impl ReconciliationAction {
             .map_err(LedgerError::Io)?;
         permit::delete_branch_rewrite_markers(&self.completed_rewrite_markers)
             .map_err(LedgerError::Io)?;
-        for marker_context in self.marker_contexts {
-            marker_context.sweep_coordination_run_marker(|worktree_id, coordination_run_id| {
-                self.active_holders.iter().any(|active_holder| {
-                    active_holder.worktree_id == worktree_id
-                        && active_holder.coordination_run_id == coordination_run_id
-                })
-            })?;
-        }
+        Self::finish_cover_markers(
+            &self.marker_contexts,
+            &self.active_holders,
+            &self.cover_marker_publications,
+        )?;
         let mut alerts = reservation_alerts(
             &reservations,
             &self.repository_snapshot,
             &self.confirmed_lost_evidence,
         )?;
+        alerts.extend(
+            self.uncovered_targets
+                .into_iter()
+                .map(|(target, waiting_reservations)| Alert::TargetUncovered {
+                    target,
+                    waiting_reservations,
+                }),
+        );
         for alert_subject in self.alert_subjects {
             alerts.extend(alert::for_orphaned_outstanding(
                 &self.repository_root,
@@ -4410,6 +4744,8 @@ impl ReconciliationAction {
             alerts,
             evidence: self.evidence,
             settlements: self.settlements,
+            covered_targets: self.covered_targets,
+            covers_created: self.covers_created,
             session_mapping_publication: SessionIdentityMappingPublication::Published,
             repository_snapshot: self.repository_snapshot,
             constraints,

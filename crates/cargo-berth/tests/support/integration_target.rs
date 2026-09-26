@@ -166,6 +166,57 @@ pub(crate) fn json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("JSON output")
 }
 
+pub(crate) fn board(root: &Path) -> Value {
+    let output = run(root, &["board", "--json"]);
+    assert_success(&output);
+    json(&output)
+}
+
+pub(crate) fn reservation_row<'board>(board: &'board Value, id: &str) -> &'board Value {
+    let data = &board["payload"]["data"];
+    [
+        "ready_now",
+        "waiting",
+        "unconstrained_reservations",
+        "resolved",
+    ]
+    .into_iter()
+    .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+    .map(|entry| entry.get("reservation").unwrap_or(entry))
+    .find(|entry| entry["reservation_id"] == id)
+    .expect("reservation appears on board")
+}
+
+pub(crate) fn cover_claims(root: &Path) -> Vec<Value> {
+    journal(root)
+        .into_iter()
+        .filter(|event| event["op"] == "claim" && event["source"]["kind"] == "cover")
+        .collect()
+}
+
+pub(crate) fn worktree_identity_and_marker_run(root: &Path) -> (String, String) {
+    let git_path = root.join(".git");
+    let administrative_directory = if git_path.is_dir() {
+        git_path
+    } else {
+        let pointer = fs::read_to_string(&git_path).expect("linked worktree git pointer reads");
+        let directory = pointer
+            .trim()
+            .strip_prefix("gitdir: ")
+            .expect("linked worktree git pointer names its administrative directory");
+        root.join(directory)
+    };
+    let worktree = fs::read_to_string(administrative_directory.join("cargo-berth-worktree-id"))
+        .expect("worktree identity reads")
+        .trim()
+        .to_owned();
+    let run = fs::read_to_string(administrative_directory.join("cargo-berth-run-id"))
+        .expect("worktree coordination marker reads")
+        .trim()
+        .to_owned();
+    (worktree, run)
+}
+
 pub(crate) fn journal(root: &Path) -> Vec<Value> {
     fs::read_to_string(root.join(".git/cargo-berth/journal.ndjson"))
         .expect("journal reads")

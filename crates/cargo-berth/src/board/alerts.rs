@@ -150,6 +150,10 @@ pub(super) enum BoardAlert {
         /// The retarget command for the reservation.
         commands:       Vec<String>,
     },
+    TargetUncovered {
+        target:               IntegrationTarget,
+        waiting_reservations: Vec<ReservationId>,
+    },
     /// A failed branch observation retains the preceding protection evidence.
     MergeExtentUnavailable {
         /// The holder whose merge surface cannot currently be derived.
@@ -300,6 +304,18 @@ pub(super) fn board_alert_detail(alert: &BoardAlert) -> String {
             target,
             ..
         } => alert::target_missing_detail(*reservation_id, target),
+        BoardAlert::TargetUncovered {
+            target,
+            waiting_reservations,
+        } => format!(
+            "Target {} has no registered worktree cover; reservations {} remain outstanding.",
+            target.short_name(),
+            waiting_reservations
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         BoardAlert::MergeExtentUnavailable {
             reservation_id,
             failure,
@@ -620,6 +636,13 @@ fn board_alert(
             reservation_id: *reservation_id,
             target:         target.clone(),
             commands:       commands.clone(),
+        }),
+        Alert::TargetUncovered {
+            target,
+            waiting_reservations,
+        } => Ok(BoardAlert::TargetUncovered {
+            target:               target.clone(),
+            waiting_reservations: waiting_reservations.clone(),
         }),
         Alert::MergeExtentUnavailable {
             reservation_id,

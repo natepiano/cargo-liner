@@ -671,6 +671,8 @@ pub(crate) enum ClaimSource {
     Explicit,
     /// A reservation enrolled from a worktree's existing changes.
     Enrolled,
+    /// A reservation for the complete work on an integration branch.
+    Cover { covered_branch: IntegrationTarget },
 }
 
 macro_rules! git_commit_role {

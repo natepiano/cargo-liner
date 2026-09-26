@@ -247,6 +247,7 @@ fn execute_every_incursion_resolution(
                 );
             }
             ReconciliationValidation::Apply {
+                cover_actors:           std::collections::HashMap::default(),
                 operations:             incident_ids
                     .iter()
                     .map(|incident_id| JournalOperation::ResolveIncursion {
@@ -559,7 +560,7 @@ fn validate_recovery_request(
     };
     let target = reservations
         .target_of(reservation_id, repository_trunk)
-        .ok_or(RecoveryRejection::UnknownReservation)?;
+        .map_err(|_| RecoveryRejection::UnknownReservation)?;
     let judging_branch = target
         .judging_branch(repository_root, repository_trunk)
         .map_err(RecoveryRejection::Git)?;

@@ -335,6 +335,10 @@ pub(super) struct DriftTransactionDecision {
     pub(super) report:     DriftReport,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "cover handling extends the existing locked classification by one case"
+)]
 pub(super) fn classify_locked(
     reservations: &RetainedReservationSet,
     subjects: &ResolvedDriftSubjects,
@@ -403,14 +407,16 @@ pub(super) fn classify_locked(
                         })
                         .collect::<Vec<_>>();
                     if blockers.is_empty()
-                        || matches!(reservation.source(), ClaimSource::FirstTouch)
-                            && outstanding_incursion_covers(
-                                reservations,
-                                subjects.reporting.as_slice(),
-                                *reservation_id,
-                                path,
-                                &blockers,
-                            )
+                        || matches!(
+                            reservation.source(),
+                            ClaimSource::FirstTouch | ClaimSource::Cover { .. }
+                        ) && outstanding_incursion_covers(
+                            reservations,
+                            subjects.reporting.as_slice(),
+                            *reservation_id,
+                            path,
+                            &blockers,
+                        )
                     {
                         return;
                     }

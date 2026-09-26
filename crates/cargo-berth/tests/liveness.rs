@@ -99,6 +99,120 @@ fn retarget_records_new_target_tip_and_refuses_invalid_targets() {
 }
 
 #[test]
+fn direct_release_waits_for_a_cover_at_a_present_integration_target() {
+    for covered in [false, true] {
+        let repo = integration_target::IntegrationRepository::new();
+        let lane = repo.lane("cover-release-lane", "integration");
+        let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        integration_target::assert_success(&claimed);
+        let _ = integration_target::board(repo.root());
+        let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("lane ID")
+            .to_owned();
+        integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
+        integration_target::assert_success(&checkpoint);
+        let waiting = integration_target::json(&checkpoint);
+        assert_eq!(waiting["status"], "outstanding", "{waiting}");
+        assert_eq!(waiting["payload"]["data"]["status"], "checkpointed");
+        assert!(
+            !waiting["message"]
+                .as_str()
+                .expect("release message")
+                .contains("uncovered"),
+            "a lane not yet merged keeps its existing outstanding answer: {waiting}"
+        );
+        if covered {
+            repo.merge_by_commit("cover-release-lane");
+        } else {
+            integration_target::git(
+                repo.root(),
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    repo.integration.to_str().expect("UTF-8 worktree"),
+                ],
+            );
+            integration_target::git(
+                repo.root(),
+                &["branch", "-f", "integration", "cover-release-lane"],
+            );
+        }
+        let released = integration_target::run(&lane, &["release", &id, "--json"]);
+        integration_target::assert_success(&released);
+        let response = integration_target::json(&released);
+        if covered {
+            assert_eq!(response["status"], "integrated", "{response}");
+        } else {
+            assert_eq!(response["status"], "outstanding", "{response}");
+            assert_eq!(response["exit_code"], 0, "{response}");
+            assert_eq!(response["payload"]["kind"], "release", "{response}");
+            assert_eq!(
+                response["payload"]["data"],
+                serde_json::json!({
+                    "status": "target_uncovered",
+                    "reservation_id": id,
+                    "target": "refs/heads/integration",
+                }),
+                "{response}"
+            );
+            assert_eq!(
+                response["message"],
+                format!("Target integration is uncovered; reservation {id} remains outstanding."),
+                "{response}"
+            );
+            let board = integration_target::board(repo.root());
+            assert_ne!(
+                integration_target::reservation_row(&board, &id)["lifecycle"]["stage"],
+                "released",
+                "{board}"
+            );
+        }
+    }
+}
+
+#[test]
+fn integrated_as_accepts_an_uncovered_target_commit() {
+    let repo = integration_target::IntegrationRepository::new();
+    let lane = repo.lane("uncovered-recovery-lane", "integration");
+    let claimed = integration_target::claim(&lane, "file:lane.txt", FIRST_RUN, None);
+    integration_target::assert_success(&claimed);
+    let _ = integration_target::board(repo.root());
+    let id = integration_target::json(&claimed)["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("lane ID")
+        .to_owned();
+    integration_target::commit_file(&lane, "lane.txt", "landed\n", "lane work");
+    let commit = integration_target::git_stdout(&lane, &["rev-parse", "HEAD"]);
+    let checkpoint = integration_target::run(&lane, &["release", &id, "--json"]);
+    integration_target::assert_success(&checkpoint);
+    integration_target::git(
+        repo.root(),
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            repo.integration.to_str().expect("UTF-8 worktree"),
+        ],
+    );
+    integration_target::git(
+        repo.root(),
+        &["branch", "-f", "integration", "uncovered-recovery-lane"],
+    );
+    let resolved = integration_target::run(
+        &lane,
+        &["resolve", &id, "--integrated-as", &commit, "--json"],
+    );
+    integration_target::assert_success(&resolved);
+    assert_eq!(
+        integration_target::json(&resolved)["payload"]["data"]["disposition"]["evidence"],
+        commit
+    );
+}
+
+#[test]
 fn retarget_distinguishes_a_nonbranch_target_from_an_unresolved_branch() {
     let repo = integration_target::IntegrationRepository::new();
     let lane = repo.lane("malformed-retarget-lane", "integration");

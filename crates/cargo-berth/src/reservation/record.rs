@@ -101,7 +101,7 @@ impl From<&ClaimTarget> for RecordedTarget {
         Self::Recorded {
             target:   claim_target.target.clone(),
             source:   claim_target.source,
-            fallback: claim_target.fallback.clone(),
+            fallback: claim_target.fallback().cloned(),
         }
     }
 }

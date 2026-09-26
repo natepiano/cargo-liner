@@ -240,9 +240,11 @@ pub(super) fn evaluate_locked(
                         Ok(decision) => decision,
                         Err(error) => return ReconciliationValidation::Reject(error),
                     };
-                    let (operations, action) = prepared.into_action(operations, decision);
+                    let (operations, cover_actors, action) =
+                        prepared.into_action(operations, decision);
                     ReconciliationValidation::Apply {
                         operations,
+                        cover_actors,
                         recoverable_operations: Vec::new(),
                         action,
                     }

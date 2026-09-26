@@ -17,6 +17,7 @@ pub(super) const OPERATION_IN_PROGRESS_MARKERS: [&str; 5] = [
 
 // porcelain fields
 pub(super) const HEAD_FIELD_PREFIX: &str = "HEAD ";
+pub(super) const BRANCH_FIELD_PREFIX: &str = "branch ";
 pub(super) const LOCKED_FIELD: &str = "locked";
 pub(super) const PRUNABLE_FIELD: &str = "prunable";
 pub(super) const WORKTREE_FIELD_PREFIX: &str = "worktree ";

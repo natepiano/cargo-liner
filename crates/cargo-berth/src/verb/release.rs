@@ -10,6 +10,7 @@ use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::edge::EdgeReplayError;
 use crate::edge::OrderingGraph;
+use crate::edge::RepositoryReservationEvidence;
 use crate::git;
 use crate::git::GitError;
 use crate::git::Reachability;
@@ -112,6 +113,29 @@ pub(crate) fn execute(release_request: ReleaseRequest) -> OutputEnvelope {
             })
             .with_alerts(reconciliation_report.alerts);
         }
+    }
+    let target = reconciliation_report
+        .repository_snapshot
+        .recorded_target(release_request.reservation_id);
+    if reconciliation_report
+        .repository_snapshot
+        .reservation(release_request.reservation_id)
+        .is_ok_and(|snapshot| {
+            matches!(
+                snapshot.evidence,
+                RepositoryReservationEvidence::Outstanding {
+                    integration_status: IntegrationEvidenceStatus::Integrated { .. },
+                    ..
+                }
+            )
+        })
+        && reconciliation_report.cover_is_missing(release_request.reservation_id)
+    {
+        return OutputEnvelope::released(ReleasePayload::TargetUncovered {
+            reservation_id: release_request.reservation_id,
+            target:         target.clone(),
+        })
+        .with_alerts(reconciliation_report.alerts);
     }
     for reconciled_evidence in &reconciliation_report.evidence {
         if reconciled_evidence.reservation_id == release_request.reservation_id {
@@ -334,7 +358,7 @@ fn validate_release_transaction(
         },
         Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
     };
-    let Some(target) = reservations.target_of(context.reservation_id, context.repository_trunk)
+    let Ok(target) = reservations.target_of(context.reservation_id, context.repository_trunk)
     else {
         return CommittedActionValidation::Reject(ReleaseRejection::UnknownReservation);
     };

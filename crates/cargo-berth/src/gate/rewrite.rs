@@ -488,6 +488,7 @@ pub(super) fn reanchor_rewritten_phases(
                     },
                 };
                 ReconciliationValidation::Apply {
+                    cover_actors:           std::collections::HashMap::default(),
                     operations:             resnapshot_operations(
                         repository_root,
                         &reservations,

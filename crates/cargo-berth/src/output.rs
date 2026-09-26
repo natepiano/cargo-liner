@@ -828,7 +828,7 @@ impl TargetView {
             &target.target,
             target.source,
             commit,
-            target.fallback.clone(),
+            target.fallback().cloned(),
         )
     }
 
@@ -1424,6 +1424,11 @@ enum FirstTouchReservationSelectionPayload {
 #[schemars(rename = "release_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ReleasePayload {
+    /// Integration is proved, but the present target lacks a fresh cover.
+    TargetUncovered {
+        reservation_id: ReservationId,
+        target:         IntegrationTarget,
+    },
     /// An active reservation recorded its first protected checkpoint.
     Checkpointed {
         /// The reservation that changed state.
@@ -1484,7 +1489,8 @@ pub(crate) enum ReleasePayload {
 impl ReleasePayload {
     const fn reservation_id(&self) -> ReservationId {
         match self {
-            Self::Checkpointed { reservation_id, .. }
+            Self::TargetUncovered { reservation_id, .. }
+            | Self::Checkpointed { reservation_id, .. }
             | Self::Resnapshotted { reservation_id, .. }
             | Self::EvidenceRevalidated { reservation_id, .. }
             | Self::AlreadySettled { reservation_id, .. }
@@ -1494,7 +1500,9 @@ impl ReleasePayload {
 
     const fn output_status(&self) -> OutputStatus {
         match self {
-            Self::Checkpointed { .. } | Self::Resnapshotted { .. } => OutputStatus::Outstanding,
+            Self::TargetUncovered { .. }
+            | Self::Checkpointed { .. }
+            | Self::Resnapshotted { .. } => OutputStatus::Outstanding,
             Self::EvidenceRevalidated { evidence, .. } | Self::AlreadySettled { evidence, .. } => {
                 integration_evidence_status(evidence)
             },
@@ -2586,6 +2594,10 @@ impl OutputEnvelope {
         let reservation_id = release_payload.reservation_id();
         let status = release_payload.output_status();
         let message = match &release_payload {
+            ReleasePayload::TargetUncovered { target, .. } => format!(
+                "Target {} is uncovered; reservation {reservation_id} remains outstanding.",
+                target.short_name()
+            ),
             ReleasePayload::Checkpointed {
                 protected_tip,
                 session_mapping_publication,
@@ -3135,6 +3147,7 @@ impl OutputEnvelope {
                 matches!(
                     alert,
                     Alert::TargetMissing { .. }
+                        | Alert::TargetUncovered { .. }
                         | Alert::LostIntegrationEvidence(_)
                         | Alert::MergeExtentUnavailable { .. }
                 )
@@ -4164,6 +4177,7 @@ fn live_board_feedback(
             matches!(
                 alert,
                 Alert::TargetMissing { .. }
+                    | Alert::TargetUncovered { .. }
                     | Alert::LostIntegrationEvidence(_)
                     | Alert::MergeExtentUnavailable { .. }
             )
@@ -4403,6 +4417,9 @@ fn source_description(claim_source: &ClaimSource) -> String {
         ClaimSource::FirstTouch => "first-touch edit".to_owned(),
         ClaimSource::Explicit => "explicit claim".to_owned(),
         ClaimSource::Enrolled => "enrolled worktree changes".to_owned(),
+        ClaimSource::Cover { covered_branch } => {
+            format!("cover for {}", covered_branch.short_name())
+        },
     }
 }
 

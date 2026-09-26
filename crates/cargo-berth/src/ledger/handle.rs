@@ -1,5 +1,6 @@
 //! The shared-ledger handle and the validation-controlled transactions it drives.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -18,6 +19,7 @@ use super::error::LedgerCommittedActionError;
 use super::error::LedgerError;
 use super::error::LedgerTransactionError;
 use super::identity;
+use super::journal::ClaimSource;
 use super::journal::Journal;
 use super::journal::JournalActor;
 use super::journal::JournalAppendError;
@@ -39,6 +41,7 @@ use crate::ids::CoordinationRunId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
+use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::session;
 use crate::session::CurrentSessionMappingRemoval;
@@ -126,6 +129,8 @@ pub(crate) enum ReconciliationValidation<Rejection, CommittedAction> {
     Apply {
         /// Journal operations whose failure invalidates the entire reconciliation.
         operations:             Vec<JournalOperation>,
+        /// Worktree actors for cover claims within the operation batch.
+        cover_actors:           HashMap<ReservationId, CoverClaimActor>,
         /// Marker imports whose failure is reported without rejecting other reconciliation work.
         recoverable_operations: Vec<JournalOperation>,
         /// Idempotent filesystem and git repairs authorized after the appends.
@@ -133,6 +138,13 @@ pub(crate) enum ReconciliationValidation<Rejection, CommittedAction> {
     },
     /// Stop without changing journal or side-effect state.
     Reject(Rejection),
+}
+
+/// The branch checkout and run that own one engine-created cover claim.
+#[derive(Clone, Copy)]
+pub(crate) struct CoverClaimActor {
+    pub(crate) worktree: WorktreeId,
+    pub(crate) run:      CoordinationRunId,
 }
 
 /// Marker imports that reconciliation could not append after repairing any partial tail.
@@ -455,11 +467,17 @@ impl Ledger {
         match validate(replayed_state) {
             ReconciliationValidation::Apply {
                 operations,
+                cover_actors,
                 recoverable_operations,
                 action,
             } => {
                 let mut session_mapping_publication = transaction
-                    .append_reconciliation_operations(worktree_id, coordination_run_id, operations)
+                    .append_reconciliation_operations(
+                        worktree_id,
+                        coordination_run_id,
+                        operations,
+                        &cover_actors,
+                    )
                     .map_err(LedgerCommittedActionError::Transaction)?;
                 let mut recoverable_failures = RecoverableReconciliationAppendFailures {
                     operations: Vec::new(),
@@ -643,6 +661,7 @@ impl LedgerTransaction {
         worktree_id: WorktreeId,
         coordination_run_id: CoordinationRunId,
         operations: Vec<JournalOperation>,
+        cover_actors: &HashMap<ReservationId, CoverClaimActor>,
     ) -> Result<SessionIdentityMappingPublication, LedgerTransactionError> {
         if operations.is_empty() {
             return Ok(SessionIdentityMappingPublication::Published);
@@ -657,8 +676,23 @@ impl LedgerTransaction {
         for operation in operations {
             generation = next_projection_generation(generation)
                 .map_err(LedgerTransactionError::LedgerUnreadable)?;
+            let operation_actor = match &operation {
+                JournalOperation::Claim {
+                    reservation_id,
+                    source: ClaimSource::Cover { .. },
+                    ..
+                } => cover_actors.get(reservation_id).map_or_else(
+                    || actor.clone(),
+                    |cover| JournalActor {
+                        repository: self.repo_instance_id,
+                        worktree:   cover.worktree,
+                        run:        cover.run,
+                    },
+                ),
+                _ => actor.clone(),
+            };
             events.push(JournalEvent::for_operation(
-                actor.clone(),
+                operation_actor,
                 generation,
                 operation,
             ));

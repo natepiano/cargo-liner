@@ -37,6 +37,12 @@ pub(crate) struct WorktreeContext {
     worktree_kind:            WorktreeKind,
 }
 
+/// The usable coordination run already published by a checkout.
+pub(crate) enum ExistingCoordinationRun {
+    Present(CoordinationRunId),
+    Absent,
+}
+
 /// The per-worktree Git directory that owns worktree and run identity markers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WorktreeAdministrativeDirectory(PathBuf);
@@ -295,6 +301,24 @@ impl WorktreeContext {
             std::mem::drop(fs::remove_file(temporary_path));
         }
         publication.map_err(LedgerError::Io)
+    }
+
+    /// Read the marker that a newly created cover should join.
+    pub(crate) fn existing_coordination_run(&self) -> Result<ExistingCoordinationRun, LedgerError> {
+        match fs::read_to_string(
+            self.administrative_directory
+                .0
+                .join(COORDINATION_RUN_MARKER_FILE_NAME),
+        ) {
+            Ok(value) => Ok(value.trim().parse().map_or(
+                ExistingCoordinationRun::Absent,
+                ExistingCoordinationRun::Present,
+            )),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                Ok(ExistingCoordinationRun::Absent)
+            },
+            Err(error) => Err(LedgerError::Io(error)),
+        }
     }
 
     /// Remove the marker only when it still names the released run.

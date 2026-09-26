@@ -34,6 +34,7 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::ClaimTarget;
+use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
@@ -134,7 +135,6 @@ pub(crate) struct WorktreeEnrollmentFailure {
 struct EnrollmentFootprint {
     context:       WorktreeContext,
     worktree_id:   WorktreeId,
-    history:       ReservationHistory,
     head:          GitObjectId,
     trunk:         GitObjectId,
     target:        ClaimTarget,
@@ -156,6 +156,12 @@ enum ReservationHistory {
 enum FootprintObservation {
     Empty,
     Work(Box<EnrollmentFootprint>),
+}
+
+/// The selected integration branch and its commit for one footprint read.
+struct FootprintTarget {
+    selection: ClaimTarget,
+    commit:    GitObjectId,
 }
 
 /// The locked replay can skip a competing acquisition or reject invalid replay.
@@ -216,6 +222,9 @@ pub(crate) fn enroll_worktrees(
     };
     let path_case = PathCase::read(context.common_git_directory())
         .map_err(|error| LedgerError::Io(std::io::Error::other(error.to_string())))?;
+    let repository_trunk = config
+        .repository_trunk()
+        .map_err(|error| LedgerError::Io(std::io::Error::other(error)))?;
     let mut footprints = Vec::new();
     for candidate in registry.enrollment_candidates() {
         match candidate {
@@ -242,8 +251,7 @@ pub(crate) fn enroll_worktrees(
                     },
                 };
                 let history = reservation_history(&events, identity.id);
-                match observe_footprint(candidate_context, identity.id, history, config, path_case)
-                {
+                match observe_footprint(candidate_context, identity.id, config, path_case) {
                     Ok(FootprintObservation::Work(footprint)) => footprints.push(*footprint),
                     Err(error) if matches!(history, ReservationHistory::NeverReserved) => {
                         report.failures.push(error);
@@ -254,10 +262,19 @@ pub(crate) fn enroll_worktrees(
         }
     }
     for candidate in &footprints {
-        if matches!(candidate.history, ReservationHistory::AlreadyReserved) {
+        if matches!(
+            reservation_history(&events, candidate.worktree_id),
+            ReservationHistory::AlreadyReserved
+        ) {
             continue;
         }
-        match enroll_candidate(&ledger, candidate, &footprints, path_case) {
+        match enroll_candidate(
+            &ledger,
+            candidate,
+            &footprints,
+            path_case,
+            &repository_trunk,
+        ) {
             Ok(EnrollmentOutcome::Enrolled(enrolled)) => report.enrolled.push(enrolled),
             Ok(EnrollmentOutcome::AlreadyReserved) => {},
             Err(error) => report.failures.push(error),
@@ -281,20 +298,10 @@ fn reservation_history(events: &[JournalEvent], worktree_id: WorktreeId) -> Rese
 fn observe_footprint(
     context: WorktreeContext,
     worktree_id: WorktreeId,
-    history: ReservationHistory,
     config: &BerthConfig,
     path_case: PathCase,
 ) -> Result<FootprintObservation, WorktreeEnrollmentFailure> {
     let root = context.repository_root();
-    for marker in OPERATION_IN_PROGRESS_MARKERS {
-        if context.administrative_directory().join(marker).exists() {
-            return Err(failure(
-                root,
-                WorktreeEnrollmentFailureReason::OperationInProgress,
-                format!("{marker} exists in the worktree administrative directory"),
-            ));
-        }
-    }
     let head =
         git::head_object_id(root).map_err(|error| resolution_failure(root, "HEAD", &error))?;
     let attachment = git::head_attachment(root).map_err(|error| {
@@ -305,6 +312,41 @@ fn observe_footprint(
         )
     })?;
     let (target, trunk) = read_enrollment_target(&context, &attachment, config)?;
+    observe_target_footprint(
+        context,
+        worktree_id,
+        head,
+        attachment,
+        FootprintTarget {
+            selection: target,
+            commit:    trunk,
+        },
+        path_case,
+    )
+}
+
+fn observe_target_footprint(
+    context: WorktreeContext,
+    worktree_id: WorktreeId,
+    head: GitObjectId,
+    attachment: HeadAttachment,
+    footprint_target: FootprintTarget,
+    path_case: PathCase,
+) -> Result<FootprintObservation, WorktreeEnrollmentFailure> {
+    let root = context.repository_root();
+    let FootprintTarget {
+        selection: target,
+        commit: trunk,
+    } = footprint_target;
+    for marker in OPERATION_IN_PROGRESS_MARKERS {
+        if context.administrative_directory().join(marker).exists() {
+            return Err(failure(
+                root,
+                WorktreeEnrollmentFailureReason::OperationInProgress,
+                format!("{marker} exists in the worktree administrative directory"),
+            ));
+        }
+    }
     let merge_base = observe_merge_base(root, &trunk, &head)?;
     let committed = git::unmerged_branch_paths(root, &trunk, &head).map_err(|error| {
         failure(
@@ -350,7 +392,6 @@ fn observe_footprint(
     Ok(FootprintObservation::Work(Box::new(EnrollmentFootprint {
         context,
         worktree_id,
-        history,
         head,
         trunk,
         target,
@@ -360,6 +401,85 @@ fn observe_footprint(
         scopes,
         working_tree,
     })))
+}
+
+/// Observe the integration branch's complete work and make its cover claim.
+pub(crate) fn cover_claim(
+    context: WorktreeContext,
+    worktree_id: WorktreeId,
+    covered_branch: IntegrationTarget,
+    target: ClaimTarget,
+    target_commit: GitObjectId,
+    path_case: PathCase,
+) -> Result<Option<JournalOperation>, WorktreeEnrollmentFailure> {
+    let root = context.repository_root().to_path_buf();
+    let head =
+        git::head_object_id(&root).map_err(|error| resolution_failure(&root, "HEAD", &error))?;
+    let attachment = git::head_attachment(&root).map_err(|error| {
+        failure(
+            &root,
+            WorktreeEnrollmentFailureReason::GitFailure,
+            error.to_string(),
+        )
+    })?;
+    let FootprintObservation::Work(footprint) = observe_target_footprint(
+        context,
+        worktree_id,
+        head,
+        attachment,
+        FootprintTarget {
+            selection: target,
+            commit:    target_commit,
+        },
+        path_case,
+    )?
+    else {
+        return Ok(None);
+    };
+    let worktree_root: CanonicalWorktreeRoot = footprint
+        .context
+        .repository_root()
+        .to_str()
+        .ok_or_else(|| {
+            failure(
+                &root,
+                WorktreeEnrollmentFailureReason::GitFailure,
+                "worktree root is not UTF-8".to_owned(),
+            )
+        })?
+        .parse()
+        .map_err(|error| {
+            failure(
+                &root,
+                WorktreeEnrollmentFailureReason::GitFailure,
+                format!("worktree root: {error}"),
+            )
+        })?;
+    let purpose = ReservationPurpose::Explained(
+        format!("Cover integration branch {}", covered_branch.short_name())
+            .parse()
+            .map_err(|error| {
+                failure(
+                    &root,
+                    WorktreeEnrollmentFailureReason::GitFailure,
+                    format!("cover purpose: {error}"),
+                )
+            })?,
+    );
+    Ok(Some(JournalOperation::Claim {
+        reservation_id: ReservationId::new(),
+        scopes: footprint.scopes.clone(),
+        source: ClaimSource::Cover { covered_branch },
+        purpose,
+        trunk_at_claim: footprint.trunk.clone().into(),
+        target: Some(Box::new(footprint.target.clone())),
+        head_snapshot: footprint.head_snapshot.clone(),
+        phase_start_head: footprint.merge_base.clone().into(),
+        worktree_root,
+        worktree_administrative_locator: footprint.context.administrative_locator().clone(),
+        authorization: ConflictAuthorization::NoConflict,
+        coordination_identity_provenance: CoordinationIdentityProvenance::NotPresented,
+    }))
 }
 
 fn read_enrollment_target(
@@ -512,6 +632,7 @@ fn enroll_candidate(
     candidate: &EnrollmentFootprint,
     footprints: &[EnrollmentFootprint],
     path_case: PathCase,
+    repository_trunk: &IntegrationTarget,
 ) -> Result<EnrollmentOutcome, WorktreeEnrollmentFailure> {
     let root = candidate.context.repository_root();
     let git_failure = |diagnostic| {
@@ -528,8 +649,10 @@ fn enroll_candidate(
         RetainedReservationSet::replay(&events).map_err(|error| git_failure(error.to_string()))?;
     let containment = ActingHeadContainment::observe_at_head(
         &reservations,
-        root,
+        &candidate.context,
         candidate.worktree_id,
+        &candidate.target.target,
+        repository_trunk,
         &candidate.head,
     );
     let remainders = mutual_remainders(candidate, footprints)?;
