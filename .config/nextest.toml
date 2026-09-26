@@ -28,3 +28,10 @@ test-group = "cargo-tile-readers"
 # The group runs one test at a time. Started in binary order, its chain of
 # about 16s ended the run; started first, it finishes alongside everything else.
 priority = 90
+
+# The capture shim's no-terminal path tees stderr through a FIFO. On macOS CI a
+# run once hung in that path for two hours; each of these tests finishes in
+# under a second, so a stuck one is terminated after two minutes instead.
+[[profile.default.overrides]]
+filter       = 'binary_id(cargo-tile::shim_modes)'
+slow-timeout = { period = "30s", terminate-after = 4 }

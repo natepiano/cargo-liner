@@ -384,7 +384,10 @@ jobs:
       - name: Build test targets
         run: cargo nextest run -p cargo-tile -p cargo-handler --bins --tests --no-run
 
+      # The suite takes about a minute here; a hung test fails the step instead
+      # of holding the runner for GitHub's six-hour default.
       - name: Test cargo-tile and cargo-handler
+        timeout-minutes: 15
         run: cargo nextest run --no-fail-fast -p cargo-tile -p cargo-handler --bins --tests
 
       - name: Lint cargo-tile and cargo-handler
