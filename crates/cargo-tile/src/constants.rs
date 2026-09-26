@@ -108,6 +108,9 @@ pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
 // tiles
+/// `tiles.widen_summary` when `config.toml` says nothing: the summary
+/// stays in its own column.
+pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = false;
 /// Seconds a finished row stays on screen, greyed, before it goes, when
 /// `config.toml` says nothing.
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;

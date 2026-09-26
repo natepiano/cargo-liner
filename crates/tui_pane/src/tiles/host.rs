@@ -154,8 +154,9 @@ mod tests {
     /// How the test grid grows: four rows in the first column before a
     /// second one opens.
     const GROWTH: TileGrowth = TileGrowth {
-        initial_rows: 4,
-        fill:         TileFill::Redistribute,
+        initial_rows:  4,
+        fill:          TileFill::Redistribute,
+        widen_summary: false,
     };
     /// Width of the rect the test grid is laid out in.
     const WIDTH: u16 = 80;

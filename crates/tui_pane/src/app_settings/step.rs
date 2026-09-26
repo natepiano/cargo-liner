@@ -37,6 +37,8 @@ pub enum FrameworkSetting {
     InitialRows,
     /// `tiles.fill`: `add_new`, `redistribute`.
     TileFill,
+    /// `tiles.widen_summary`: `true`, `false`.
+    WidenSummary,
 }
 
 /// Reach into an app's config for the keys the framework owns.
@@ -58,6 +60,9 @@ pub trait AppConfig: Default + DeserializeOwned + Serialize {
 
     /// `tiles.fill`, for its stepper to edit.
     fn tile_fill_mut(&mut self) -> &mut TileFill;
+
+    /// `tiles.widen_summary`, for its stepper to edit.
+    fn widen_summary_mut(&mut self) -> &mut bool;
 }
 
 /// The value one step from `current`, wrapping at both ends.
@@ -111,6 +116,11 @@ pub fn step_framework_setting<C: AppConfig>(
         },
         FrameworkSetting::InitialRows => config.initial_rows_mut().step(step),
         FrameworkSetting::TileFill => config.tile_fill_mut().step(step),
+        // Two values, so a step either way lands on the other one.
+        FrameworkSetting::WidenSummary => {
+            let widen = config.widen_summary_mut();
+            *widen = !*widen;
+        },
     }
     apply_settings(loaded, theme_note);
 }

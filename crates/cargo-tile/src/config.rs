@@ -22,6 +22,7 @@ use crate::constants::DEFAULT_EXCLUDED;
 use crate::constants::DEFAULT_FADE_SECONDS;
 use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::DEFAULT_WIDEN_SUMMARY;
 use crate::constants::MAX_FADE_SECONDS;
 
 /// cargo-tile's identity for the framework's config and runner paths.
@@ -80,33 +81,39 @@ pub(crate) struct TilesConfig {
     /// Rows the grid grows to in a single column before it starts
     /// arranging itself into a square. Read through
     /// [`TilesConfig::growth`], which enforces the floor.
-    pub(crate) initial_rows: InitialRows,
+    pub(crate) initial_rows:  InitialRows,
     /// How the cells spread over the columns once there is more than
     /// one: `add_new` or `redistribute`.
-    pub(crate) fill:         TileFill,
+    pub(crate) fill:          TileFill,
+    /// Whether the summary widens over the next columns when its widest
+    /// line does not fit its own; see [`TileGrowth::widen_summary`].
+    pub(crate) widen_summary: bool,
     /// Seconds a finished row stays on screen, greyed, before it and any
     /// cell it leaves empty go. Read through
     /// [`TilesConfig::fade`], which enforces the ceiling.
-    pub(crate) fade_seconds: u64,
+    pub(crate) fade_seconds:  u64,
 }
 
 impl Default for TilesConfig {
     fn default() -> Self {
         Self {
-            initial_rows: InitialRows::default(),
-            fill:         TileFill::default(),
-            fade_seconds: DEFAULT_FADE_SECONDS,
+            initial_rows:  InitialRows::default(),
+            fill:          TileFill::default(),
+            widen_summary: DEFAULT_WIDEN_SUMMARY,
+            fade_seconds:  DEFAULT_FADE_SECONDS,
         }
     }
 }
 
 impl TilesConfig {
     /// The grid's growth: the single column's rows, never below one
-    /// (see [`InitialRows::get`]), and the fill.
+    /// (see [`InitialRows::get`]), the fill, and whether the summary
+    /// widens.
     pub(crate) fn growth(&self) -> TileGrowth {
         TileGrowth {
-            initial_rows: self.initial_rows.get(),
-            fill:         self.fill,
+            initial_rows:  self.initial_rows.get(),
+            fill:          self.fill,
+            widen_summary: self.widen_summary,
         }
     }
 
@@ -164,6 +171,8 @@ impl AppConfig for Config {
     fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.tiles.initial_rows }
 
     fn tile_fill_mut(&mut self) -> &mut TileFill { &mut self.tiles.fill }
+
+    fn widen_summary_mut(&mut self) -> &mut bool { &mut self.tiles.widen_summary }
 }
 
 /// `config.toml` as loaded, with whatever went wrong reading or
@@ -233,6 +242,7 @@ hidden_when_idle = [\n    \"port\",\n    \"handler\",\n]
 [tiles]
 initial_rows = 4
 fill = \"redistribute\"
+widen_summary = false
 fade_seconds = 3
 ";
         let written =

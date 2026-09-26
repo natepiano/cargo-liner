@@ -18,6 +18,7 @@ use super::constants::STEPPER_DECORATION_WIDTH;
 use super::constants::THEMES_LABEL;
 use super::constants::TILE_FILL_LABEL;
 use super::constants::UNRESOLVED_PATH;
+use super::constants::WIDEN_SUMMARY_LABEL;
 use super::step::FrameworkSetting;
 use crate::AppIdentity;
 use crate::AppearanceConfig;
@@ -177,6 +178,17 @@ impl<S: Copy> SettingsRows<S> {
         );
     }
 
+    /// Push the `widen summary` stepper, which walks `true` and
+    /// `false`. No section: the app places it under a section of its
+    /// own.
+    pub fn widen_summary(&mut self, widen: bool) {
+        self.push_stepper(
+            SettingTarget::Framework(FrameworkSetting::WidenSummary),
+            WIDEN_SUMMARY_LABEL,
+            &widen.to_string(),
+        );
+    }
+
     /// Push the Files section: where `config.toml`, the `themes/`
     /// directory and `keymap.toml` live.
     pub fn files<I: AppIdentity>(&mut self) {
@@ -268,6 +280,7 @@ mod tests {
         rows.section("Top");
         rows.initial_rows(crate::InitialRows::default());
         rows.tile_fill(crate::TileFill::default());
+        rows.widen_summary(false);
         rows.stepper(TestSetting::Speed, "speed", "3");
         rows.text(TestSetting::Names, "names", "a, b".to_string());
         rows.section("Info");
@@ -285,12 +298,13 @@ mod tests {
             [
                 SettingTarget::Framework(FrameworkSetting::InitialRows),
                 SettingTarget::Framework(FrameworkSetting::TileFill),
+                SettingTarget::Framework(FrameworkSetting::WidenSummary),
                 SettingTarget::App(TestSetting::Speed),
                 SettingTarget::AppText(TestSetting::Names),
                 SettingTarget::ReadOnly,
             ]
         );
-        assert_eq!(rows.target(5), None);
+        assert_eq!(rows.target(6), None);
     }
 
     /// The `fill` row shows the value the way `config.toml` spells it.
@@ -305,5 +319,23 @@ mod tests {
             .map(|row| (row.label.as_str(), row.value.as_str()))
             .collect();
         assert_eq!(shown, [("fill", "add_new"), ("fill", "redistribute")]);
+    }
+
+    /// The `widen summary` row shows the value the way `config.toml`
+    /// spells it.
+    #[test]
+    fn the_widen_summary_row_shows_the_file_spelling() {
+        let mut rows = SettingsRows::<TestSetting>::new();
+        rows.widen_summary(true);
+        rows.widen_summary(false);
+        let shown: Vec<_> = rows
+            .rows()
+            .iter()
+            .map(|row| (row.label.as_str(), row.value.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [("widen summary", "true"), ("widen summary", "false")]
+        );
     }
 }

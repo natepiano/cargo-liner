@@ -21,6 +21,7 @@ use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_LIGHT_THEME;
+use crate::constants::DEFAULT_WIDEN_SUMMARY;
 #[cfg(test)]
 use crate::constants::TEST_CONFIG_ROOT;
 
@@ -56,25 +57,40 @@ fn test_config_path(name: &str) -> PathBuf {
 }
 
 /// How the tile grid grows.
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct TilesConfig {
     /// Rows the grid grows to in a single column before it starts
     /// arranging itself into a square. Read through
     /// [`TilesConfig::growth`], which enforces the floor.
-    pub(crate) initial_rows: InitialRows,
+    pub(crate) initial_rows:  InitialRows,
     /// How the cells spread over the columns once there is more than
     /// one: `add_new` or `redistribute`.
-    pub(crate) fill:         TileFill,
+    pub(crate) fill:          TileFill,
+    /// Whether the summary widens over the next columns when its widest
+    /// line does not fit its own; see [`TileGrowth::widen_summary`].
+    pub(crate) widen_summary: bool,
+}
+
+impl Default for TilesConfig {
+    fn default() -> Self {
+        Self {
+            initial_rows:  InitialRows::default(),
+            fill:          TileFill::default(),
+            widen_summary: DEFAULT_WIDEN_SUMMARY,
+        }
+    }
 }
 
 impl TilesConfig {
     /// The grid's growth: the single column's rows, never below one
-    /// (see [`InitialRows::get`]), and the fill.
+    /// (see [`InitialRows::get`]), the fill, and whether the summary
+    /// widens.
     pub(crate) fn growth(&self) -> TileGrowth {
         TileGrowth {
-            initial_rows: self.initial_rows.get(),
-            fill:         self.fill,
+            initial_rows:  self.initial_rows.get(),
+            fill:          self.fill,
+            widen_summary: self.widen_summary,
         }
     }
 }
@@ -111,6 +127,8 @@ impl AppConfig for Config {
     fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.tiles.initial_rows }
 
     fn tile_fill_mut(&mut self) -> &mut TileFill { &mut self.tiles.fill }
+
+    fn widen_summary_mut(&mut self) -> &mut bool { &mut self.tiles.widen_summary }
 }
 
 /// `config.toml` as loaded, with whatever went wrong reading or
@@ -147,6 +165,7 @@ iterm2_profile = \"cargo-handler\"
 [tiles]
 initial_rows = 4
 fill = \"redistribute\"
+widen_summary = true
 
 [machines]
 remote = []

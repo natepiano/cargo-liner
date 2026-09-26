@@ -325,16 +325,17 @@ fn tile_demands(
             .map_or(narrowest, |&(_, width)| width)
     };
     let summary = summary_rows(roster, hidden_when_idle);
-    let summary_width = width_of(TileContent::Summary);
+    let summary: Vec<&TrackedRow> = summary.iter().map(AsRef::as_ref).collect();
     TileDemands {
-        summary: table_height(
-            &summary.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+        summary:       table_height(
+            &summary,
             TableKind::Summary,
-            summary_width,
+            width_of(TileContent::Summary),
             PinnedGroup::Unpinned,
             tree,
         ),
-        groups:  roster
+        summary_width: summary_width(&summary, tree),
+        groups:        roster
             .tiled_ids(hidden_when_idle)
             .into_iter()
             .filter_map(|id| roster.groups().iter().find(|group| group.id == id))
@@ -347,6 +348,59 @@ fn tile_demands(
             })
             .collect(),
     }
+}
+
+/// Columns the summary's widest line takes given all the room it wants:
+/// a directory heading, or a row with its command line unwrapped.
+///
+/// What the summary asks the grid for across, read only under
+/// `tiles.widen_summary`.
+fn summary_width(rows: &[&TrackedRow], tree: ProcessTree) -> u16 {
+    if rows.is_empty() {
+        return cell_width(SECTION_HEADER_INDENT).saturating_add(cell_width(NO_PROCESSES_NOTE));
+    }
+    let kind = TableKind::Summary;
+    let columns = visible_columns(rows, kind);
+    let command = rows
+        .iter()
+        .map(|row| {
+            let arguments = match tree {
+                ProcessTree::Long => row.process.command.line(kind.detail()),
+                ProcessTree::Short => row.process.command.named(),
+            };
+            // The words the wrap sets down, one space between each.
+            let words: Vec<&str> = row
+                .process
+                .command
+                .program
+                .split_whitespace()
+                .chain(arguments.split_whitespace())
+                .collect();
+            cell_width(&words.join(" "))
+        })
+        .max()
+        .unwrap_or_default()
+        .max(cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
+    let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let table = fitted_constraints(rows, &columns)
+        .iter()
+        .zip(&columns)
+        .map(|(constraint, &column)| match constraint {
+            _ if column == COMMAND_COLUMN => command,
+            Constraint::Length(width) | Constraint::Min(width) => *width,
+            _ => 0,
+        })
+        .fold(
+            cell_width(SECTION_ITEM_INDENT)
+                .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(gaps)),
+            u16::saturating_add,
+        );
+    let headings = group_by_path(rows, PinnedGroup::Unpinned)
+        .iter()
+        .map(|group| cell_width(SECTION_HEADER_INDENT).saturating_add(cell_width(&group.heading())))
+        .max()
+        .unwrap_or_default();
+    table.max(headings)
 }
 
 /// Rows one command's cell lays out with all the room it could want: the
@@ -4367,11 +4421,11 @@ mod tests {
                 "│ Tiles:                                                   │",
                 "│   initial rows      < 4 >                                │",
                 "│   fill              < redistribute >                     │",
+                "│   widen summary     < false >                            │",
                 "│   fade seconds      < 3 >                                │",
                 "│ Capture:                                                 │",
                 "│   auto install      true                                 │",
                 "│   shared directory  /tmp/cargo-tile · created by the     │",
-                "│                     first captured cargo run             │",
                 "└──────────────────────────────────────────────────────────┘",
             ],
         ),

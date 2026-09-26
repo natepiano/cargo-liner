@@ -3850,8 +3850,9 @@ mod tests {
         let mut roster = crate::roster::Roster::new();
         let mut grid = crate::tiles::TileGrid::new();
         let growth = TileGrowth {
-            initial_rows: 1,
-            fill:         tui_pane::TileFill::default(),
+            initial_rows:  1,
+            fill:          tui_pane::TileFill::default(),
+            widen_summary: false,
         };
         grid.set_layout(ratatui::layout::Rect::new(0, 0, 120, 40), growth);
         let mut expected_family = FamilyHead::NoChildren;
@@ -3870,8 +3871,9 @@ mod tests {
                 crate::roster::FamilyHead::Heads(_)
             ));
             let demands = TileDemands {
-                summary: 3,
-                groups:  vec![crate::tiles::TileDemand {
+                summary:       3,
+                summary_width: 0,
+                groups:        vec![crate::tiles::TileDemand {
                     id:   tracked.id.clone(),
                     rows: 3,
                 }],

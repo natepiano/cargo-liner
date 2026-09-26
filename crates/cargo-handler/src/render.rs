@@ -128,11 +128,14 @@ impl TileCells<AgentCell> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     /// Every row of the summary and of an agent's cell is one line at any
-    /// width: a name too long for its column is cut, not wrapped.
+    /// width: a name too long for its column is cut, not wrapped. The
+    /// summary asks across for its widest row, which the grid widens it
+    /// toward when `tiles.widen_summary` is on.
     fn demands(&self, _widths: &[(TileContent, u16)]) -> TileDemands {
         TileDemands {
-            summary: summary::height(&self.machines),
-            groups:  self
+            summary:       summary::height(&self.machines),
+            summary_width: summary::width(&self.machines, self.now),
+            groups:        self
                 .agents
                 .iter()
                 .map(|entry| TileDemand {
@@ -352,20 +355,20 @@ fraying = "leading"
         "│                                                                              │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
-        "│       │ ▶ mode          < auto >                                     │       │",
-        "│       │   light theme   < Default Light >                            │       │",
-        "│       │   dark theme    < Default Dark >                             │       │",
+        "│       │ ▶ mode           < auto >                                    │       │",
+        "│       │   light theme    < Default Light >                           │       │",
+        "│       │   dark theme     < Default Dark >                            │       │",
         "│       │ Tiles:                                                       │       │",
-        "│       │   initial rows  < 4 >                                        │       │",
-        "│       │   fill          < redistribute >                             │       │",
+        "│       │   initial rows   < 4 >                                       │       │",
+        "│       │   fill           < redistribute >                            │       │",
+        "│       │   widen summary  < true >                                    │       │",
         "│       │ Machines:                                                    │       │",
-        "│       │   remote        none                                         │       │",
+        "│       │   remote         none                                        │       │",
         "│       │ Files:                                                       │       │",
-        "│       │   config        /<config>/cargo-handler/config.toml          │       │",
-        "│       │   themes        /<config>/cargo-handler/themes               │       │",
-        "│       │   keymap        /<config>/cargo-handler/keymap.toml          │       │",
+        "│       │   config         /<config>/cargo-handler/config.toml         │       │",
+        "│       │   themes         /<config>/cargo-handler/themes              │       │",
+        "│       │   keymap         /<config>/cargo-handler/keymap.toml         │       │",
         "│       └──────────────────────────────────────────────────────────────┘       │",
-        "│                                                                              │",
         "│                                                                              │",
         "│                                                  content rows: 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",

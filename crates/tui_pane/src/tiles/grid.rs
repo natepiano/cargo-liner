@@ -44,6 +44,7 @@
 //! line between them rather than sitting flush. [`crate::GridLines`]
 //! draws that line once for both.
 
+use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -96,16 +97,22 @@ pub struct TileDemand<Id> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TileDemands<Id> {
     /// Rows the summary cell would draw given all the room it wants.
-    pub summary: usize,
+    pub summary:       usize,
+    /// Columns the summary's widest line takes, inside the cell's
+    /// borders. Read only under [`TileGrowth::widen_summary`], where the
+    /// summary widens across columns until it holds this many; zero
+    /// asks for no more than its own column.
+    pub summary_width: u16,
     /// Every group that gets a cell, in cell order.
-    pub groups:  Vec<TileDemand<Id>>,
+    pub groups:        Vec<TileDemand<Id>>,
 }
 
 impl<Id> Default for TileDemands<Id> {
     fn default() -> Self {
         Self {
-            summary: 0,
-            groups:  Vec::new(),
+            summary:       0,
+            summary_width: 0,
+            groups:        Vec::new(),
         }
     }
 }
@@ -261,9 +268,13 @@ enum GridMotion<Id> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct HeldCellLayout {
     /// Rows each cell holds, in cell order and the summary's first.
-    rows:    Vec<u16>,
+    rows:         Vec<u16>,
     /// Which cell holds the ring, or whether that slot is outside the layout.
-    focused: FocusLocation,
+    focused:      FocusLocation,
+    /// Columns the summary asks to reach across, its own included; see
+    /// [`summary_span`]. Held with the rows so the summary widening or
+    /// narrowing is a change the grid travels through like any other.
+    summary_span: usize,
 }
 
 /// The arrangement a transition is moving away from.
@@ -340,13 +351,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             slots:     Vec::new(),
             pending:   VecDeque::new(),
             held:      HeldCellLayout {
-                rows:    Vec::new(),
-                focused: FocusLocation::Departing,
+                rows:         Vec::new(),
+                focused:      FocusLocation::Departing,
+                summary_span: 1,
             },
-            demands:   TileDemands {
-                summary: 0,
-                groups:  Vec::new(),
-            },
+            demands:   TileDemands::default(),
             motion:    GridMotion::Settled,
             area:      Rect::ZERO,
             growth:    TileGrowth::default(),
@@ -365,8 +374,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return self.held.clone();
         }
         HeldCellLayout {
-            rows:    cell_wants(&self.demands, &self.slots, &self.settings),
-            focused: self.focused_cell(),
+            rows:         cell_wants(&self.demands, &self.slots, &self.settings),
+            focused:      self.focused_cell(),
+            summary_span: self.wanted_span(),
         }
     }
 
@@ -381,6 +391,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     fn settled_held(&self) -> HeldCellLayout {
         let wants = cell_wants(&self.demands, &self.slots, &self.settings);
         let focused = self.focused_cell();
+        let summary_span = self.wanted_span();
         if wants.len() != self.held.rows.len()
             || wants
                 .iter()
@@ -390,12 +401,27 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return HeldCellLayout {
                 rows: wants,
                 focused,
+                summary_span,
             };
         }
         HeldCellLayout {
             rows: self.held.rows.clone(),
             focused,
+            summary_span,
         }
+    }
+
+    /// Columns the summary asks to reach across at the current cell
+    /// count, as the last frame's rect and settings have it.
+    fn wanted_span(&self) -> usize {
+        if !self.growth.widen_summary {
+            return 1;
+        }
+        summary_span(
+            self.area,
+            columns(self.count(), self.growth).len(),
+            self.demands.summary_width,
+        )
     }
 
     /// Cells the grid holds, the summary included.
@@ -424,10 +450,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 .map_or(0, |&rect| frame_inner(share_borders(rect, area)).width);
             widths.extend(std::iter::repeat_n(inner, cells_here));
         }
+        // The summary alone can reach past its own column, which only
+        // the laid-out grid knows.
+        let summary = Grid::new(area, &self.drawn_held(), growth, &self.settings)
+            .cell(TABLE_CELL)
+            .map(|rect| frame_inner(rect).width);
         cells(&self.slots)
             .into_iter()
             .zip(widths)
-            .map(|((content, _), width)| (content, width))
+            .map(|((content, _), width)| {
+                let width = match content {
+                    TileContent::Summary => summary.unwrap_or(width),
+                    TileContent::Group(_) | TileContent::Empty(_) => width,
+                };
+                (content, width)
+            })
             .collect()
     }
 
@@ -484,6 +521,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// its column travels there the same way a cell opening does.
     pub fn sync(&mut self, demands: &TileDemands<Id>, growth: TileGrowth) {
         self.demands = demands.clone();
+        self.growth = growth;
         let mut arrangement = self.target();
         let mut steps: Vec<Vec<Slot<Id>>> = Vec::new();
         let live = demands.ids();
@@ -811,32 +849,42 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// beside it -- so a sideways step keeps the row it can and lands
     /// on the bottom cell of a shorter column rather than refusing to
     /// move at all.
+    ///
+    /// A summary widened over the next columns heads each of them as
+    /// well as its own, so up from the top of one of them reaches it,
+    /// and a sideways step from it goes on to the first column it does
+    /// not cover.
     fn focus_step(&mut self, direction: Direction, growth: TileGrowth) {
-        let widths = columns(self.count(), growth);
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return;
         };
-        let Some((column, row)) = position(&widths, cell) else {
+        let lanes = Grid::new(self.area, &self.drawn_held(), growth, &self.settings).lanes();
+        let Some((column, row)) = lanes.iter().enumerate().find_map(|(column, lane)| {
+            lane.iter()
+                .position(|&held| held == cell)
+                .map(|row| (column, row))
+        }) else {
             return;
         };
-        let last = widths.len().saturating_sub(1);
-        let (column, row) = match direction {
-            Direction::Left => (column.saturating_sub(1), row),
-            Direction::Right => (column.saturating_add(1).min(last), row),
-            Direction::Up => (column, row.saturating_sub(1)),
-            Direction::Down => (column, row.saturating_add(1)),
+        let landing = |column: usize, row: usize| {
+            lanes
+                .get(column)
+                .and_then(|lane| lane.get(row.min(lane.len().saturating_sub(1))))
+                .copied()
+                .filter(|&landed| landed != cell)
         };
-        let Some(&height) = widths.get(column) else {
+        let next = match direction {
+            Direction::Left => (0..column).rev().find_map(|to| landing(to, row)),
+            Direction::Right => {
+                (column.saturating_add(1)..lanes.len()).find_map(|to| landing(to, row))
+            },
+            Direction::Up => row.checked_sub(1).and_then(|above| landing(column, above)),
+            Direction::Down => landing(column, row.saturating_add(1)),
+        };
+        let Some(next) = next else {
             return;
         };
-        let row = row.min(height.saturating_sub(1));
-        let cell = widths
-            .iter()
-            .take(column)
-            .sum::<usize>()
-            .saturating_add(row)
-            .saturating_add(TABLE_CELL);
-        self.focus = self.focus_at(cell);
+        self.focus = self.focus_at(next);
         self.resize_for_focus();
     }
 
@@ -955,8 +1003,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 .collect();
         };
 
-        let progress = eased(self.progress());
+        let raw = self.progress();
+        let progress = eased(raw);
         let before = Grid::new(area, &transition.held, growth, &self.settings);
+        let turns = Turns::of(&before, &settled);
         let mut placements = Vec::new();
         // The summary keeps cell one throughout, but the grid around it
         // resizes, so it still has somewhere to travel.
@@ -964,7 +1014,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             &before,
             &settled,
             (Some(TABLE_CELL), Some(TABLE_CELL)),
-            progress,
+            eased(turns.summary(raw)),
             &Drawn {
                 content: TileContent::Summary,
                 focused: self.focus == Focus::Summary,
@@ -987,6 +1037,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 pair => pair,
             };
             let content = content_of(&slot, new.or(old).unwrap_or(TABLE_CELL));
+            let progress = if turns.covers(&before, &settled, (old, new)) {
+                eased(turns.covered(raw))
+            } else {
+                progress
+            };
             moving_cell(
                 &before,
                 &settled,
@@ -1099,18 +1154,29 @@ struct Grid {
     widths:   Vec<usize>,
     /// Where each cell sits, keyed by cell number.
     resolved: ResolvedPaneLayout<usize>,
-    /// The full-height rect each column occupies.
+    /// The rect each column's cells divide: the column's whole height,
+    /// or what the summary leaves below it in a column it widens over.
     columns:  Vec<Rect>,
+    /// Columns the summary covers, its own included.
+    span:     usize,
 }
 
 impl Grid {
     /// Resolve the cells `held` describes against `area`.
+    ///
+    /// The first column is divided before the rest, because the summary
+    /// at its top settles how far it reaches: it keeps the height its
+    /// own column gives it and widens over as many of the next columns
+    /// as `held` asks and [`reach`] allows, each of which then divides
+    /// only what is left below it.
     fn new(area: Rect, held: &HeldCellLayout, growth: TileGrowth, settings: &TileSettings) -> Self {
         let count = held.rows.len();
         let widths = columns(count, growth);
         let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(widths.len())))
             .split(area)
             .to_vec();
+        let mut bands = opened.clone();
+        let mut span = 1;
         let mut panes = Vec::with_capacity(count);
         let mut index = 1;
         let mut taken: usize = 0;
@@ -1131,18 +1197,27 @@ impl Grid {
                 FocusLocation::Departing => ColumnFocus::Outside,
             };
             taken = ends_at;
-            let Some(&column_rect) = opened.get(column) else {
+            let Some(&band) = bands.get(column) else {
                 continue;
             };
             for &cell in Layout::vertical(constraints_for_sizes(&shares(
                 wants,
-                column_rect.height,
+                band.height,
                 focused,
                 settings.min_tile_height,
             )))
-            .split(column_rect)
+            .split(band)
             .iter()
             {
+                let cell = if index == TABLE_CELL {
+                    span = reach(&opened, &widths, cell, held.summary_span, settings);
+                    for (band, column) in bands.iter_mut().zip(&opened).take(span).skip(1) {
+                        *band = below(*column, cell);
+                    }
+                    widened(cell, opened.get(span.saturating_sub(1)).copied())
+                } else {
+                    cell
+                };
                 panes.push(ResolvedPane {
                     pane: index,
                     area: share_borders(cell, area),
@@ -1154,11 +1229,32 @@ impl Grid {
             area,
             widths,
             resolved: ResolvedPaneLayout::new(panes),
-            columns: opened
+            columns: bands
                 .iter()
                 .map(|&column| share_borders(column, area))
                 .collect(),
+            span,
         }
+    }
+
+    /// The cells each column reads down, for the arrows: its own, with
+    /// the summary heading every column it widens over as well as its
+    /// own.
+    fn lanes(&self) -> Vec<Vec<usize>> {
+        let mut opens_at = TABLE_CELL;
+        self.widths
+            .iter()
+            .enumerate()
+            .map(|(column, &height)| {
+                let own = opens_at..opens_at.saturating_add(height);
+                opens_at = own.end;
+                let under_summary = column > 0 && column < self.span;
+                std::iter::once(TABLE_CELL)
+                    .filter(|_| under_summary)
+                    .chain(own)
+                    .collect()
+            })
+            .collect()
     }
 
     /// Where cell `index` sits, or `None` when the grid has no such cell.
@@ -1179,6 +1275,69 @@ impl Grid {
     /// The rect column `column` occupies, full height.
     fn column_rect(&self, column: usize) -> Rect {
         self.columns.get(column).copied().unwrap_or(self.area)
+    }
+}
+
+/// Columns the summary asks to cover, its own included, for its widest
+/// line to fit: the fewest of `columns` equal columns across `area` whose
+/// combined interior is at least `width` wide, or all of them when even
+/// that is too narrow.
+fn summary_span(area: Rect, columns: usize, width: u16) -> usize {
+    let opened = Layout::horizontal(constraints_for_sizes(&fills(columns))).split(area);
+    let Some(&first) = opened.first() else {
+        return 1;
+    };
+    opened
+        .iter()
+        .position(|column| {
+            let covered = widened(first, Some(*column));
+            frame_inner(share_borders(covered, area)).width >= width
+        })
+        .map_or(opened.len(), |last| last.saturating_add(1))
+}
+
+/// Columns the summary covers once `summary`, its rect in the first
+/// column, has its height: as many of the `wanted` as `opened` holds,
+/// stopping at the first column whose cells would no longer fit below
+/// it at [`TileSettings::min_tile_height`] -- the same floor that stops
+/// the grid growing a cell it cannot show.
+fn reach(
+    opened: &[Rect],
+    widths: &[usize],
+    summary: Rect,
+    wanted: usize,
+    settings: &TileSettings,
+) -> usize {
+    let mut span = 1;
+    while span < wanted.min(opened.len()) {
+        let (Some(column), Some(&cells)) = (opened.get(span), widths.get(span)) else {
+            break;
+        };
+        let room = column.bottom().saturating_sub(summary.bottom());
+        let cells = u16::try_from(cells).unwrap_or(u16::MAX);
+        if room < shared_run(cells, settings.min_tile_height) {
+            break;
+        }
+        span += 1;
+    }
+    span
+}
+
+/// `summary` carried right to the far edge of `last`, the last column it
+/// covers; left as it is without one.
+fn widened(summary: Rect, last: Option<Rect>) -> Rect {
+    last.map_or(summary, |last| Rect {
+        width: last.right().saturating_sub(summary.x),
+        ..summary
+    })
+}
+
+/// What `column` has left below `summary` for its own cells.
+const fn below(column: Rect, summary: Rect) -> Rect {
+    Rect {
+        y: summary.bottom(),
+        height: column.bottom().saturating_sub(summary.bottom()),
+        ..column
     }
 }
 
@@ -1389,6 +1548,104 @@ const fn shared_run(count: u16, min_tile: u16) -> u16 {
     count
         .saturating_mul(min_tile.saturating_sub(1))
         .saturating_add(1)
+}
+
+/// Which way a step moves the summary's far edge, which decides the
+/// order it and the cells below it move in.
+///
+/// Moving together, the summary's edge sweeps across a column whose top
+/// cell has not yet moved out of its way, and the two are drawn over
+/// each other for the length of the step. So they take turns. Widening,
+/// the cells it is about to cover move down over the first half of the
+/// step and the summary spreads over the room they leave in the second;
+/// narrowing, the summary draws back first and the cells rise into what
+/// it gave up.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Turns {
+    /// The summary covers the same columns at both ends of the step.
+    Together,
+    /// The summary covers more columns at the end: columns `from..to`
+    /// are the ones it widens over.
+    Widening {
+        /// The first column it newly covers.
+        from: usize,
+        /// One past the last column it newly covers.
+        to:   usize,
+    },
+    /// The summary covers fewer columns at the end: columns `from..to`
+    /// are the ones it draws back from.
+    Narrowing {
+        /// The first column it no longer covers.
+        from: usize,
+        /// One past the last column it no longer covers.
+        to:   usize,
+    },
+}
+
+impl Turns {
+    /// The turns a step from `before` to `after` takes.
+    fn of(before: &Grid, after: &Grid) -> Self {
+        match before.span.cmp(&after.span) {
+            Ordering::Equal => Self::Together,
+            Ordering::Less => Self::Widening {
+                from: before.span,
+                to:   after.span,
+            },
+            Ordering::Greater => Self::Narrowing {
+                from: after.span,
+                to:   before.span,
+            },
+        }
+    }
+
+    /// How far through its own turn the summary is at `progress`.
+    fn summary(self, progress: u32) -> u32 {
+        match self {
+            Self::Together => progress,
+            Self::Widening { .. } => second_half(progress),
+            Self::Narrowing { .. } => first_half(progress),
+        }
+    }
+
+    /// How far through their turn the cells under the summary's moving
+    /// edge are at `progress`.
+    fn covered(self, progress: u32) -> u32 {
+        match self {
+            Self::Together => progress,
+            Self::Widening { .. } => first_half(progress),
+            Self::Narrowing { .. } => second_half(progress),
+        }
+    }
+
+    /// Whether the cell travelling `old` to `new` stands in one of the
+    /// columns the summary's edge crosses, at both ends of the step. A
+    /// cell changing columns is moving for its own reasons, on the
+    /// step's own clock.
+    fn covers(
+        self,
+        before: &Grid,
+        after: &Grid,
+        (old, new): (Option<usize>, Option<usize>),
+    ) -> bool {
+        let (Self::Widening { from, to } | Self::Narrowing { from, to }) = self else {
+            return false;
+        };
+        let column = old.and_then(|index| before.column_of(index));
+        column.is_some_and(|column| (from..to).contains(&column))
+            && column == new.and_then(|index| after.column_of(index))
+    }
+}
+
+/// `progress` through the first half of a step, done at the midpoint.
+fn first_half(progress: u32) -> u32 { progress.saturating_mul(2).min(PROGRESS_SCALE) }
+
+/// `progress` through the second half of a step, not begun until the
+/// midpoint.
+fn second_half(progress: u32) -> u32 {
+    progress
+        .saturating_mul(2)
+        .saturating_sub(PROGRESS_SCALE)
+        .min(PROGRESS_SCALE)
 }
 
 /// Work out how one cell moves between two arrangements and push the
@@ -1678,8 +1935,9 @@ mod tests {
         let first = (TEST_PID, u64::from(TEST_PID));
         let replacement = (TEST_PID, TEST_REPLACEMENT_LIFETIME);
         let mut demands = TileDemands {
-            summary: 0,
-            groups:  vec![TileDemand {
+            summary:       0,
+            summary_width: 0,
+            groups:        vec![TileDemand {
                 id:   first,
                 rows: 0,
             }],
@@ -1724,8 +1982,9 @@ mod tests {
     /// evenly -- the geometry and motion tests are written against it.
     fn even(count: usize) -> HeldCellLayout {
         HeldCellLayout {
-            rows:    vec![demanded_rows(0); count],
-            focused: FocusLocation::Departing,
+            rows:         vec![demanded_rows(0); count],
+            focused:      FocusLocation::Departing,
+            summary_span: 1,
         }
     }
 
@@ -1733,8 +1992,9 @@ mod tests {
     /// so the arrangement is all that moves.
     fn quiet<Id: Clone>(ids: &[Id]) -> TileDemands<Id> {
         TileDemands {
-            summary: 0,
-            groups:  ids
+            summary:       0,
+            summary_width: 0,
+            groups:        ids
                 .iter()
                 .map(|id| TileDemand {
                     id:   id.clone(),
@@ -1765,6 +2025,7 @@ mod tests {
         TileGrowth {
             initial_rows,
             fill: TileFill::AddNew,
+            widen_summary: false,
         }
     }
 
@@ -1774,7 +2035,131 @@ mod tests {
         TileGrowth {
             initial_rows,
             fill: TileFill::Redistribute,
+            widen_summary: false,
         }
+    }
+
+    /// How a test grid grows at `initial_rows` with the summary widening.
+    const fn widening(initial_rows: usize) -> TileGrowth {
+        TileGrowth {
+            widen_summary: true,
+            ..redistribute(initial_rows)
+        }
+    }
+
+    /// A scan of `groups` quiet cells whose summary asks for `width`
+    /// columns across.
+    fn wide_summary(groups: &[u32], width: u16) -> TileDemands<u32> {
+        TileDemands {
+            summary_width: width,
+            ..quiet(groups)
+        }
+    }
+
+    /// The summary asks for the fewest columns whose interior holds its
+    /// widest line, and for all of them when none does.
+    #[test]
+    fn the_summary_asks_for_the_fewest_columns_that_hold_its_width() {
+        let own = frame_inner(share_borders(
+            Rect::new(0, 0, TEST_WIDTH / 2, TEST_HEIGHT),
+            test_area(),
+        ))
+        .width;
+        assert_eq!(summary_span(test_area(), 2, 0), 1);
+        assert_eq!(summary_span(test_area(), 2, own), 1);
+        assert_eq!(summary_span(test_area(), 2, own + 1), 2);
+        assert_eq!(summary_span(test_area(), 2, u16::MAX), 2);
+        assert_eq!(summary_span(test_area(), 1, u16::MAX), 1);
+    }
+
+    /// Widened, the summary keeps the height its own column gives it and
+    /// the next column's cells divide what is left below it.
+    #[test]
+    fn a_widened_summary_keeps_its_height_and_the_next_column_starts_below_it() {
+        let settings = TileSettings::default();
+        let narrow = Grid::new(test_area(), &even(4), widening(3), &settings);
+        let held = HeldCellLayout {
+            summary_span: 2,
+            ..even(4)
+        };
+        let wide = Grid::new(test_area(), &held, widening(3), &settings);
+        let cell = |grid: &Grid, index: usize| {
+            grid.cell(index)
+                .expect("a four-cell grid holds cells one to three")
+        };
+        let was = cell(&narrow, TABLE_CELL);
+        let summary = cell(&wide, TABLE_CELL);
+        let under = cell(&wide, TABLE_CELL + 1);
+        let beside = cell(&wide, TABLE_CELL + 2);
+        assert_eq!(wide.span, 2);
+        assert_eq!((summary.y, summary.height), (was.y, was.height));
+        assert_eq!((summary.x, summary.right()), (0, TEST_WIDTH));
+        assert_eq!(
+            beside.y, under.y,
+            "the next column starts where the summary ends"
+        );
+        assert_eq!(beside.x, wide.column_rect(1).x);
+    }
+
+    /// A column whose cells would not fit below the summary stops it,
+    /// the same as the right edge does.
+    #[test]
+    fn a_column_with_no_room_below_the_summary_stops_it() {
+        let settings = TileSettings::default();
+        let mut held = HeldCellLayout {
+            summary_span: 2,
+            ..even(4)
+        };
+        assert_eq!(columns(4, widening(3)), vec![2, 2]);
+        assert_eq!(
+            Grid::new(test_area(), &held, widening(3), &settings).span,
+            2
+        );
+        held.rows[0] = TEST_HEIGHT;
+        assert_eq!(
+            Grid::new(test_area(), &held, widening(3), &settings).span,
+            1
+        );
+    }
+
+    /// The grid widens the summary only while the setting is on.
+    #[test]
+    fn the_summary_widens_only_when_the_setting_is_on() {
+        for (growth, span) in [(redistribute(3), 1), (widening(3), 2)] {
+            let mut grid = TileGrid::new();
+            grid.set_layout(test_area(), growth);
+            grid.sync(&wide_summary(&[1, 2, 3], u16::MAX), growth);
+            grid.settle_for_test();
+            assert_eq!(grid.held.summary_span, span, "{growth:?}");
+            let width = grid.content_widths(test_area(), growth)[0].1;
+            let expected = if span == 1 {
+                TEST_WIDTH / 2 - 1
+            } else {
+                TEST_WIDTH - 2
+            };
+            assert_eq!(width, expected, "{growth:?}");
+        }
+    }
+
+    /// Up from the top of a column the summary covers reaches the
+    /// summary, and a sideways step from it passes over what it covers.
+    #[test]
+    fn the_arrows_treat_a_widened_summary_as_heading_what_it_covers() {
+        let growth = widening(3);
+        let mut grid = TileGrid::new();
+        grid.set_layout(test_area(), growth);
+        grid.sync(&wide_summary(&[1, 2, 3], u16::MAX), growth);
+        grid.settle_for_test();
+        grid.focus_cell(TABLE_CELL + 2);
+        grid.apply(TileAction::FocusUp, growth);
+        assert_eq!(grid.focus, Focus::Summary);
+        grid.apply(TileAction::FocusRight, growth);
+        assert_eq!(grid.focus, Focus::Summary, "nothing stands right of it");
+        grid.apply(TileAction::FocusDown, growth);
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(1)));
+        grid.focus_cell(TABLE_CELL + 3);
+        grid.apply(TileAction::FocusLeft, growth);
+        assert_eq!(grid.focus, Focus::Cell(Slot::Group(1)));
     }
 
     /// Rows per column for every count up to `count`, so a walk through
@@ -1793,6 +2178,7 @@ mod tests {
             let growth = TileGrowth {
                 initial_rows: 4,
                 fill,
+                widen_summary: false,
             };
             assert_eq!(walk(4, growth), vec![vec![1], vec![2], vec![3], vec![4]]);
         }
@@ -1924,6 +2310,7 @@ mod tests {
             let growth = TileGrowth {
                 initial_rows: 3,
                 fill,
+                widen_summary: false,
             };
             assert_eq!(columns(5, growth), vec![3, 2]);
             assert_eq!(columns(4, growth), vec![2, 2]);
@@ -1950,7 +2337,11 @@ mod tests {
         for fill in FILLS {
             for initial_rows in 1..=6 {
                 for count in 1..=60 {
-                    let growth = TileGrowth { initial_rows, fill };
+                    let growth = TileGrowth {
+                        initial_rows,
+                        fill,
+                        widen_summary: false,
+                    };
                     assert_eq!(
                         columns(count, growth).iter().sum::<usize>(),
                         count,
@@ -1999,6 +2390,7 @@ mod tests {
                     TileGrowth {
                         initial_rows: 0,
                         fill,
+                        widen_summary: false,
                     }
                 ),
                 columns(
@@ -2006,6 +2398,7 @@ mod tests {
                     TileGrowth {
                         initial_rows: 1,
                         fill,
+                        widen_summary: false,
                     }
                 )
             );
@@ -2016,8 +2409,9 @@ mod tests {
     /// which cells are busy and which are idle.
     fn busy(groups: &[(u32, usize)]) -> TileDemands<u32> {
         TileDemands {
-            summary: 0,
-            groups:  groups
+            summary:       0,
+            summary_width: 0,
+            groups:        groups
                 .iter()
                 .map(|&(id, rows)| TileDemand { id, rows })
                 .collect(),
@@ -2277,6 +2671,7 @@ mod tests {
         let held = HeldCellLayout {
             rows,
             focused: FocusLocation::Cell(2 + TABLE_CELL),
+            summary_span: 1,
         };
         let grid = Grid::new(
             test_area(),

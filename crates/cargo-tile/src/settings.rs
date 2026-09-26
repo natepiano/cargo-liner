@@ -2,13 +2,13 @@
 //! stepping that edits them.
 //!
 //! The framework owns the `[appearance]` steppers, `initial rows`,
-//! `fill`, the Files paths and the Notices section; this module places
-//! them and adds cargo-tile's own `fade seconds` stepper and its
-//! Capture and Commands rows. Every stepper walks its allowed values on
-//! Left/Right/Enter, writes `config.toml`, and swaps the active theme
-//! in place. The two Commands lists are typed in: Enter opens the list
-//! as comma-separated text, and Enter again writes it and applies it.
-//! Every other row reports state and is inert.
+//! `fill`, `widen summary`, the Files paths and the Notices section;
+//! this module places them and adds cargo-tile's own `fade seconds`
+//! stepper and its Capture and Commands rows. Every stepper walks its
+//! allowed values on Left/Right/Enter, writes `config.toml`, and swaps
+//! the active theme in place. The two Commands lists are typed in:
+//! Enter opens the list as comma-separated text, and Enter again writes
+//! it and applies it. Every other row reports state and is inert.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -152,6 +152,7 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
     out.section("Tiles");
     out.initial_rows(config.tiles.initial_rows);
     out.tile_fill(config.tiles.fill);
+    out.widen_summary(config.tiles.widen_summary);
     out.stepper(
         AppSetting::FadeSeconds,
         "fade seconds",
@@ -1254,7 +1255,7 @@ mod layout_tests {
     }
 
     /// Rows shared by both layouts: everything above Notices.
-    const BODY: [&str; 18] = [
+    const BODY: [&str; 19] = [
         "[Appearance]",
         "0 Stepper mode = auto",
         "1 Stepper light theme = Default Light",
@@ -1262,17 +1263,18 @@ mod layout_tests {
         "[Tiles]",
         "3 Stepper initial rows = 4",
         "4 Stepper fill = redistribute",
-        "5 Stepper fade seconds = 3",
+        "5 Stepper widen summary = false",
+        "6 Stepper fade seconds = 3",
         "[Capture]",
-        "6 Value auto install = true",
-        "7 Value shared directory = <shared directory>",
+        "7 Value auto install = true",
+        "8 Value shared directory = <shared directory>",
         "[Commands]",
-        "8 Value excluded = berth",
-        "9 Value hidden when idle = port, handler",
+        "9 Value excluded = berth",
+        "10 Value hidden when idle = port, handler",
         "[Files]",
-        "10 Value config = <config path>",
-        "11 Value themes = <themes dir>",
-        "12 Value keymap = <keymap path>",
+        "11 Value config = <config path>",
+        "12 Value themes = <themes dir>",
+        "13 Value keymap = <keymap path>",
     ];
 
     /// Order, section headers, labels, values, row kinds and selectable
@@ -1292,10 +1294,10 @@ mod layout_tests {
         let mut expected = BODY.to_vec();
         expected.extend([
             "[Notices]",
-            "13 Value theme = theme note",
-            "14 Value capture = kept note",
-            "15 Value capture = failure note",
-            "16 Value config = config error",
+            "14 Value theme = theme note",
+            "15 Value capture = kept note",
+            "16 Value capture = failure note",
+            "17 Value config = config error",
         ]);
         assert_eq!(layout(&app), expected);
     }

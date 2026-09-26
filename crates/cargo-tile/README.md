@@ -273,10 +273,18 @@ fourth column, the whole height of the grid, and cells added between one
 rearrangement and the next move nothing already on the screen. The number of
 columns is the same under both.
 
+`widen_summary`, off by default, lets the summary reach past its own column when
+its widest line -- a directory heading, or a row with its command line unwrapped
+-- does not fit there. It keeps the height its own column gives it and takes the
+top of each next column in turn until that line fits or it reaches the right
+edge; the cells of a column it covers divide what is left below it, and a column
+whose cells would no longer fit below it stops the summary there.
+
 ```toml
 [tiles]
 initial_rows = 3
 fill = "redistribute"
+widen_summary = false
 fade_seconds = 3
 ```
 

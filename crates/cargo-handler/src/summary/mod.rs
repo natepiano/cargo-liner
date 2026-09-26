@@ -68,6 +68,33 @@ pub(crate) fn height(machines: &[Machine<'_>]) -> usize {
     groups + gaps
 }
 
+/// Columns the summary's widest line takes for `machines`: a machine's
+/// heading, or the table with every column at its fitted width and every
+/// directory written out in full.
+///
+/// This is what the summary asks the grid for across, so a directory is
+/// only cut short once the summary has reached the right edge.
+pub(crate) fn width(machines: &[Machine<'_>], now: u64) -> u16 {
+    let headings = machines
+        .iter()
+        .map(|machine| heading(machine).width())
+        .max()
+        .map_or(0, |widest| u16::try_from(widest).unwrap_or(u16::MAX));
+    if machines
+        .iter()
+        .all(|machine| machine.state.top_level().next().is_none())
+    {
+        return headings;
+    }
+    let widths = column_widths(machines, now);
+    let columns = u16::try_from(SUMMARY_HEADERS.len()).unwrap_or(u16::MAX);
+    let table = (0..SUMMARY_HEADERS.len())
+        .map(|column| widths.get(column))
+        .fold(cell_width(SECTION_ITEM_INDENT), u16::saturating_add)
+        .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(columns.saturating_sub(1)));
+    headings.max(table)
+}
+
 /// Rows a machine's table takes for `rows` agents: none when it lists
 /// none, else its label row and the agents.
 fn table_height(rows: usize) -> usize {
@@ -113,32 +140,7 @@ fn draw_machine(
     now: u64,
 ) -> u16 {
     let label = Style::default().fg(label_color());
-    let mut heading = vec![
-        Span::raw(SECTION_HEADER_INDENT),
-        Span::styled(machine.name, Style::default().fg(accent_color())),
-    ];
-    match machine.state {
-        MachineState::Scanning => {
-            heading.push(Span::styled(
-                format!("{HEADING_SEPARATOR}{SCANNING_NOTE}"),
-                label,
-            ));
-        },
-        MachineState::Answered(_) => {
-            heading.push(Span::styled(
-                format!(
-                    "{HEADING_SEPARATOR}{}",
-                    count_note(machine.state.top_level().count())
-                ),
-                label,
-            ));
-        },
-        MachineState::Failed(reason) => {
-            heading.push(Span::styled(HEADING_SEPARATOR, label));
-            heading.push(Span::styled(reason.as_str(), Role::Unreachable.style()));
-        },
-    }
-    Paragraph::new(Line::from(heading)).render(
+    Paragraph::new(heading(machine)).render(
         Rect {
             height: GROUP_HEADER_HEIGHT.min(area.height),
             ..area
@@ -171,6 +173,38 @@ fn draw_machine(
     GROUP_HEADER_HEIGHT
         .saturating_add(drawn)
         .saturating_add(GROUP_GAP_HEIGHT)
+}
+
+/// `machine`'s heading: its name, then how many agents it lists, that
+/// it is still being scanned, or why it could not be.
+fn heading<'a>(machine: &Machine<'a>) -> Line<'a> {
+    let label = Style::default().fg(label_color());
+    let mut heading = vec![
+        Span::raw(SECTION_HEADER_INDENT),
+        Span::styled(machine.name, Style::default().fg(accent_color())),
+    ];
+    match machine.state {
+        MachineState::Scanning => {
+            heading.push(Span::styled(
+                format!("{HEADING_SEPARATOR}{SCANNING_NOTE}"),
+                label,
+            ));
+        },
+        MachineState::Answered(_) => {
+            heading.push(Span::styled(
+                format!(
+                    "{HEADING_SEPARATOR}{}",
+                    count_note(machine.state.top_level().count())
+                ),
+                label,
+            ));
+        },
+        MachineState::Failed(reason) => {
+            heading.push(Span::styled(HEADING_SEPARATOR, label));
+            heading.push(Span::styled(reason.as_str(), Role::Unreachable.style()));
+        },
+    }
+    Line::from(heading)
 }
 
 /// What a heading says about a machine that answered with `count`
@@ -253,6 +287,23 @@ pub(crate) fn truncated(name: &str, max: usize) -> String {
 /// `name` stops at [`NAME_COLUMN_MAX`], and `directory` takes whatever
 /// the fitted columns leave.
 fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
+    column_widths(machines, now)
+        .to_constraints()
+        .into_iter()
+        .enumerate()
+        .map(|(column, constraint)| {
+            if column == DIRECTORY_COLUMN {
+                Constraint::Min(cell_width(SUMMARY_HEADERS[DIRECTORY_COLUMN]))
+            } else {
+                constraint
+            }
+        })
+        .collect()
+}
+
+/// The widest cell in each column across every machine's rows, `name`
+/// stopping at [`NAME_COLUMN_MAX`] and `directory` written out in full.
+fn column_widths(machines: &[Machine<'_>], now: u64) -> ColumnWidths {
     let mut widths = ColumnWidths::new(
         SUMMARY_HEADERS
             .iter()
@@ -274,19 +325,9 @@ fn fitted_constraints(machines: &[Machine<'_>], now: u64) -> Vec<Constraint> {
         let age = age_label(now.saturating_sub(row.started));
         widths.observe_cell_usize(AGE_COLUMN, age.chars().count());
         widths.observe_cell_usize(DESKTOP_COLUMN, desktop_text(row).chars().count());
+        widths.observe_cell_usize(DIRECTORY_COLUMN, row.directory.chars().count());
     }
     widths
-        .to_constraints()
-        .into_iter()
-        .enumerate()
-        .map(|(column, constraint)| {
-            if column == DIRECTORY_COLUMN {
-                Constraint::Min(cell_width(SUMMARY_HEADERS[DIRECTORY_COLUMN]))
-            } else {
-                constraint
-            }
-        })
-        .collect()
 }
 
 /// `area` indented one level, where every machine's label row and rows
@@ -519,6 +560,81 @@ mod tests {
                 Color::Rgb(100, 150, 255),
             ],
             "red, then yellow past trunk's orange, green, cyan, and the mac's blue"
+        );
+    }
+
+    /// The summary asks for its widest line: the table with every
+    /// directory written out in full, so a longer directory asks for
+    /// that much more room, or the widest heading when no machine lists
+    /// an agent.
+    #[test]
+    fn the_width_holds_the_longest_directory_or_the_widest_heading() {
+        const LONG_DIRECTORY: &str =
+            "~/rust/a/directory/far/longer/than/any/other/the/summary/lists";
+        let natedev = natedev();
+        let machines = [Machine {
+            name:  "natedev",
+            state: &natedev,
+        }];
+        let fitted = width(&machines, NOW);
+        let height = u16::try_from(height(&machines)).expect("the height should fit a u16");
+        let area = Rect::new(0, 0, WIDTH, height);
+        let mut buffer = Buffer::empty(area);
+        draw(
+            &mut buffer,
+            area,
+            &machines,
+            &agent_cell::cell_order(&machines),
+            NOW,
+        );
+        let widest = lines(&buffer)
+            .iter()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
+        assert_eq!(usize::from(fitted), widest, "the widest row drawn uncut");
+
+        let mut rows = natedev.rows().to_vec();
+        let longest_before = rows
+            .iter()
+            .map(|row| row.directory.chars().count())
+            .max()
+            .unwrap_or(0);
+        rows.push(row(
+            7_000_001,
+            Agent::Claude,
+            "far away",
+            Some("idle"),
+            MINUTE,
+            LONG_DIRECTORY,
+        ));
+        let longer = MachineState::Answered(rows);
+        let machines = [Machine {
+            name:  "natedev",
+            state: &longer,
+        }];
+        assert_eq!(
+            usize::from(width(&machines, NOW)),
+            usize::from(fitted) + LONG_DIRECTORY.chars().count() - longest_before,
+            "the table widens by what the long directory adds"
+        );
+
+        let quiet = MachineState::Answered(Vec::new());
+        let studio = MachineState::Failed("unreachable".to_string());
+        let machines = [
+            Machine {
+                name:  "natedev",
+                state: &quiet,
+            },
+            Machine {
+                name:  "studio",
+                state: &studio,
+            },
+        ];
+        assert_eq!(
+            usize::from(width(&machines, NOW)),
+            " studio · unreachable".chars().count(),
+            "the wider of the two headings"
         );
     }
 }

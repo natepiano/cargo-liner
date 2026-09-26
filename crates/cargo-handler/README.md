@@ -259,8 +259,9 @@ dark_theme     = "Default Dark"
 iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone
 
 [tiles]
-initial_rows = 4                 # rows the first column grows to before the grid squares up
-fill         = "redistribute"    # redistribute / add_new: how the cells spread over the columns
+initial_rows  = 4                # rows the first column grows to before the grid squares up
+fill          = "redistribute"   # redistribute / add_new: how the cells spread over the columns
+widen_summary = true             # the summary reaches across columns until its widest line fits
 
 [machines]
 remote = []                      # ssh host names the summary probes, e.g. ["mac"]
@@ -272,8 +273,16 @@ others, the taller ones on the left: twelve cells stand as three columns of
 four, the thirteenth opens a fourth column and deals the thirteen out as four,
 three, three and three, and the fourteenth makes that four, four, three and
 three. `add_new` fills a column at a time, so the thirteenth cell stands alone
-in the fourth column, the whole height of the grid. The settings overlay steps
-both `initial rows` and `fill` under **Tiles**.
+in the fourth column, the whole height of the grid.
+
+`widen_summary` lets the summary reach past its own column when its widest line
+-- a machine's heading, or an agent's row with its directory written out in full
+-- does not fit there. It keeps the height its own column gives it and takes the
+top of each next column in turn until that line fits or it reaches the right
+edge; the cells of a column it covers divide what is left below it, and a column
+whose cells would no longer fit below it stops the summary there. Off, the
+summary stays in its own column and cuts a long directory short. The settings
+overlay steps `initial rows`, `fill` and `widen summary` under **Tiles**.
 
 The settings overlay edits `remote` under **Machines** as a typed list; a
 change applies from the next probe.

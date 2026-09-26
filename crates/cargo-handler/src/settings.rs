@@ -2,11 +2,11 @@
 //! stepping that edits them.
 //!
 //! The framework owns every row here but `remote`: the `[appearance]`
-//! steppers, `initial rows`, `fill`, the Files paths and the Notices
-//! section. This module
-//! places them. Every stepper walks its allowed values on
-//! Left/Right/Enter, writes `config.toml`, and swaps the active theme
-//! in place. Every other row reports state and is inert.
+//! steppers, `initial rows`, `fill`, `widen summary`, the Files paths
+//! and the Notices section. This module places them. Every stepper
+//! walks its allowed values on Left/Right/Enter, writes `config.toml`,
+//! and swaps the active theme in place. Every other row reports state
+//! and is inert.
 
 use tui_pane::SettingStep;
 use tui_pane::SettingTarget;
@@ -40,6 +40,7 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
     out.section(TILES_SETTINGS_SECTION);
     out.initial_rows(config.tiles.initial_rows);
     out.tile_fill(config.tiles.fill);
+    out.widen_summary(config.tiles.widen_summary);
 
     out.section(MACHINES_SETTINGS_SECTION);
     out.text(

@@ -72,6 +72,10 @@ pub(crate) const KEYMAP_TOML_HEADER: &str = "\
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
 
 // tiles
+/// `tiles.widen_summary` when `config.toml` says nothing: the summary
+/// widens over the next columns until its widest row fits, so no
+/// directory is cut short while there is room to the right.
+pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = true;
 /// The summary cell's title, set into its top border. The leading space
 /// holds the word off the corner glyph the title is set against.
 pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
