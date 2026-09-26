@@ -268,7 +268,8 @@ pub(super) struct BoardGitCost {
     /// One status observation per live holder checkout, including cache hits.
     #[serde(default)]
     merge_extent_worktree_status_queries:   u64,
-    /// Only changed trunk, HEAD, or dirty path sets require another net path query.
+    /// Only a changed integration target tip, HEAD, or dirty path set requires another net path
+    /// query.
     #[serde(default)]
     merge_extent_path_queries:              u64,
 }
@@ -359,13 +360,13 @@ fn lost_integration_evidence_detail(
 ) -> String {
     match recovery {
         LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and trunk commit {trunk_oid} carries protected tip {protected_tip}. Run `cargo-berth resolve {reservation_id} --integrated-as {trunk_oid}`. Inspect `cargo-berth board --json`."
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and integration target commit {trunk_oid} carries protected tip {protected_tip}. Run `cargo-berth resolve {reservation_id} --integrated-as {trunk_oid}`. Inspect `cargo-berth board --json`."
         ),
         LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but trunk {trunk_oid} no longer proves protected tip {protected_tip}. If a trunk commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TRUNK_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`."
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but its integration target at {trunk_oid} no longer proves protected tip {protected_tip}. If an integration target commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TARGET_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`."
         ),
         LostEvidenceRecovery::ResolveTrunkFirst { .. } => format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and trunk does not currently resolve to a known object, so protected tip {protected_tip} cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`."
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip {protected_tip} cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --json`."
         ),
     }
 }

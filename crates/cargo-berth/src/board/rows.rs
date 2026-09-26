@@ -1016,8 +1016,11 @@ pub(super) fn waiting_action(
         EdgeHold::PredecessorNotOnOrderingTarget {
             evidence: UnintegratedPredecessorEvidence::TrunkRewritten,
         } => WaitingAction::TrunkEvidenceRewritten {
-            instruction:  "re-record evidence invalidated by the trunk rewrite".to_owned(),
-            resolve_flag: "resolve --integrated-as <trunk-oid>".to_owned(),
+            instruction:  format!(
+                "re-record evidence invalidated by a rewrite of {}",
+                ordering_target.wait_name()
+            ),
+            resolve_flag: "resolve --integrated-as <target-oid>".to_owned(),
         },
         EdgeHold::PredecessorNotOnOrderingTarget {
             evidence: UnintegratedPredecessorEvidence::ObjectUnknown,
@@ -1383,8 +1386,8 @@ mod tests {
         else {
             return Err(io::Error::other("rewritten trunk should require new evidence").into());
         };
-        assert!(instruction.contains("trunk rewrite"));
-        assert_eq!(resolve_flag, "resolve --integrated-as <trunk-oid>");
+        assert!(instruction.contains("rewrite of trunk"));
+        assert_eq!(resolve_flag, "resolve --integrated-as <target-oid>");
         assert!(matches!(
             &test_support::board_reservation_snapshot(
                 &rewritten_model,

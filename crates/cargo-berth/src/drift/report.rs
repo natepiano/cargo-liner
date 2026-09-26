@@ -287,14 +287,18 @@ pub(crate) struct IncursionCommit {
 
 declare_wire_enum! {
     /// Where a commit behind an entered path came from.
+    ///
+    /// `trunk` in the wire name `already_on_trunk` means the reservation's integration target, or
+    /// the repository trunk when that target ref is missing.
     #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
     #[serde(rename_all = "snake_case")]
     pub(crate) enum IncursionCommitOrigin {
-        /// Trunk does not carry the commit, so this phase authored it.
+        /// The integration target does not carry the commit, so this phase authored it.
         PhaseAuthored => "phase_authored";
-        /// Trunk already carried the commit, so the phase received it rather than wrote it.
+        /// The integration target already carried the commit, so the phase received it rather
+        /// than wrote it.
         AlreadyOnTrunk => "already_on_trunk";
-        /// Trunk could not be resolved, so the commit's origin was not decided.
+        /// The integration target could not be resolved, so the commit's origin was not decided.
         Unknown => "unknown";
     }
 }

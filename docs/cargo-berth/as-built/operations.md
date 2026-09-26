@@ -252,7 +252,7 @@ judged at.
 cannot prove:
 
 - `--recovered` rebinds a reservation to the worktree running the command.
-- `--integrated-as <trunk-oid>` records a verified alternate commit already
+- `--integrated-as <target-oid>` records a verified alternate commit already
   reachable from the reservation's target.
 - `--abandon --why <text>` is the only deliberate abandonment route.
 - `--retire-orphan --why <text>` is the only confirmed orphan-retirement route,

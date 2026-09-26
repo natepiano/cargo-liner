@@ -124,7 +124,7 @@ impl Display for Alert {
             Self::LostIntegrationEvidence(alert) => match &alert.recovery {
                 LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and trunk commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --json`.",
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and integration target commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --json`.",
                     alert.reservation_id,
                     trunk_oid,
                     alert.protected_tip,
@@ -133,12 +133,12 @@ impl Display for Alert {
                 ),
                 LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but trunk {} no longer proves protected tip {}. If a trunk commit carries the released work, run `cargo-berth resolve {} --integrated-as <TRUNK_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
                     alert.reservation_id, trunk_oid, alert.protected_tip, alert.reservation_id,
                 ),
                 LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and trunk does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve trunk first, then rerun. Inspect `cargo-berth board --json`.",
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --json`.",
                     alert.reservation_id, alert.protected_tip,
                 ),
             },
@@ -368,13 +368,13 @@ impl OrphanResolutionAction {
     pub(crate) fn integration_guidance(&self, protected_tip: &ProtectedReservationTip) -> String {
         match self {
             Self::Recover(LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. }) => format!(
-                "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since trunk commit {trunk_oid} carries the work."
+                "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since integration target commit {trunk_oid} carries the work."
             ),
             Self::Recover(LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. }) => format!(
-                "Trunk {trunk_oid} does not contain protected tip {protected_tip}; --integrated-as needs a trunk commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than trunk."
+                "The reservation's integration target at {trunk_oid} does not contain protected tip {protected_tip}; --integrated-as needs an integration target commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target."
             ),
             Self::Recover(LostEvidenceRecovery::ResolveTrunkFirst { .. }) => {
-                "For a merged branch, resolve trunk first, then rerun to name the integration commit."
+                "For a merged branch, resolve the integration target first, then rerun to name the integration commit."
                     .to_owned()
             },
             Self::RetireOrAbandon => String::new(),
@@ -820,7 +820,7 @@ mod tests {
                 assert_eq!(
                     guidance,
                     format!(
-                        "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since trunk commit {CARRYING_COMMIT} carries the work."
+                        "Use --recovered after restoring the worktree; for a merged branch, use --integrated-as, since integration target commit {CARRYING_COMMIT} carries the work."
                     )
                 );
             },
@@ -838,7 +838,7 @@ mod tests {
                 assert_eq!(
                     guidance,
                     format!(
-                        "Trunk {TRUNK_TIP} does not contain protected tip {PROTECTED_TIP}; --integrated-as needs a trunk commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than trunk."
+                        "The reservation's integration target at {TRUNK_TIP} does not contain protected tip {PROTECTED_TIP}; --integrated-as needs an integration target commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target."
                     )
                 );
             },
@@ -846,7 +846,7 @@ mod tests {
                 assert_eq!(commands, [format!("resolve {reservation_id} --recovered")]);
                 assert_eq!(
                     guidance,
-                    "For a merged branch, resolve trunk first, then rerun to name the integration commit."
+                    "For a merged branch, resolve the integration target first, then rerun to name the integration commit."
                 );
             },
         }

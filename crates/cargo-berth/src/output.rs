@@ -2633,13 +2633,13 @@ impl OutputEnvelope {
             },
             ReleasePayload::EvidenceRevalidated { evidence, .. } => match evidence {
                 IntegrationEvidenceStatus::NotIntegrated => format!(
-                    "Reservation {reservation_id} remains outstanding; its protected tip is not in trunk."
+                    "Reservation {reservation_id} remains outstanding; its protected tip is not in its integration target."
                 ),
                 IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
-                    "Reservation {reservation_id} has integration evidence in trunk commit {trunk_oid}."
+                    "Reservation {reservation_id} has integration evidence in integration target commit {trunk_oid}."
                 ),
                 IntegrationEvidenceStatus::TrunkRewritten => format!(
-                    "Reservation {reservation_id} is blocking again because trunk no longer contains its verified evidence."
+                    "Reservation {reservation_id} is blocking again because its integration target no longer contains its verified evidence."
                 ),
                 IntegrationEvidenceStatus::ObjectUnknown => format!(
                     "Reservation {reservation_id} is blocking because git could not resolve its integration evidence."
@@ -2651,7 +2651,7 @@ impl OutputEnvelope {
                 ..
             } => match evidence {
                 IntegrationEvidenceStatus::Integrated { trunk_oid, .. } => format!(
-                    "Reservation {reservation_id} was already released with disposition {disposition:?}; trunk commit {trunk_oid} still carries its integration evidence. This release changed nothing."
+                    "Reservation {reservation_id} was already released with disposition {disposition:?}; integration target commit {trunk_oid} still carries its integration evidence. This release changed nothing."
                 ),
                 IntegrationEvidenceStatus::NotIntegrated
                 | IntegrationEvidenceStatus::TrunkRewritten
@@ -3794,7 +3794,7 @@ fn first_touch_holder_recovery_guidance(
         .map(|conflict| {
             let reservation_id = conflict.reservation_id;
             format!(
-                "- Reservation `{reservation_id}`: `cargo-berth release {reservation_id}` once the work is on trunk, `cargo-berth resolve {reservation_id} --integrated-as <TRUNK_OID>` after that release when git cannot prove the integration, or `cargo-berth resolve {reservation_id} --abandon --why <WHY>` when the work was discarded."
+                "- Reservation `{reservation_id}`: `cargo-berth release {reservation_id}` once the work is on its integration target, `cargo-berth resolve {reservation_id} --integrated-as <TARGET_OID>` after that release when git cannot prove the integration, or `cargo-berth resolve {reservation_id} --abandon --why <WHY>` when the work was discarded."
             )
         })
         .collect::<Vec<_>>();
@@ -3851,10 +3851,10 @@ fn first_touch_disposition_description(
     match first_touch_holders.as_slice() {
         [] => FirstTouchHolderRecoveryDescription::NotApplicable,
         [reservation_id] => FirstTouchHolderRecoveryDescription::Described(format!(
-            "Reservation {reservation_id} came from a first-touch edit, so its holder clears it with cargo-berth release {reservation_id} once the work is on trunk, cargo-berth resolve {reservation_id} --integrated-as <TRUNK_OID> after that release when git cannot prove the integration, or cargo-berth resolve {reservation_id} --abandon --why <WHY> when the work is discarded."
+            "Reservation {reservation_id} came from a first-touch edit, so its holder clears it with cargo-berth release {reservation_id} once the work is on its integration target, cargo-berth resolve {reservation_id} --integrated-as <TARGET_OID> after that release when git cannot prove the integration, or cargo-berth resolve {reservation_id} --abandon --why <WHY> when the work is discarded."
         )),
         [_, _, ..] => FirstTouchHolderRecoveryDescription::Described(format!(
-            "Reservations {} came from first-touch edits, so a holder clears one with cargo-berth release <RESERVATION_ID> once the work is on trunk, cargo-berth resolve <RESERVATION_ID> --integrated-as <TRUNK_OID> after that release when git cannot prove the integration, or cargo-berth resolve <RESERVATION_ID> --abandon --why <WHY> when the work is discarded.",
+            "Reservations {} came from first-touch edits, so a holder clears one with cargo-berth release <RESERVATION_ID> once the work is on its integration target, cargo-berth resolve <RESERVATION_ID> --integrated-as <TARGET_OID> after that release when git cannot prove the integration, or cargo-berth resolve <RESERVATION_ID> --abandon --why <WHY> when the work is discarded.",
             first_touch_holders.join(", ")
         )),
     }
@@ -3971,7 +3971,7 @@ fn render_incursion_commits(commits: &[IncursionCommit]) -> String {
                 match commit.origin {
                     IncursionCommitOrigin::PhaseAuthored => "this phase authored it",
                     IncursionCommitOrigin::AlreadyOnTrunk =>
-                        "already on trunk, so this phase received it",
+                        "already on the integration target, so this phase received it",
                     IncursionCommitOrigin::Unknown => "origin undetermined",
                 },
                 commit
@@ -4392,7 +4392,7 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
                             evidence: UnintegratedPredecessorEvidence::TrunkRewritten,
                         },
                 } => format!(
-                    "re-record verified evidence with cargo-berth resolve {predecessor} --integrated-as <trunk-oid>"
+                    "re-record verified evidence with cargo-berth resolve {predecessor} --integrated-as <target-oid>"
                 ),
                 EdgeReadiness::Holding {
                     hold:

@@ -1210,7 +1210,7 @@
             },
             {
               "const": "trunk_rewritten",
-              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
+              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <target-oid>`.",
               "type": "string"
             },
             {
@@ -2491,7 +2491,7 @@
           "properties": {
             "merge_extent_path_queries": {
               "default": 0,
-              "description": "Only changed trunk, HEAD, or dirty path sets require another net path query.",
+              "description": "Only a changed integration target tip, HEAD, or dirty path set requires another net path\nquery.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -4088,21 +4088,21 @@
           "type": "object"
         },
         "IncursionCommitOrigin": {
-          "description": "Where a commit behind an entered path came from.",
+          "description": "Where a commit behind an entered path came from.\n\n`trunk` in the wire name `already_on_trunk` means the reservation's integration target, or\nthe repository trunk when that target ref is missing.",
           "oneOf": [
             {
               "const": "phase_authored",
-              "description": "Trunk does not carry the commit, so this phase authored it.",
+              "description": "The integration target does not carry the commit, so this phase authored it.",
               "type": "string"
             },
             {
               "const": "already_on_trunk",
-              "description": "Trunk already carried the commit, so the phase received it rather than wrote it.",
+              "description": "The integration target already carried the commit, so the phase received it rather\nthan wrote it.",
               "type": "string"
             },
             {
               "const": "unknown",
-              "description": "Trunk could not be resolved, so the commit's origin was not decided.",
+              "description": "The integration target could not be resolved, so the commit's origin was not decided.",
               "type": "string"
             }
           ]
@@ -6349,7 +6349,7 @@
             },
             {
               "const": "trunk_rewritten",
-              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
+              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <target-oid>`.",
               "type": "string"
             },
             {
@@ -6620,7 +6620,7 @@
             },
             {
               "const": "no_merge_base",
-              "description": "HEAD and trunk have no resolvable common ancestor.",
+              "description": "HEAD and the selected integration target have no resolvable common ancestor.",
               "type": "string"
             },
             {
@@ -10390,7 +10390,7 @@
           "properties": {
             "merge_extent_path_queries": {
               "default": 0,
-              "description": "Only changed trunk, HEAD, or dirty path sets require another net path query.",
+              "description": "Only a changed integration target tip, HEAD, or dirty path set requires another net path\nquery.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -11929,21 +11929,21 @@
           "type": "object"
         },
         "IncursionCommitOrigin": {
-          "description": "Where a commit behind an entered path came from.",
+          "description": "Where a commit behind an entered path came from.\n\n`trunk` in the wire name `already_on_trunk` means the reservation's integration target, or\nthe repository trunk when that target ref is missing.",
           "oneOf": [
             {
               "const": "phase_authored",
-              "description": "Trunk does not carry the commit, so this phase authored it.",
+              "description": "The integration target does not carry the commit, so this phase authored it.",
               "type": "string"
             },
             {
               "const": "already_on_trunk",
-              "description": "Trunk already carried the commit, so the phase received it rather than wrote it.",
+              "description": "The integration target already carried the commit, so the phase received it rather\nthan wrote it.",
               "type": "string"
             },
             {
               "const": "unknown",
-              "description": "Trunk could not be resolved, so the commit's origin was not decided.",
+              "description": "The integration target could not be resolved, so the commit's origin was not decided.",
               "type": "string"
             }
           ]
@@ -14050,7 +14050,7 @@
             },
             {
               "const": "trunk_rewritten",
-              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <trunk-oid>`.",
+              "description": "A rewrite of the ordering target invalidated the recorded evidence; re-record it with\n`resolve --integrated-as <target-oid>`.",
               "type": "string"
             },
             {
@@ -14321,7 +14321,7 @@
             },
             {
               "const": "no_merge_base",
-              "description": "HEAD and trunk have no resolvable common ancestor.",
+              "description": "HEAD and the selected integration target have no resolvable common ancestor.",
               "type": "string"
             },
             {

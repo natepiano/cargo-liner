@@ -1024,7 +1024,7 @@ impl Display for RecoveryRejection {
                 protected_tip,
             } => write!(
                 formatter,
-                "the --integrated-as commit {} does not contain protected tip {protected_tip} or an equivalent of its scoped changes; name a trunk commit that carries this work, or run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>` when the work landed where git cannot match it",
+                "the --integrated-as commit {} does not contain protected tip {protected_tip} or an equivalent of its scoped changes; name an integration target commit that carries this work, or run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>` when the work landed where git cannot match it",
                 commit.as_ref()
             ),
             Self::IntegrationCommitUncompared {

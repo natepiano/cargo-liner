@@ -169,7 +169,7 @@ const RETIRE_ORPHAN_ARGUMENT_ID: &str = "retire_orphan";
 const RUN_ARGUMENT: &str = "run";
 const RUN_VALUE_NAME: &str = "COORDINATION_RUN_ID";
 const POST_COMMIT_HOOK_ENVIRONMENT: &str = "CARGO_BERTH_POST_COMMIT";
-const TRUNK_OID_VALUE_NAME: &str = "TRUNK_OID";
+const TARGET_OID_VALUE_NAME: &str = "TARGET_OID";
 const WHY_ARGUMENT: &str = "why";
 const WHY_VALUE_NAME: &str = "WHY";
 
@@ -177,12 +177,12 @@ const ABANDON_LONG_ABOUT: &str = "Use this only when the reservation's work is i
 const BOARD_LONG_ABOUT: &str = "Inspect current reservations and integration constraints. With both standard input and standard output attached to terminals, bare board opens the full-screen view; otherwise it prints a pointer to board --json. Use --json to emit board facts.";
 const CHECK_LONG_ABOUT: &str = "Check proposed paths against foreign reservations. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants.";
 const CLAIM_LONG_ABOUT: &str = "Reserve repository paths for a reservation. An unprefixed path means one exact file; prefix a path with file: to state that explicitly or tree: to include all component descendants. This is the spelling check reports against, so a path that reads clear from check reserves the same extent here.";
-const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached trunk through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied trunk commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
+const INTEGRATED_AS_LONG_ABOUT: &str = "Use this when the reservation's work reached its integration target through a squash, cherry-pick, or other rewritten integration that the tool cannot prove from its stored commit. This asserts the supplied integration target commit is evidence; choosing it without that evidence can incorrectly release an unresolved reservation.";
 const RECOVERED_LONG_ABOUT: &str = "Use this when the reservation's work is still present but now belongs to this replacement worktree. It records a new worktree identity; choosing it when the work was actually integrated or discarded leaves an inaccurate live reservation blocking other work.";
 const RETIRE_ORPHAN_LONG_ABOUT: &str = "Use this only after confirming an orphaned reservation can retire without classifying its work as deliberately discarded. It records a distinct orphan-retirement disposition and requires --why so later readers can audit that decision.";
 const RENEW_LONG_ABOUT: &str = "Record that this still-live reservation remains active after inspection. Renewal changes neither its scopes nor any ordering edge; using it to hide abandoned work delays the user-confirmed recovery or abandonment decision that must eventually resolve it.";
 const EVERY_INCURSION_LONG_ABOUT: &str = "Answer every incursion incident outstanding for this reservation in one disposition. A backlog reports one notice per incident, and answering a single member leaves the rest standing, so the notice keeps firing until the set is empty.";
-const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TRUNK_OID> when work reached trunk in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
+const RESOLVE_LONG_ABOUT: &str = "Resolve a reservation recovery or an incursion incident. Choose exactly one disposition: --incursion <INCIDENT_ID> for an outstanding incident; --recovered when work survives in this replacement worktree; --integrated-as <TARGET_OID> when work reached its integration target in a form the tool could not prove; --abandon --why <WHY> only when work is deliberately discarded; or --retire-orphan --why <WHY> after confirming an orphan may retire without classifying its work as discarded. Choosing --abandon discards work. Choosing --integrated-as asserts evidence the tool could not prove for itself, so a wrong commit can release an unresolved reservation.";
 /// The refusal earned by a resolve command line that names no single disposition.
 const RESOLVE_DISPOSITION_REFUSAL: &str = "choose exactly one resolution disposition and provide --why only for --abandon or --retire-orphan";
 
@@ -670,10 +670,10 @@ struct ReservationRecoverySelection {
     /// Record this worktree as the recovered holder of surviving work.
     #[arg(long = RECOVERED_ARGUMENT, long_help = RECOVERED_LONG_ABOUT)]
     recovered:     bool,
-    /// Assert a trunk commit proves rewritten integration.
+    /// Assert an integration target commit proves rewritten integration.
     #[arg(
         long = INTEGRATED_AS_ARGUMENT,
-        value_name = TRUNK_OID_VALUE_NAME,
+        value_name = TARGET_OID_VALUE_NAME,
         long_help = INTEGRATED_AS_LONG_ABOUT
     )]
     integrated_as: Option<RewrittenIntegrationTrunkCommit>,

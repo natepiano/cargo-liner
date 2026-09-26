@@ -1598,7 +1598,7 @@ fn rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries() {
     assert_eq!(rewritten_wait["reason"], "trunk_evidence_rewritten");
     assert_eq!(
         rewritten_wait["resolve_flag"],
-        "resolve --integrated-as <trunk-oid>"
+        "resolve --integrated-as <target-oid>"
     );
 
     let unknown_fixture = ordered_fixture();

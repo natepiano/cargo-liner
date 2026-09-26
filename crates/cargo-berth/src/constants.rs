@@ -8,9 +8,9 @@ pub(crate) const PROPOSAL_ARGUMENT: &str = "proposal";
 pub(crate) const PROPOSAL_VALUE_NAME: &str = "TOKEN";
 
 // merge extent
-/// A missing trunk cannot prove that a branch's merge surface is empty.
+/// A missing integration target cannot prove that a branch's merge surface is empty.
 pub(crate) const MERGE_EXTENT_TRUNK_UNAVAILABLE: &str =
-    "cannot derive merge extent: trunk is unavailable";
+    "cannot derive merge extent: integration target is unavailable";
 /// Failed holder validation preserves the prior surface instead of observing a recycled path.
 pub(crate) const MERGE_EXTENT_WORKTREE_UNAVAILABLE: &str =
     "cannot derive merge extent: holder worktree is unavailable";
@@ -24,5 +24,5 @@ pub(crate) const UNMERGED_BRANCH_PATH_GIT_QUERIES: u64 = 2;
 /// journal entry is the only account a later reader gets.
 pub(crate) const DERIVED_ORPHAN_RETIREMENT_REASON: &str = "berth retired this orphan: \
      git no longer registers the holder worktree, and the last completed merge-extent \
-     observation proved the branch level with trunk and nothing uncommitted, so the \
+     observation proved the branch level with its integration target and nothing uncommitted, so the \
      reservation protected nothing and no later observation could change that";

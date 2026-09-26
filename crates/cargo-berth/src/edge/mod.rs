@@ -568,7 +568,7 @@ pub(crate) enum UnintegratedPredecessorEvidence {
     /// The ordering target does not contain the protected tip yet; wait for it to land.
     NotIntegrated,
     /// A rewrite of the ordering target invalidated the recorded evidence; re-record it with
-    /// `resolve --integrated-as <trunk-oid>`.
+    /// `resolve --integrated-as <target-oid>`.
     TrunkRewritten,
     /// A commit involved in the check does not resolve; repair the repository.
     ObjectUnknown,

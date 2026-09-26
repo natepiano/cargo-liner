@@ -94,7 +94,7 @@ pub(crate) struct EnrollmentOverlap {
 pub(crate) enum WorktreeEnrollmentFailureReason {
     /// A merge, rebase, cherry-pick, or revert is underway.
     OperationInProgress,
-    /// HEAD and trunk have no resolvable common ancestor.
+    /// HEAD and the selected integration target have no resolvable common ancestor.
     NoMergeBase,
     /// A repository observation or publication failed.
     GitFailure,

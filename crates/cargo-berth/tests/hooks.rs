@@ -2416,7 +2416,7 @@ impl LostIntegrationEvidence {
         let reservation_id = &self.reservation_id;
         let protected_tip = &self.protected_tip;
         Ok(format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but trunk {trunk_oid} no longer proves protected tip {protected_tip}. If a trunk commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TRUNK_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`."
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but its integration target at {trunk_oid} no longer proves protected tip {protected_tip}. If an integration target commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TARGET_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`."
         ))
     }
 }
@@ -3353,7 +3353,7 @@ fn session_start_publishes_the_engine_board_report() -> TestResult {
             let id = &orphan.reservation_id;
             let tip = &orphan.protected_tip;
             let expected = format!(
-                "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --retire-orphan --why <reason>` or `cargo-berth resolve {id} --abandon --why <reason>` after reviewing the work. Trunk {trunk} does not contain protected tip {tip}; --integrated-as needs a trunk commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than trunk."
+                "ORPHANED OUTSTANDING: reservation {id} at protected tip {tip} is recoverable_from_branch. Answer it with `cargo-berth resolve {id} --recovered` or `cargo-berth resolve {id} --retire-orphan --why <reason>` or `cargo-berth resolve {id} --abandon --why <reason>` after reviewing the work. The reservation's integration target at {trunk} does not contain protected tip {tip}; --integrated-as needs an integration target commit that carries this work. Use --recovered after restoring the worktree, or --retire-orphan when the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target."
             );
             assert!(
                 feedback
