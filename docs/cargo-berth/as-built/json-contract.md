@@ -2,9 +2,12 @@
 
 The wire contract for tools that consume `cargo-berth` output: the envelope
 `cargo berth board --json` emits, and the journal records the ledger appends.
-Both are stable — additions arrive as new variants, not renamed fields.
+The journal is stable: a ledger written by an older binary must replay, so
+records gain new variants and never rename or drop a field. The envelope changes
+with the binary; `output_contract_version` names its generation and rises
+whenever a field or section is renamed or removed.
 
-The machine-readable v2 contract is
+The machine-readable contract is
 [`generated/output-contract.json`](../generated/output-contract.json). It is
 generated in the `cargo-berth` test binary from the serialized DTO schemas.
 Ordinary tests regenerate it in memory and require an exact byte match.
@@ -86,7 +89,7 @@ bypass:
 
 ```json
 {
-  "output_contract_version": 2,
+  "output_contract_version": 3,
   "verb": "board",
   "status": "board_ready",
   "exit_code": 0,
@@ -234,7 +237,7 @@ bypass:
 }
 ```
 
-The binary reports top-level `output_contract_version = 2`. It identifies the
+The binary reports top-level `output_contract_version = 3`. It identifies the
 contract generation that produced the response and has the same value as the
 generated contract's top-level `version`; both values come from one binary
 constant. This is reported information and gates nothing: no consumer refuses
