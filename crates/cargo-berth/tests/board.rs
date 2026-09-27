@@ -527,7 +527,7 @@ fn populated_board_presentation_carries_the_complete_board_report() {
         let mut payload_section = board_data[payload_field].clone();
         if matches!(
             payload_field,
-            "ready_now" | "unconstrained_reservations" | "resolved"
+            "ready_now" | "waiting" | "unconstrained_reservations" | "resolved"
         ) {
             for entry in payload_section["entries"]
                 .as_array_mut()
@@ -552,7 +552,7 @@ fn populated_board_presentation_carries_the_complete_board_report() {
 }
 
 #[test]
-fn waiting_successor_lifecycle_and_extents_are_queryable_while_omitted_from_board_rows() {
+fn waiting_successor_lifecycle_and_extents_are_queryable_and_listed_with_its_hold() {
     let fixture = ordered_fixture();
     fs::write(
         fixture.successor_root.join("src/lib.rs"),
@@ -586,11 +586,14 @@ fn waiting_successor_lifecycle_and_extents_are_queryable_while_omitted_from_boar
     assert!(released.status.success());
 
     let complete_board = board_data(fixture.repository.path());
+    let waiting = &complete_board["waiting"]["entries"][0];
+    assert_eq!(waiting["hold"], "ordering_edge");
+    assert_eq!(waiting["successor"], fixture.successor_id);
     assert_eq!(
-        complete_board["waiting"]["entries"][0]["successor"],
+        waiting["reservation"]["reservation_id"],
         fixture.successor_id
     );
-    assert!(!has_reservation_snapshot(
+    assert!(has_reservation_snapshot(
         &complete_board,
         &fixture.successor_id
     ));
@@ -610,7 +613,7 @@ fn waiting_successor_lifecycle_and_extents_are_queryable_while_omitted_from_boar
 }
 
 #[test]
-fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows() {
+fn both_unresolved_overlap_endpoints_are_queryable_and_listed_as_waiting() {
     let repository = initialized_repository();
     git(repository.path(), &["add", CONFIGURATION_PATH]);
     git(
@@ -662,8 +665,19 @@ fn both_unresolved_overlap_endpoints_are_queryable_while_omitted_from_board_rows
     let overlap = &complete_board["unresolved_overlaps"]["entries"][0];
     assert_eq!(overlap["blocker"], blocker_id);
     assert_eq!(overlap["deferred"], deferred_id);
+    assert_eq!(
+        overlap["consequence"],
+        "both_integrations_held_until_sequence"
+    );
+    let waiting = complete_board["waiting"]["entries"]
+        .as_array()
+        .expect("waiting entries");
     for reservation_id in [&blocker_id, &deferred_id] {
-        assert!(!has_reservation_snapshot(&complete_board, reservation_id));
+        assert!(waiting.iter().any(|entry| {
+            entry["hold"] == "unresolved_overlap"
+                && entry["reservation"]["reservation_id"] == *reservation_id
+        }));
+        assert!(has_reservation_snapshot(&complete_board, reservation_id));
     }
     assert_reservation_lifecycle(repository.path(), &blocker_id, "outstanding", &blocker_tip);
     assert_reservation_lifecycle(
@@ -712,7 +726,7 @@ fn waiting_reservation_report_retains_merge_evidence_when_its_holder_is_unavaila
             .is_empty()
     );
     let complete_board = board_data(fixture.repository.path());
-    assert!(!has_reservation_snapshot(
+    assert!(has_reservation_snapshot(
         &complete_board,
         &fixture.successor_id
     ));
@@ -1877,20 +1891,30 @@ fn board_reservation_snapshot<'board>(
     data: &'board serde_json::Value,
     reservation_id: &str,
 ) -> &'board serde_json::Value {
-    ["ready_now", "unconstrained_reservations", "resolved"]
-        .into_iter()
-        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
-        .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .find(|snapshot| snapshot["reservation_id"] == reservation_id)
-        .expect("reservation should have a board snapshot")
+    [
+        "ready_now",
+        "waiting",
+        "unconstrained_reservations",
+        "resolved",
+    ]
+    .into_iter()
+    .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+    .map(|entry| entry.get("reservation").unwrap_or(entry))
+    .find(|snapshot| snapshot["reservation_id"] == reservation_id)
+    .expect("reservation should have a board snapshot")
 }
 
 fn has_reservation_snapshot(data: &serde_json::Value, reservation_id: &str) -> bool {
-    ["ready_now", "unconstrained_reservations", "resolved"]
-        .into_iter()
-        .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
-        .map(|entry| entry.get("reservation").unwrap_or(entry))
-        .any(|snapshot| snapshot["reservation_id"] == reservation_id)
+    [
+        "ready_now",
+        "waiting",
+        "unconstrained_reservations",
+        "resolved",
+    ]
+    .into_iter()
+    .flat_map(|section| data[section]["entries"].as_array().into_iter().flatten())
+    .map(|entry| entry.get("reservation").unwrap_or(entry))
+    .any(|snapshot| snapshot["reservation_id"] == reservation_id)
 }
 
 fn assert_reservation_lifecycle(
@@ -2006,7 +2030,7 @@ fn assert_preserved_board_envelope_fields(
             "verb",
         ]
     );
-    assert_eq!(envelope["output_contract_version"], 3);
+    assert_eq!(envelope["output_contract_version"], 4);
     assert_eq!(envelope["verb"], "board");
     assert_eq!(envelope["status"], "board_ready");
     assert_eq!(envelope["exit_code"], 0);

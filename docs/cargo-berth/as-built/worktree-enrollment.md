@@ -112,7 +112,7 @@
 - **Config exclusion scope.** Only `observe_merge_working_tree` drops the config file, from every working-tree partition. Ordinary and full drift still attribute the untracked config file, and existing tests depend on that.
 - **Unborn HEAD or missing trunk.** `git rev-parse` failures come back as `GitError::CommandFailed`, not as cat-file resolution variants, and are mapped to `no_merge_base`. A `cargoBerthTarget` that does not resolve falls back to the trunk, so only an unresolvable HEAD or trunk reaches this mapping.
 - **Run marker publish failure.** If publishing fails after the claim commits, running `init` again does not retry it: the worktree now has history.
-- **Ended endpoints.** Unresolved overlaps are replayed from `Enrollment` authorizations minus `ResolveDefer` events, not read from the ordering graph. A pair is reported again after either reservation ends, until `sequence` resolves it.
+- **Ended endpoints.** Unresolved overlaps are replayed from `Enrollment` authorizations minus `ResolveDefer` events, not read from the ordering graph. A pair stays reported while at least one of its reservations is not released, until `sequence` resolves it; once both have ended, the pair holds nothing and the board drops it.
 - **Stacked worktrees.** The pairwise checks cover both candidates and observed worktrees that already have history. A worktree stacked on an in-flight branch forms no pair for the parent commits its HEAD already contains. Claim scopes themselves stay target-relative; only the recorded overlap is narrowed.
 - **Locked and prunable worktrees.** Locked worktrees are enrolled. Prunable or undiscoverable registrations are reported as `unavailable`.
 - **Clean repository.** Managed hooks install into git's hooks directory and the config file is excluded, so `init` creates no work of its own and enrolls nothing in a clean repository.
@@ -137,5 +137,5 @@
 - **Why the run marker is published:** so a session in the enrolled worktree joins that run and reuses the reservation, instead of taking a first-touch claim of its own.
 - **Why enrolled claims publish no session mapping:** `init` runs in one session but claims for every worktree. Mapping them would tie the invoking session to other worktrees' reservations.
 - **Why `ClaimSource::Enrolled` counts as work for automatic ending:** enrollment requires a non-empty footprint, and the immutable source keeps that fact even if a later drift or gate check has already recorded an empty extent.
-- **Why unresolved overlaps come from the journal and not the graph:** a pair has to keep being reported after an endpoint ends, until the user orders it.
+- **Why unresolved overlaps come from the journal and not the graph:** a pair has to keep being reported after one endpoint ends, while the other is still held, until the user orders it. The board drops the pair once both endpoints have ended.
 - **Why the untracked config file is excluded from merge observation:** `init` itself creates that file. Without the exclusion, a clean repository would enroll its own configuration.

@@ -83,13 +83,13 @@ or `presentation`.
 
 ## The JSON envelope
 
-This representative board envelope contains a live predecessor, a waiting edge
-with its user action, stale alerts with their `renew` actions, and one recovered
+This representative board envelope contains a live predecessor, a waiting
+successor with its hold and user action, stale alerts with their `renew` actions, and one recovered
 bypass:
 
 ```json
 {
-  "output_contract_version": 3,
+  "output_contract_version": 4,
   "verb": "board",
   "status": "board_ready",
   "exit_code": 0,
@@ -155,6 +155,7 @@ bypass:
       "waiting": {
         "journal_position": { "generation": 3, "journal_byte_offset": 2820 },
         "entries": [{
+          "hold": "ordering_edge",
           "edge_id": "01a036fb-1629-7712-96b7-168de72d8c2f",
           "predecessor": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
           "successor": "01a036fb-1629-7712-96b7-1672b64a151f",
@@ -165,7 +166,31 @@ bypass:
             "instruction": "wait for the predecessor to reach a checkpoint; nobody can act yet"
           },
           "provenance": "acquisition",
-          "declaration_event_id": "01a036fb-1629-7712-96b7-1699922daa50"
+          "declaration_event_id": "01a036fb-1629-7712-96b7-1699922daa50",
+          "reservation": {
+            "reservation_id": "01a036fb-1629-7712-96b7-1672b64a151f",
+            "holder": {
+              "worktree_id": "01a036fb-15d0-7b41-a3c2-5e2f0d8a4b17",
+              "worktree_root": "/private/tmp/cargo-berth-phase11-collision.ay9US3/worktrees/requester",
+              "branch": { "kind": "attached", "reference": "refs/heads/requester" },
+              "liveness": "live"
+            },
+            "source": { "kind": "work_plan", "plan": "docs/work.md", "phase": "requester" },
+            "target": {
+              "ref": "refs/heads/main",
+              "short_name": "main",
+              "source": "repository_trunk",
+              "commit": "3333333333333333333333333333333333333333"
+            },
+            "purpose": { "kind": "explained", "explanation": "build on the shared API" },
+            "scopes": [{ "path": "crates/shared", "kind": "tree" }],
+            "lifecycle": { "stage": "active" },
+            "integration_evidence": { "kind": "active_work" },
+            "edit_blocking_status": "blocking",
+            "visibility": "active_constraint",
+            "freshness": { "status": "stale", "last_activity_at": "2020-01-01T00:00:00.000Z" },
+            "ahead_behind_main": { "status": "counts", "ahead": 0, "behind": 0 }
+          }
         }]
       },
       "settled_ordering_constraints": { "journal_position": { "generation": 3, "journal_byte_offset": 2820 }, "entries": [] },
@@ -237,7 +262,7 @@ bypass:
 }
 ```
 
-The binary reports top-level `output_contract_version = 3`. It identifies the
+The binary reports top-level `output_contract_version = 4`. It identifies the
 contract generation that produced the response and has the same value as the
 generated contract's top-level `version`; both values come from one binary
 constant. This is reported information and gates nothing: no consumer refuses
@@ -299,12 +324,24 @@ released reservations are always `clear`. Consequently, a row never pairs
 
 The sections mean:
 
+- Every non-resolved row appears in exactly one of `ready_now`, `waiting`, and
+  `unconstrained_reservations`; a resolved row appears only in `resolved`.
+  Non-resolved rows are active or outstanding reservations.
 - `ready_now`: non-resolved endpoints involved in any recorded ordering edge,
-  including an edge now listed under `settled_ordering_constraints`, except a
-  current waiting successor or either endpoint of an unresolved deferral. Each
-  entry wraps the row with `relation = "unordered"`. Non-resolved rows are
-  active or outstanding reservations.
-- `waiting`: holding edges. Its action is `predecessor_checkpoint`,
+  including an edge now listed under `settled_ordering_constraints`, that no
+  hold lists under `waiting`. Each entry wraps the row with
+  `relation = "unordered"`.
+- `waiting`: one entry per hold on a non-resolved reservation. Each entry
+  carries the held reservation's row under `reservation`, and `hold` names what
+  holds it. `hold = "ordering_edge"` is a holding edge: the entry carries
+  `edge_id`, `predecessor`, `successor`, `scopes`, `reason`, `action`,
+  `provenance`, and `declaration_event_id`, and its row is the successor's.
+  `hold = "unresolved_overlap"` is one live side of an entry in
+  `unresolved_overlaps`: the entry carries `declaration_event_id`, `deferred`,
+  `blocker`, and `action = { "reason": "overlap_not_sequenced", "instruction" }`,
+  whose instruction gives the `sequence` command that orders the pair. A
+  reservation held by several edges or overlaps has one entry for each. An
+  ordering edge's action is `predecessor_checkpoint`,
   `predecessor_not_integrated`, `trunk_evidence_rewritten`,
   `predecessor_object_unknown`, or `successor_must_incorporate_predecessor`.
   The actions respectively tell the user to wait for a checkpoint, wait for the
@@ -320,18 +357,26 @@ The sections mean:
   edges, tagged `cancelled_constraint_ended`,
   `fulfilled_successor_contains_predecessor`, or
   `successor_no_longer_active`.
-- `unresolved_overlaps`: deferred pairs that still require a `sequence` answer.
-  Each entry carries `declaration_event_id`, `deferred`, `blocker`, `scopes`,
-  `reason`, `origin`, and `consequence =
-  "both_integrations_held_until_sequence"`. `origin` is `user_answer` for a
-  `defer` answer or `enrollment` for an overlap recorded by `init` enrollment.
+- `unresolved_overlaps`: deferred pairs that still require a `sequence` answer
+  while at least one side is not released. A pair leaves the list once both
+  sides are released, because the gate holds no released reservation. Each
+  entry carries `declaration_event_id`, `deferred`, `blocker`, `scopes`,
+  `reason`, `origin`, and `consequence`. `consequence` is
+  `both_integrations_held_until_sequence` while neither side is released,
+  `deferred_integration_held_until_sequence` once the blocker is released, and
+  `blocker_integration_held_until_sequence` once the deferred side is released.
+  `origin` is `user_answer` for a `defer` answer or `enrollment` for an overlap
+  recorded by `init` enrollment.
 - `live_overlap_answers`: durable answers to an overlap with another
   reservation, recorded by a reservation that is still active or outstanding.
   `answer` is `enrollment`, `sequence`, `defer`, `override`, or
   `ordering_created_from_deferral`; each entry carries its exact scopes and
   effects. An `enrollment` entry carries `reservation_id`,
   `exact_approved_scopes`, `acquisition = { "origin": "enrollment" }`, and
-  `consequence`, and lists only pairs not yet resolved; a resolved pair appears
+  `consequence`, and lists only pairs not yet resolved. A `defer` or
+  `enrollment` consequence uses the `unresolved_overlaps` values: an
+  `enrollment` answer reports `deferred_integration_held_until_sequence` only
+  once every counterpart it lists is released; a resolved pair appears
   as `ordering_created_from_deferral`, and the `defer` answer it resolved
   leaves the list. `acquisition.origin` is `claim`, `enrollment`, or `widen`
   (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen appears
@@ -347,7 +392,7 @@ The sections mean:
   released reservations. The board does not list them; the journal keeps each
   one.
 - `unconstrained_reservations`: non-resolved rows not involved in a recorded
-  ordering edge or unresolved deferral. These are `active` and `outstanding`
+  ordering edge and not held under `waiting`. These are `active` and `outstanding`
   rows; a `released` reservation is always resolved audit history.
 - `resolved`: released reservation audit history. Its four dispositions are
   `integrated`, `rewritten_integration`, `abandoned`, and `retired_orphan`.
@@ -479,9 +524,9 @@ only the requested id, `blocked_by` is empty, and the payload echoes the id:
 The disposition is the same tagged value used by board rows: `kind =
 "integrated"`; or `rewritten_integration`, `abandoned`, or `retired_orphan`
 with `evidence`. The lifecycle payload deliberately omits current integration
-evidence. A waiting successor and either endpoint of an unresolved overlap can
-therefore be selected even though the complete board omits their reservation
-rows. The selector has no terminal representation and requires `--json`.
+evidence. Any retained reservation can be selected, whichever complete-board
+section lists its row. The selector has no terminal representation and requires
+`--json`.
 
 The payload also carries `race_extent` and `merge_extent`, with the values a
 complete-board row carries: a released reservation reports `merge_extent.status

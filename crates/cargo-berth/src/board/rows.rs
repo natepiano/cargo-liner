@@ -82,7 +82,7 @@ pub(crate) struct BoardModel {
     integration_order:                     IntegrationOrderDeclaration,
     targets:                               Vec<BoardTarget>,
     pub(super) ready_now:                  BoardSection<ReadyReservation>,
-    waiting:                               BoardSection<WaitingConstraint>,
+    pub(super) waiting:                    BoardSection<WaitingEntry>,
     settled_ordering_constraints:          BoardSection<SettledOrderingConstraint>,
     unresolved_overlaps:                   BoardSection<UnresolvedOverlap>,
     pub(super) live_overlap_answers:       BoardSection<RecordedOverlapAnswer>,
@@ -133,7 +133,15 @@ impl<'board> From<&'board BoardModel> for CompleteBoardReport<'board> {
                     ),
                 }
             }),
-            waiting:                            &board.waiting,
+            waiting:                            board.waiting.for_human_report(|entry| {
+                HumanWaitingEntry {
+                    hold:        &entry.hold,
+                    reservation: HumanReservationSnapshot::from_snapshot(
+                        &entry.reservation,
+                        visibility,
+                    ),
+                }
+            }),
             settled_ordering_constraints:       &board.settled_ordering_constraints,
             unresolved_overlaps:                &board.unresolved_overlaps,
             live_overlap_answers:               &board.live_overlap_answers,
@@ -229,7 +237,12 @@ impl HumanTargetVisibility {
             return;
         }
         fields.remove("targets");
-        for section in ["ready_now", "unconstrained_reservations", "resolved"] {
+        for section in [
+            "ready_now",
+            "waiting",
+            "unconstrained_reservations",
+            "resolved",
+        ] {
             let Some(entries) = fields
                 .get_mut(section)
                 .and_then(|value| value.get_mut("entries"))
@@ -238,7 +251,7 @@ impl HumanTargetVisibility {
                 continue;
             };
             for entry in entries {
-                let reservation = if section == "ready_now" {
+                let reservation = if matches!(section, "ready_now" | "waiting") {
                     &mut entry["reservation"]
                 } else {
                     entry
@@ -333,6 +346,13 @@ pub(super) struct HumanReadyReservation<'board> {
     reservation: HumanReservationSnapshot<'board>,
 }
 
+#[derive(Serialize)]
+pub(super) struct HumanWaitingEntry<'board> {
+    #[serde(flatten)]
+    hold:        &'board WaitingHold,
+    reservation: HumanReservationSnapshot<'board>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ReservationHolder {
     worktree_id:   WorktreeId,
@@ -378,16 +398,44 @@ enum ReadinessTie {
     Unordered,
 }
 
+/// One hold on a live reservation, carrying that reservation's row.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub(super) struct WaitingConstraint {
-    edge_id:              EdgeId,
-    predecessor:          ReservationId,
-    successor:            ReservationId,
-    scopes:               ReservationScopeSet,
-    reason:               OrderingReason,
-    action:               WaitingAction,
-    provenance:           EdgeDeclaration,
-    declaration_event_id: EventId,
+pub(super) struct WaitingEntry {
+    #[serde(flatten)]
+    hold:                   WaitingHold,
+    pub(super) reservation: BoardReservationSnapshot,
+}
+
+/// Why one live reservation cannot integrate yet.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "hold", rename_all = "snake_case")]
+pub(super) enum WaitingHold {
+    /// A declared ordering edge holds its successor, the reservation this entry carries.
+    OrderingEdge {
+        edge_id:              EdgeId,
+        predecessor:          ReservationId,
+        successor:            ReservationId,
+        scopes:               ReservationScopeSet,
+        reason:               OrderingReason,
+        action:               WaitingAction,
+        provenance:           EdgeDeclaration,
+        declaration_event_id: EventId,
+    },
+    /// An unresolved overlap holds each live side, the reservation this entry carries, until
+    /// `sequence` orders the pair.
+    UnresolvedOverlap {
+        declaration_event_id: EventId,
+        deferred:             ReservationId,
+        blocker:              ReservationId,
+        action:               OverlapWaitingAction,
+    },
+}
+
+/// What releases a hold that an unresolved overlap places.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub(super) enum OverlapWaitingAction {
+    OverlapNotSequenced { instruction: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -439,27 +487,71 @@ pub(super) struct UnresolvedOverlap {
     scopes:               ReservationScopeSet,
     reason:               OverlapAuthorizationReason,
     origin:               DeferralOrigin,
-    consequence:          SymmetricDeferralConsequence,
+    consequence:          DeferralConsequence,
 }
 
+/// Which integrations one unresolved deferral holds until `sequence` orders the pair.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum SymmetricDeferralConsequence {
-    BothIntegrationsHeldUntilSequence,
+pub(super) enum DeferralConsequence {
+    /// Neither side is released, so both integrations are held.
+    #[serde(rename = "both_integrations_held_until_sequence")]
+    Both,
+    /// The blocker is released, so only the deferred side's integration is held.
+    #[serde(rename = "deferred_integration_held_until_sequence")]
+    DeferredOnly,
+    /// The deferred side is released, so only the blocker's integration is held.
+    #[serde(rename = "blocker_integration_held_until_sequence")]
+    BlockerOnly,
+}
+
+impl DeferralConsequence {
+    /// The integrations a deferral holds, or `None` once both of its sides are released.
+    fn from_lifecycles(
+        deferred: &ReservationLifecycle,
+        blocker: &ReservationLifecycle,
+    ) -> Option<Self> {
+        if is_released(deferred) {
+            (!is_released(blocker)).then_some(Self::BlockerOnly)
+        } else {
+            Some(Self::with_live_deferred([blocker]))
+        }
+    }
+
+    /// The integrations held while the deferred side is live: the blockers' as well, until every
+    /// blocker is released.
+    pub(super) fn with_live_deferred<'lifecycle>(
+        blockers: impl IntoIterator<Item = &'lifecycle ReservationLifecycle>,
+    ) -> Self {
+        if blockers.into_iter().all(is_released) {
+            Self::DeferredOnly
+        } else {
+            Self::Both
+        }
+    }
+}
+
+const fn is_released(lifecycle: &ReservationLifecycle) -> bool {
+    matches!(lifecycle, ReservationLifecycle::Released { .. })
 }
 
 /// Declared ordering constraints split by whether they still hold a live successor.
 struct DeclaredOrderingConstraints {
-    waiting:                  Vec<WaitingConstraint>,
+    holds:                    Vec<ReservationHold>,
     settled:                  Vec<SettledOrderingConstraint>,
-    /// Every reservation named by an ordering constraint. Callers that also
-    /// place unresolved overlaps extend this with those endpoints.
+    /// Every reservation named by an ordering constraint.
     constrained_reservations: HashSet<ReservationId>,
 }
 
-/// The three mutually exclusive sections one board places its reservation rows into.
+/// One hold on a live reservation, before the board attaches that reservation's row.
+struct ReservationHold {
+    held: ReservationId,
+    hold: WaitingHold,
+}
+
+/// The four mutually exclusive sections one board places its reservation rows into.
 struct PlacedReservationSections {
     ready_now:                  Vec<ReadyReservation>,
+    waiting:                    Vec<WaitingEntry>,
     unconstrained_reservations: Vec<BoardReservationSnapshot>,
     resolved:                   Vec<BoardReservationSnapshot>,
 }
@@ -604,24 +696,20 @@ impl BoardModel {
             .collect::<HashSet<_>>();
 
         let DeclaredOrderingConstraints {
-            waiting,
+            holds,
             settled,
-            mut constrained_reservations,
+            constrained_reservations,
         } = declared_ordering_constraints(&report.constraints, &active_ids);
-        let unresolved_overlaps = unresolved_overlaps(&report.constraints);
-        constrained_reservations.extend(
-            unresolved_overlaps
-                .iter()
-                .flat_map(|overlap| [overlap.deferred, overlap.blocker]),
-        );
+        let unresolved_overlaps = unresolved_overlaps(&report.constraints)?;
         let PlacedReservationSections {
             ready_now,
+            waiting,
             unconstrained_reservations,
             resolved,
         } = place_reservation_sections(
             &reservation_snapshots,
             &constrained_reservations,
-            &waiting,
+            holds,
             &unresolved_overlaps,
         );
         let BoardOverlapAnswers {
@@ -699,7 +787,12 @@ impl BoardModel {
                     .iter()
                     .map(|snapshot| snapshot.reservation_id),
             )
-            .chain(self.waiting.entries.iter().map(|entry| entry.successor))
+            .chain(
+                self.waiting
+                    .entries
+                    .iter()
+                    .map(|entry| entry.reservation.reservation_id),
+            )
             .chain(
                 self.unresolved_overlaps
                     .entries
@@ -734,7 +827,7 @@ fn declared_ordering_constraints(
     constraints: &IntegrationConstraintProjection,
     active_ids: &HashSet<ReservationId>,
 ) -> DeclaredOrderingConstraints {
-    let mut waiting = Vec::new();
+    let mut holds = Vec::new();
     let mut settled = Vec::new();
     let mut involved = HashSet::new();
     for edge in &constraints.ordering_constraints {
@@ -742,15 +835,18 @@ fn declared_ordering_constraints(
         involved.insert(edge.successor);
         match edge.readiness {
             EdgeReadiness::Holding { hold } if active_ids.contains(&edge.successor) => {
-                waiting.push(WaitingConstraint {
-                    edge_id:              edge.edge_id,
-                    predecessor:          edge.predecessor,
-                    successor:            edge.successor,
-                    scopes:               edge.scopes.clone(),
-                    reason:               edge.reason.clone(),
-                    action:               waiting_action(hold, &edge.ordering_target),
-                    provenance:           edge.declaration,
-                    declaration_event_id: edge.declaration_event_id,
+                holds.push(ReservationHold {
+                    held: edge.successor,
+                    hold: WaitingHold::OrderingEdge {
+                        edge_id:              edge.edge_id,
+                        predecessor:          edge.predecessor,
+                        successor:            edge.successor,
+                        scopes:               edge.scopes.clone(),
+                        reason:               edge.reason.clone(),
+                        action:               waiting_action(hold, &edge.ordering_target),
+                        provenance:           edge.declaration,
+                        declaration_event_id: edge.declaration_event_id,
+                    },
                 });
             },
             EdgeReadiness::Holding { .. } => settled.push(SettledOrderingConstraint {
@@ -787,60 +883,91 @@ fn declared_ordering_constraints(
     }
 
     DeclaredOrderingConstraints {
-        waiting,
+        holds,
         settled,
         constrained_reservations: involved,
     }
 }
 
-fn unresolved_overlaps(constraints: &IntegrationConstraintProjection) -> Vec<UnresolvedOverlap> {
-    constraints
+/// Every unresolved deferral that still holds an integration.
+///
+/// The filter reads lifecycles, not board visibility: an outstanding reservation with an empty
+/// merge extent is resolved audit on the board, yet the gate still holds it.
+fn unresolved_overlaps(
+    constraints: &IntegrationConstraintProjection,
+) -> Result<Vec<UnresolvedOverlap>, BoardError> {
+    let mut overlaps = Vec::new();
+    for deferral in constraints
         .deferrals
         .iter()
         .filter(|deferral| deferral.status == IntegrationDeferralStatus::Unresolved)
-        .map(|deferral| UnresolvedOverlap {
+    {
+        let deferred = &constraints.reservation(deferral.deferred)?.lifecycle;
+        let blocker = &constraints.reservation(deferral.blocker)?.lifecycle;
+        // The gate skips released reservations, so a pair whose sides both ended holds nothing.
+        let Some(consequence) = DeferralConsequence::from_lifecycles(deferred, blocker) else {
+            continue;
+        };
+        overlaps.push(UnresolvedOverlap {
             declaration_event_id: deferral.declaration_event_id,
-            deferred:             deferral.deferred,
-            blocker:              deferral.blocker,
-            scopes:               deferral.scopes.clone(),
-            reason:               deferral.reason.clone(),
-            origin:               deferral.origin,
-            consequence:          SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence,
-        })
-        .collect()
+            deferred: deferral.deferred,
+            blocker: deferral.blocker,
+            scopes: deferral.scopes.clone(),
+            reason: deferral.reason.clone(),
+            origin: deferral.origin,
+            consequence,
+        });
+    }
+    Ok(overlaps)
 }
 
+/// Place each reservation row in exactly one section: resolved audit, one waiting entry per hold,
+/// ready as an ordering-edge endpoint, or unconstrained.
 fn place_reservation_sections(
     reservation_snapshots: &[BoardReservationSnapshot],
-    involved: &HashSet<ReservationId>,
-    waiting: &[WaitingConstraint],
+    ordering_endpoints: &HashSet<ReservationId>,
+    ordering_holds: Vec<ReservationHold>,
     unresolved_overlaps: &[UnresolvedOverlap],
 ) -> PlacedReservationSections {
-    let waiting_successors = waiting
-        .iter()
-        .map(|constraint| constraint.successor)
-        .collect::<HashSet<_>>();
-    let deferred_endpoints = unresolved_overlaps
-        .iter()
-        .flat_map(|overlap| [overlap.deferred, overlap.blocker])
-        .collect::<HashSet<_>>();
-    let ready_now = reservation_snapshots
+    let active_rows = reservation_snapshots
         .iter()
         .filter(|snapshot| snapshot.visibility != BoardReservationVisibility::ResolvedAudit)
-        .filter(|snapshot| involved.contains(&snapshot.reservation_id))
-        .filter(|snapshot| !waiting_successors.contains(&snapshot.reservation_id))
-        .filter(|snapshot| !deferred_endpoints.contains(&snapshot.reservation_id))
+        .map(|snapshot| (snapshot.reservation_id, snapshot))
+        .collect::<HashMap<_, _>>();
+    let overlap_holds = unresolved_overlaps.iter().flat_map(|overlap| {
+        [overlap.deferred, overlap.blocker]
+            .into_iter()
+            .map(|held| ReservationHold {
+                held,
+                hold: overlap_hold(overlap),
+            })
+    });
+    let waiting = ordering_holds
+        .into_iter()
+        .chain(overlap_holds)
+        .filter_map(|ReservationHold { held, hold }| {
+            active_rows.get(&held).map(|row| WaitingEntry {
+                hold,
+                reservation: (*row).clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let held = waiting
+        .iter()
+        .map(|entry| entry.reservation.reservation_id)
+        .collect::<HashSet<_>>();
+    let (ready_now, unconstrained_reservations): (Vec<_>, Vec<_>) = reservation_snapshots
+        .iter()
+        .filter(|snapshot| snapshot.visibility != BoardReservationVisibility::ResolvedAudit)
+        .filter(|snapshot| !held.contains(&snapshot.reservation_id))
         .cloned()
+        .partition(|snapshot| ordering_endpoints.contains(&snapshot.reservation_id));
+    let ready_now = ready_now
+        .into_iter()
         .map(|reservation| ReadyReservation {
             relation: ReadinessTie::Unordered,
             reservation,
         })
-        .collect();
-    let unconstrained_reservations = reservation_snapshots
-        .iter()
-        .filter(|snapshot| snapshot.visibility != BoardReservationVisibility::ResolvedAudit)
-        .filter(|snapshot| !involved.contains(&snapshot.reservation_id))
-        .cloned()
         .collect();
     let resolved = reservation_snapshots
         .iter()
@@ -849,8 +976,23 @@ fn place_reservation_sections(
         .collect();
     PlacedReservationSections {
         ready_now,
+        waiting,
         unconstrained_reservations,
         resolved,
+    }
+}
+
+fn overlap_hold(overlap: &UnresolvedOverlap) -> WaitingHold {
+    WaitingHold::UnresolvedOverlap {
+        declaration_event_id: overlap.declaration_event_id,
+        deferred:             overlap.deferred,
+        blocker:              overlap.blocker,
+        action:               OverlapWaitingAction::OverlapNotSequenced {
+            instruction: format!(
+                "order this pair: cargo berth sequence <first> <then> --why '<reason>', naming {} and {} in the order they must integrate",
+                overlap.deferred, overlap.blocker
+            ),
+        },
     }
 }
 
@@ -1049,24 +1191,31 @@ pub(super) fn waiting_action(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::fs;
     use std::io;
 
     use super::BoardIntegrationEvidence;
     use super::BoardModel;
-    use super::SymmetricDeferralConsequence;
+    use super::DeferralConsequence;
     use super::WaitingAction;
+    use super::WaitingEntry;
+    use super::WaitingHold;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::ConflictAuthorization;
     use crate::answer::OverlapScopeRevision;
     use crate::board::alerts::BypassAuditEntry;
+    use crate::board::answers::RecordedOverlapAnswer;
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
     use crate::board::test_support::FixtureResult;
     use crate::board::test_support::OrderedBoardFixture;
+    use crate::board::test_support::OverlapAnswerFixture;
+    use crate::board::test_support::TestActor;
     use crate::config::Enrollment;
     use crate::edge::DeferralOrigin;
     use crate::ids::GitObjectId;
+    use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
@@ -1118,10 +1267,7 @@ mod tests {
         assert_eq!(enrollment.origin, DeferralOrigin::Enrollment);
         assert_eq!(enrollment.deferred, enrolled.reservation_id);
         assert_eq!(enrollment.blocker, blocker.reservation_id);
-        assert_eq!(
-            enrollment.consequence,
-            SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence
-        );
+        assert_eq!(enrollment.consequence, DeferralConsequence::Both);
         assert_eq!(serde_json::to_value(enrollment)?["origin"], "enrollment");
 
         let user = fixture.claim(
@@ -1145,6 +1291,175 @@ mod tests {
         assert_eq!(user_overlap.origin, DeferralOrigin::UserAnswer);
         assert_eq!(serde_json::to_value(user_overlap)?["origin"], "user_answer");
         Ok(())
+    }
+
+    /// A blocker and a reservation that deferred its overlap with that blocker.
+    struct DeferredPairFixture {
+        board:    BoardFixture,
+        actor:    TestActor,
+        deferred: ReservationId,
+        blocker:  ReservationId,
+    }
+
+    impl DeferredPairFixture {
+        fn new() -> FixtureResult<Self> {
+            let board = BoardFixture::new()?;
+            let actor = board.main_actor();
+            let blocker = board.claim(&actor, "shared.rs", ConflictAuthorization::NoConflict)?;
+            let deferred = board.claim(
+                &actor,
+                "shared.rs",
+                test_support::conflict_authorization(OverlapAnswerFixture::Defer, &blocker)?,
+            )?;
+            Ok(Self {
+                board,
+                actor,
+                deferred: deferred.reservation_id,
+                blocker: blocker.reservation_id,
+            })
+        }
+
+        fn abandon(&self, reservation_id: ReservationId) -> FixtureResult<()> {
+            self.board.release(
+                &self.actor,
+                reservation_id,
+                ReleaseDisposition::Abandoned(
+                    "the overlapping work was dropped".parse::<AbandonmentReason>()?,
+                ),
+            )
+        }
+
+        fn model(&self) -> FixtureResult<BoardModel> {
+            let model = self.board.model()?;
+            assert_placed_once(&model, &[self.deferred, self.blocker]);
+            Ok(model)
+        }
+    }
+
+    #[test]
+    fn an_overlap_leaves_the_board_once_both_sides_end() -> FixtureResult<()> {
+        let pair = DeferredPairFixture::new()?;
+        pair.abandon(pair.deferred)?;
+        pair.abandon(pair.blocker)?;
+        let model = pair.model()?;
+        assert!(model.unresolved_overlaps.entries.is_empty());
+        assert!(model.waiting.entries.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_released_blocker_leaves_the_deferred_side_waiting() -> FixtureResult<()> {
+        let pair = DeferredPairFixture::new()?;
+        pair.abandon(pair.blocker)?;
+        let model = pair.model()?;
+        assert_eq!(
+            overlap_consequence(&model)?,
+            DeferralConsequence::DeferredOnly
+        );
+        assert_eq!(overlap_holds(&model), [pair.deferred]);
+        assert!(matches!(
+            model.live_overlap_answers.entries.as_slice(),
+            [RecordedOverlapAnswer::Defer {
+                consequence: DeferralConsequence::DeferredOnly,
+                ..
+            }]
+        ));
+
+        let wire = serde_json::to_value(&model)?;
+        assert_eq!(
+            wire["unresolved_overlaps"]["entries"][0]["consequence"],
+            "deferred_integration_held_until_sequence"
+        );
+        let entry = &wire["waiting"]["entries"][0];
+        assert_eq!(entry["hold"], "unresolved_overlap");
+        assert_eq!(entry["deferred"], serde_json::to_value(pair.deferred)?);
+        assert_eq!(entry["blocker"], serde_json::to_value(pair.blocker)?);
+        assert_eq!(entry["action"]["reason"], "overlap_not_sequenced");
+        assert_eq!(
+            entry["reservation"]["reservation_id"],
+            serde_json::to_value(pair.deferred)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_released_deferred_side_leaves_the_blocker_waiting() -> FixtureResult<()> {
+        let pair = DeferredPairFixture::new()?;
+        pair.abandon(pair.deferred)?;
+        let model = pair.model()?;
+        assert_eq!(
+            overlap_consequence(&model)?,
+            DeferralConsequence::BlockerOnly
+        );
+        assert_eq!(overlap_holds(&model), [pair.blocker]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_live_overlap_holds_both_sides() -> FixtureResult<()> {
+        let pair = DeferredPairFixture::new()?;
+        let model = pair.model()?;
+        assert_eq!(overlap_consequence(&model)?, DeferralConsequence::Both);
+        assert_eq!(overlap_holds(&model), [pair.deferred, pair.blocker]);
+        Ok(())
+    }
+
+    fn overlap_consequence(model: &BoardModel) -> FixtureResult<DeferralConsequence> {
+        let [overlap] = model.unresolved_overlaps.entries.as_slice() else {
+            return Err(io::Error::other("fixture should list one unresolved overlap").into());
+        };
+        Ok(overlap.consequence)
+    }
+
+    /// The reservations an unresolved overlap holds, in waiting order.
+    fn overlap_holds(model: &BoardModel) -> Vec<ReservationId> {
+        model
+            .waiting
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.hold, WaitingHold::UnresolvedOverlap { .. }))
+            .map(|entry| entry.reservation.reservation_id)
+            .collect()
+    }
+
+    /// Each reservation sits in exactly one of ready now, waiting, unconstrained, and resolved.
+    fn assert_placed_once(model: &BoardModel, reservations: &[ReservationId]) {
+        let sections = [
+            model
+                .ready_now
+                .entries
+                .iter()
+                .map(|entry| entry.reservation.reservation_id)
+                .collect::<HashSet<_>>(),
+            model
+                .waiting
+                .entries
+                .iter()
+                .map(|entry| entry.reservation.reservation_id)
+                .collect(),
+            model
+                .unconstrained_reservations
+                .entries
+                .iter()
+                .map(|row| row.reservation_id)
+                .collect(),
+            model
+                .resolved
+                .entries
+                .iter()
+                .map(|row| row.reservation_id)
+                .collect(),
+        ];
+        for reservation_id in reservations {
+            assert_eq!(
+                sections
+                    .iter()
+                    .filter(|section| section.contains(reservation_id))
+                    .count(),
+                1,
+                "reservation {reservation_id} should sit in exactly one section"
+            );
+        }
     }
 
     #[test]
@@ -1302,7 +1617,7 @@ mod tests {
     fn assert_checkpoint_not_integrated_and_incorporation_actions() -> FixtureResult<()> {
         let initial = OrderedBoardFixture::new()?;
         let initial_model = initial.model()?;
-        assert_waiting_endpoints(&initial_model, &initial);
+        assert_waiting_endpoints(&initial_model, &initial)?;
         let WaitingAction::PredecessorCheckpoint { instruction } = waiting_action(&initial_model)?
         else {
             return Err(io::Error::other("active predecessor should require a checkpoint").into());
@@ -1454,21 +1769,43 @@ mod tests {
     }
 
     fn waiting_action(model: &BoardModel) -> FixtureResult<&WaitingAction> {
-        if model.waiting.entries.len() != 1 {
-            return Err(io::Error::other("fixture should produce one waiting constraint").into());
-        }
-        Ok(&model.waiting.entries[0].action)
+        let [
+            WaitingEntry {
+                hold: WaitingHold::OrderingEdge { action, .. },
+                ..
+            },
+        ] = model.waiting.entries.as_slice()
+        else {
+            return Err(
+                io::Error::other("fixture should produce one waiting ordering edge").into(),
+            );
+        };
+        Ok(action)
     }
 
-    fn assert_waiting_endpoints(model: &BoardModel, fixture: &OrderedBoardFixture) {
-        assert_eq!(model.waiting.entries.len(), 1);
-        assert_eq!(
-            model.waiting.entries[0].predecessor,
-            fixture.predecessor.reservation_id
-        );
-        assert_eq!(
-            model.waiting.entries[0].successor,
-            fixture.successor.reservation_id
-        );
+    fn assert_waiting_endpoints(
+        model: &BoardModel,
+        fixture: &OrderedBoardFixture,
+    ) -> FixtureResult<()> {
+        let [
+            WaitingEntry {
+                hold:
+                    WaitingHold::OrderingEdge {
+                        predecessor,
+                        successor,
+                        ..
+                    },
+                reservation,
+            },
+        ] = model.waiting.entries.as_slice()
+        else {
+            return Err(
+                io::Error::other("fixture should produce one waiting ordering edge").into(),
+            );
+        };
+        assert_eq!(*predecessor, fixture.predecessor.reservation_id);
+        assert_eq!(*successor, fixture.successor.reservation_id);
+        assert_eq!(reservation.reservation_id, fixture.successor.reservation_id);
+        Ok(())
     }
 }

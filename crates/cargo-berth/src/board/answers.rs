@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::error::BoardError;
 use super::rows;
-use super::rows::SymmetricDeferralConsequence;
+use super::rows::DeferralConsequence;
 use super::rows::WaitingAction;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
@@ -41,7 +41,7 @@ pub(super) enum RecordedOverlapAnswer {
         reservation_id:        ReservationId,
         exact_approved_scopes: AuthorizedOverlapSet,
         acquisition:           AnswerAcquisition,
-        consequence:           SymmetricDeferralConsequence,
+        consequence:           DeferralConsequence,
     },
     Sequence {
         reservation_id:        ReservationId,
@@ -58,7 +58,7 @@ pub(super) enum RecordedOverlapAnswer {
         exact_approved_scopes: AuthorizedOverlapSet,
         authorization_reason:  OverlapAuthorizationReason,
         acquisition:           AnswerAcquisition,
-        consequence:           SymmetricDeferralConsequence,
+        consequence:           DeferralConsequence,
     },
     Override {
         reservation_id:        ReservationId,
@@ -78,20 +78,6 @@ pub(super) enum RecordedOverlapAnswer {
         ordering_reason:       OrderingReason,
         consequence:           OrderingConsequence,
     },
-}
-
-impl RecordedOverlapAnswer {
-    /// The reservation whose scope acquisition this answer settled: the requester, or the
-    /// deferred side of a sequenced deferral. The answer stays live while this reservation does.
-    const fn answering_reservation(&self) -> ReservationId {
-        match self {
-            Self::Enrollment { reservation_id, .. }
-            | Self::Sequence { reservation_id, .. }
-            | Self::Defer { reservation_id, .. }
-            | Self::Override { reservation_id, .. } => *reservation_id,
-            Self::OrderingCreatedFromDeferral { deferred, .. } => *deferred,
-        }
-    }
 }
 
 /// How many recorded overlap answers belong to reservations that are already released.
@@ -138,6 +124,32 @@ pub(super) enum OverrideConsequence {
     EditingAuthorizedWithoutIntegrationOrder,
 }
 
+/// Recorded overlap answers split as they are read, so only a live answer computes its consequence.
+struct AnswerSplit<'live> {
+    live_reservations: &'live HashSet<ReservationId>,
+    live:              Vec<RecordedOverlapAnswer>,
+    released:          usize,
+}
+
+impl AnswerSplit<'_> {
+    /// Keep one answer in full while its answering reservation is live, or count it once released.
+    ///
+    /// The answering reservation is the one whose scope acquisition the answer settled: the
+    /// requester, or the deferred side of a sequenced deferral.
+    fn record(
+        &mut self,
+        answering_reservation: ReservationId,
+        answer: impl FnOnce() -> Result<RecordedOverlapAnswer, BoardError>,
+    ) -> Result<(), BoardError> {
+        if self.live_reservations.contains(&answering_reservation) {
+            self.live.push(answer()?);
+        } else {
+            self.released += 1;
+        }
+        Ok(())
+    }
+}
+
 /// One durable authorization answer's own inputs, apart from where the board appends it.
 struct RecordedAuthorizationRow<'authorization> {
     reservation_id: ReservationId,
@@ -167,21 +179,12 @@ pub(super) fn board_overlap_answers(
     constraints: &IntegrationConstraintProjection,
     live_reservations: &HashSet<ReservationId>,
 ) -> Result<BoardOverlapAnswers, BoardError> {
-    let (live, released): (Vec<_>, Vec<_>) = recorded_answers(events, constraints)?
-        .into_iter()
-        .partition(|answer| live_reservations.contains(&answer.answering_reservation()));
-    Ok(BoardOverlapAnswers {
-        live,
-        released: ReleasedOverlapAnswerCount(released.len()),
-    })
-}
-
-fn recorded_answers(
-    events: &[JournalEvent],
-    constraints: &IntegrationConstraintProjection,
-) -> Result<Vec<RecordedOverlapAnswer>, BoardError> {
     let resolved_pairs = resolved_defer_pairs(events);
-    let mut answers = Vec::new();
+    let mut answers = AnswerSplit {
+        live_reservations,
+        live: Vec::new(),
+        released: 0,
+    };
     for event in events {
         match &event.operation {
             JournalOperation::Claim {
@@ -240,21 +243,26 @@ fn recorded_answers(
                     .iter()
                     .find(|edge| edge.edge_id == *edge_id)
                     .ok_or(BoardError::MissingOrderingEdge(*edge_id))?;
-                answers.push(RecordedOverlapAnswer::OrderingCreatedFromDeferral {
-                    edge_id: *edge_id,
-                    deferred: *deferred_reservation_id,
-                    blocker: *blocker_reservation_id,
-                    direction: *direction,
-                    exact_approved_scopes,
-                    deferral_reasons,
-                    ordering_reason: reason.clone(),
-                    consequence: ordering_consequence(edge),
-                });
+                answers.record(*deferred_reservation_id, || {
+                    Ok(RecordedOverlapAnswer::OrderingCreatedFromDeferral {
+                        edge_id: *edge_id,
+                        deferred: *deferred_reservation_id,
+                        blocker: *blocker_reservation_id,
+                        direction: *direction,
+                        exact_approved_scopes,
+                        deferral_reasons,
+                        ordering_reason: reason.clone(),
+                        consequence: ordering_consequence(edge),
+                    })
+                })?;
             },
             _ => {},
         }
     }
-    Ok(answers)
+    Ok(BoardOverlapAnswers {
+        live:     answers.live,
+        released: ReleasedOverlapAnswerCount(answers.released),
+    })
 }
 
 const fn claim_acquisition(authorization: &ConflictAuthorization) -> AnswerAcquisition {
@@ -347,7 +355,7 @@ fn accumulated_deferral_approvals(
 }
 
 fn append_authorization_answer(
-    answers: &mut Vec<RecordedOverlapAnswer>,
+    answers: &mut AnswerSplit<'_>,
     row: RecordedAuthorizationRow<'_>,
     resolved_pairs: &HashSet<(ReservationId, ReservationId)>,
     constraints: &IntegrationConstraintProjection,
@@ -369,12 +377,24 @@ fn append_authorization_answer(
                 .cloned()
                 .collect::<Vec<_>>();
             if let Ok(exact_approved_scopes) = AuthorizedOverlapSet::try_from(unresolved) {
-                answers.push(RecordedOverlapAnswer::Enrollment {
-                    reservation_id,
-                    exact_approved_scopes,
-                    acquisition,
-                    consequence: SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence,
-                });
+                answers.record(reservation_id, || {
+                    let counterparts = exact_approved_scopes
+                        .as_slice()
+                        .iter()
+                        .map(|overlap| {
+                            constraints
+                                .reservation(overlap.reservation_id)
+                                .map(|facts| &facts.lifecycle)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let consequence = DeferralConsequence::with_live_deferred(counterparts);
+                    Ok(RecordedOverlapAnswer::Enrollment {
+                        reservation_id,
+                        exact_approved_scopes,
+                        acquisition,
+                        consequence,
+                    })
+                })?;
             }
         },
         ConflictAuthorization::Sequence {
@@ -389,42 +409,49 @@ fn append_authorization_answer(
                 .iter()
                 .find(|edge| edge.edge_id == *edge_id)
                 .ok_or(BoardError::MissingOrderingEdge(*edge_id))?;
-            answers.push(RecordedOverlapAnswer::Sequence {
-                reservation_id,
-                blocker: *blocker,
-                direction: *direction,
-                exact_approved_scopes: overlaps.clone(),
-                authorization_reason: reason.clone(),
-                acquisition,
-                consequence: ordering_consequence(edge),
-            });
+            answers.record(reservation_id, || {
+                Ok(RecordedOverlapAnswer::Sequence {
+                    reservation_id,
+                    blocker: *blocker,
+                    direction: *direction,
+                    exact_approved_scopes: overlaps.clone(),
+                    authorization_reason: reason.clone(),
+                    acquisition,
+                    consequence: ordering_consequence(edge),
+                })
+            })?;
         },
         ConflictAuthorization::Defer {
             overlaps,
             blocker,
             reason,
         } if !resolved_pairs.contains(&(reservation_id, *blocker)) => {
-            answers.push(RecordedOverlapAnswer::Defer {
-                reservation_id,
-                blocker: *blocker,
-                exact_approved_scopes: overlaps.clone(),
-                authorization_reason: reason.clone(),
-                acquisition,
-                consequence: SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence,
-            });
+            answers.record(reservation_id, || {
+                let blocker_lifecycle = &constraints.reservation(*blocker)?.lifecycle;
+                Ok(RecordedOverlapAnswer::Defer {
+                    reservation_id,
+                    blocker: *blocker,
+                    exact_approved_scopes: overlaps.clone(),
+                    authorization_reason: reason.clone(),
+                    acquisition,
+                    consequence: DeferralConsequence::with_live_deferred([blocker_lifecycle]),
+                })
+            })?;
         },
         ConflictAuthorization::Override {
             overlaps,
             blocker,
             reason,
-        } => answers.push(RecordedOverlapAnswer::Override {
-            reservation_id,
-            blocker: *blocker,
-            exact_approved_scopes: overlaps.clone(),
-            authorization_reason: reason.clone(),
-            acquisition,
-            consequence: OverrideConsequence::EditingAuthorizedWithoutIntegrationOrder,
-        }),
+        } => answers.record(reservation_id, || {
+            Ok(RecordedOverlapAnswer::Override {
+                reservation_id,
+                blocker: *blocker,
+                exact_approved_scopes: overlaps.clone(),
+                authorization_reason: reason.clone(),
+                acquisition,
+                consequence: OverrideConsequence::EditingAuthorizedWithoutIntegrationOrder,
+            })
+        })?,
         // No foreign overlap, overlaps earlier answers already cover, and a deferral a later
         // sequence resolved each record no answer of their own.
         ConflictAuthorization::NoConflict
@@ -447,7 +474,7 @@ mod tests {
     use crate::answer::ConflictAuthorization;
     use crate::answer::OverlapScopeRevision;
     use crate::board::rows::BoardModel;
-    use crate::board::rows::SymmetricDeferralConsequence;
+    use crate::board::rows::DeferralConsequence;
     use crate::board::rows::WaitingAction;
     use crate::board::test_support;
     use crate::board::test_support::BoardFixture;
@@ -496,8 +523,7 @@ mod tests {
                     reservation_id:        enrolled.reservation_id,
                     exact_approved_scopes: overlaps,
                     acquisition:           AnswerAcquisition::Enrollment,
-                    consequence:
-                        SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence,
+                    consequence:           DeferralConsequence::Both,
                 }
             );
             let wire = serde_json::to_value(answer)?;
@@ -647,10 +673,7 @@ mod tests {
             "integration order is deferred"
         );
         assert!(matches!(acquisition, AnswerAcquisition::Claim));
-        assert_eq!(
-            *consequence,
-            SymmetricDeferralConsequence::BothIntegrationsHeldUntilSequence
-        );
+        assert_eq!(*consequence, DeferralConsequence::Both);
 
         let override_fixture = test_support::answered_board(OverlapAnswerFixture::Override)?;
         let override_answer =
@@ -757,9 +780,12 @@ mod tests {
             .live_overlap_answers
             .entries
             .iter()
-            .map(RecordedOverlapAnswer::answering_reservation)
+            .map(|answer| match answer {
+                RecordedOverlapAnswer::Override { reservation_id, .. } => Some(*reservation_id),
+                _ => None,
+            })
             .collect::<Vec<_>>();
-        assert_eq!(listed, [live.reservation_id]);
+        assert_eq!(listed, [Some(live.reservation_id)]);
         let wire = serde_json::to_value(&model)?;
         assert_eq!(wire["released_overlap_answer_count"], 1);
         Ok(())

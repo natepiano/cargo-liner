@@ -2880,7 +2880,7 @@
           "properties": {
             "entries": {
               "items": {
-                "$ref": "#/$defs/WaitingConstraint"
+                "$ref": "#/$defs/WaitingEntry"
               },
               "type": "array"
             },
@@ -3380,6 +3380,26 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "DeferralConsequence": {
+          "description": "Which integrations one unresolved deferral holds until `sequence` orders the pair.",
+          "oneOf": [
+            {
+              "const": "both_integrations_held_until_sequence",
+              "description": "Neither side is released, so both integrations are held.",
+              "type": "string"
+            },
+            {
+              "const": "deferred_integration_held_until_sequence",
+              "description": "The blocker is released, so only the deferred side's integration is held.",
+              "type": "string"
+            },
+            {
+              "const": "blocker_integration_held_until_sequence",
+              "description": "The deferred side is released, so only the blocker's integration is held.",
+              "type": "string"
+            }
+          ]
         },
         "DeferralOrigin": {
           "description": "How an overlap became a deferred integration decision.",
@@ -4897,6 +4917,27 @@
           "minItems": 1,
           "type": "array"
         },
+        "OverlapWaitingAction": {
+          "description": "What releases a hold that an unresolved overlap places.",
+          "oneOf": [
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "overlap_not_sequenced",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "OverrideConsequence": {
           "enum": [
             "editing_authorized_without_integration_order"
@@ -5125,7 +5166,7 @@
                   "type": "string"
                 },
                 "consequence": {
-                  "$ref": "#/$defs/SymmetricDeferralConsequence"
+                  "$ref": "#/$defs/DeferralConsequence"
                 },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
@@ -5199,7 +5240,7 @@
                   "$ref": "#/$defs/uuid_v7_identifier"
                 },
                 "consequence": {
-                  "$ref": "#/$defs/SymmetricDeferralConsequence"
+                  "$ref": "#/$defs/DeferralConsequence"
                 },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
@@ -6173,12 +6214,6 @@
             }
           ]
         },
-        "SymmetricDeferralConsequence": {
-          "enum": [
-            "both_integrations_held_until_sequence"
-          ],
-          "type": "string"
-        },
         "TargetFallback": {
           "description": "An invalid branch setting replaced by the repository trunk during automatic acquisition.",
           "properties": {
@@ -6306,7 +6341,7 @@
               "$ref": "#/$defs/uuid_v7_identifier"
             },
             "consequence": {
-              "$ref": "#/$defs/SymmetricDeferralConsequence"
+              "$ref": "#/$defs/DeferralConsequence"
             },
             "declaration_event_id": {
               "$ref": "#/$defs/uuid_v7_identifier"
@@ -6423,42 +6458,91 @@
             }
           ]
         },
-        "WaitingConstraint": {
+        "WaitingEntry": {
+          "description": "One hold on a live reservation, carrying that reservation's row.",
+          "oneOf": [
+            {
+              "description": "A declared ordering edge holds its successor, the reservation this entry carries.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/WaitingAction"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "const": "ordering_edge",
+                  "type": "string"
+                },
+                "predecessor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "provenance": {
+                  "$ref": "#/$defs/EdgeDeclaration"
+                },
+                "reason": {
+                  "$ref": "#/$defs/OrderingReason"
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet"
+                },
+                "successor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "hold",
+                "edge_id",
+                "predecessor",
+                "successor",
+                "scopes",
+                "reason",
+                "action",
+                "provenance",
+                "declaration_event_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An unresolved overlap holds each live side, the reservation this entry carries, until\n`sequence` orders the pair.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/OverlapWaitingAction"
+                },
+                "blocker": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "deferred": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "const": "unresolved_overlap",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "hold",
+                "declaration_event_id",
+                "deferred",
+                "blocker",
+                "action"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
-            "action": {
-              "$ref": "#/$defs/WaitingAction"
-            },
-            "declaration_event_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "edge_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "predecessor": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "provenance": {
-              "$ref": "#/$defs/EdgeDeclaration"
-            },
-            "reason": {
-              "$ref": "#/$defs/OrderingReason"
-            },
-            "scopes": {
-              "$ref": "#/$defs/ReservationScopeSet"
-            },
-            "successor": {
-              "$ref": "#/$defs/uuid_v7_identifier"
+            "reservation": {
+              "$ref": "#/$defs/BoardReservationSnapshot"
             }
           },
           "required": [
-            "edge_id",
-            "predecessor",
-            "successor",
-            "scopes",
-            "reason",
-            "action",
-            "provenance",
-            "declaration_event_id"
+            "reservation"
           ],
           "type": "object"
         },
@@ -10714,7 +10798,7 @@
           "properties": {
             "entries": {
               "items": {
-                "$ref": "#/$defs/WaitingConstraint"
+                "$ref": "#/$defs/WaitingEntry"
               },
               "type": "array"
             },
@@ -11156,6 +11240,26 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "DeferralConsequence": {
+          "description": "Which integrations one unresolved deferral holds until `sequence` orders the pair.",
+          "oneOf": [
+            {
+              "const": "both_integrations_held_until_sequence",
+              "description": "Neither side is released, so both integrations are held.",
+              "type": "string"
+            },
+            {
+              "const": "deferred_integration_held_until_sequence",
+              "description": "The blocker is released, so only the deferred side's integration is held.",
+              "type": "string"
+            },
+            {
+              "const": "blocker_integration_held_until_sequence",
+              "description": "The deferred side is released, so only the blocker's integration is held.",
+              "type": "string"
+            }
+          ]
         },
         "DeferralOrigin": {
           "description": "How an overlap became a deferred integration decision.",
@@ -12595,6 +12699,27 @@
           "minItems": 1,
           "type": "array"
         },
+        "OverlapWaitingAction": {
+          "description": "What releases a hold that an unresolved overlap places.",
+          "oneOf": [
+            {
+              "properties": {
+                "instruction": {
+                  "type": "string"
+                },
+                "reason": {
+                  "const": "overlap_not_sequenced",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason",
+                "instruction"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "OverrideConsequence": {
           "enum": [
             "editing_authorized_without_integration_order"
@@ -12823,7 +12948,7 @@
                   "type": "string"
                 },
                 "consequence": {
-                  "$ref": "#/$defs/SymmetricDeferralConsequence"
+                  "$ref": "#/$defs/DeferralConsequence"
                 },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
@@ -12897,7 +13022,7 @@
                   "$ref": "#/$defs/uuid_v7_identifier"
                 },
                 "consequence": {
-                  "$ref": "#/$defs/SymmetricDeferralConsequence"
+                  "$ref": "#/$defs/DeferralConsequence"
                 },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
@@ -13809,12 +13934,6 @@
             }
           ]
         },
-        "SymmetricDeferralConsequence": {
-          "enum": [
-            "both_integrations_held_until_sequence"
-          ],
-          "type": "string"
-        },
         "TargetFallback": {
           "description": "An invalid branch setting replaced by the repository trunk during automatic acquisition.",
           "properties": {
@@ -13942,7 +14061,7 @@
               "$ref": "#/$defs/uuid_v7_identifier"
             },
             "consequence": {
-              "$ref": "#/$defs/SymmetricDeferralConsequence"
+              "$ref": "#/$defs/DeferralConsequence"
             },
             "declaration_event_id": {
               "$ref": "#/$defs/uuid_v7_identifier"
@@ -14059,42 +14178,91 @@
             }
           ]
         },
-        "WaitingConstraint": {
+        "WaitingEntry": {
+          "description": "One hold on a live reservation, carrying that reservation's row.",
+          "oneOf": [
+            {
+              "description": "A declared ordering edge holds its successor, the reservation this entry carries.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/WaitingAction"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "edge_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "const": "ordering_edge",
+                  "type": "string"
+                },
+                "predecessor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "provenance": {
+                  "$ref": "#/$defs/EdgeDeclaration"
+                },
+                "reason": {
+                  "$ref": "#/$defs/OrderingReason"
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet"
+                },
+                "successor": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                }
+              },
+              "required": [
+                "hold",
+                "edge_id",
+                "predecessor",
+                "successor",
+                "scopes",
+                "reason",
+                "action",
+                "provenance",
+                "declaration_event_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An unresolved overlap holds each live side, the reservation this entry carries, until\n`sequence` orders the pair.",
+              "properties": {
+                "action": {
+                  "$ref": "#/$defs/OverlapWaitingAction"
+                },
+                "blocker": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "declaration_event_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "deferred": {
+                  "$ref": "#/$defs/uuid_v7_identifier"
+                },
+                "hold": {
+                  "const": "unresolved_overlap",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "hold",
+                "declaration_event_id",
+                "deferred",
+                "blocker",
+                "action"
+              ],
+              "type": "object"
+            }
+          ],
           "properties": {
-            "action": {
-              "$ref": "#/$defs/WaitingAction"
-            },
-            "declaration_event_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "edge_id": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "predecessor": {
-              "$ref": "#/$defs/uuid_v7_identifier"
-            },
-            "provenance": {
-              "$ref": "#/$defs/EdgeDeclaration"
-            },
-            "reason": {
-              "$ref": "#/$defs/OrderingReason"
-            },
-            "scopes": {
-              "$ref": "#/$defs/ReservationScopeSet"
-            },
-            "successor": {
-              "$ref": "#/$defs/uuid_v7_identifier"
+            "reservation": {
+              "$ref": "#/$defs/BoardReservationSnapshot"
             }
           },
           "required": [
-            "edge_id",
-            "predecessor",
-            "successor",
-            "scopes",
-            "reason",
-            "action",
-            "provenance",
-            "declaration_event_id"
+            "reservation"
           ],
           "type": "object"
         },
@@ -18173,5 +18341,5 @@
       "title": "scoped_patch_evaluator_version"
     }
   },
-  "version": 3
+  "version": 4
 }

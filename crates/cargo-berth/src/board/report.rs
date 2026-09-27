@@ -16,11 +16,11 @@ use super::rows::BoardTarget;
 use super::rows::HumanBoardSection;
 use super::rows::HumanReadyReservation;
 use super::rows::HumanReservationSnapshot;
+use super::rows::HumanWaitingEntry;
 use super::rows::IntegrationOrderDeclaration;
 use super::rows::RecoveredBypassesThisInvocation;
 use super::rows::SettledOrderingConstraint;
 use super::rows::UnresolvedOverlap;
-use super::rows::WaitingConstraint;
 use crate::ids::ReservationId;
 use crate::output::ReservationReportSnapshot;
 use crate::presentation;
@@ -47,7 +47,7 @@ pub(super) struct CompleteBoardReport<'board> {
     #[serde(rename = "Ready now")]
     pub(super) ready_now: HumanBoardSection<'board, HumanReadyReservation<'board>>,
     #[serde(rename = "Waiting")]
-    pub(super) waiting:                            &'board BoardSection<WaitingConstraint>,
+    pub(super) waiting: HumanBoardSection<'board, HumanWaitingEntry<'board>>,
     #[serde(rename = "Settled ordering constraints")]
     pub(super) settled_ordering_constraints:       &'board BoardSection<SettledOrderingConstraint>,
     #[serde(rename = "Unresolved overlaps")]

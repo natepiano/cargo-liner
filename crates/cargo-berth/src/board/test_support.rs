@@ -426,6 +426,7 @@ pub(super) fn board_reservation_snapshot(
         .entries
         .iter()
         .map(|entry| &entry.reservation)
+        .chain(model.waiting.entries.iter().map(|entry| &entry.reservation))
         .chain(model.unconstrained_reservations.entries.iter())
         .chain(model.resolved.entries.iter())
         .find(|row| row.reservation_id == reservation_id)

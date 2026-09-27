@@ -101,10 +101,11 @@ struct WorktreeStatus {
 }
 ```
 
-`ready_now`, `unconstrained_reservations` and `resolved` group cleanly by
-`ReservationHolder::worktree_id`. `waiting`, `unresolved_overlaps` and
-`outstanding_incursions` do not: each belongs to a *pair* of reservations, not
-to one tile. Those resolve into the `blocked_by` and `blocking` lists and get
+`ready_now`, `waiting`, `unconstrained_reservations` and `resolved` group
+cleanly by `ReservationHolder::worktree_id`: each `waiting` entry carries the
+held reservation's row. The hold in a `waiting` entry, `unresolved_overlaps`
+and `outstanding_incursions` each belong to a *pair* of reservations, not to
+one tile. Those resolve into the `blocked_by` and `blocking` lists and get
 drawn in both tiles from opposite ends.
 
 Tile identity is `(RepositoryId, WorktreeId)`, which is the second reason the

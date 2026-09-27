@@ -67,12 +67,13 @@ const OVERVIEW_FIELDS: &[&str] = &[
     "targets",
     "git_cost",
 ];
-const RESERVATION_FIELDS: &[&str] = &["ready_now", "unconstrained_reservations", "resolved"];
-const CONSTRAINT_FIELDS: &[&str] = &[
+const RESERVATION_FIELDS: &[&str] = &[
+    "ready_now",
     "waiting",
-    "settled_ordering_constraints",
-    "unresolved_overlaps",
+    "unconstrained_reservations",
+    "resolved",
 ];
+const CONSTRAINT_FIELDS: &[&str] = &["settled_ordering_constraints", "unresolved_overlaps"];
 const ANSWER_FIELDS: &[&str] = &[
     "live_overlap_answers",
     "released_overlap_answer_count",

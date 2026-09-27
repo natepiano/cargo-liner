@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `board --json` lists a live endpoint of an unresolved overlap under `waiting`, which now carries each held reservation's row with a `hold` of `ordering_edge` or `unresolved_overlap`; `unresolved_overlaps` drops a pair once both endpoints are released, and its `consequence` (renamed type `DeferralConsequence`) names which side is still held. `output_contract_version` is now 4.
 - An incursion recorded against one reservation now covers every reservation of
   its run in its worktree: post-commit drift no longer charges an answered or
   standing overlap again to each sibling the run claims later, `resolve` accepts
