@@ -19,9 +19,9 @@ workspace = true
 chrono = { workspace = true }
 clap   = { workspace = true }
 # Level-triggered polling preserves keyboard readiness beside SIGWINCH.
-crossterm  = { workspace = true, features = ["use-dev-tty"] }
-dirs       = { workspace = true }
-ratatui    = { workspace = true }
+crossterm = { workspace = true, features = ["use-dev-tty"] }
+dirs      = { workspace = true }
+ratatui   = { workspace = true }
 # `bundled` compiles SQLite in, so reading Codex's thread database needs
 # no system library on either platform.
 rusqlite   = { workspace = true, features = ["bundled"] }
