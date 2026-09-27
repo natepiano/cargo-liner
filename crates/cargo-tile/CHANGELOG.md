@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Fixed
+- A cargo run with no terminal no longer hangs on macOS once cargo has exited. The shim passed stderr to `tee` through a named FIFO, and now and then `tee` never saw its end-of-file; an anonymous pipe has no such rendezvous to lose. The shim borrows two closed descriptors from 3 to 9 to route around the pipe, leaving any the caller hands cargo open; a caller holding all but one of them, or running cargo with stdout closed, gets cargo uncaptured.
 - Running several instances at once no longer kills the desktop backdrop: each display is captured through one persistent multi-client ScreenCaptureKit stream that excludes the terminal's own windows.
 - An ordinary start no longer reports a stalled desktop capture -- a first capture of a display can take seconds, so the screen waits. The notice remains for a worker actually abandoned and replaced.
 - The attract screen's notice names the real cause: the Settings instruction appears only where Screen Recording is denied.

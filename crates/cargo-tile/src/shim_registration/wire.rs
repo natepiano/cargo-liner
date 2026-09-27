@@ -60,7 +60,6 @@ impl InstalledShim {
         );
         install_cargo(&fixture.path("bin/cargo-tile-real"));
         install_date(&fixture.path("tools/date"));
-        install_fifo_removal_observer(&fixture.path("tools/rm"));
         install_publication_observer(&fixture.path("tools/ln"));
         fixture
     }
@@ -96,7 +95,7 @@ impl InstalledShim {
     /// Allow tests to change only the child environment and invocation schedule.
     fn command(&self, arguments: &[&str]) -> Command {
         let utilities = Command::new("sh")
-            .args(["-c", "command -v ln; command -v date; command -v rm"])
+            .args(["-c", "command -v ln; command -v date"])
             .output()
             .expect("locate system utilities before changing the child PATH");
         assert!(utilities.status.success());
@@ -125,7 +124,6 @@ if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
             cp "$staging" "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids/$publication"
         fi
         printf 'old progress\n' > "$SHIM_TEST_ACCOUNT_DIRECTORY/$log"
-        mkfifo "$SHIM_TEST_ACCOUNT_DIRECTORY/state/stderr-$publication"
     done
 fi
 if [ "$SHIM_TEST_BIRTH_TIME_SEPARATION" = required ]; then
@@ -168,7 +166,6 @@ exec sh "$0" "$@""#,
                     "SHIM_TEST_REAL_DATE",
                     utilities.next().expect("system date path"),
                 )
-                .env("SHIM_TEST_REAL_RM", utilities.next().expect("system rm path"))
                 .env("SHIM_TEST_GENERATION", "20260909-204000")
                 .env("SHIM_TEST_NATIVE_PLATFORM", std::env::consts::OS)
                 .env_remove("SHIM_TEST_PENDING_DELETE")
@@ -273,9 +270,9 @@ fi
 if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" ]; then
     cp -R "$SHIM_TEST_ACCOUNT_DIRECTORY/state/pids" "$observations/pids"
 fi
-for fifo in "$SHIM_TEST_ACCOUNT_DIRECTORY"/state/stderr-*; do
-    if [ -p "$fifo" ]; then printf '%s\n' "${fifo##*/}" >> "$observations/fifos"; fi
-done
+if [ -d "$SHIM_TEST_ACCOUNT_DIRECTORY/state" ]; then
+    ls -A "$SHIM_TEST_ACCOUNT_DIRECTORY/state" > "$observations/state-entries"
+fi
 printf 'cargo stdout\n'
 printf 'registration log marker\n' >&2
 if [ -n "${CARGOTILE_NESTED-}" ]; then
@@ -336,35 +333,6 @@ if [ "$1" != +%Y%m%d-%H%M%S ]; then
 fi
 printf '%s\n' "$SHIM_TEST_GENERATION"
 printf '%s' "$SHIM_TEST_GENERATION" > "$SHIM_TEST_OBSERVATIONS/calendar"
-"#,
-    );
-}
-
-/// Seed the full FIFO name immediately before the shim's real removal attempt.
-fn install_fifo_removal_observer(path: &Path) {
-    executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-for candidate in "$@"; do
-    case $candidate in
-        "$SHIM_TEST_ACCOUNT_DIRECTORY"/state/stderr-*)
-            if [ -f "$SHIM_TEST_OBSERVATIONS/leave-stale-fifo" ]; then
-                "$SHIM_TEST_REAL_RM" -f "$SHIM_TEST_OBSERVATIONS/leave-stale-fifo"
-                mkfifo "$candidate"
-                [ -p "$candidate" ]
-                printf '%s' "$candidate" > "$SHIM_TEST_OBSERVATIONS/stale-fifo"
-            fi
-            if [ -f "$SHIM_TEST_OBSERVATIONS/block-fifo-removal" ]; then
-                "$SHIM_TEST_REAL_RM" -f "$SHIM_TEST_OBSERVATIONS/block-fifo-removal"
-                mkdir "$candidate"
-                printf 'keep this directory\n' > "$candidate/keep"
-                printf '%s' "$candidate" > "$SHIM_TEST_OBSERVATIONS/blocked-fifo"
-            fi
-            ;;
-    esac
-done
-exec "$SHIM_TEST_REAL_RM" "$@"
 "#,
     );
 }
@@ -740,7 +708,7 @@ fn raw_directory_preserves_a_trailing_newline() {
 
 /// The filename and log field identify the same live run and are removed on exit.
 #[test]
-fn registration_log_and_live_fifo_share_pid_and_generation() {
+fn registration_and_log_share_pid_and_generation() {
     let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     assert_cargo_result(&fixture.run(&["build"]));
     let registration = fixture.registration();
@@ -749,13 +717,12 @@ fn registration_log_and_live_fifo_share_pid_and_generation() {
     assert!(pid.parse::<u32>().expect("shim pid is numeric") > 0);
     let generation = std::str::from_utf8(fields[1]).expect("generation is ASCII");
     assert_eq!(registration.name, format!("{pid}.{generation}"));
-    let fifo_name = format!("stderr-{}", registration.name);
     assert_eq!(
-        fs::read_to_string(fixture.path("observations/fifos"))
-            .expect("cargo observes the live FIFO"),
-        format!("{fifo_name}\n")
+        fs::read_to_string(fixture.path("observations/state-entries"))
+            .expect("cargo lists the live state directory"),
+        "pids\n",
+        "stderr capture leaves nothing in state beside the registrations"
     );
-    assert!(!fixture.path("capture/state").join(fifo_name).exists());
     let log = std::str::from_utf8(fields[4]).expect("log basename is ASCII");
     assert_eq!(log, format!("run-{generation}-{pid}.log"));
     assert_eq!(
@@ -769,130 +736,6 @@ fn registration_log_and_live_fifo_share_pid_and_generation() {
             .count(),
         0,
         "cleanup removes the registration and any temporary staging file"
-    );
-}
-
-/// The full invocation FIFO is removed before mkfifo, even when it already exists.
-#[test]
-fn stale_invocation_fifo_still_publishes_registration_and_captures_stderr() {
-    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    fs::write(fixture.path("observations/leave-stale-fifo"), b"")
-        .expect("seed the FIFO at the generation boundary before capture setup");
-    let arguments = ["run", "--", "a b", ""];
-    assert_cargo_result(&fixture.run(&arguments));
-    let pid = fs::read_to_string(fixture.path("observations/shim-pid"))
-        .expect("read independently recorded shim pid");
-    let registration = fixture.registration();
-    let fifo = fixture.path(&format!("capture/state/stderr-{}", registration.name));
-    assert_eq!(
-        fs::read_to_string(fixture.path("observations/stale-fifo"))
-            .expect("the boundary fixture creates a real FIFO"),
-        fifo.to_str().expect("fixture FIFO path is UTF-8")
-    );
-    let registration = fixture.registration();
-    let fields = registration.fields();
-    let generation = std::str::from_utf8(fields[1]).expect("ASCII generation");
-    assert_eq!(registration.name, format!("{pid}.{generation}"));
-    let log = std::str::from_utf8(fields[4]).expect("registration names its capture log");
-    assert_eq!(
-        fs::read(fixture.path("observations").join(log))
-            .expect("published run actually captures cargo stderr"),
-        b"registration log marker\n"
-    );
-    let observed = fs::read(fixture.path("observations/arguments"))
-        .expect("cargo records its original arguments");
-    assert_eq!(
-        nul_fields(&observed),
-        arguments
-            .iter()
-            .map(|word| word.as_bytes())
-            .collect::<Vec<_>>()
-    );
-    let umask = fs::read_to_string(fixture.path("observations/umask"))
-        .expect("cargo records its inherited umask");
-    assert_eq!(
-        u32::from_str_radix(umask.trim(), 8).expect("octal umask"),
-        0o066
-    );
-    assert!(!fifo.exists(), "cleanup removes the replacement FIFO");
-    assert!(!fixture.path("capture").join(log).exists(), "log cleanup");
-    assert_eq!(
-        fs::read_dir(fixture.path("capture/state/pids"))
-            .expect("read registration directory after cleanup")
-            .count(),
-        0,
-        "registration and staging cleanup"
-    );
-}
-
-/// A directory at the FIFO path makes real rm fail and must leave cargo unchanged.
-#[test]
-fn fifo_removal_failure_preserves_original_cargo_and_unowned_directory() {
-    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    fs::write(fixture.path("observations/block-fifo-removal"), b"")
-        .expect("leave a directory that rm -f cannot remove at the FIFO path");
-    let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
-    assert_cargo_result(&fixture.run(&arguments));
-    let observed = fs::read(fixture.path("observations/arguments"))
-        .expect("cargo records original arguments after removal failure");
-    assert_eq!(
-        nul_fields(&observed),
-        arguments
-            .iter()
-            .map(|word| word.as_bytes())
-            .collect::<Vec<_>>()
-    );
-    let umask = fs::read_to_string(fixture.path("observations/umask"))
-        .expect("cargo records its inherited umask");
-    assert_eq!(
-        u32::from_str_radix(umask.trim(), 8).expect("octal umask"),
-        0o066
-    );
-    assert_eq!(
-        fs::read(fixture.path("observations/capture-settings"))
-            .expect("cargo records capture exports"),
-        b"\0\0\0",
-        "removal failure reaches fallback before capture exports"
-    );
-    let pid = fs::read_to_string(fixture.path("observations/shim-pid")).expect("read shim pid");
-    let directory = PathBuf::from(
-        fs::read_to_string(fixture.path("observations/blocked-fifo"))
-            .expect("observe blocked invocation FIFO"),
-    );
-    let name = directory
-        .file_name()
-        .expect("FIFO basename")
-        .to_str()
-        .expect("ASCII name");
-    assert!(
-        name.starts_with(&format!("stderr-{pid}.20260909-204000-")),
-        "{name}"
-    );
-    assert_eq!(
-        fs::read(directory.join("keep")).expect("preserve the unowned directory sentinel"),
-        b"keep this directory\n"
-    );
-    assert_eq!(
-        fs::read_dir(directory)
-            .expect("read FIFO-path directory")
-            .count(),
-        1
-    );
-    for registrations in ["observations/pids", "capture/state/pids"] {
-        assert_eq!(
-            fs::read_dir(fixture.path(registrations))
-                .expect("inspect registrations during cargo and after cleanup")
-                .count(),
-            0,
-            "removal failure leaves neither publication nor staging"
-        );
-    }
-    assert_eq!(
-        fs::read_dir(fixture.path("capture"))
-            .expect("read capture root")
-            .count(),
-        1,
-        "failed setup leaves only the state directory"
     );
 }
 
@@ -1305,7 +1148,7 @@ fn term_after_publication_cleans_artifacts_without_starting_cargo() {
     }
 }
 
-/// Each shim sweeps dead registrations, staging, logs, and FIFOs only in its account.
+/// Each shim sweeps dead registrations, staging, and logs only in its account.
 #[test]
 fn dead_pid_captures_are_reaped_before_publication_without_touching_another_account() {
     let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
@@ -1346,15 +1189,6 @@ fn dead_pid_captures_are_reaped_before_publication_without_touching_another_acco
             let log = directory.join(log);
             fs::write(&log, b"old progress").expect("seed dead log");
             paths.push(log);
-            let fifo = directory.join(format!("state/stderr-{name}"));
-            assert!(
-                Command::new("mkfifo")
-                    .arg(&fifo)
-                    .status()
-                    .expect("seed stale FIFO")
-                    .success()
-            );
-            paths.push(fifo);
         }
         if directory == &account {
             removed = paths;
@@ -1362,15 +1196,6 @@ fn dead_pid_captures_are_reaped_before_publication_without_touching_another_acco
             retained = paths;
         }
     }
-    let unrelated_fifo = account.join(format!("state/stderr-{pid}.unregistered-generation"));
-    assert!(
-        Command::new("mkfifo")
-            .arg(&unrelated_fifo)
-            .status()
-            .expect("seed another invocation FIFO")
-            .success()
-    );
-    retained.push(unrelated_fifo);
     assert_cargo_result(&fixture.run(&["build"]));
     assert!(
         !fixture.registration().contents.is_empty(),
@@ -1400,7 +1225,6 @@ fn same_pid_predecessor_is_reaped_before_the_new_invocation_registers() {
             format!("state/pids/{pid}.{generation}"),
             format!("state/pids/{pid}.{generation}.tmp"),
             format!("run-{generation}-{pid}.log"),
-            format!("state/stderr-{pid}.{generation}"),
         ] {
             assert!(
                 !fixture.path("capture").join(&relative).exists(),
@@ -1409,9 +1233,9 @@ fn same_pid_predecessor_is_reaped_before_the_new_invocation_registers() {
         }
     }
     assert_eq!(
-        fs::read_to_string(fixture.path("observations/fifos"))
-            .expect("fresh FIFO observed during cargo"),
-        format!("stderr-{}\n", fresh.name)
+        fs::read_to_string(fixture.path("observations/state-entries"))
+            .expect("cargo lists the live state directory"),
+        "pids\n"
     );
 }
 

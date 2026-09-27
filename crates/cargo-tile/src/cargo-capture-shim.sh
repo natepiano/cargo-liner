@@ -140,8 +140,9 @@ case ${CARGOTILE_NESTED:-} in
 esac
 
 [ "$capture" -eq 1 ] || exec "$real" "$@"
-# Settle the capture path before setup so even FIFO failures can pass
-# the caller's original arguments and environment through unchanged.
+# Settle the capture path before setup, so a run that cannot be captured
+# still passes the caller's original arguments and environment through
+# unchanged.
 pty=none
 if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && command -v script > /dev/null 2>&1; then
     if script --version 2> /dev/null | grep -q util-linux; then
@@ -149,6 +150,33 @@ if [ -t 0 ] && [ -t 1 ] && [ -t 2 ] && command -v script > /dev/null 2>&1; then
     else
         pty=bsd
     fi
+fi
+# The no-terminal path writes through stdout and stderr and borrows two
+# more descriptors to route around its pipe: the highest two from 3 to 9
+# that are closed here. An open one is left alone. It may be one the
+# caller hands cargo -- a make jobserver, a socket passed down -- or one
+# the shell keeps for itself, and borrowing it would close it under
+# cargo. A run with fewer than two closed goes uncaptured, and so does
+# one whose stdout or stderr is closed, since it cannot be written
+# through. Only an open descriptor can be duplicated, so each stream is
+# probed by copying it onto the other: a shell treats `>&1` on stdout as
+# nothing to do and would pass a closed one. The probe for stderr stays
+# bare: a closed stderr swallows its own complaint.
+if [ "$pty" = none ]; then
+    out=
+    back=
+    for descriptor in 9 8 7 6 5 4 3; do
+        if { true >&"$descriptor"; } 2>/dev/null; then continue; fi
+        if [ -z "$out" ]; then
+            out=$descriptor
+        else
+            back=$descriptor
+            break
+        fi
+    done
+    [ -n "$back" ] || exec "$real" "$@"
+    { true 2>&1; } 2>/dev/null || exec "$real" "$@"
+    true >&2 || exec "$real" "$@"
 fi
 
 # Calendar text is for people; the UUID prevents a later invocation from
@@ -164,8 +192,6 @@ log_basename="run-$generation-$$.log"
 log_path="$root/$log_basename"
 registration_path="$pids/$$.$generation"
 temporary_path="$registration_path.tmp"
-fifo_path=
-if [ "$pty" = none ]; then fifo_path="$root/state/stderr-$$.$generation"; fi
 
 # Only owned artifacts enter cleanup. In particular, a failed exclusive
 # publication must never remove the registration that already held the
@@ -174,10 +200,8 @@ if [ "$pty" = none ]; then fifo_path="$root/state/stderr-$$.$generation"; fi
 temporary=
 registration=
 log=
-fifo=
 cleanup() {
     rm -f "$temporary" "$registration" "$log"
-    if [ -n "$fifo" ]; then rm -f "$fifo"; fi
 }
 trap cleanup 0
 trap 'exit 129' HUP
@@ -226,7 +250,7 @@ setup_capture() (
     done
 
     # A killed shim cannot run its exit trap. Its account's next invocation
-    # removes each dead pid's exact publication, staging file, log, and FIFO.
+    # removes each dead pid's exact publication, staging file, and log.
     # This shim has not registered yet, so its own pid names a predecessor.
     for stale in "$pids"/*; do
         [ -e "$stale" ] || [ -L "$stale" ] || continue
@@ -241,7 +265,7 @@ setup_capture() (
                 rm -f "$root/run-$stale_generation-$pid.log"
                 ;;
         esac
-        rm -f "$pids/$publication" "$pids/$publication.tmp" "$root/state/stderr-$publication"
+        rm -f "$pids/$publication" "$pids/$publication.tmp"
     done
 
     # The sentinel protects newlines belonging to the directory name.
@@ -299,13 +323,6 @@ setup_capture() (
     printf '%s\000' cargo-tile-v3 "$generation" "$boot" "$birth" \
         "$log_basename" "$directory" "$writer_home" "$#" "$@" > "$temporary" || exit 1
     chmod 0644 "$temporary" || exit 1
-    if [ -n "$fifo_path" ]; then
-        # Remove any stale FIFO at this exact publication name before creating it.
-        rm -f "$fifo_path" || exit 1
-        mkfifo "$fifo_path" || exit 1
-        fifo=$fifo_path
-        chmod 0640 "$fifo" || exit 1
-    fi
     # Unlike mv -f, a hard link cannot replace a prior registration
     # after pid reuse or a backward clock step reproduces its name.
     ln "$temporary" "$registration_path" || exit 1
@@ -329,7 +346,6 @@ setup_capture() (
 if setup_capture "$@" 2>/dev/null; then
     registration=$registration_path
     log=$log_path
-    fifo=$fifo_path
 else
     result=$?
     cleanup
@@ -447,13 +463,49 @@ else
     # what the caller expects.
     export CARGO_TERM_PROGRESS_WHEN=${CARGO_TERM_PROGRESS_WHEN:-always}
     export CARGO_TERM_PROGRESS_WIDTH=${CARGO_TERM_PROGRESS_WIDTH:-100}
-    tee -a "$log" < "$fifo" >&2 &
-    tee_pid=$!
-    "$real" "$@" 2> "$fifo"
-    status=$?
-    # Let tee drain the pipe before the run is taken off the live
-    # list, so the last redraw is in the log when the grid looks.
-    wait "$tee_pid" 2> /dev/null
+    #
+    # stderr reaches tee down an anonymous pipe. A named FIFO lost its
+    # end-of-file on macOS now and then -- cargo had exited, nothing held
+    # the write end, and tee sat in read() for good -- and a pipe has no
+    # open() rendezvous to lose. Only stdout can enter a pipe, so cargo's
+    # stdout goes around it on the descriptor in `out` and its exit status
+    # comes back on the one in `back`, since the pipeline's own status is
+    # tee's. Neither cargo nor tee keeps either one: a process cargo leaves
+    # behind would otherwise hold the substitution open long after the
+    # build.
+    #
+    # The substitution returns only once the whole pipeline has, tee
+    # included, so the last redraw is in the log before the run is taken
+    # off the live list.
+    #
+    # A signal to the whole group waits on cargo in the left group, as the
+    # shim's own traps do, so the shim still exits after cargo rather than
+    # before it. Ignoring INT and QUIT, as a background tee did, keeps tee
+    # mirroring whatever cargo says while it stops.
+    #
+    # POSIX takes the descriptor a redirection opens or closes only as a
+    # literal digit, so the run is spelled out once the pair is known.
+    status=
+    eval "run_captured() {
+        {
+            status=\$(
+                {
+                    {
+                        trap : HUP INT TERM
+                        \"\$real\" \"\$@\" 2>&1 >&$out $out>&- $back>&-
+                        printf '%s' \"\$?\" >&$back
+                    } | {
+                        trap '' INT QUIT
+                        exec tee -a \"\$log\" >&2 $out>&- $back>&-
+                    }
+                } $back>&1
+            )
+        } $out>&1
+    }"
+    run_captured "$@"
+    # Empty only when something killed the shell waiting on cargo, and a
+    # run that ended that way must not read as a success.
+    [ -n "$status" ] || status=1
 fi
 
 exit $status

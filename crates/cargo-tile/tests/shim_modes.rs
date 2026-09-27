@@ -9,24 +9,105 @@
 mod tests {
     use std::env;
     use std::fs;
-    use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::fs::symlink;
+    use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::process::ExitStatus;
     use std::process::Output;
     use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use tempfile::TempDir;
+
+    /// The stand-in for the real cargo, run after `DESCRIPTOR_PROBE`. It records what it
+    /// was given, then `SHIM_TEST_SCENARIO` selects what it does; unset, it writes one
+    /// line to each stream.
+    const CARGO_STAND_IN: &str = r#"umask > "$SHIM_TEST_OBSERVATIONS/umask"
+printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
+printf '%s\000' "$(pwd -P)" "${HOME-}" > "$SHIM_TEST_OBSERVATIONS/directory-fields"
+printf '%s\000' "${CARGOTILE_NESTED-unset}" \
+    "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" \
+    > "$SHIM_TEST_OBSERVATIONS/environment"
+if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+    printf '%s' pty > "$SHIM_TEST_OBSERVATIONS/streams"
+else
+    printf '%s' pipes > "$SHIM_TEST_OBSERVATIONS/streams"
+fi
+record_descriptors descriptors
+true > "$SHIM_TEST_OBSERVATIONS/cargo-output"
+if [ -d "$SHIM_TEST_DEFAULT_ROOT" ]; then
+    cp -pR "$SHIM_TEST_DEFAULT_ROOT" "$SHIM_TEST_OBSERVATIONS/root"
+fi
+if [ -n "${SHIM_TEST_WRITE_DESCRIPTOR-}" ]; then
+    printf 'through the descriptor\n' >&"$SHIM_TEST_WRITE_DESCRIPTOR"
+fi
+case ${SHIM_TEST_SCENARIO-} in
+    bytes)
+        printf 'a\000b\n\n\n'
+        printf 'first line\nlast line, unterminated' >&2
+        exit "$SHIM_TEST_EXIT_STATUS"
+        ;;
+    kill)
+        printf 'killed next\n' >&2
+        kill -KILL $$
+        ;;
+    signal-shim)
+        kill -"$SHIM_TEST_SIGNAL" "$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")"
+        sleep 0.2
+        printf 'after the signal\n' >&2
+        true > "$SHIM_TEST_OBSERVATIONS/cargo-finished"
+        exit "$SHIM_TEST_EXIT_STATUS"
+        ;;
+    interrupt-group)
+        trap 'sleep 0.2; printf "shutting down\n" >&2; true > "$SHIM_TEST_OBSERVATIONS/cargo-finished"; trap - INT; kill -INT $$' INT
+        kill -INT 0
+        sleep 5
+        exit 99
+        ;;
+    leave-child)
+        sleep 60 2>/dev/null &
+        printf '%s' "$!" > "$SHIM_TEST_OBSERVATIONS/child-pid"
+        exit "$SHIM_TEST_EXIT_STATUS"
+        ;;
+esac
+# A closed stdout fails this write, and the error is not cargo's output. The
+# subshell ends with the unwritten line: macOS /bin/sh, bash 3.2, keeps it
+# buffered and sends it with the next write, which goes to stderr.
+(printf '%s\n' cargo-stdout) 2>/dev/null || true
+printf '%s\n' cargo-stderr >&2 || true
+exit "$SHIM_TEST_EXIT_STATUS"
+"#;
+    /// Defines `record_descriptors <observation>`, which writes which of descriptors 3
+    /// through 9 the calling shell holds open, so the caller's set can be compared with
+    /// the sets cargo and tee inherit.
+    const DESCRIPTOR_PROBE: &str = r#"record_descriptors() {
+    descriptors=
+    for descriptor in 3 4 5 6 7 8 9; do
+        if { true >&"$descriptor"; } 2>/dev/null; then descriptors="$descriptors$descriptor "; fi
+    done
+    printf '%s' "$descriptors" > "$SHIM_TEST_OBSERVATIONS/$1"
+}
+"#;
+    /// How often a detached run is checked for having exited.
+    const EXIT_POLL: Duration = Duration::from_millis(10);
+    /// Room for a loaded machine to start the shim and cargo, and well short of the
+    /// 60 seconds the `leave-child` scenario's process lives for.
+    const SHIM_DEADLINE: Duration = Duration::from_secs(20);
+    /// What cargo records when the shim ran it without capture.
+    const UNCAPTURED_ENVIRONMENT: &[u8] = b"unset\0unset\0unset\0";
 
     /// Select the stream conditions that make the shim choose its capture path.
     #[derive(Clone, Copy, Debug)]
     enum CapturePath {
         /// The system `script` command supplies all three terminal streams.
         Pty,
-        /// Piped output and null input select stderr mirroring through a FIFO.
+        /// Piped output and null input select stderr mirroring through a pipe to tee.
         NoTerminal,
     }
 
@@ -39,6 +120,15 @@ mod tests {
         Relative(&'static str),
         /// Remove `HOME` only from the child process.
         Unset,
+    }
+
+    /// A run waited on through the shim's exit alone: its streams went to files, so
+    /// nothing else holding them could extend the wait.
+    struct DetachedRun {
+        /// `None` when the shim outlived `SHIM_DEADLINE` and was killed.
+        status: Option<ExitStatus>,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
     }
 
     /// Own the installed shim, cargo stand-in, and observations until assertions end.
@@ -81,31 +171,26 @@ mod tests {
             write_executable(&bin.join("cargo"), &source);
             write_executable(
                 &bin.join("cargo-tile-real"),
-                r#"#!/bin/sh
-set -eu
-umask > "$SHIM_TEST_OBSERVATIONS/umask"
-printf '%s\000' "$@" > "$SHIM_TEST_OBSERVATIONS/arguments"
-printf '%s\000' "$(pwd -P)" "${HOME-}" > "$SHIM_TEST_OBSERVATIONS/directory-fields"
-printf '%s\000' "${CARGOTILE_NESTED-unset}" \
-    "${CARGO_TERM_PROGRESS_WHEN-unset}" "${CARGO_TERM_PROGRESS_WIDTH-unset}" \
-    > "$SHIM_TEST_OBSERVATIONS/environment"
-if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
-    printf '%s' pty > "$SHIM_TEST_OBSERVATIONS/streams"
-else
-    printf '%s' pipes > "$SHIM_TEST_OBSERVATIONS/streams"
-fi
-true > "$SHIM_TEST_OBSERVATIONS/cargo-output"
-if [ -d "$SHIM_TEST_DEFAULT_ROOT" ]; then
-    cp -pR "$SHIM_TEST_DEFAULT_ROOT" "$SHIM_TEST_OBSERVATIONS/root"
-fi
-printf '%s\n' cargo-stdout
-printf '%s\n' cargo-stderr >&2
-exit "$SHIM_TEST_EXIT_STATUS"
-"#,
+                &["#!/bin/sh\nset -eu\n", DESCRIPTOR_PROBE, CARGO_STAND_IN].concat(),
             );
+            // The launcher execs the shim, so the pid it records is the shim's.
+            // `SHIM_TEST_CALLER_REDIRECTIONS` opens or closes descriptors the way
+            // a caller of cargo would before handing them down.
             write_executable(
                 &launcher,
-                "#!/bin/sh\numask \"$SHIM_TEST_CALLER_UMASK\"\nexec sh \"$SHIM_TEST_SHIM\" \"$@\"\n",
+                &[
+                    "#!/bin/sh\n",
+                    DESCRIPTOR_PROBE,
+                    r#"umask "$SHIM_TEST_CALLER_UMASK"
+printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
+if [ -n "${SHIM_TEST_CALLER_REDIRECTIONS-}" ]; then
+    eval "exec $SHIM_TEST_CALLER_REDIRECTIONS"
+fi
+record_descriptors caller-descriptors
+exec sh "$SHIM_TEST_SHIM" "$@"
+"#,
+                ]
+                .concat(),
             );
             Self {
                 directory,
@@ -124,6 +209,29 @@ exit "$SHIM_TEST_EXIT_STATUS"
             caller_umask: u32,
             arguments: &[&str],
         ) -> Output {
+            self.prepare(capture_path, home_selection, caller_umask, arguments)
+                .output()
+                .expect("run installed shim to completion")
+        }
+
+        /// The ordinary no-terminal invocation, for a scenario to add its settings to.
+        fn no_terminal(&self, arguments: &[&str]) -> Command {
+            self.prepare(
+                CapturePath::NoTerminal,
+                HomeSelection::Present,
+                0o066,
+                arguments,
+            )
+        }
+
+        /// Configure one invocation, leaving how it is waited on to the caller.
+        fn prepare(
+            &self,
+            capture_path: CapturePath,
+            home_selection: HomeSelection,
+            caller_umask: u32,
+            arguments: &[&str],
+        ) -> Command {
             let mut command = self.command(capture_path, arguments);
             let search_path = env::var_os("PATH").expect("fixture inherits system utilities");
             let search_path = env::join_paths(
@@ -153,7 +261,71 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 HomeSelection::Relative(home) => command.env("HOME", home),
                 HomeSelection::Unset => command.env_remove("HOME"),
             };
-            command.output().expect("run installed shim to completion")
+            command
+        }
+
+        /// Wait on the shim alone, killing it once it outlives `SHIM_DEADLINE`.
+        fn run_detached(&self, mut command: Command) -> DetachedRun {
+            let stdout_path = self.directory.path().join("stdout");
+            let stderr_path = self.directory.path().join("stderr");
+            command
+                .stdout(fs::File::create(&stdout_path).expect("create stdout file"))
+                .stderr(fs::File::create(&stderr_path).expect("create stderr file"));
+            let mut child = command.spawn().expect("start installed shim");
+            let started = Instant::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("poll installed shim") {
+                    break Some(status);
+                }
+                if started.elapsed() > SHIM_DEADLINE {
+                    child.kill().expect("stop the overdue shim");
+                    child.wait().expect("reap the overdue shim");
+                    break None;
+                }
+                thread::sleep(EXIT_POLL);
+            };
+            DetachedRun {
+                status,
+                stdout: fs::read(stdout_path).expect("read stdout file"),
+                stderr: fs::read(stderr_path).expect("read stderr file"),
+            }
+        }
+
+        /// Stand a `tee` in front of the system one that records the descriptors it
+        /// inherits and, once the system tee has drained stderr, copies the log while
+        /// the shim still owns it.
+        fn install_tee_recorder(&self) {
+            let tee = Command::new("sh")
+                .args(["-c", "command -v tee"])
+                .output()
+                .expect("locate system tee before installing the recorder");
+            assert!(tee.status.success());
+            let tee = String::from_utf8(tee.stdout).expect("UTF-8 tee path");
+            write_executable(
+                &self.directory.path().join("toolchain/bin/tee"),
+                &[
+                    "#!/bin/sh\nset -eu\n",
+                    DESCRIPTOR_PROBE,
+                    &format!(
+                        r#"record_descriptors tee-descriptors
+{} "$@"
+for log in "$SHIM_TEST_DEFAULT_ROOT"/run-*.log; do
+    [ -f "$log" ] || continue
+    cp -p "$log" "$SHIM_TEST_OBSERVATIONS/written-log"
+done
+"#,
+                        shell_word(tee.trim_end())
+                    ),
+                ]
+                .concat(),
+            );
+        }
+
+        /// Read one file cargo, tee, or the launcher left in the observations directory.
+        /// A missing file is reported at the caller's line.
+        #[track_caller]
+        fn observed(&self, name: &str) -> Vec<u8> {
+            fs::read(self.observations.join(name)).expect("read observation file")
         }
 
         /// Use the host's real terminal recorder, accepting both supported interfaces.
@@ -259,39 +431,35 @@ exit "$SHIM_TEST_EXIT_STATUS"
                 .collect();
             assert_eq!(logs.len(), 1, "cargo observes its pre-created log");
             assert_mode(&logs[0], 0o644);
-            let fifos: Vec<_> = entries(&snapshot.join("state"))
-                .into_iter()
-                .filter(|path| {
-                    fs::metadata(path)
-                        .expect("artifact metadata")
-                        .file_type()
-                        .is_fifo()
-                })
-                .collect();
+            assert_eq!(
+                entries(&snapshot.join("state")),
+                [snapshot.join("state/pids")],
+                "neither capture path adds anything to state beside the registrations"
+            );
             let streams = fs::read_to_string(self.observations.join("streams"))
                 .expect("cargo records terminal streams");
-            match capture_path {
-                CapturePath::Pty => {
-                    assert_eq!(
-                        streams, "pty",
-                        "cargo must run in the terminal capture path"
-                    );
-                    assert!(
-                        fifos.is_empty(),
-                        "terminal capture must not use the stderr FIFO"
-                    );
-                },
-                CapturePath::NoTerminal => {
-                    assert_eq!(streams, "pipes");
-                    assert_eq!(fifos.len(), 1, "stderr capture must use a FIFO");
-                    assert_mode(&fifos[0], 0o640);
-                },
-            }
+            let expected_streams = match capture_path {
+                CapturePath::Pty => "pty",
+                CapturePath::NoTerminal => "pipes",
+            };
+            assert_eq!(
+                streams, expected_streams,
+                "cargo runs in the {capture_path:?} capture path"
+            );
+            self.assert_cleaned_up();
+        }
+
+        /// The exit trap leaves the account directory as setup first made it.
+        fn assert_cleaned_up(&self) {
             assert!(
                 entries(&self.root.join("state/pids")).is_empty(),
                 "registration cleanup"
             );
-            assert_eq!(entries(&self.root.join("state")).len(), 1, "FIFO cleanup");
+            assert_eq!(
+                entries(&self.root.join("state")).len(),
+                1,
+                "only pids remains in state"
+            );
             assert_eq!(entries(&self.root).len(), 1, "log cleanup");
         }
     }
@@ -374,16 +542,16 @@ exit "$SHIM_TEST_EXIT_STATUS"
     /// This models a sweep at ln, not an earlier pid snapshot used after publication.
     fn assert_log_mode_after_sweep(capture_path: CapturePath) {
         let toolchain = InstalledToolchain::new();
-        let system_commands = Command::new("sh")
-            .args(["-c", "command -v ln; command -v tee"])
+        let link = Command::new("sh")
+            .args(["-c", "command -v ln"])
             .output()
-            .expect("locate capture utilities before installing fixture wrappers");
-        assert!(system_commands.status.success());
-        let system_commands =
-            String::from_utf8(system_commands.stdout).expect("system utility paths are UTF-8");
-        let mut commands = system_commands.lines();
-        let link = shell_word(commands.next().expect("system ln path"));
-        let tee = shell_word(commands.next().expect("system tee path"));
+            .expect("locate ln before installing its fixture wrapper");
+        assert!(link.status.success());
+        let link = shell_word(
+            String::from_utf8(link.stdout)
+                .expect("system ln path is UTF-8")
+                .trim_end(),
+        );
         write_executable(
             &toolchain.directory.path().join("toolchain/bin/ln"),
             &format!(
@@ -401,19 +569,7 @@ exec {link} "$@"
         );
         // Snapshot after tee drains stderr, while the shim still owns its log.
         // This also covers recreation happening after cargo's earlier snapshot.
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/tee"),
-            &format!(
-                r#"#!/bin/sh
-set -eu
-{tee} "$@"
-for log in "$SHIM_TEST_DEFAULT_ROOT"/run-*.log; do
-    [ -f "$log" ] || continue
-    cp -p "$log" "$SHIM_TEST_OBSERVATIONS/written-log"
-done
-"#
-            ),
-        );
+        toolchain.install_tee_recorder();
         let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
         toolchain.assert_cargo(&output, 0o066, &["build"]);
         assert_eq!(
@@ -517,7 +673,7 @@ exec {} "$@"
         assert_eq!(output.stderr, b"cargo-stderr\n");
         assert_eq!(
             fs::read(toolchain.observations.join("environment")).expect("cargo capture settings"),
-            b"unset\0unset\0unset\0"
+            UNCAPTURED_ENVIRONMENT
         );
         assert!(
             !toolchain.root.exists(),
@@ -644,7 +800,7 @@ exec {} "$@"
                 assert_eq!(
                     fs::read(toolchain.observations.join("environment"))
                         .expect("cargo environment"),
-                    b"unset\0unset\0unset\0"
+                    UNCAPTURED_ENVIRONMENT
                 );
             }
         }
@@ -682,7 +838,7 @@ exec {} "$@"
             );
             assert_eq!(
                 fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
-                b"unset\0unset\0unset\0"
+                UNCAPTURED_ENVIRONMENT
             );
         }
     }
@@ -702,7 +858,7 @@ exec {} "$@"
             );
             assert_eq!(
                 fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
-                b"unset\0unset\0unset\0"
+                UNCAPTURED_ENVIRONMENT
             );
         }
     }
@@ -739,19 +895,16 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         toolchain.assert_cargo(&output, 0o077, &arguments);
         assert_eq!(
             fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
-            b"unset\0unset\0unset\0"
+            UNCAPTURED_ENVIRONMENT
         );
         assert!(entries(&toolchain.root.join("state/pids")).is_empty());
     }
 
-    /// FIFO failure must precede argument rewriting and capture exports.
+    /// With only one of descriptors 3 through 9 closed the shim has no pair to borrow,
+    /// so cargo runs uncaptured with the caller's still open, ahead of argument rewriting
+    /// and the capture exports.
     #[test]
-    fn fifo_failure_preserves_original_json_arguments_and_capture_environment() {
-        let toolchain = InstalledToolchain::new();
-        write_executable(
-            &toolchain.directory.path().join("toolchain/bin/mkfifo"),
-            "#!/bin/sh\nexit 1\n",
-        );
+    fn fewer_than_two_free_descriptors_run_cargo_uncaptured() {
         let arguments = [
             "check",
             "--quiet",
@@ -761,31 +914,234 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
             "a b",
             "-q",
         ];
-        let output = toolchain.run(
-            CapturePath::NoTerminal,
-            HomeSelection::Present,
-            0o066,
-            &arguments,
-        );
-        toolchain.assert_cargo(&output, 0o066, &arguments);
+        for free in ["3", "9"] {
+            let held: Vec<&str> = ["3", "4", "5", "6", "7", "8", "9"]
+                .into_iter()
+                .filter(|descriptor| *descriptor != free)
+                .collect();
+            let descriptor = held[held.len() - 1];
+            let toolchain = InstalledToolchain::new();
+            let mut command = toolchain.no_terminal(&arguments);
+            command
+                .env(
+                    "SHIM_TEST_CALLER_REDIRECTIONS",
+                    held.iter()
+                        .map(|held| {
+                            format!("{held}>>\"$SHIM_TEST_OBSERVATIONS/descriptor-{held}\"")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+                .env("SHIM_TEST_WRITE_DESCRIPTOR", descriptor);
+            let output = command.output().expect("run installed shim to completion");
+            toolchain.assert_cargo(&output, 0o066, &arguments);
+            assert_eq!(output.stdout, b"cargo-stdout\n");
+            assert_eq!(output.stderr, b"cargo-stderr\n");
+            assert_eq!(
+                toolchain.observed("environment"),
+                UNCAPTURED_ENVIRONMENT,
+                "descriptor {descriptor} is settled before the capture exports"
+            );
+            assert!(
+                !toolchain.root.exists(),
+                "descriptor {descriptor} is settled before setup publishes anything"
+            );
+            assert_eq!(
+                toolchain.observed("descriptors"),
+                toolchain.observed("caller-descriptors")
+            );
+            assert_eq!(
+                toolchain.observed(&format!("descriptor-{descriptor}")),
+                b"through the descriptor\n",
+                "cargo writes through the caller's descriptor {descriptor}"
+            );
+        }
+    }
+
+    /// A caller's descriptor reaches captured cargo, 8 and 9 included, since the shim
+    /// borrows only closed ones, and neither cargo nor tee inherits a descriptor the
+    /// caller did not hand down.
+    #[test]
+    fn caller_descriptors_reach_captured_cargo() {
+        for descriptor in ["4", "8", "9"] {
+            let toolchain = InstalledToolchain::new();
+            toolchain.install_tee_recorder();
+            let mut command = toolchain.no_terminal(&["build"]);
+            command
+                .env(
+                    "SHIM_TEST_CALLER_REDIRECTIONS",
+                    format!("{descriptor}>>\"$SHIM_TEST_OBSERVATIONS/descriptor-{descriptor}\""),
+                )
+                .env("SHIM_TEST_WRITE_DESCRIPTOR", descriptor);
+            let output = command.output().expect("run installed shim to completion");
+            toolchain.assert_cargo(&output, 0o066, &["build"]);
+            toolchain.assert_capture_modes(CapturePath::NoTerminal);
+            let shim_pid = String::from_utf8(toolchain.observed("shim-pid")).expect("ASCII pid");
+            assert_eq!(
+                toolchain.observed("environment"),
+                format!("{shim_pid}\0always\x00100\0").as_bytes()
+            );
+            let caller = toolchain.observed("caller-descriptors");
+            assert!(
+                String::from_utf8_lossy(&caller)
+                    .split_whitespace()
+                    .any(|open| open == descriptor)
+            );
+            assert_eq!(toolchain.observed("descriptors"), caller);
+            assert_eq!(toolchain.observed("tee-descriptors"), caller);
+            assert_eq!(
+                toolchain.observed(&format!("descriptor-{descriptor}")),
+                b"through the descriptor\n"
+            );
+        }
+    }
+
+    /// Cargo's stdout reaches the caller byte for byte around the pipe, and the log
+    /// holds exactly what reached stderr, an unterminated last line included.
+    #[test]
+    fn no_terminal_streams_keep_their_bytes_and_the_log_matches_stderr() {
+        let toolchain = InstalledToolchain::new();
+        toolchain.install_tee_recorder();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command.env("SHIM_TEST_SCENARIO", "bytes");
+        let output = command.output().expect("run installed shim to completion");
+        toolchain.assert_cargo(&output, 0o066, &["build"]);
+        assert_eq!(output.stdout, b"a\0b\n\n\n");
+        assert_eq!(output.stderr, b"first line\nlast line, unterminated");
+        assert_eq!(toolchain.observed("written-log"), output.stderr);
+        let caller = toolchain.observed("caller-descriptors");
         assert_eq!(
-            fs::read(toolchain.observations.join("environment"))
-                .expect("cargo records environment"),
-            b"unset\0unset\0unset\0",
-            "FIFO setup failure must precede capture exports"
+            toolchain.observed("descriptors"),
+            caller,
+            "cargo holds neither descriptor the shim routes the pipe around on"
+        );
+        assert_eq!(
+            toolchain.observed("tee-descriptors"),
+            caller,
+            "tee holds neither descriptor the shim routes the pipe around on"
+        );
+        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+    }
+
+    /// Every status cargo exits with comes back as the shim's own, SIGKILL included.
+    #[test]
+    fn no_terminal_returns_cargo_exit_status() {
+        for status in [0, 1, 255] {
+            let toolchain = InstalledToolchain::new();
+            let mut command = toolchain.no_terminal(&["build"]);
+            command.env("SHIM_TEST_EXIT_STATUS", status.to_string());
+            let output = command.output().expect("run installed shim to completion");
+            assert_eq!(output.status.code(), Some(status), "{output:?}");
+            assert_eq!(output.stdout, b"cargo-stdout\n");
+            assert_eq!(output.stderr, b"cargo-stderr\n");
+            toolchain.assert_capture_modes(CapturePath::NoTerminal);
+        }
+        let toolchain = InstalledToolchain::new();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command.env("SHIM_TEST_SCENARIO", "kill");
+        let output = command.output().expect("run installed shim to completion");
+        // A shell reports death by signal 9 as 128 + 9.
+        assert_eq!(output.status.code(), Some(137), "{output:?}");
+        // dash adds its own report of the killed cargo, as it did in front of the FIFO.
+        assert!(output.stderr.starts_with(b"killed next\n"), "{output:?}");
+        toolchain.assert_cleaned_up();
+    }
+
+    /// A signal sent to the shim alone waits for cargo, whose later stderr is still
+    /// mirrored, and then ends the shim with the signal's status.
+    #[test]
+    fn signal_to_the_shim_alone_waits_for_cargo() {
+        for (signal, status) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
+            let toolchain = InstalledToolchain::new();
+            let mut command = toolchain.no_terminal(&["build"]);
+            command
+                .env("SHIM_TEST_SCENARIO", "signal-shim")
+                .env("SHIM_TEST_SIGNAL", signal);
+            let run = toolchain.run_detached(command);
+            assert_eq!(
+                run.status.as_ref().and_then(ExitStatus::code),
+                Some(status),
+                "{signal}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert!(
+                toolchain.observations.join("cargo-finished").exists(),
+                "the shim returned on {signal} before cargo finished"
+            );
+            assert_eq!(run.stdout, b"");
+            assert_eq!(run.stderr, b"after the signal\n", "{signal}");
+            toolchain.assert_cleaned_up();
+        }
+    }
+
+    /// An interrupt to the caller's whole process group reaches cargo, tee and the shim
+    /// together: tee keeps mirroring while cargo stops, and the shim exits after cargo.
+    #[test]
+    fn interrupt_to_the_process_group_lets_cargo_finish_first() {
+        let toolchain = InstalledToolchain::new();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command
+            .env("SHIM_TEST_SCENARIO", "interrupt-group")
+            .process_group(0);
+        let run = toolchain.run_detached(command);
+        assert_eq!(
+            run.status.as_ref().and_then(ExitStatus::code),
+            Some(130),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
         );
         assert!(
-            entries(&toolchain.root.join("state/pids")).is_empty(),
-            "registration cleanup"
+            toolchain.observations.join("cargo-finished").exists(),
+            "the shim returned before cargo finished stopping"
         );
+        assert_eq!(run.stderr, b"shutting down\n");
+        toolchain.assert_cleaned_up();
+    }
+
+    /// A process cargo leaves running holds the caller's stdout and nothing of the
+    /// shim's, so the shim returns when cargo does rather than when that process ends.
+    #[test]
+    fn process_left_behind_by_cargo_does_not_hold_the_shim() {
+        let toolchain = InstalledToolchain::new();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command.env("SHIM_TEST_SCENARIO", "leave-child");
+        let run = toolchain.run_detached(command);
+        let child = String::from_utf8(toolchain.observed("child-pid")).expect("ASCII pid");
+        let stopped = Command::new("kill")
+            .arg(&child)
+            .status()
+            .expect("stop the process cargo left behind");
+        assert!(stopped.success(), "cargo left process {child} running");
         assert_eq!(
-            entries(&toolchain.root.join("state")).len(),
-            1,
-            "FIFO cleanup"
+            run.status.as_ref().and_then(ExitStatus::code),
+            Some(37),
+            "the shim waited on the process cargo left behind"
         );
-        assert_eq!(entries(&toolchain.root).len(), 1, "log cleanup");
-        assert_eq!(output.stdout, b"cargo-stdout\n");
-        assert_eq!(output.stderr, b"cargo-stderr\n");
+        toolchain.assert_cleaned_up();
+    }
+
+    /// A closed stdout or stderr cannot be written through, and cargo still runs with
+    /// the streams the caller left it; a closed stdout sends it uncaptured.
+    #[test]
+    fn closed_stdout_or_stderr_runs_cargo_uncaptured() {
+        for (redirection, stdout, stderr) in [
+            ("1>&-", b"".as_slice(), b"cargo-stderr\n".as_slice()),
+            ("2>&-", b"cargo-stdout\n", b""),
+        ] {
+            let toolchain = InstalledToolchain::new();
+            let mut command = toolchain.no_terminal(&["build"]);
+            command.env("SHIM_TEST_CALLER_REDIRECTIONS", redirection);
+            let output = command.output().expect("run installed shim to completion");
+            toolchain.assert_cargo(&output, 0o066, &["build"]);
+            assert_eq!(output.stdout, stdout, "{redirection}");
+            assert_eq!(output.stderr, stderr, "{redirection}");
+            // bash opens the shim script itself on the closed descriptor 2, so only a
+            // closed stdout is sure to reach the shim's probe closed.
+            if redirection == "1>&-" {
+                assert_eq!(toolchain.observed("environment"), UNCAPTURED_ENVIRONMENT);
+                assert!(!toolchain.root.exists());
+            }
+        }
     }
 
     /// Relative and numeric homes cannot be interpreted as an absolute prefix or argc.
