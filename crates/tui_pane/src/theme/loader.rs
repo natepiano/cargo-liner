@@ -166,9 +166,8 @@ fn scan_themes_dir(dir: &Path) -> (Vec<ThemeFamily>, Vec<FailedFile>) {
 mod tests {
     use std::io::Write;
 
-    use tempfile::TempDir;
-
     use ratatui::style::Color;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::theme;
@@ -296,12 +295,13 @@ mod tests {
 
     #[test]
     fn a_replacing_variant_inherits_the_roles_it_leaves_out_from_the_builtin_it_replaces() {
-        let dir = temp_dir("inherit_replaced");
+        let dir = TempDir::new().expect("create temp themes dir");
         write_file(
-            &dir.join("second.toml"),
+            &dir.path().join("second.toml"),
             &family_with_roles(SECOND_DARK_NAME, &format!("{SHARED_ROLE} = \"White\"")),
         );
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), builtins_with_roles());
+        let registry =
+            ThemeRegistry::from_dir_with_builtins(Some(dir.path()), builtins_with_roles());
         assert_eq!(
             roles_in(&registry, SECOND_DARK_NAME),
             roles_of(&[
@@ -313,12 +313,13 @@ mod tests {
 
     #[test]
     fn a_new_variant_inherits_from_the_first_builtin_of_its_appearance() {
-        let dir = temp_dir("inherit_new");
+        let dir = TempDir::new().expect("create temp themes dir");
         write_file(
-            &dir.join("custom.toml"),
+            &dir.path().join("custom.toml"),
             &family_with_roles(CUSTOM_DARK_NAME, &format!("{OWN_ROLE} = \"Cyan\"")),
         );
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), builtins_with_roles());
+        let registry =
+            ThemeRegistry::from_dir_with_builtins(Some(dir.path()), builtins_with_roles());
         assert_eq!(
             roles_in(&registry, CUSTOM_DARK_NAME),
             roles_of(&[
@@ -334,19 +335,20 @@ mod tests {
     /// roles.
     #[test]
     fn inherited_roles_come_from_the_builtins_as_compiled_not_a_user_replacement() {
-        let dir = temp_dir("inherit_compiled");
+        let dir = TempDir::new().expect("create temp themes dir");
         write_file(
-            &dir.join("a.toml"),
+            &dir.path().join("a.toml"),
             &family_with_roles(
                 SAMPLE_VARIANT_NAME,
                 &format!("{SHARED_ROLE} = \"White\"\n{FIRST_DARK_ROLE} = \"White\""),
             ),
         );
         write_file(
-            &dir.join("b.toml"),
+            &dir.path().join("b.toml"),
             &family_with_roles(CUSTOM_DARK_NAME, ""),
         );
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), builtins_with_roles());
+        let registry =
+            ThemeRegistry::from_dir_with_builtins(Some(dir.path()), builtins_with_roles());
         assert_eq!(
             roles_in(&registry, SAMPLE_VARIANT_NAME),
             roles_of(&[(SHARED_ROLE, Color::White), (FIRST_DARK_ROLE, Color::White)])
@@ -361,12 +363,12 @@ mod tests {
     /// with exactly the roles they set.
     #[test]
     fn builtins_without_roles_leave_a_files_roles_as_written() {
-        let dir = temp_dir("inherit_none");
+        let dir = TempDir::new().expect("create temp themes dir");
         write_file(
-            &dir.join("override.toml"),
+            &dir.path().join("override.toml"),
             &family_with_roles(SAMPLE_VARIANT_NAME, &format!("{OWN_ROLE} = \"Cyan\"")),
         );
-        let registry = ThemeRegistry::from_dir_with_builtins(Some(&dir), app_builtins());
+        let registry = ThemeRegistry::from_dir_with_builtins(Some(dir.path()), app_builtins());
         assert_eq!(
             roles_in(&registry, SAMPLE_VARIANT_NAME),
             roles_of(&[(OWN_ROLE, Color::Cyan)])
