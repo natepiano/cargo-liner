@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":2,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
+//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -133,7 +133,7 @@ mod tests {
                         ),
                         child(
                             1,
-                            ChildKind::Process(Agent::Codex),
+                            ChildKind::UnderShell(Agent::Codex),
                             Some(80_200),
                             "app-server",
                             1_790_000_111,
@@ -173,11 +173,11 @@ mod tests {
         assert_eq!(
             json,
             concat!(
-                r#"{"schema":2,"machine":"mac","rows":["#,
+                r#"{"schema":3,"machine":"mac","rows":["#,
                 r#"{"agent":"codex","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","launched_by":null,"children":[]},"#,
                 r#"{"agent":"claude","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","pid":80100,"name":"Run the mesh","started":1790000110},"#,
-                r#"{"depth":1,"kind":{"process":"codex"},"pid":80200,"name":"app-server","started":1790000111},"#,
+                r#"{"depth":1,"kind":{"under_shell":"codex"},"pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"pid":81020,"name":"worker","started":1790000130}]},"#,
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn a_row_without_a_desktop_reads_back_with_none() {
         let output = concat!(
-            r#"{"schema":2,"machine":"natedev","rows":["#,
+            r#"{"schema":3,"machine":"natedev","rows":["#,
             r#"{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"directory":"~/rust/handler","launched_by":null,"children":[]},"#,
             r#"{"agent":"claude","name":"berth-fix","status":"idle","started":1790000100,"pid":2165974,"desktop":"berth_fix","directory":"~/rust/berth","launched_by":null,"children":[]}]}"#,
         );
@@ -228,6 +228,6 @@ mod tests {
 
         assert_eq!(parse_report(b"bash: warning: setlocale\n"), unreadable);
         assert_eq!(parse_report(b""), unreadable);
-        assert_eq!(parse_report(br#"{"schema":2,"machine":"mac"}"#), unreadable);
+        assert_eq!(parse_report(br#"{"schema":3,"machine":"mac"}"#), unreadable);
     }
 }

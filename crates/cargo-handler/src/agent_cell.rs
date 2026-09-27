@@ -41,10 +41,11 @@ use crate::census::Machine;
 use crate::constants::AGENT_HEADER_GAP_HEIGHT;
 use crate::constants::CHILD_AGE_COLUMN;
 use crate::constants::CHILD_HEADERS;
-use crate::constants::CHILD_KIND_COLUMN;
-use crate::constants::CHILD_KIND_INDENT;
 use crate::constants::CHILD_NAME_COLUMN;
 use crate::constants::CHILD_PID_COLUMN;
+use crate::constants::CHILD_RUNS_COLUMN;
+use crate::constants::CHILD_VIA_COLUMN;
+use crate::constants::CHILD_VIA_INDENT;
 use crate::constants::HEADER_AGE_LABEL;
 use crate::constants::HEADER_AGENT_LABEL;
 use crate::constants::HEADER_DESKTOP_LABEL;
@@ -387,7 +388,7 @@ enum Children {
     Nothing,
     /// A table, its columns fitted to their widest cells, every name
     /// whole.
-    Table([Constraint; 4]),
+    Table([Constraint; 5]),
     /// One entry after another, for a width where the table would cut a
     /// name.
     Stacked,
@@ -414,22 +415,26 @@ fn child_row(child: &ChildRow, name_style: Style, now: u64) -> Row<'static> {
     );
     Row::new([
         pid,
-        Span::styled(kind_text(child), kind_role(child.kind).style()),
+        Span::styled(via_text(child), text),
+        Span::styled(child.kind.runs(), runs_role(child.kind).style()),
         Span::styled(child.name.clone(), name_style),
         Span::styled(age::age_label(now.saturating_sub(child.started)), text),
     ])
 }
 
-/// One child as a stacked entry `width` cells across: `<kind> · <age> ·
-/// pid <pid>`, the kind indented as the table indents it and the pid
-/// left out for a child with no process, then the name in full on the
-/// lines below, indented under the kind and drawn in `name_style`. As
-/// in [`header_line`], `pid` reads as part of its value.
+/// One child as a stacked entry `width` cells across: `<via> · <runs> ·
+/// <age> · pid <pid>`, the `via` indented as the table indents it and
+/// the pid left out for a child with no process, then the name in full
+/// on the lines below, indented under the `via` and drawn in
+/// `name_style`. As in [`header_line`], `pid` reads as part of its
+/// value.
 fn stacked_child(child: &ChildRow, width: u16, name_style: Style, now: u64) -> Vec<Line<'static>> {
     let text = Style::default().fg(text_default());
     let separator = summary::separator;
     let mut head = vec![
-        Span::styled(kind_text(child), kind_role(child.kind).style()),
+        Span::styled(via_text(child), text),
+        separator(),
+        Span::styled(child.kind.runs(), runs_role(child.kind).style()),
         separator(),
         Span::styled(age::age_label(now.saturating_sub(child.started)), text),
     ];
@@ -451,8 +456,8 @@ fn stacked_child(child: &ChildRow, width: u16, name_style: Style, now: u64) -> V
 }
 
 /// Cells a stacked child's name is indented by: one level past its
-/// kind.
-fn name_indent(child: &ChildRow) -> usize { (usize::from(child.depth) + 1) * CHILD_KIND_INDENT }
+/// `via`.
+fn name_indent(child: &ChildRow) -> usize { (usize::from(child.depth) + 1) * CHILD_VIA_INDENT }
 
 /// A stacked child's name broken onto the lines `width` cells across
 /// leaves it past its indent.
@@ -463,32 +468,30 @@ fn name_lines(child: &ChildRow, width: u16) -> Vec<String> {
     )
 }
 
-/// The `kind` cell: the kind's label, indented [`CHILD_KIND_INDENT`]
-/// cells for each level the row sits below the agent.
-fn kind_text(child: &ChildRow) -> String {
-    let indent = usize::from(child.depth) * CHILD_KIND_INDENT;
-    format!("{:indent$}{}", "", child.kind.label())
+/// The `via` cell: how the agent holds the row, indented
+/// [`CHILD_VIA_INDENT`] cells for each level the row sits below the
+/// agent.
+fn via_text(child: &ChildRow) -> String {
+    let indent = usize::from(child.depth) * CHILD_VIA_INDENT;
+    format!("{:indent$}{}", "", child.kind.via())
 }
 
-/// The role a row's `kind` is drawn in: a shell as a shell status, a
-/// subagent as Claude Code, a thread as Codex, and a session or process
-/// as its program.
-const fn kind_role(kind: ChildKind) -> Role {
-    match kind {
-        ChildKind::Shell => Role::Shell,
-        ChildKind::Subagent => Role::Claude,
-        ChildKind::Session(agent) | ChildKind::Process(agent) => summary::agent_role(agent),
-        ChildKind::Thread => Role::Codex,
+/// The role a row's `runs` is drawn in: a command as a shell status,
+/// and an agent as its program.
+const fn runs_role(kind: ChildKind) -> Role {
+    match kind.agent() {
+        Some(agent) => summary::agent_role(agent),
+        None => Role::Shell,
     }
 }
 
 /// The table's column widths within `width` cells, or none when a name
 /// would not fit its column whole.
 ///
-/// Every column fits its widest cell. When the four and the spacing
+/// Every column fits its widest cell. When the five and the spacing
 /// between them come to more than `width`, the table would have to cut
 /// a name, and the children are stacked instead.
-fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constraint; 4]> {
+fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constraint; 5]> {
     let mut widths = ColumnWidths::new(
         CHILD_HEADERS
             .iter()
@@ -504,19 +507,22 @@ fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constra
             |pid| pid.to_string().chars().count(),
         );
         widths.observe_cell_usize(CHILD_PID_COLUMN, pid);
-        widths.observe_cell_usize(CHILD_KIND_COLUMN, kind_text(child).chars().count());
+        widths.observe_cell_usize(CHILD_VIA_COLUMN, via_text(child).chars().count());
+        widths.observe_cell_usize(CHILD_RUNS_COLUMN, child.kind.runs().chars().count());
         widths.observe_cell_usize(CHILD_NAME_COLUMN, child.name.chars().count());
         let age = age::age_label(now.saturating_sub(child.started));
         widths.observe_cell_usize(CHILD_AGE_COLUMN, age.chars().count());
     }
     let columns = [
         CHILD_PID_COLUMN,
-        CHILD_KIND_COLUMN,
+        CHILD_VIA_COLUMN,
+        CHILD_RUNS_COLUMN,
         CHILD_NAME_COLUMN,
         CHILD_AGE_COLUMN,
     ]
     .map(|column| widths.get(column));
-    let spacing = TABLE_COLUMN_SPACING.saturating_mul(3);
+    let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let spacing = TABLE_COLUMN_SPACING.saturating_mul(gaps);
     let needed = columns
         .iter()
         .fold(spacing, |total, &column| total.saturating_add(column));
@@ -547,7 +553,7 @@ mod tests {
     const ARRANGE: u32 = 3_337_048;
     /// A cell's width where everything fits on its line: the one-line
     /// header, and trunk's table with every name whole.
-    const WIDE: u16 = 96;
+    const WIDE: u16 = 104;
     /// A narrow cell's width, as a grid of many columns leaves each of
     /// them.
     const NARROW: u16 = 38;
@@ -583,13 +589,21 @@ mod tests {
     }
 
     /// tool-based-ui-trunk, a session boss opened, on the `berth_fix`
-    /// desktop: a shell running a Codex app server with a thread, a
-    /// subagent running a shell whose command is its name, and the
-    /// session it opened, tool-based-ui-arrange.
+    /// desktop: a Codex app server that has left its shell, a shell
+    /// running a Codex app server with a thread, a subagent running a
+    /// shell whose command is its name, and the session it opened,
+    /// tool-based-ui-arrange.
     fn trunk() -> AgentRow {
         AgentRow {
             desktop: Some("berth_fix".to_string()),
             children: vec![
+                child(
+                    0,
+                    ChildKind::Detached(Agent::Codex),
+                    Some(468_060),
+                    "app-server",
+                    22 * HOUR,
+                ),
                 child(
                     0,
                     ChildKind::Shell,
@@ -599,7 +613,7 @@ mod tests {
                 ),
                 child(
                     1,
-                    ChildKind::Process(Agent::Codex),
+                    ChildKind::UnderShell(Agent::Codex),
                     Some(2_372_720),
                     "app-server",
                     12 * MINUTE,
@@ -697,8 +711,9 @@ mod tests {
 
     /// Where it all fits, a session boss opened draws its one-line
     /// header, its directory, the agent that launched it, and a table
-    /// that indents each row's kind under the row that started it,
-    /// shows `—` for a row with no process, and holds every name whole.
+    /// that indents each row's `via` under the row that started it,
+    /// draws its `runs` in the program's color, shows `—` for a row
+    /// with no process, and holds every name whole.
     #[test]
     fn a_launched_session_draws_its_header_and_tree() {
         let trunk = trunk();
@@ -712,13 +727,14 @@ mod tests {
                 " ~/rust/tool-based-ui-trunk",
                 " launched by boss of bosses",
                 "",
-                " pid      kind        name                                                                age",
-                " 2371669  shell       Launch the Phase 1 implementation seat                              12m",
-                " 2372720    codex     app-server                                                          12m",
-                " —            thread  tool-based-ui-trunk-impl                                            11m",
-                " —        subagent    Review the permission queue                                         5m 3s",
-                " 2424763    shell     cargo nextest run -p hana_video --no-fail-fast -- permission_queue  45s",
-                " 3337048  session     tool-based-ui-arrange                                               30s",
+                " pid      via         runs     name                                                                age",
+                " 468060   detached    codex    app-server                                                          22h",
+                " 2371669  shell       command  Launch the Phase 1 implementation seat                              12m",
+                " 2372720    shell     codex    app-server                                                          12m",
+                " —            thread  codex    tool-based-ui-trunk-impl                                            11m",
+                " —        subagent    claude   Review the permission queue                                         5m 3s",
+                " 2424763    shell     command  cargo nextest run -p hana_video --no-fail-fast -- permission_queue  45s",
+                " 3337048  session     claude   tool-based-ui-arrange                                               30s",
             ]
         );
         let role = |x, y| Some(buffer[(x, y)].fg);
@@ -728,11 +744,12 @@ mod tests {
         assert_eq!(buffer[(1, 0)].fg, text_default(), "the pid marker");
         assert_eq!(buffer[(13, 0)].fg, text_default(), "a separator");
         assert_eq!(buffer[(37, 0)].fg, text_default(), "the machine");
-        assert_eq!(role(10, 5), Role::Shell.style().fg);
-        assert_eq!(role(12, 6), Role::Codex.style().fg);
-        assert_eq!(buffer[(1, 7)].fg, text_default());
+        assert_eq!(buffer[(10, 5)].fg, text_default(), "a via");
+        assert_eq!(role(22, 5), Role::Codex.style().fg);
+        assert_eq!(role(22, 6), Role::Shell.style().fg);
+        assert_eq!(buffer[(1, 8)].fg, text_default());
         let header = buffer[(1, 4)].fg;
-        for y in 5..=10 {
+        for y in 5..=11 {
             for x in 0..buffer.area.width {
                 assert_ne!(
                     buffer[(x, y)].fg,
@@ -741,13 +758,14 @@ mod tests {
                 );
             }
         }
-        assert_eq!(role(14, 7), Role::Codex.style().fg);
-        assert_eq!(role(10, 8), Role::Claude.style().fg);
+        assert_eq!(buffer[(14, 8)].fg, text_default(), "an indented via");
+        assert_eq!(role(22, 8), Role::Codex.style().fg);
+        assert_eq!(role(22, 9), Role::Claude.style().fg);
     }
 
     /// In a cell too narrow for them, the header stands as a labelled
     /// block, the directory breaks after a `/`, and each child stands
-    /// as its kind, age and pid over its name in full.
+    /// as its `via`, `runs`, age and pid over its name in full.
     #[test]
     fn a_narrow_cell_stacks_its_header_and_children() {
         let trunk = AgentRow {
@@ -770,20 +788,22 @@ mod tests {
                 " tool-based-ui-geometry-material-impl",
                 " launched by boss of bosses",
                 "",
-                " shell · 12m · pid 2371669",
+                " detached · codex · 22h · pid 468060",
+                "   app-server",
+                " shell · command · 12m · pid 2371669",
                 "   Launch the Phase 1 implementation",
                 "   seat",
-                "   codex · 12m · pid 2372720",
+                "   shell · codex · 12m · pid 2372720",
                 "     app-server",
-                "     thread · 11m",
+                "     thread · codex · 11m",
                 "       tool-based-ui-trunk-impl",
-                " subagent · 5m 3s",
+                " subagent · claude · 5m 3s",
                 "   Review the permission queue",
-                "   shell · 45s · pid 2424763",
+                "   shell · command · 45s · pid 2424763",
                 "     cargo nextest run -p hana_video",
                 "     --no-fail-fast --",
                 "     permission_queue",
-                " session · 30s · pid 3337048",
+                " session · claude · 30s · pid 3337048",
                 "   tool-based-ui-arrange",
             ]
         );
@@ -897,9 +917,9 @@ mod tests {
             ],
             ..agent(ARRANGE, "arrange", 2 * HOUR, None)
         };
-        // The indent, then pid, kind, name and age at their widest, two
-        // cells apart.
-        let table = 1 + 7 + 2 + 8 + 2 + 31 + 2 + 5;
+        // The indent, then pid, via, runs, name and age at their widest,
+        // two cells apart.
+        let table = 1 + 7 + 2 + 8 + 2 + 7 + 2 + 31 + 2 + 5;
 
         let fits = drawn(&arrange, None, table);
         let stacked = drawn(&arrange, None, table - 1);
@@ -907,27 +927,28 @@ mod tests {
         assert_eq!(
             lines(&fits)[3..],
             [
-                " pid      kind      name                             age",
-                " 2424763  shell     cargo nextest run -p hana_video  45s",
-                " —        subagent  Review the permission queue      5m 3s",
+                " pid      via       runs     name                             age",
+                " 2424763  shell     command  cargo nextest run -p hana_video  45s",
+                " —        subagent  claude   Review the permission queue      5m 3s",
             ]
         );
         assert_eq!(
             lines(&stacked)[3..],
             [
-                " shell · 45s · pid 2424763",
+                " shell · command · 45s · pid 2424763",
                 "   cargo nextest run -p hana_video",
-                " subagent · 5m 3s",
+                " subagent · claude · 5m 3s",
                 "   Review the permission queue",
             ]
         );
         let label = label_color();
-        assert_eq!(Some(stacked[(1, 3)].fg), Role::Shell.style().fg);
-        assert_eq!(stacked[(9, 3)].fg, text_default(), "the age");
+        assert_eq!(stacked[(1, 3)].fg, text_default(), "the via");
+        assert_eq!(Some(stacked[(9, 3)].fg), Role::Shell.style().fg);
+        assert_eq!(stacked[(19, 3)].fg, text_default(), "the age");
         assert_eq!(stacked[(7, 3)].fg, text_default(), "a separator");
-        assert_eq!(stacked[(15, 3)].fg, text_default(), "the pid marker");
-        assert_eq!(stacked[(19, 3)].fg, text_default(), "the pid");
-        assert_eq!(Some(stacked[(1, 5)].fg), Role::Claude.style().fg);
+        assert_eq!(stacked[(25, 3)].fg, text_default(), "the pid marker");
+        assert_eq!(stacked[(29, 3)].fg, text_default(), "the pid");
+        assert_eq!(Some(stacked[(12, 5)].fg), Role::Claude.style().fg);
         for y in [4, 6] {
             for x in 0..stacked.area.width {
                 assert_ne!(

@@ -85,18 +85,20 @@ pub(crate) const AGENT_CELL_TITLE_LEAD: &str = " ";
 
 // agent cells
 /// The column labels of an agent cell's table, in column order.
-pub(crate) const CHILD_HEADERS: [&str; 4] = ["pid", "kind", "name", "age"];
+pub(crate) const CHILD_HEADERS: [&str; 5] = ["pid", "via", "runs", "name", "age"];
 /// Index of the `pid` column in [`CHILD_HEADERS`].
 pub(crate) const CHILD_PID_COLUMN: usize = 0;
-/// Index of the `kind` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_KIND_COLUMN: usize = 1;
+/// Index of the `via` column in [`CHILD_HEADERS`].
+pub(crate) const CHILD_VIA_COLUMN: usize = 1;
+/// Index of the `runs` column in [`CHILD_HEADERS`].
+pub(crate) const CHILD_RUNS_COLUMN: usize = 2;
 /// Index of the `name` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_NAME_COLUMN: usize = 2;
+pub(crate) const CHILD_NAME_COLUMN: usize = 3;
 /// Index of the `age` column in [`CHILD_HEADERS`].
-pub(crate) const CHILD_AGE_COLUMN: usize = 3;
-/// Cells the `kind` column is indented by for each level a row sits
+pub(crate) const CHILD_AGE_COLUMN: usize = 4;
+/// Cells the `via` column is indented by for each level a row sits
 /// below the agent.
-pub(crate) const CHILD_KIND_INDENT: usize = 2;
+pub(crate) const CHILD_VIA_INDENT: usize = 2;
 /// Labels the agent's age in an agent cell's header block.
 pub(crate) const HEADER_AGE_LABEL: &str = "age";
 /// Labels an agent cell's header block with the agent's program, one
@@ -109,7 +111,7 @@ pub(crate) const HEADER_MACHINE_LABEL: &str = "machine";
 /// Labels the agent's status in an agent cell's header block.
 pub(crate) const HEADER_STATUS_LABEL: &str = "status";
 /// Rows the first line of a child drawn as a stacked entry takes: its
-/// kind, age and pid, above its name.
+/// `via`, `runs`, age and pid, above its name.
 pub(crate) const STACKED_CHILD_HEAD_HEIGHT: u16 = 1;
 /// Rows the line naming the agent that launched a session takes.
 pub(crate) const LAUNCHER_LINE_HEIGHT: u16 = 1;
@@ -125,14 +127,23 @@ pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
-/// The `kind` of a command an agent's shell tool is running.
-pub(crate) const SHELL_KIND: &str = "shell";
-/// The `kind` of a subagent.
-pub(crate) const SUBAGENT_KIND: &str = "subagent";
-/// The `kind` of an agent another agent opened in a tmux session.
-pub(crate) const SESSION_KIND: &str = "session";
-/// The `kind` of a thread a Codex app server runs.
-pub(crate) const THREAD_KIND: &str = "thread";
+/// The `via` of a command the agent's shell tool is running, and of an
+/// agent that command started.
+pub(crate) const SHELL_VIA: &str = "shell";
+/// The `via` of a subagent.
+pub(crate) const SUBAGENT_VIA: &str = "subagent";
+/// The `via` of an agent another agent opened in a tmux session.
+pub(crate) const SESSION_VIA: &str = "session";
+/// The `via` of a thread a Codex app server runs.
+pub(crate) const THREAD_VIA: &str = "thread";
+/// The `via` of an agent process the agent started itself, not through
+/// a shell: an MCP server, or a command Codex runs.
+pub(crate) const DIRECT_VIA: &str = "direct";
+/// The `via` of a Codex app server that has left the shell that
+/// started it and names the agent in `CLAUDE_PID`.
+pub(crate) const DETACHED_VIA: &str = "detached";
+/// The `runs` of a command, where the row is not an agent.
+pub(crate) const COMMAND_RUNS: &str = "command";
 
 // summary table
 /// The summary's column labels, in column order.
@@ -441,7 +452,7 @@ pub(crate) const TMUX_LIST_CLIENTS: [&str; 3] =
 pub(crate) const PROBE_COMMAND: &str = "probe";
 /// Version of the probe's JSON. A machine answering with another
 /// version is reported rather than read.
-pub(crate) const PROBE_SCHEMA: u32 = 2;
+pub(crate) const PROBE_SCHEMA: u32 = 3;
 /// The program the probe runs through.
 pub(crate) const SSH_PROGRAM: &str = "ssh";
 /// ssh options every probe passes: never prompt, and give up on a

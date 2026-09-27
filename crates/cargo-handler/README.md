@@ -80,13 +80,14 @@ launcher's.
  ~/rust/tool-based-ui-trunk
  launched by boss of bosses
 
- pid      kind        name                                    age
- 2371669  shell       Launch the Phase 1 implementation seat  12m
- 2372720    codex     app-server                              12m
- —            thread  tool-based-ui-trunk-impl                11m
- —        subagent    Review the permission queue             5m 3s
- 2424763    shell     cargo nextest run -p hana_video         45s
- 3337048  session     tool-based-ui-arrange                   30s
+ pid      via         runs     name                                    age
+ 468060   detached    codex    app-server                              22h
+ 2371669  shell       command  Launch the Phase 1 implementation seat  12m
+ 2372720    shell     codex    app-server                              12m
+ —            thread  codex    tool-based-ui-trunk-impl                11m
+ —        subagent    claude   Review the permission queue             5m 3s
+ 2424763    shell     command  cargo nextest run -p hana_video         45s
+ 3337048  session     claude   tool-based-ui-arrange                   30s
 ```
 
 Every agent someone can talk to gets a cell, titled in its top border with its
@@ -104,9 +105,11 @@ though the summary leaves it out, and when a cell closes, the cells after it
 each take the color before. The header gives the agent's pid, program, status, age, machine and
 desktop, colored as the summary colors them, then its directory, and for a launched
 session the agent that opened it. Below it is a table of everything the agent
-started that is still running, each row's `kind` indented two cells under the
-row that started it, with `—` for a row that has no process of its own. An
-agent running nothing says `nothing running`.
+started that is still running. Each row's `via` says how the agent holds it,
+indented two cells under the row that started it; `runs` says what it is,
+`command` for a shell and otherwise the program, `claude` or `codex`, drawn in
+that program's color. A row that has no process of its own shows `—` for its
+pid. An agent running nothing says `nothing running`.
 
 A cell is laid out for its width, spending rows where a narrow cell would
 otherwise cut its header, its directory or a name short. The same session in a
@@ -123,18 +126,20 @@ cell 38 columns wide, working in a longer directory:
  tool-based-ui-geometry-material-impl
  launched by boss of bosses
 
- shell · 12m · pid 2371669
+ detached · codex · 22h · pid 468060
+   app-server
+ shell · command · 12m · pid 2371669
    Launch the Phase 1 implementation
    seat
-   codex · 12m · pid 2372720
+   shell · codex · 12m · pid 2372720
      app-server
-     thread · 11m
+     thread · codex · 11m
        tool-based-ui-trunk-impl
- subagent · 5m 3s
+ subagent · claude · 5m 3s
    Review the permission queue
-   shell · 45s · pid 2424763
+   shell · command · 45s · pid 2424763
      cargo nextest run -p hana_video
- session · 30s · pid 3337048
+ session · claude · 30s · pid 3337048
    tool-based-ui-arrange
 ```
 
@@ -142,10 +147,10 @@ Where the header's one line would be cut, it stands as a block, one fact to a
 line after a label column: the agent, its pid, status, age, machine and
 desktop, each value in the color the line gives it. A directory
 too long for its line breaks after a `/`, onto as many lines as it takes. Where
-the table would cut a name, each row stands as an entry of its own: its `kind`,
-indented as the table indents it, then its age and its pid when it has one, and
-below that its name in full, indented under the `kind` and broken before a
-space or after a `/` when it is still too long.
+the table would cut a name, each row stands as an entry of its own: its `via`,
+indented as the table indents it, then its `runs`, its age and its pid when it
+has one, and below that its name in full, indented under the `via` and broken
+before a space or after a `/` when it is still too long.
 
 The label color is kept for labels: the block's label column, the table's
 column headers and `launched by`. Values, the `pid` before a number, the ` · `
@@ -155,7 +160,7 @@ nothing else uses.
 
 Each kind of row comes from its own place:
 
-- **shell**: a command the agent's shell tool is running: a child of the
+- **shell** running **command**: a command the agent's shell tool is running: a child of the
   `claude` process running Claude Code's shell wrapper
   (`zsh -c "source …/shell-snapshots/snapshot-… && eval '<command>'"`). It is
   named by the `description` of the Bash call in the session's transcript whose
@@ -163,19 +168,24 @@ Each kind of row comes from its own place:
   started; a call written without a description, or none found, leaves the
   command itself on one line. A call found in a subagent's transcript puts the
   shell under that subagent.
-- **claude** / **codex**: a Claude Code or Codex process found below a shell,
-  one level under it. A `codex app-server` is named `app-server`, another Codex
-  by its arguments, and a Claude Code process by its session's name. Each is
-  laid out the same way in turn. A Codex app server moved out from under the
-  shell that started it is found by the `CLAUDE_PID` in its environment, and
-  sits directly under the agent that variable names.
-- **thread**: a thread a Codex app server holds open, on Linux only: read from
+- **shell** running **claude** / **codex**: a Claude Code or Codex process
+  found below a shell, one level under it. A `codex app-server` is named
+  `app-server`, another Codex by its arguments, and a Claude Code process by
+  its session's name. Each is laid out the same way in turn.
+- **direct**: a Claude Code or Codex process the agent started itself rather
+  than through a shell, such as a `codex mcp-server`, named and laid out as one
+  below a shell is.
+- **detached**: a Codex app server moved out from under the shell that
+  started it, found by the `CLAUDE_PID` in its environment. It sits directly
+  under the agent that variable names.
+- **thread** running **codex**: a thread a Codex app server holds open, on Linux only: read from
   the conversation files under `~/.codex/sessions/` among the server's open
   files, and named from Codex's thread database.
-- **subagent**: a subagent running inside the agent, read from the
+- **subagent** running **claude**: a subagent running inside the agent, read from the
   `subagents/` directory beside its transcript. A subagent whose transcript has
   ended its turn, or gone 30 minutes unwritten, is no longer listed.
-- **session**: an agent this one opened in tmux, which has its own cell.
+- **session**: an agent this one opened in tmux, which has its own cell,
+  running its program.
 
 ### launched sessions
 

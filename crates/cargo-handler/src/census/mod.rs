@@ -38,11 +38,14 @@ use sysinfo::System;
 
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
+use crate::constants::COMMAND_RUNS;
+use crate::constants::DETACHED_VIA;
+use crate::constants::DIRECT_VIA;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
-use crate::constants::SESSION_KIND;
-use crate::constants::SHELL_KIND;
-use crate::constants::SUBAGENT_KIND;
-use crate::constants::THREAD_KIND;
+use crate::constants::SESSION_VIA;
+use crate::constants::SHELL_VIA;
+use crate::constants::SUBAGENT_VIA;
+use crate::constants::THREAD_VIA;
 
 /// Which program an agent row is.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -103,9 +106,10 @@ impl AgentRow {
     const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
 }
 
-/// What one row of an agent's cell is.
+/// What one row of an agent's cell is: how the agent holds it, its
+/// `via`, and what it runs.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ChildKind {
     /// A command the agent's shell tool is running.
     Shell,
@@ -114,23 +118,50 @@ pub(crate) enum ChildKind {
     /// An agent this one opened in a tmux session, which has a cell of
     /// its own.
     Session(Agent),
-    /// A Claude Code or Codex process started under a shell or detached
-    /// from one.
-    Process(Agent),
+    /// A Claude Code or Codex process one of the agent's shells started.
+    UnderShell(Agent),
+    /// A Claude Code or Codex process the agent started itself, not
+    /// through a shell: an MCP server, or a command Codex runs.
+    Direct(Agent),
+    /// A Codex app server that has left the shell that started it and
+    /// names the agent in `CLAUDE_PID`.
+    Detached(Agent),
     /// A thread a Codex app server is running.
     Thread,
 }
 
 impl ChildKind {
-    /// The row's `kind` cell: a process by its program, anything else by
-    /// what it is.
-    pub(crate) const fn label(self) -> &'static str {
+    /// The row's `via` cell: how the agent holds it.
+    pub(crate) const fn via(self) -> &'static str {
         match self {
-            Self::Shell => SHELL_KIND,
-            Self::Subagent => SUBAGENT_KIND,
-            Self::Session(_) => SESSION_KIND,
-            Self::Process(agent) => agent.label(),
-            Self::Thread => THREAD_KIND,
+            Self::Shell | Self::UnderShell(_) => SHELL_VIA,
+            Self::Subagent => SUBAGENT_VIA,
+            Self::Session(_) => SESSION_VIA,
+            Self::Direct(_) => DIRECT_VIA,
+            Self::Detached(_) => DETACHED_VIA,
+            Self::Thread => THREAD_VIA,
+        }
+    }
+
+    /// The agent the row runs: none for a shell, which runs a command.
+    pub(crate) const fn agent(self) -> Option<Agent> {
+        match self {
+            Self::Shell => None,
+            Self::Subagent => Some(Agent::Claude),
+            Self::Session(agent)
+            | Self::UnderShell(agent)
+            | Self::Direct(agent)
+            | Self::Detached(agent) => Some(agent),
+            Self::Thread => Some(Agent::Codex),
+        }
+    }
+
+    /// The row's `runs` cell: its agent's program, or `command` for a
+    /// shell.
+    pub(crate) const fn runs(self) -> &'static str {
+        match self.agent() {
+            Some(agent) => agent.label(),
+            None => COMMAND_RUNS,
         }
     }
 }

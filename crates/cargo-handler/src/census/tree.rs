@@ -214,7 +214,7 @@ pub(super) fn attach_children(
                 .collect();
             for server in detached {
                 if visited.insert(server.pid) {
-                    nodes.push(walker.process_node(server, 1, &mut visited));
+                    nodes.push(walker.process_node(server, ChildKind::Detached, 1, &mut visited));
                 }
             }
             let mut laid_out = Vec::new();
@@ -288,7 +288,12 @@ impl Walker<'_> {
                     None => nodes.push(shell),
                 }
             } else if child.is_agent() {
-                nodes.push(self.process_node(child, level.saturating_add(1), visited));
+                nodes.push(self.process_node(
+                    child,
+                    ChildKind::Direct,
+                    level.saturating_add(1),
+                    visited,
+                ));
             }
         }
         if process.is_claude() {
@@ -330,7 +335,12 @@ impl Walker<'_> {
                 continue;
             }
             if process.is_agent() {
-                found.push(self.process_node(process, level.saturating_add(1), visited));
+                found.push(self.process_node(
+                    process,
+                    ChildKind::UnderShell,
+                    level.saturating_add(1),
+                    visited,
+                ));
             } else {
                 pending.extend(
                     self.children
@@ -344,9 +354,15 @@ impl Walker<'_> {
         found
     }
 
-    /// The row for the agent process `process`, `level` agents below the
-    /// cell's own, with the rows under it.
-    fn process_node(&self, process: &ProcessEntry, level: u8, visited: &mut HashSet<u32>) -> Node {
+    /// The row for the agent process `process`, held as `kind` gives it,
+    /// `level` agents below the cell's own, with the rows under it.
+    fn process_node(
+        &self,
+        process: &ProcessEntry,
+        kind: fn(Agent) -> ChildKind,
+        level: u8,
+        visited: &mut HashSet<u32>,
+    ) -> Node {
         let (agent, name) = if process.is_codex() {
             let name = if process.is_app_server() {
                 CODEX_APP_SERVER_LABEL.to_string()
@@ -371,7 +387,7 @@ impl Walker<'_> {
             )
         };
         Node {
-            kind: ChildKind::Process(agent),
+            kind: kind(agent),
             pid: Some(process.pid),
             name,
             started: process.started,
@@ -823,8 +839,8 @@ mod tests {
         attach_children(&mut rows, &processes, &sources);
 
         let session = ChildKind::Session(Agent::Claude);
-        let claude = ChildKind::Process(Agent::Claude);
-        let codex = ChildKind::Process(Agent::Codex);
+        let claude = ChildKind::UnderShell(Agent::Claude);
+        let codex = ChildKind::UnderShell(Agent::Codex);
         assert_eq!(
             cell(&rows, BOSS),
             [
@@ -857,7 +873,13 @@ mod tests {
         assert_eq!(
             cell(&rows, GEOMETRY),
             [
-                (0, codex, Some(3_331_960), "mcp-server", 702),
+                (
+                    0,
+                    ChildKind::Direct(Agent::Codex),
+                    Some(3_331_960),
+                    "mcp-server",
+                    702
+                ),
                 (0, ChildKind::Shell, Some(3_900_000), "Run phase 1", 800),
                 (1, codex, Some(3_900_030), "app-server", 802),
                 (2, ChildKind::Thread, None, "phase 1 impl", 803),
@@ -872,7 +894,13 @@ mod tests {
         assert_eq!(
             cell(&rows, TRUNK),
             [
-                (0, codex, Some(3_769_600), "app-server", 650),
+                (
+                    0,
+                    ChildKind::Detached(Agent::Codex),
+                    Some(3_769_600),
+                    "app-server",
+                    650
+                ),
                 (1, ChildKind::Thread, None, "trunk mesh", 660),
             ]
         );
@@ -896,7 +924,7 @@ mod tests {
 
         assert_eq!(
             cell(&rows, 10),
-            [(0, ChildKind::Process(Agent::Claude), Some(20), "claude", 6)]
+            [(0, ChildKind::Direct(Agent::Claude), Some(20), "claude", 6)]
         );
     }
 
