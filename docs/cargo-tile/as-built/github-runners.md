@@ -318,7 +318,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 
 ### What the tests prove
 
-`crates/cargo-tile/src/shim_registration/` is a `cfg(test)` module tree inside the binary (`mod.rs` reader scenarios, `wire.rs` shim wire tests, `shared_capture.rs` cross-account scenarios, `rows_readout.rs`); it drives the built binary under a PTY. Fixtures write records with Python under the test's own uid; no test needs a second account.
+`crates/cargo-tile/src/shim_registration/` is a test-only module tree declared only by `tests/unit_tests.rs` (`mod.rs` reader scenarios, `wire.rs` shim wire tests, `shared_capture.rs` cross-account scenarios, `rows_readout.rs`); it drives the built binary, found through `CARGO_BIN_EXE_cargo-tile`, under a PTY. Fixtures write records with Python under the test's own uid; no test needs a second account.
 
 - Injected accounts install through the built binary. The staged installer copies the executable and removes its directory on drop. An installer that cannot start is reported per account, not as a crash. Group resolution matches the account database. Unit tests cover the Darwin primary-first list, credential prefix and uid, and continuation past a credential failure.
 - The reader reports a foreign-owned uid directory as ignored, skips symlinked and non-numeric entries, and shows a new account directory on the next scan.
@@ -360,7 +360,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 - Every cargo-berth reader that can reconcile or release includes the extent and evidence handling before a newer binary touches a shared ledger.
 - `unsafe_code` is denied workspace-wide. In cargo-tile the exceptions are `birth_stamp/macos.rs` (sysctl), the account-database and credential calls in `hook.rs`, and the test FIFO fixture in `root_scan/inspected_directory.rs`, each under a per-item `allow(reason)` with a `// SAFETY:` comment.
 - Every constant lives in `crates/cargo-tile/src/constants.rs` with a rationale.
-- The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules, including the shim, summary-total and ACL suites, so the crate's sources compile once for the whole test binary. The only integration targets left (`tests/cli_lifecycle.rs`, `tests/shim_modes.rs`) spawn the built binary and include no sources.
+- The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules, including the shim, summary-total and ACL suites. `tests/unit_tests.rs` compiles every source module through `#[path]` into one test binary, so cargo builds `cargo-tile` before those tests and names it in `CARGO_BIN_EXE_cargo-tile`; its module list mirrors `src/main.rs` plus the test-only `shim_registration`. The binary target sets `test = false`, and `src/main.rs` carries `#![cfg(not(test))]`, so an explicit `--bins` or `--all-targets` builds an empty harness. No test builds the binary itself: on macOS cargo replaces even an up-to-date `target/debug/cargo-tile` by removing and copying it, so a nested build in one test process left another test executing a missing file. The other integration targets (`tests/cli_lifecycle.rs`, `tests/shim_modes.rs`) spawn the built binary and include no sources.
 - Two uids are never required by a test.
 
 ## Calibration and gotchas
