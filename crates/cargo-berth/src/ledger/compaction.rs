@@ -16,7 +16,9 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -46,11 +48,11 @@ use crate::reservation::ReservationReplayError;
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct SupersededExtents {
     /// The ordinal of the latest observation naming each reservation.
-    latest:          BTreeMap<ReservationId, u64>,
+    latest:                     BTreeMap<ReservationId, u64>,
     /// Every observation that is the latest for at least one reservation, by ordinal.
-    live:            BTreeMap<u64, LiveExtent>,
+    live:                       BTreeMap<u64, LiveExtent>,
     /// The total byte length of the observations no reservation names as its latest.
-    droppable_bytes: u64,
+    pub(super) droppable_bytes: u64,
 }
 
 /// An observation that is the latest for at least one reservation.
@@ -156,6 +158,21 @@ enum PublicationBoundary {
     AfterRename,
 }
 
+/// The journal file an automatic compaction last failed on, which holds automatic compaction back
+/// until that file grows past its length then by the compaction threshold, so a defect costs one
+/// attempt per threshold of appended bytes instead of one per transaction.
+#[derive(Debug, Deserialize, Serialize)]
+struct CompactionRefusalMarker {
+    /// The device of the journal file.
+    device:     u64,
+    /// The inode of the journal file.
+    inode:      u64,
+    /// The journal's length when the compaction failed.
+    end_offset: u64,
+    /// Why the compaction failed.
+    cause:      String,
+}
+
 /// A journal's replay and the records its compaction keeps.
 struct CompactionPlan {
     /// The replay of the whole journal.
@@ -195,6 +212,101 @@ impl Ledger {
         self.require_existing()?;
         let _lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
+        self.compact_locked_journal(repo_instance_id, replays_agree, &mut at_boundary)
+    }
+
+    /// Compact the journal after a transaction whose replay held `droppable_bytes` of superseded
+    /// records, once they reach the ledger's compaction threshold.
+    ///
+    /// Skips when another holder has the mutation lock rather than wait, and never fails: like a
+    /// checkpoint that cannot be written, a failed compaction leaves the journal whole. Its
+    /// [`CompactionRefusalMarker`] holds the next attempt back until the journal grows.
+    pub(super) fn compact_if_due(&self, droppable_bytes: u64) {
+        std::mem::drop(self.attempt_due_compaction(droppable_bytes, replays_agree));
+    }
+
+    /// [`Self::compact_if_due`], keeping a compacted journal only when `agree` holds of the
+    /// original and compacted replays. Returns `None` when it skips the compaction.
+    fn attempt_due_compaction(
+        &self,
+        droppable_bytes: u64,
+        agree: fn(&JournalReplay, &JournalReplay) -> bool,
+    ) -> Result<Option<JournalCompaction>, JournalCompactionError> {
+        if droppable_bytes < self.compaction_threshold_bytes || self.compaction_held_back() {
+            return Ok(None);
+        }
+        let _lock = match MutationLock::acquire(&self.paths.lock, Duration::ZERO) {
+            Ok(lock) => lock,
+            Err(MutationLockError::AcquisitionTimedOut) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let compaction = self.compact_locked_journal_if_due(agree);
+        if let Err(error) = &compaction {
+            // Without a marker, the next transaction past the threshold attempts again.
+            std::mem::drop(self.record_refusal(error));
+        }
+        compaction
+    }
+
+    /// Replay the journal again under the mutation lock the caller holds, and compact it when its
+    /// superseded records still reach the threshold after any concurrent compaction.
+    fn compact_locked_journal_if_due(
+        &self,
+        agree: fn(&JournalReplay, &JournalReplay) -> bool,
+    ) -> Result<Option<JournalCompaction>, JournalCompactionError> {
+        let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let replay =
+            Journal::open_existing(&self.paths.journal)?.replay_repairing_tail_from_checkpoint(
+                &ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id),
+            )?;
+        if replay.superseded.droppable_bytes < self.compaction_threshold_bytes {
+            return Ok(None);
+        }
+        self.compact_locked_journal(repo_instance_id, agree, &mut |_| {})
+            .map(Some)
+    }
+
+    /// Whether a failed automatic compaction of the current journal file holds the next one back:
+    /// the journal has not grown past its length at that failure by the compaction threshold.
+    fn compaction_held_back(&self) -> bool {
+        let (Ok(marker), Ok(journal)) = (
+            fs::read(&self.paths.compaction_refusal),
+            fs::metadata(&self.paths.journal),
+        ) else {
+            return false;
+        };
+        serde_json::from_slice::<CompactionRefusalMarker>(&marker).is_ok_and(|marker| {
+            marker.device == journal.dev()
+                && marker.inode == journal.ino()
+                && journal.len()
+                    <= marker
+                        .end_offset
+                        .saturating_add(self.compaction_threshold_bytes)
+        })
+    }
+
+    /// Store the [`CompactionRefusalMarker`] of an automatic compaction that failed with `error`,
+    /// naming the journal file and its length now.
+    fn record_refusal(&self, error: &JournalCompactionError) -> std::io::Result<()> {
+        let journal = fs::metadata(&self.paths.journal)?;
+        let marker = CompactionRefusalMarker {
+            device:     journal.dev(),
+            inode:      journal.ino(),
+            end_offset: journal.len(),
+            cause:      error.to_string(),
+        };
+        fs::write(&self.paths.compaction_refusal, serde_json::to_vec(&marker)?)
+    }
+
+    /// Compact the journal of the ledger of `repo_instance_id` under the mutation lock the caller
+    /// holds, keeping the compacted journal only when `agree` holds of the original and compacted
+    /// replays, and calling `at_boundary` at each [`PublicationBoundary`] it reaches.
+    fn compact_locked_journal(
+        &self,
+        repo_instance_id: RepoInstanceId,
+        agree: fn(&JournalReplay, &JournalReplay) -> bool,
+        at_boundary: &mut impl FnMut(PublicationBoundary),
+    ) -> Result<JournalCompaction, JournalCompactionError> {
         let temporary_path = self
             .paths
             .directory
@@ -209,13 +321,15 @@ impl Ledger {
             return Ok(JournalCompaction::NothingToCompact);
         };
         let publication =
-            self.publish_compacted(&temporary_path, &plan, repo_instance_id, &mut at_boundary);
+            self.publish_compacted(&temporary_path, &plan, repo_instance_id, agree, at_boundary);
         if publication.is_err() {
             // Before the rename the journal is untouched, and the next compaction would remove
             // the temporary file anyway.
             std::mem::drop(fs::remove_file(&temporary_path));
         }
         let compacted = publication?;
+        // A marker left behind names the replaced journal file, so it holds nothing back.
+        std::mem::drop(remove_refusal(&self.paths.compaction_refusal));
         Ok(JournalCompaction::Compacted {
             removed:   JournalRecords {
                 records: plan.replay.record_count - compacted.record_count,
@@ -228,13 +342,14 @@ impl Ledger {
         })
     }
 
-    /// Write `plan`'s kept records to `temporary_path`, verify their replay, and publish them as
-    /// the journal. Returns the compacted journal's replay.
+    /// Write `plan`'s kept records to `temporary_path`, verify with `agree` that their replay
+    /// matches the plan's, and publish them as the journal. Returns the compacted journal's replay.
     fn publish_compacted(
         &self,
         temporary_path: &Path,
         plan: &CompactionPlan,
         repo_instance_id: RepoInstanceId,
+        agree: fn(&JournalReplay, &JournalReplay) -> bool,
         at_boundary: &mut impl FnMut(PublicationBoundary),
     ) -> Result<JournalReplay, JournalCompactionError> {
         let mut temporary_file = OpenOptions::new()
@@ -244,7 +359,7 @@ impl Ledger {
         temporary_file.write_all(&plan.kept)?;
         temporary_file.sync_all()?;
         let compacted = Journal::replay_read_only(temporary_path)?;
-        if !replays_agree(&plan.replay, &compacted) {
+        if !agree(&plan.replay, &compacted) {
             return Err(CompactionRefusal::ReplayMismatch.into());
         }
         // A checkpoint that cannot be written leaves the next replay to start from byte 0.
@@ -295,6 +410,16 @@ impl CompactionPlan {
             }
         }
         Ok(Some(Self { replay, kept }))
+    }
+}
+
+/// Delete the [`CompactionRefusalMarker`] at `path`, so the next transaction past the threshold
+/// compacts the journal.
+pub(super) fn remove_refusal(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -369,18 +494,24 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
 
     use serde_json::Value;
     use tempfile::TempDir;
 
     use super::CompactionPlan;
     use super::CompactionRefusal;
+    use super::CompactionRefusalMarker;
     use super::JOURNAL_COMPACTION_TEMPORARY_FILE_NAME;
     use super::JournalCompaction;
     use super::JournalCompactionError;
     use super::Ledger;
+    use super::MUTATING_VERB_CONTENTION_TOLERANCE;
+    use super::MutationLock;
     use super::PublicationBoundary;
     use super::SupersededExtents;
+    use super::replays_agree;
     use crate::ids::CoordinationRunId;
     use crate::ids::EventId;
     use crate::ids::ProjectionGeneration;
@@ -652,17 +783,7 @@ mod tests {
     #[test]
     fn appends_racing_compaction_all_survive() -> Result<(), Box<dyn Error>> {
         let (events, rejected) = journal::round_trip_sequence_events()?;
-        let (reservation_id, observation) = events[..rejected]
-            .iter()
-            .rev()
-            .find_map(|event| match &event.operation {
-                JournalOperation::MergeExtentObserved { reservation_id, .. } => {
-                    Some((*reservation_id, event.operation.clone()))
-                },
-                _ => None,
-            })
-            .ok_or("the round-trip sequence records a legacy observation")?;
-        let renewal = JournalOperation::Renew { reservation_id };
+        let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
         let fixture = Arc::new(CompactionFixture::holding(events[..rejected].to_vec())?);
         let start = Arc::new(Barrier::new(2));
         let renewals = {
@@ -798,6 +919,120 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_transaction_compacts_the_journal_once_superseded_records_reach_the_threshold()
+    -> Result<(), Box<dyn Error>> {
+        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (renewal, observation) = renewal_and_observation(&events[..rejected])?;
+        let mut fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        let droppable = superseded_bytes(&fixture.ledger)?;
+        fixture.ledger.compaction_threshold_bytes = droppable + 1;
+        let inode = fs::metadata(&fixture.ledger.paths.journal)?.ino();
+
+        let renewed = append(&fixture.ledger, renewal)?;
+        assert_eq!(fs::metadata(&fixture.ledger.paths.journal)?.ino(), inode);
+        assert_eq!(superseded_bytes(&fixture.ledger)?, droppable);
+
+        let observed = append(&fixture.ledger, observation)?;
+        let survivors = journal::complete_record_events(&fixture.journal()?)?
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect::<BTreeSet<_>>();
+        assert_ne!(fs::metadata(&fixture.ledger.paths.journal)?.ino(), inode);
+        assert_eq!(superseded_bytes(&fixture.ledger)?, 0);
+        assert!(survivors.contains(&renewed) && survivors.contains(&observed));
+        fixture.ledger.read_validated_journal()?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_due_compaction_skips_a_held_lock_without_waiting() -> Result<(), Box<dyn Error>> {
+        let mut fixture = CompactionFixture::round_trip()?;
+        let droppable = superseded_bytes(&fixture.ledger)?;
+        fixture.ledger.compaction_threshold_bytes = droppable;
+        let original = fixture.journal()?;
+        let _holder = MutationLock::acquire(
+            &fixture.ledger.paths.lock,
+            MUTATING_VERB_CONTENTION_TOLERANCE,
+        )?;
+
+        let started_at = Instant::now();
+        let compaction = fixture
+            .ledger
+            .attempt_due_compaction(droppable, replays_agree)?;
+        // A compaction that waited for the lock would spend the whole contention tolerance.
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        assert_eq!(compaction, None);
+        assert_eq!(fixture.journal()?, original);
+        assert!(!fixture.ledger.paths.compaction_refusal.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_refused_compaction_waits_for_a_threshold_of_growth() -> Result<(), Box<dyn Error>> {
+        let (events, rejected) = journal::round_trip_sequence_events()?;
+        let (renewal, _) = renewal_and_observation(&events[..rejected])?;
+        let mut fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
+        let droppable = superseded_bytes(&fixture.ledger)?;
+        fixture.ledger.compaction_threshold_bytes = droppable;
+        let fixture = fixture;
+        let ledger = &fixture.ledger;
+        let original = fixture.journal()?;
+        let disagree = |_: &JournalReplay, _: &JournalReplay| false;
+
+        let refusal = ledger.attempt_due_compaction(droppable, disagree);
+        assert!(
+            matches!(
+                refusal,
+                Err(JournalCompactionError::Refused(
+                    CompactionRefusal::ReplayMismatch
+                ))
+            ),
+            "{refusal:?}"
+        );
+        assert_eq!(fixture.journal()?, original);
+        Ledger::repair_projection(fixture.repository.path())?;
+        assert!(!ledger.paths.compaction_refusal.exists());
+
+        ledger
+            .attempt_due_compaction(droppable, disagree)
+            .err()
+            .ok_or("the disagreeing compaction completed")?;
+        let refused = fs::metadata(&ledger.paths.journal)?;
+        let marker = serde_json::from_slice::<CompactionRefusalMarker>(&fs::read(
+            &ledger.paths.compaction_refusal,
+        )?)?;
+        assert_eq!(
+            (marker.device, marker.inode, marker.end_offset),
+            (refused.dev(), refused.ino(), refused.len())
+        );
+        assert_eq!(
+            ledger.attempt_due_compaction(droppable, replays_agree)?,
+            None
+        );
+        assert_eq!(fixture.journal()?, original);
+
+        let limit = refused.len() + droppable;
+        let mut appends = 0;
+        loop {
+            append(ledger, renewal.clone())?;
+            appends += 1;
+            let journal = fs::metadata(&ledger.paths.journal)?;
+            if journal.ino() != refused.ino() {
+                break;
+            }
+            assert!(
+                journal.len() <= limit,
+                "a journal grown to {} bytes, past {limit}, stayed uncompacted",
+                journal.len()
+            );
+        }
+        assert!(appends > 1, "one renewal outgrew the threshold");
+        assert!(!ledger.paths.compaction_refusal.exists());
+        assert_eq!(superseded_bytes(ledger)?, 0);
+        Ok(())
+    }
+
     /// The byte length, newline included, of every merge extent observation whose every
     /// reservation a later observation names.
     fn superseded_record_bytes(events: &[JournalEvent]) -> Result<u64, Box<dyn Error>> {
@@ -906,6 +1141,32 @@ mod tests {
         }
 
         fn journal(&self) -> std::io::Result<Vec<u8>> { fs::read(&self.ledger.paths.journal) }
+    }
+
+    /// A renewal of the reservation of the latest legacy merge extent observation in `events`,
+    /// and that observation, whose append supersedes it.
+    fn renewal_and_observation(
+        events: &[JournalEvent],
+    ) -> Result<(JournalOperation, JournalOperation), Box<dyn Error>> {
+        let (reservation_id, observation) = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.operation {
+                JournalOperation::MergeExtentObserved { reservation_id, .. } => {
+                    Some((*reservation_id, event.operation.clone()))
+                },
+                _ => None,
+            })
+            .ok_or("the events record a legacy observation")?;
+        Ok((JournalOperation::Renew { reservation_id }, observation))
+    }
+
+    /// The superseded record bytes of `ledger`'s journal.
+    fn superseded_bytes(ledger: &Ledger) -> Result<u64, Box<dyn Error>> {
+        let droppable = Journal::replay_read_only(&ledger.paths.journal)?
+            .superseded
+            .droppable_bytes;
+        Ok(droppable)
     }
 
     /// Append `operation` through a ledger transaction and return its event id.

@@ -7,6 +7,7 @@ pub(super) const COORDINATION_RUN_MARKER_FILE_NAME: &str = "cargo-berth-run-id";
 pub(super) const COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX: &str = "retiring";
 pub(crate) const GATE_TARGETS_FILE_NAME: &str = "gate-targets";
 pub(super) const GATE_TARGETS_TEMPORARY_FILE_NAME: &str = "gate-targets.tmp";
+pub(super) const JOURNAL_COMPACTION_REFUSAL_FILE_NAME: &str = "journal-compaction-refused.json";
 pub(super) const JOURNAL_COMPACTION_TEMPORARY_FILE_NAME: &str = "journal.ndjson.compact.tmp";
 pub(super) const JOURNAL_FILE_NAME: &str = "journal.ndjson";
 pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
@@ -18,6 +19,12 @@ pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 
 // git reference validation
 pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
+
+// journal compaction
+/// The superseded record bytes a transaction's replay holds before the journal compacts after it.
+///
+/// A refused automatic compaction also holds the next one back until the journal grows this much.
+pub(super) const JOURNAL_COMPACTION_THRESHOLD_BYTES: u64 = 16 * 1_024 * 1_024;
 
 // journal limits
 /// Maximum record bytes for a fact whose size a caller chose and can reduce.
