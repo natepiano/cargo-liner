@@ -16,6 +16,7 @@ use tempfile::Builder;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+use crate::DirectorySnapshot;
 use crate::berth_command;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
@@ -110,6 +111,32 @@ impl IntegrationRepository {
             "integration start",
         );
         integration_repository
+    }
+
+    /// Capture the main worktree and every linked worktree, for [`Self::restore`].
+    ///
+    /// # Panics
+    ///
+    /// Panics as [`DirectorySnapshot::capture`] does.
+    #[must_use]
+    pub fn capture(&self) -> [DirectorySnapshot; 2] {
+        [
+            DirectorySnapshot::capture(self.repository.path()),
+            DirectorySnapshot::capture(self.worktrees.path()),
+        ]
+    }
+
+    /// Write back what [`Self::capture`] took, discarding everything written since.
+    ///
+    /// Git records a linked worktree and its repository by absolute path, so a
+    /// capture restores only into the repository it was taken from.
+    ///
+    /// # Panics
+    ///
+    /// Panics as [`DirectorySnapshot::restore`] does.
+    pub fn restore(&self, [repository, worktrees]: &[DirectorySnapshot; 2]) {
+        repository.restore(self.repository.path());
+        worktrees.restore(self.worktrees.path());
     }
 
     /// The main worktree, which has `main` checked out and holds the berth

@@ -624,8 +624,10 @@ fn listed_target_recreation_is_gated_at_its_proposed_tip() {
 
 #[test]
 fn target_gate_observe_and_enforce_messages_name_the_target() {
+    let pair = target_pair(true);
+    let snapshot = pair.repository.capture();
     for mode in ["observe", "enforce"] {
-        let pair = target_pair(true);
+        pair.repository.restore(&snapshot);
         set_gate_mode(pair.repository.root(), mode);
         let result = propose_branch(
             pair.repository.root(),
@@ -835,8 +837,10 @@ fn hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged() {
 
 #[test]
 fn two_gated_refs_in_one_transaction_refuse_before_journal_changes() {
+    let pair = target_pair(true);
+    let snapshot = pair.repository.capture();
     for integration_first in [false, true] {
-        let pair = target_pair(true);
+        pair.repository.restore(&snapshot);
         set_gate_mode(pair.repository.root(), "enforce");
         let main = pair
             .repository
