@@ -6,6 +6,9 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::num::TryFromIntError;
 use std::path::Component;
@@ -1975,12 +1978,44 @@ impl Journal {
         let (replay, complete_end) = replay_complete_records(&bytes)?;
 
         if complete_end != bytes.len() {
-            let journal_file = OpenOptions::new().write(true).open(&self.path)?;
-            journal_file
-                .set_len(u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?)?;
-            journal_file.sync_all()?;
+            self.truncate_to(replay.end_offset)?;
         }
         Ok(replay)
+    }
+
+    /// Advance `replay` over the records appended after its end offset and repair one incomplete
+    /// final record.
+    ///
+    /// Reads only the bytes after [`JournalReplay::end_offset`], and leaves `replay` equal to
+    /// [`Self::replay_repairing_tail`]. A journal shorter than that offset no longer holds the
+    /// replayed bytes, so it is replayed whole.
+    pub(super) fn advance_repairing_tail(
+        &self,
+        replay: &mut JournalReplay,
+    ) -> Result<(), JournalError> {
+        let mut journal_file = fs::File::open(&self.path)?;
+        let replayed_length = u64::from(replay.end_offset);
+        if journal_file.metadata()?.len() < replayed_length {
+            *replay = self.replay_repairing_tail()?;
+            return Ok(());
+        }
+        journal_file.seek(SeekFrom::Start(replayed_length))?;
+        let mut appended = Vec::new();
+        journal_file.read_to_end(&mut appended)?;
+
+        let complete_end = replay.advance_over(&appended)?;
+        if complete_end != appended.len() {
+            self.truncate_to(replay.end_offset)?;
+        }
+        Ok(())
+    }
+
+    /// Cut the journal to `length` bytes, discarding an incomplete final record.
+    fn truncate_to(&self, length: JournalByteOffset) -> Result<(), JournalError> {
+        let journal_file = OpenOptions::new().write(true).open(&self.path)?;
+        journal_file.set_len(u64::from(length))?;
+        journal_file.sync_all()?;
+        Ok(())
     }
 
     /// Replay complete records without opening the journal for mutation.
@@ -2031,44 +2066,76 @@ impl Journal {
     }
 }
 
-fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), JournalError> {
-    let mut reservations = Ok(RetainedReservationSet::default());
-    let mut coordination_events = Vec::new();
-    let mut repositories = BTreeSet::new();
-    let mut record_count = 0_u64;
-    let mut generation = ProjectionGeneration::from(0);
-    let complete_end = decode_complete_records(bytes, |event| {
-        fold_reservations(&mut reservations, &event);
-        repositories.insert(event.actor.repository);
-        record_count += 1;
-        generation = event.projection_generation;
-        if event.operation.is_coordination_record() {
-            coordination_events.push(event);
+impl JournalReplay {
+    /// The replay of a journal with no records.
+    fn empty() -> Self {
+        Self {
+            reservations:        Ok(RetainedReservationSet::default()),
+            coordination_events: Vec::new(),
+            repositories:        BTreeSet::new(),
+            record_count:        0,
+            end_offset:          JournalByteOffset::from(0),
+            fingerprint:         JournalFingerprint::EMPTY,
+            generation:          ProjectionGeneration::from(0),
         }
-    })?;
+    }
 
-    let complete_bytes = &bytes[..complete_end];
-    Ok((
-        JournalReplay {
-            reservations,
-            coordination_events,
-            repositories,
-            record_count,
-            end_offset: JournalByteOffset::from(
-                u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?,
-            ),
-            fingerprint: JournalFingerprint::from_bytes(complete_bytes),
-            generation,
-        },
-        complete_end,
-    ))
+    /// Fold one decoded record, the next after every record already replayed.
+    ///
+    /// Updates every field except the byte range, which [`Self::cover`] extends.
+    fn apply_record(&mut self, event: JournalEvent) {
+        fold_reservations(&mut self.reservations, &event);
+        self.repositories.insert(event.actor.repository);
+        self.record_count += 1;
+        self.generation = event.projection_generation;
+        if event.operation.is_coordination_record() {
+            self.coordination_events.push(event);
+        }
+    }
+
+    /// Extend the replayed byte range over `complete_records`, the bytes that follow it.
+    fn cover(&mut self, complete_records: &[u8]) -> Result<(), JournalError> {
+        let length =
+            u64::try_from(complete_records.len()).map_err(JournalError::JournalTooLarge)?;
+        self.end_offset = JournalByteOffset::from(u64::from(self.end_offset) + length);
+        self.fingerprint = self.fingerprint.continued(complete_records);
+        Ok(())
+    }
+
+    /// Fold the complete records at the start of `appended`, the journal bytes after
+    /// [`Self::end_offset`].
+    ///
+    /// Returns the byte length of those complete records. A record that fails to decode leaves
+    /// the replay unchanged, and its line number counts every record already replayed.
+    fn advance_over(&mut self, appended: &[u8]) -> Result<usize, JournalError> {
+        let replayed_lines =
+            usize::try_from(self.record_count).map_err(JournalError::JournalTooLarge)?;
+        let mut events = Vec::new();
+        let complete_end =
+            decode_complete_records(appended, replayed_lines + 1, |event| events.push(event))?;
+        self.cover(&appended[..complete_end])?;
+        for event in events {
+            self.apply_record(event);
+        }
+        Ok(complete_end)
+    }
+}
+
+fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), JournalError> {
+    let mut replay = JournalReplay::empty();
+    let complete_end = decode_complete_records(bytes, 1, |event| replay.apply_record(event))?;
+    replay.cover(&bytes[..complete_end])?;
+    Ok((replay, complete_end))
 }
 
 /// Decode every newline-terminated record in append order, passing each event to `visit`.
 ///
 /// Returns the byte length of the complete records; bytes after the last newline are ignored.
+/// Corrupt records are numbered from `first_line`, the one-based journal line of the first
+/// record in `bytes`.
 fn decode_complete_records(
     bytes: &[u8],
+    first_line: usize,
     mut visit: impl FnMut(JournalEvent),
 ) -> Result<usize, JournalError> {
     let complete_end = bytes
@@ -2079,21 +2146,22 @@ fn decode_complete_records(
     let records = complete_records.split(|byte| *byte == b'\n');
     let line_count = records.clone().count();
     for (line_index, record) in records.enumerate() {
+        let line = first_line + line_index;
         if record.is_empty() {
             if line_index + 1 == line_count {
                 continue;
             }
             return Err(JournalError::CorruptInteriorRecord {
-                line:  line_index + 1,
+                line,
                 error: "blank journal record".to_owned(),
             });
         }
         let record =
             std::str::from_utf8(record).map_err(|error| JournalError::CorruptInteriorRecord {
-                line:  line_index + 1,
+                line,
                 error: error.to_string(),
             })?;
-        visit(decode_record(record, line_index + 1)?);
+        visit(decode_record(record, line)?);
     }
     Ok(complete_end)
 }
@@ -2102,7 +2170,7 @@ fn decode_complete_records(
 #[cfg(test)]
 pub(super) fn complete_record_events(bytes: &[u8]) -> Result<Vec<JournalEvent>, JournalError> {
     let mut events = Vec::new();
-    decode_complete_records(bytes, |event| events.push(event))?;
+    decode_complete_records(bytes, 1, |event| events.push(event))?;
     Ok(events)
 }
 
@@ -2154,12 +2222,17 @@ fn decode_record(record: &str, line: usize) -> Result<JournalEvent, JournalError
 }
 
 impl JournalFingerprint {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        const FNV_OFFSET_BASIS: u64 = 14_695_981_039_346_656_037;
-        const FNV_PRIME: u64 = 1_099_511_628_211;
+    /// The fingerprint of an empty journal: the FNV-1a offset basis.
+    const EMPTY: Self = Self(14_695_981_039_346_656_037);
+    const FNV_PRIME: u64 = 1_099_511_628_211;
 
-        Self(bytes.iter().fold(FNV_OFFSET_BASIS, |fingerprint, byte| {
-            (fingerprint ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    /// The fingerprint of the bytes this one covers followed by `bytes`.
+    ///
+    /// FNV-1a's whole state is its running value, so continuing a prefix's fingerprint over the
+    /// bytes that follow equals fingerprinting the joined bytes from [`Self::EMPTY`].
+    fn continued(self, bytes: &[u8]) -> Self {
+        Self(bytes.iter().fold(self.0, |fingerprint, byte| {
+            (fingerprint ^ u64::from(*byte)).wrapping_mul(Self::FNV_PRIME)
         }))
     }
 }
@@ -2279,6 +2352,7 @@ mod tests {
     use super::JournalEvent;
     use super::JournalMutationIdentityInputs;
     use super::JournalOperation;
+    use super::JournalReplay;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
     use super::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
     use super::NonEmptyReservationPurpose;
@@ -2954,6 +3028,157 @@ mod tests {
         );
         assert_eq!(replay.coordination_events.len(), 6);
         assert_eq!(replay.repositories.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn advancing_over_appends_equals_a_whole_journal_replay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let (one_at_a_time, batch) = events.split_at(FOLD_FAILING_RECORD_INDEX);
+        let temporary_directory = tempdir()?;
+        let (journal, _) =
+            Journal::open_or_create(&temporary_directory.path().join("journal.ndjson"))?;
+        let mut replay = journal.replay_repairing_tail()?;
+
+        for event in one_at_a_time {
+            journal.append(event)?;
+            advance_and_compare_with_whole_replay(&journal, &mut replay)?;
+            assert!(replay.reservations.is_ok());
+        }
+        journal.append_events(batch)?;
+        advance_and_compare_with_whole_replay(&journal, &mut replay)?;
+
+        assert!(
+            replay.reservations.is_err(),
+            "the batch holds the rejected record"
+        );
+        assert_eq!(replay.record_count, u64::try_from(events.len())?);
+        Ok(())
+    }
+
+    #[test]
+    fn advancing_after_the_reservation_fold_fails_equals_a_whole_journal_replay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let (through_failure, after_failure) = events.split_at(FOLD_FAILING_RECORD_INDEX + 1);
+        let temporary_directory = tempdir()?;
+        let (journal, _) =
+            Journal::open_or_create(&temporary_directory.path().join("journal.ndjson"))?;
+        journal.append_events(through_failure)?;
+        let mut replay = journal.replay_repairing_tail()?;
+        let failed_reservations = replay.reservations.clone();
+        assert!(failed_reservations.is_err());
+
+        for event in after_failure {
+            journal.append(event)?;
+            advance_and_compare_with_whole_replay(&journal, &mut replay)?;
+            assert_eq!(
+                replay.reservations, failed_reservations,
+                "no record after the first failure is applied"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn advancing_over_an_incomplete_final_record_repairs_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let temporary_directory = tempdir()?;
+        let journal_path = temporary_directory.path().join("journal.ndjson");
+        let (journal, _) = Journal::open_or_create(&journal_path)?;
+        journal.append_events(&events[..2])?;
+        let mut replay = journal.replay_repairing_tail()?;
+
+        journal.append(&events[2])?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&journal_path)?
+            .write_all(b"{\"op\":")?;
+        advance_and_compare_with_whole_replay(&journal, &mut replay)?;
+        assert_eq!(replay.record_count, 3);
+        assert_eq!(
+            fs::metadata(&journal_path)?.len(),
+            u64::from(replay.end_offset)
+        );
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&journal_path)?
+            .write_all(b"{\"op\":")?;
+        advance_and_compare_with_whole_replay(&journal, &mut replay)?;
+        assert_eq!(replay.record_count, 3);
+        assert!(fs::read(&journal_path)?.ends_with(b"\n"));
+        assert_eq!(
+            fs::metadata(&journal_path)?.len(),
+            u64::from(replay.end_offset)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn advancing_over_a_corrupt_record_reports_its_journal_line()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let temporary_directory = tempdir()?;
+        let journal_path = temporary_directory.path().join("journal.ndjson");
+        let (journal, _) = Journal::open_or_create(&journal_path)?;
+        journal.append_events(&events[..3])?;
+        let mut replay = journal.replay_repairing_tail()?;
+        let replay_before_corruption = replay.clone();
+
+        journal.append(&events[3])?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&journal_path)?
+            .write_all(b"not-json\n")?;
+        journal.append(&events[4])?;
+
+        let advance_error = journal.advance_repairing_tail(&mut replay);
+        let replay_error = journal.replay_repairing_tail();
+
+        assert!(matches!(
+            advance_error,
+            Err(JournalError::CorruptInteriorRecord { line: 5, .. })
+        ));
+        assert!(matches!(
+            replay_error,
+            Err(JournalError::CorruptInteriorRecord { line: 5, .. })
+        ));
+        assert_eq!(
+            replay, replay_before_corruption,
+            "a failed advance changes nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn advancing_past_the_end_of_a_shortened_journal_replays_it_whole()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let temporary_directory = tempdir()?;
+        let (journal, _) =
+            Journal::open_or_create(&temporary_directory.path().join("journal.ndjson"))?;
+        journal.append_events(&events[..3])?;
+        let mut replay = journal.replay_repairing_tail()?;
+
+        journal.truncate()?;
+        journal.append(&events[0])?;
+        advance_and_compare_with_whole_replay(&journal, &mut replay)?;
+
+        assert_eq!(replay.record_count, 1);
+        Ok(())
+    }
+
+    /// Advance `replay` over the journal's appended records and require that it equals a replay of
+    /// the whole journal.
+    fn advance_and_compare_with_whole_replay(
+        journal: &Journal,
+        replay: &mut JournalReplay,
+    ) -> Result<(), JournalError> {
+        journal.advance_repairing_tail(replay)?;
+        assert_eq!(*replay, journal.replay_repairing_tail()?);
         Ok(())
     }
 

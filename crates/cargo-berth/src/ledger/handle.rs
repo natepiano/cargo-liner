@@ -772,9 +772,8 @@ impl LedgerTransaction {
         self.journal
             .append_events(&events)
             .map_err(journal_append_transaction_error)?;
-        self.replay = self
-            .journal
-            .replay_repairing_tail()
+        self.journal
+            .advance_repairing_tail(&mut self.replay)
             .map_err(LedgerError::from)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
         let mut session_mapping_publication = SessionIdentityMappingPublication::Published;
@@ -805,9 +804,8 @@ impl LedgerTransaction {
         self.journal
             .append(&event)
             .map_err(journal_append_transaction_error)?;
-        self.replay = self
-            .journal
-            .replay_repairing_tail()
+        self.journal
+            .advance_repairing_tail(&mut self.replay)
             .map_err(LedgerError::from)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
         let session_mapping_publication =
@@ -819,9 +817,8 @@ impl LedgerTransaction {
     }
 
     fn recover_after_recoverable_append_failure(&mut self) -> Result<(), LedgerTransactionError> {
-        self.replay = self
-            .journal
-            .replay_repairing_tail()
+        self.journal
+            .advance_repairing_tail(&mut self.replay)
             .map_err(LedgerError::from)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
         identity::validate_journal_repository(self.repo_instance_id, &self.replay)
