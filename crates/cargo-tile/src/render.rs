@@ -879,11 +879,11 @@ fn draw_ancestry(
     let levels = ancestry_fit(
         ancestry,
         budget,
-        area.width,
         matches!(
             foot,
             AncestryFoot::ColoredCommand(_) | AncestryFoot::PlainCommand
         ),
+        |levels| ancestry_height(levels, area.width),
     );
     if levels.is_empty() {
         return 0;
@@ -941,16 +941,25 @@ enum AncestryLevel<'a> {
 /// the block away entirely, and a pid with the head of its command is
 /// worth more than a blank half-cell. What that one level overruns by
 /// is what [`draw_ancestry`] cuts off the bottom.
+///
+/// `height` is what a candidate block is measured with --
+/// [`ancestry_height`] at the cell's width -- and every call to it wraps
+/// each level's command line again.
 fn ancestry_fit(
     ancestry: &[Ancestor],
     budget: usize,
-    width: u16,
     foot_is_the_command: bool,
+    mut height: impl FnMut(&[AncestryLevel<'_>]) -> usize,
 ) -> Vec<AncestryLevel<'_>> {
-    let mut asked = budget;
+    // A budget past the chain's length asks for the whole chain however
+    // far past it is, so the first ask is the chain. Starting from the
+    // budget measured that same whole chain once per spare row, and a
+    // command line of tens of kilobytes in a cell hundreds of rows tall
+    // made every frame cost seconds.
+    let mut asked = budget.min(ancestry.len());
     loop {
         let levels = ancestry_levels(ancestry, asked, foot_is_the_command);
-        if levels.len() <= 1 || ancestry_height(&levels, width) <= budget {
+        if levels.len() <= 1 || height(&levels) <= budget {
             return levels;
         }
         asked = asked.saturating_sub(1);
@@ -3013,7 +3022,9 @@ mod tests {
         // block is left once the table has taken its rows.
         let height = u16::try_from(asked + table).expect("a test cell should fit a u16");
         let budget = ancestry_budget(height, table);
-        let levels = ancestry_fit(&ancestry, budget, width, false);
+        let levels = ancestry_fit(&ancestry, budget, false, |levels| {
+            ancestry_height(levels, width)
+        });
 
         assert_eq!(
             levels.len(),
@@ -3024,6 +3035,47 @@ mod tests {
             ancestry_height(&levels, width).saturating_add(gap),
             asked,
             "and draws exactly the rows it asked for",
+        );
+    }
+
+    /// A budget far past the chain's length measures no more candidate
+    /// blocks than the chain has levels.
+    ///
+    /// Every measurement wraps each level's command line again. Counted
+    /// down from the budget, a cell hundreds of rows tall over a command
+    /// line of tens of kilobytes measured the same whole chain once per
+    /// spare row, every frame took seconds, and a key that changed the
+    /// view showed only as each of those frames finished.
+    #[test]
+    fn a_tall_budget_measures_at_most_one_block_per_level() {
+        let width = 60;
+        let ancestry = vec![
+            ancestor(6218, "zed"),
+            ancestor(18581, &format!("python3 -c {}", "script ".repeat(2000))),
+            ancestor(24101, "zsh -c cargo check"),
+        ];
+        let whole: Vec<AncestryLevel<'_>> = ancestry.iter().map(AncestryLevel::Ancestor).collect();
+        let budget = 150;
+        assert!(
+            ancestry_height(&whole, width) > budget,
+            "the chain should outrun the budget for the fit to give levels up",
+        );
+
+        let mut measured = 0;
+        let levels = ancestry_fit(&ancestry, budget, false, |levels| {
+            measured += 1;
+            ancestry_height(levels, width)
+        });
+
+        assert_eq!(
+            drawn(&levels),
+            vec![Some(6218), Some(24101)],
+            "the long middle step is the one given up",
+        );
+        assert!(
+            measured <= ancestry.len(),
+            "measured {measured} candidate blocks for a chain of {} levels",
+            ancestry.len(),
         );
     }
 

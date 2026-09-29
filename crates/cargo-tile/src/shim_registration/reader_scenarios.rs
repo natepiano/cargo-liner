@@ -42,7 +42,16 @@ use crate::settings;
 const CPU_OBSERVATION_SCANS: usize = 16;
 
 /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
-const READER_SCENARIO_SCRIPT: &str = include_str!("reader_scenario.py");
+///
+/// Run from its path rather than through `python3 -c`: the script is the
+/// parent of every writer the reader draws, so its command line is a step
+/// in each cell's chain, and a long tree would put the script's own
+/// source -- every string its screen predicates look for included -- on
+/// the screen under test.
+const READER_SCENARIO_SCRIPT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/shim_registration/reader_scenario.py"
+);
 
 /// The child receives a parent path through this constructor, never application configuration.
 #[test]
@@ -149,7 +158,7 @@ fn run_reader_script(scenario: &str) {
     // The script times its CPU observation against the reader's own windows.
     let cadence = CensusCadence::for_test();
     let output = Command::new("python3")
-        .args(["-c", READER_SCENARIO_SCRIPT])
+        .arg(READER_SCENARIO_SCRIPT)
         .arg(directory.path())
         .arg(std::env::current_exe().expect("integration reader executable"))
         .arg(concat!(
