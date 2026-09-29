@@ -1997,25 +1997,7 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
                 line:  line_index + 1,
                 error: error.to_string(),
             })?;
-        let schema_header =
-            serde_json::from_str::<JournalSchemaHeader>(record).map_err(|error| {
-                JournalError::CorruptInteriorRecord {
-                    line:  line_index + 1,
-                    error: error.to_string(),
-                }
-            })?;
-        if schema_header.schema_version != SchemaVersion::from(CURRENT_SCHEMA_VERSION) {
-            return Err(JournalError::UnsupportedSchemaVersion(
-                schema_header.schema_version,
-            ));
-        }
-        let event = serde_json::from_str::<JournalEvent>(record).map_err(|error| {
-            JournalError::CorruptInteriorRecord {
-                line:  line_index + 1,
-                error: error.to_string(),
-            }
-        })?;
-        events.push(event);
+        events.push(decode_record(record, line_index + 1)?);
     }
 
     let generation = events.last().map_or_else(
@@ -2034,6 +2016,38 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
         },
         complete_end,
     ))
+}
+
+/// Decode one complete record with a single `JournalEvent` parse.
+///
+/// `JournalSchemaHeader` is parsed only after that parse fails, to report a record from another
+/// schema as `UnsupportedSchemaVersion` rather than `CorruptInteriorRecord`. The errors match
+/// those of parsing the header first and the event second.
+fn decode_record(record: &str, line: usize) -> Result<JournalEvent, JournalError> {
+    let current_schema_version = SchemaVersion::from(CURRENT_SCHEMA_VERSION);
+    match serde_json::from_str::<JournalEvent>(record) {
+        Ok(event) if event.schema_version == current_schema_version => Ok(event),
+        Ok(event) => Err(JournalError::UnsupportedSchemaVersion(event.schema_version)),
+        Err(event_error) => {
+            let schema_header =
+                serde_json::from_str::<JournalSchemaHeader>(record).map_err(|header_error| {
+                    JournalError::CorruptInteriorRecord {
+                        line,
+                        error: header_error.to_string(),
+                    }
+                })?;
+            if schema_header.schema_version == current_schema_version {
+                Err(JournalError::CorruptInteriorRecord {
+                    line,
+                    error: event_error.to_string(),
+                })
+            } else {
+                Err(JournalError::UnsupportedSchemaVersion(
+                    schema_header.schema_version,
+                ))
+            }
+        },
+    }
 }
 
 impl JournalFingerprint {
@@ -2363,6 +2377,38 @@ mod tests {
             replay_complete_records(future_record),
             Err(JournalError::UnsupportedSchemaVersion(version))
                 if version == SchemaVersion::from(3)
+        ));
+    }
+
+    #[test]
+    fn a_decodable_record_from_another_schema_is_unsupported() {
+        let mut record = serde_json::to_value(super::JournalEvent::for_operation(
+            test_actor(),
+            ProjectionGeneration::from(1),
+            JournalOperation::Renew {
+                reservation_id: ReservationId::new(),
+            },
+        ))
+        .expect("record should encode");
+        let other_schema_version = CURRENT_SCHEMA_VERSION + 1;
+        record["schema_version"] = serde_json::json!(other_schema_version);
+        let record = format!("{record}\n");
+
+        assert!(matches!(
+            replay_complete_records(record.as_bytes()),
+            Err(JournalError::UnsupportedSchemaVersion(version))
+                if version == SchemaVersion::from(other_schema_version)
+        ));
+    }
+
+    #[test]
+    fn a_record_without_a_schema_version_reports_the_header_error() {
+        let record = b"{\"op\":\"renew\"}\n";
+
+        assert!(matches!(
+            replay_complete_records(record),
+            Err(JournalError::CorruptInteriorRecord { line: 1, error })
+                if error.contains("schema_version")
         ));
     }
 
