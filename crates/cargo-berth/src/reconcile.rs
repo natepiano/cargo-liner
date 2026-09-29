@@ -227,15 +227,17 @@ struct MergeExtentGitCost {
 
 /// Complete journal truth retained from one reconciliation lock acquisition.
 pub(crate) struct ReconciledJournalSnapshot {
-    events:             Vec<JournalEvent>,
-    reservations:       RetainedReservationSet,
-    generation:         ProjectionGeneration,
-    journal_end_offset: JournalByteOffset,
+    coordination_events: Vec<JournalEvent>,
+    reservations:        RetainedReservationSet,
+    generation:          ProjectionGeneration,
+    journal_end_offset:  JournalByteOffset,
 }
 
 impl ReconciledJournalSnapshot {
-    /// Borrow every event visible at the reconciled replay point.
-    pub(crate) fn events(&self) -> &[JournalEvent] { &self.events }
+    /// Borrow every record a coordination reader reads at the reconciled replay point.
+    ///
+    /// See [`crate::ledger::JournalOperation::is_coordination_record`].
+    pub(crate) fn coordination_events(&self) -> &[JournalEvent] { &self.coordination_events }
 
     /// Borrow the reservation set folded from every event at the reconciled replay point.
     pub(crate) const fn reservations(&self) -> &RetainedReservationSet { &self.reservations }
@@ -2143,8 +2145,8 @@ fn prepare_reconciliation_transaction(
         .reservations()
         .map_err(ReconciliationPlanningError::Reservation)?;
     let reservations = rewrite_preflight.project(reservations)?;
-    let ordering_graph =
-        OrderingGraph::replay(state.events()).map_err(ReconciliationPlanningError::Edge)?;
+    let ordering_graph = OrderingGraph::replay(state.coordination_events())
+        .map_err(ReconciliationPlanningError::Edge)?;
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
@@ -2179,7 +2181,7 @@ fn prepare_reconciliation_transaction(
     reconciliation_plan.action.trunk_resolution_calls += rewrite_preflight.trunk_resolution_calls;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
         worktree_context.common_git_directory(),
-        state.events(),
+        state.coordination_events(),
     )
     .map_err(ReconciliationPlanningError::PendingBypass)?;
     let pending_bypass_imports = pending_bypasses.take_imports();
@@ -3163,8 +3165,8 @@ pub(crate) fn prepare_gate_reconciliation(
         .reservations()
         .map_err(GateReconciliationError::Reservation)?;
     let reservations = rewrite_preflight.project(reservations)?;
-    let ordering_graph =
-        OrderingGraph::replay(state.events()).map_err(GateReconciliationError::Edge)?;
+    let ordering_graph = OrderingGraph::replay(state.coordination_events())
+        .map_err(GateReconciliationError::Edge)?;
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
@@ -5049,8 +5051,8 @@ impl ReconciliationAction {
         recoverable_failures: &RecoverableReconciliationAppendFailures,
     ) -> Result<ReconciliationReport, ReconcileError> {
         let reservations = state.reservations().map_err(ReconcileError::Replay)?;
-        let ordering_graph =
-            OrderingGraph::replay(state.events()).map_err(ReconcileError::EdgeReplay)?;
+        let ordering_graph = OrderingGraph::replay(state.coordination_events())
+            .map_err(ReconcileError::EdgeReplay)?;
         let constraints = ordering_graph
             .integration_constraints(reservations, &self.repository_snapshot, state.generation())
             .map_err(ReconcileError::MissingReadinessFact)?;
@@ -5128,10 +5130,10 @@ impl ReconciliationAction {
             repository_snapshot: self.repository_snapshot,
             constraints,
             journal_snapshot: ReconciledJournalSnapshot {
-                events:             state.events().to_vec(),
-                reservations:       reservations.clone(),
-                generation:         state.generation(),
-                journal_end_offset: state.journal_end_offset(),
+                coordination_events: state.coordination_events().to_vec(),
+                reservations:        reservations.clone(),
+                generation:          state.generation(),
+                journal_end_offset:  state.journal_end_offset(),
             },
             unrecorded_bypass_occurrences: self.unrecorded_bypass_occurrences,
             recovered_bypass_markers,

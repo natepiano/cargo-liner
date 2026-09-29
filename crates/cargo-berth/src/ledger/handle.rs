@@ -69,11 +69,16 @@ pub(crate) struct EditCheckLedgerSnapshot {
 
 /// Validated journal truth read without holding the mutation lock.
 pub(crate) struct ValidatedJournal {
-    events:       Vec<JournalEvent>,
-    reservations: Result<RetainedReservationSet, ReservationReplayError>,
+    coordination_events: Vec<JournalEvent>,
+    reservations:        Result<RetainedReservationSet, ReservationReplayError>,
 }
 
 impl ValidatedJournal {
+    /// Take every record a coordination reader reads, in append order.
+    ///
+    /// See [`JournalOperation::is_coordination_record`].
+    pub(crate) fn into_coordination_events(self) -> Vec<JournalEvent> { self.coordination_events }
+
     /// Take the reservation set folded from every record, or the first record replay rejected.
     pub(crate) fn into_reservations(
         self,
@@ -115,15 +120,17 @@ impl EditCheckLedgerSnapshot {
 
 /// The replayed journal facts visible to a transaction's validation step.
 pub(crate) struct ReplayedLedgerState<'replay> {
-    events:             &'replay [JournalEvent],
-    reservations:       &'replay Result<RetainedReservationSet, ReservationReplayError>,
-    generation:         ProjectionGeneration,
-    journal_end_offset: JournalByteOffset,
+    coordination_events: &'replay [JournalEvent],
+    reservations:        &'replay Result<RetainedReservationSet, ReservationReplayError>,
+    generation:          ProjectionGeneration,
+    journal_end_offset:  JournalByteOffset,
 }
 
 impl<'replay> ReplayedLedgerState<'replay> {
-    /// Borrow every replayed fact in append order.
-    pub(crate) const fn events(&self) -> &[JournalEvent] { self.events }
+    /// Borrow every replayed record a coordination reader reads, in append order.
+    ///
+    /// See [`JournalOperation::is_coordination_record`].
+    pub(crate) const fn coordination_events(&self) -> &[JournalEvent] { self.coordination_events }
 
     /// Borrow the reservation set folded from every replayed record.
     ///
@@ -313,15 +320,10 @@ impl Ledger {
             identity::validate_journal_repository(repo_instance_id, &replay)?;
             projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
             Ok(ValidatedJournal {
-                events:       replay.events,
-                reservations: replay.reservations,
+                coordination_events: replay.coordination_events,
+                reservations:        replay.reservations,
             })
         })
-    }
-
-    /// Read every validated journal fact without holding the mutation lock.
-    pub(crate) fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
-        self.read_validated_journal().map(|journal| journal.events)
     }
 
     /// Validate against one locked replay and append only the approved operation.
@@ -335,10 +337,10 @@ impl Ledger {
             .begin_mutation()
             .map_err(LedgerTransactionError::from_ledger_error)?;
         let replayed_state = ReplayedLedgerState {
-            events:             &transaction.replay.events,
-            reservations:       &transaction.replay.reservations,
-            generation:         transaction.replay.generation,
-            journal_end_offset: transaction.replay.end_offset,
+            coordination_events: &transaction.replay.coordination_events,
+            reservations:        &transaction.replay.reservations,
+            generation:          transaction.replay.generation,
+            journal_end_offset:  transaction.replay.end_offset,
         };
         match validate(replayed_state) {
             TransactionValidation::Append(operation) => {
@@ -372,10 +374,10 @@ impl Ledger {
             .begin_mutation_with_tolerance(Duration::ZERO)
             .map_err(LedgerTransactionError::from_ledger_error)?;
         let replayed_state = ReplayedLedgerState {
-            events:             &transaction.replay.events,
-            reservations:       &transaction.replay.reservations,
-            generation:         transaction.replay.generation,
-            journal_end_offset: transaction.replay.end_offset,
+            coordination_events: &transaction.replay.coordination_events,
+            reservations:        &transaction.replay.reservations,
+            generation:          transaction.replay.generation,
+            journal_end_offset:  transaction.replay.end_offset,
         };
         match validate(replayed_state) {
             TransactionValidation::Append(operation) => {
@@ -453,10 +455,10 @@ impl Ledger {
             .map_err(LedgerTransactionError::from)
             .map_err(LedgerCommittedActionError::Transaction)?;
         let replayed_state = ReplayedLedgerState {
-            events:             &transaction.replay.events,
-            reservations:       &transaction.replay.reservations,
-            generation:         transaction.replay.generation,
-            journal_end_offset: transaction.replay.end_offset,
+            coordination_events: &transaction.replay.coordination_events,
+            reservations:        &transaction.replay.reservations,
+            generation:          transaction.replay.generation,
+            journal_end_offset:  transaction.replay.end_offset,
         };
         let outcome = match validate(replayed_state) {
             CommittedActionValidation::Append { operation, action } => {
@@ -518,10 +520,10 @@ impl Ledger {
             .map_err(LedgerTransactionError::from)
             .map_err(LedgerCommittedActionError::Transaction)?;
         let replayed_state = ReplayedLedgerState {
-            events:             &transaction.replay.events,
-            reservations:       &transaction.replay.reservations,
-            generation:         transaction.replay.generation,
-            journal_end_offset: transaction.replay.end_offset,
+            coordination_events: &transaction.replay.coordination_events,
+            reservations:        &transaction.replay.reservations,
+            generation:          transaction.replay.generation,
+            journal_end_offset:  transaction.replay.end_offset,
         };
         match validate(replayed_state) {
             ReconciliationValidation::Apply {
@@ -556,10 +558,10 @@ impl Ledger {
                     }
                 }
                 let committed_state = ReplayedLedgerState {
-                    events:             &transaction.replay.events,
-                    reservations:       &transaction.replay.reservations,
-                    generation:         transaction.replay.generation,
-                    journal_end_offset: transaction.replay.end_offset,
+                    coordination_events: &transaction.replay.coordination_events,
+                    reservations:        &transaction.replay.reservations,
+                    generation:          transaction.replay.generation,
+                    journal_end_offset:  transaction.replay.end_offset,
                 };
                 let action_output = commit_action(action, &committed_state, &recoverable_failures);
                 transaction
@@ -1035,6 +1037,7 @@ mod tests {
     use crate::ledger::ReservationScope;
     use crate::ledger::ScopeKind;
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
+    use crate::ledger::journal::complete_record_events;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
     use crate::reservation::MergeExtent;
@@ -1078,7 +1081,7 @@ mod tests {
         let repository_id = ledger.repository_identity().expect("identity should read");
         let operation = renewal_operation();
         let mut attempts = 0;
-        let events = super::retry_concurrent_projection_publication(|| {
+        let record_count = super::retry_concurrent_projection_publication(|| {
             attempts += 1;
             let replay = super::Journal::replay_read_only(&ledger.paths.journal)?;
             if attempts == 1 {
@@ -1089,10 +1092,14 @@ mod tests {
                     .expect("concurrent publication should append");
             }
             super::projection::read_validated(&ledger.paths.projection, repository_id, &replay)?;
-            Ok(replay.events)
+            Ok(replay.record_count)
         })
         .expect("fresh journal and projection should agree");
         assert_eq!(attempts, 2);
+        assert_eq!(record_count, 1);
+        let events =
+            complete_record_events(&fs::read(&ledger.paths.journal).expect("journal should read"))
+                .expect("journal should decode");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].operation, operation);
     }
@@ -1168,7 +1175,7 @@ mod tests {
 
         let rejected = ledger
             .transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
-                assert!(state.events().is_empty());
+                assert!(state.coordination_events().is_empty());
                 assert_eq!(u64::from(state.generation()), 0);
                 assert_eq!(u64::from(state.journal_end_offset()), 0);
                 TransactionValidation::Reject("overlap")
@@ -1451,7 +1458,7 @@ mod tests {
         let mut record_was_visible = false;
         let outcome = ledger
             .transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
-                record_was_visible = state.events().len() == 1;
+                record_was_visible = u64::from(state.journal_end_offset()) > 0;
                 TransactionValidation::Reject(())
             })
             .expect("next reader should replay journal truth");
@@ -1532,7 +1539,7 @@ mod tests {
             ledger: &Ledger,
         ) -> Result<LedgerTransactionOutcome<()>, LedgerTransactionError> {
             ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
-                assert!(state.events().is_empty());
+                assert!(state.coordination_events().is_empty());
                 assert_eq!(u64::from(state.generation()), 0);
                 assert_eq!(u64::from(state.journal_end_offset()), 0);
                 TransactionValidation::Append(Box::new(JournalOperation::Bypass {

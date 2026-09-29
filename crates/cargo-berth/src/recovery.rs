@@ -413,7 +413,7 @@ fn execute_reservation_resolution(
                         return CommittedActionValidation::Reject(RecoveryRejection::Replay(error));
                     },
                 };
-                let ordering_graph = match OrderingGraph::replay(state.events()) {
+                let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
                     Ok(ordering_graph) => ordering_graph,
                     Err(error) => {
                         return CommittedActionValidation::Reject(RecoveryRejection::EdgeReplay(

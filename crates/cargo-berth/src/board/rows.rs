@@ -674,7 +674,7 @@ impl BoardModel {
             generation:          report.journal_snapshot.generation(),
             journal_byte_offset: report.journal_snapshot.journal_end_offset(),
         };
-        let events = report.journal_snapshot.events();
+        let events = report.journal_snapshot.coordination_events();
         let reservations = report.journal_snapshot.reservations();
         if report.constraints.generation != position.generation {
             return Err(BoardError::MismatchedProjectionGeneration {

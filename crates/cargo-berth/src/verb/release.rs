@@ -346,7 +346,7 @@ fn validate_release_transaction(
         Ok(reservations) => reservations,
         Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
     };
-    let ordering_graph = match OrderingGraph::replay(state.events()) {
+    let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
         Ok(ordering_graph) => ordering_graph,
         Err(error) => {
             return CommittedActionValidation::Reject(ReleaseRejection::EdgeReplay(error));

@@ -206,7 +206,7 @@ pub(crate) fn enroll_worktrees(
     config: &BerthConfig,
 ) -> Result<WorktreeEnrollmentReport, LedgerError> {
     let ledger = Ledger::open_from_discovered_worktree(context)?;
-    let events = ledger.read_validated_events()?;
+    let events = ledger.read_validated_journal()?.into_coordination_events();
     let mut report = WorktreeEnrollmentReport::default();
     let registry = match WorktreeRegistry::read(context) {
         Ok(registry) => registry,
@@ -280,7 +280,9 @@ pub(crate) fn enroll_worktrees(
             Err(error) => report.failures.push(error),
         }
     }
-    report.overlaps = unresolved_enrollment_overlaps(&ledger.read_validated_events()?);
+    report.overlaps = unresolved_enrollment_overlaps(
+        &ledger.read_validated_journal()?.into_coordination_events(),
+    );
     Ok(report)
 }
 
@@ -671,7 +673,7 @@ fn enroll_candidate(
     let outcome = ledger
         .transact(candidate.worktree_id, run, |state| {
             if matches!(
-                reservation_history(state.events(), candidate.worktree_id),
+                reservation_history(state.coordination_events(), candidate.worktree_id),
                 ReservationHistory::AlreadyReserved
             ) {
                 return TransactionValidation::Reject(EnrollmentRejection::AlreadyReserved);

@@ -178,7 +178,7 @@ fn execute_sequence(
                 };
                 return TransactionValidation::Reject(rejection);
             }
-            let ordering_graph = match OrderingGraph::replay(state.events()) {
+            let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
                 Ok(ordering_graph) => ordering_graph,
                 Err(error) => {
                     return TransactionValidation::Reject(SequenceRejection::EdgeReplay(error));

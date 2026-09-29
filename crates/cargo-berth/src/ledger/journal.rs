@@ -1910,12 +1910,10 @@ impl std::error::Error for EmptySkippedIntegrationHoldSet {}
 /// A replayed journal and the metadata needed to validate its cache.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct JournalReplay {
-    /// Every fully parsed journal event in append order.
-    pub(super) events:              Vec<JournalEvent>,
     /// The reservation set folded record by record, or the first record it could not apply.
     ///
-    /// Equal to [`RetainedReservationSet::replay`] over `events`: no record after the first
-    /// failure is applied.
+    /// Equal to [`RetainedReservationSet::replay`] over every complete record: no record after
+    /// the first failure is applied.
     pub(super) reservations:        Result<RetainedReservationSet, ReservationReplayError>,
     /// Every event whose operation [`JournalOperation::is_coordination_record`], in append order.
     pub(super) coordination_events: Vec<JournalEvent>,
@@ -2034,6 +2032,45 @@ impl Journal {
 }
 
 fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), JournalError> {
+    let mut reservations = Ok(RetainedReservationSet::default());
+    let mut coordination_events = Vec::new();
+    let mut repositories = BTreeSet::new();
+    let mut record_count = 0_u64;
+    let mut generation = ProjectionGeneration::from(0);
+    let complete_end = decode_complete_records(bytes, |event| {
+        fold_reservations(&mut reservations, &event);
+        repositories.insert(event.actor.repository);
+        record_count += 1;
+        generation = event.projection_generation;
+        if event.operation.is_coordination_record() {
+            coordination_events.push(event);
+        }
+    })?;
+
+    let complete_bytes = &bytes[..complete_end];
+    Ok((
+        JournalReplay {
+            reservations,
+            coordination_events,
+            repositories,
+            record_count,
+            end_offset: JournalByteOffset::from(
+                u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?,
+            ),
+            fingerprint: JournalFingerprint::from_bytes(complete_bytes),
+            generation,
+        },
+        complete_end,
+    ))
+}
+
+/// Decode every newline-terminated record in append order, passing each event to `visit`.
+///
+/// Returns the byte length of the complete records; bytes after the last newline are ignored.
+fn decode_complete_records(
+    bytes: &[u8],
+    mut visit: impl FnMut(JournalEvent),
+) -> Result<usize, JournalError> {
     let complete_end = bytes
         .iter()
         .rposition(|byte| *byte == b'\n')
@@ -2041,11 +2078,6 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
     let complete_records = &bytes[..complete_end];
     let records = complete_records.split(|byte| *byte == b'\n');
     let line_count = records.clone().count();
-    let mut events = Vec::new();
-    let mut reservations = Ok(RetainedReservationSet::default());
-    let mut coordination_events = Vec::new();
-    let mut repositories = BTreeSet::new();
-    let mut record_count = 0_u64;
     for (line_index, record) in records.enumerate() {
         if record.is_empty() {
             if line_index + 1 == line_count {
@@ -2061,36 +2093,17 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
                 line:  line_index + 1,
                 error: error.to_string(),
             })?;
-        let event = decode_record(record, line_index + 1)?;
-        fold_reservations(&mut reservations, &event);
-        repositories.insert(event.actor.repository);
-        record_count += 1;
-        if event.operation.is_coordination_record() {
-            coordination_events.push(event.clone());
-        }
-        events.push(event);
+        visit(decode_record(record, line_index + 1)?);
     }
+    Ok(complete_end)
+}
 
-    let generation = events.last().map_or_else(
-        || ProjectionGeneration::from(0),
-        |event| event.projection_generation,
-    );
-    let complete_bytes = &bytes[..complete_end];
-    Ok((
-        JournalReplay {
-            events,
-            reservations,
-            coordination_events,
-            repositories,
-            record_count,
-            end_offset: JournalByteOffset::from(
-                u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?,
-            ),
-            fingerprint: JournalFingerprint::from_bytes(complete_bytes),
-            generation,
-        },
-        complete_end,
-    ))
+/// Decode every complete record, including the records no production reader retains.
+#[cfg(test)]
+pub(super) fn complete_record_events(bytes: &[u8]) -> Result<Vec<JournalEvent>, JournalError> {
+    let mut events = Vec::new();
+    decode_complete_records(bytes, |event| events.push(event))?;
+    Ok(events)
 }
 
 /// Apply one event to a reservation fold that has not yet failed.
@@ -2283,6 +2296,7 @@ mod tests {
     use super::WidenCause;
     use super::WorkPlanReference;
     use super::WorktreeAdministrativeLocator;
+    use super::complete_record_events;
     use super::replay_complete_records;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapScopeSet;
@@ -2444,7 +2458,7 @@ mod tests {
 
         let replay = journal.replay_repairing_tail().expect("tail should repair");
 
-        assert_eq!(replay.events.len(), 1);
+        assert_eq!(replay.record_count, 1);
         assert!(
             fs::read(&journal_path)
                 .expect("journal should read")
@@ -2571,7 +2585,7 @@ mod tests {
             journal
                 .replay_repairing_tail()
                 .expect("appended claim should replay")
-                .events,
+                .coordination_events,
             vec![journal_event]
         );
     }
@@ -2887,13 +2901,11 @@ mod tests {
                 journal.extend(serde_json::to_vec(event)?);
                 journal.push(b'\n');
             }
+            let prefix = &events[..prefix_length];
             let (replay, _) = replay_complete_records(&journal)?;
 
-            assert_eq!(replay.events, events[..prefix_length]);
-            assert_eq!(
-                replay.reservations,
-                RetainedReservationSet::replay(&replay.events)
-            );
+            assert_eq!(complete_record_events(&journal)?, prefix);
+            assert_eq!(replay.reservations, RetainedReservationSet::replay(prefix));
             assert_eq!(
                 replay.reservations.is_ok(),
                 prefix_length <= FOLD_FAILING_RECORD_INDEX,
@@ -2901,8 +2913,7 @@ mod tests {
             );
             assert_eq!(
                 replay.coordination_events,
-                replay
-                    .events
+                prefix
                     .iter()
                     .filter(|event| event.operation.is_coordination_record())
                     .cloned()
@@ -2910,13 +2921,19 @@ mod tests {
             );
             assert_eq!(
                 replay.repositories,
-                replay
-                    .events
+                prefix
                     .iter()
                     .map(|event| event.actor.repository)
                     .collect::<BTreeSet<_>>()
             );
             assert_eq!(replay.record_count, u64::try_from(prefix_length)?);
+            assert_eq!(
+                replay.generation,
+                prefix.last().map_or_else(
+                    || ProjectionGeneration::from(0),
+                    |event| event.projection_generation
+                )
+            );
         }
 
         let (replay, _) = replay_complete_records(&journal)?;
@@ -2926,8 +2943,7 @@ mod tests {
                 if reservation_id == parse_reservation_id(FOLD_RESERVATION_ID)
         ));
         assert_eq!(
-            replay
-                .events
+            events
                 .iter()
                 .map(|event| event.operation.is_coordination_record())
                 .collect::<Vec<_>>(),
@@ -2936,6 +2952,7 @@ mod tests {
                 true,
             ]
         );
+        assert_eq!(replay.coordination_events.len(), 6);
         assert_eq!(replay.repositories.len(), 3);
         Ok(())
     }
