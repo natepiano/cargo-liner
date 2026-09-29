@@ -8,6 +8,12 @@ pub(super) const SETTINGS_POPUP_WIDTH: u16 = 90;
 pub(super) const CONFIRM_DIALOG_HEIGHT: u16 = 3;
 pub(super) const CI_TIMESTAMP_WIDTH: u16 = 16;
 
+// Settings toggle values, as a toggle row carries them.
+/// A toggle row's value while the setting is on.
+pub(super) const TOGGLE_ON: &str = "ON";
+/// A toggle row's value while the setting is off.
+pub(super) const TOGGLE_OFF: &str = "OFF";
+
 pub(super) const MAX_FINDER_RESULTS: usize = 50;
 
 // cargo process commands

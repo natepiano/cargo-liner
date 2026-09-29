@@ -40,6 +40,8 @@ use tui_pane::write_value;
 
 use super::app::App;
 use super::constants::SETTINGS_POPUP_WIDTH;
+use super::constants::TOGGLE_OFF;
+use super::constants::TOGGLE_ON;
 use super::keymap_ui;
 use super::overlays::PopupFrame;
 use super::render;
@@ -86,6 +88,58 @@ pub(super) enum SettingOption {
     FocusedPaneTint,
     Transparent,
 }
+
+/// How a setting's row is drawn and how it answers the keys. Every row
+/// of one kind draws and behaves alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingKind {
+    /// On or off, drawn `< ON >`: left, right, Enter and Space all flip
+    /// it.
+    Toggle,
+    /// One of a run of values, drawn `< value >`: left and right step
+    /// it, and Enter steps it forward unless it opens the text editor.
+    Stepper,
+    /// Drawn as its value: Enter opens the text editor.
+    Value,
+}
+
+impl SettingOption {
+    const fn kind(self) -> SettingKind {
+        match self {
+            Self::InvertScroll
+            | Self::IncludeNonRust
+            | Self::NavigationKeys
+            | Self::EdgeScroll
+            | Self::LintsEnabled
+            | Self::LintOnDiscovery
+            | Self::FocusedPaneTint
+            | Self::Transparent => SettingKind::Toggle,
+            Self::CiRunCount | Self::AppearanceMode | Self::LightTheme | Self::DarkTheme => {
+                SettingKind::Stepper
+            },
+            Self::CacheRoot
+            | Self::Editor
+            | Self::TerminalCommand
+            | Self::MainBranch
+            | Self::OtherPrimaryBranches
+            | Self::IncludeDirs
+            | Self::ExcludeDirs
+            | Self::InlineDirs
+            | Self::StatusToastVisibleSecs
+            | Self::FinishedTaskVisibleSecs
+            | Self::DiscoveryShimmerSecs
+            | Self::CpuPollMs
+            | Self::CpuLowUtilizationMaxPercent
+            | Self::CpuMediumUtilizationMaxPercent
+            | Self::LintProjects
+            | Self::LintCommands
+            | Self::LintCacheSize => SettingKind::Value,
+        }
+    }
+}
+
+/// A toggle row's value: [`TOGGLE_ON`] or [`TOGGLE_OFF`].
+fn on_off(on: bool) -> String { if on { TOGGLE_ON } else { TOGGLE_OFF }.to_string() }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
     value
@@ -1207,22 +1261,12 @@ fn appearance_settings_rows(cargo_port_config: &CargoPortConfig) -> Vec<Settings
         (
             Some(SettingOption::FocusedPaneTint),
             "Focused pane tint".to_string(),
-            if cargo_port_config.appearance.focused_pane_tint.is_enabled() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(cargo_port_config.appearance.focused_pane_tint.is_enabled()),
         ),
         (
             Some(SettingOption::Transparent),
             "Transparent".to_string(),
-            if cargo_port_config.appearance.transparent.is_transparent() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(cargo_port_config.appearance.transparent.is_transparent()),
         ),
     ]
 }
@@ -1233,42 +1277,22 @@ fn general_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<
         (
             Some(SettingOption::InvertScroll),
             "Invert scroll".to_string(),
-            if app.config.invert_scroll().is_inverted() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(app.config.invert_scroll().is_inverted()),
         ),
         (
             Some(SettingOption::IncludeNonRust),
             "Non-Rust projects".to_string(),
-            if app.config.include_non_rust().includes_non_rust() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(app.config.include_non_rust().includes_non_rust()),
         ),
         (
             Some(SettingOption::NavigationKeys),
             "Vim nav keys".to_string(),
-            if app.config.navigation_keys().uses_vim() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(app.config.navigation_keys().uses_vim()),
         ),
         (
             Some(SettingOption::EdgeScroll),
             "Edge scroll advances pane".to_string(),
-            if app.config.edge_scroll().advances_pane() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(app.config.edge_scroll().advances_pane()),
         ),
         (
             Some(SettingOption::CiRunCount),
@@ -1366,22 +1390,12 @@ fn lint_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<Set
         (
             Some(SettingOption::LintsEnabled),
             "Enabled".to_string(),
-            if app.config.lint_enabled() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(app.config.lint_enabled()),
         ),
         (
             Some(SettingOption::LintOnDiscovery),
             "Lint on discovery".to_string(),
-            if cargo_port_config.lint.on_discovery.is_immediate() {
-                "ON"
-            } else {
-                "OFF"
-            }
-            .to_string(),
+            on_off(cargo_port_config.lint.on_discovery.is_immediate()),
         ),
         (
             Some(SettingOption::LintProjects),
@@ -1549,12 +1563,16 @@ fn framework_settings_rows(app: &App, rows: &[SettingsUiRow]) -> Vec<FrameworkSe
             framework_rows.push(FrameworkSettingsRow::section(label.clone()));
             continue;
         };
-        let mut row = if is_toggle_setting(Some(setting)) {
-            FrameworkSettingsRow::toggle(selection_index, label.clone(), value == "ON")
-        } else if is_stepper_setting(setting) {
-            FrameworkSettingsRow::stepper(selection_index, label.clone(), value.clone())
-        } else {
-            FrameworkSettingsRow::value(selection_index, label.clone(), value.clone())
+        let mut row = match setting.kind() {
+            SettingKind::Toggle => {
+                FrameworkSettingsRow::toggle(selection_index, label.clone(), value == TOGGLE_ON)
+            },
+            SettingKind::Stepper => {
+                FrameworkSettingsRow::stepper(selection_index, label.clone(), value.clone())
+            },
+            SettingKind::Value => {
+                FrameworkSettingsRow::value(selection_index, label.clone(), value.clone())
+            },
         };
         if matches!(
             setting,
@@ -1578,30 +1596,6 @@ fn framework_settings_rows(app: &App, rows: &[SettingsUiRow]) -> Vec<FrameworkSe
         selection_index += 1;
     }
     framework_rows
-}
-
-const fn is_toggle_setting(setting: Option<SettingOption>) -> bool {
-    matches!(
-        setting,
-        Some(
-            SettingOption::InvertScroll
-                | SettingOption::IncludeNonRust
-                | SettingOption::NavigationKeys
-                | SettingOption::EdgeScroll
-                | SettingOption::LintsEnabled
-                | SettingOption::LintOnDiscovery,
-        )
-    )
-}
-
-const fn is_stepper_setting(setting: SettingOption) -> bool {
-    matches!(
-        setting,
-        SettingOption::CiRunCount
-            | SettingOption::AppearanceMode
-            | SettingOption::LightTheme
-            | SettingOption::DarkTheme,
-    )
 }
 
 const fn settings_is_editing(app: &App) -> bool { app.framework.settings_pane.is_editing() }
@@ -1666,55 +1660,39 @@ fn close_settings_overlay(app: &mut App) {
 }
 
 fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<SettingOption>) {
+    let Some(setting) = setting else { return };
+    match setting.kind() {
+        SettingKind::Toggle => flip_toggle(app, setting),
+        SettingKind::Stepper => {
+            step_setting(app, setting, if key == KeyCode::Right { 1 } else { -1 });
+        },
+        SettingKind::Value => {},
+    }
+}
+
+/// Flip a [`SettingKind::Toggle`] setting and save it. Every toggle
+/// row reaches here, from left, right, Enter and Space alike.
+fn flip_toggle(app: &mut App, setting: SettingOption) {
     match setting {
-        Some(SettingOption::InvertScroll) => {
+        SettingOption::InvertScroll => {
             let next = !app.config.invert_scroll().is_inverted();
             let _ = save_app_setting_with_toast(app, |table| set_invert_scroll(table, next));
         },
-        Some(SettingOption::NavigationKeys) => {
-            toggle_vim_mode(app);
-        },
-        Some(SettingOption::EdgeScroll) => {
+        SettingOption::NavigationKeys => toggle_vim_mode(app),
+        SettingOption::EdgeScroll => {
             let next = !app.config.edge_scroll().advances_pane();
             let _ = save_app_setting_with_toast(app, |table| set_edge_scroll(table, next));
         },
-        Some(SettingOption::CiRunCount) => {
-            let current = app.config.current().tui.ci_run_count;
-            let next = if key == KeyCode::Right {
-                current.saturating_add(1)
-            } else {
-                current.saturating_sub(1).max(1)
-            };
-            let _ =
-                save_app_setting_with_toast(app, |table| set_ci_run_count(table, i64::from(next)));
-        },
-        Some(SettingOption::IncludeNonRust) => {
+        SettingOption::IncludeNonRust => {
             let next = !app.config.include_non_rust().includes_non_rust();
             let _ = save_app_setting_with_toast(app, |table| set_include_non_rust(table, next));
         },
-        Some(SettingOption::LintsEnabled) => {
-            toggle_lints(app);
-        },
-        Some(SettingOption::LintOnDiscovery) => {
+        SettingOption::LintsEnabled => toggle_lints(app),
+        SettingOption::LintOnDiscovery => {
             let next = !app.config.current().lint.on_discovery.is_immediate();
             let _ = save_app_setting_with_toast(app, |table| set_lint_on_discovery(table, next));
         },
-        Some(SettingOption::AppearanceMode) => {
-            let step = if key == KeyCode::Right { 1 } else { -1 };
-            let next = cycle_appearance_mode(&app.config.current().appearance.mode, step);
-            let _ = save_app_setting_with_toast(app, |table| set_appearance_mode(table, &next));
-        },
-        Some(SettingOption::LightTheme) => cycle_appearance_theme_setting(
-            app,
-            Appearance::Light,
-            if key == KeyCode::Right { 1 } else { -1 },
-        ),
-        Some(SettingOption::DarkTheme) => cycle_appearance_theme_setting(
-            app,
-            Appearance::Dark,
-            if key == KeyCode::Right { 1 } else { -1 },
-        ),
-        Some(SettingOption::FocusedPaneTint) => {
+        SettingOption::FocusedPaneTint => {
             let next = !app
                 .config
                 .current()
@@ -1723,30 +1701,79 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
                 .is_enabled();
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
-        Some(SettingOption::Transparent) => {
+        SettingOption::Transparent => {
             let next = !app.config.current().appearance.transparent.is_transparent();
             let _ = save_app_setting_with_toast(app, |table| set_transparent(table, next));
         },
-        Some(
-            SettingOption::Editor
-            | SettingOption::TerminalCommand
-            | SettingOption::CacheRoot
-            | SettingOption::MainBranch
-            | SettingOption::OtherPrimaryBranches
-            | SettingOption::IncludeDirs
-            | SettingOption::ExcludeDirs
-            | SettingOption::InlineDirs
-            | SettingOption::StatusToastVisibleSecs
-            | SettingOption::FinishedTaskVisibleSecs
-            | SettingOption::DiscoveryShimmerSecs
-            | SettingOption::CpuPollMs
-            | SettingOption::CpuLowUtilizationMaxPercent
-            | SettingOption::CpuMediumUtilizationMaxPercent
-            | SettingOption::LintProjects
-            | SettingOption::LintCommands
-            | SettingOption::LintCacheSize,
-        )
-        | None => {},
+        SettingOption::CacheRoot
+        | SettingOption::CiRunCount
+        | SettingOption::Editor
+        | SettingOption::TerminalCommand
+        | SettingOption::MainBranch
+        | SettingOption::OtherPrimaryBranches
+        | SettingOption::IncludeDirs
+        | SettingOption::ExcludeDirs
+        | SettingOption::InlineDirs
+        | SettingOption::StatusToastVisibleSecs
+        | SettingOption::FinishedTaskVisibleSecs
+        | SettingOption::DiscoveryShimmerSecs
+        | SettingOption::CpuPollMs
+        | SettingOption::CpuLowUtilizationMaxPercent
+        | SettingOption::CpuMediumUtilizationMaxPercent
+        | SettingOption::LintProjects
+        | SettingOption::LintCommands
+        | SettingOption::LintCacheSize
+        | SettingOption::AppearanceMode
+        | SettingOption::LightTheme
+        | SettingOption::DarkTheme => {},
+    }
+}
+
+/// Step a [`SettingKind::Stepper`] setting `step` values along and
+/// save it.
+fn step_setting(app: &mut App, setting: SettingOption, step: i32) {
+    match setting {
+        SettingOption::CiRunCount => {
+            let current = app.config.current().tui.ci_run_count;
+            let next = if step > 0 {
+                current.saturating_add(1)
+            } else {
+                current.saturating_sub(1).max(1)
+            };
+            let _ =
+                save_app_setting_with_toast(app, |table| set_ci_run_count(table, i64::from(next)));
+        },
+        SettingOption::AppearanceMode => {
+            let next = cycle_appearance_mode(&app.config.current().appearance.mode, step);
+            let _ = save_app_setting_with_toast(app, |table| set_appearance_mode(table, &next));
+        },
+        SettingOption::LightTheme => cycle_appearance_theme_setting(app, Appearance::Light, step),
+        SettingOption::DarkTheme => cycle_appearance_theme_setting(app, Appearance::Dark, step),
+        SettingOption::CacheRoot
+        | SettingOption::InvertScroll
+        | SettingOption::IncludeNonRust
+        | SettingOption::NavigationKeys
+        | SettingOption::EdgeScroll
+        | SettingOption::Editor
+        | SettingOption::TerminalCommand
+        | SettingOption::MainBranch
+        | SettingOption::OtherPrimaryBranches
+        | SettingOption::IncludeDirs
+        | SettingOption::ExcludeDirs
+        | SettingOption::InlineDirs
+        | SettingOption::StatusToastVisibleSecs
+        | SettingOption::FinishedTaskVisibleSecs
+        | SettingOption::DiscoveryShimmerSecs
+        | SettingOption::CpuPollMs
+        | SettingOption::CpuLowUtilizationMaxPercent
+        | SettingOption::CpuMediumUtilizationMaxPercent
+        | SettingOption::LintsEnabled
+        | SettingOption::LintOnDiscovery
+        | SettingOption::LintProjects
+        | SettingOption::LintCommands
+        | SettingOption::LintCacheSize
+        | SettingOption::FocusedPaneTint
+        | SettingOption::Transparent => {},
     }
 }
 
@@ -1829,55 +1856,13 @@ fn settings_edit_seed(app: &App, setting: SettingOption) -> Option<String> {
 }
 
 /// Apply a setting that changes in place on activation rather than opening
-/// the inline editor. Settings with an editor seed never reach here.
+/// the inline editor: a toggle flips, a stepper steps forward. Settings
+/// with an editor seed never reach here.
 fn toggle_setting(app: &mut App, setting: SettingOption) {
-    match setting {
-        SettingOption::InvertScroll => {
-            let next = !app.config.invert_scroll().is_inverted();
-            let _ = save_app_setting_with_toast(app, |table| set_invert_scroll(table, next));
-        },
-        SettingOption::NavigationKeys => {
-            toggle_vim_mode(app);
-        },
-        SettingOption::EdgeScroll => {
-            let next = !app.config.edge_scroll().advances_pane();
-            let _ = save_app_setting_with_toast(app, |table| set_edge_scroll(table, next));
-        },
-        SettingOption::IncludeNonRust => {
-            let next = !app.config.include_non_rust().includes_non_rust();
-            let _ = save_app_setting_with_toast(app, |table| set_include_non_rust(table, next));
-        },
-        SettingOption::LintsEnabled => {
-            toggle_lints(app);
-        },
-        SettingOption::LintOnDiscovery => {
-            let next = !app.config.current().lint.on_discovery.is_immediate();
-            let _ = save_app_setting_with_toast(app, |table| set_lint_on_discovery(table, next));
-        },
-        SettingOption::AppearanceMode => {
-            let next = cycle_appearance_mode(&app.config.current().appearance.mode, 1);
-            let _ = save_app_setting_with_toast(app, |table| set_appearance_mode(table, &next));
-        },
-        SettingOption::LightTheme => {
-            cycle_appearance_theme_setting(app, Appearance::Light, 1);
-        },
-        SettingOption::DarkTheme => {
-            cycle_appearance_theme_setting(app, Appearance::Dark, 1);
-        },
-        SettingOption::FocusedPaneTint => {
-            let next = !app
-                .config
-                .current()
-                .appearance
-                .focused_pane_tint
-                .is_enabled();
-            let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
-        },
-        SettingOption::Transparent => {
-            let next = !app.config.current().appearance.transparent.is_transparent();
-            let _ = save_app_setting_with_toast(app, |table| set_transparent(table, next));
-        },
-        _ => {},
+    match setting.kind() {
+        SettingKind::Toggle => flip_toggle(app, setting),
+        SettingKind::Stepper => step_setting(app, setting, 1),
+        SettingKind::Value => {},
     }
 }
 
@@ -2092,6 +2077,7 @@ mod tests {
     use super::config::Transparency;
     use super::config::WorkspaceMemberInclusion;
     use super::*;
+    use crate::tui::test_support;
 
     #[test]
     fn setting_selection_ignores_section_headers() {
@@ -2100,7 +2086,7 @@ mod tests {
             (
                 Some(SettingOption::InvertScroll),
                 "Invert scroll".to_string(),
-                "ON".to_string(),
+                on_off(true),
             ),
             (None, "Toasts".to_string(), String::new()),
             (
@@ -2119,6 +2105,26 @@ mod tests {
             Some(SettingOption::StatusToastVisibleSecs)
         );
         assert_eq!(setting_at_selection(&rows, 2), None);
+    }
+
+    /// Every row showing ON or OFF is a toggle, so it draws `< ON >`
+    /// and flips on every key like the rest, the appearance rows among
+    /// them.
+    #[test]
+    fn every_on_off_row_is_a_toggle() {
+        let app = test_support::make_app(&[]);
+        let rows = settings_rows(&app, app.config.current());
+        let on_off_rows: Vec<SettingOption> = rows
+            .iter()
+            .filter(|(_, _, value)| value == TOGGLE_ON || value == TOGGLE_OFF)
+            .filter_map(|(setting, _, _)| *setting)
+            .collect();
+
+        assert!(on_off_rows.contains(&SettingOption::FocusedPaneTint));
+        assert!(on_off_rows.contains(&SettingOption::Transparent));
+        for setting in on_off_rows {
+            assert_eq!(setting.kind(), SettingKind::Toggle, "{setting:?}");
+        }
     }
 
     #[test]
