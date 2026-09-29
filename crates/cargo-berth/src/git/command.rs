@@ -2,6 +2,7 @@
 
 use std::io;
 use std::io::Error;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -163,10 +164,18 @@ fn command_output_with_input(mut command: Command, input: &[u8]) -> io::Result<O
             result
         });
         let output = child.wait_with_output();
-        input_writer
+        let written = input_writer
             .join()
-            .map_err(|_| io::Error::other("git child standard input writer panicked"))??;
-        output
+            .map_err(|_| io::Error::other("git child standard input writer panicked"))?;
+        let output = output?;
+        match written {
+            // A git that fails before reading all of its input closes the pipe under the writer;
+            // its exit status and standard error, not the broken pipe, say why it failed.
+            Err(error) if error.kind() == ErrorKind::BrokenPipe && !output.status.success() => {
+                Ok(output)
+            },
+            written => written.map(|()| output),
+        }
     })
 }
 
@@ -174,14 +183,19 @@ fn command_output_with_input(mut command: Command, input: &[u8]) -> io::Result<O
 mod tests {
     use std::error::Error;
     use std::ffi::OsStr;
+    use std::io::ErrorKind;
     use std::path::Path;
     use std::process::Command;
 
     use super::GitHookExecutionPolicy;
+    use super::command_output_with_input;
     use super::git_command_with_hook_execution_policy;
     use crate::git::constants::BERTH_EXECUTABLE_ENVIRONMENT;
 
     const CHILD_PROCESS_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_COMMAND_ENVIRONMENT_CHILD";
+    /// Input past every default pipe capacity, so a child that exits without reading it always
+    /// leaves the writer facing a closed pipe.
+    const UNREAD_INPUT_BYTES: usize = 256 * 1024;
 
     #[test]
     fn enabled_hooks_use_current_berth_when_override_is_missing_or_empty()
@@ -307,6 +321,30 @@ mod tests {
             Some(OsStr::new("/dev/null"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_child_that_fails_before_reading_its_input_reports_its_own_failure()
+    -> Result<(), Box<dyn Error>> {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo refused >&2; exit 3"]);
+        let output = command_output_with_input(command, &vec![b'\n'; UNREAD_INPUT_BYTES])?;
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused");
+        Ok(())
+    }
+
+    #[test]
+    fn a_child_that_succeeds_without_reading_its_input_reports_the_broken_pipe() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 0"]);
+        let result = command_output_with_input(command, &vec![b'\n'; UNREAD_INPUT_BYTES]);
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.kind() == ErrorKind::BrokenPipe),
+            "unread input should surface as a broken pipe: {result:?}"
+        );
     }
 
     fn explicit_environment_value<'command>(
