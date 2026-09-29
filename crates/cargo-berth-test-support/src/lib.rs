@@ -9,19 +9,22 @@
 //! here: `berth_command` starts `cargo-berth` without the test process's Claude
 //! Code session, `GitDriver` runs git under one test file's policy,
 //! `IntegrationRepository` builds a repository whose lanes target an
-//! `integration` branch, and `observes_merge_extent_of` reads a merge extent
-//! observation in either record form. Only a test crate of the `cargo-berth`
-//! package can expand `env!("CARGO_BIN_EXE_cargo-berth")`, so each entry point here that
-//! runs `cargo-berth`, directly or through a git hook, takes that path as its
-//! `executable`.
+//! `integration` branch, `DirectorySnapshot` restores a fixture built once
+//! before each case that starts from it, and `observes_merge_extent_of` reads
+//! a merge extent observation in either record form. Only a test crate of the
+//! `cargo-berth` package can expand `env!("CARGO_BIN_EXE_cargo-berth")`, so
+//! each entry point here that runs `cargo-berth`, directly or through a git
+//! hook, takes that path as its `executable`.
 
 mod berth_command;
+mod directory_snapshot;
 mod git_driver;
 mod integration_repository;
 mod journal_records;
 
 pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
+pub use directory_snapshot::DirectorySnapshot;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
 pub use git_driver::GitDriver;
 pub use git_driver::OptionalLocks;

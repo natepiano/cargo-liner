@@ -12,6 +12,7 @@ mod timing;
 mod split_rebase;
 
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
+use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
@@ -4372,9 +4373,11 @@ fn hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock() {
 #[test]
 fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
     // This invokes berth's installed git post-commit hook. The external Claude
-    // PostToolUse shim is outside this repository and is not exercised here.
-    let one_reservation = post_commit_reservation_cardinality_trace(1);
-    let three_reservations = post_commit_reservation_cardinality_trace(3);
+    // PostToolUse shim is outside this repository and is not exercised here. Every cell restores
+    // one shared fixture, so the cells differ only in what they claim, write and commit.
+    let fixture = PostCommitCellFixture::new();
+    let one_reservation = post_commit_reservation_cardinality_trace(&fixture, 1);
+    let three_reservations = post_commit_reservation_cardinality_trace(&fixture, 3);
 
     assert_same_git_process_multiset(&one_reservation, &three_reservations);
     assert_eq!(
@@ -4397,20 +4400,20 @@ fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
         1
     );
 
-    let attributed_baseline = post_commit_path_commit_cardinality_trace(1, 1);
+    let attributed_baseline = post_commit_path_commit_cardinality_trace(&fixture, 1, 1);
     assert_eq!(
         attributed_baseline.len(),
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
     );
     assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
-    // Each cell builds its own repository, so a cell already traced is reused instead of
-    // rebuilt: the baseline is the (1, 1) cell, and the wide cells skip the small grid.
+    // A cell already traced is reused instead of traced again: the baseline is the (1, 1)
+    // cell, and the wide cells skip the small grid.
     for path_count in [0, 1, 2] {
         for commit_count in [0, 1, 2] {
             let observed = if (path_count, commit_count) == (1, 1) {
                 attributed_baseline.clone()
             } else {
-                post_commit_path_commit_cardinality_trace(path_count, commit_count)
+                post_commit_path_commit_cardinality_trace(&fixture, path_count, commit_count)
             };
             assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
             if path_count > 0 && commit_count > 0 {
@@ -4423,7 +4426,8 @@ fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
     }
 
     for (path_count, commit_count) in [(0, 14), (0, 100), (4, 0), (33, 0)] {
-        let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
+        let observed =
+            post_commit_path_commit_cardinality_trace(&fixture, path_count, commit_count);
         assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
         assert_eq!(git_command_count(&observed, "log"), 0);
     }
@@ -5513,18 +5517,54 @@ fn run_hook_at_path(
         .expect("managed hook should finish")
 }
 
-fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<RawGitInvocation> {
-    let repository = initialized_repository();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let subject_root = add_worktree(
-        repository.path(),
-        worktrees.path(),
-        "hook-incursion-subject",
-    );
-    dirty_source(repository.path(), "hook-incursion/entered.txt");
+/// The configured repository and subject worktree every post-commit cardinality cell starts from.
+///
+/// Each cell needs the same repository with one linked worktree, which costs a hooked commit and
+/// a hooked `git worktree add` to build. `new` builds it once and captures both trees, and
+/// `restore` writes them back before each cell at the paths they were built at, because git
+/// records a linked worktree and its repository by absolute path.
+struct PostCommitCellFixture {
+    repository:          TempDir,
+    worktrees:           TempDir,
+    subject_root:        PathBuf,
+    repository_snapshot: DirectorySnapshot,
+    worktrees_snapshot:  DirectorySnapshot,
+}
+
+impl PostCommitCellFixture {
+    fn new() -> Self {
+        let repository = initialized_repository();
+        let worktrees = tempdir().expect("worktree parent should exist");
+        let subject_root = add_worktree(repository.path(), worktrees.path(), "hook-subject");
+        let repository_snapshot = DirectorySnapshot::capture(repository.path());
+        let worktrees_snapshot = DirectorySnapshot::capture(worktrees.path());
+        Self {
+            repository,
+            worktrees,
+            subject_root,
+            repository_snapshot,
+            worktrees_snapshot,
+        }
+    }
+
+    /// Discard what the previous cell wrote and return the repository root.
+    fn restore(&self) -> &Path {
+        self.repository_snapshot.restore(self.repository.path());
+        self.worktrees_snapshot.restore(self.worktrees.path());
+        self.repository.path()
+    }
+}
+
+fn post_commit_reservation_cardinality_trace(
+    fixture: &PostCommitCellFixture,
+    reservation_count: usize,
+) -> Vec<RawGitInvocation> {
+    let repository_root = fixture.restore();
+    let subject_root = fixture.subject_root.as_path();
+    dirty_source(repository_root, "hook-incursion/entered.txt");
     assert!(
         claim(
-            repository.path(),
+            repository_root,
             "tree:hook-incursion",
             FIRST_RUN,
             "docs/hook-incursion-holder.md",
@@ -5537,7 +5577,7 @@ fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<Ra
         let subject_path = format!("subject-{index}.txt");
         assert!(
             claim(
-                &subject_root,
+                subject_root,
                 &format!("file:{subject_path}"),
                 SECOND_RUN,
                 "docs/hook-incursion-subject.md",
@@ -5551,9 +5591,9 @@ fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<Ra
             format!("subject {index}\n"),
         )
         .expect("hook subject path should write");
-        git(&subject_root, &["add", &subject_path]);
+        git(subject_root, &["add", &subject_path]);
         git(
-            &subject_root,
+            subject_root,
             &[
                 "-c",
                 "core.hooksPath=/dev/null",
@@ -5568,9 +5608,9 @@ fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<Ra
         .expect("hook incursion directory should exist");
     fs::write(subject_root.join("hook-incursion/entered.txt"), "entered\n")
         .expect("hook incursion path should write");
-    git(&subject_root, &["add", "hook-incursion/entered.txt"]);
+    git(subject_root, &["add", "hook-incursion/entered.txt"]);
     git(
-        &subject_root,
+        subject_root,
         &[
             "-c",
             "core.hooksPath=/dev/null",
@@ -5580,9 +5620,9 @@ fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<Ra
             "hook incursion work",
         ],
     );
-    let post_commit_hook = repository.path().join(".git/hooks/post-commit");
+    let post_commit_hook = repository_root.join(".git/hooks/post-commit");
     let (output, invocations) =
-        run_command_with_raw_git_trace(&subject_root, post_commit_hook.as_os_str(), &[]);
+        run_command_with_raw_git_trace(subject_root, post_commit_hook.as_os_str(), &[]);
     assert!(
         output.status.success(),
         "traced post-commit hook failed: {}",
@@ -5592,25 +5632,21 @@ fn post_commit_reservation_cardinality_trace(reservation_count: usize) -> Vec<Ra
 }
 
 fn post_commit_path_commit_cardinality_trace(
+    fixture: &PostCommitCellFixture,
     path_count: usize,
     commit_count: usize,
 ) -> Vec<RawGitInvocation> {
-    let repository = initialized_repository();
-    let worktrees = tempdir().expect("worktree parent should exist");
-    let subject_root = add_worktree(
-        repository.path(),
-        worktrees.path(),
-        "hook-cardinality-subject",
-    );
+    let repository_root = fixture.restore();
+    let subject_root = fixture.subject_root.as_path();
     for index in 0..path_count {
         dirty_source(
-            repository.path(),
+            repository_root,
             &format!("hook-cardinality/path-{index}.txt"),
         );
     }
     assert!(
         claim(
-            repository.path(),
+            repository_root,
             "tree:hook-cardinality",
             FIRST_RUN,
             "docs/hook-cardinality-holder.md",
@@ -5621,7 +5657,7 @@ fn post_commit_path_commit_cardinality_trace(
     );
     assert!(
         claim(
-            &subject_root,
+            subject_root,
             "file:subject.txt",
             SECOND_RUN,
             "docs/hook-cardinality-subject.md",
@@ -5658,10 +5694,10 @@ fn post_commit_path_commit_cardinality_trace(
         // Only the first commit adds new paths; `commit --all` stages every later edit
         // without a separate `git add` process per commit.
         if commit_index == 0 {
-            git(&subject_root, &["add", "-A"]);
+            git(subject_root, &["add", "-A"]);
         }
         git(
-            &subject_root,
+            subject_root,
             &[
                 "-c",
                 "core.hooksPath=/dev/null",
@@ -5682,9 +5718,9 @@ fn post_commit_path_commit_cardinality_trace(
             .expect("uncommitted cardinality path should write");
         }
     }
-    let post_commit_hook = repository.path().join(".git/hooks/post-commit");
+    let post_commit_hook = repository_root.join(".git/hooks/post-commit");
     let (output, invocations) =
-        run_command_with_raw_git_trace(&subject_root, post_commit_hook.as_os_str(), &[]);
+        run_command_with_raw_git_trace(subject_root, post_commit_hook.as_os_str(), &[]);
     assert!(
         output.status.success(),
         "traced post-commit hook failed: {}",
