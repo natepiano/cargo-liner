@@ -327,7 +327,17 @@ fn checkpoint_ranges_with_reconciliation(history: &TwoRebaseHistory, timing: Rec
     drain_markers(fixture, &[first, second], CheckpointPlacement::OnTrunk);
     assert_final_checkpoint(fixture, first, earlier_tip, final_tip);
     assert_final_checkpoint(fixture, second, final_tip, final_tip);
-    GIT.run(&fixture.holder, ["switch", "--quiet", "--detach"]);
+    // Detaching moves only HEAD, which the hooks never pass to cargo-berth.
+    GIT.run(
+        &fixture.holder,
+        [
+            "-c",
+            "core.hooksPath=/dev/null",
+            "switch",
+            "--quiet",
+            "--detach",
+        ],
+    );
     GIT.run(fixture.root(), ["branch", "-D", "holder"]);
     let settled = board(fixture.root());
     for id in [first, second] {
