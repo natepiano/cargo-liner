@@ -46,6 +46,7 @@ pub(crate) use outcome::FixNotice;
 pub(crate) use outcome::FixValidationFailure;
 pub(crate) use outcome::MendFailure;
 pub(crate) use outcome::NoticeKind;
+pub(crate) use outcome::PassEdits;
 pub(crate) use outcome::PubUseNotice;
 pub(crate) use outcome::RollbackStatus;
 pub(crate) use render::ColorMode;

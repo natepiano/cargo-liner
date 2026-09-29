@@ -30,6 +30,15 @@ impl FixCli {
         self.requested_fixes.contains(&requested_fix)
     }
 
+    /// Whether this run writes fixes to disk, as opposed to reporting or
+    /// previewing them.
+    pub(crate) const fn applies_fixes(&self) -> bool {
+        matches!(
+            self.execution,
+            FixExecution::ApplyRequested | FixExecution::ApplyAll
+        )
+    }
+
     pub(crate) fn runs_compiler_fix(&self) -> bool {
         match self.execution {
             FixExecution::ApplyAll => true,

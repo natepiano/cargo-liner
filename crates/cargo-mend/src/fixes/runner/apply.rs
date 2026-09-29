@@ -9,6 +9,7 @@ use crate::reporting::ExecutionOutcome;
 use crate::reporting::FixValidationFailure;
 use crate::reporting::MendFailure;
 use crate::reporting::OutputFormat;
+use crate::reporting::PassEdits;
 use crate::reporting::RollbackStatus;
 
 impl MendRunner<'_> {
@@ -40,6 +41,7 @@ impl MendRunner<'_> {
                 compiler_fixable,
                 applied_pub_use: 0,
                 applied_subtree_reexport: false,
+                pass_edits: PassEdits::Unchanged,
                 compiler_warning_facts: warning_facts,
             });
         }
@@ -74,6 +76,7 @@ impl MendRunner<'_> {
                     compiler_fixable,
                     applied_pub_use,
                     applied_subtree_reexport,
+                    pass_edits: PassEdits::Written,
                     compiler_warning_facts: warning_facts,
                 })
             },

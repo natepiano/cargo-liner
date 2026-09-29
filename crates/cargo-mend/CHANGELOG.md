@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `--fix` stops once a pass writes no edit, instead of running one more full `cargo check` and scan that would find the same nothing. A `--fix` run with nothing to fix now checks the crate once, and its compiler warnings print once instead of twice. A pass that `cargo fix` (`--fix-compiler`, `--fix-all`) followed still gets the re-check.
+
 ## [0.22.1] - 2026-09-25
 
 ### Added

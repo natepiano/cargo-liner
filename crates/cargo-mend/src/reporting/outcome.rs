@@ -11,6 +11,13 @@ use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Report;
 use crate::config::OperationIntent;
 
+/// Whether a `--fix` pass wrote any mend edit to disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PassEdits {
+    Written,
+    Unchanged,
+}
+
 #[derive(Debug)]
 pub(crate) struct ExecutionOutcome {
     pub report:                   Report,
@@ -24,6 +31,9 @@ pub(crate) struct ExecutionOutcome {
     /// link of a re-export chain turns the next link into a new finding, so a
     /// pass can make progress while the fixable count stays level.
     pub applied_subtree_reexport: bool,
+    /// Whether this pass wrote mend edits; a pass that wrote none leaves the
+    /// tree the next pass would plan against unchanged.
+    pub pass_edits:               PassEdits,
     /// Post-apply validation's compiler-warning summary — `UnusedImportWarnings`
     /// signals that `cargo fix` should be chained to clean up the cascade.
     pub compiler_warning_facts:   CompilerWarningFacts,

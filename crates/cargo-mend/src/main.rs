@@ -32,7 +32,6 @@ use anyhow::Result;
 use compiler::DRIVER_ENV;
 use config::BuildInfoMode;
 use config::DiagnosticsConfig;
-use config::FixExecution;
 use config::OperationMode;
 use config::WarningPolicy;
 use constants::BUILD_INFO_UNKNOWN;
@@ -54,6 +53,7 @@ use reporting::EXIT_CODE_WARNING;
 use reporting::ExecutionOutcome;
 use reporting::MendFailure;
 use reporting::OutputFormat;
+use reporting::PassEdits;
 use selection::DisplayFilter;
 use selection::Selection;
 
@@ -151,16 +151,15 @@ fn run() -> Result<ExitCode, MendFailure> {
         //  2. `--fix-pub-use` (or its bundle inside `--fix-all`) just applied edits that produced
         //     `unused import` warnings; auto-clean them.
         let user_asked_for_compiler_fix = cli.fix.runs_compiler_fix();
-        let pub_use_self_heal = matches!(
-            cli.fix.execution,
-            FixExecution::ApplyRequested | FixExecution::ApplyAll
-        ) && outcome.applied_pub_use > 0
+        let pub_use_self_heal = cli.fix.applies_fixes()
+            && outcome.applied_pub_use > 0
             && matches!(
                 outcome.compiler_warning_facts,
                 CompilerWarningFacts::UnusedImportWarnings
             );
 
-        if user_asked_for_compiler_fix || pub_use_self_heal {
+        let runs_compiler_fix = user_asked_for_compiler_fix || pub_use_self_heal;
+        if runs_compiler_fix {
             total_compiler_fix_duration += compiler::run_cargo_fix(
                 &selection,
                 &cargo_plan,
@@ -169,11 +168,14 @@ fn run() -> Result<ExitCode, MendFailure> {
             )?;
         }
 
-        if !matches!(
-            cli.fix.execution,
-            FixExecution::ApplyRequested | FixExecution::ApplyAll
-        ) || passes >= FIX_CONVERGENCE_MAX_PASSES
-        {
+        if !cli.fix.applies_fixes() || passes >= FIX_CONVERGENCE_MAX_PASSES {
+            break;
+        }
+
+        // A pass that wrote nothing leaves the tree it planned against, so
+        // another pass would plan the same fix set and write nothing again.
+        // Only a `cargo fix` run since then can change what mend finds.
+        if outcome.pass_edits == PassEdits::Unchanged && !runs_compiler_fix {
             break;
         }
 

@@ -320,6 +320,52 @@ edition = "2024"
     assert!(stderr.contains("mend: no import fixes available"));
 }
 
+/// A pass that writes nothing leaves the tree unchanged, so `--fix` stops after
+/// it instead of checking the crate again. Cargo replays a fresh unit's
+/// warnings, so a second check would print the warning a second time.
+#[test]
+fn fix_with_nothing_to_fix_checks_the_crate_once() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "fix_single_pass_fixture"
+version = "0.1.0"
+edition = "2024"
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src")).expect("create src");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "fn main() {}\n\nfn never_called() {}\n",
+    )
+    .expect("write fixture main");
+
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
+        .arg("--fix")
+        .output()
+        .expect("run cargo-mend --fix");
+    assert!(
+        output.status.success(),
+        "cargo-mend --fix failed unexpectedly: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert_eq!(
+        stderr
+            .matches("function `never_called` is never used")
+            .count(),
+        1,
+        "a no-op --fix must check the crate once:\n{stderr}"
+    );
+    assert!(stderr.contains("mend: no import fixes available"));
+}
+
 #[test]
 fn fix_reports_applied_notice_after_summary() {
     let temp = tempdir().expect("create temp fixture dir");

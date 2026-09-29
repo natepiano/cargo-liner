@@ -12,6 +12,7 @@ use crate::fixes::inline_path_qualified_type;
 use crate::fixes::prefer_module_import;
 use crate::reporting::ExecutionOutcome;
 use crate::reporting::MendFailure;
+use crate::reporting::PassEdits;
 
 impl MendRunner<'_> {
     pub(super) fn execute(&mut self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
@@ -28,6 +29,7 @@ impl MendRunner<'_> {
                 compiler_fixable,
                 applied_pub_use: 0,
                 applied_subtree_reexport: false,
+                pass_edits: PassEdits::Unchanged,
             }),
             OperationIntent::DryRun => {
                 // Count the validated set, not the scans: a dry run must
@@ -50,6 +52,7 @@ impl MendRunner<'_> {
                     compiler_fixable,
                     applied_pub_use: 0,
                     applied_subtree_reexport: false,
+                    pass_edits: PassEdits::Unchanged,
                 })
             },
             OperationIntent::Apply => self.apply(planned),
