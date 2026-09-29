@@ -17,7 +17,7 @@ use crate::berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 
 /// Points git's hook lookup at a path that holds no hook on any platform.
-const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
+pub(crate) const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
 
 /// Start a git command whose managed hooks run the `cargo-berth` under test.
 ///

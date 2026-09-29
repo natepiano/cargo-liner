@@ -851,6 +851,72 @@ fn hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged() {
     );
 }
 
+/// `initialized_repository` and `IntegrationRepository::new` commit the configuration without
+/// the hooks this test runs. The hooked commit starts `cargo-berth` at both reference-transaction
+/// phases and for the post-commit drift check, and every file under the git directory apart from
+/// git's own records of the commit reads the same after it.
+#[test]
+fn hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged() {
+    let repository = staged_configuration_repository();
+    let git_directory = repository.path().join(".git");
+    let before = files_under(&git_directory);
+    let wrapper_directory = tempdir().expect("wrapper directory");
+    let invocations = wrapper_directory.path().join("invocations");
+    let wrapper = wrapper_directory.path().join("cargo-berth");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> {}\nexec {} \"$@\"\n",
+            shell_single_quoted(&invocations),
+            shell_single_quoted(Path::new(BERTH_EXECUTABLE))
+        ),
+    )
+    .expect("invocation-recording wrapper writes");
+    let mut permissions = fs::metadata(&wrapper)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper, permissions).expect("wrapper executes");
+    let committed = GIT.output_with_environment(
+        repository.path(),
+        &["commit", "--quiet", "-m", "configure berth"],
+        EXECUTABLE_ENVIRONMENT,
+        wrapper.to_str().expect("wrapper path should be UTF-8"),
+    );
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    let invocations = fs::read_to_string(&invocations).expect("the hooks should start cargo-berth");
+    for expected in [
+        "__reference-transaction prepared",
+        "__reference-transaction committed",
+        "drift --full",
+    ] {
+        assert!(
+            invocations.lines().any(|invocation| invocation == expected),
+            "invocations: {invocations}"
+        );
+    }
+
+    let after = files_under(&git_directory);
+    let commit_records = [
+        Path::new("COMMIT_EDITMSG"),
+        Path::new("index"),
+        Path::new("logs/HEAD"),
+        Path::new("logs/refs/heads/main"),
+        Path::new("refs/heads/main"),
+    ];
+    let commit_record = |path: &Path| commit_records.contains(&path) || path.starts_with("objects");
+    let changed: Vec<&PathBuf> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| !commit_record(path) && before.get(*path) != after.get(*path))
+        .collect();
+    assert!(changed.is_empty(), "the hooked commit changed {changed:?}");
+}
+
 #[test]
 fn two_gated_refs_in_one_transaction_refuse_before_journal_changes() {
     let pair = target_pair(true);
@@ -4987,7 +5053,28 @@ fn dirty_source(root: &Path, path: &str) {
     fs::write(target, "uncommitted holder work\n").expect("held work should write");
 }
 
+/// A scratch repository with berth initialized and its configuration committed on `main`.
+///
+/// The configuration commit skips the hooks: with no reservation yet they write nothing, which
+/// `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged` proves.
 fn initialized_repository() -> TempDir {
+    let repository = staged_configuration_repository();
+    git(
+        repository.path(),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "configure berth",
+        ],
+    );
+    repository
+}
+
+/// A scratch repository after `cargo-berth init`, with the configuration staged to commit.
+fn staged_configuration_repository() -> TempDir {
     let repository = scratch_repository();
     assert!(
         run_berth(repository.path(), &["init", "--json"])
@@ -4995,10 +5082,6 @@ fn initialized_repository() -> TempDir {
             .success()
     );
     git(repository.path(), &["add", CONFIGURATION_PATH]);
-    git(
-        repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
-    );
     repository
 }
 

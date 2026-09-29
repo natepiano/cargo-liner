@@ -19,6 +19,7 @@ use tempfile::tempdir;
 use crate::DirectorySnapshot;
 use crate::berth_command;
 use crate::git_driver::GitDriver;
+use crate::git_driver::HOOKS_DISABLED_CONFIGURATION;
 use crate::git_driver::OptionalLocks;
 
 /// Variables cleared before git runs, so a hook cannot inherit this process's
@@ -99,9 +100,20 @@ impl IntegrationRepository {
         let initialized = integration_repository.run(root, &["init", "--json"]);
         assert_success(&initialized);
         integration_repository.git(root, &["add", ".claude/config/berth.toml"]);
+        // With no reservation yet the hooks write nothing for this commit, which the gate test
+        // `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged`
+        // proves. The `integration start` commit keeps them: its post-commit check records the
+        // `integration` worktree's identity.
         integration_repository.git(
             root,
-            &["commit", "--quiet", "-m", "track berth configuration"],
+            &[
+                "-c",
+                HOOKS_DISABLED_CONFIGURATION,
+                "commit",
+                "--quiet",
+                "-m",
+                "track berth configuration",
+            ],
         );
         integration_repository
             .git_driver()
