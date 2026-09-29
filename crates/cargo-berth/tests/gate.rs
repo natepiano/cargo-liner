@@ -2705,7 +2705,6 @@ fn managed_hook_sends_non_ascii_and_control_bytes_to_the_binary() {
         b"control\x01byte".as_slice(),
         b"delete\x7fbyte".as_slice(),
         b"non-utf8\xff".as_slice(),
-        b"feature\0refs/heads/main".as_slice(),
     ] {
         let repository = initialized_repository();
         let spy = replace_managed_hook_executable_with_spy(repository.path());
@@ -2730,41 +2729,75 @@ fn managed_hook_sends_non_ascii_and_control_bytes_to_the_binary() {
     }
 }
 
+/// Every step before the dispatch is a shell builtin. With `PATH` holding only a recording
+/// `git`, a transaction the binary has no use for starts nothing but the trunk probe a prepared
+/// run makes, and trunk and listed gate-target updates still reach the binary byte for byte. A
+/// command the hook looked up anywhere else would fail as not found on stderr.
 #[test]
-fn managed_hook_never_replays_a_partial_transaction_after_buffering_fails() {
+fn managed_hook_decides_without_starting_helper_processes() {
     let repository = initialized_repository();
     let spy = replace_managed_hook_executable_with_spy(repository.path());
-    let command_directory = tempdir().expect("command directory should exist");
-    let failing_cat = command_directory.path().join("cat");
+    let recorder = tempdir().expect("recording git directory should exist");
+    let git_log = recorder.path().join("git-invocations");
+    let recording_git = recorder.path().join(GIT_BINARY);
     fs::write(
-        &failing_cat,
-        "#!/bin/sh\nIFS= read -r ignored || :\nprintf '%s' partial\nexit 1\n",
+        &recording_git,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexec {} \"$@\"\n",
+            shell_single_quoted(&git_log),
+            shell_single_quoted(&git_binary()),
+        ),
     )
-    .expect("failing cat should write");
-    let mut permissions = fs::metadata(&failing_cat)
-        .expect("failing cat metadata should read")
+    .expect("recording git should write");
+    let mut permissions = fs::metadata(&recording_git)
+        .expect("recording git metadata should read")
         .permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&failing_cat, permissions).expect("failing cat should be executable");
-    let inherited_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let command_search_path = std::env::join_paths(
-        std::iter::once(command_directory.path().to_path_buf())
-            .chain(std::env::split_paths(&inherited_path)),
-    )
-    .expect("command search path should join");
+    fs::set_permissions(&recording_git, permissions).expect("recording git should be executable");
+    OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(repository.path().join(GATE_TARGETS_PATH))
+        .and_then(|mut targets| targets.write_all(b"refs/heads/integration\n"))
+        .expect("gate target should list");
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let input = format!("{base} {base} refs/heads/main\n");
+    let hook_run = |phase: &str, input: &str| {
+        let output = run_hook_script_bytes_with_command_search_path(
+            repository.path(),
+            phase,
+            input.as_bytes(),
+            recorder.path().as_os_str(),
+        );
+        assert!(
+            output.status.success() && output.stderr.is_empty(),
+            "{phase} hook run: {output:?}"
+        );
+    };
 
-    let rejected = run_hook_script_bytes_with_command_search_path(
-        repository.path(),
-        "prepared",
-        input.as_bytes(),
-        &command_search_path,
+    hook_run(
+        "committed",
+        &format!("{base} {base} refs/remotes/origin/main\n{base} {base} HEAD\n"),
+    );
+    hook_run("prepared", &format!("{base} {base} refs/heads/feature\n"));
+
+    assert!(!spy.phase_log.exists());
+    assert_eq!(
+        fs::read_to_string(&git_log).expect("git invocation log should read"),
+        "show-ref --verify --quiet refs/heads/main\n"
     );
 
-    assert!(!rejected.status.success());
-    assert!(!spy.phase_log.exists());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("partial input"));
+    fs::remove_file(&git_log).expect("git invocation log should remove");
+    let trunk = format!("{base}\t{base}  refs/heads/main");
+    let target = format!("{base} {base} refs/heads/integration\n");
+    hook_run("prepared", &trunk);
+    hook_run("prepared", &target);
+
+    assert_eq!(spy.invoked_phases(), ["prepared", "prepared"]);
+    assert_eq!(
+        fs::read(&spy.stdin_log).expect("spy stdin log should read"),
+        format!("{trunk}{target}").into_bytes()
+    );
+    assert!(!git_log.exists());
 }
 
 #[test]
@@ -6179,8 +6212,12 @@ fn replace_managed_hook_executable_with_spy(repository_root: &Path) -> ManagedHo
     let spy_path = repository_root.join(".git/cargo-berth-hook-spy");
     let phase_log = repository_root.join(".git/cargo-berth-hook-spy-phases");
     let stdin_log = repository_root.join(".git/cargo-berth-hook-spy-stdin");
+    // The spy keeps the test's own `PATH`, so a hook run under a narrowed one still records.
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$2\" >> {}\ncat >> {}\n",
+        "#!/bin/sh\nPATH={}\nexport PATH\nprintf '%s\\n' \"$2\" >> {}\ncat >> {}\n",
+        shell_single_quoted(Path::new(
+            &std::env::var_os("PATH").expect("test PATH should exist")
+        )),
         shell_single_quoted(&phase_log),
         shell_single_quoted(&stdin_log),
     );

@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The managed `reference-transaction` hook decides with shell builtins alone: a transaction `cargo-berth` has no use for starts no helper process (a `prepared` run still probes the trunk ref with `git show-ref`), where each run used to start `mktemp`, `cat`, `grep`, `awk` and `rm`. Existing repositories keep the previous hook, which still works, until `cargo berth init` rewrites it.
 - Reconciliation journals one `holder_merge_extent_observed` record per holder checkout's changed merge extent, listing each reservation it applies to, instead of one `merge_extent_observed` record per reservation. A holder with many outstanding reservations no longer repeats the same extent in each record; journals holding `merge_extent_observed` records still replay unchanged.
 - Board `journal_byte_offset` can decrease after a journal compaction; order responses by `generation`. `reservation_revision` no longer counts merge extent observations.
 - Hook and command cost no longer grows with journal length. Replay decodes each record once, folding reservation state as it goes and keeping only the records ordering, answers, enrollment, permits, the gate decision, and the bypass audit read; an append advances the held replay over the appended bytes instead of reading the journal again. On a 69.6 MB journal the post-tool-use hook drops from 1.43 s to 0.10 s, the same as on a 58.7 MB journal.

@@ -303,6 +303,15 @@ impl ManagedHook {
     }
 }
 
+/// The managed `reference-transaction` hook.
+///
+/// It decides with shell builtins alone, so a transaction the binary has no use for starts no
+/// process beyond the shell, except the trunk probe a `prepared` run makes; the records it reads
+/// are replayed unchanged into the binary. The byte scan runs under `LC_ALL=C`, restored before
+/// anything else starts, because bash 3.2 matches bracket ranges by collation in other locales.
+/// A shell drops NUL bytes as it reads, which costs nothing here: git writes ref names as C
+/// strings, so its hook input holds none. Records are buffered in batches, because appending
+/// each one to a single growing string costs quadratic time in the transaction's size.
 const REFERENCE_TRANSACTION_SCRIPT_TEMPLATE: &str = r#"#!/bin/sh
 __REFERENCE_TRANSACTION_MARKER__
 __ISSUING_DIRECTORY_ENVIRONMENT__=$PWD
@@ -312,121 +321,106 @@ if [ -d __POLICY_WORKTREE__ ]; then
 fi
 cargo_berth_trunk_reference=__TRUNK_REFERENCE__
 cargo_berth_gate_targets=__GATE_TARGETS__
-export cargo_berth_trunk_reference cargo_berth_gate_targets
 case "${1:-}" in
     preparing|aborted) exit 0 ;;
     prepared|committed) ;;
     *) exit 0 ;;
 esac
 
-__EXECUTABLE_RESOLUTION__
-
-transaction_input=''
-transaction_buffered=0
-buffered_transaction_input=''
-if buffered_transaction_input=$(umask 077; mktemp "${TMPDIR:-/tmp}/cargo-berth-reference-transaction.XXXXXX") 2>/dev/null; then
-    transaction_input=$buffered_transaction_input
-    trap 'rm -f "$transaction_input"' EXIT HUP INT TERM
-    if ! cat > "$transaction_input"; then
-        printf '%s\n' 'cargo-berth could not preserve the complete ref transaction; refusing to decide from partial input. Retry the git command after correcting temporary-file access.' >&2
-        exit 1
+cargo_berth_newline='
+'
+cargo_berth_gated_references=''
+if [ "$1" = "prepared" ]; then
+    cargo_berth_gated_references=$cargo_berth_newline$cargo_berth_trunk_reference$cargo_berth_newline
+    if [ -r "$cargo_berth_gate_targets" ]; then
+        while IFS= read -r cargo_berth_target || [ -n "$cargo_berth_target" ]; do
+            cargo_berth_gated_references=$cargo_berth_gated_references$cargo_berth_target$cargo_berth_newline
+        done < "$cargo_berth_gate_targets"
     fi
-    transaction_buffered=1
 fi
 
-if [ "$transaction_buffered" -eq 1 ]; then
-    LC_ALL=C grep -q '[^	 -~]' "$transaction_input"
-    transaction_byte_scan_status=$?
-    if [ "$transaction_byte_scan_status" -eq 1 ]; then
-        cargo_berth_phase=$1
-        export cargo_berth_phase
-        LC_ALL=C awk '
-        function valid_transaction_bytes(value, byte_index, byte) {
-            for (byte_index = 1; byte_index <= length(value); byte_index += 1) {
-                byte = substr(value, byte_index, 1)
-                if (byte != tab && byte !~ /^[ -~]$/) {
-                    return 0
-                }
-            }
-            return 1
-        }
-        function valid_full_ref(value, suffix, count, components, component_index, component) {
-            if (substr(value, 1, 5) != "refs/" || length(value) == 5 || value ~ /\.\./ || index(value, "@{") != 0 || substr(value, length(value), 1) == ".") {
-                return 0
-            }
-            if (value ~ /[^!-~]/ || value ~ /[~^:?*\[\\]/) {
-                return 0
-            }
-            suffix = substr(value, 6)
-            count = split(suffix, components, "/")
-            for (component_index = 1; component_index <= count; component_index += 1) {
-                component = components[component_index]
-                if (component == "" || substr(component, 1, 1) == "." || component ~ /\.lock$/) {
-                    return 0
-                }
-            }
-            return 1
-        }
-        function valid_object(value, length_) {
-            if (substr(value, 1, 4) == "ref:") {
-                return valid_full_ref(substr(value, 5))
-            }
-            length_ = length(value)
-            return (length_ == 40 || length_ == 64) && value !~ /[^0-9a-f]/
-        }
-        BEGIN {
-            phase = ENVIRON["cargo_berth_phase"]
-            trunk = ENVIRON["cargo_berth_trunk_reference"]
-            gate_targets = ENVIRON["cargo_berth_gate_targets"]
-            decision = 1
-            tab = sprintf("%c", 9)
-            while ((getline target_ref < gate_targets) > 0) {
-                if (target_ref != "") {
-                    targets[target_ref] = 1
-                }
-            }
-            close(gate_targets)
-        }
-        {
-            if (!valid_transaction_bytes($0) || NF != 3) {
-                malformed = 1
-                next
-            }
-            if (substr($3, 1, 11) == "refs/heads/") {
-                if (!valid_object($1) || !valid_object($2) || !valid_full_ref($3)) {
-                    malformed = 1
-                }
-                if (phase == "committed") {
-                    decision = 0
-                }
-            }
-            if (phase == "prepared" && ($3 == trunk || ($3 in targets))) {
-                decision = 0
-            }
-        }
-        END {
-            if (malformed) {
-                exit 2
-            }
-            exit decision
-        }
-        ' "$transaction_input"
-        dispatch_status=$?
-    else
-        dispatch_status=2
+cargo_berth_full_ref() {
+    case $1 in
+        refs/?*) ;;
+        *) return 1 ;;
+    esac
+    case $1 in
+        *..*|*'@{'*|*.|*'~'*|*'^'*|*':'*|*'?'*|*'*'*|*'['*|*'\'*) return 1 ;;
+    esac
+    case ${1#refs/} in
+        /*|*/|*//*|.*|*/.*|*.lock|*.lock/*) return 1 ;;
+    esac
+}
+
+cargo_berth_object() {
+    case $1 in
+        ref:*) cargo_berth_full_ref "${1#ref:}" ;;
+        *[!0123456789abcdef]*) return 1 ;;
+        *) [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ] ;;
+    esac
+}
+
+cargo_berth_classify_record() {
+    if [ "$#" -ne 3 ]; then
+        cargo_berth_dispatch=1
+        return
     fi
-    case "$dispatch_status" in
-        0|2) ;;
-        1)
-            if [ "$1" = "prepared" ] && ! git show-ref --verify --quiet "$cargo_berth_trunk_reference" >/dev/null 2>&1; then
-                :
-            else
-                exit 0
+    case $3 in
+        refs/heads/*)
+            if [ "$cargo_berth_phase" = "committed" ] || ! cargo_berth_object "$1" || ! cargo_berth_object "$2" || ! cargo_berth_full_ref "$3"; then
+                cargo_berth_dispatch=1
             fi
             ;;
-        *) ;;
     esac
+    case $cargo_berth_gated_references in
+        *"$cargo_berth_newline$3$cargo_berth_newline"*) cargo_berth_dispatch=1 ;;
+    esac
+}
+
+cargo_berth_phase=$1
+cargo_berth_transaction=''
+cargo_berth_batch=''
+cargo_berth_batch_records=0
+cargo_berth_dispatch=0
+cargo_berth_locale=${LC_ALL-}
+cargo_berth_locale_set=${LC_ALL+set}
+LC_ALL=C
+set -f
+while :; do
+    cargo_berth_terminator=$cargo_berth_newline
+    if ! IFS= read -r cargo_berth_record; then
+        [ -n "$cargo_berth_record" ] || break
+        cargo_berth_terminator=''
+    fi
+    cargo_berth_batch=$cargo_berth_batch$cargo_berth_record$cargo_berth_terminator
+    cargo_berth_batch_records=$((cargo_berth_batch_records + 1))
+    if [ "$cargo_berth_batch_records" -eq 128 ]; then
+        cargo_berth_transaction=$cargo_berth_transaction$cargo_berth_batch
+        cargo_berth_batch=''
+        cargo_berth_batch_records=0
+    fi
+    if [ "$cargo_berth_dispatch" -eq 0 ]; then
+        case $cargo_berth_record in
+            *[!'	 '!-~]*) cargo_berth_dispatch=1 ;;
+            *) cargo_berth_classify_record $cargo_berth_record ;;
+        esac
+    fi
+    [ -n "$cargo_berth_terminator" ] || break
+done
+cargo_berth_transaction=$cargo_berth_transaction$cargo_berth_batch
+set +f
+if [ "$cargo_berth_locale_set" = "set" ]; then
+    LC_ALL=$cargo_berth_locale
+else
+    unset LC_ALL
 fi
+if [ "$cargo_berth_dispatch" -eq 0 ]; then
+    if [ "$1" != "prepared" ] || git show-ref --verify --quiet "$cargo_berth_trunk_reference" >/dev/null 2>&1; then
+        exit 0
+    fi
+fi
+
+__EXECUTABLE_RESOLUTION__
 
 bypassed_merge_id="${CARGO_BERTH_BYPASSED_MERGE_ID:-git-process-${PPID:-$$}}"
 case "$bypassed_merge_id" in
@@ -434,11 +428,7 @@ case "$bypassed_merge_id" in
 esac
 if [ "${CARGO_BERTH_BYPASS:-}" = "1" ]; then
     if [ -x "$cargo_berth_executable" ]; then
-        if [ "$transaction_buffered" -eq 1 ]; then
-            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
-        else
-            CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference"
-        fi
+        printf '%s' "$cargo_berth_transaction" | CARGO_BERTH_BYPASSED_MERGE_ID="$bypassed_merge_id" "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference"
         status=$?
         if [ "$status" -eq 0 ]; then
             exit 0
@@ -471,11 +461,7 @@ if [ ! -x "$cargo_berth_executable" ]; then
     printf '%s\n' 'cargo-berth trunk gate executable is unavailable; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
     exit 0
 fi
-if [ "$transaction_buffered" -eq 1 ]; then
-    "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference" < "$transaction_input"
-else
-    "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference"
-fi
+printf '%s' "$cargo_berth_transaction" | "$cargo_berth_executable" __reference-transaction "$@" "$cargo_berth_trunk_reference"
 status=$?
 if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
     printf '%s\n' 'cargo-berth trunk gate executable could not run; permitting this ref transaction. Rerun cargo berth init after restoring cargo-berth. CARGO_BERTH_BYPASS=1 remains the explicit override.' >&2
