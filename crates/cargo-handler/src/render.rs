@@ -185,6 +185,14 @@ impl TileCells<AgentCell> for Cells<'_> {
             )
         })
     }
+
+    /// A top-level agent and the sessions it opened are outlined in the
+    /// hue the top-level agent's name is drawn in.
+    fn group_outline(&self, id: &AgentCell) -> Option<Color> {
+        self.agent(id)
+            .and_then(|entry| entry.outline)
+            .and_then(|hue| Role::Rainbow(hue).style().fg)
+    }
 }
 
 /// The status line: the app's name and version, `attract` while the
@@ -360,12 +368,12 @@ fraying = "leading"
         "┌ summary──────────────────────────────────────────────────────────────────────┐",
         "│ natedev · no agents                                                          │",
         "│                                                                              │",
-        "│                                                                              │",
         "│       ┌ Settings ────────────────────────────────────────────────────┐       │",
         "│       │ Appearance:                                                  │       │",
         "│       │ ▶ mode           < auto >                                    │       │",
         "│       │   light theme    < Default Light >                           │       │",
         "│       │   dark theme     < Default Dark >                            │       │",
+        "│       │   transparent    < true >                                    │       │",
         "│       │ Tiles:                                                       │       │",
         "│       │   initial rows   < 4 >                                       │       │",
         "│       │   fill           < redistribute >                            │       │",

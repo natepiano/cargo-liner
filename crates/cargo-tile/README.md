@@ -36,8 +36,8 @@ bottom-right corner, and ctrl-k opens the full keymap viewer.
 | Enter | rebind the selected row (keymap and `?` overlays); step the selected setting forward, or edit a command list |
 | Space | step the selected setting forward, or edit a command list |
 
-In the settings overlay the three `[appearance]` rows are steppers, drawn as
-`< value >`: stepping one writes `config.toml` and swaps the active theme
+In the settings overlay the four `[appearance]` rows are steppers, drawn as
+`< value >`: stepping one writes `config.toml` and takes effect
 immediately. The two **Commands** lists are not a fixed set of values, so they
 are typed in: Enter opens the list as text, entries separated by commas or
 spaces, Enter again writes it to `config.toml` and applies it on the spot, and
@@ -77,6 +77,7 @@ on macOS that is `~/Library/Application Support/cargo-tile/`, on Linux
 mode        = "auto"          # auto follows the terminal; light / dark pin one
 light_theme = "Default Light"
 dark_theme  = "Default Dark"
+transparent = true            # false paints the grid solid in the theme's background
 ```
 
 Four variants are compiled in: `Default Dark`, `Default Light`,
@@ -92,16 +93,21 @@ present, and unknown keys are rejected. A theme id that matches nothing falls
 back to another variant of the same appearance and the substitution is reported
 in the settings overlay.
 
-The grid draws in `pane_chrome.inactive_border`, focus or no focus. A border
-is a cell two tiles share, so lighting it for one takes the boundary away from
-the other; the focused tile is marked by the background tint under its contents
-instead. There is no focused-border colour in the theme.
+`transparent`, on by default, paints nothing under the grid, so a transparent
+terminal window shows the desktop behind every tile. With no tint under the
+tiles to carry focus, the focused tile's border lights in the focused title's
+colour. The attract screen draws the same either way.
 
-Both states are painted, not just the focused one. A cell with no background of
-its own is the terminal's *default* background, which a transparent window
-composites differently from a painted cell -- so leaving unfocused tiles bare
-would make focus read as a difference in opacity rather than of colour. Focus is
-carried by how far each tile's tint is pushed from the theme background.
+Off, the grid is painted solid in the theme's `text.bg_focus` while its tiles
+are shown, and every line draws in `pane_chrome.inactive_border`, focus or no
+focus: a border is a cell two tiles share, so lighting it for one takes the
+boundary away from the other. The focused tile is marked by the background tint
+under its contents instead. Both states are painted, not just the focused one.
+A cell with no background of its own is the terminal's *default* background,
+which a transparent window composites differently from a painted cell -- so
+leaving unfocused tiles bare would make focus read as a difference in opacity
+rather than of colour. Focus is carried by how far each tile's tint is pushed
+from the theme background.
 
 ### iTerm2
 
@@ -115,9 +121,11 @@ iterm2_profile = "cargo-tile"   # "" to leave the session alone
 ```
 
 Make a profile by that name in iTerm2 (Settings -> Profiles -> **+**) and set it
-up however you like. To see the tints above through a transparent window, untick
-**"Only the default background color uses transparency"** there -- ticked, it
-means painted cells are opaque, and every cell in the grid is painted.
+up however you like. With `transparent` on, nothing in the grid is painted, so
+the window's transparency shows through every tile as it is. With it off, untick
+**"Only the default background color uses transparency"** to see the tints
+through a transparent window -- ticked, it means painted cells are opaque, and
+every cell in the grid is painted.
 
 The profile to return to is read from `ITERM_PROFILE`, which iTerm2 sets in
 every session. If it is missing, cargo-tile does not switch at all rather than

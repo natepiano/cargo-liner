@@ -84,6 +84,7 @@ pub(super) enum SettingOption {
     LightTheme,
     DarkTheme,
     FocusedPaneTint,
+    Transparent,
 }
 
 fn parse_dir_list(value: &str) -> Vec<String> {
@@ -414,6 +415,12 @@ fn register_appearance_settings(registry: SettingsRegistry) -> SettingsRegistry 
             get_focused_pane_tint,
             set_focused_pane_tint,
         )
+        .add_bool_in(
+            SettingsSection::App("appearance"),
+            "transparent",
+            get_transparent,
+            set_transparent,
+        )
 }
 
 fn register_general_settings(registry: SettingsRegistry) -> SettingsRegistry {
@@ -708,6 +715,10 @@ pub(super) fn settings_table_from_config(
     set_focused_pane_tint(
         &mut table,
         cargo_port_config.appearance.focused_pane_tint.is_enabled(),
+    )?;
+    set_transparent(
+        &mut table,
+        cargo_port_config.appearance.transparent.is_transparent(),
     )?;
     Ok(table)
 }
@@ -1107,6 +1118,15 @@ fn set_focused_pane_tint(table: &mut Table, value: bool) -> Result<(), SettingsE
     write_value(table, "appearance", "focused_pane_tint", value.into())
 }
 
+fn get_transparent(table: &Table) -> bool {
+    read_bool(table, "appearance", "transparent")
+        .unwrap_or_else(|| default_config().appearance.transparent.is_transparent())
+}
+
+fn set_transparent(table: &mut Table, value: bool) -> Result<(), SettingsError> {
+    write_value(table, "appearance", "transparent", value.into())
+}
+
 fn settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<SettingsUiRow> {
     let mut rows = general_settings_rows(app, cargo_port_config);
     rows.extend(toast_settings_rows(app, cargo_port_config));
@@ -1188,6 +1208,16 @@ fn appearance_settings_rows(cargo_port_config: &CargoPortConfig) -> Vec<Settings
             Some(SettingOption::FocusedPaneTint),
             "Focused pane tint".to_string(),
             if cargo_port_config.appearance.focused_pane_tint.is_enabled() {
+                "ON"
+            } else {
+                "OFF"
+            }
+            .to_string(),
+        ),
+        (
+            Some(SettingOption::Transparent),
+            "Transparent".to_string(),
+            if cargo_port_config.appearance.transparent.is_transparent() {
                 "ON"
             } else {
                 "OFF"
@@ -1693,6 +1723,10 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
                 .is_enabled();
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
+        Some(SettingOption::Transparent) => {
+            let next = !app.config.current().appearance.transparent.is_transparent();
+            let _ = save_app_setting_with_toast(app, |table| set_transparent(table, next));
+        },
         Some(
             SettingOption::Editor
             | SettingOption::TerminalCommand
@@ -1789,7 +1823,8 @@ fn settings_edit_seed(app: &App, setting: SettingOption) -> Option<String> {
         | SettingOption::AppearanceMode
         | SettingOption::LightTheme
         | SettingOption::DarkTheme
-        | SettingOption::FocusedPaneTint => None,
+        | SettingOption::FocusedPaneTint
+        | SettingOption::Transparent => None,
     }
 }
 
@@ -1837,6 +1872,10 @@ fn toggle_setting(app: &mut App, setting: SettingOption) {
                 .focused_pane_tint
                 .is_enabled();
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
+        },
+        SettingOption::Transparent => {
+            let next = !app.config.current().appearance.transparent.is_transparent();
+            let _ = save_app_setting_with_toast(app, |table| set_transparent(table, next));
         },
         _ => {},
     }
@@ -1915,7 +1954,8 @@ fn apply_general_settings_edit(
         | SettingOption::AppearanceMode
         | SettingOption::LightTheme
         | SettingOption::DarkTheme
-        | SettingOption::FocusedPaneTint => return Ok(false),
+        | SettingOption::FocusedPaneTint
+        | SettingOption::Transparent => return Ok(false),
         SettingOption::StatusToastVisibleSecs => {
             if !save_toast_number_setting(
                 app,
@@ -2049,6 +2089,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use super::config::Transparency;
     use super::config::WorkspaceMemberInclusion;
     use super::*;
 
@@ -2191,6 +2232,17 @@ mod tests {
         assert!(saved.contains("workspace_members = true"));
         assert!(saved.contains("[toasts]"));
         assert!(saved.contains("status_toast_visible = 3.0"));
+    }
+
+    #[test]
+    fn transparent_round_trips_through_the_settings_table() {
+        let mut cargo_port_config = CargoPortConfig::default();
+        let table = settings_table_from_config(&cargo_port_config).expect("settings table");
+        assert!(get_transparent(&table));
+
+        cargo_port_config.appearance.transparent = Transparency::Solid;
+        let table = settings_table_from_config(&cargo_port_config).expect("settings table");
+        assert!(!get_transparent(&table));
     }
 
     #[test]

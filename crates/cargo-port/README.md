@@ -170,7 +170,9 @@ cargo-port supports light / dark mode and will follow your OS's settings if you 
 
 - **Dark theme** - A default and high contrast theme are included out of the box.
 
-- **Focused pane tint** - whether or not to tint the background of the focused pane.
+- **Focused pane tint** - whether or not to tint the background of the focused pane. Applies only while **Transparent** is off.
+
+- **Transparent** - on (the default), nothing paints a background under the panes, so a transparent terminal window shows the desktop behind every one of them. Off, the whole screen is painted solid in the theme's background.
 
 **User themes**
 

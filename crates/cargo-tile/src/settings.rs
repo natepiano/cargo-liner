@@ -1255,26 +1255,27 @@ mod layout_tests {
     }
 
     /// Rows shared by both layouts: everything above Notices.
-    const BODY: [&str; 19] = [
+    const BODY: [&str; 20] = [
         "[Appearance]",
         "0 Stepper mode = auto",
         "1 Stepper light theme = Default Light",
         "2 Stepper dark theme = Default Dark",
+        "3 Stepper transparent = true",
         "[Tiles]",
-        "3 Stepper initial rows = 4",
-        "4 Stepper fill = redistribute",
-        "5 Stepper widen summary = false",
-        "6 Stepper fade seconds = 3",
+        "4 Stepper initial rows = 4",
+        "5 Stepper fill = redistribute",
+        "6 Stepper widen summary = false",
+        "7 Stepper fade seconds = 3",
         "[Capture]",
-        "7 Value auto install = true",
-        "8 Value shared directory = <shared directory>",
+        "8 Value auto install = true",
+        "9 Value shared directory = <shared directory>",
         "[Commands]",
-        "9 Value excluded = berth",
-        "10 Value hidden when idle = port, handler",
+        "10 Value excluded = berth",
+        "11 Value hidden when idle = port, handler",
         "[Files]",
-        "11 Value config = <config path>",
-        "12 Value themes = <themes dir>",
-        "13 Value keymap = <keymap path>",
+        "12 Value config = <config path>",
+        "13 Value themes = <themes dir>",
+        "14 Value keymap = <keymap path>",
     ];
 
     /// Order, section headers, labels, values, row kinds and selectable
@@ -1294,10 +1295,10 @@ mod layout_tests {
         let mut expected = BODY.to_vec();
         expected.extend([
             "[Notices]",
-            "14 Value theme = theme note",
-            "15 Value capture = kept note",
-            "16 Value capture = failure note",
-            "17 Value config = config error",
+            "15 Value theme = theme note",
+            "16 Value capture = kept note",
+            "17 Value capture = failure note",
+            "18 Value config = config error",
         ]);
         assert_eq!(layout(&app), expected);
     }

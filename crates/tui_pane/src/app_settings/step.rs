@@ -14,6 +14,7 @@ use crate::TileFill;
 use crate::app_config;
 use crate::registry;
 use crate::set_active_theme;
+use crate::set_transparent_background;
 
 /// Which way a stepper row moves.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,6 +40,8 @@ pub enum FrameworkSetting {
     TileFill,
     /// `tiles.widen_summary`: `true`, `false`.
     WidenSummary,
+    /// `appearance.transparent`: `true`, `false`.
+    Transparent,
 }
 
 /// Reach into an app's config for the keys the framework owns.
@@ -121,6 +124,10 @@ pub fn step_framework_setting<C: AppConfig>(
             let widen = config.widen_summary_mut();
             *widen = !*widen;
         },
+        FrameworkSetting::Transparent => {
+            let appearance = config.appearance_mut();
+            appearance.transparent = !appearance.transparent;
+        },
     }
     apply_settings(loaded, theme_note);
 }
@@ -136,6 +143,7 @@ pub fn apply_settings<C: AppConfig>(loaded: &mut LoadedConfig<C>, theme_note: &m
     let (theme, note) = app_config::resolve_appearance(&registry(), loaded.config.appearance());
     *theme_note = note;
     set_active_theme(theme);
+    set_transparent_background(loaded.config.appearance().transparent);
     loaded.save::<C::Identity>();
 }
 

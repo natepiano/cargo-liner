@@ -28,8 +28,15 @@ pub struct ThemeState {
     /// a subtle background tint behind the focused pane to lift it
     /// from neighbours. Defaults to true; client apps can mirror their
     /// focused-pane-tint config bit into this slot at startup and on
-    /// config reload.
+    /// config reload. Painted only while [`Self::transparent`] is off.
     focused_pane_tint: AtomicBool,
+    /// When true, nothing paints a background under the app's main
+    /// screen, so a transparent terminal window shows the desktop behind
+    /// every cell. When false, the screen is painted solid in the
+    /// theme's ground. Defaults to true, as the `[appearance]`
+    /// `transparent` key does; apps mirror that key into this slot at
+    /// startup and when it changes.
+    transparent:       AtomicBool,
 }
 
 impl ThemeState {
@@ -49,6 +56,7 @@ impl ThemeState {
             registry:          RwLock::new(Arc::new(registry)),
             current:           RwLock::new(Arc::new(initial)),
             focused_pane_tint: AtomicBool::new(true),
+            transparent:       AtomicBool::new(true),
         }
     }
 }
@@ -160,6 +168,26 @@ pub fn focused_pane_tint_enabled() -> bool {
 pub fn set_focused_pane_tint(enabled: bool) {
     let state = installed_state();
     state.focused_pane_tint.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether the main screen is left transparent: nothing paints a
+/// background under it, the focused-pane tint included.
+///
+/// Read every render. Defaults to true when no state has been
+/// installed yet.
+#[must_use]
+pub fn transparent_background() -> bool {
+    let state = installed_state();
+    state.transparent.load(Ordering::Relaxed)
+}
+
+/// Leave the main screen transparent, or paint it solid.
+///
+/// Idempotent; subsequent renders pick up the new value on the next
+/// frame.
+pub fn set_transparent_background(transparent: bool) {
+    let state = installed_state();
+    state.transparent.store(transparent, Ordering::Relaxed);
 }
 
 /// Replace the theme registry. Subsequent calls to [`registry()`]

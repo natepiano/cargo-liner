@@ -102,7 +102,10 @@ cell pair up at a glance. Inside a cell, a name with a cell of its own takes
 that cell's color too: the agent after `launched by`, and each session the
 agent opened. A launched session takes a color of its own even
 though the summary leaves it out, and when a cell closes, the cells after it
-each take the color before. The header gives the agent's pid, program, status, age, machine and
+each take the color before. A top-level agent that opened sessions outlines its
+group -- its own cell and each session's after it -- in its own color, so the
+cells that belong together read as one block; a line two cells share takes the
+color of the one drawn first, and a cell standing alone keeps the plain border. The header gives the agent's pid, program, status, age, machine and
 desktop, colored as the summary colors them, then its directory, and for a launched
 session the agent that opened it. Below it is a table of everything the agent
 started that is still running. Each row's `via` says how the agent holds it,
@@ -313,6 +316,7 @@ mode           = "auto"          # auto follows the terminal; light / dark pin o
 light_theme    = "Default Light"
 dark_theme     = "Default Dark"
 iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone
+transparent    = true            # false paints the grid solid in the theme's background
 
 [tiles]
 initial_rows  = 4                # rows the first column grows to before the grid squares up
@@ -339,6 +343,12 @@ edge; the cells of a column it covers divide what is left below it, and a column
 whose cells would no longer fit below it stops the summary there. Off, the
 summary stays in its own column and cuts a long directory short. The settings
 overlay steps `initial rows`, `fill` and `widen summary` under **Tiles**.
+
+`transparent` paints nothing under the grid, so a transparent terminal window
+shows the desktop behind every cell, and the focused cell's border lights to
+mark focus. Off, the grid is painted solid in the theme's background while its
+cells are shown, and focus is a tint under the focused cell's contents. The
+settings overlay steps it under **Appearance**.
 
 The settings overlay edits `remote` under **Machines** as a typed list; a
 change applies from the next probe.

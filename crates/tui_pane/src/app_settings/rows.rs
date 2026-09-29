@@ -17,6 +17,7 @@ use super::constants::NOTICES_SECTION;
 use super::constants::STEPPER_DECORATION_WIDTH;
 use super::constants::THEMES_LABEL;
 use super::constants::TILE_FILL_LABEL;
+use super::constants::TRANSPARENT_LABEL;
 use super::constants::UNRESOLVED_PATH;
 use super::constants::WIDEN_SUMMARY_LABEL;
 use super::step::FrameworkSetting;
@@ -136,8 +137,8 @@ impl<S: Copy> SettingsRows<S> {
         self.targets.push(SettingTarget::ReadOnly);
     }
 
-    /// Push the Appearance section: the `mode`, `light theme` and
-    /// `dark theme` steppers.
+    /// Push the Appearance section: the `mode`, `light theme`,
+    /// `dark theme` and `transparent` steppers.
     pub fn appearance<I: AppIdentity>(&mut self, appearance: &AppearanceConfig<I>) {
         self.section(APPEARANCE_SECTION);
         self.push_stepper(
@@ -154,6 +155,11 @@ impl<S: Copy> SettingsRows<S> {
             SettingTarget::Framework(FrameworkSetting::DarkTheme),
             DARK_THEME_LABEL,
             &appearance.dark_theme,
+        );
+        self.push_stepper(
+            SettingTarget::Framework(FrameworkSetting::Transparent),
+            TRANSPARENT_LABEL,
+            &appearance.transparent.to_string(),
         );
     }
 

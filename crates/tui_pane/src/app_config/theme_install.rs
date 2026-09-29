@@ -10,6 +10,7 @@ use crate::ThemeRegistry;
 use crate::ThemeState;
 use crate::ThemeVariant;
 use crate::install_theme_state;
+use crate::set_transparent_background;
 
 /// Install the theme `appearance` selects, process-wide.
 ///
@@ -31,6 +32,7 @@ pub fn install_theme<I: AppIdentity>(
     let (theme, note) = resolve_appearance(&registry, appearance);
     let initial_theme = (*theme).clone();
     install_theme_state(ThemeState::with_registry(registry, initial_theme));
+    set_transparent_background(appearance.transparent);
     note
 }
 

@@ -194,10 +194,12 @@ impl StartupServices {
         registry: ThemeRegistry,
         initial_theme: Theme,
         focused_pane_tint: bool,
+        transparent: bool,
     ) {
         if self.allows(StartupEffectKind::ProcessGlobals) {
             tui_pane::install_theme_state(ThemeState::with_registry(registry, initial_theme));
             tui_pane::set_focused_pane_tint(focused_pane_tint);
+            tui_pane::set_transparent_background(transparent);
             self.record_real(StartupEffectKind::ProcessGlobals);
         } else {
             self.record_suppressed(StartupEffectKind::ProcessGlobals);
@@ -213,10 +215,16 @@ impl StartupServices {
         }
     }
 
-    pub(super) fn publish_active_theme(&self, theme: Arc<Theme>, focused_pane_tint: bool) {
+    pub(super) fn publish_active_theme(
+        &self,
+        theme: Arc<Theme>,
+        focused_pane_tint: bool,
+        transparent: bool,
+    ) {
         if self.allows(StartupEffectKind::ProcessGlobals) {
             tui_pane::set_active_theme(theme);
             tui_pane::set_focused_pane_tint(focused_pane_tint);
+            tui_pane::set_transparent_background(transparent);
             self.record_real(StartupEffectKind::ProcessGlobals);
         } else {
             self.record_suppressed(StartupEffectKind::ProcessGlobals);

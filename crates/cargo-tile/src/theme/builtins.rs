@@ -61,15 +61,16 @@ pub(crate) fn builtins() -> Vec<ThemeVariant> {
 
 /// Default dark variant, named by [`DEFAULT_DARK_THEME`].
 ///
-/// `inactive_border` is the shade every tile draws in, focused or not:
-/// a border is a cell two tiles share, so focus is carried by the
-/// background tint under a tile's contents instead.
+/// `inactive_border` is the shade every tile draws in while the tint is
+/// painted: a border is a cell two tiles share, so focus is carried by
+/// the tint under a tile's contents. On a transparent screen there is
+/// no tint, and the focused tile's border lights instead.
 #[must_use]
 const fn default_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // Tiles are peers meeting on shared border cells, so none of
-            // them lights a border; focus is the tint under the contents.
+            // No colour of its own: where no tint is painted to carry
+            // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::DarkGray),
             active_title:    StyleSpec::bold(Color::Yellow),
@@ -116,8 +117,8 @@ const fn default_dark() -> Theme {
 const fn default_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // Tiles are peers meeting on shared border cells, so none of
-            // them lights a border; focus is the tint under the contents.
+            // No colour of its own: where no tint is painted to carry
+            // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
             active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
@@ -168,8 +169,8 @@ const fn default_light() -> Theme {
 const fn high_contrast_dark() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // Tiles are peers meeting on shared border cells, so none of
-            // them lights a border; focus is the tint under the contents.
+            // No colour of its own: where no tint is painted to carry
+            // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::White),
             active_title:    StyleSpec::bold(Color::LightYellow),
@@ -219,8 +220,8 @@ const fn high_contrast_dark() -> Theme {
 const fn high_contrast_light() -> Theme {
     Theme {
         pane_chrome: PaneChromeTheme {
-            // Tiles are peers meeting on shared border cells, so none of
-            // them lights a border; focus is the tint under the contents.
+            // No colour of its own: where no tint is painted to carry
+            // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Black),
             active_title:    StyleSpec::bold(Color::Rgb(140, 60, 0)),

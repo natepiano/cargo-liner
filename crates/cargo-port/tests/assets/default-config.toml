@@ -193,3 +193,11 @@
 #
 # Default value: true
 #focused_pane_tint = true
+
+# Leaves the main screen transparent: nothing paints a background
+# under it, the focused-pane tint included, so a transparent
+# terminal window shows the desktop behind every cell. `false`
+# paints it solid in the theme's ground.
+#
+# Default value: true
+#transparent = true

@@ -36,6 +36,7 @@ use crate::draw_clipped;
 use crate::error_color;
 use crate::label_color;
 use crate::pane_background;
+use crate::screen_ground;
 use crate::success_color;
 use crate::text_default;
 use crate::title_color;
@@ -97,6 +98,12 @@ pub trait TileCells<Id> {
     ///
     /// [`summary_title`]: Self::summary_title
     fn group_title(&self, _id: &Id) -> Option<Span<'static>> { None }
+
+    /// The colour the border of the cell drawing `id` is outlined in,
+    /// which is how cells that belong together say so. None unless the
+    /// app groups its cells; a line two groups share takes the colour
+    /// of the cell drawn first.
+    fn group_outline(&self, _id: &Id) -> Option<Color> { None }
 }
 
 /// Draw `grid` into `area`, its columns laid out by `growth`, with
@@ -129,6 +136,13 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     add_readout_rows(&mut demands, &widths);
     grid.sync(&demands, growth);
     let placements = grid.placements(area, growth);
+    // Painted solid only while the work is shown: the attract screen
+    // draws over bare panes, and keeps the terminal's own background.
+    if contents == TileGridContents::Shown
+        && let Some(ground) = screen_ground()
+    {
+        buffer.set_style(area, Style::default().bg(ground));
+    }
     let mut grid_lines = GridLines::new(area);
     for placement in &placements {
         // The ground a fading row is carried toward is the one its own
@@ -179,10 +193,16 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
                 grid_lines.add(placement.frame);
             },
         }
+        if let TileContent::Group(id) = &placement.content
+            && let Some(color) = cells.group_outline(id)
+        {
+            grid_lines.outline(placement.frame, color);
+        }
     }
     // Neighbouring tiles meet on one line, so no cell belongs to a
-    // single tile and none of them can carry focus. Focus is the
-    // background tint under a tile's contents instead.
+    // single tile. Focus is the background tint under a tile's contents,
+    // and lights the tile's border only where the screen is transparent
+    // and no tint is painted.
     grid_lines.render(buffer, default_pane_chrome(), PaneBorders::Shared);
 }
 

@@ -34,6 +34,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::symbols::line;
 use ratatui::text::Line;
@@ -295,9 +296,13 @@ struct GridCell {
     sides:   Sides,
     /// Whether a focused pane put any of them there.
     ///
-    /// Read only under [`PaneBorders::Separate`], where a cell belongs
-    /// to exactly one pane and lighting it takes nothing from anybody.
+    /// Read under [`PaneBorders::Separate`], where a cell belongs to
+    /// exactly one pane and lighting it takes nothing from anybody, and
+    /// wherever no tint is painted to carry focus instead.
     focused: bool,
+    /// The colour a pane asked its edges to be drawn in, when one did.
+    /// The first pane to ask keeps the cell.
+    outline: Option<Color>,
 }
 
 impl GridCell {
@@ -306,6 +311,7 @@ impl GridCell {
         Self {
             sides:   Sides::none(),
             focused: false,
+            outline: None,
         }
     }
 }
@@ -354,7 +360,8 @@ enum OverlayStyle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaneBorders {
     /// Neighbours meet on one line and the grid reads as a single
-    /// lattice. Focus is carried by the background tint alone.
+    /// lattice. Focus is carried by the background tint, and lights
+    /// the focused pane's border only where no tint is painted.
     Shared,
     /// Every pane closes its own box, with its neighbour's line beside
     /// rather than under it. The focused pane's border lights up.
@@ -431,6 +438,29 @@ impl GridLines {
             let sides = run(y, top, bottom, Side::Up, Side::Down);
             self.mark(frame, left, y, sides);
             self.mark(frame, right, y, sides);
+        }
+    }
+
+    /// Draw `frame`'s four edges in `color` rather than the chrome's
+    /// shade, which is how a pane marks itself one of a group.
+    ///
+    /// A cell another pane already coloured keeps that colour, so a
+    /// line two groups share takes the first one's. The lines
+    /// themselves still come from [`add`](Self::add).
+    pub fn outline(&mut self, frame: PaneFrame, color: Color) {
+        let rect = frame.rect;
+        if rect.is_empty() {
+            return;
+        }
+        let (left, right) = (rect.left(), rect.right().saturating_sub(1));
+        let (top, bottom) = (rect.top(), rect.bottom().saturating_sub(1));
+        let edges = (left..=right)
+            .flat_map(|x| [(x, top), (x, bottom)])
+            .chain((top..=bottom).flat_map(|y| [(left, y), (right, y)]));
+        for (x, y) in edges {
+            if let Some(cell) = self.cell_at(frame, x, y) {
+                cell.outline.get_or_insert(color);
+            }
         }
     }
 
@@ -516,13 +546,16 @@ impl GridLines {
     /// `borders` decides each line's shade. Under
     /// [`PaneBorders::Separate`] a cell belongs to one pane alone, so a
     /// focused pane lights its whole box. Under
-    /// [`PaneBorders::Shared`] every line draws in `chrome`'s inactive
-    /// style instead: a border is then a cell two panes share, and
+    /// [`PaneBorders::Shared`] a border is a cell two panes share, and
     /// lighting it for the focused one takes the boundary away from the
     /// other, so focus is left to the background tint under the pane's
-    /// contents.
+    /// contents -- unless no tint is painted, when lighting the box is
+    /// the only mark focus has left. A line that is not lit takes the
+    /// colour a pane [`outline`](Self::outline)d it in, or `chrome`'s
+    /// inactive style.
     pub fn render(&self, buffer: &mut Buffer, chrome: PaneChrome, borders: PaneBorders) {
         let focused_line = focus_tinted(chrome.active_border);
+        let lights_focus = borders.lights_focused_border() || chrome::pane_fill(true).is_none();
         for y in self.area.top()..self.area.bottom() {
             for x in self.area.left()..self.area.right() {
                 let Some(cell) = self.cells.get(self.index(x, y)).copied() else {
@@ -531,12 +564,14 @@ impl GridLines {
                 let Some(glyph) = glyph(cell.sides) else {
                     continue;
                 };
-                let lit = borders.lights_focused_border() && cell.focused;
-                buffer[(x, y)].set_symbol(glyph).set_style(if lit {
+                let style = if lights_focus && cell.focused {
                     focused_line
+                } else if let Some(color) = cell.outline {
+                    chrome.inactive_border.fg(color)
                 } else {
                     chrome.inactive_border
-                });
+                };
+                buffer[(x, y)].set_symbol(glyph).set_style(style);
             }
         }
         let mut written = vec![false; self.cells.len()];
@@ -942,11 +977,13 @@ mod tests {
         );
     }
 
-    /// The same two panes sharing a border cell instead: focus does not
-    /// reach the lines at all, because the cell between them belongs to
-    /// the boundary rather than to either side of it.
+    /// The same two panes sharing a border cell instead: while a tint
+    /// is painted, focus does not reach the lines at all, because the
+    /// cell between them belongs to the boundary rather than to either
+    /// side of it.
     #[test]
     fn a_shared_border_ignores_focus() {
+        crate::set_transparent_background(false);
         let buffer = framed(
             Rect::new(0, 0, 7, 3),
             &[
@@ -960,6 +997,47 @@ mod tests {
             Color::Red,
             "so does the focused pane's far side"
         );
+    }
+
+    /// With the screen transparent no tint is painted, so the focused
+    /// pane's box lights up even where its border is shared.
+    #[test]
+    fn a_transparent_shared_border_lights_focus() {
+        crate::set_transparent_background(true);
+        let buffer = framed(
+            Rect::new(0, 0, 7, 3),
+            &[
+                PaneFrame::new(Rect::new(0, 0, 4, 3)).with_focus(true),
+                PaneFrame::new(Rect::new(3, 0, 4, 3)),
+            ],
+        );
+        assert_ne!(buffer[(0, 1)].fg, Color::Red, "the focused box is lit");
+        assert_ne!(buffer[(3, 1)].fg, Color::Red, "its shared side too");
+        assert_eq!(buffer[(6, 1)].fg, Color::Red, "the other pane stays dim");
+    }
+
+    /// An outlined pane's edges take its colour; a line another pane
+    /// outlined first keeps that pane's colour.
+    #[test]
+    fn an_outline_colours_a_panes_edges_first_come() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 7, 3);
+        let left = PaneFrame::new(Rect::new(0, 0, 4, 3));
+        let right = PaneFrame::new(Rect::new(3, 0, 4, 3));
+        let mut lines = GridLines::new(area);
+        lines.add(left);
+        lines.add(right);
+        lines.outline(left, Color::Green);
+        lines.outline(right, Color::Blue);
+        let mut buffer = Buffer::empty(area);
+        lines.render(&mut buffer, chrome(), PaneBorders::Shared);
+        assert_eq!(buffer[(0, 1)].fg, Color::Green);
+        assert_eq!(
+            buffer[(3, 1)].fg,
+            Color::Green,
+            "the shared line keeps the first"
+        );
+        assert_eq!(buffer[(6, 1)].fg, Color::Blue);
     }
 
     /// The title lands on the top border line one cell in from the

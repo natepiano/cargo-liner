@@ -36,6 +36,10 @@ pub struct AppearanceConfig<I: AppIdentity> {
     /// back to the one it came in on at exit. Empty leaves the session
     /// alone, and so does every terminal that is not iTerm2.
     pub iterm2_profile: String,
+    /// Leave the main screen transparent: nothing paints a background
+    /// under it, so a transparent terminal window shows the desktop
+    /// behind every cell. `false` paints it solid in the theme's ground.
+    pub transparent:    bool,
     /// Ties the defaults to `I` without owning one, so the table is
     /// `Send` and `Sync` whatever `I` is.
     #[serde(skip)]
@@ -49,6 +53,7 @@ impl<I: AppIdentity> Default for AppearanceConfig<I> {
             light_theme:    I::DEFAULT_LIGHT_THEME.to_string(),
             dark_theme:     I::DEFAULT_DARK_THEME.to_string(),
             iterm2_profile: I::DEFAULT_ITERM2_PROFILE.to_string(),
+            transparent:    true,
             identity:       PhantomData,
         }
     }
@@ -62,6 +67,7 @@ impl<I: AppIdentity> fmt::Debug for AppearanceConfig<I> {
             .field("light_theme", &self.light_theme)
             .field("dark_theme", &self.dark_theme)
             .field("iterm2_profile", &self.iterm2_profile)
+            .field("transparent", &self.transparent)
             .finish_non_exhaustive()
     }
 }

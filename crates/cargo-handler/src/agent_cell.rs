@@ -71,24 +71,29 @@ use crate::wrap;
 #[derive(Clone, Debug)]
 pub(crate) struct AgentEntry<'a> {
     /// The cell's id in the grid.
-    pub(crate) id:  AgentCell,
+    pub(crate) id:      AgentCell,
     /// The agent the cell draws.
-    pub(crate) row: &'a AgentRow,
+    pub(crate) row:     &'a AgentRow,
     /// The name of the agent that opened this one in tmux, where that
     /// agent is listed on the same machine.
-    launcher:       Option<&'a str>,
+    launcher:           Option<&'a str>,
     /// The heading of the machine the agent runs on.
-    machine:        &'a str,
+    machine:            &'a str,
     /// The hue the cell's title and the agent's name in the summary are
     /// drawn in: the next of the rainbow, in cell order.
-    pub(crate) hue: RainbowHue,
+    pub(crate) hue:     RainbowHue,
+    /// The hue the cell's border is outlined in when it belongs to a
+    /// group -- a top-level agent and the sessions it opened -- which is
+    /// the top-level agent's own hue. None for a cell standing alone.
+    pub(crate) outline: Option<RainbowHue>,
 }
 
 /// Every agent's cell across `machines`, in the order the grid shows
 /// them: machine by machine, and within a machine each top-level agent
 /// oldest first, followed by the sessions it opened, depth first and
 /// oldest first. A session whose launcher is not listed stands as a
-/// top-level agent. Each cell takes the next hue of the rainbow.
+/// top-level agent. Each cell takes the next hue of the rainbow, and a
+/// top-level agent with sessions outlines its group in its own hue.
 pub(crate) fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
     let mut cells = Vec::new();
     for machine in machines {
@@ -100,15 +105,31 @@ pub(crate) fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
                 .is_none_or(|launcher| launcher == row.pid || !listed.contains(&launcher))
         });
         for root in roots {
+            let first = cells.len();
             place(machine.name, rows, root, &mut placed, &mut cells);
+            outline_group(&mut cells[first..]);
         }
         // Rows that only name one another as launcher reach no root, so
         // each stands as one rather than going without a cell.
         for row in rows {
+            let first = cells.len();
             place(machine.name, rows, row, &mut placed, &mut cells);
+            outline_group(&mut cells[first..]);
         }
     }
     cells
+}
+
+/// Outline `group` -- a top-level agent's cell followed by its
+/// sessions' -- in the top-level agent's hue, when it holds more than
+/// that one cell.
+fn outline_group(group: &mut [AgentEntry<'_>]) {
+    if let [root, _, ..] = group {
+        let hue = root.hue;
+        for cell in group {
+            cell.outline = Some(hue);
+        }
+    }
 }
 
 /// Put `row`'s cell into `cells`, then the cells of the sessions it
@@ -138,6 +159,7 @@ fn place<'a>(
         launcher,
         machine,
         hue: RainbowHue::of_cell(cells.len()),
+        outline: None,
     });
     for session in rows
         .iter()
@@ -664,6 +686,7 @@ mod tests {
             launcher,
             machine: "natedev",
             hue: RainbowHue::Red,
+            outline: None,
         }
     }
 
@@ -1205,6 +1228,45 @@ mod tests {
                 ("left", RainbowHue::Violet),
                 ("right", RainbowHue::Red),
                 ("natemccoy-30", RainbowHue::Orange),
+            ]
+        );
+    }
+
+    /// A top-level agent with sessions outlines its whole group in its
+    /// own hue, sessions of sessions included, and two rows naming only
+    /// each other form a group of their own. A cell standing alone has
+    /// no outline.
+    #[test]
+    fn a_group_is_outlined_in_its_top_level_agents_hue() {
+        let (natedev, mac) = natedev_and_mac();
+        let machines = [
+            Machine {
+                name:  "natedev",
+                state: &natedev,
+            },
+            Machine {
+                name:  "mac",
+                state: &mac,
+            },
+        ];
+
+        let outlines: Vec<(&str, Option<RainbowHue>)> = cell_order(&machines)
+            .iter()
+            .map(|cell| (cell.row.name.as_str(), cell.outline))
+            .collect();
+
+        assert_eq!(
+            outlines,
+            [
+                ("boss of bosses", Some(RainbowHue::Red)),
+                ("trunk", Some(RainbowHue::Red)),
+                ("under trunk", Some(RainbowHue::Red)),
+                ("arrange", Some(RainbowHue::Red)),
+                ("enh/handler", None),
+                ("orphan", None),
+                ("left", Some(RainbowHue::Violet)),
+                ("right", Some(RainbowHue::Violet)),
+                ("natemccoy-30", None),
             ]
         );
     }

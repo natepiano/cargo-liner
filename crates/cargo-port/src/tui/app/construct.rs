@@ -193,6 +193,11 @@ impl AppBuilder<Channeled> {
                 .appearance
                 .focused_pane_tint
                 .is_enabled(),
+            inputs
+                .cargo_port_config
+                .appearance
+                .transparent
+                .is_transparent(),
         );
         let config_path_resolution = config::config_path();
         let keymap_path_resolution = keymap::keymap_path();
