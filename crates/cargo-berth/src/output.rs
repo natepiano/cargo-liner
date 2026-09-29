@@ -63,6 +63,7 @@ use crate::ledger::ForeignReservationIdSet;
 use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
+use crate::ledger::JournalCompaction;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
@@ -102,6 +103,8 @@ use crate::worktree::WorktreeEnrollmentReport;
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
 const PROJECTION_REPAIRED_MESSAGE: &str =
     "Rebuilt reservations.json from journal truth without changing the journal.";
+const JOURNAL_NOTHING_TO_COMPACT_MESSAGE: &str =
+    "The journal holds no superseded merge extent observation; it is unchanged.";
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
@@ -606,6 +609,8 @@ declare_output_contract_metadata! {
         Initialized => ("initialized", Clear);
         /// Explicit repair rebuilt only the disposable journal projection.
         ProjectionRepaired => ("projection_repaired", Clear);
+        /// Explicit compaction removed the journal's superseded merge extent observations, if any.
+        JournalCompacted => ("journal_compacted", Clear);
         /// Confirmed reinitialization discarded the reviewed journal state.
         Reinitialized => ("reinitialized", Clear);
         /// The journal or its projection could not be safely read or published.
@@ -741,6 +746,8 @@ enum OutputFacts {
     Init(InitializationPayload),
     /// Facts returned by `init --repair-projection`.
     ProjectionRepair(ProjectionRepairPayload),
+    /// Facts returned by `init --compact-journal`.
+    JournalCompaction(JournalCompactionPayload),
     /// Facts returned by confirmed journal reinitialization.
     Reinitialize(ReinitializationPayload),
     /// Facts returned by the headless reservation board.
@@ -970,6 +977,33 @@ struct ProjectionRepairPayload {
     projection: RepairedProjection,
     /// The journal mutation guarantee of explicit projection repair.
     journal:    ProjectionRepairJournalEffect,
+}
+
+/// What explicit journal compaction removed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "journal_compaction_payload")]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum JournalCompactionPayload {
+    /// No merge extent observation is superseded, so `journal.ndjson` remained byte-identical.
+    NothingToCompact,
+    /// `journal.ndjson` was rewritten without its superseded merge extent observations; every
+    /// other record is unchanged and in order.
+    Compacted {
+        /// The superseded merge extent observations removed.
+        removed:   JournalRecordsPayload,
+        /// The records the compacted journal holds.
+        remaining: JournalRecordsPayload,
+    },
+}
+
+/// A number of journal records and their byte length, newlines included.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "journal_records")]
+struct JournalRecordsPayload {
+    /// The number of records.
+    records: u64,
+    /// The byte length of the records.
+    bytes:   u64,
 }
 
 /// The exact destructive effect of confirmed ledger reinitialization.
@@ -1739,6 +1773,43 @@ impl OutputEnvelope {
                     journal:    ProjectionRepairJournalEffect::Unchanged,
                 },
             )),
+        }
+    }
+
+    /// Build the successful response for an explicit journal compaction.
+    pub(crate) fn journal_compacted(compaction: JournalCompaction) -> Self {
+        let (message, payload) = match compaction {
+            JournalCompaction::NothingToCompact => (
+                JOURNAL_NOTHING_TO_COMPACT_MESSAGE.to_owned(),
+                JournalCompactionPayload::NothingToCompact,
+            ),
+            JournalCompaction::Compacted { removed, remaining } => (
+                format!(
+                    "Compacted the journal: removed {} superseded merge extent observation(s) ({} bytes); {} record(s) ({} bytes) remain.",
+                    removed.records, removed.bytes, remaining.records, remaining.bytes
+                ),
+                JournalCompactionPayload::Compacted {
+                    removed:   JournalRecordsPayload {
+                        records: removed.records,
+                        bytes:   removed.bytes,
+                    },
+                    remaining: JournalRecordsPayload {
+                        records: remaining.records,
+                        bytes:   remaining.bytes,
+                    },
+                },
+            ),
+        };
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Init,
+            status: OutputStatus::JournalCompacted,
+            exit_code: BerthExit::Clear,
+            reservations: Vec::new(),
+            blocked_by: Vec::new(),
+            message,
+            presentation: EnvelopePresentation::NotProvided,
+            payload: OutputPayload::from_facts(OutputFacts::JournalCompaction(payload)),
         }
     }
 
@@ -2561,6 +2632,7 @@ impl OutputEnvelope {
             | OutputStatus::BoardReady
             | OutputStatus::Initialized
             | OutputStatus::ProjectionRepaired
+            | OutputStatus::JournalCompacted
             | OutputStatus::Reinitialized
             | OutputStatus::TerminalViewFailed
             | OutputStatus::Claimed
@@ -2882,6 +2954,7 @@ impl OutputEnvelope {
                     OutputFacts::NoFacts
                     | OutputFacts::Init(_)
                     | OutputFacts::ProjectionRepair(_)
+                    | OutputFacts::JournalCompaction(_)
                     | OutputFacts::Reinitialize(_)
                     | OutputFacts::Board(_)
                     | OutputFacts::Reservation(_)
@@ -3009,6 +3082,7 @@ impl OutputEnvelope {
             OutputFacts::NoFacts => self.stated_condition_rendering(),
             OutputFacts::Init(_)
             | OutputFacts::ProjectionRepair(_)
+            | OutputFacts::JournalCompaction(_)
             | OutputFacts::Reinitialize(_)
             | OutputFacts::Board(_)
             | OutputFacts::Reservation(_)

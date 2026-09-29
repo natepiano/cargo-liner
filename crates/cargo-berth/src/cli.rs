@@ -76,6 +76,7 @@ use crate::ledger::FullRefName;
 use crate::ledger::GATE_DEADLINE_ENVIRONMENT;
 use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
+use crate::ledger::JournalCompactionError;
 use crate::ledger::JournalOperation;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
@@ -137,6 +138,8 @@ const CLAIM_DEFER_ARGUMENT: &str = "defer";
 const CLAIM_OVERRIDE_ARGUMENT: &str = "override";
 const CLAIM_OVERRIDE_ARGUMENT_ID: &str = "override_reservation";
 const CLAIM_RESOLUTION_GROUP: &str = "claim-resolution";
+const COMPACT_JOURNAL_ARGUMENT: &str = "compact-journal";
+const COMPACT_JOURNAL_ARGUMENT_ID: &str = "compact_journal";
 const FORCE_ARGUMENT: &str = "force";
 const FULL_ARGUMENT: &str = "full";
 const HEAD_ARGUMENT: &str = "head";
@@ -322,6 +325,7 @@ enum IdentityCommand {
     ArgGroup::new(INIT_OPERATION_GROUP)
         .args([
             REPAIR_PROJECTION_ARGUMENT_ID,
+            COMPACT_JOURNAL_ARGUMENT_ID,
             REINITIALIZE_AFTER_REVIEW_ARGUMENT_ID,
         ])
         .multiple(false)
@@ -330,6 +334,10 @@ struct InitArguments {
     /// Rebuild `reservations.json` from journal truth and delete the replay checkpoint.
     #[arg(long = REPAIR_PROJECTION_ARGUMENT)]
     repair_projection:         bool,
+    /// Remove the merge extent observations that later observations supersede from the journal;
+    /// this also runs automatically once 16 MiB of them accumulate.
+    #[arg(long = COMPACT_JOURNAL_ARGUMENT)]
+    compact_journal:           bool,
     /// Discard journal state after confirming every pending order was reviewed.
     #[arg(long = REINITIALIZE_AFTER_REVIEW_ARGUMENT)]
     reinitialize_after_review: bool,
@@ -1078,15 +1086,23 @@ impl CheckArguments {
 enum InitializationRequest {
     Initialize,
     RepairProjection,
+    CompactJournal,
     ReinitializeAfterReview,
 }
 
 impl InitArguments {
     const fn initialization_request(&self) -> InitializationRequest {
-        match (self.repair_projection, self.reinitialize_after_review) {
-            (true, false) => InitializationRequest::RepairProjection,
-            (false, true) => InitializationRequest::ReinitializeAfterReview,
-            (false, false) | (true, true) => InitializationRequest::Initialize,
+        match (
+            self.repair_projection,
+            self.compact_journal,
+            self.reinitialize_after_review,
+        ) {
+            (true, false, false) => InitializationRequest::RepairProjection,
+            (false, true, false) => InitializationRequest::CompactJournal,
+            (false, false, true) => InitializationRequest::ReinitializeAfterReview,
+            (false, false, false) | (true, true, _) | (true, _, true) | (_, true, true) => {
+                InitializationRequest::Initialize
+            },
         }
     }
 }
@@ -1671,6 +1687,7 @@ fn initialize_ledger(initialization_request: InitializationRequest) -> OutputEnv
                         Err(error) => initialization_error(error),
                     }
                 },
+                InitializationRequest::CompactJournal => compact_journal(&repository_root),
                 InitializationRequest::ReinitializeAfterReview => {
                     let worktree_context =
                         match crate::ledger::WorktreeContext::discover(&repository_root) {
@@ -2172,6 +2189,21 @@ fn reference_transaction_error(error: &GateError) -> ExitCode {
             ));
             BerthExit::LedgerUnreadable.into()
         },
+    }
+}
+
+/// Compact the journal on request, ignoring the automatic threshold and any refusal marker.
+fn compact_journal(repository_root: &Path) -> OutputEnvelope {
+    match Ledger::open(repository_root)
+        .map_err(JournalCompactionError::Ledger)
+        .and_then(|ledger| ledger.compact_journal())
+    {
+        Ok(compaction) => OutputEnvelope::journal_compacted(compaction),
+        Err(JournalCompactionError::Ledger(error)) => initialization_error(error),
+        Err(error @ JournalCompactionError::Refused(_)) => OutputEnvelope::ledger_unreadable(
+            CommandVerb::Init,
+            &format!("{error}; the journal is unchanged"),
+        ),
     }
 }
 

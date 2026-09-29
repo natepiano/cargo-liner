@@ -117,9 +117,9 @@ pub(crate) enum JournalCompaction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct JournalRecords {
     /// The number of records.
-    records: u64,
+    pub(crate) records: u64,
     /// The byte length of the records.
-    bytes:   u64,
+    pub(crate) bytes:   u64,
 }
 
 /// Why a journal compaction did not complete.
@@ -192,13 +192,6 @@ impl Ledger {
     /// of the original journal meets the new projection as one behind its replay, a rebuild to do,
     /// where the reverse order would show a reader of the compacted journal the original
     /// projection, ahead of its replay.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the compaction trigger and its init verb are not wired yet"
-        )
-    )]
     pub(crate) fn compact_journal(&self) -> Result<JournalCompaction, JournalCompactionError> {
         self.compact_journal_observing(|_| {})
     }

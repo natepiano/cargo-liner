@@ -62,54 +62,12 @@ fn drift_reads_merge_extent_fixture() -> TestResult {
 
 #[test]
 fn session_start_reads_merge_extent_fixture() -> TestResult {
-    let repository = fixture_repository()?;
-    let payload = serde_json::json!({
-        "hook_event_name": "SessionStart",
-        "cwd": repository.path(),
-        "source": "startup",
-        "session_id": SESSION,
-    });
-    let output = spawn_hook_verb(
-        &reader_executable()?,
-        repository.path(),
-        "session-start",
-        &serde_json::to_vec(&payload)?,
-        &AmbientHarnessSession::Present("ignored-ambient-session"),
-    )?;
-    assert_hook_response(
-        &output,
-        HookResponseEvent::SessionStart,
-        repository.path(),
-        include_str!("fixtures/reader_compat/session-start.json"),
-    )
+    assert_session_start(fixture_repository()?.path())
 }
 
 #[test]
 fn post_tool_use_reads_merge_extent_fixture() -> TestResult {
-    let repository = fixture_repository()?;
-    fs::write(
-        repository.path().join("additional.txt"),
-        "new work after Bash\n",
-    )?;
-    let payload = serde_json::json!({
-        "tool_name": "Bash",
-        "cwd": repository.path(),
-        "tool_input": {"command": "true"},
-        "session_id": SESSION,
-    });
-    let output = spawn_hook_verb(
-        &reader_executable()?,
-        repository.path(),
-        "post-tool-use",
-        &serde_json::to_vec(&payload)?,
-        &AmbientHarnessSession::Absent,
-    )?;
-    assert_hook_response(
-        &output,
-        HookResponseEvent::PostToolUse,
-        repository.path(),
-        include_str!("fixtures/reader_compat/post-tool-use.json"),
-    )
+    assert_post_tool_use(fixture_repository()?.path())
 }
 
 #[test]
@@ -171,6 +129,45 @@ fn init_pins_legacy_claim_target_once_and_keeps_it_after_trunk_edit() -> TestRes
     assert!(third.status.success());
     assert_eq!(pin_events(&fs::read(root.join(JOURNAL_PATH))?)?, pins);
     Ok(())
+}
+
+#[test]
+fn compact_journal_leaves_the_frozen_fixture_unchanged() -> TestResult {
+    let repository = fixture_repository()?;
+    let root = repository.path();
+    let before = fs::read(root.join(JOURNAL_PATH))?;
+    // The frozen journal holds one observation, which nothing supersedes.
+    let compaction = run_reader(
+        Path::new(BUILT_EXECUTABLE),
+        root,
+        &["init", "--compact-journal", "--json"],
+    )?;
+    require_readable(&compaction, "compact the frozen journal")?;
+    let response: Value = serde_json::from_slice(&compaction.stdout)?;
+    assert_eq!(response["status"], "journal_compacted");
+    assert_eq!(
+        response["payload"]["data"],
+        serde_json::json!({"status": "nothing_to_compact"})
+    );
+    assert_eq!(fs::read(root.join(JOURNAL_PATH))?, before);
+    for (arguments, expected) in [
+        (
+            &["board", "--json"][..],
+            include_str!("fixtures/reader_compat/board.json"),
+        ),
+        (
+            &["check", "file:claimed.txt", "--json"][..],
+            include_str!("fixtures/reader_compat/check.json"),
+        ),
+        (
+            &["drift", "--full", "--json"][..],
+            include_str!("fixtures/reader_compat/drift.json"),
+        ),
+    ] {
+        assert_command_in(root, arguments, expected)?;
+    }
+    assert_session_start(root)?;
+    assert_post_tool_use(root)
 }
 
 fn reader_executable() -> TestResult<PathBuf> {
@@ -248,18 +245,68 @@ fn run_reader(executable: &Path, repository: &Path, arguments: &[&str]) -> TestR
 
 fn assert_command(arguments: &[&str], expected: &str) -> TestResult {
     let repository = fixture_repository()?;
+    assert_command_in(repository.path(), arguments, expected)
+}
+
+fn assert_command_in(repository: &Path, arguments: &[&str], expected: &str) -> TestResult {
     let executable = reader_executable()?;
-    let output = run_reader(&executable, repository.path(), arguments)?;
+    let output = run_reader(&executable, repository, arguments)?;
     let context = format!("{} {}", executable.display(), arguments.join(" "));
     require_readable(&output, &context)?;
     let response: Value = serde_json::from_slice(&output.stdout)?;
     let mut observed =
         serde_json::json!({"status": response["status"], "payload": response["payload"]});
     let mut expected: Value = serde_json::from_str(expected)?;
-    normalize(&mut observed, repository.path())?;
-    normalize(&mut expected, repository.path())?;
+    normalize(&mut observed, repository)?;
+    normalize(&mut expected, repository)?;
     assert_eq!(observed, expected, "{context}");
     Ok(())
+}
+
+fn assert_session_start(repository: &Path) -> TestResult {
+    let payload = serde_json::json!({
+        "hook_event_name": "SessionStart",
+        "cwd": repository,
+        "source": "startup",
+        "session_id": SESSION,
+    });
+    let output = spawn_hook_verb(
+        &reader_executable()?,
+        repository,
+        "session-start",
+        &serde_json::to_vec(&payload)?,
+        &AmbientHarnessSession::Present("ignored-ambient-session"),
+    )?;
+    assert_hook_response(
+        &output,
+        HookResponseEvent::SessionStart,
+        repository,
+        include_str!("fixtures/reader_compat/session-start.json"),
+    )
+}
+
+/// Write an unclaimed file first, so the hook has a widening to report.
+fn assert_post_tool_use(repository: &Path) -> TestResult {
+    fs::write(repository.join("additional.txt"), "new work after Bash\n")?;
+    let payload = serde_json::json!({
+        "tool_name": "Bash",
+        "cwd": repository,
+        "tool_input": {"command": "true"},
+        "session_id": SESSION,
+    });
+    let output = spawn_hook_verb(
+        &reader_executable()?,
+        repository,
+        "post-tool-use",
+        &serde_json::to_vec(&payload)?,
+        &AmbientHarnessSession::Absent,
+    )?;
+    assert_hook_response(
+        &output,
+        HookResponseEvent::PostToolUse,
+        repository,
+        include_str!("fixtures/reader_compat/post-tool-use.json"),
+    )
 }
 
 fn assert_hook_response(

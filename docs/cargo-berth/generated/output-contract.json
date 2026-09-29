@@ -8132,6 +8132,69 @@
             }
           ]
         },
+        "journal_compaction_payload": {
+          "description": "What explicit journal compaction removed.",
+          "oneOf": [
+            {
+              "description": "No merge extent observation is superseded, so `journal.ndjson` remained byte-identical.",
+              "properties": {
+                "status": {
+                  "const": "nothing_to_compact",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`journal.ndjson` was rewritten without its superseded merge extent observations; every\nother record is unchanged and in order.",
+              "properties": {
+                "remaining": {
+                  "$ref": "#/$defs/journal_records",
+                  "description": "The records the compacted journal holds."
+                },
+                "removed": {
+                  "$ref": "#/$defs/journal_records",
+                  "description": "The superseded merge extent observations removed."
+                },
+                "status": {
+                  "const": "compacted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "removed",
+                "remaining"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "journal_records": {
+          "description": "A number of journal records and their byte length, newlines included.",
+          "properties": {
+            "bytes": {
+              "description": "The byte length of the records.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "records": {
+              "description": "The number of records.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "records",
+            "bytes"
+          ],
+          "type": "object"
+        },
         "lost_evidence_recovery": {
           "description": "Recovery instructions distinguished by whether the reservation's integration target resolved.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
@@ -8475,6 +8538,23 @@
               "type": "object"
             },
             {
+              "description": "Facts returned by `init --compact-journal`.",
+              "properties": {
+                "data": {
+                  "$ref": "#/$defs/journal_compaction_payload"
+                },
+                "kind": {
+                  "const": "journal_compaction",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "data"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Facts returned by confirmed journal reinitialization.",
               "properties": {
                 "data": {
@@ -8763,6 +8843,11 @@
             {
               "const": "projection_repaired",
               "description": "Explicit repair rebuilt only the disposable journal projection.",
+              "type": "string"
+            },
+            {
+              "const": "journal_compacted",
+              "description": "Explicit compaction removed the journal's superseded merge extent observations, if any.",
               "type": "string"
             },
             {
@@ -15634,6 +15719,69 @@
             }
           ]
         },
+        "journal_compaction_payload": {
+          "description": "What explicit journal compaction removed.",
+          "oneOf": [
+            {
+              "description": "No merge extent observation is superseded, so `journal.ndjson` remained byte-identical.",
+              "properties": {
+                "status": {
+                  "const": "nothing_to_compact",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`journal.ndjson` was rewritten without its superseded merge extent observations; every\nother record is unchanged and in order.",
+              "properties": {
+                "remaining": {
+                  "$ref": "#/$defs/journal_records",
+                  "description": "The records the compacted journal holds."
+                },
+                "removed": {
+                  "$ref": "#/$defs/journal_records",
+                  "description": "The superseded merge extent observations removed."
+                },
+                "status": {
+                  "const": "compacted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "removed",
+                "remaining"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "journal_records": {
+          "description": "A number of journal records and their byte length, newlines included.",
+          "properties": {
+            "bytes": {
+              "description": "The byte length of the records.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "records": {
+              "description": "The number of records.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "records",
+            "bytes"
+          ],
+          "type": "object"
+        },
         "lost_evidence_recovery": {
           "description": "Recovery instructions distinguished by whether the reservation's integration target resolved.\n\nA target branch that no longer resolves is judged by trunk instead, and `trunk` in these wire\nnames means whichever branch judged the reservation.",
           "oneOf": [
@@ -16913,6 +17061,23 @@
             },
             "kind": {
               "const": "projection_repair",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Facts returned by `init --compact-journal`.",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/journal_compaction_payload"
+            },
+            "kind": {
+              "const": "journal_compaction",
               "type": "string"
             }
           },
