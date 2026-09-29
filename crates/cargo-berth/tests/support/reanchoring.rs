@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -206,89 +207,130 @@ enum ReconciliationTiming {
     DuringIntegration,
 }
 
-pub(super) fn checkpoint_ranges_survive_two_rebases() {
-    for timing in [
-        ReconciliationTiming::BeforeFastForward,
-        ReconciliationTiming::DuringIntegration,
-    ] {
-        checkpoint_ranges_with_reconciliation(timing);
-    }
+/// Two phases whose checkpoints went through a conflicted rebase and an amend, then one more
+/// rebase onto `main`: the history both `ReconciliationTiming` cases continue from.
+///
+/// Building it costs two rebases and an amend through the real hooks. `new` builds it once and
+/// captures the repository and its linked checkouts, and `restore` writes them back before each
+/// case at the paths they were built at, because git records a linked worktree and its
+/// repository by absolute path.
+struct TwoRebaseHistory {
+    fixture:             RewriteFixture,
+    first:               String,
+    second:              String,
+    earlier_tip:         String,
+    final_tip:           String,
+    repository_snapshot: DirectorySnapshot,
+    worktrees_snapshot:  DirectorySnapshot,
 }
 
-fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
-    let fixture = RewriteFixture::new();
-    let first = fixture.start_phase();
-    fixture.commit("one", "base");
-    let first_old_tip = fixture.head();
-    fixture.checkpoint(&first);
-    let second = fixture.start_phase();
-    fixture.commit("one", "two");
-    fixture.upstream_conflict();
-    fixture.stop_rebase();
-    fixture.resolve_rebase();
-    drain_markers(&fixture, &[&first], CheckpointPlacement::BesideTrunk);
-    let first_rebased_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
-    assert_ne!(first_old_tip, first_rebased_tip);
-    assert_latest_anchors(&fixture, &first, &first_rebased_tip);
-    let events = journal_events(fixture.root());
-    let second_anchor = events.iter().rev().find(|event| {
-        event["op"] == "resnapshot"
-            && event["reservation_id"] == second
-            && event["snapshot"]["stage"] == "active"
-    });
-    assert_eq!(
-        second_anchor.map(|event| &event["snapshot"]["claim_snapshot"]),
-        Some(&serde_json::json!(first_rebased_tip)),
-        "the conflict-resolved active phase must start after the earlier checkpoint: {events:?}"
-    );
-    fixture.checkpoint(&second);
-    GIT.run(
-        &fixture.holder,
-        [
-            "commit",
-            "--amend",
-            "--quiet",
-            "-m",
-            "amended second checkpoint",
-        ],
-    );
-    drain_markers(
-        &fixture,
-        &[&first, &second],
-        CheckpointPlacement::BesideTrunk,
-    );
-    assert_latest_anchors(&fixture, &second, &fixture.head());
-
-    commit_file(
-        fixture.root(),
-        "upstream.txt",
-        "second upstream change\n",
-        "second upstream base",
-    );
-    GIT.run(&fixture.holder, ["rebase", "main"]);
-    let final_tip = fixture.head();
-    let earlier_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
-    assert_ne!(earlier_tip, final_tip);
-    assert_ne!(first_rebased_tip, earlier_tip);
-    if matches!(timing, ReconciliationTiming::BeforeFastForward) {
+impl TwoRebaseHistory {
+    fn new() -> Self {
+        let fixture = RewriteFixture::new();
+        let first = fixture.start_phase();
+        fixture.commit("one", "base");
+        let first_old_tip = fixture.head();
+        fixture.checkpoint(&first);
+        let second = fixture.start_phase();
+        fixture.commit("one", "two");
+        fixture.upstream_conflict();
+        fixture.stop_rebase();
+        fixture.resolve_rebase();
+        drain_markers(&fixture, &[&first], CheckpointPlacement::BesideTrunk);
+        let first_rebased_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
+        assert_ne!(first_old_tip, first_rebased_tip);
+        assert_latest_anchors(&fixture, &first, &first_rebased_tip);
+        let events = journal_events(fixture.root());
+        let second_anchor = events.iter().rev().find(|event| {
+            event["op"] == "resnapshot"
+                && event["reservation_id"] == second
+                && event["snapshot"]["stage"] == "active"
+        });
+        assert_eq!(
+            second_anchor.map(|event| &event["snapshot"]["claim_snapshot"]),
+            Some(&serde_json::json!(first_rebased_tip)),
+            "the conflict-resolved active phase must start after the earlier checkpoint: {events:?}"
+        );
+        fixture.checkpoint(&second);
+        GIT.run(
+            &fixture.holder,
+            [
+                "commit",
+                "--amend",
+                "--quiet",
+                "-m",
+                "amended second checkpoint",
+            ],
+        );
         drain_markers(
             &fixture,
             &[&first, &second],
             CheckpointPlacement::BesideTrunk,
         );
-        assert_latest_anchors(&fixture, &first, &earlier_tip);
-        assert_latest_anchors(&fixture, &second, &final_tip);
+        assert_latest_anchors(&fixture, &second, &fixture.head());
+
+        commit_file(
+            fixture.root(),
+            "upstream.txt",
+            "second upstream change\n",
+            "second upstream base",
+        );
+        GIT.run(&fixture.holder, ["rebase", "main"]);
+        let final_tip = fixture.head();
+        let earlier_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
+        assert_ne!(earlier_tip, final_tip);
+        assert_ne!(first_rebased_tip, earlier_tip);
+        let repository_snapshot = DirectorySnapshot::capture(fixture.root());
+        let worktrees_snapshot = DirectorySnapshot::capture(fixture.worktrees.path());
+        Self {
+            fixture,
+            first,
+            second,
+            earlier_tip,
+            final_tip,
+            repository_snapshot,
+            worktrees_snapshot,
+        }
+    }
+
+    /// Discard what the previous case wrote and return the rebased fixture.
+    fn restore(&self) -> &RewriteFixture {
+        self.repository_snapshot.restore(self.fixture.root());
+        self.worktrees_snapshot
+            .restore(self.fixture.worktrees.path());
+        &self.fixture
+    }
+}
+
+pub(super) fn checkpoint_ranges_survive_two_rebases() {
+    let history = TwoRebaseHistory::new();
+    for timing in [
+        ReconciliationTiming::BeforeFastForward,
+        ReconciliationTiming::DuringIntegration,
+    ] {
+        checkpoint_ranges_with_reconciliation(&history, timing);
+    }
+}
+
+fn checkpoint_ranges_with_reconciliation(history: &TwoRebaseHistory, timing: ReconciliationTiming) {
+    let fixture = history.restore();
+    let (first, second) = (history.first.as_str(), history.second.as_str());
+    let (earlier_tip, final_tip) = (history.earlier_tip.as_str(), history.final_tip.as_str());
+    if matches!(timing, ReconciliationTiming::BeforeFastForward) {
+        drain_markers(fixture, &[first, second], CheckpointPlacement::BesideTrunk);
+        assert_latest_anchors(fixture, first, earlier_tip);
+        assert_latest_anchors(fixture, second, final_tip);
     }
     // The prepared gate and drift hooks may already consume some markers or settle
     // subjects. Every board pass must settle each accepted subject already on trunk.
     GIT.run(fixture.root(), ["merge", "--quiet", "--ff-only", "holder"]);
-    drain_markers(&fixture, &[&first, &second], CheckpointPlacement::OnTrunk);
-    assert_final_checkpoint(&fixture, &first, &earlier_tip, &final_tip);
-    assert_final_checkpoint(&fixture, &second, &final_tip, &final_tip);
+    drain_markers(fixture, &[first, second], CheckpointPlacement::OnTrunk);
+    assert_final_checkpoint(fixture, first, earlier_tip, final_tip);
+    assert_final_checkpoint(fixture, second, final_tip, final_tip);
     GIT.run(&fixture.holder, ["switch", "--quiet", "--detach"]);
     GIT.run(fixture.root(), ["branch", "-D", "holder"]);
     let settled = board(fixture.root());
-    for id in [&first, &second] {
+    for id in [first, second] {
         assert_eq!(
             snapshot(&settled, id)["lifecycle"]["stage"],
             "released",
@@ -297,7 +339,7 @@ fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
         assert_eq!(
             journal_events(fixture.root())
                 .iter()
-                .filter(|event| event["op"] == "release" && event["reservation_id"] == *id)
+                .filter(|event| event["op"] == "release" && event["reservation_id"] == id)
                 .count(),
             1
         );
