@@ -268,7 +268,7 @@ fn stacking_order() -> Option<Vec<StackedWindow>> {
 ///
 /// `KWin` runs scripts in its own process and gives them no way to
 /// return a value, so the script is handed the bus name this connection
-/// already owns and calls [`Sink`] back with the expression's text. The
+/// already owns and calls `Sink` back with the expression's text. The
 /// script is unloaded and its file removed whether or not the answer
 /// arrived, so a read that failed part way through leaves nothing loaded
 /// behind it.
