@@ -404,7 +404,8 @@ The sections mean:
 - `outstanding_incursions`: incidents awaiting the row's supplied `flag`, which
   names `resolve <reservation-id> --incursion <incident-id>`.
 - `recorded_incursion_answers`: durable resolutions for those incidents.
-- `alerts`: lost integration evidence and its `resolve_integrated_as` action;
+- `alerts`: lost integration evidence with its `resolve_integrated_as` action
+  and, when the judged branch resolves, its `resolve_retire_orphan` retirement;
   orphan recovery evidence and its `recover_with_trunk` or `retire_or_abandon` action;
   `target_missing` with `reservation_id`, `target`, and `commands` (the
   `cargo-berth retarget <id> --target <branch>` command) for an unreleased
@@ -457,6 +458,10 @@ Board `lost_integration_evidence` entries use this tagged form:
     "action": {
       "action": "resolve_integrated_as",
       "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1"
+    },
+    "retirement": {
+      "action": "resolve_retire_orphan",
+      "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1"
     }
   }
 }
@@ -473,6 +478,12 @@ so with a resolved tip it always uses `name_carrying_trunk_commit`.
 `recovery.kind = resolve_trunk_first` omits `trunk_oid` and requires the judged
 branch to resolve before the action is usable. Every alternative
 carries `action.action = resolve_integrated_as` and its `reservation_id`.
+`name_carrying_trunk_commit` also carries
+`retirement.action = resolve_retire_orphan` and its `reservation_id`:
+`resolve <id> --retire-orphan --why <reason>` replaces the released
+disposition with `retired_orphan` when the work landed where git cannot match
+it, such as a reworked squash or a branch other than the integration target.
+Git no longer revalidates the retired reservation, so the alert stops.
 `resolve <id> --integrated-as <commit>` refuses with exit 5 `invalid_input` a
 commit not reachable from the reservation's target (from the repository trunk
 when that target ref is missing). It also refuses a reachable commit that

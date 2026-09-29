@@ -1859,6 +1859,96 @@ fn unresolved_trunk_alert_survives_and_defers_integrated_as_recovery() {
     assert_eq!(json_output(&unavailable)["status"], "ledger_unreadable");
 }
 
+#[test]
+fn retire_orphan_replaces_lost_integration_evidence_and_survives_replay() {
+    let repository = initialized_repository();
+    let claim = run_berth(
+        repository.path(),
+        &["claim", "file:reworked", "--run", FIRST_RUN, "--json"],
+    );
+    assert!(claim.status.success());
+    let reservation_id = reservation_id(&claim);
+    let trunk_before_landing = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    commit_file(repository.path(), "reworked", "work\n", "landed work");
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let released = run_berth(repository.path(), &["release", &reservation_id, "--json"]);
+    assert_eq!(json_output(&released)["status"], "integrated");
+
+    // Evidence that still proves the integration leaves no disposition to replace.
+    assert_retire_orphan_is_already_resolved(repository.path(), &reservation_id);
+
+    // Trunk is rewritten and the work lands again reworked, so git cannot match it and the
+    // `--integrated-as` refusal names the retirement instead.
+    lose_the_integration_witness(repository.path(), &reservation_id, &trunk_before_landing);
+    commit_file(
+        repository.path(),
+        "reworked",
+        "reworked work\n",
+        "reworked landing",
+    );
+    let reworked_commit = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    assert_integrated_as_lacks_the_work(
+        repository.path(),
+        &reservation_id,
+        &reworked_commit,
+        &protected_tip,
+    );
+    let board = json_output(&run_berth(repository.path(), &["board", "--json"]));
+    let alert = lost_evidence_alert(&board, &reservation_id)
+        .expect("the board should report the lost evidence");
+    assert_eq!(
+        alert["recovery"]["retirement"],
+        serde_json::json!({
+            "action": "resolve_retire_orphan",
+            "reservation_id": reservation_id,
+        })
+    );
+
+    let retired = run_berth(
+        repository.path(),
+        &[
+            "resolve",
+            &reservation_id,
+            "--retire-orphan",
+            "--why",
+            "work landed as a reworked commit",
+            "--json",
+        ],
+    );
+    assert!(retired.status.success(), "{:#}", json_output(&retired));
+    assert_eq!(
+        json_output(&retired)["payload"]["data"]["disposition"]["kind"],
+        "retired_orphan"
+    );
+
+    // Git no longer revalidates the retired reservation, so no later pass reports lost evidence.
+    let mut snapshot = serde_json::Value::Null;
+    for _ in 0..2 {
+        let board = json_output(&run_berth(repository.path(), &["board", "--json"]));
+        assert!(
+            lost_evidence_alert(&board, &reservation_id).is_none(),
+            "{board:#}"
+        );
+        snapshot = board_reservation_snapshot(&board["payload"]["data"], &reservation_id).clone();
+    }
+    assert_eq!(
+        snapshot["lifecycle"]["disposition"]["kind"],
+        "retired_orphan"
+    );
+    fs::remove_file(repository.path().join(PROJECTION_PATH)).expect("projection should delete");
+    assert!(run_berth(repository.path(), &["init"]).status.success());
+    let replayed = json_output(&run_berth(repository.path(), &["board", "--json"]));
+    assert!(
+        lost_evidence_alert(&replayed, &reservation_id).is_none(),
+        "{replayed:#}"
+    );
+    assert_eq!(
+        board_reservation_snapshot(&replayed["payload"]["data"], &reservation_id),
+        &snapshot
+    );
+    assert_retire_orphan_is_already_resolved(repository.path(), &reservation_id);
+}
+
 fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) {
     git(repository, &["switch", "--quiet", "-c", "abandoned"]);
     commit_file(repository, "abandoned", "work\n", "abandoned work");
@@ -1979,7 +2069,7 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
 
     // The released reservation is non-blocking, so replacing its lost evidence is refused for
     // a trunk commit lacking the work and accepted for one carrying identical scoped content.
-    lose_the_rewritten_integration_witness(repository, &rewritten_id, &unrelated_commit);
+    lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
     assert_integrated_as_lacks_the_work(
         repository,
         &rewritten_id,
@@ -1991,7 +2081,7 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
     replace_the_integration_evidence(repository, &rewritten_id, &equivalent_commit);
 
     // Merging the work branch makes the protected tip an ancestor of the replacement evidence.
-    lose_the_rewritten_integration_witness(repository, &rewritten_id, &unrelated_commit);
+    lose_the_integration_witness(repository, &rewritten_id, &unrelated_commit);
     git(
         repository,
         &[
@@ -2021,7 +2111,7 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
 }
 
 /// Reset trunk past the recorded witness and confirm the lost-evidence alert names that trunk.
-fn lose_the_rewritten_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
+fn lose_the_integration_witness(repository: &Path, reservation_id: &str, trunk: &str) {
     git(repository, &["reset", "--hard", "--quiet", trunk]);
     // The reset is the first thing this pass sees, so it records the loss and says nothing; the
     // next pass, reading back the row it left, is the one that reports. See
@@ -2054,6 +2144,10 @@ fn lose_the_rewritten_integration_witness(repository: &Path, reservation_id: &st
         "name_carrying_trunk_commit"
     );
     assert_eq!(lost_evidence["data"]["recovery"]["trunk_oid"], trunk);
+    assert_eq!(
+        lost_evidence["data"]["recovery"]["retirement"]["action"],
+        "resolve_retire_orphan"
+    );
 }
 
 /// Replace a released reservation's lost evidence with a trunk commit that carries the work.
@@ -2105,6 +2199,42 @@ fn assert_integrated_as_lacks_the_work(
         )),
         "{message}"
     );
+}
+
+/// Assert `resolve --retire-orphan` refuses a released reservation whose disposition stands.
+fn assert_retire_orphan_is_already_resolved(repository: &Path, reservation_id: &str) {
+    let refused = run_berth(
+        repository,
+        &[
+            "resolve",
+            reservation_id,
+            "--retire-orphan",
+            "--why",
+            "user confirmed retirement",
+            "--json",
+        ],
+    );
+    let refused_json = json_output(&refused);
+    assert_eq!(refused.status.code(), Some(5));
+    assert_eq!(refused_json["status"], "invalid_input");
+    assert_eq!(
+        refused_json["message"],
+        "the reservation is already resolved"
+    );
+}
+
+/// The board's lost-integration-evidence alert for one reservation, when it reports one.
+fn lost_evidence_alert<'board>(
+    board: &'board serde_json::Value,
+    reservation_id: &str,
+) -> Option<&'board serde_json::Value> {
+    board["payload"]["data"]["alerts"]["entries"]
+        .as_array()?
+        .iter()
+        .find(|alert| {
+            alert["kind"] == "lost_integration_evidence"
+                && alert["reservation_id"] == reservation_id
+        })
 }
 
 fn create_active_orphan(

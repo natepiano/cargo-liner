@@ -1634,7 +1634,10 @@ impl RetainedReservationSet {
         replacement: &ReleaseDisposition,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
-        if !matches!(replacement, ReleaseDisposition::RewrittenIntegration(_)) {
+        if !matches!(
+            replacement,
+            ReleaseDisposition::RewrittenIntegration(_) | ReleaseDisposition::RetiredOrphan(_)
+        ) {
             return Err(ReservationReplayError::InvalidReplacementDisposition(
                 reservation_id,
             ));

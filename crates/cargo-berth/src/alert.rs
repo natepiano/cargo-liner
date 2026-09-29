@@ -133,8 +133,12 @@ impl Display for Alert {
                 ),
                 LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
-                    alert.reservation_id, trunk_oid, alert.protected_tip, alert.reservation_id,
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
+                    alert.reservation_id,
+                    trunk_oid,
+                    alert.protected_tip,
+                    alert.reservation_id,
+                    alert.reservation_id,
                 ),
                 LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
                     formatter,
@@ -238,9 +242,11 @@ pub(crate) enum LostEvidenceRecovery {
         /// The integration target's current commit, which does not contain the protected work.
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
-        trunk_oid: GitObjectId,
+        trunk_oid:  GitObjectId,
         /// The typed resolution available once an integration-target commit carries the work.
-        action:    LostEvidenceRecoveryCommand,
+        action:     LostEvidenceRecoveryCommand,
+        /// The typed retirement available when the work landed where git cannot match it.
+        retirement: LostEvidenceRetirementCommand,
     },
     /// No integration-target object resolved, so no repair is available until the target resolves.
     ResolveTrunkFirst {
@@ -256,6 +262,18 @@ pub(crate) enum LostEvidenceRecovery {
 pub(crate) enum LostEvidenceRecoveryCommand {
     /// Replace lost Git-backed evidence with an operator-verified integration-target commit.
     ResolveIntegratedAs {
+        #[schemars(with = "String")]
+        reservation_id: ReservationId,
+    },
+}
+
+/// The orphan retirement represented without a stringly typed flag.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "lost_evidence_retirement_action")]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub(crate) enum LostEvidenceRetirementCommand {
+    /// Retire the reservation with a stated reason instead of naming a carrying commit.
+    ResolveRetireOrphan {
         #[schemars(with = "String")]
         reservation_id: ReservationId,
     },
@@ -323,6 +341,9 @@ impl OrphanResolutionAction {
                         LostEvidenceRecovery::NameCarryingTrunkCommit {
                             trunk_oid: trunk_oid.clone(),
                             action,
+                            retirement: LostEvidenceRetirementCommand::ResolveRetireOrphan {
+                                reservation_id: orphan.reservation_id(),
+                            },
                         }
                     },
                     (OrphanIntegrationEvidence::Unproven, JudgedTargetTip::ObjectUnknown) => {
@@ -559,6 +580,9 @@ pub(crate) fn for_lost_integration_evidence(
         JudgedTargetTip::Resolved(trunk_oid) => LostEvidenceRecovery::NameCarryingTrunkCommit {
             trunk_oid: trunk_oid.clone(),
             action,
+            retirement: LostEvidenceRetirementCommand::ResolveRetireOrphan {
+                reservation_id: reservation.id(),
+            },
         },
         JudgedTargetTip::ObjectUnknown => LostEvidenceRecovery::ResolveTrunkFirst { action },
     };
@@ -688,6 +712,7 @@ mod tests {
     use super::BranchRefStatus;
     use super::LostEvidenceRecovery;
     use super::LostEvidenceRecoveryCommand;
+    use super::LostEvidenceRetirementCommand;
     use super::ObjectAvailability;
     use super::OrphanIntegrationEvidence;
     use super::OrphanResolutionAction;
@@ -768,8 +793,11 @@ mod tests {
                             JudgedTargetTip::Resolved(trunk_oid),
                         ) => OrphanResolutionAction::Recover(
                             LostEvidenceRecovery::NameCarryingTrunkCommit {
-                                trunk_oid: trunk_oid.clone(),
-                                action:    command,
+                                trunk_oid:  trunk_oid.clone(),
+                                action:     command,
+                                retirement: LostEvidenceRetirementCommand::ResolveRetireOrphan {
+                                    reservation_id,
+                                },
                             },
                         ),
                         (

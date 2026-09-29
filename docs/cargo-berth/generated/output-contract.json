@@ -1888,6 +1888,10 @@
                   "const": "name_carrying_trunk_commit",
                   "type": "string"
                 },
+                "retirement": {
+                  "$ref": "#/$defs/lost_evidence_retirement_action",
+                  "description": "The typed retirement available when the work landed where git cannot match it."
+                },
                 "trunk_oid": {
                   "description": "The integration target's current commit, which does not contain the protected work.",
                   "minLength": 1,
@@ -1897,7 +1901,8 @@
               "required": [
                 "kind",
                 "trunk_oid",
-                "action"
+                "action",
+                "retirement"
               ],
               "type": "object"
             },
@@ -1929,6 +1934,28 @@
               "properties": {
                 "action": {
                   "const": "resolve_integrated_as",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "reservation_id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "lost_evidence_retirement_action": {
+          "description": "The orphan retirement represented without a stringly typed flag.",
+          "oneOf": [
+            {
+              "description": "Retire the reservation with a stated reason instead of naming a carrying commit.",
+              "properties": {
+                "action": {
+                  "const": "resolve_retire_orphan",
                   "type": "string"
                 },
                 "reservation_id": {
@@ -8143,6 +8170,10 @@
                   "const": "name_carrying_trunk_commit",
                   "type": "string"
                 },
+                "retirement": {
+                  "$ref": "#/$defs/lost_evidence_retirement_action",
+                  "description": "The typed retirement available when the work landed where git cannot match it."
+                },
                 "trunk_oid": {
                   "description": "The integration target's current commit, which does not contain the protected work.",
                   "minLength": 1,
@@ -8152,7 +8183,8 @@
               "required": [
                 "kind",
                 "trunk_oid",
-                "action"
+                "action",
+                "retirement"
               ],
               "type": "object"
             },
@@ -8184,6 +8216,28 @@
               "properties": {
                 "action": {
                   "const": "resolve_integrated_as",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "reservation_id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "lost_evidence_retirement_action": {
+          "description": "The orphan retirement represented without a stringly typed flag.",
+          "oneOf": [
+            {
+              "description": "Retire the reservation with a stated reason instead of naming a carrying commit.",
+              "properties": {
+                "action": {
+                  "const": "resolve_retire_orphan",
                   "type": "string"
                 },
                 "reservation_id": {
@@ -15618,6 +15672,10 @@
                   "const": "name_carrying_trunk_commit",
                   "type": "string"
                 },
+                "retirement": {
+                  "$ref": "#/$defs/lost_evidence_retirement_action",
+                  "description": "The typed retirement available when the work landed where git cannot match it."
+                },
                 "trunk_oid": {
                   "description": "The integration target's current commit, which does not contain the protected work.",
                   "minLength": 1,
@@ -15627,7 +15685,8 @@
               "required": [
                 "kind",
                 "trunk_oid",
-                "action"
+                "action",
+                "retirement"
               ],
               "type": "object"
             },
@@ -15659,6 +15718,28 @@
               "properties": {
                 "action": {
                   "const": "resolve_integrated_as",
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "reservation_id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "lost_evidence_retirement_action": {
+          "description": "The orphan retirement represented without a stringly typed flag.",
+          "oneOf": [
+            {
+              "description": "Retire the reservation with a stated reason instead of naming a carrying commit.",
+              "properties": {
+                "action": {
+                  "const": "resolve_retire_orphan",
                   "type": "string"
                 },
                 "reservation_id": {

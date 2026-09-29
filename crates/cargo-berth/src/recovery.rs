@@ -673,25 +673,16 @@ fn recovery_operation(
                 ReservationEvidenceState::Released {
                     protected_tip,
                     disposition: superseded,
-                    integration_status:
-                        IntegrationEvidenceStatus::NotIntegrated
-                        | IntegrationEvidenceStatus::TrunkRewritten
-                        | IntegrationEvidenceStatus::ObjectUnknown,
+                    integration_status,
                     ..
-                } if !matches!(
-                    superseded.revalidation_subject(),
-                    ReleaseRevalidationSubject::None
-                ) =>
-                {
-                    (
-                        JournalOperation::ReplaceReleaseDisposition {
-                            reservation_id,
-                            superseded,
-                            replacement: disposition.clone(),
-                        },
-                        protected_tip,
-                    )
-                },
+                } if release_evidence_is_lost(&superseded, &integration_status) => (
+                    JournalOperation::ReplaceReleaseDisposition {
+                        reservation_id,
+                        superseded,
+                        replacement: disposition.clone(),
+                    },
+                    protected_tip,
+                ),
                 ReservationEvidenceState::Released { .. }
                 | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
                     return Err(RecoveryRejection::AlreadyResolved);
@@ -720,12 +711,74 @@ fn recovery_operation(
             reservation_id,
             ReleaseDisposition::Abandoned(reason),
         ),
-        ReservationRecoveryDecision::RetireOrphan(reason) => disposition_operation(
-            reservation,
-            reservation_id,
-            ReleaseDisposition::RetiredOrphan(reason),
-        ),
+        ReservationRecoveryDecision::RetireOrphan(reason) => {
+            retire_orphan_operation(reservation, reservation_id, reason)
+        },
     }
+}
+
+/// Retire an unreleased orphan, or replace a released disposition whose git evidence is lost.
+fn retire_orphan_operation(
+    reservation: &Reservation,
+    reservation_id: ReservationId,
+    reason: OrphanRetirementReason,
+) -> Result<
+    (
+        JournalOperation,
+        ResolvePayloadSeed,
+        PostCommitRecoveryMarkerAction,
+    ),
+    RecoveryRejection,
+> {
+    let disposition = ReleaseDisposition::RetiredOrphan(reason);
+    if !matches!(
+        reservation.lifecycle(),
+        ReservationLifecycle::Released { .. }
+    ) {
+        return disposition_operation(reservation, reservation_id, disposition);
+    }
+    match reservation
+        .evidence_state()
+        .map_err(RecoveryRejection::Replay)?
+    {
+        ReservationEvidenceState::Released {
+            disposition: superseded,
+            integration_status,
+            ..
+        } if release_evidence_is_lost(&superseded, &integration_status) => Ok((
+            JournalOperation::ReplaceReleaseDisposition {
+                reservation_id,
+                superseded,
+                replacement: disposition.clone(),
+            },
+            ResolvePayloadSeed::Released {
+                reservation_id,
+                disposition,
+            },
+            PostCommitRecoveryMarkerAction::NoMarkerPublicationRequired,
+        )),
+        _ => Err(RecoveryRejection::AlreadyResolved),
+    }
+}
+
+/// Whether a released disposition rests on git evidence that no longer proves integration.
+///
+/// Only such a disposition may be replaced, by `--integrated-as` naming a commit that carries the
+/// work or by `--retire-orphan` when the work landed where git cannot match it; every other
+/// released reservation is already resolved.
+const fn release_evidence_is_lost(
+    disposition: &ReleaseDisposition,
+    integration_status: &IntegrationEvidenceStatus,
+) -> bool {
+    !matches!(
+        disposition.revalidation_subject(),
+        ReleaseRevalidationSubject::None
+    ) && matches!(
+        integration_status,
+        IntegrationEvidenceStatus::NotIntegrated
+            | IntegrationEvidenceStatus::TrunkRewritten
+            | IntegrationEvidenceStatus::ObjectUnknown
+    )
 }
 
 /// Refuse an `--integrated-as` commit unless it contains the protected work.

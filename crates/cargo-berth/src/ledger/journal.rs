@@ -491,12 +491,15 @@ pub(crate) enum JournalOperation {
         disposition:    ReleaseDisposition,
     },
     /// Replace a released reservation's disposition after its git evidence was invalidated.
+    ///
+    /// The replacement is a verified `RewrittenIntegration`, or a user-confirmed `RetiredOrphan`
+    /// for work that landed where git cannot match it.
     ReplaceReleaseDisposition {
-        /// The reservation receiving corrected rewritten-integration evidence.
+        /// The reservation receiving the corrected disposition.
         reservation_id: ReservationId,
         /// The disposition retained as immutable history before this correction.
         superseded:     ReleaseDisposition,
-        /// The newly verified disposition used by current replay state.
+        /// The disposition used by current replay state.
         replacement:    ReleaseDisposition,
     },
     /// Materialize a git evidence result for mutation-free edit checks.

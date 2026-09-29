@@ -257,7 +257,12 @@ cannot prove:
   reachable from the reservation's target.
 - `--abandon --why <text>` is the only deliberate abandonment route.
 - `--retire-orphan --why <text>` is the only confirmed orphan-retirement route,
-  and its disposition stays distinct from abandonment after replay.
+  and its disposition stays distinct from abandonment after replay. On a
+  released reservation whose integration evidence is lost, it replaces the
+  `integrated` or `rewritten_integration` disposition with `retired_orphan`
+  for work that landed where git cannot match it, such as a reworked squash or
+  a branch other than the integration target; the lost-evidence alert then
+  stops. Any other released reservation is already resolved.
 - `--incursion <incident-id>` answers the named outstanding incursion. The
   positional reservation may be any reservation of the incident's run in its
   worktree, since drift reports the incident under each of them.

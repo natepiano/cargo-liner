@@ -51,6 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `resolve <id> --retire-orphan --why <reason>` now clears lost integration
+  evidence on a released reservation whose work landed where git cannot match
+  it. It appends a `replace_release_disposition` record that replaces the
+  `integrated` or `rewritten_integration` disposition with `retired_orphan`, so
+  the lost-evidence alert stops on the next reconciliation instead of repeating
+  on every hook call. The lost-evidence notice and its board JSON `recovery`
+  (new `retirement` member) name this route. An older binary cannot replay that
+  record, so every machine sharing the repository must run this version before
+  anyone uses it.
 - `board --json` lists a live endpoint of an unresolved overlap under `waiting`, which now carries each held reservation's row with a `hold` of `ordering_edge` or `unresolved_overlap`; `unresolved_overlaps` drops a pair once both endpoints are released, and its `consequence` (renamed type `DeferralConsequence`) names which side is still held. `output_contract_version` is now 4.
 - An incursion recorded against one reservation now covers every reservation of
   its run in its worktree: post-commit drift no longer charges an answered or
