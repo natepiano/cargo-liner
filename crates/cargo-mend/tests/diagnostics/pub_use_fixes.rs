@@ -3,49 +3,48 @@ use tempfile::TempDir;
 
 use crate::support::*;
 
-#[test]
-fn accepted_restricted_stale_facade_is_not_offered_to_any_fixer() {
-    for fix_flag in ["--fix", "--fix-pub-use", "--fix-all"] {
-        let temp = tempdir().expect("create restricted stale-facade fixture dir");
-        fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            r#"[package]
+/// The restricted stale-facade fixture. No fixer may touch it, so every fixer
+/// in the test below runs against these same files.
+const RESTRICTED_STALE_FACADE_SOURCES: &[(&str, &str)] = &[
+    (
+        "Cargo.toml",
+        r#"[package]
 name = "restricted_stale_facade_fix_fixture"
 version = "0.1.0"
 edition = "2024"
 "#,
-        )
-        .expect("write fixture manifest");
-        fs::write(
-            temp.path().join("mend.toml"),
-            "[visibility]\npub_in_path = \"permitted\"\n",
-        )
-        .expect("write fixture visibility config");
-        fs::write(temp.path().join("src/main.rs"), "mod a;\nfn main() {}\n")
-            .expect("write fixture root");
-        fs::write(temp.path().join("src/a.rs"), "mod b;\n").expect("write outer module");
-        fs::write(
-            temp.path().join("src/a/b.rs"),
-            "mod c;\n#[allow(unused_imports, reason = \"exercise stale facade handling\")]\npub(super) use c::Thing;\n",
-        )
-        .expect("write stale facade");
-        let child_path = temp.path().join("src/a/b/c.rs");
-        let child_source = "pub(in crate::a) struct Thing;\n";
-        fs::write(&child_path, child_source).expect("write restricted child");
-        init_git_repo(temp.path());
+    ),
+    ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
+    ("src/main.rs", "mod a;\nfn main() {}\n"),
+    ("src/a.rs", "mod b;\n"),
+    (
+        "src/a/b.rs",
+        "mod c;\n#[allow(unused_imports, reason = \"exercise stale facade handling\")]\npub(super) use c::Thing;\n",
+    ),
+    ("src/a/b/c.rs", "pub(in crate::a) struct Thing;\n"),
+];
 
-        let report = run_mend_json(&temp.path().join("Cargo.toml"));
-        let finding = report
-            .findings
-            .iter()
-            .find(|finding| finding.code == DiagnosticCode::SuspiciousPub)
-            .unwrap_or_else(|| panic!("missing restricted stale-facade finding: {report:#?}"));
-        assert_eq!(finding.fix_support, FixSupport::None);
-        assert_eq!(report.summary.fixable_with_fix, 0);
-        assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
-        assert_no_stored_pub_use_fix_facts(&temp);
+#[test]
+fn accepted_restricted_stale_facade_is_not_offered_to_any_fixer() {
+    let temp = tempdir().expect("create restricted stale-facade fixture dir");
+    fs::create_dir_all(temp.path().join("src/a/b")).expect("create fixture modules");
+    for (relative_path, source) in RESTRICTED_STALE_FACADE_SOURCES {
+        fs::write(temp.path().join(relative_path), source).expect("write fixture source");
+    }
+    init_git_repo(temp.path());
 
+    let report = run_mend_json(&temp.path().join("Cargo.toml"));
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == DiagnosticCode::SuspiciousPub)
+        .unwrap_or_else(|| panic!("missing restricted stale-facade finding: {report:#?}"));
+    assert_eq!(finding.fix_support, FixSupport::None);
+    assert_eq!(report.summary.fixable_with_fix, 0);
+    assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
+    assert_no_stored_pub_use_fix_facts(&temp);
+
+    for fix_flag in ["--fix", "--fix-pub-use", "--fix-all"] {
         let output = mend_command_for(&temp.path().join("Cargo.toml"))
             .arg(fix_flag)
             .output()
@@ -56,10 +55,13 @@ edition = "2024"
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
-        assert_eq!(
-            fs::read_to_string(&child_path).expect("read restricted child"),
-            child_source,
-        );
+        for (relative_path, source) in RESTRICTED_STALE_FACADE_SOURCES {
+            assert_eq!(
+                fs::read_to_string(temp.path().join(relative_path)).expect("read fixture source"),
+                *source,
+                "{fix_flag} must leave {relative_path} unchanged",
+            );
+        }
     }
 }
 
