@@ -17,6 +17,7 @@ use super::constants::LOCK_FILE_NAME;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use super::constants::PROJECTION_FILE_NAME;
+use super::constants::REPLAY_CHECKPOINT_FILE_NAME;
 use super::constants::REPO_INSTANCE_ID_FILE_NAME;
 use super::error::CorrectableTransactionInput;
 use super::error::LedgerCommittedActionError;
@@ -36,6 +37,8 @@ use super::projection;
 use super::projection::Projection;
 use super::projection::ProjectionError;
 use super::projection::ProjectionSynchronization;
+use super::replay_checkpoint;
+use super::replay_checkpoint::ReplayCheckpoint;
 use super::worktree_context::WorktreeContext;
 use crate::config::BerthConfig;
 use crate::config::ConfigurationLookup;
@@ -316,7 +319,10 @@ impl Ledger {
         self.require_existing()?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
         retry_concurrent_projection_publication(|| {
-            let replay = Journal::replay_read_only(&self.paths.journal)?;
+            let replay = Journal::replay_read_only_from_checkpoint(
+                &self.paths.journal,
+                &ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id),
+            )?;
             identity::validate_journal_repository(repo_instance_id, &replay)?;
             projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
             Ok(ValidatedJournal {
@@ -589,11 +595,14 @@ impl Ledger {
     }
 
     /// Remove and rebuild only the disposable projection from journal truth.
+    ///
+    /// Also removes the replay checkpoint, so the journal replays from byte 0.
     pub(crate) fn repair_projection(repository_root: &Path) -> Result<(), LedgerError> {
         let ledger = Self::locate(repository_root)?;
         ledger.require_existing()?;
         let _lock = MutationLock::acquire(&ledger.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)?;
         let repo_instance_id = identity::read_repo_instance_id(&ledger.paths.repo_instance_id)?;
+        replay_checkpoint::remove(&ledger.paths.replay_checkpoint)?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
         identity::validate_journal_repository(repo_instance_id, &replay)?;
         match fs::remove_file(&ledger.paths.projection) {
@@ -625,6 +634,7 @@ impl Ledger {
         let complete_record_count = journal_bytes.split(|byte| *byte == b'\n').count() - 1;
         let discarded_complete_records = u64::try_from(complete_record_count)
             .map_err(|_| LedgerError::JournalSizeUnrepresentable)?;
+        replay_checkpoint::remove(&ledger.paths.replay_checkpoint)?;
         let (journal, _) = Journal::open_or_create(&ledger.paths.journal)?;
         journal.truncate()?;
         let repo_instance_id = identity::read_repo_instance_id(&ledger.paths.repo_instance_id)?;
@@ -658,6 +668,7 @@ impl Ledger {
                 journal: directory.join(JOURNAL_FILE_NAME),
                 lock: directory.join(LOCK_FILE_NAME),
                 projection: directory.join(PROJECTION_FILE_NAME),
+                replay_checkpoint: directory.join(REPLAY_CHECKPOINT_FILE_NAME),
                 repo_instance_id: directory.join(REPO_INSTANCE_ID_FILE_NAME),
                 repository_root: repository_root.to_path_buf(),
                 directory,
@@ -710,7 +721,10 @@ impl Ledger {
         journal_initialization: InitializationState,
         repo_instance_id: RepoInstanceId,
     ) -> Result<LedgerTransaction, LedgerError> {
-        let replay = journal.replay_repairing_tail()?;
+        let replay = journal.replay_repairing_tail_from_checkpoint(&ReplayCheckpoint::new(
+            &self.paths.replay_checkpoint,
+            repo_instance_id,
+        ))?;
         identity::validate_journal_repository(repo_instance_id, &replay)?;
         let projection_synchronization =
             projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
@@ -957,12 +971,13 @@ struct JournalAppend {
 }
 
 struct LedgerPaths {
-    directory:        PathBuf,
-    journal:          PathBuf,
-    projection:       PathBuf,
-    lock:             PathBuf,
-    repo_instance_id: PathBuf,
-    repository_root:  PathBuf,
+    directory:         PathBuf,
+    journal:           PathBuf,
+    projection:        PathBuf,
+    replay_checkpoint: PathBuf,
+    lock:              PathBuf,
+    repo_instance_id:  PathBuf,
+    repository_root:   PathBuf,
 }
 
 /// A projection published after a lock-free journal read requires a fresh pair of reads.
@@ -1501,6 +1516,23 @@ mod tests {
                 Err(LedgerError::Projection(ProjectionError::CacheAhead))
             ));
         }
+    }
+
+    #[test]
+    fn projection_repair_and_reinitialization_remove_the_replay_checkpoint() {
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path()).expect("ledger should initialize");
+        let ledger = Ledger::open(repository.path()).expect("ledger should open");
+
+        Ledger::repair_projection(repository.path())
+            .expect("repair should accept a ledger without a checkpoint");
+        fs::write(&ledger.paths.replay_checkpoint, b"stale").expect("checkpoint should write");
+        Ledger::repair_projection(repository.path()).expect("projection should rebuild");
+        assert!(!ledger.paths.replay_checkpoint.exists());
+
+        fs::write(&ledger.paths.replay_checkpoint, b"stale").expect("checkpoint should write");
+        Ledger::reinitialize_after_review(repository.path()).expect("ledger should reinitialize");
+        assert!(!ledger.paths.replay_checkpoint.exists());
     }
 
     fn append_renewal(ledger: Arc<Ledger>) -> JoinHandle<Result<(), LedgerTransactionError>> {

@@ -31,6 +31,7 @@ use super::constants::HARNESS_SESSION_ENVIRONMENT;
 use super::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
+use super::replay_checkpoint::ReplayCheckpoint;
 use super::target::ClaimTarget;
 use super::target::IntegrationTarget;
 use super::target::TargetSource;
@@ -2018,10 +2019,32 @@ impl Journal {
         Ok(())
     }
 
+    /// Replay every complete record, resuming after `checkpoint` when it still describes this
+    /// journal, and repair one incomplete final record.
+    pub(super) fn replay_repairing_tail_from_checkpoint(
+        &self,
+        checkpoint: &ReplayCheckpoint<'_>,
+    ) -> Result<JournalReplay, JournalError> {
+        let (replay, read_end) = checkpoint.replay_journal(&self.path)?;
+        if read_end != replay.end_offset {
+            self.truncate_to(replay.end_offset)?;
+        }
+        Ok(replay)
+    }
+
     /// Replay complete records without opening the journal for mutation.
     pub(super) fn replay_read_only(path: &Path) -> Result<JournalReplay, JournalError> {
         let bytes = fs::read(path)?;
         replay_complete_records(&bytes).map(|(replay, _)| replay)
+    }
+
+    /// Replay complete records without opening the journal for mutation, resuming after
+    /// `checkpoint` when it still describes the journal.
+    pub(super) fn replay_read_only_from_checkpoint(
+        path: &Path,
+        checkpoint: &ReplayCheckpoint<'_>,
+    ) -> Result<JournalReplay, JournalError> {
+        checkpoint.replay_journal(path).map(|(replay, _)| replay)
     }
 
     /// Append exactly one complete JSON record and sync it before cache publication.
@@ -2068,7 +2091,7 @@ impl Journal {
 
 impl JournalReplay {
     /// The replay of a journal with no records.
-    fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             reservations:        Ok(RetainedReservationSet::default()),
             coordination_events: Vec::new(),
@@ -2119,13 +2142,25 @@ impl JournalReplay {
         }
         Ok(complete_end)
     }
+
+    /// This replay extended over the complete records at the start of `appended`, the journal
+    /// bytes after [`Self::end_offset`], and the byte length of those records.
+    ///
+    /// Folds each record as it decodes, without holding the decoded records, so a record that
+    /// fails to decode consumes the replay where [`Self::advance_over`] leaves it unchanged.
+    pub(super) fn extended_over(mut self, appended: &[u8]) -> Result<(Self, usize), JournalError> {
+        let replayed_lines =
+            usize::try_from(self.record_count).map_err(JournalError::JournalTooLarge)?;
+        let complete_end = decode_complete_records(appended, replayed_lines + 1, |event| {
+            self.apply_record(event);
+        })?;
+        self.cover(&appended[..complete_end])?;
+        Ok((self, complete_end))
+    }
 }
 
 fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), JournalError> {
-    let mut replay = JournalReplay::empty();
-    let complete_end = decode_complete_records(bytes, 1, |event| replay.apply_record(event))?;
-    replay.cover(&bytes[..complete_end])?;
-    Ok((replay, complete_end))
+    JournalReplay::empty().extended_over(bytes)
 }
 
 /// Decode every newline-terminated record in append order, passing each event to `visit`.
@@ -2223,14 +2258,14 @@ fn decode_record(record: &str, line: usize) -> Result<JournalEvent, JournalError
 
 impl JournalFingerprint {
     /// The fingerprint of an empty journal: the FNV-1a offset basis.
-    const EMPTY: Self = Self(14_695_981_039_346_656_037);
+    pub(super) const EMPTY: Self = Self(14_695_981_039_346_656_037);
     const FNV_PRIME: u64 = 1_099_511_628_211;
 
     /// The fingerprint of the bytes this one covers followed by `bytes`.
     ///
     /// FNV-1a's whole state is its running value, so continuing a prefix's fingerprint over the
     /// bytes that follow equals fingerprinting the joined bytes from [`Self::EMPTY`].
-    fn continued(self, bytes: &[u8]) -> Self {
+    pub(super) fn continued(self, bytes: &[u8]) -> Self {
         Self(bytes.iter().fold(self.0, |fingerprint, byte| {
             (fingerprint ^ u64::from(*byte)).wrapping_mul(Self::FNV_PRIME)
         }))
@@ -2321,7 +2356,7 @@ impl From<std::io::Error> for JournalAppendError {
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::io::Write;
@@ -3227,7 +3262,8 @@ mod tests {
     /// A journal from three repositories covering claims, widens under two authorizations, a
     /// holder merge extent, a bypass, and a full lifecycle, followed by a widen of the released
     /// reservation that reservation replay rejects and records after it.
-    fn fold_sequence_events() -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
+    pub(in crate::ledger) fn fold_sequence_events()
+    -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
         let first = test_actor();
         let second = test_actor();
         let third = test_actor();
@@ -3331,8 +3367,8 @@ mod tests {
     /// that populate what the fold sequence leaves empty: a claim with a fallback target, a
     /// protected merge extent, a resolved and an outstanding incursion, and scoped patch verdicts
     /// and attempts for the released reservation. Also returns the rejected widen's index.
-    fn round_trip_sequence_events() -> Result<(Vec<JournalEvent>, usize), Box<dyn std::error::Error>>
-    {
+    pub(in crate::ledger) fn round_trip_sequence_events()
+    -> Result<(Vec<JournalEvent>, usize), Box<dyn std::error::Error>> {
         let mut events = fold_sequence_events()?;
         let released = RetainedReservationSet::replay(&events[..FOLD_FAILING_RECORD_INDEX])?;
         let subject = serde_json::to_value(

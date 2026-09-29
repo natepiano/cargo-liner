@@ -10,6 +10,7 @@ mod journal;
 mod lock;
 mod path;
 mod projection;
+mod replay_checkpoint;
 mod target;
 #[cfg(test)]
 #[allow(
