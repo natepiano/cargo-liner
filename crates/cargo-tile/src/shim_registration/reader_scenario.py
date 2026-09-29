@@ -30,8 +30,12 @@ if TYPE_CHECKING:
     Snapshot = tuple[str, list[list[Foreground]]]
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario, cpu_scans_argument = sys.argv[2:]
+binary, source, scenario, cpu_scans_argument, report_argument, smoothing_argument = sys.argv[2:]
 cpu_scans = int(cpu_scans_argument)
+# The reader's CensusCadence: how long the table holds a cpu reading, and how
+# long a reading takes to travel most of the way to a changed share, in seconds.
+report_window = float(report_argument)
+smoothing_window = float(smoothing_argument)
 READER_SCENARIOS = (
     'child-source-switch', 'locale', 'root-headings', 'settings-scroll-burst',
     'cpu-cache-server', 'quiet-json-long', 'excluded',
@@ -42,6 +46,8 @@ frame_end = b'\x1b[?25l'
 # Parallel reader tests share the host census; leave room for every fixture's rows.
 terminal_rows = 300
 terminal_columns = 300
+# How long wait_for polls before it fails.
+wait_seconds = 10
 home = root / 'home'
 work = home / ('repair-group-' + root.name)
 capture_parent = root / 'capture'
@@ -170,12 +176,15 @@ def reader_terminal() -> int:
     return required(terminal, 'reader terminal is used before pty.fork')
 
 def wait_for(predicate: Callable[[], object], description: str,
-             diagnostics: Callable[[], str] | None = None) -> None:
-    deadline = time.monotonic() + 10
+             diagnostics: Callable[[], str] | None = None, *, pause: float = 0.02,
+             deadline: float | None = None) -> None:
+    # Filesystem and ps predicates pause between checks; a predicate that blocks on a
+    # terminal read passes pause=0. A caller that bounds nested waits passes their deadline.
+    deadline = time.monotonic() + wait_seconds if deadline is None else deadline
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(0.02)
+        time.sleep(pause)
     details = diagnostics() if diagnostics is not None else ('\n' + screen() if transcript else '')
     raise AssertionError(description + details)
 
@@ -372,8 +381,8 @@ def process_ancestry(pid: int) -> list[int]:
     return ancestry
 
 
-def rendered_cpu(rendered: str, writer: StartedWriter, markers: tuple[str, ...]) -> int:
-    commands = fixture_pane(rendered, markers)
+def rendered_cpu(rendered: str, writer: StartedWriter) -> int:
+    commands = fixture_pane(rendered, (writer[1].name,))
     pid = (writer[1] / 'cargo-pid').read_text()
     rows = [line for line in commands if writer[1].name in line
             and re.match(r'^\s*│\s*' + pid + r'\s', line)]
@@ -391,21 +400,24 @@ def rendered_cpu(rendered: str, writer: StartedWriter, markers: tuple[str, ...])
     return int(percentages[0][:-1])
 
 def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter) -> str:
-    markers = (writer[1].name, unrelated[1].name)
-    rendered = wait_for_fixture_pane(markers)
+    # Independent invocations share a pane under a leading test driver and lead their own
+    # groups without one; each is looked up in the one pane that draws it.
+    panes = ((writer[1].name,), (unrelated[1].name,))
+    rendered = wait_for_fixture_panes(*panes)
     readings: list[tuple[float, int]] = []
     other_readings: list[int] = []
     started = time.monotonic()
-    deadline = started + 4
+    # Readings climb for one smoothing window; the sustained set then spans three report windows.
+    deadline = started + smoothing_window + 3 * report_window
     def observe_cpu() -> bool:
         nonlocal rendered
-        readings.append((time.monotonic() - started, rendered_cpu(rendered, writer, markers)))
-        other_readings.append(rendered_cpu(rendered, unrelated, markers))
-        rendered = wait_for_fixture_pane(markers)
+        readings.append((time.monotonic() - started, rendered_cpu(rendered, writer)))
+        other_readings.append(rendered_cpu(rendered, unrelated))
+        rendered = wait_for_fixture_panes(*panes)
         return time.monotonic() >= deadline
     wait_for(observe_cpu, 'compiler does not complete the observed CPU workload',
-             lambda: repr(readings))
-    sustained = [cpu for elapsed, cpu in readings if elapsed >= 2]
+             lambda: repr(readings), pause=0)
+    sustained = [cpu for elapsed, cpu in readings if elapsed >= smoothing_window]
     assert len(sustained) >= 3 and min(sustained) >= 10, (
         'compile CPU must remain charged across reporting windows', readings)
     assert max(other_readings) < min(sustained) / 2, (readings, other_readings)
@@ -422,19 +434,36 @@ def finish_cpu_scans() -> list[list[str]]:
     return observations
 
 
+def read_pending() -> bool:
+    # Append one read of reader output; False once the reader has closed its terminal.
+    try:
+        data = os.read(reader_terminal(), 65536)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            return False
+        raise
+    transcript.extend(data)
+    return bool(data)
+
 def read_terminal(duration: float) -> None:
+    # Return once this call has read a completed frame and nothing more is pending, so a
+    # predicate is checked against every frame; duration bounds the wait when none arrives.
     deadline = time.monotonic() + duration
-    while time.monotonic() < deadline:
-        if select.select([reader_terminal()], [], [], min(0.05, max(0, deadline - time.monotonic())))[0]:
-            try:
-                data = os.read(reader_terminal(), 65536)
-            except OSError as error:
-                if error.errno == errno.EIO:
-                    break
-                raise
-            if not data:
-                break
-            transcript.extend(data)
+    # Start early enough to find a frame end split across the previous read and this one.
+    frame_search = max(0, len(transcript) - len(frame_end) + 1)
+    while (remaining := deadline - time.monotonic()) > 0:
+        framed = transcript.find(frame_end, frame_search) >= 0
+        if not select.select([reader_terminal()], [], [], 0 if framed else remaining)[0]:
+            return
+        if not read_pending():
+            return
+
+def drain_terminal(duration: float) -> None:
+    # Keep reading for all of duration, or until the reader closes its terminal.
+    deadline = time.monotonic() + duration
+    while (remaining := deadline - time.monotonic()) > 0:
+        if select.select([reader_terminal()], [], [], remaining)[0] and not read_pending():
+            return
 
 class CompletedTerminalFrames:
     """Keep the mutable draw separate from the last completed screen."""
@@ -574,17 +603,18 @@ def fixture_pane(rendered: str, markers: tuple[str, ...]) -> list[str]:
     assert len(matches) == 1, 'fixture must occupy one command pane\n' + rendered
     return matches[0]
 
-def wait_for_fixture_pane(markers: tuple[str, ...]) -> str:
+def wait_for_fixture_panes(*panes: tuple[str, ...]) -> str:
+    # One completed frame in which every group of markers occupies exactly one command pane.
     rendered = ''
-    matches: list[list[str]] = []
-    def pane_is_ready() -> bool:
-        nonlocal rendered, matches
+    counts: list[int] = []
+    def panes_are_ready() -> bool:
+        nonlocal rendered, counts
         read_terminal(0.1)
         rendered = screen()
-        matches = fixture_panes(rendered, markers)
-        return len(matches) == 1
-    wait_for(pane_is_ready, 'fixture must occupy one command pane',
-             lambda: f'; observed {len(matches)} matching panes\n' + rendered)
+        counts = [len(fixture_panes(rendered, markers)) for markers in panes]
+        return all(count == 1 for count in counts)
+    wait_for(panes_are_ready, 'fixture must occupy one command pane',
+             lambda: f'; observed {counts} matching panes\n' + rendered, pause=0)
     return rendered
 
 
@@ -621,7 +651,7 @@ def carrier_source_is_rendered(writer: RegistrationCarrier, source: str) -> bool
 
 def assert_child_family(parent: StartedWriter,
                         child: RegistrationCarrier) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...]]:
-    rendered = wait_for_fixture_pane((parent[1].name, child[1].name))
+    rendered = wait_for_fixture_panes((parent[1].name, child[1].name))
     # No PTY read separates the ready screen from its matching color snapshot.
     colors = terminal_snapshot()[1]
     commands = fixture_pane(rendered, (parent[1].name, child[1].name))
@@ -658,14 +688,14 @@ def assert_child_family(parent: StartedWriter,
 
 def assert_child_source_switch(carrier: RegistrationCarrier) -> None:
     wait_for(lambda: carrier_source_is_rendered(carrier, 'registration'),
-             'parent does not display its registration-only child')
+             'parent does not display its registration-only child', pause=0)
     initial = assert_child_family(first, carrier)
     for source, trigger in (('process', 'activate'), ('registration', 'retire')):
         (carrier[1] / trigger).touch()
         wait_for(lambda: (carrier[1] / 'source').read_text() == source,
                  'child does not switch to ' + source)
         wait_for(lambda: carrier_source_is_rendered(carrier, source),
-                 'reader does not observe child source ' + source)
+                 'reader does not observe child source ' + source, pause=0)
         observed = assert_child_family(first, carrier)
         assert observed == initial, \
             ('child source change alters family color, start, or headings: '
@@ -679,7 +709,7 @@ def expand_arguments(expected_rows: list[tuple[str, str]]) -> str:
         rows = [line for commands in command_panes(screen()) for line in commands]
         return all(any(re.match(r'^\s*│\s*' + str(pid) + r'\s', line) and command in line
                        for line in rows) for pid, command in expected_rows)
-    wait_for(arguments_are_rendered, 'full command arguments do not finish rendering')
+    wait_for(arguments_are_rendered, 'full command arguments do not finish rendering', pause=0)
     return screen()
 
 def settings_screen() -> str:
@@ -688,13 +718,13 @@ def settings_screen() -> str:
         read_terminal(0.1)
         rendered = screen()
         return 'Capture:' in rendered and 'auto install' in rendered and 'Commands:' in rendered
-    wait_for(settings_are_visible, 'settings do not open')
+    wait_for(settings_are_visible, 'settings do not open', pause=0)
     rendered = screen()
     _ = os.write(reader_terminal(), b'\x1b')
     def settings_are_closed() -> bool:
         read_terminal(0.1)
         return 'Capture:' not in screen()
-    wait_for(settings_are_closed, 'settings do not close')
+    wait_for(settings_are_closed, 'settings do not close', pause=0)
     return rendered
 
 def assert_settings_scroll() -> None:
@@ -745,35 +775,41 @@ def assert_settings_scroll() -> None:
         rendered = screen()
         return 'Settings' in rendered and any('▶' in line and 'mode' in line
                                              for line in rendered.splitlines())
-    wait_for(settings_are_visible, 'small settings popup does not open', popup_diagnostics)
+    wait_for(settings_are_visible, 'small settings popup does not open', popup_diagnostics,
+             pause=0)
     initial = screen()
     assert all(str(directory) not in initial for directory in account_directories), initial
     pending = {str(directory) for directory in account_directories}
     selected_accounts: set[str] = set()
     def selected_rows() -> str:
-        return '\n'.join(line for line in screen().splitlines() if '▶' in line)
-    def press_down() -> None:
+        # Tiles beside the popup share the selected row's screen line and redraw on every scan;
+        # keep only the popup's cell, so a tile redraw never reads as a selection change.
+        return '\n'.join(line[line.index('▶'):].split('│', 1)[0]
+                         for line in screen().splitlines() if '▶' in line)
+    def press_down(deadline: float) -> None:
         # Each arrow redraws the selection; read until that frame lands instead of a fixed delay.
+        # Waiting on the enclosing wait_for deadline keeps a slow frame from queueing a second
+        # arrow, and a selection that cannot move still returns when that wait fails.
         previous = selected_rows()
         _ = os.write(reader_terminal(), b'\x1b[B')
-        deadline = time.monotonic() + 1
-        while selected_rows() == previous and time.monotonic() < deadline:
-            read_terminal(0.01)
+        while selected_rows() == previous and (remaining := deadline - time.monotonic()) > 0:
+            read_terminal(remaining)
+    accounts_deadline = time.monotonic() + wait_seconds
     def accounts_are_selected() -> bool:
-        press_down()
-        rendered = screen()
-        selected = '\n'.join(line for line in rendered.splitlines() if '▶' in line)
+        press_down(accounts_deadline)
+        selected = selected_rows()
         selected_accounts.update(directory for directory in pending if directory in selected)
         return selected_accounts == pending
     wait_for(accounts_are_selected, 'keyboard navigation cannot select every drawn account',
-             lambda: '\nmissing: ' + repr(sorted(pending - selected_accounts)) + '\n' + screen())
+             lambda: '\nmissing: ' + repr(sorted(pending - selected_accounts)) + '\n' + screen(),
+             pause=0, deadline=accounts_deadline)
     selected = next(line for line in screen().splitlines() if '▶' in line)
     account = next(directory for directory in pending if directory in selected)
     configurations = {path: path.read_bytes() for path in
                       (root / 'config/cargo-tile/config.toml',
                        home / 'Library/Application Support/cargo-tile/config.toml')}
     _ = os.write(reader_terminal(), b'\r\x1b[C\x1b[D')
-    read_terminal(0.2)
+    drain_terminal(0.2)
     assert any('▶' in line and account in line for line in screen().splitlines()), screen()
     assert all(path.read_bytes() == contents for path, contents in configurations.items()), \
         'account navigation edits configuration'
@@ -783,25 +819,30 @@ def assert_settings_scroll() -> None:
     def selection_survives_resize() -> bool:
         read_terminal(0.1)
         return any('▶' in line and account in line for line in screen().splitlines())
-    wait_for(selection_survives_resize, 'selected account disappears after terminal resize')
+    wait_for(selection_survives_resize, 'selected account disappears after terminal resize',
+             pause=0)
     remaining_settings = {'excluded', 'hidden when idle', 'config', 'themes', 'keymap'}
+    settings_deadline = time.monotonic() + wait_seconds
     def later_settings_are_selected() -> bool:
-        press_down()
+        press_down(settings_deadline)
         selected = selected_rows()
         remaining_settings.difference_update(label for label in tuple(remaining_settings)
                                              if re.search('▶\\s+' + re.escape(label) + '\\s', selected))
         return not remaining_settings
     wait_for(later_settings_are_selected, 'settings below account directories cannot be reached',
-             lambda: '\nmissing: ' + repr(sorted(remaining_settings)) + '\n' + screen())
+             lambda: '\nmissing: ' + repr(sorted(remaining_settings)) + '\n' + screen(),
+             pause=0, deadline=settings_deadline)
     _ = os.write(reader_terminal(), b'\x1b')
     read_terminal(0.1)
 
 def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path) -> str:
     markers = ['probe-nested-' + root.name + '-' + command for command in ('check', 'test')]
-    rendered = wait_for_fixture_pane((first[1].name, *markers))
-    commands = fixture_pane(rendered, (first[1].name, *markers))
-    assert any(nested_directory.name in line for line in commands), rendered
+    # The excluded command draws no row, so the nested commands' grouping follows whatever
+    # leads them; each is looked up in the one pane that draws it.
+    rendered = wait_for_fixture_panes(*((marker,) for marker in markers))
     for marker, command in zip(markers, ('check', 'test')):
+        commands = fixture_pane(rendered, (marker,))
+        assert any(nested_directory.name in line for line in commands), rendered
         rows = [line for line in commands if marker in line]
         assert len(rows) == 1, 'nested invocation does not retain one row\n' + rendered
         assert 'blocked' in rows[0] and 'cargo ' + command + ' ' + marker in rows[0], rendered
@@ -990,7 +1031,7 @@ try:
         rendered = screen()
         marker = first[1].name
         return marker in rendered and 'summary' in rendered
-    wait_for(reader_has_scanned, 'production reader does not display the live cargo row')
+    wait_for(reader_has_scanned, 'production reader does not display the live cargo row', pause=0)
     rendered = screen()
     assert 'summary' in rendered, rendered
     if scenario == 'cpu-cache-server':
@@ -1001,7 +1042,7 @@ try:
         quiet_writer = required(quiet_writer, 'quiet-json-long setup does not assign quiet_writer')
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
         rendered = expand_arguments([(cargo_pid, 'cargo check ' + quiet_writer[1].name + ' ' + ' '.join(arguments))])
-        commands = fixture_pane(rendered, (first[1].name, quiet_writer[1].name))
+        commands = fixture_pane(rendered, (quiet_writer[1].name,))
         rows = [line for line in commands if quiet_writer[1].name in line]
         assert len(rows) == 1, 'quiet JSON produces multiple invocation rows\n' + rendered
         cargo_pid = (quiet_writer[1] / 'cargo-pid').read_text()
@@ -1017,14 +1058,15 @@ try:
     if scenario == 'root-headings':
         markers = (first[1].name, required(second, 'root-headings setup does not assign second')[1].name)
         # The reader has shown the first writer; the second can arrive in a later scan.
-        rendered = wait_for_fixture_pane(markers)
-        commands = fixture_pane(rendered, markers)
-        for marker in markers:
-            assert sum(marker in line for line in commands) == 1, rendered
+        # Each writer is checked in the one pane that draws it, shared or its own.
+        rendered = wait_for_fixture_panes(*((marker,) for marker in markers))
         account = pwd.getpwuid(capture.stat().st_uid).pw_name
         heading = '[' + account + '] ~/' + work.name
-        assert sum(heading in line for line in commands) == 1, rendered
-        assert not any('[' + str(other_uid) + ']' in line for line in commands), rendered
+        for marker in markers:
+            commands = fixture_pane(rendered, (marker,))
+            assert sum(marker in line for line in commands) == 1, rendered
+            assert sum(heading in line for line in commands) == 1, rendered
+            assert not any('[' + str(other_uid) + ']' in line for line in commands), rendered
         settings = settings_screen()
         assert str(capture_parent) in settings and '1777' in settings, settings
         assert any(account in line and 'yours · 1 capture ·' in line
@@ -1061,7 +1103,7 @@ finally:
             finished, status = os.waitpid(reader, os.WNOHANG)
             if not finished:
                 _ = os.write(reader_terminal(), b'q')
-                read_terminal(0.3)
+                drain_terminal(0.3)
                 finished, status = os.waitpid(reader, os.WNOHANG)
                 if not finished:
                     os.kill(reader, signal.SIGTERM)

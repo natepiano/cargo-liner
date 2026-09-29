@@ -54,6 +54,8 @@ use crate::constants::BIRTH_STAT_FILENAME;
 use crate::constants::BIRTH_STAT_START_INDEX;
 use crate::constants::CARGO_TARGET_DIR_ENV;
 use crate::constants::CARGO_TARGET_DIR_FLAG;
+#[cfg(test)]
+use crate::constants::CENSUS_TEST_CADENCE_DIVISOR;
 #[cfg(target_os = "linux")]
 use crate::constants::CPU_AUXV_CLOCK_TICKS;
 #[cfg(target_os = "linux")]
@@ -149,6 +151,57 @@ impl From<&Process> for CpuBaseline {
     }
 }
 
+/// How often the census scans and how the table's `cpu` column follows
+/// those scans.
+///
+/// The executable takes [`CensusCadence::default`], built from the
+/// production constants; PTY tests take `CensusCadence::for_test`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CensusCadence {
+    /// Delay between scans; see [`PROCESS_POLL_MILLIS`].
+    pub(super) poll:      Duration,
+    /// How long the table holds a `cpu` reading before it takes a fresh
+    /// one; see [`CPU_REPORT_MILLIS`].
+    pub(crate) report:    Duration,
+    /// How long a reading takes to travel most of the way to a share that
+    /// has changed; see [`CPU_SMOOTHING_SECONDS`].
+    pub(crate) smoothing: Duration,
+}
+
+impl Default for CensusCadence {
+    fn default() -> Self {
+        Self {
+            poll:      Duration::from_millis(PROCESS_POLL_MILLIS),
+            report:    Duration::from_millis(CPU_REPORT_MILLIS),
+            smoothing: Duration::from_secs_f32(CPU_SMOOTHING_SECONDS),
+        }
+    }
+}
+
+impl CensusCadence {
+    /// Every production interval divided by [`CENSUS_TEST_CADENCE_DIVISOR`],
+    /// so a reader under test scans, smooths and reports at the
+    /// executable's proportions in a fraction of the time.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        let production = Self::default();
+        Self {
+            poll:      production.poll / CENSUS_TEST_CADENCE_DIVISOR,
+            report:    production.report / CENSUS_TEST_CADENCE_DIVISOR,
+            smoothing: production.smoothing / CENSUS_TEST_CADENCE_DIVISOR,
+        }
+    }
+
+    /// How much of a fresh sample a settled reading takes on.
+    ///
+    /// Worked out from the scan interval rather than stated, so the window
+    /// stays the one [`smoothing`](Self::smoothing) names however often
+    /// the scan runs.
+    fn smoothing_alpha(self) -> f32 {
+        1.0 - (-self.poll.as_secs_f32() / self.smoothing.as_secs_f32()).exp()
+    }
+}
+
 /// Whether the smoother has ever published a snapshot and when it last did so.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum CpuPublication {
@@ -167,10 +220,11 @@ enum CpuPublication {
 /// anything that works in bursts says more about where the sample landed
 /// than about what the command is doing, so each invocation's reading is
 /// carried part way toward its latest sample rather than replaced by it,
-/// over the window [`CPU_SMOOTHING_SECONDS`] names. That happens on every
-/// scan. What the table is given, though, is held for
-/// [`CPU_REPORT_MILLIS`] at a time: a smooth figure redrawn four times a
-/// second is still a figure nobody can read.
+/// over the window [`CensusCadence::smoothing`] names. That happens on
+/// every scan. What the table is given, though, is held for
+/// [`CensusCadence::report`] at a time: a smooth figure redrawn four times
+/// a second is still a figure nobody can read. The default cadence takes
+/// both windows from [`CPU_SMOOTHING_SECONDS`] and [`CPU_REPORT_MILLIS`].
 #[derive(Default)]
 pub(super) struct InvocationCpuAccounting {
     /// Native lifetimes preserve the first confirmed generation through registration gaps.
@@ -193,6 +247,8 @@ pub(super) struct InvocationCpuAccounting {
     pub(super) reported:     HashMap<InvocationId, Measurement<f32>>,
     /// A never-published smoother has no previous snapshot to hold.
     publication:             CpuPublication,
+    /// The scan interval and the windows that smooth and hold a reading.
+    cadence:                 CensusCadence,
 }
 
 /// A cumulative subtree counter, retaining completed work on platforms without wait totals.
@@ -562,6 +618,14 @@ pub(super) fn linux_cpu_time(pid: Pid) -> Result<Duration, MeasurementAbsence> {
 }
 
 impl InvocationCpuAccounting {
+    /// Accounting that smooths and holds readings at `cadence`.
+    pub(super) fn new(cadence: CensusCadence) -> Self {
+        Self {
+            cadence,
+            ..Self::default()
+        }
+    }
+
     /// Only recovery for a proven process lifetime may rename accumulated CPU ownership.
     /// A different confirmed generation starts fresh even when pid and birth still match.
     pub(super) fn identify_owners(&mut self, census: &Census) {
@@ -626,7 +690,7 @@ impl InvocationCpuAccounting {
     ) -> HashMap<InvocationId, Measurement<f32>> {
         self.settled.retain(|pid, _| cargo.contains(pid));
         self.reported.retain(|pid, _| cargo.contains(pid));
-        let alpha = smoothing_alpha();
+        let alpha = self.cadence.smoothing_alpha();
         for pid in cargo {
             let sample = sampled
                 .get(pid)
@@ -665,21 +729,9 @@ impl InvocationCpuAccounting {
     pub(super) fn is_due(&self, now: Instant) -> bool {
         match self.publication {
             CpuPublication::NeverPublished => true,
-            CpuPublication::Published(taken) => {
-                now.duration_since(taken) >= Duration::from_millis(CPU_REPORT_MILLIS)
-            },
+            CpuPublication::Published(taken) => now.duration_since(taken) >= self.cadence.report,
         }
     }
-}
-
-/// How much of a fresh sample a settled reading takes on.
-///
-/// Worked out from the scan interval rather than stated, so the window
-/// stays the one [`CPU_SMOOTHING_SECONDS`] names however often the scan
-/// runs.
-fn smoothing_alpha() -> f32 {
-    let interval = Duration::from_millis(PROCESS_POLL_MILLIS).as_secs_f32();
-    1.0 - (-interval / CPU_SMOOTHING_SECONDS).exp()
 }
 
 #[cfg(test)]

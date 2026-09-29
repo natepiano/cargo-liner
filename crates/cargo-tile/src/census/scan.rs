@@ -45,6 +45,7 @@ use super::direct_capture::DirectCapture;
 use super::direct_capture::NearestRegistration;
 use super::direct_capture::SelectedProof;
 use super::invocation_cpu_accounting;
+use super::invocation_cpu_accounting::CensusCadence;
 use super::invocation_cpu_accounting::CompileOwner;
 use super::invocation_cpu_accounting::CompilerCreditRetention;
 use super::invocation_cpu_accounting::CpuAssignment;
@@ -77,7 +78,6 @@ use crate::constants::CARGO_QUIET_FLAGS;
 use crate::constants::CARGO_TARGET_DIR_FLAG;
 use crate::constants::COMPILER_PROCESS_NAMES;
 use crate::constants::PARENT_WALK_LIMIT;
-use crate::constants::PROCESS_POLL_MILLIS;
 use crate::constants::ROOT_PROCESS_PID;
 use crate::constants::RUSTC_BINARY;
 use crate::constants::RUSTC_OUT_DIR_FLAG;
@@ -384,20 +384,23 @@ impl ExcludedCommands {
 ///
 /// The thread ends when the receiver is dropped.
 ///
-/// Each scan reads `excluded` afresh. Parent resolution runs once inside
-/// the worker before its scan loop, so a slow filesystem cannot block terminal
-/// startup; each scan still opens every root to recheck access and ownership.
-/// Keep root resolution on the worker even when it stalls. The resolver and
-/// join handle let tests hold resolution and observe repeated scans and shutdown.
+/// Each scan reads `excluded` afresh, and `cadence` sets the pause between
+/// scans and how the `cpu` column follows them. Parent resolution runs once
+/// inside the worker before its scan loop, so a slow filesystem cannot block
+/// terminal startup; each scan still opens every root to recheck access and
+/// ownership. Keep root resolution on the worker even when it stalls. The
+/// resolver and join handle let tests hold resolution and observe repeated
+/// scans and shutdown.
 pub(crate) fn spawn_with_resolver(
     excluded: ExcludedCommands,
+    cadence: CensusCadence,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
 ) -> (Receiver<Scan>, JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel();
     let worker = thread::spawn(move || {
         let roots = resolve();
         let mut system = System::new();
-        let mut smoothing = InvocationCpuAccounting::default();
+        let mut smoothing = InvocationCpuAccounting::new(cadence);
         let home = dirs::home_dir();
         let scanner_home = home.as_deref().into();
         loop {
@@ -414,7 +417,7 @@ pub(crate) fn spawn_with_resolver(
             {
                 return;
             }
-            thread::sleep(Duration::from_millis(PROCESS_POLL_MILLIS));
+            thread::sleep(cadence.poll);
         }
     });
     (receiver, worker)
@@ -5273,7 +5276,7 @@ mod tests {
         let worker_resolutions = Arc::clone(&resolutions);
         let (started, resolution_started) = mpsc::channel();
         let (release, resolution_release) = mpsc::channel();
-        let (scans, worker) = spawn_with_resolver(excluded, move || {
+        let (scans, worker) = spawn_with_resolver(excluded, CensusCadence::for_test(), move || {
             assert_ne!(thread::current().id(), caller);
             worker_resolutions.fetch_add(1, Ordering::SeqCst);
             started.send(()).expect("startup observer is alive");

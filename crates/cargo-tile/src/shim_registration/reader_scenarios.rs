@@ -31,6 +31,7 @@ use tui_pane::TerminalApp;
 
 use crate::app::App;
 use crate::census;
+use crate::census::CensusCadence;
 use crate::census::Measurement;
 use crate::config::Config;
 use crate::constants::POPUP_CHROME_HEIGHT;
@@ -52,7 +53,7 @@ fn reader_child() -> std::io::Result<()> {
     if std::env::var_os("CARGO_TILE_TEST_READER").is_some() {
         let parent = std::env::current_dir()?.join("capture");
         assert_eq!(
-            crate::terminal::run_with_capture_parent(parent),
+            crate::terminal::run_with_capture_parent(parent, CensusCadence::for_test()),
             std::process::ExitCode::SUCCESS
         );
     }
@@ -96,7 +97,9 @@ fn cpu_scan_child() -> std::io::Result<()> {
     let mut output = fs::File::create("cpu-scans")?;
     let excluded = census::ExcludedCommands::new(Config::default().commands.excluded);
     let (receiver, worker) =
-        census::spawn_with_resolver(excluded, move || CaptureRoots::from_parent(&parent));
+        census::spawn_with_resolver(excluded, CensusCadence::for_test(), move || {
+            CaptureRoots::from_parent(&parent)
+        });
     let result = (|| {
         for index in 0..CPU_OBSERVATION_SCANS {
             let scan = receiver
@@ -134,6 +137,8 @@ fn reader_regression(scenario: &str) { run_reader_script(scenario); }
 /// The parser self-check uses the same script without starting a reader.
 fn run_reader_script(scenario: &str) {
     let directory = tempfile::tempdir().expect("isolate writer and reader processes");
+    // The script times its CPU observation against the reader's own windows.
+    let cadence = CensusCadence::for_test();
     let mut command = Command::new("python3");
     if scenario == "--terminal-frame-self-check" {
         let inner = Rect::new(0, 0, 80, 10);
@@ -160,6 +165,8 @@ fn run_reader_script(scenario: &str) {
         ))
         .arg(scenario)
         .arg(CPU_OBSERVATION_SCANS.to_string())
+        .arg(cadence.report.as_secs_f64().to_string())
+        .arg(cadence.smoothing.as_secs_f64().to_string())
         .output()
         .expect("run isolated production reader regression");
     assert!(

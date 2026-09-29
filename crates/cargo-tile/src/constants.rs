@@ -266,6 +266,15 @@ pub(crate) const CPU_REPORT_MILLIS: u64 = 1000;
 /// instead of taking it, over a window long enough to average a burst
 /// out and short enough that a build ramping up is not left behind.
 pub(crate) const CPU_SMOOTHING_SECONDS: f32 = 2.0;
+/// What `CensusCadence::for_test` divides every production interval by.
+///
+/// A 50 ms scan still spans five of Linux's 10 ms clock ticks
+/// (`USER_HZ` is 100), so a sampled CPU share keeps its resolution; the
+/// scan never goes below that. The smoothing window shrinks in step, so
+/// the smoothing factor (0.1175) and each sample's weight stay the
+/// executable's.
+#[cfg(test)]
+pub(crate) const CENSUS_TEST_CADENCE_DIVISOR: u32 = 5;
 /// `chrono` format for the `start` column.
 pub(crate) const START_TIME_FORMAT: &str = "%H:%M";
 /// Seconds in a minute, for splitting a run time into its parts.

@@ -15,6 +15,7 @@ mod summary_totals_tests;
 pub(crate) use command_text::command_name;
 pub(crate) use direct_capture::DirectAssociation;
 pub(crate) use direct_capture::SelectedProof;
+pub(crate) use invocation_cpu_accounting::CensusCadence;
 pub(crate) use invocation_cpu_accounting::Measurement;
 pub(crate) use process_identity::InvocationId;
 pub(crate) use process_identity::VisibleParent;
