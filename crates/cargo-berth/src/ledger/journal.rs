@@ -805,6 +805,14 @@ impl JournalOperation {
             _ => None,
         }
     }
+
+    /// Whether this operation records a merge extent, in either record form.
+    pub(super) const fn is_merge_extent_observation(&self) -> bool {
+        matches!(
+            self,
+            Self::MergeExtentObserved { .. } | Self::HolderMergeExtentObserved { .. }
+        )
+    }
 }
 
 /// How a claim named the work it reserves.
@@ -2179,11 +2187,22 @@ impl JournalReplay {
     ///
     /// Folds each record as it decodes, without holding the decoded records, so a record that
     /// fails to decode consumes the replay where [`Self::advance_over`] leaves it unchanged.
-    pub(super) fn extended_over(mut self, appended: &[u8]) -> Result<(Self, usize), JournalError> {
+    pub(super) fn extended_over(self, appended: &[u8]) -> Result<(Self, usize), JournalError> {
+        self.extended_over_visiting(appended, |_| {})
+    }
+
+    /// [`Self::extended_over`], passing each complete record's operation to `visit`, in append
+    /// order, before the record folds.
+    pub(super) fn extended_over_visiting(
+        mut self,
+        appended: &[u8],
+        mut visit: impl FnMut(&JournalOperation),
+    ) -> Result<(Self, usize), JournalError> {
         let replayed_lines =
             usize::try_from(self.record_count).map_err(JournalError::JournalTooLarge)?;
         let complete_end =
             decode_complete_records(appended, replayed_lines + 1, |event, bytes| {
+                visit(&event.operation);
                 self.apply_record(event, bytes);
             })?;
         self.cover(&appended[..complete_end])?;

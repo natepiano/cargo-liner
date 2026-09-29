@@ -61,7 +61,7 @@ use crate::session::SessionIdentityMappingPublication;
 
 /// The shared append-only ledger for one git common directory.
 pub(crate) struct Ledger {
-    paths: LedgerPaths,
+    pub(super) paths: LedgerPaths,
 }
 
 /// Validated journal truth for a mutation-free edit check.
@@ -676,7 +676,7 @@ impl Ledger {
         }
     }
 
-    fn require_existing(&self) -> Result<(), LedgerError> {
+    pub(super) fn require_existing(&self) -> Result<(), LedgerError> {
         if !self.paths.directory.is_dir()
             || !self.paths.journal.is_file()
             || !self.paths.repo_instance_id.is_file()
@@ -970,14 +970,14 @@ struct JournalAppend {
     session_mapping_publication: SessionIdentityMappingPublication,
 }
 
-struct LedgerPaths {
-    directory:         PathBuf,
-    journal:           PathBuf,
-    projection:        PathBuf,
-    replay_checkpoint: PathBuf,
-    lock:              PathBuf,
-    repo_instance_id:  PathBuf,
-    repository_root:   PathBuf,
+pub(super) struct LedgerPaths {
+    pub(super) directory:         PathBuf,
+    pub(super) journal:           PathBuf,
+    pub(super) projection:        PathBuf,
+    pub(super) replay_checkpoint: PathBuf,
+    pub(super) lock:              PathBuf,
+    pub(super) repo_instance_id:  PathBuf,
+    repository_root:              PathBuf,
 }
 
 /// A projection published after a lock-free journal read requires a fresh pair of reads.

@@ -174,6 +174,19 @@ impl<'a> ReplayCheckpoint<'a> {
         (replay.end_offset == header.end_offset).then_some(replay)
     }
 
+    /// Write `replay` as the checkpoint of the journal file `journal` describes, where `folded`
+    /// holds complete records ending at the replay's end offset.
+    ///
+    /// The checkpoint follows that file through a rename, which keeps its device and inode.
+    pub(super) fn store_for_journal_file(
+        &self,
+        replay: &JournalReplay,
+        journal: &Metadata,
+        folded: &[u8],
+    ) -> io::Result<()> {
+        self.store(replay, JournalFileIdentity::from(journal), folded)
+    }
+
     /// Write `replay` as the checkpoint of the journal file `journal`, where `folded` holds the
     /// complete records the replay just folded, ending at its end offset.
     fn store(
