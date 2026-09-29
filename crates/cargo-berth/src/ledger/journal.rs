@@ -1918,7 +1918,7 @@ impl std::error::Error for EmptySkippedIntegrationHoldSet {}
 pub(super) struct JournalReplay {
     /// The reservation set folded record by record, or the first record it could not apply.
     ///
-    /// Equal to [`RetainedReservationSet::replay`] over every complete record: no record after
+    /// Folded with `RetainedReservationSet::apply` over every complete record: no record after
     /// the first failure is applied.
     pub(super) reservations:        Result<RetainedReservationSet, ReservationReplayError>,
     /// Every event whose operation [`JournalOperation::is_coordination_record`], in append order.
@@ -2213,8 +2213,8 @@ pub(super) fn complete_record_events(bytes: &[u8]) -> Result<Vec<JournalEvent>, 
 
 /// Apply one event to a reservation fold that has not yet failed.
 ///
-/// The first failure replaces the set and no later event is applied, as
-/// [`RetainedReservationSet::replay`] stops at its first error.
+/// The first failure replaces the set and no later event is applied, so
+/// the fold stops at its first error.
 fn fold_reservations(
     reservations: &mut Result<RetainedReservationSet, ReservationReplayError>,
     event: &JournalEvent,
