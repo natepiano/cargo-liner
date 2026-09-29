@@ -12,6 +12,7 @@ use super::FixSummaryBucket;
 use super::FixSupport;
 use super::diagnostic_spec;
 use super::diagnostics::AdvertisedFix;
+use super::mend_command_for;
 use super::report::ExpectedFinding;
 use super::report::Report;
 use super::report::Summary;
@@ -60,19 +61,6 @@ pub(super) fn cargo_command() -> Command {
 pub(crate) fn mend_command() -> Command {
     let mut command = Command::new(mend_bin());
     isolate_cargo(&mut command);
-    command
-}
-
-/// Runs mend on `manifest_path` from the fixture's own directory, the way a
-/// user runs it in a project: `cargo fix`, which `--fix-compiler`, `--fix-all`
-/// and the unused-import cleanup run, looks for version control from its
-/// working directory.
-pub(crate) fn mend_command_for(manifest_path: &Path) -> Command {
-    let mut command = mend_command();
-    command.arg("--manifest-path").arg(manifest_path);
-    if let Some(fixture_root) = manifest_path.parent() {
-        command.current_dir(fixture_root);
-    }
     command
 }
 

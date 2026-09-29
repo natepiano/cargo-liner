@@ -7,8 +7,8 @@ use std::process::Command;
 use serde::Deserialize;
 use tempfile::TempDir;
 
+use super::mend_command_for;
 use super::mend_json::expected_summary;
-use super::mend_json::mend_command_for;
 use super::mend_json::parse_mend_json_output;
 use super::report::Finding;
 use super::report::Report;

@@ -37,12 +37,7 @@ pub(super) use self::diagnostics::diagnostic_spec;
 pub(super) use self::diagnostics::findings_at;
 pub(super) use self::diagnostics::member_report;
 pub(super) use self::mend_json::fix_support_for;
-#[allow(
-    unused_imports,
-    reason = "`cli_smoke` runs mend without a fixture manifest; the diagnostics suite always names one"
-)]
 pub(super) use self::mend_json::mend_command;
-pub(super) use self::mend_json::mend_command_for;
 pub(super) use self::mend_json::parse_mend_json_output;
 pub(super) use self::report::ExpectedFinding;
 pub(super) use self::report::Finding;
@@ -91,6 +86,19 @@ pub(super) fn allow_pub_use_outside_subtree(project_root: &Path) {
         format!("[diagnostics]\npub_use_outside_subtree = false\n\n{existing}"),
     )
     .expect("write fixture mend.toml");
+}
+
+/// Runs mend on `manifest_path` from the fixture's own directory, the way a
+/// user runs it in a project: `cargo fix`, which `--fix-compiler`, `--fix-all`
+/// and the unused-import cleanup run, looks for version control from its
+/// working directory.
+pub(super) fn mend_command_for(manifest_path: &Path) -> Command {
+    let mut command = mend_command();
+    command.arg("--manifest-path").arg(manifest_path);
+    if let Some(fixture_root) = manifest_path.parent() {
+        command.current_dir(fixture_root);
+    }
+    command
 }
 
 /// Makes a fixture a git repository. `cargo fix`, which `--fix-compiler`,
