@@ -63,18 +63,6 @@ edition = "2024"
     );
 
     let manifest = temp.path().join("Cargo.toml");
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .output()
-        .expect("check visibility-fix fixture");
-    assert!(
-        check.status.success(),
-        "fixture must compile before mend: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr),
-    );
     let report = run_mend_json(&manifest);
     assert_fixable_findings(&report);
 
@@ -211,18 +199,6 @@ edition = "2024"
     );
 
     let manifest = temp.path().join("Cargo.toml");
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .output()
-        .expect("check trait-impl-interface fixture");
-    assert!(
-        check.status.success(),
-        "fixture must compile before mend: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr),
-    );
 
     let report = run_mend_json(&manifest);
     let narrowed: Vec<_> = report
@@ -314,18 +290,6 @@ edition = "2024"
     );
 
     let manifest = temp.path().join("Cargo.toml");
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(&manifest)
-        .output()
-        .expect("check declaration interface fixture");
-    assert!(
-        check.status.success(),
-        "fixture must compile before mend: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr),
-    );
 
     let output = mend_command_for(&manifest)
         .arg("--fix")

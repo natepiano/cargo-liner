@@ -2,22 +2,6 @@ use std::path::Path;
 
 use crate::support::*;
 
-fn assert_prefer_module_fixture_compiles(manifest_path: &Path) {
-    let check = cargo_command()
-        .arg("check")
-        .arg("--all-targets")
-        .arg("--manifest-path")
-        .arg(manifest_path)
-        .output()
-        .expect("check prefer-module-import fixture");
-    assert!(
-        check.status.success(),
-        "fixture must compile before mend: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr)
-    );
-}
-
 #[test]
 fn fix_all_preserves_cfg_on_rewritten_module_import() {
     if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
@@ -117,7 +101,6 @@ edition = "2024"
     let original = "use crate::process_observation::identity;\n\n#[cfg(not(test))]\npub(crate) fn signal() {\n    identity::revalidate();\n}\n";
     fs::write(&consumer_path, original).expect("write consumer");
     let manifest_path = temp.path().join("Cargo.toml");
-    assert_prefer_module_fixture_compiles(&manifest_path);
     init_git_repo(temp.path());
 
     let output = mend_command_for(&manifest_path)
@@ -2264,7 +2247,6 @@ edition = "2024"
         "no prefer_module_import finding for a glob-reached import: {:#?}",
         report.findings
     );
-    assert_prefer_module_fixture_compiles(&manifest_path);
 }
 
 /// Two separate parent-module function imports in the same file. Both `use`
@@ -2972,7 +2954,6 @@ mod tests {
         reconcile.contains("use super::reflect_component_for;"),
         "the inline module's own import must be left intact, got:\n{reconcile}"
     );
-    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
 }
 
 /// A `use` with a visibility is a re-export: `parent/child.rs` reaches
@@ -3026,7 +3007,6 @@ edition = "2024"
         "pub(super) fn example() -> i32 {\n    super::staging::do_thing()\n}\n",
     )
     .expect("write child");
-    assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
 
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")

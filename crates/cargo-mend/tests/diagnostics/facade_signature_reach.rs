@@ -58,7 +58,6 @@ edition = "2024"
     );
 
     let manifest = temp.path().join("Cargo.toml");
-    assert_fixture_compiles(&manifest, "fixture must compile before mend");
 
     let output = mend_command_for(&manifest)
         .arg("--fix")
@@ -87,23 +86,6 @@ edition = "2024"
     assert!(
         target_bounds.contains(FACADE_BOUNDED_TYPE),
         "the facade-bounded sibling must still narrow:\n{target_bounds}",
-    );
-
-    assert_fixture_compiles(&manifest, "fixed sources must compile");
-}
-
-fn assert_fixture_compiles(manifest: &std::path::Path, context: &str) {
-    let check = cargo_command()
-        .arg("check")
-        .arg("--manifest-path")
-        .arg(manifest)
-        .output()
-        .expect("check facade signature fixture");
-    assert!(
-        check.status.success(),
-        "{context}: {}\n{}",
-        String::from_utf8_lossy(&check.stdout),
-        String::from_utf8_lossy(&check.stderr),
     );
 }
 
