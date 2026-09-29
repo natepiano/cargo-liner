@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn a_replay_resumed_from_a_checkpoint_equals_a_whole_journal_replay()
     -> Result<(), Box<dyn Error>> {
-        let (events, _) = journal::tests::round_trip_sequence_events()?;
+        let (events, _) = journal::round_trip_sequence_events()?;
         for checkpointed_records in 1..=events.len() {
             let fixture = CheckpointFixture::new()?;
             let (checkpointed, appended) = events.split_at(checkpointed_records);
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn a_checkpoint_rewritten_after_every_append_keeps_replays_equal_to_whole_journal_replays()
     -> Result<(), Box<dyn Error>> {
-        let events = journal::tests::fold_sequence_events()?;
+        let events = journal::fold_sequence_events()?;
         let fixture = CheckpointFixture::new()?;
         for (appended_records, event) in events.iter().enumerate() {
             assert_eq!(
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn a_checkpoint_that_no_longer_describes_the_journal_is_ignored() -> Result<(), Box<dyn Error>>
     {
-        let events = journal::tests::fold_sequence_events()?;
+        let events = journal::fold_sequence_events()?;
         let (checkpointed, appended) = events.split_at(events.len() / 2);
         for invalidation in [
             Invalidation::Missing,
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn a_replay_rewrites_the_checkpoint_once_it_folds_the_record_interval()
     -> Result<(), Box<dyn Error>> {
-        let events = journal::tests::fold_sequence_events()?;
+        let events = journal::fold_sequence_events()?;
         let smallest = events
             .iter()
             .min_by_key(|event| serde_json::to_vec(event).map_or(usize::MAX, |record| record.len()))
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn a_replay_rewrites_the_checkpoint_once_it_folds_the_byte_interval()
     -> Result<(), Box<dyn Error>> {
-        let events = journal::tests::fold_sequence_events()?;
+        let events = journal::fold_sequence_events()?;
         let largest = events
             .iter()
             .max_by_key(|event| serde_json::to_vec(event).map_or(0, |record| record.len()))
@@ -412,7 +412,7 @@ mod tests {
         let fixture = CheckpointFixture::new()?;
         fixture
             .journal
-            .append_events(&journal::tests::fold_sequence_events()?)?;
+            .append_events(&journal::fold_sequence_events()?)?;
         let unwritable_path = fixture
             .directory
             .path()

@@ -403,6 +403,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::IntegrationProofSubjectRevision;
     use super::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
     use super::ScopedPatchEvaluationPriority;
@@ -466,7 +468,7 @@ mod tests {
             evaluation_schedule
         );
 
-        let serde_json::Value::Array(entries) = &mut encoded else {
+        let Value::Array(entries) = &mut encoded else {
             return Err("a schedule encodes as its entries".into());
         };
         let first_entry = entries.first().cloned().ok_or("the schedule is full")?;

@@ -60,9 +60,11 @@ use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::IntegrationWitness;
+use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReservationReplayError;
+use crate::reservation::ReservationRunStatus;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluatorVersion;
@@ -763,7 +765,7 @@ impl JournalOperation {
     pub(crate) fn observed_merge_extent(
         &self,
         reservation_id: ReservationId,
-    ) -> Option<&crate::reservation::MergeExtent> {
+    ) -> Option<&MergeExtent> {
         match self {
             Self::MergeExtentObserved {
                 reservation_id: observed,
@@ -1309,7 +1311,7 @@ pub(crate) struct ObservedReservation {
     /// The reservation whose recorded merge extent the observation replaces.
     pub(crate) reservation_id: ReservationId,
     /// Checkpoint and release determine mapping retirement, never merge emptiness alone.
-    pub(crate) run_status:     crate::reservation::ReservationRunStatus,
+    pub(crate) run_status:     ReservationRunStatus,
 }
 
 nonempty_journal_set!(
@@ -2352,15 +2354,21 @@ impl From<std::io::Error> for JournalAppendError {
 }
 
 #[cfg(test)]
+pub(super) use tests::fold_sequence_events;
+#[cfg(test)]
+pub(super) use tests::round_trip_sequence_events;
+
+#[cfg(test)]
 #[allow(
     clippy::expect_used,
     reason = "tests should panic on unexpected values"
 )]
-pub(super) mod tests {
+mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::io::Write;
 
+    use serde_json::Value;
     use tempfile::tempdir;
 
     use super::BlockedIncursionPath;
@@ -3496,9 +3504,7 @@ pub(super) mod tests {
         }))
     }
 
-    fn fold_operation(
-        operation: &serde_json::Value,
-    ) -> Result<JournalOperation, serde_json::Error> {
+    fn fold_operation(operation: &Value) -> Result<JournalOperation, serde_json::Error> {
         serde_json::from_value(operation.clone())
     }
 

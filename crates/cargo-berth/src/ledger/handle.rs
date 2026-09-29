@@ -1049,7 +1049,7 @@ mod tests {
     use crate::ledger::ReservationScope;
     use crate::ledger::ScopeKind;
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
-    use crate::ledger::journal::complete_record_events;
+    use crate::ledger::journal;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
     use crate::reservation::MergeExtent;
@@ -1109,9 +1109,10 @@ mod tests {
         .expect("fresh journal and projection should agree");
         assert_eq!(attempts, 2);
         assert_eq!(record_count, 1);
-        let events =
-            complete_record_events(&fs::read(&ledger.paths.journal).expect("journal should read"))
-                .expect("journal should decode");
+        let events = journal::complete_record_events(
+            &fs::read(&ledger.paths.journal).expect("journal should read"),
+        )
+        .expect("journal should decode");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].operation, operation);
     }
