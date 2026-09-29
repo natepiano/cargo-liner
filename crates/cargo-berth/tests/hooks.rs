@@ -573,6 +573,53 @@ fn an_approved_defer_claim_under_the_claude_code_session_authorizes_its_edit() -
     Ok(())
 }
 
+/// An approved `--defer` answer keeps authorizing its file after the holder widens elsewhere.
+///
+/// The holder dirties a second file after the answer, and the reconcile each edit check runs
+/// records the holder's wider merge extent. The answer names the shared file, not the holder's
+/// whole extent, so the session's edit of that file still passes, while the holder's new file
+/// is shared work the answer never covered and the hook refuses it.
+#[test]
+fn an_approved_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file() -> TestResult {
+    let repository = initialized_repository()?;
+    let holder = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:shared.rs", "--json"],
+        HOLDER_SESSION,
+    )?;
+    require_success(&holder, "the other session's claim")?;
+    let holder_id = claimed_reservation_id(&holder)?;
+    dirty_source(repository.path(), "shared.rs")?;
+    let (_requester_directory, requester_root) = add_worktree(&repository, "deferring-requester")?;
+    let deferred = defer_claim_with_claude_code_session(
+        &requester_root,
+        "shared.rs",
+        &holder_id,
+        DEFERRING_SESSION,
+    )?;
+    require_success(&deferred, "the approved defer claim")?;
+
+    dirty_source(repository.path(), "widened.rs")?;
+
+    let shared = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "shared.rs", Some(DEFERRING_SESSION)),
+    )?;
+    require_success(
+        &shared,
+        "the session's edit to the shared file after the holder dirtied another file",
+    )?;
+    let widened = run_pre_tool_use(
+        &requester_root,
+        &edit_payload(&requester_root, "widened.rs", Some(DEFERRING_SESSION)),
+    )?;
+    assert_refused_for_scope(
+        &widened,
+        "file:widened.rs",
+        "the edit to the file the holder dirtied after the answer",
+    )
+}
+
 enum NormalizedEdit {
     Held(&'static str),
     Outside,

@@ -884,8 +884,10 @@ These operation fields use the following tagged values:
   is `{ "reservation_id": <uuid-v7>, "scope_revision": [scope...], "scopes":
   [scope...] }`. `enrollment` binds every counterpart observed when `init`
   enrolled the claim and holds integration for each pair until `sequence`
-  orders it; `scope_revision` is still required on its entries but is not
-  compared when deciding edit coverage.
+  orders it. `scope_revision` is required on every entry, but only
+  `existing_answers_cover_every_overlap` compares it when deciding edit
+  coverage; `enrollment`, `sequence`, `defer`, and `override` cover their
+  `scopes` whatever the counterpart's revision has become.
 - `coordination_identity_provenance` is `presented` or `not_presented`. It
   records whether a caller presented the coordination identity the claim was
   made under, or whether the engine issued one because nothing identified the

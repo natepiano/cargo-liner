@@ -51,6 +51,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An approved `--before`, `--after`, `--defer`, or `--override` answer keeps
+  authorizing edits to the files it names when the holder's merge extent grows
+  elsewhere, as when the holder first-touches or dirties another file. The
+  answer covers its recorded shared scopes whatever the holder's scope revision
+  has become, as enrollment already did; a file newly shared with the holder
+  still asks for an answer of its own.
 - `resolve <id> --retire-orphan --why <reason>` now clears lost integration
   evidence on a released reservation whose work landed where git cannot match
   it. It appends a `replace_release_disposition` record that replaces the

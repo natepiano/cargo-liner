@@ -6,7 +6,6 @@ use serde::Serialize;
 use super::proposal::OverlapAuthorizationReason;
 use super::proposal::OverlapProposal;
 use super::proposal::PermissiveOverlapAnswer;
-use super::scope_binding::AuthorizedOverlap;
 use super::scope_binding::AuthorizedOverlapSet;
 use super::scope_binding::OverlapScopeRevision;
 use crate::ids::EdgeId;
@@ -26,7 +25,7 @@ pub(crate) enum ConflictAuthorization {
         /// The counterpart reservations and shared scopes observed at enrollment.
         overlaps: AuthorizedOverlapSet,
     },
-    /// An ordering edge authorizes this exact observed overlap set.
+    /// An ordering edge authorizes the shared scopes of this observed overlap set.
     Sequence {
         /// The exact holder bindings shown to the user.
         overlaps:  AuthorizedOverlapSet,
@@ -89,19 +88,13 @@ impl ConflictAuthorization {
         }
     }
 
-    /// Borrow the exact holder bindings covered by this authorization.
-    pub(crate) fn authorized_overlaps(&self) -> &[AuthorizedOverlap] {
-        match self {
-            Self::NoConflict => &[],
-            Self::Enrollment { overlaps }
-            | Self::Sequence { overlaps, .. }
-            | Self::Defer { overlaps, .. }
-            | Self::Override { overlaps, .. }
-            | Self::ExistingAnswersCoverEveryOverlap { overlaps } => overlaps.as_slice(),
-        }
-    }
-
     /// Return whether this answer covers one exact counterpart and scope.
+    ///
+    /// An enrollment or an approved answer covers the shared scopes it names whatever else
+    /// the counterpart later protects, so a holder that widens elsewhere leaves the answer
+    /// standing. A scope newly shared with that holder is outside the approved set and still
+    /// needs an answer of its own. A widen covered by existing answers binds only the exact
+    /// counterpart revision it observed.
     pub(crate) fn covers(
         &self,
         counterpart_id: ReservationId,
@@ -109,20 +102,27 @@ impl ConflictAuthorization {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        let overlaps = self.authorized_overlaps();
-        if let Self::Enrollment { .. } = self {
-            return overlaps.iter().any(|authorized_overlap| {
-                authorized_overlap.covers_shared_scope(counterpart_id, overlap_scope, path_case)
-            });
+        match self {
+            Self::NoConflict => false,
+            Self::Enrollment { overlaps }
+            | Self::Sequence { overlaps, .. }
+            | Self::Defer { overlaps, .. }
+            | Self::Override { overlaps, .. } => {
+                overlaps.as_slice().iter().any(|authorized_overlap| {
+                    authorized_overlap.covers_shared_scope(counterpart_id, overlap_scope, path_case)
+                })
+            },
+            Self::ExistingAnswersCoverEveryOverlap { overlaps } => {
+                overlaps.as_slice().iter().any(|authorized_overlap| {
+                    authorized_overlap.covers(
+                        counterpart_id,
+                        counterpart_scope_revision,
+                        overlap_scope,
+                        path_case,
+                    )
+                })
+            },
         }
-        overlaps.iter().any(|authorized_overlap| {
-            authorized_overlap.covers(
-                counterpart_id,
-                counterpart_scope_revision,
-                overlap_scope,
-                path_case,
-            )
-        })
     }
 }
 
@@ -134,14 +134,16 @@ mod tests {
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapSet;
     use crate::answer::OverlapScopeRevision;
+    use crate::ids::EdgeId;
     use crate::ids::ReservationId;
+    use crate::ledger::OrderingDirection;
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
     use crate::scope::PathCase;
 
     #[test]
-    fn enrollment_covers_shared_scopes_after_unrelated_widen() -> Result<(), Box<dyn Error>> {
+    fn answers_cover_shared_scopes_after_unrelated_widen() -> Result<(), Box<dyn Error>> {
         let counterpart = ReservationId::new();
         let shared = ReservationScope {
             path: "shared.rs".parse()?,
@@ -162,31 +164,48 @@ mod tests {
             scope_revision: original_revision.clone(),
             scopes:         original_scopes.into(),
         });
-        let enrollment = ConflictAuthorization::Enrollment {
-            overlaps: overlaps.clone(),
-        };
-        for revision in [&original_revision, &widened_revision] {
-            assert!(enrollment.covers(counterpart, revision, &shared, PathCase::Sensitive));
-            assert!(!enrollment.covers(counterpart, revision, &added, PathCase::Sensitive));
-            assert!(!enrollment.covers(
-                ReservationId::new(),
-                revision,
-                &shared,
-                PathCase::Sensitive,
-            ));
+        let answers = [
+            ConflictAuthorization::Enrollment {
+                overlaps: overlaps.clone(),
+            },
+            ConflictAuthorization::Sequence {
+                overlaps:  overlaps.clone(),
+                blocker:   counterpart,
+                direction: OrderingDirection::HolderBeforeRequester,
+                edge_id:   EdgeId::new(),
+                reason:    "integrate after the holder".parse()?,
+            },
+            ConflictAuthorization::Defer {
+                overlaps: overlaps.clone(),
+                blocker:  counterpart,
+                reason:   "decide the order later".parse()?,
+            },
+            ConflictAuthorization::Override {
+                overlaps: overlaps.clone(),
+                blocker:  counterpart,
+                reason:   "accept the conflict".parse()?,
+            },
+        ];
+        for answer in &answers {
+            for revision in [&original_revision, &widened_revision] {
+                assert!(answer.covers(counterpart, revision, &shared, PathCase::Sensitive));
+                assert!(!answer.covers(counterpart, revision, &added, PathCase::Sensitive));
+                assert!(!answer.covers(
+                    ReservationId::new(),
+                    revision,
+                    &shared,
+                    PathCase::Sensitive,
+                ));
+            }
         }
-        let existing = ConflictAuthorization::Defer {
-            overlaps,
-            blocker: counterpart,
-            reason: "decide the order later".parse()?,
-        };
+        let existing = ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps };
         assert!(existing.covers(
             counterpart,
             &original_revision,
             &shared,
             PathCase::Sensitive,
         ));
-        assert!(!existing.covers(counterpart, &widened_revision, &shared, PathCase::Sensitive,));
+        assert!(!existing.covers(counterpart, &widened_revision, &shared, PathCase::Sensitive));
         Ok(())
     }
 }

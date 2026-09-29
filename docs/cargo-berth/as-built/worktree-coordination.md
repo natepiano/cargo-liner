@@ -282,7 +282,7 @@ pub(crate) enum ConflictAuthorization {
 }
 ```
 
-All four user-selectable answers — before, after, defer, override — exist so that **both** parties may continue editing the overlapping path. Only the integration order differs between them. An answer never revokes edit access. `Enrollment` is engine-written by `init`: it binds every counterpart at once, holds integration like a deferral until `sequence` orders the pair, and its coverage ignores `scope_revision`. The board reports such a pair while at least one endpoint is live and drops it once both have ended.
+All four user-selectable answers — before, after, defer, override — exist so that **both** parties may continue editing the overlapping path. Only the integration order differs between them. An answer never revokes edit access. Each answer covers the shared scopes it recorded and ignores `scope_revision`, so a holder whose merge extent grows elsewhere leaves the answer standing, while a newly shared path asks again. `Enrollment` is engine-written by `init`: it binds every counterpart at once, holds integration like a deferral until `sequence` orders the pair, and covers the same way. The board reports such a pair while at least one endpoint is live and drops it once both have ended.
 
 Answering is a two-invocation handshake. The first invocation exits 3 with a proposal and an `OverlapProposalToken`. The token is transient — nothing is journalled for it — and the second invocation recomputes the proposal under the lock and matches it against the token. If state moved in between, the token no longer matches and the user is asked again against the new facts. `from_approved_proposal` is the only way an approved proposal becomes an authorization.
 

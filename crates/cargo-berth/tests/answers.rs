@@ -664,7 +664,7 @@ fn renewal_and_race_widening_preserve_a_proposal_while_merge_changes_invalidate_
 }
 
 #[test]
-fn authorization_survives_holder_lifecycle_and_race_changes_but_not_merge_changes() {
+fn authorization_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), ["switch", "--quiet", "-c", "phase"]);
@@ -755,10 +755,15 @@ fn authorization_survives_holder_lifecycle_and_race_changes_but_not_merge_change
             .success()
     );
     dirty_source(repository.path(), "docs/new.rs");
-    let reblocked = check(&second_root, &["file:src/lib.rs"], SECOND_RUN);
-    assert_eq!(reblocked.status.code(), Some(1));
+    assert!(
+        check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
+    let newly_shared = check(&second_root, &["file:docs/new.rs"], SECOND_RUN);
+    assert_eq!(newly_shared.status.code(), Some(1));
     assert_eq!(
-        json_output(&reblocked)["blocked_by"],
+        json_output(&newly_shared)["blocked_by"],
         serde_json::json!([holder_id])
     );
 }

@@ -75,7 +75,7 @@
 
 ### How enrollment touches existing subsystems
 
-- **Edit coverage.** `ConflictAuthorization::covers` sends `Enrollment` to `AuthorizedOverlap::covers_shared_scope`: the counterpart id matches and the scope is among the recorded scopes, and `scope_revision` is ignored. Every other variant uses `AuthorizedOverlap::covers`, which is revision equality plus `covers_shared_scope`. Edit checks and widening go through the existing `reservations_authorize_scope`.
+- **Edit coverage.** `ConflictAuthorization::covers` sends `Enrollment`, `Sequence`, `Defer` and `Override` to `AuthorizedOverlap::covers_shared_scope`: the counterpart id matches and the scope is among the recorded scopes, and `scope_revision` is ignored. `ExistingAnswersCoverEveryOverlap` uses `AuthorizedOverlap::covers`, which is revision equality plus `covers_shared_scope`. Edit checks and widening go through the existing `reservations_authorize_scope`.
 - **Ordering graph.** `OrderingGraph::apply_authorization` adds one deferral per distinct counterpart through `add_deferral(.., DeferralOrigin::Enrollment)`; `Defer` uses the same helper with `UserAnswer`. The existing `IntegrationHold::DeferredOverlap` holds integration: observe mode reports it, enforce mode rejects it. `sequence <first> <then> --why` resolves the deferral in either order.
 - **Board.** Reads `DeferralOrigin` from the constraint projection. `UnresolvedOverlap.origin` is `"user_answer"` or `"enrollment"`. `RecordedOverlapAnswer::Enrollment { reservation_id, exact_approved_scopes, acquisition: AnswerAcquisition::Enrollment, consequence }` lists only the pairs not yet resolved. A resolved pair shows up as `OrderingCreatedFromDeferral`, and its deferral reasons are taken from the projection's enrollment deferrals, one per pair in journal order.
 - **Automatic run ending** (`reconcile.rs` `append_merged_run_endings`). A reservation with `ClaimSource::Enrolled` counts as having done work even when its merge extent was already observed `Empty`. It therefore ends once its checkout is clean at a head that its target contains. `ClaimSource::Cover` counts the same way.
@@ -98,11 +98,11 @@
 - Any `Claim` by a worktree, in any state, rules it out of enrollment for good. Enrollment never appends to a worktree that has history.
 - Each candidate gets its own `Ledger::transact`: one lock hold that decides and records. No Git runs inside the lock. The footprint, containment and pairwise checks are all computed before it. The history check is repeated on the locked replay.
 - One candidate's failure never stops the others.
-- `Enrollment` authorization never takes away edit access, and existing answer variants keep revision-equality coverage.
+- `Enrollment` authorization never takes away edit access. It and the approved answers cover their recorded shared scopes at any counterpart revision; only `ExistingAnswersCoverEveryOverlap` keeps revision-equality coverage.
 - An enrolled reservation ends like any other run: checkpoint and release, or automatically once its work reaches its target. Journal history is never removed.
 - Wire changes are additive only. Older journals replay unchanged, `tests/fixtures/reader_compat` bytes stay the same, `InitializationPayload.enrollment` stays serde-default, and `docs/cargo-berth/generated/output-contract.json` must match the generator (regenerate with `CARGO_BERTH_REGENERATE_OUTPUT_CONTRACT=1` on `generated_artifacts_are_reproducible_from_the_checked_in_contract`).
 - A journal record is at most 16 KiB. An enrolled claim that does not fit is reported as `record_too_large`, never split.
-- `AuthorizedOverlap` still requires `scope_revision` on the wire, even though `Enrollment` coverage ignores it.
+- `AuthorizedOverlap` still requires `scope_revision` on the wire, even though edit coverage for `Enrollment` and the approved answers ignores it. It stays for audit and for `OverlapProposalToken::matches`.
 - Adding a variant to `ClaimSource` or `ConflictAuthorization` means updating its exhaustive match sites, including `verb/claim.rs` and `output.rs`.
 
 ## Calibration / gotchas
@@ -130,7 +130,7 @@
 
 ## Why
 
-- **Why `Enrollment` ignores `scope_revision`:** so that when either side widens into unrelated paths, the pair is not blocked again. A newly shared path still gets the ordinary conflict handling.
+- **Why `Enrollment` and the approved answers ignore `scope_revision`:** so that when either side widens into unrelated paths, the pair is not blocked again. A holder's revision changes whenever its merge extent does, including a first touch or a dirtied file elsewhere, so revision equality would withdraw an approved answer from files it still names. A newly shared path still gets the ordinary conflict handling.
 - **Why `Enrollment` is its own variant and not a `Defer`:** it binds every counterpart at once, with no single blocker and no user-written reason. `DeferralOrigin` lets the board tell engine-made deferrals from user answers without scanning the journal again.
 - **Why the config goes at the main worktree root:** every worktree without its own file reads it there. Linked worktrees added later need no copy.
 - **Why one transaction per candidate, with a history recheck under the lock:** one failure stays with its worktree, and a worktree that gains a reservation concurrently is skipped instead of claimed twice.
