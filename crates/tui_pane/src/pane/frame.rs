@@ -977,11 +977,13 @@ mod tests {
         );
     }
 
-    /// The same two panes sharing a border cell instead: focus does not
-    /// reach the lines at all, because the cell between them belongs to
-    /// the boundary rather than to either side of it.
+    /// The same two panes sharing a border cell instead: while a tint
+    /// is painted, focus does not reach the lines at all, because the
+    /// cell between them belongs to the boundary rather than to either
+    /// side of it.
     #[test]
     fn a_shared_border_ignores_focus() {
+        crate::set_transparent_background(false);
         let buffer = framed(
             Rect::new(0, 0, 7, 3),
             &[
@@ -995,6 +997,43 @@ mod tests {
             Color::Red,
             "so does the focused pane's far side"
         );
+    }
+
+    /// With the screen transparent no tint is painted, so the focused
+    /// pane's box lights up even where its border is shared.
+    #[test]
+    fn a_transparent_shared_border_lights_focus() {
+        crate::set_transparent_background(true);
+        let buffer = framed(
+            Rect::new(0, 0, 7, 3),
+            &[
+                PaneFrame::new(Rect::new(0, 0, 4, 3)).with_focus(true),
+                PaneFrame::new(Rect::new(3, 0, 4, 3)),
+            ],
+        );
+        assert_ne!(buffer[(0, 1)].fg, Color::Red, "the focused box is lit");
+        assert_ne!(buffer[(3, 1)].fg, Color::Red, "its shared side too");
+        assert_eq!(buffer[(6, 1)].fg, Color::Red, "the other pane stays dim");
+    }
+
+    /// An outlined pane's edges take its colour; a line another pane
+    /// outlined first keeps that pane's colour.
+    #[test]
+    fn an_outline_colours_a_panes_edges_first_come() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 7, 3);
+        let left = PaneFrame::new(Rect::new(0, 0, 4, 3));
+        let right = PaneFrame::new(Rect::new(3, 0, 4, 3));
+        let mut lines = GridLines::new(area);
+        lines.add(left);
+        lines.add(right);
+        lines.outline(left, Color::Green);
+        lines.outline(right, Color::Blue);
+        let mut buffer = Buffer::empty(area);
+        lines.render(&mut buffer, chrome(), PaneBorders::Shared);
+        assert_eq!(buffer[(0, 1)].fg, Color::Green);
+        assert_eq!(buffer[(3, 1)].fg, Color::Green, "the shared line keeps the first");
+        assert_eq!(buffer[(6, 1)].fg, Color::Blue);
     }
 
     /// The title lands on the top border line one cell in from the

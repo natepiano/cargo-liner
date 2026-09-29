@@ -4296,6 +4296,8 @@ mod tests {
         const WIDTH: u16 = 40;
         const HEIGHT: u16 = 6;
         const PAINTED_ON_NOTHING: (u16, u16) = (20, 3);
+        // The cells stand on a painted tint, which a transparent screen leaves off.
+        tui_pane::set_transparent_background(false);
         let painted: [(Color, Color); HEIGHT as usize] = [
             (Color::Rgb(200, 100, 50), Color::Rgb(10, 20, 30)),
             (Color::Rgb(200, 100, 50), Color::Rgb(10, 20, 30)),
