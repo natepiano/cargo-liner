@@ -237,21 +237,23 @@ mod integration_cover {
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
+        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let lane = repo.lane("landing-lane", "integration");
+        let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
+        assert_success(&claimed);
+        let _ = repo.board();
+        let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("lane ID")
+            .to_owned();
+        let cover_id = repo.cover_claims()[0]["reservation_id"]
+            .as_str()
+            .expect("cover ID")
+            .to_owned();
+        repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+        let lane_work = repo.capture();
         for merge_commit in [true, false] {
-            let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
-            let lane = repo.lane("landing-lane", "integration");
-            let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
-            assert_success(&claimed);
-            let _ = repo.board();
-            let lane_id = json(&claimed)["payload"]["data"]["reservation_id"]
-                .as_str()
-                .expect("lane ID")
-                .to_owned();
-            let cover_id = repo.cover_claims()[0]["reservation_id"]
-                .as_str()
-                .expect("cover ID")
-                .to_owned();
-            repo.commit_file(&lane, "lane.txt", "landed\n", "lane work");
+            repo.restore(&lane_work);
             if merge_commit {
                 repo.merge_by_commit("landing-lane");
             } else {
@@ -1990,25 +1992,27 @@ mod merge_extent {
 
     #[test]
     fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
-        for merge_commit in [true, false] {
-            let repo = IntegrationRepository::new(BERTH);
-            let a = repo.lane("lane-a", "integration");
-            let b = repo.lane("lane-b", "integration");
-            let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
-            assert_success(&a_claim);
-            let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
-                .as_str()
-                .expect("lane A reservation id")
-                .to_owned();
-            let b_claim = repo.claim(&b, "file:b.txt", SECOND_RUN, None);
-            assert_success(&b_claim);
-            repo.commit_file(&a, "shared.txt", "lane A\n", "lane A work");
-            let before = repo.board();
-            assert_eq!(
-                snapshot(&before, &a_id)["merge_extent"]["status"],
-                "protected"
-            );
+        let repo = IntegrationRepository::new(BERTH);
+        let a = repo.lane("lane-a", "integration");
+        let b = repo.lane("lane-b", "integration");
+        let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);
+        assert_success(&a_claim);
+        let a_id = json(&a_claim)["payload"]["data"]["reservation_id"]
+            .as_str()
+            .expect("lane A reservation id")
+            .to_owned();
+        let b_claim = repo.claim(&b, "file:b.txt", SECOND_RUN, None);
+        assert_success(&b_claim);
+        repo.commit_file(&a, "shared.txt", "lane A\n", "lane A work");
+        let before = repo.board();
+        assert_eq!(
+            snapshot(&before, &a_id)["merge_extent"]["status"],
+            "protected"
+        );
+        let lane_work = repo.capture();
 
+        for merge_commit in [true, false] {
+            repo.restore(&lane_work);
             if merge_commit {
                 repo.merge_by_commit("lane-a");
             } else {
