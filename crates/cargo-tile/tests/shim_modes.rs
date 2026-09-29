@@ -1042,8 +1042,15 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         let output = command.output().expect("run installed shim to completion");
         // A shell reports death by signal 9 as 128 + 9.
         assert_eq!(output.status.code(), Some(137), "{output:?}");
-        // dash adds its own report of the killed cargo, as it did in front of the FIFO.
-        assert!(output.stderr.starts_with(b"killed next\n"), "{output:?}");
+        // The shell writes its own report of the killed cargo straight to stderr while
+        // tee is still mirroring cargo's, so either line can come first.
+        assert!(
+            output
+                .stderr
+                .split_inclusive(|&byte| byte == b'\n')
+                .any(|line| line == b"killed next\n"),
+            "{output:?}"
+        );
         toolchain.assert_cleaned_up();
     }
 
