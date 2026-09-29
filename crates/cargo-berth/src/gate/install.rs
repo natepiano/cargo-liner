@@ -1,5 +1,6 @@
 //! Idempotent installation of every git hook managed by this crate.
 
+use std::env;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -24,6 +25,14 @@ const POST_COMMIT_HOOK_NAME: &str = "post-commit";
 const POST_COMMIT_MARKER: &str = "# cargo-berth managed hook: post-commit";
 const REFERENCE_TRANSACTION_HOOK_NAME: &str = "reference-transaction";
 const REFERENCE_TRANSACTION_MARKER: &str = "# cargo-berth managed hook: reference-transaction";
+/// Carries the fingerprint of the template a managed `reference-transaction` hook was rendered
+/// from, exported by that hook to the binary it starts.
+///
+/// A binary that finds its own fingerprint there knows the hook is current without reading it;
+/// any other value, or none, sends it to compare the hook file with the script it would write.
+const TEMPLATE_ENVIRONMENT: &str = "CARGO_BERTH_REFERENCE_TRANSACTION_TEMPLATE";
+const FINGERPRINT_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FINGERPRINT_PRIME: u64 = 0x0100_0000_01b3;
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
 ///
 /// The generated shell carries this name as its own literal; tests reach for it
@@ -193,16 +202,11 @@ fn install_managed_hook(
     trunk_reference: &str,
 ) -> Result<ManagedHookActivationOutcome, HookInstallationError> {
     let hook_path = hooks_directory.join(hook.name);
-    let existing = match fs::read(&hook_path) {
-        Ok(existing) => Some(existing),
-        Err(error) if error.kind() == ErrorKind::NotFound => None,
-        Err(error) => return Err(HookInstallationError::Io(error)),
-    };
-    if existing.as_ref().is_some_and(|contents| {
-        !contents
-            .windows(hook.marker.len())
-            .any(|window| window == hook.marker.as_bytes())
-    }) {
+    let existing = read_hook(&hook_path)?;
+    if existing
+        .as_deref()
+        .is_some_and(|contents| !hook.is_marked_in(contents))
+    {
         return Ok(ManagedHookActivationOutcome::Inactive {
             reason: ManagedHookInactivity::PreservedUnmanaged,
         });
@@ -224,6 +228,61 @@ fn install_managed_hook(
         ActiveManagedHookInstallation::Installed
     };
     Ok(ManagedHookActivationOutcome::Active { installation })
+}
+
+/// Whether the managed `reference-transaction` hook that started this process was rendered
+/// from this build's template.
+pub(crate) fn issuing_hook_is_current() -> bool {
+    env::var_os(TEMPLATE_ENVIRONMENT)
+        .is_some_and(|fingerprint| fingerprint == *reference_transaction_template_fingerprint())
+}
+
+/// Replace a managed `reference-transaction` hook rendered from an earlier template.
+///
+/// The hook is rewritten only when it carries the managed marker, names `policy_worktree`, and
+/// differs from the current script, through the same atomic replacement installation uses. A
+/// missing hook stays missing, an unmanaged one stays byte-identical, and one naming another
+/// policy worktree keeps it; each is left to `cargo berth init`. A hook that cannot be located or
+/// read is not identified as outdated, so only a failed rewrite is an error.
+pub(crate) fn replace_outdated_reference_transaction_hook(
+    common_git_directory: &Path,
+    policy_worktree: &Path,
+    trunk_reference: &str,
+) -> std::io::Result<()> {
+    let hook = REFERENCE_TRANSACTION_HOOK;
+    let Ok(hooks_directory) = git::hooks_directory(policy_worktree) else {
+        return Ok(());
+    };
+    let hook_path = hooks_directory.join(hook.name);
+    let Ok(Some(existing)) = read_hook(&hook_path) else {
+        return Ok(());
+    };
+    let quoted_policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
+    let script = hook.script(common_git_directory, policy_worktree, trunk_reference);
+    if !hook.is_marked_in(&existing)
+        || !contains(&existing, quoted_policy_worktree.as_bytes())
+        || existing == script.as_bytes()
+    {
+        return Ok(());
+    }
+    PendingManagedHookReplacement::create(&hooks_directory, hook.name)?
+        .activate(&hook_path, script.as_bytes())?;
+    let _ = fs::File::open(&hooks_directory).and_then(|directory| directory.sync_all());
+    Ok(())
+}
+
+fn read_hook(hook_path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match fs::read(hook_path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// A fully written replacement that is not visible at the managed hook path yet.
@@ -268,39 +327,58 @@ impl Drop for PendingManagedHookReplacement {
 }
 
 impl ManagedHook {
+    /// Whether `contents` carries this hook's marker, which makes the file ours to rewrite.
+    fn is_marked_in(&self, contents: &[u8]) -> bool { contains(contents, self.marker.as_bytes()) }
+
     fn script(
         &self,
         common_git_directory: &Path,
         policy_worktree: &Path,
         trunk_reference: &str,
     ) -> String {
-        let pending_marker_prefix = shell_single_quoted(
-            &common_git_directory
-                .join(PENDING_BYPASS_FILE_PREFIX)
-                .to_string_lossy(),
-        );
-        let pending_marker_suffix = shell_single_quoted(PENDING_BYPASS_FILE_SUFFIX);
-        let policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
-        let trunk_reference = shell_single_quoted(trunk_reference);
-        let gate_targets = shell_single_quoted(
-            &common_git_directory
-                .join("cargo-berth")
-                .join(GATE_TARGETS_FILE_NAME)
-                .to_string_lossy(),
-        );
         match self.dispatch {
             ManagedHookDispatch::PostCommit => format!(
                 "#!/bin/sh\n{POST_COMMIT_MARKER}\nif [ \"${{CARGO_BERTH_BYPASS:-}}\" = \"1\" ]; then\n    exit 0\nfi\n{EXECUTABLE_RESOLUTION}\nif [ ! -x \"$cargo_berth_executable\" ]; then\n    printf '%s\\n' 'cargo-berth could not check this commit drift because its executable is unavailable. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\n    exit 0\nfi\nCARGO_BERTH_POST_COMMIT=1 \"$cargo_berth_executable\" drift --full\nstatus=$?\nif [ \"$status\" -eq 126 ] || [ \"$status\" -eq 127 ]; then\n    printf '%s\\n' 'cargo-berth could not run the post-commit drift check. Run `cargo-berth drift --full` by hand; this commit remains in place.' >&2\nfi\nexit 0\n"
             ),
-            ManagedHookDispatch::ReferenceTransaction => reference_transaction_script(
-                &pending_marker_prefix,
-                &pending_marker_suffix,
-                &policy_worktree,
-                &trunk_reference,
-                &gate_targets,
+            ManagedHookDispatch::ReferenceTransaction => repository_reference_transaction_script(
+                common_git_directory,
+                policy_worktree,
+                trunk_reference,
+                &reference_transaction_template_fingerprint(),
             ),
         }
     }
+}
+
+/// Render the `reference-transaction` script for one repository.
+fn repository_reference_transaction_script(
+    common_git_directory: &Path,
+    policy_worktree: &Path,
+    trunk_reference: &str,
+    template_fingerprint: &str,
+) -> String {
+    let pending_marker_prefix = shell_single_quoted(
+        &common_git_directory
+            .join(PENDING_BYPASS_FILE_PREFIX)
+            .to_string_lossy(),
+    );
+    let pending_marker_suffix = shell_single_quoted(PENDING_BYPASS_FILE_SUFFIX);
+    let policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
+    let trunk_reference = shell_single_quoted(trunk_reference);
+    let gate_targets = shell_single_quoted(
+        &common_git_directory
+            .join("cargo-berth")
+            .join(GATE_TARGETS_FILE_NAME)
+            .to_string_lossy(),
+    );
+    reference_transaction_script(
+        &pending_marker_prefix,
+        &pending_marker_suffix,
+        &policy_worktree,
+        &trunk_reference,
+        &gate_targets,
+        template_fingerprint,
+    )
 }
 
 /// The managed `reference-transaction` hook.
@@ -311,11 +389,15 @@ impl ManagedHook {
 /// anything else starts, because bash 3.2 matches bracket ranges by collation in other locales.
 /// A shell drops NUL bytes as it reads, which costs nothing here: git writes ref names as C
 /// strings, so its hook input holds none. Records are buffered in batches, because appending
-/// each one to a single growing string costs quadratic time in the transaction's size.
+/// each one to a single growing string costs quadratic time in the transaction's size. It
+/// exports the fingerprint of this template, so the binary it starts can tell a hook an earlier
+/// build wrote and replace it.
 const REFERENCE_TRANSACTION_SCRIPT_TEMPLATE: &str = r#"#!/bin/sh
 __REFERENCE_TRANSACTION_MARKER__
 __ISSUING_DIRECTORY_ENVIRONMENT__=$PWD
 export __ISSUING_DIRECTORY_ENVIRONMENT__
+__TEMPLATE_ENVIRONMENT__=__TEMPLATE_FINGERPRINT__
+export __TEMPLATE_ENVIRONMENT__
 if [ -d __POLICY_WORKTREE__ ]; then
     cd __POLICY_WORKTREE__
 fi
@@ -476,6 +558,7 @@ fn reference_transaction_script(
     policy_worktree: &str,
     trunk_reference: &str,
     gate_targets: &str,
+    template_fingerprint: &str,
 ) -> String {
     render_reference_transaction_template(&[
         (
@@ -486,6 +569,8 @@ fn reference_transaction_script(
             "__ISSUING_DIRECTORY_ENVIRONMENT__",
             REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT,
         ),
+        ("__TEMPLATE_ENVIRONMENT__", TEMPLATE_ENVIRONMENT),
+        ("__TEMPLATE_FINGERPRINT__", template_fingerprint),
         ("__POLICY_WORKTREE__", policy_worktree),
         ("__TRUNK_REFERENCE__", trunk_reference),
         ("__GATE_TARGETS__", gate_targets),
@@ -493,6 +578,17 @@ fn reference_transaction_script(
         ("__PENDING_MARKER_PREFIX__", pending_marker_prefix),
         ("__PENDING_MARKER_SUFFIX__", pending_marker_suffix),
     ])
+}
+
+/// FNV-1a over the script this build renders for empty repository paths and an empty
+/// fingerprint, so any change to the template or to a constant it embeds changes it.
+fn reference_transaction_template_fingerprint() -> String {
+    let fingerprint = repository_reference_transaction_script(Path::new(""), Path::new(""), "", "")
+        .bytes()
+        .fold(FINGERPRINT_OFFSET_BASIS, |fingerprint, byte| {
+            (fingerprint ^ u64::from(byte)).wrapping_mul(FINGERPRINT_PRIME)
+        });
+    format!("{fingerprint:016x}")
 }
 
 fn render_reference_transaction_template(substitutions: &[(&str, &str)]) -> String {
@@ -578,8 +674,9 @@ mod tests {
             "'refs/heads/__PENDING_MARKER_PREFIX__'",
         ];
 
-        let script =
-            reference_transaction_script(values[0], values[1], values[2], values[3], values[0]);
+        let script = reference_transaction_script(
+            values[0], values[1], values[2], values[3], values[0], values[1],
+        );
 
         for value in values {
             assert!(script.contains(value), "rendering changed {value}");

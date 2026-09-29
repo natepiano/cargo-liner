@@ -1748,6 +1748,7 @@ fn run_reference_transaction(
     phase: ReferenceTransactionPhase,
     trunk_reference: FullRefName,
 ) -> ExitCode {
+    replace_outdated_managed_hook(&trunk_reference);
     if gate::permit::environment_bypass_requested() {
         return run_environment_bypassed_reference_transaction(phase, &trunk_reference);
     }
@@ -1824,6 +1825,31 @@ fn run_reference_transaction(
         managed_trunk_deletion,
     );
     exit_for_reference_transaction_results(results)
+}
+
+/// Replace the managed hook that started this process when an earlier build rendered it.
+///
+/// A current hook exports this build's template fingerprint, so the check costs one comparison
+/// and starts nothing. The hook in flight keeps running from its open file; the next ref
+/// transaction runs the replacement.
+fn replace_outdated_managed_hook(trunk_reference: &FullRefName) {
+    if gate::install::issuing_hook_is_current() {
+        return;
+    }
+    let Some(worktree_context) = env::current_dir().ok().and_then(|policy_worktree| {
+        crate::ledger::WorktreeContext::discover(&policy_worktree).ok()
+    }) else {
+        return;
+    };
+    if let Err(error) = gate::install::replace_outdated_reference_transaction_hook(
+        worktree_context.common_git_directory(),
+        worktree_context.repository_root(),
+        &trunk_reference.to_string(),
+    ) {
+        write_reference_transaction_diagnostic(format_args!(
+            "cargo-berth could not replace its reference-transaction hook, written by an earlier build, with the current one: {error}. The existing hook still guards ref updates; rerun cargo berth init after correcting the failure."
+        ));
+    }
 }
 
 fn schedule_managed_hook_refresh_after_trunk_deletion(

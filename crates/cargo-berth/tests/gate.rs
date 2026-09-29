@@ -39,6 +39,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -82,10 +83,12 @@ const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
     "CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY";
+const REFERENCE_TRANSACTION_MARKER: &str = "# cargo-berth managed hook: reference-transaction";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
+const TEMPLATE_ENVIRONMENT: &str = "CARGO_BERTH_REFERENCE_TRANSACTION_TEMPLATE";
 const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 /// The search path the wrapper uses for its own utilities.
@@ -2835,6 +2838,124 @@ fn renamed_trunk_refreshes_dispatch_before_next_prepared_update() {
             .trim(),
         "prepared"
     );
+}
+
+#[test]
+fn an_outdated_managed_hook_is_replaced_by_the_first_ref_transaction_it_dispatches() {
+    let repository = initialized_repository();
+    let hook_path = repository.path().join(HOOK_PATH);
+    let current = fs::read_to_string(&hook_path).expect("managed hook should read");
+    let outdated = hook_written_before_template_fingerprints(&current);
+    fs::write(&hook_path, &outdated).expect("outdated hook fixture should write");
+
+    git(repository.path(), &["branch", "outdated-hook-trigger"]);
+
+    assert_eq!(
+        fs::read_to_string(&hook_path).expect("replaced hook should read"),
+        current
+    );
+    assert_ne!(
+        fs::metadata(&hook_path)
+            .expect("replaced hook metadata should read")
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+}
+
+#[test]
+fn a_current_managed_hook_is_left_in_place_by_the_ref_transactions_it_dispatches() {
+    let repository = initialized_repository();
+    let hook_path = repository.path().join(HOOK_PATH);
+    let current = fs::read(&hook_path).expect("managed hook should read");
+    let before = HookFileIdentity::read(&hook_path);
+    let head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+
+    git(repository.path(), &["branch", "current-hook-trigger"]);
+    let direct = run_private_hook(
+        repository.path(),
+        "committed",
+        &format!("{} {head} refs/heads/current-hook-direct\n", "0".repeat(40)),
+    );
+
+    assert!(
+        direct.status.success(),
+        "{}",
+        String::from_utf8_lossy(&direct.stderr)
+    );
+    assert_eq!(HookFileIdentity::read(&hook_path), before);
+    assert_eq!(
+        fs::read(&hook_path).expect("managed hook should read"),
+        current
+    );
+}
+
+#[test]
+fn a_user_owned_hook_that_starts_cargo_berth_is_never_rewritten() {
+    let repository = initialized_repository();
+    let hook_path = repository.path().join(HOOK_PATH);
+    let managed = fs::read_to_string(&hook_path).expect("managed hook should read");
+    let user_owned = hook_written_before_template_fingerprints(&managed)
+        .replace(&format!("{REFERENCE_TRANSACTION_MARKER}\n"), "");
+    assert!(!user_owned.contains(REFERENCE_TRANSACTION_MARKER));
+    fs::write(&hook_path, &user_owned).expect("user-owned hook should write");
+    let head = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+
+    let dispatched = run_hook_script(
+        repository.path(),
+        "committed",
+        &format!("{} {head} refs/heads/user-hook-probe\n", "0".repeat(40)),
+        ReleaseValve::Unset,
+    );
+
+    assert!(
+        dispatched.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dispatched.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&hook_path).expect("user-owned hook should read"),
+        user_owned
+    );
+}
+
+/// The managed hook as a build before template fingerprints wrote it: identical but for the
+/// two lines exporting the fingerprint.
+fn hook_written_before_template_fingerprints(current: &str) -> String {
+    let fingerprint_export = current
+        .lines()
+        .find(|line| line.starts_with(&format!("{TEMPLATE_ENVIRONMENT}=")))
+        .expect("managed hook should export its template fingerprint");
+    let outdated = current.replace(
+        &format!("{fingerprint_export}\nexport {TEMPLATE_ENVIRONMENT}\n"),
+        "",
+    );
+    assert!(!outdated.contains(TEMPLATE_ENVIRONMENT));
+    outdated
+}
+
+/// What a rewrite of a hook file changes even when it writes the same bytes.
+#[derive(Debug, Eq, PartialEq)]
+struct HookFileIdentity {
+    inode:            u64,
+    modified_seconds: i64,
+    modified_nanos:   i64,
+    changed_seconds:  i64,
+    changed_nanos:    i64,
+}
+
+impl HookFileIdentity {
+    fn read(hook_path: &Path) -> Self {
+        let metadata = fs::metadata(hook_path).expect("hook metadata should read");
+        Self {
+            inode:            metadata.ino(),
+            modified_seconds: metadata.mtime(),
+            modified_nanos:   metadata.mtime_nsec(),
+            changed_seconds:  metadata.ctime(),
+            changed_nanos:    metadata.ctime_nsec(),
+        }
+    }
 }
 
 #[test]

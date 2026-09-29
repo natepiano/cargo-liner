@@ -200,7 +200,10 @@ way when it is invoked directly.
 - Plain `cargo berth init` creates a missing ledger and main-worktree config,
   installs or refreshes each managed hook without replacing an unmanaged hook,
   and enrolls existing worktree work as described under
-  [Worktree enrollment](#worktree-enrollment).
+  [Worktree enrollment](#worktree-enrollment). A hook change alone needs no
+  `init`: the first ref transaction a managed `reference-transaction` hook from
+  an earlier build sends to `cargo-berth` replaces that hook with the current
+  one.
 - `cargo berth init --repair-projection` rebuilds `reservations.json` from
   journal truth and deletes `replay-checkpoint.json`, so the journal replays
   from byte 0, and `journal-compaction-refused.json`, so the next transaction
