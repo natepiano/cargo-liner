@@ -1,12 +1,7 @@
 use std::path::Path;
-use std::time::Duration;
 
-#[cfg(test)]
-use notify::Event;
 use notify::event::EventKind;
 
-use super::constants::DELETE_LINT_DEBOUNCE;
-use super::constants::LINT_DEBOUNCE;
 use crate::constants::CARGO_CONFIG;
 use crate::constants::CARGO_CONFIG_TOML;
 use crate::constants::CARGO_LOCK;
@@ -43,14 +38,6 @@ pub struct LintTriggerEvent {
 
 impl LintTriggerEvent {
     pub const fn is_removal(&self) -> bool { matches!(self.event_kind, LintEventKind::Remove) }
-
-    pub const fn debounce(&self) -> Duration {
-        if self.is_removal() {
-            DELETE_LINT_DEBOUNCE
-        } else {
-            LINT_DEBOUNCE
-        }
-    }
 }
 
 /// Kind of trigger for a `cargo metadata` refresh. Driven by the same
@@ -115,14 +102,6 @@ pub(crate) fn classify_cargo_metadata_basename(path: &Path) -> Option<CargoMetad
     }
 }
 
-#[cfg(test)]
-fn classify_event(project_root: &Path, event: &Event) -> Option<LintTriggerEvent> {
-    event
-        .paths
-        .iter()
-        .find_map(|path| classify_event_path(project_root, event.kind, path))
-}
-
 pub(crate) fn classify_event_path(
     project_root: &Path,
     event_kind: EventKind,
@@ -183,7 +162,6 @@ mod tests {
 
     use notify::event::DataChange;
     use notify::event::ModifyKind;
-    use notify::event::RemoveKind;
 
     use super::*;
 
@@ -341,34 +319,5 @@ mod tests {
                 path.display()
             );
         }
-    }
-
-    #[test]
-    fn remove_events_use_longer_debounce() {
-        let project_dir = tempfile::tempdir().expect("tempdir");
-        let source_path = project_dir.path().join("src/lib.rs");
-        let remove_event = Event {
-            kind:  EventKind::Remove(RemoveKind::File),
-            paths: vec![source_path.clone()],
-            attrs: notify::event::EventAttributes::default(),
-        };
-        let modify_event = Event {
-            kind:  EventKind::Modify(ModifyKind::Data(DataChange::Any)),
-            paths: vec![source_path],
-            attrs: notify::event::EventAttributes::default(),
-        };
-
-        assert_eq!(
-            classify_event(project_dir.path(), &remove_event)
-                .expect("remove trigger")
-                .debounce(),
-            DELETE_LINT_DEBOUNCE
-        );
-        assert_eq!(
-            classify_event(project_dir.path(), &modify_event)
-                .expect("modify trigger")
-                .debounce(),
-            LINT_DEBOUNCE
-        );
     }
 }

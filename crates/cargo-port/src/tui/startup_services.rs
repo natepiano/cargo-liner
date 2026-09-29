@@ -240,7 +240,13 @@ impl StartupServices {
         });
         #[cfg(test)]
         let cargo_port_config = fixture_config.as_ref().unwrap_or(cargo_port_config);
-        let spawn = lint::spawn(cargo_port_config, background_tx);
+        let spawn = match &self.profile {
+            StartupProfile::Production => lint::spawn(cargo_port_config, background_tx),
+            #[cfg(test)]
+            StartupProfile::QuietUnitTest(_) => {
+                RuntimeHandle::spawn_for_test(cargo_port_config, background_tx)
+            },
+        };
         if spawn.handle.is_some() {
             self.record_real(StartupEffectKind::LintRuntime);
         }

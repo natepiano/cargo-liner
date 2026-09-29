@@ -2495,7 +2495,7 @@ mod tests {
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = lint::spawn(&cargo_port_config, background_tx.clone())
+        let runtime = RuntimeHandle::spawn_for_test(&cargo_port_config, background_tx.clone())
             .handle
             .expect("runtime handle");
         let request =
@@ -2606,7 +2606,7 @@ mod tests {
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = lint::spawn(&cargo_port_config, background_tx.clone())
+        let runtime = RuntimeHandle::spawn_for_test(&cargo_port_config, background_tx.clone())
             .handle
             .expect("runtime handle");
         let request = RegisterProjectRequest::new(
@@ -3063,8 +3063,10 @@ mod tests {
             5,
             NonRustInclusion::default(),
             &ExcludeDirs::default(),
-            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone())
-                .expect("http client"),
+            &crate::http::HttpClient::new_without_github_auth_for_test(
+                test_support::test_runtime().handle().clone(),
+            )
+            .expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = background_rx
@@ -3108,8 +3110,10 @@ mod tests {
             5,
             NonRustInclusion::default(),
             &ExcludeDirs::default(),
-            &crate::http::HttpClient::new(test_support::test_runtime().handle().clone())
-                .expect("http client"),
+            &crate::http::HttpClient::new_without_github_auth_for_test(
+                test_support::test_runtime().handle().clone(),
+            )
+            .expect("http client"),
         );
 
         let BackgroundMsg::ProjectDiscovered { item } = background_rx

@@ -1,5 +1,6 @@
 #[cfg(test)]
 use std::sync::Condvar;
+use std::time::Duration;
 use std::time::SystemTime;
 
 use tui_pane::PERF_LOG_TARGET;
@@ -13,6 +14,7 @@ use super::CachedLintStatus;
 use super::CargoPortConfig;
 use super::Child;
 use super::ChildSlot;
+use super::DELETE_LINT_DEBOUNCE;
 use super::DateTime;
 use super::DiscoveryLint;
 use super::FixedOffset;
@@ -20,6 +22,7 @@ use super::HashMap;
 use super::HashSet;
 use super::Instant;
 use super::JoinHandle;
+use super::LINT_DEBOUNCE;
 use super::LINTS_HISTORY_JSONL;
 use super::LINTS_LATEST_JSON;
 use super::LintCommandConfig;
@@ -112,6 +115,14 @@ pub fn spawn(
     cargo_port_config: &CargoPortConfig,
     background_tx: Sender<BackgroundMsg>,
 ) -> SpawnResult {
+    spawn_with_timing(cargo_port_config, background_tx, LintTiming::PRODUCTION)
+}
+
+fn spawn_with_timing(
+    cargo_port_config: &CargoPortConfig,
+    background_tx: Sender<BackgroundMsg>,
+    timing: LintTiming,
+) -> SpawnResult {
     if !cargo_port_config.lint.enabled.is_enabled() {
         return SpawnResult {
             handle:                  None,
@@ -135,6 +146,7 @@ pub fn spawn(
             cache_size_bytes,
             &background_tx,
             &supervisor_pause_state,
+            timing,
         );
     });
     #[cfg(test)]
@@ -159,6 +171,7 @@ fn supervisor_loop(
     cache_size_bytes: Option<u64>,
     background_tx: &Sender<BackgroundMsg>,
     pause_state: &Arc<PauseState>,
+    timing: LintTiming,
 ) {
     let mut workers: HashMap<AbsolutePath, ProjectWorker> = HashMap::new();
     // Lazy hydration: the cache starts empty and `cached_status_for_project`
@@ -177,6 +190,7 @@ fn supervisor_loop(
         status_cache: Arc::clone(&status_cache),
         pause_state: Arc::clone(pause_state),
         catch_up: Arc::clone(&catch_up),
+        timing,
     };
 
     loop {
@@ -379,6 +393,36 @@ pub(super) fn desired_projects(
         .collect()
 }
 
+/// Debounce and poll intervals for lint workers. [`spawn`] runs on
+/// [`LintTiming::PRODUCTION`]; tests spawn with shorter intervals so a trigger
+/// lints in milliseconds.
+#[derive(Clone, Copy)]
+pub(super) struct LintTiming {
+    /// Wait after a create or modify trigger before its run starts.
+    debounce:        Duration,
+    /// Wait after a removal trigger before its run starts.
+    delete_debounce: Duration,
+    /// Longest a worker blocks before rechecking its `stop` flag, and its wait
+    /// between attempts to take a run lock another instance holds.
+    stop_poll:       Duration,
+}
+
+impl LintTiming {
+    const PRODUCTION: Self = Self {
+        debounce:        LINT_DEBOUNCE,
+        delete_debounce: DELETE_LINT_DEBOUNCE,
+        stop_poll:       STOP_POLL,
+    };
+
+    const fn debounce_for(self, event: &LintTriggerEvent) -> Duration {
+        if event.is_removal() {
+            self.delete_debounce
+        } else {
+            self.debounce
+        }
+    }
+}
+
 /// Shared configuration for spawning lint workers.
 pub(super) struct WorkerConfig {
     pub(super) cache_root:       AbsolutePath,
@@ -391,6 +435,7 @@ pub(super) struct WorkerConfig {
     /// Projects whose runs were killed or whose triggers arrived while paused.
     /// Drained on resume to re-dispatch the catch-up runs.
     pub(super) catch_up:         Arc<Mutex<HashSet<AbsolutePath>>>,
+    pub(super) timing:           LintTiming,
 }
 
 /// Whether a freshly spawned worker runs a lint immediately or waits idle for
@@ -480,9 +525,10 @@ impl ScheduledLintRun {
 pub(super) fn schedule_lint_run(
     scheduled: Option<ScheduledLintRun>,
     trigger: &DispatchedTrigger,
+    timing: LintTiming,
 ) -> ScheduledLintRun {
     let next = ScheduledLintRun {
-        deadline:     Instant::now() + trigger.event.debounce(),
+        deadline:     Instant::now() + timing.debounce_for(&trigger.event),
         origin:       lint_run_origin_for_trigger(&trigger.event),
         requested_at: trigger.requested_at,
     };
@@ -665,6 +711,7 @@ struct WorkerContext {
     stop:             Arc<AtomicBool>,
     trigger_rx:       StdReceiver<DispatchedTrigger>,
     start:            WorkerStart,
+    timing:           LintTiming,
 }
 
 impl WorkerContext {
@@ -687,22 +734,22 @@ impl WorkerContext {
                 return;
             }
 
-            let timeout = scheduled_run.map_or(STOP_POLL, |scheduled| {
+            let timeout = scheduled_run.map_or(self.timing.stop_poll, |scheduled| {
                 scheduled
                     .deadline
                     .saturating_duration_since(Instant::now())
-                    .min(STOP_POLL)
+                    .min(self.timing.stop_poll)
             });
 
             if let Ok(trigger) = self.trigger_rx.try_recv() {
                 self.log_trigger(&trigger.event);
-                scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
+                scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger, self.timing));
             }
 
             match self.trigger_rx.recv_timeout(timeout) {
                 Ok(trigger) => {
                     self.log_trigger(&trigger.event);
-                    scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger));
+                    scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger, self.timing));
                 },
                 Err(RecvTimeoutError::Timeout) => {},
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -786,7 +833,7 @@ impl WorkerContext {
                     return Some(RunLock::unlocked());
                 },
             }
-            thread::sleep(STOP_POLL);
+            thread::sleep(self.timing.stop_poll);
             if self.stop.load(Ordering::Relaxed) {
                 return None;
             }
@@ -885,6 +932,7 @@ fn spawn_project_worker(
         stop: Arc::clone(&stop),
         trigger_rx,
         start,
+        timing: config.timing,
     };
     let handle = thread::spawn(move || context.run());
     ProjectWorker {
@@ -976,6 +1024,10 @@ mod tests {
 
     use chrono::Local;
     use crossbeam_channel::RecvTimeoutError;
+    use notify::event::DataChange;
+    use notify::event::EventKind;
+    use notify::event::ModifyKind;
+    use notify::event::RemoveKind;
     use tempfile::TempDir;
 
     use super::*;
@@ -989,7 +1041,21 @@ mod tests {
     use crate::lint::trigger::LintTriggerKind::RustSource;
     use crate::lint::trigger::LintTriggerKind::Startup;
 
+    const TEST_TIMING: LintTiming = LintTiming {
+        debounce:        Duration::from_millis(20),
+        delete_debounce: Duration::from_millis(40),
+        stop_poll:       Duration::from_millis(10),
+    };
+
     impl RuntimeHandle {
+        /// Spawn a runtime whose workers debounce and poll on `TEST_TIMING`.
+        pub(crate) fn spawn_for_test(
+            cargo_port_config: &CargoPortConfig,
+            background_tx: Sender<BackgroundMsg>,
+        ) -> SpawnResult {
+            spawn_with_timing(cargo_port_config, background_tx, TEST_TIMING)
+        }
+
         /// Wait for worker initialization and inspect its actual initial schedule.
         pub(crate) fn assert_idle_worker_for_test(&self, project_root: &Path) {
             let (starts, _) = self
@@ -1045,13 +1111,33 @@ mod tests {
 
         let startup = DispatchedTrigger::now(startup);
         let source = DispatchedTrigger::now(source);
-        let scheduled = schedule_lint_run(None, &startup);
+        let scheduled = schedule_lint_run(None, &startup, LintTiming::PRODUCTION);
         assert_eq!(scheduled.origin, LintRunOrigin::CatchUp);
-        let scheduled = schedule_lint_run(Some(scheduled), &source);
+        let scheduled = schedule_lint_run(Some(scheduled), &source, LintTiming::PRODUCTION);
         assert_eq!(scheduled.origin, LintRunOrigin::Normal);
         assert_eq!(
             scheduled.requested_at, source.requested_at,
             "a coalesced run is requested as of its newest trigger"
+        );
+    }
+
+    #[test]
+    fn remove_events_use_longer_debounce() {
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        let source_path = project_dir.path().join("src/lib.rs");
+        let debounce_for = |event_kind| {
+            let trigger = lint::classify_event_path(project_dir.path(), event_kind, &source_path)
+                .expect("source trigger");
+            LintTiming::PRODUCTION.debounce_for(&trigger)
+        };
+
+        assert_eq!(
+            debounce_for(EventKind::Remove(RemoveKind::File)),
+            DELETE_LINT_DEBOUNCE
+        );
+        assert_eq!(
+            debounce_for(EventKind::Modify(ModifyKind::Data(DataChange::Any))),
+            LINT_DEBOUNCE
         );
     }
 
@@ -1115,7 +1201,7 @@ mod tests {
         project_root: &Path,
     ) -> (RuntimeHandle, Receiver<BackgroundMsg>) {
         let (background_tx, background_rx) = channel::unbounded();
-        let runtime = spawn(cargo_port_config, background_tx)
+        let runtime = RuntimeHandle::spawn_for_test(cargo_port_config, background_tx)
             .handle
             .expect("runtime handle");
         let request = request("~/rust/demo", project_root);
@@ -1475,7 +1561,7 @@ mod tests {
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&cargo_port_config, background_tx);
+        let spawn = RuntimeHandle::spawn_for_test(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         let request = request("~/rust/demo", project_dir.path());
         runtime.sync_projects(vec![request.clone()]);
@@ -1535,7 +1621,7 @@ mod tests {
         }];
 
         let (background_tx, background_rx) = channel::unbounded();
-        let spawn = spawn(&cargo_port_config, background_tx);
+        let spawn = RuntimeHandle::spawn_for_test(&cargo_port_config, background_tx);
         let runtime = spawn.handle.expect("runtime handle");
         let request = request("~/rust/demo", project_dir.path());
         runtime.sync_projects(vec![request.clone()]);
@@ -1793,6 +1879,7 @@ mod tests {
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
             pause_state:      Arc::new(PauseState::default()),
             catch_up:         Arc::new(Mutex::new(HashSet::new())),
+            timing:           TEST_TIMING,
         };
 
         reconcile_workers(
@@ -1834,6 +1921,7 @@ mod tests {
             status_cache:     Arc::new(Mutex::new(HashMap::new())),
             pause_state:      Arc::new(PauseState::default()),
             catch_up:         Arc::new(Mutex::new(HashSet::new())),
+            timing:           TEST_TIMING,
         };
         reconcile_workers(
             &mut workers,
