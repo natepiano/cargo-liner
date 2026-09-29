@@ -1911,7 +1911,7 @@ impl Display for EmptySkippedIntegrationHoldSet {
 impl std::error::Error for EmptySkippedIntegrationHoldSet {}
 
 /// A replayed journal and the metadata needed to validate its cache.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct JournalReplay {
     /// The reservation set folded record by record, or the first record it could not apply.
     ///
@@ -3171,6 +3171,37 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn replays_round_trip_through_serde_and_advance_like_the_original()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (events, failing_record_index) = round_trip_sequence_events()?;
+        let mut journal = Vec::new();
+        let mut record_ends = vec![0];
+        for event in &events {
+            journal.extend(serde_json::to_vec(event)?);
+            journal.push(b'\n');
+            record_ends.push(journal.len());
+        }
+
+        for (prefix_length, record_end) in record_ends.into_iter().enumerate() {
+            let (prefix, appended) = journal.split_at(record_end);
+            let (mut original, _) = replay_complete_records(prefix)?;
+            assert_eq!(
+                original.reservations.is_ok(),
+                prefix_length <= failing_record_index,
+                "every record before the rejected widen applies"
+            );
+            let mut decoded =
+                serde_json::from_slice::<JournalReplay>(&serde_json::to_vec(&original)?)?;
+            assert_eq!(decoded, original);
+
+            original.advance_over(appended)?;
+            decoded.advance_over(appended)?;
+            assert_eq!(decoded, original);
+        }
+        Ok(())
+    }
+
     /// Advance `replay` over the journal's appended records and require that it equals a replay of
     /// the whole journal.
     fn advance_and_compare_with_whole_replay(
@@ -3189,6 +3220,9 @@ mod tests {
     const FOLD_TIP: &str = "2222222222222222222222222222222222222222";
     /// The index in [`fold_sequence_events`] of the widen that reservation replay rejects.
     const FOLD_FAILING_RECORD_INDEX: usize = 9;
+    const ROUND_TRIP_CLAIM_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a34";
+    const ROUND_TRIP_RESOLVED_INCIDENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a35";
+    const ROUND_TRIP_OUTSTANDING_INCIDENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a36";
 
     /// A journal from three repositories covering claims, widens under two authorizations, a
     /// holder merge extent, a bypass, and a full lifecycle, followed by a widen of the released
@@ -3291,6 +3325,111 @@ mod tests {
             });
         }
         Ok(events)
+    }
+
+    /// [`fold_sequence_events`] with records inserted between the release and the rejected widen
+    /// that populate what the fold sequence leaves empty: a claim with a fallback target, a
+    /// protected merge extent, a resolved and an outstanding incursion, and scoped patch verdicts
+    /// and attempts for the released reservation. Also returns the rejected widen's index.
+    fn round_trip_sequence_events() -> Result<(Vec<JournalEvent>, usize), Box<dyn std::error::Error>>
+    {
+        let mut events = fold_sequence_events()?;
+        let released = RetainedReservationSet::replay(&events[..FOLD_FAILING_RECORD_INDEX])?;
+        let subject = serde_json::to_value(
+            released
+                .reservation(parse_reservation_id(FOLD_RESERVATION_ID))?
+                .integration_proof_subject_revision(),
+        )?;
+        let mut targeted_claim = serde_json::to_value(fold_claim(ROUND_TRIP_CLAIM_ID, "bench")?)?;
+        targeted_claim["target"] = serde_json::json!({
+            "target": "refs/heads/main",
+            "source": "repository_trunk",
+            "fallback": {"requested": "refs/heads/phase", "reason": "own_branch"},
+        });
+        let key = serde_json::json!({
+            "trunk": FOLD_TRUNK,
+            "head": FOLD_TIP,
+            "working_tree": {"tracked_paths": ["docs/guide.md"], "untracked_paths": []},
+        });
+        let blocked_paths = serde_json::json!([
+            {"path": "src/lib.rs", "holders": [FOLD_RESERVATION_ID]},
+        ]);
+        let operations = [
+            targeted_claim,
+            serde_json::json!({
+                "op": "merge_extent_observed",
+                "reservation_id": FOLD_SECOND_RESERVATION_ID,
+                "extent": {
+                    "status": "protected",
+                    "key": key,
+                    "scopes": [{"path": "docs", "kind": "tree"}],
+                },
+                "run_status": "editing",
+            }),
+            serde_json::json!({
+                "op": "incursion",
+                "incident_id": ROUND_TRIP_RESOLVED_INCIDENT_ID,
+                "reservation_id": FOLD_SECOND_RESERVATION_ID,
+                "blocked_paths": blocked_paths,
+            }),
+            serde_json::json!({
+                "op": "resolve_incursion",
+                "incident_id": ROUND_TRIP_RESOLVED_INCIDENT_ID,
+            }),
+            serde_json::json!({
+                "op": "incursion",
+                "incident_id": ROUND_TRIP_OUTSTANDING_INCIDENT_ID,
+                "reservation_id": ROUND_TRIP_CLAIM_ID,
+                "blocked_paths": blocked_paths,
+            }),
+            serde_json::json!({
+                "op": "scoped_patch_equivalence_checked",
+                "reservation_id": FOLD_RESERVATION_ID,
+                "subject": subject,
+                "target": FOLD_TRUNK,
+                "verdict": "integrated",
+            }),
+            serde_json::json!({
+                "op": "scoped_patch_comparison_attempted",
+                "reservation_id": FOLD_RESERVATION_ID,
+                "subject": subject,
+                "target": FOLD_TIP,
+            }),
+            serde_json::json!({
+                "op": "successor_scoped_patch_equivalence_checked",
+                "predecessor_reservation_id": FOLD_RESERVATION_ID,
+                "subject": subject,
+                "successor_head": FOLD_TIP,
+                "verdict": "different",
+            }),
+            serde_json::json!({
+                "op": "successor_scoped_patch_comparison_attempted",
+                "predecessor_reservation_id": FOLD_RESERVATION_ID,
+                "subject": subject,
+                "successor_head": FOLD_TRUNK,
+            }),
+        ];
+        let actor = test_actor();
+        let mut inserted = Vec::new();
+        for operation in &operations {
+            inserted.push(JournalEvent {
+                schema_version:        SchemaVersion::from(CURRENT_SCHEMA_VERSION),
+                event_id:              EventId::new(),
+                actor:                 actor.clone(),
+                identity_inputs:       JournalMutationIdentityInputs::Unrecorded,
+                at:                    "2026-08-23T17:35:12.456Z".parse::<RecordedAt>()?,
+                projection_generation: ProjectionGeneration::from(0),
+                operation:             fold_operation(operation)?,
+            });
+        }
+        events.splice(
+            FOLD_FAILING_RECORD_INDEX..FOLD_FAILING_RECORD_INDEX,
+            inserted,
+        );
+        for (generation, event) in (1_u64..).zip(&mut events) {
+            event.projection_generation = ProjectionGeneration::from(generation);
+        }
+        Ok((events, FOLD_FAILING_RECORD_INDEX + operations.len()))
     }
 
     fn fold_claim(reservation_id: &str, tree: &str) -> Result<JournalOperation, serde_json::Error> {

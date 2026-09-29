@@ -7,6 +7,9 @@
 
 use std::collections::HashSet;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::conflict::ReservationConflict;
 use super::containment::ActingHeadContainment;
 use super::evidence::ProtectedReservationTip;
@@ -149,11 +152,15 @@ impl Reservation {
 }
 
 /// Every retained reservation after replaying the journal in append order.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RetainedReservationSet {
     reservations:            Vec<Reservation>,
     incursion_incidents:     Vec<IncursionIncident>,
     /// Whether foreign protection excludes work already present in the acting HEAD.
+    ///
+    /// Never serialized: a replayed set always holds [`ForeignProtectionPolicy::FullProtection`],
+    /// and callers narrow it afterwards through [`Self::with_acting_head_containment`].
+    #[serde(skip)]
     acting_head_containment: ForeignProtectionPolicy,
 }
 
@@ -168,7 +175,7 @@ enum ForeignProtectionPolicy {
 }
 
 /// Whether replay has recorded a protected tip for this reservation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) enum RetainedProtectedTip {
     /// An active reservation has not checkpointed a commit.
     NotCheckpointed,
@@ -177,7 +184,7 @@ pub(super) enum RetainedProtectedTip {
 }
 
 /// The trunk comparison point retained for the reservation's current state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum IntegrationTrunkSnapshot {
     /// The trunk commit observed when the reservation was acquired.
     AtClaim(TrunkObservationAtClaim),
@@ -186,7 +193,7 @@ pub(crate) enum IntegrationTrunkSnapshot {
 }
 
 /// One incursion incident and its current replayed disposition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct IncursionIncident {
     id:             IncursionIncidentId,
     reservation_id: ReservationId,
@@ -195,7 +202,7 @@ pub(crate) struct IncursionIncident {
 }
 
 /// Whether an incursion still requires a user disposition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum IncursionIncidentStatus {
     /// No disposition record has answered this incident.
     Outstanding,

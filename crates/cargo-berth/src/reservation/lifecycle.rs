@@ -409,7 +409,7 @@ impl FromStr for RewrittenIntegrationTrunkCommit {
 }
 
 /// A journal sequence requested a lifecycle transition from the wrong state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum LifecycleTransitionError {
     /// A checkpoint operation named a reservation that was not active.
     CheckpointRequiresActive,
