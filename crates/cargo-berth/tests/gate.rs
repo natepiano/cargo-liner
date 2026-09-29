@@ -62,6 +62,8 @@ const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const MUTATION_LOCK_READY_ENVIRONMENT: &str = "CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH";
 
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
+const FIXTURE_USER_EMAIL: &str = "test@example.com";
+const FIXTURE_USER_NAME: &str = "Test User";
 const GATE_DEADLINE: Duration = Duration::from_secs(1);
 const GATE_DEADLINE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GATE_DEADLINE_MS";
 const GIT_BINARY: &str = "git";
@@ -75,6 +77,7 @@ const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
 /// lacks. Every branch path read is those two invocations.
 const POST_COMMIT_ENGINE_GIT_PROCESS_CEILING: usize = 16;
+const POST_COMMIT_SUBJECT_BRANCH: &str = "hook-subject";
 const RAW_GIT_BEHAVIOR_ENVIRONMENT: &str = "CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR";
 const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -89,10 +92,17 @@ const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 ///
 /// [`RawGitBehavior::RemoveAfterTargetHistory`] narrows the traced process's `PATH` to the
 /// wrapper directory alone, which is what makes git unavailable once the wrapper deletes
-/// itself. That narrowing also reaches the wrapper's own `mkdir`, `rmdir`, `rm` and `sleep`,
-/// so the wrapper restores this path for itself before running any of them. Resolving them
-/// under `/bin` instead only works where `/bin` holds more than `sh`.
+/// itself. That narrowing also reaches the wrapper's own `rm`, so the wrapper restores this
+/// path for itself before running it. Resolving `rm` under `/bin` instead only works where
+/// `/bin` holds more than `sh`.
 const UTILITY_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_UTILITY_PATH";
+/// A `git` that records its arguments under the `TRACE_ENVIRONMENT` directory, then runs the
+/// real git or the failure `RAW_GIT_BEHAVIOR_ENVIRONMENT` names.
+///
+/// Each invocation writes one record file named by its sequence number. With `set -C` the
+/// shell creates that file only when the name is new, so concurrent invocations claim distinct
+/// numbers with no lock and no sleep, and a claim that loses retries the next number. The
+/// claim starts from the count of records already written, so the numbers stay contiguous.
 const RAW_TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
 separator=$(printf '\037')
@@ -102,17 +112,23 @@ for argument in "$@"; do
 done
 PATH="$CARGO_BERTH_TEST_UTILITY_PATH"
 export PATH
-lock_attempt=0
-while ! mkdir "$CARGO_BERTH_TEST_GIT_TRACE.lock" 2>/dev/null; do
-    lock_attempt=$((lock_attempt + 1))
-    if [ "$lock_attempt" -ge 200 ]; then
-        printf '%s\n' 'timed out acquiring raw git trace lock' >&2
-        exit 24
-    fi
-    sleep 0.01
-done
-printf '%s\036' "$record" >> "$CARGO_BERTH_TEST_GIT_TRACE"
-rmdir "$CARGO_BERTH_TEST_GIT_TRACE.lock"
+trace_record() {
+    set -- "$CARGO_BERTH_TEST_GIT_TRACE"/*
+    [ -e "$1" ] || set --
+    sequence=$#
+    set -C
+    until
+        sequence=$((sequence + 1))
+        printf '%s' "$record" 2>/dev/null >"$CARGO_BERTH_TEST_GIT_TRACE/$sequence"
+    do
+        if [ ! -e "$CARGO_BERTH_TEST_GIT_TRACE/$sequence" ]; then
+            printf '%s\n' 'raw git trace record could not be written' >&2
+            exit 24
+        fi
+    done
+    set +C
+}
+trace_record
 if [ "${CARGO_BERTH_TEST_RAW_GIT_BEHAVIOR:-pass_through}" = "fail_phase_diff" ] \
     && [ "$1" = "--no-optional-locks" ] \
     && [ "$2" = "diff-tree" ] \
@@ -5001,9 +5017,12 @@ fn scratch_repository() -> TempDir {
     git(repository.path(), &["config", "gc.auto", "0"]);
     git(
         repository.path(),
-        &["config", "user.email", "test@example.com"],
+        &["config", "user.email", FIXTURE_USER_EMAIL],
     );
-    git(repository.path(), &["config", "user.name", "Test User"]);
+    git(
+        repository.path(),
+        &["config", "user.name", FIXTURE_USER_NAME],
+    );
     fs::create_dir_all(repository.path().join("src")).expect("source directory should exist");
     fs::create_dir_all(repository.path().join("tests")).expect("test directory should exist");
     fs::write(repository.path().join("src/lib.rs"), "pub fn base() {}\n")
@@ -5617,7 +5636,11 @@ impl PostCommitCellFixture {
     fn new() -> Self {
         let repository = initialized_repository();
         let worktrees = tempdir().expect("worktree parent should exist");
-        let subject_root = add_worktree(repository.path(), worktrees.path(), "hook-subject");
+        let subject_root = add_worktree(
+            repository.path(),
+            worktrees.path(),
+            POST_COMMIT_SUBJECT_BRANCH,
+        );
         let repository_snapshot = DirectorySnapshot::capture(repository.path());
         let worktrees_snapshot = DirectorySnapshot::capture(worktrees.path());
         Self {
@@ -5750,47 +5773,36 @@ fn post_commit_path_commit_cardinality_trace(
     );
     fs::create_dir_all(subject_root.join("hook-cardinality"))
         .expect("hook cardinality directory should exist");
-    for commit_index in 0..commit_count {
-        if path_count == 0 {
-            fs::write(
-                subject_root.join("subject.txt"),
-                format!("subject version {commit_index}\n"),
-            )
-            .expect("covered subject path should write");
-        } else if commit_index == 0 {
-            for path_index in 0..path_count {
-                fs::write(
-                    subject_root.join(format!("hook-cardinality/path-{path_index}.txt")),
+    let commits = (0..commit_count)
+        .map(|commit_index| {
+            let written_files = if path_count == 0 {
+                vec![(
+                    "subject.txt".to_owned(),
+                    format!("subject version {commit_index}\n"),
+                )]
+            } else if commit_index == 0 {
+                (0..path_count)
+                    .map(|path_index| {
+                        (
+                            format!("hook-cardinality/path-{path_index}.txt"),
+                            format!("path {path_index}, version {commit_index}\n"),
+                        )
+                    })
+                    .collect()
+            } else {
+                let path_index = commit_index % path_count;
+                vec![(
+                    format!("hook-cardinality/path-{path_index}.txt"),
                     format!("path {path_index}, version {commit_index}\n"),
-                )
-                .expect("entered cardinality path should write");
+                )]
+            };
+            FixtureCommit {
+                message: format!("hook cardinality commit {commit_index}"),
+                written_files,
             }
-        } else {
-            let path_index = commit_index % path_count;
-            fs::write(
-                subject_root.join(format!("hook-cardinality/path-{path_index}.txt")),
-                format!("path {path_index}, version {commit_index}\n"),
-            )
-            .expect("entered cardinality path should update");
-        }
-        // Only the first commit adds new paths; `commit --all` stages every later edit
-        // without a separate `git add` process per commit.
-        if commit_index == 0 {
-            git(subject_root, &["add", "-A"]);
-        }
-        git(
-            subject_root,
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "commit",
-                "--all",
-                "--quiet",
-                "-m",
-                &format!("hook cardinality commit {commit_index}"),
-            ],
-        );
-    }
+        })
+        .collect::<Vec<_>>();
+    commit_files_without_hooks(subject_root, POST_COMMIT_SUBJECT_BRANCH, &commits);
     if commit_count == 0 {
         for path_index in 0..path_count {
             fs::write(
@@ -5809,6 +5821,76 @@ fn post_commit_path_commit_cardinality_trace(
         String::from_utf8_lossy(&output.stderr)
     );
     invocations
+}
+
+/// One commit `commit_files_without_hooks` makes: its message and the files it writes over its
+/// parent's tree, each as `(path, contents)`.
+struct FixtureCommit {
+    message:       String,
+    written_files: Vec<(String, String)>,
+}
+
+/// Make each of `commits` in order on `branch`, checked out at `worktree_root`, then check the
+/// last one out there.
+///
+/// One `git fast-import` makes every commit and one `git read-tree` updates the index and
+/// worktree, so a cell's history costs two processes whatever its commit count. The hooks stay
+/// disabled, as for every fixture commit that is not under test.
+fn commit_files_without_hooks(worktree_root: &Path, branch: &str, commits: &[FixtureCommit]) {
+    if commits.is_empty() {
+        return;
+    }
+    let mut stream = String::new();
+    for (index, fixture_commit) in commits.iter().enumerate() {
+        let _ = writeln!(stream, "commit refs/heads/{branch}");
+        let _ = writeln!(
+            stream,
+            "committer {FIXTURE_USER_NAME} <{FIXTURE_USER_EMAIL}> now"
+        );
+        let _ = writeln!(
+            stream,
+            "data {}\n{}",
+            fixture_commit.message.len(),
+            fixture_commit.message
+        );
+        if index == 0 {
+            let _ = writeln!(stream, "from refs/heads/{branch}^0");
+        }
+        for (path, contents) in &fixture_commit.written_files {
+            let _ = writeln!(
+                stream,
+                "M 100644 inline {path}\ndata {}\n{contents}",
+                contents.len()
+            );
+        }
+    }
+    let mut child = git_command(BERTH_EXECUTABLE)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "fast-import",
+            "--quiet",
+            "--date-format=now",
+        ])
+        .current_dir(worktree_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("fast-import should start");
+    child
+        .stdin
+        .take()
+        .expect("fast-import stdin")
+        .write_all(stream.as_bytes())
+        .expect("fast-import stream should write");
+    let imported = child.wait_with_output().expect("fast-import should finish");
+    assert!(
+        imported.status.success(),
+        "fast-import failed: {}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    git(worktree_root, &["read-tree", "--reset", "-u", "HEAD"]);
 }
 
 fn run_berth_with_raw_git_trace(
@@ -5858,6 +5940,7 @@ fn run_command_with_raw_git_behavior(
     let directory = tempdir().expect("wrapper directory should exist");
     let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("raw-trace");
+    fs::create_dir(&trace_path).expect("raw git trace directory should exist");
     fs::write(&wrapper_path, RAW_TRACING_GIT_WRAPPER).expect("git wrapper should write");
     let mut permissions = fs::metadata(&wrapper_path)
         .expect("git wrapper metadata should read")
@@ -5894,10 +5977,27 @@ fn run_command_with_raw_git_behavior(
         .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
         .output()
         .expect("cargo-berth should run");
-    let trace = fs::read_to_string(&trace_path).expect("raw git trace should read");
-    let invocations = trace
-        .split('\u{1e}')
-        .filter(|record| !record.is_empty())
+    let records = fs::read_dir(&trace_path)
+        .expect("raw git trace should read")
+        .map(|entry| {
+            let entry = entry.expect("raw git trace record should list");
+            let sequence = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<usize>().ok())
+                .expect("raw git trace record should be named by its sequence number");
+            let record =
+                fs::read_to_string(entry.path()).expect("raw git trace record should read");
+            (sequence, record)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert!(
+        records.keys().copied().eq(1..=records.len()),
+        "raw git trace records should be numbered from one without a gap: {:?}",
+        records.keys().collect::<Vec<_>>()
+    );
+    let invocations = records
+        .into_values()
         .map(|record| RawGitInvocation {
             arguments: record.split('\u{1f}').map(str::to_owned).collect(),
         })
