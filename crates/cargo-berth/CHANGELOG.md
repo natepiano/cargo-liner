@@ -10,11 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A disposable replay checkpoint, `replay-checkpoint.json` in the ledger directory, so a command replays only the journal records appended since it was written. The first command after upgrading replays the whole journal once and writes it; a checkpoint from another build, repository, or journal file, or one whose last record no longer matches the journal, is rebuilt the same way. `init --repair-projection` and `init --reinitialize-after-review` delete it.
+- `cargo-berth` compacts `journal.ndjson`: merge extent observations that later observations replace for every reservation they name are removed, automatically once 16 MiB of them accumulate or on `init --compact-journal [--json]`, which reports status `journal_compacted` with a `journal_compaction` payload of the records and bytes removed and remaining. Surviving records are unchanged and in order. The compacted journal replaces the original only when both replay alike; a refused compaction reports `ledger_unreadable` and leaves the journal unchanged, and a failed automatic one leaves `journal-compaction-refused.json`, which holds the next automatic attempt back until 16 MiB more is appended and which `init --repair-projection` deletes. The first command after upgrading a ledger with a large journal compacts it once, in several seconds.
 - A present non-trunk integration target's worktree holds a cover reservation against its own target. `target_uncovered` reports a present target with waiting reservations and no registered checkout.
 
 - Report `target_missing` when an unlanded live reservation's recorded branch disappears; board JSON now includes each row's `target` and a sorted top-level `targets` list.
 - Coordinate exclusive file and tree reservations across a Git repository's
-  worktrees with an append-only journal and disposable projections.
+  worktrees with a journal of every mutation and disposable projections.
 - Record directed integration order, deferred overlaps, explicit override
   answers, checkpoints, release evidence, recovery decisions, and incursions.
 - Guard trunk updates with an observe-or-enforce `reference-transaction` hook
@@ -30,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Reconciliation journals one `holder_merge_extent_observed` record per holder checkout's changed merge extent, listing each reservation it applies to, instead of one `merge_extent_observed` record per reservation. A holder with many outstanding reservations no longer repeats the same extent in each record; journals holding `merge_extent_observed` records still replay unchanged.
+- Board `journal_byte_offset` can decrease after a journal compaction; order responses by `generation`. `reservation_revision` no longer counts merge extent observations.
 - Hook and command cost no longer grows with journal length. Replay decodes each record once, folding reservation state as it goes and keeping only the records ordering, answers, enrollment, permits, the gate decision, and the bypass audit read; an append advances the held replay over the appended bytes instead of reading the journal again. On a 69.6 MB journal the post-tool-use hook drops from 1.43 s to 0.10 s, the same as on a 58.7 MB journal.
 - The reference-transaction gate and `integrate` hold every live integration target to the ordering rules. Run `cargo-berth init` again to install the new hook and publish `gate-targets`.
 
@@ -45,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Release, lost-evidence, orphan, first-touch, edge-rewrite, and `resolve --integrated-as` text names the reservation's integration target instead of trunk, since that branch judges the work; the `--integrated-as` value is shown as `<TARGET_OID>`.
 
-- `board --json` replaces `recorded_overlap_answers` with `live_overlap_answers` and `released_overlap_answer_count`. The list holds only answers to an overlap with another reservation (`enrollment`, `sequence`, `defer`, `override`, `ordering_created_from_deferral`) recorded by a reservation that is still active or outstanding; a released reservation's answers are only counted. A widen onto paths no other reservation holds, or whose overlaps earlier answers already cover, is scope growth and no longer appears as an answer, so the `widen_without_foreign_overlap` and `existing_answers_cover_every_overlap` board entries are gone. The journal keeps every record. `output_contract_version` is now 3.
+- `board --json` replaces `recorded_overlap_answers` with `live_overlap_answers` and `released_overlap_answer_count`. The list holds only answers to an overlap with another reservation (`enrollment`, `sequence`, `defer`, `override`, `ordering_created_from_deferral`) recorded by a reservation that is still active or outstanding; a released reservation's answers are only counted. A widen onto paths no other reservation holds, or whose overlaps earlier answers already cover, is scope growth and no longer appears as an answer, so the `widen_without_foreign_overlap` and `existing_answers_cover_every_overlap` board entries are gone. The journal keeps every answer record. `output_contract_version` is now 3.
 
 - A released reservation's `merge_extent` in `board --json` and `board --reservation <id> --json` is `{"status": "released", "at_release": <extent>}`, so the extent last observed before release no longer reads as live protection. The single-reservation text labels it `Merge extent at release (not blocking)`. Active and outstanding rows are unchanged.
 

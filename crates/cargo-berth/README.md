@@ -1,8 +1,8 @@
 # cargo-berth
 
 `cargo-berth` coordinates path ownership and merge order between Git worktrees.
-It keeps an append-only journal in the repository's common Git directory, so
-every worktree sees the same reservations.
+It keeps a journal of every mutation in the repository's common Git directory,
+so every worktree sees the same reservations.
 
 It does not choose an order for you. It records explicit answers, checks them
 before integration, and shows the resulting state on a board.

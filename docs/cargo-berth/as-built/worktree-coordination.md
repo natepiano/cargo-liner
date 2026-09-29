@@ -20,7 +20,9 @@ All coordination state lives in a `cargo-berth` directory under the repository's
 
 | File | Role |
 | --- | --- |
-| `journal.ndjson` | Append-only NDJSON record of every mutation. Truth. |
+| `journal.ndjson` | NDJSON record of every mutation, append-only between compactions. Truth. |
+| `journal.ndjson.compact.tmp` | Staging path for a compacted journal, renamed over `journal.ndjson` once its replay matches the original's. The next compaction removes a leftover one. |
+| `journal-compaction-refused.json` | The journal file and length at which an automatic compaction failed, and why. Holds automatic compaction back until the journal grows past that length by the compaction threshold. |
 | `reservations.json` | Materialized projection of the journal. Disposable cache. |
 | `reservations.json.tmp` | Staging path for the atomic rename that publishes a projection. |
 | `replay-checkpoint.json` | Serialized replay of the journal's first bytes, so a replay decodes only the records after them. Disposable cache. |
@@ -49,7 +51,7 @@ pub(crate) fn transact<Rejection>(
 ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError>
 ```
 
-The sequence inside is fixed: acquire the mutation lock, replay the journal (resuming from the replay checkpoint) to a `ReplayedLedgerState`, hand that state to the caller's `validate` closure, and — only if the closure returns an accepting `TransactionValidation` — append the record it produced. `transact_with_committed_action` extends the same hold to git side effects that must not be observed apart from the record, so the ref write and the journal append cannot be seen out of order.
+The sequence inside is fixed: acquire the mutation lock, replay the journal (resuming from the replay checkpoint) to a `ReplayedLedgerState`, hand that state to the caller's `validate` closure, and — only if the closure returns an accepting `TransactionValidation` — append the record it produced. `transact_with_committed_action` extends the same hold to git side effects that must not be observed apart from the record, so the ref write and the journal append cannot be seen out of order. After the transaction returns and its lock drops, `Ledger::conclude` compacts the journal when the transaction's replay holds enough superseded records (see [Journal compaction](#journal-compaction)).
 
 `MutationLock::acquire` polls with backoff from `MUTATION_LOCK_INITIAL_RETRY_INTERVAL` (50 ms) to `MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL` (1 s), giving up after `MUTATING_VERB_CONTENTION_TOLERANCE` (10 s) with exit 6. The lock is `std::fs::File::lock`; there is no advisory protocol layered on top and no lock-free append path. `PIPE_BUF` atomicity governs pipes, not regular files, so no record small enough exists to make an unlocked append safe.
 
@@ -67,7 +69,7 @@ Every record also carries `identity_inputs`: the process inputs available when i
 
 ### Journal replay
 
-`ledger/journal.rs` replays the journal into a `JournalReplay`: the folded `RetainedReservationSet`, or the first `ReservationReplayError` the fold met; the coordination events; the repository identities that wrote records; the record count; the end offset; the FNV-1a fingerprint; and the generation. Each complete record is decoded once and handed to `JournalReplay::apply_record`, which folds it into the reservation set through `RetainedReservationSet::apply` and moves it into `coordination_events` when `JournalOperation::is_coordination_record` holds. After the first fold error no later record is applied to the set, so the result equals a fold of the whole record list that stops at that error.
+`ledger/journal.rs` replays the journal into a `JournalReplay`: the folded `RetainedReservationSet`, or the first `ReservationReplayError` the fold met; the coordination events; the repository identities that wrote records; the record count; the end offset; the FNV-1a fingerprint; the generation; and `SupersededExtents`, the merge extent observations later observations supersede. Each complete record is decoded once and handed to `JournalReplay::apply_record`, which folds it into the reservation set through `RetainedReservationSet::apply` and moves it into `coordination_events` when `JournalOperation::is_coordination_record` holds. After the first fold error no later record is applied to the set, so the result equals a fold of the whole record list that stops at that error.
 
 Coordination readers receive `coordination_events()` and nothing else: `OrderingGraph` replay, the board's overlap answers and alerts, worktree enrollment's reservation history and overlaps, forced-integration permits, the gate's `decide`, the bypass audit, and pending-bypass recovery. The predicate admits every `Claim`; a `Widen` whose authorization is `Enrollment`, `Sequence`, `Defer`, or `Override`; `ResolveDefer`; `ForcedIntegrationPermit`; `ConsumeForcedIntegrationPermit`; and `Bypass`. Every other record, merge-extent observations, evidence revalidations, and scoped-patch verdicts among them, is read only by the reservation fold. `ReplayedLedgerState`, `ValidatedJournal` (from `Ledger::read_validated_journal`), and `ReconciledJournalSnapshot` expose `reservations()` and `coordination_events()`; `EditCheckLedgerSnapshot` holds only the reservations. None carries the full event list.
 
@@ -89,9 +91,35 @@ The file holds two JSON lines. Line one is a `CheckpointHeader`: `fold_format_ve
 
 Any failure, a missing file included, discards the checkpoint and replays from byte 0; none is an error. The body decode enforces leaf invariants and the scoped-patch retention bounds, not the cross-record invariants only `apply` maintains, so the header checks are what reject a checkpoint that describes another journal. `RetainedReservationSet.acting_head_containment` is not serialized and decodes to `FullProtection`, the value every replay holds.
 
-A replay writes a new checkpoint once it has folded `REPLAY_CHECKPOINT_INTERVAL_BYTES` or `REPLAY_CHECKPOINT_INTERVAL_RECORDS` past where it started: the loaded checkpoint, or byte 0. Locked and lock-free replays both write it; an append's advance does not. The write goes to `replay-checkpoint.json.<uuid v7>.tmp` through `fs::write` and is renamed into place without an fsync, so a concurrent reader never opens a partial file, and a crash that leaves one behind fails decode and rebuilds. A failed write removes its temporary file and never fails the replay. `init --repair-projection` deletes the checkpoint under the lock before its replay from byte 0, and `init --reinitialize-after-review` deletes it before truncating the journal.
+A replay writes a new checkpoint once it has folded `REPLAY_CHECKPOINT_INTERVAL_BYTES` or `REPLAY_CHECKPOINT_INTERVAL_RECORDS` past where it started: the loaded checkpoint, or byte 0. Locked and lock-free replays both write it; an append's advance does not. The write goes to `replay-checkpoint.json.<uuid v7>.tmp` through `fs::write` and is renamed into place without an fsync, so a concurrent reader never opens a partial file, and a crash that leaves one behind fails decode and rebuilds. A failed write removes its temporary file and never fails the replay. `init --repair-projection` deletes the checkpoint under the lock before its replay from byte 0, and `init --reinitialize-after-review` deletes it before truncating the journal. Journal compaction stores a checkpoint for the compacted file before renaming it over the journal, so the next replay resumes from it. A checkpoint names the journal by device and inode, so a ledger copied elsewhere replays from byte 0 once and writes a checkpoint for its own journal file.
 
 Only the last checkpointed record is compared with the journal. An edit to, or corruption of, an earlier record inside the checkpointed prefix is not detected until the checkpoint is deleted or fails a header check, and until then the replay's fingerprint continues from the checkpointed fingerprint instead of covering the edited bytes, so the projection's fingerprint check does not see the edit either. A periodic rewrite resumes from the checkpoint it loaded and does not re-read the prefix; `init --repair-projection` forces a replay from byte 0.
+
+### Journal compaction
+
+`ledger/compaction.rs` rewrites the journal without the merge extent observations that later observations supersede. An observation, in either record form (`HolderMergeExtentObserved`, or the older `MergeExtentObserved`), replaces the recorded merge extent of every reservation it names, and no replay step reads a merge extent. Once every reservation an observation names is named again by a later observation, the record leaves no trace in the fold, and compaction drops it. An observation superseded for only some of its reservations is kept whole. Every other record is kept byte for byte, in order, so event ids never change while line numbers and byte offsets do. A merge extent observation does not advance the reservation's revision, so the fold without the superseded observations equals the fold with them.
+
+Replay tracks what compaction may drop as it folds. `SupersededExtents` in `JournalReplay.superseded` holds the ordinal of the latest observation naming each reservation, each observation still named by some reservation with its byte length and the number of reservations naming it, and `droppable_bytes`, the total length of the observations no reservation names as its latest. It is part of the serialized fold, so the replay checkpoint carries it.
+
+`Ledger::compact_journal` holds the mutation lock for the whole sequence:
+
+1. Remove a leftover `journal.ndjson.compact.tmp`.
+2. Replay the whole journal from byte 0. Refuse when the reservation fold fails, a record names another repository, or bytes follow the final newline.
+3. With nothing superseded, return `NothingToCompact` and leave the journal untouched.
+4. Write the kept records to `journal.ndjson.compact.tmp` (`create_new`) and `sync_all` it.
+5. Replay the temporary file from disk, and refuse unless its reservations, coordination events, repositories, and generation equal the original replay's. A refusal deletes the temporary file.
+6. Store the replay checkpoint for the temporary file; the rename keeps its device and inode.
+7. Publish the projection of the compacted replay.
+8. Rename the temporary file over `journal.ndjson` and fsync the ledger directory.
+
+The projection publishes before the rename because lock-free readers replay the journal and then read the projection. A reader that replayed the original journal meets the new projection as one behind its replay, at the same generation and a smaller end offset, which is a rebuild to do and not an error. With the rename first, a reader of the compacted journal could meet the original projection, which claims more journal bytes than its replay: `ProjectionError::CacheAhead`. The rename loses no append, because every append opens `journal.ndjson` by path inside a transaction that holds the mutation lock, and `Journal` holds a path, never an open descriptor. An interrupted compaction leaves the original journal untouched until step 8: a projection published for the compacted journal is behind the original, so the next locked transaction republishes it; a checkpoint stored for the temporary file fails its inode check; and the next compaction removes the temporary file.
+
+Compaction runs two ways:
+
+- **After a transaction.** `Ledger::conclude` passes the transaction replay's `droppable_bytes` to `compact_if_due` once the lock drops. At `JOURNAL_COMPACTION_THRESHOLD_BYTES` (16 MiB) or more, it takes the mutation lock with zero wait and skips when another holder has it, replays again under the lock, checks the threshold again, and compacts. It never fails the command: like a checkpoint that cannot be written, a failed compaction leaves the journal whole. Lock-free reads, `read_for_edit_check` among them, never compact.
+- **`init --compact-journal`.** Compacts under the ordinary ten-second lock wait, whatever the threshold and the refusal marker say, and reports the removed and remaining records and bytes, or that nothing was superseded.
+
+A failed automatic compaction, a refusal or an I/O error, writes `journal-compaction-refused.json` with the journal's `device`, `inode`, and length as `end_offset`, and the `cause`. Automatic compaction skips while the journal is that same file and no longer than `end_offset` plus the threshold, so a defect costs one attempt per 16 MiB appended instead of one per transaction. Any successful compaction removes the marker, and `init --repair-projection` deletes it.
 
 ### Scopes and overlap
 
@@ -103,7 +131,7 @@ A reservation scope is a set of repo-relative paths. `scope/` validates them pur
 
 | Verb | What it does |
 | --- | --- |
-| `init` | Creates the ledger, writes configuration at the main worktree root if absent, installs the managed hooks, and enrolls every live worktree that has work and no reservation history. `InitializationRequest::{Initialize, RepairProjection, ReinitializeAfterReview}` selects between first setup, cache repair, and a deliberate re-run over an existing install. |
+| `init` | Creates the ledger, writes configuration at the main worktree root if absent, installs the managed hooks, and enrolls every live worktree that has work and no reservation history. `InitializationRequest::{Initialize, RepairProjection, CompactJournal, ReinitializeAfterReview}` selects between first setup, cache repair, journal compaction, and a deliberate re-run over an existing install. |
 | `check` | Asks whether paths are free, and on a clear answer claims them in the same transaction. |
 | `claim` | Creates a reservation explicitly, with a stated purpose. |
 | `board` | Renders current state as a terminal view, plain text, or `--json`. |
@@ -125,7 +153,7 @@ Two hidden subcommands exist solely for git to invoke — `__reference-transacti
 
 ### The output envelope
 
-Every command returns an `OutputEnvelope` with six frozen fields plus a `payload`. `OutputPayload` is a struct: `#[serde(flatten)] facts: OutputFacts` and `alerts: Vec<Alert>`. `OutputFacts` is tagged `kind`/`data` across nineteen variants — `NoFacts`, `ReplayFailure`, `Init`, `ProjectionRepair`, `Reinitialize`, `Board`, `Reservation`, `FirstTouchReservationSelection`, `Check`, `Claim`, `Drift`, `Release`, `Sequence`, `Integrate`, `Resolve`, `Renew`, `Retarget`, `Identity`, `CoordinationIdentity` — so a consumer switches on `kind` and reads `data` directly. Alerts travel with the facts on every envelope rather than being a payload variant, because an alert is orthogonal to what the command was asked to do.
+Every command returns an `OutputEnvelope` with six frozen fields plus a `payload`. `OutputPayload` is a struct: `#[serde(flatten)] facts: OutputFacts` and `alerts: Vec<Alert>`. `OutputFacts` is tagged `kind`/`data` across twenty variants — `NoFacts`, `ReplayFailure`, `Init`, `ProjectionRepair`, `JournalCompaction`, `Reinitialize`, `Board`, `Reservation`, `FirstTouchReservationSelection`, `Check`, `Claim`, `Drift`, `Release`, `Sequence`, `Integrate`, `Resolve`, `Renew`, `Retarget`, `Identity`, `CoordinationIdentity` — so a consumer switches on `kind` and reads `data` directly. Alerts travel with the facts on every envelope rather than being a payload variant, because an alert is orthogonal to what the command was asked to do.
 
 `OutputStatus` names each terminal state — `Clear`, `Claimed`, `Widened`, `Incursion`, `DriftCollision`, `BlockedByOverlap`, `BlockedByOrdering`, `NeedsUserAuthorization`, `Contention`, `Sequenced`, `OrderingCycle`, `Integrated`, `TrunkRewritten`, `Released`, `Recovered`, `Renewed`, and the rest — so the status is readable without parsing prose.
 
@@ -423,7 +451,8 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - Decision and record happen in one lock hold against one generation. Reading a clear answer and appending in a separate step is unsound and is not permitted anywhere.
 - The mutation lock is the only anti-interleaving mechanism. No record size makes an unlocked append safe.
 - Journal records never exceed `MAXIMUM_JOURNAL_RECORD_BYTES`, counting the newline.
-- Records are append-only. Nothing is edited or deleted in place; a correction is a new record — `ReplaceReleaseDisposition` corrects a disposition, it does not rewrite one. It applies only to a released disposition whose git evidence is lost (`recovery::release_evidence_is_lost`), and its replacement is a verified `RewrittenIntegration` or a user-confirmed `RetiredOrphan`; replay rejects any other replacement.
+- Records are never edited. Nothing is changed in place; a correction is a new record — `ReplaceReleaseDisposition` corrects a disposition, it does not rewrite one. It applies only to a released disposition whose git evidence is lost (`recovery::release_evidence_is_lost`), and its replacement is a verified `RewrittenIntegration` or a user-confirmed `RetiredOrphan`; replay rejects any other replacement.
+- Journal compaction is the only removal. It drops only merge extent observations that later observations supersede for every reservation they name, keeps every other record byte for byte and in order, and publishes the compacted journal only after its replay from disk equals the original's reservations, coordination events, repositories, and generation.
 - Every journal record carries `CURRENT_SCHEMA_VERSION`; any other version makes the journal unreadable.
 - Overlap is decided on path components, never string prefixes, and always through the `PathCase` derived from `core.ignoreCase`.
 - Scope validation stays lexical. No path check may require the file to exist.
@@ -512,7 +541,8 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 | `CURRENT_PROJECTION_SCHEMA_VERSION` | 3, independent of the journal's 2 |
 | `REPLAY_CHECKPOINT_INTERVAL_BYTES` | 256 KiB folded past the replay's start before the checkpoint is rewritten |
 | `REPLAY_CHECKPOINT_INTERVAL_RECORDS` | 256 records folded past the replay's start before the checkpoint is rewritten |
-| `FOLD_FORMAT_VERSION` | 1 |
+| `FOLD_FORMAT_VERSION` | 2 |
+| `JOURNAL_COMPACTION_THRESHOLD_BYTES` | 16 MiB of superseded merge extent observations before a transaction compacts the journal, and 16 MiB appended past a failed automatic attempt before the next |
 | `MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES` | 256 JSON-content bytes |
 
 - Reservation freshness is computed from owner activity events only. Unrelated journal traffic from other worktrees does not refresh a reservation, so a busy repository does not mask an abandoned claim.
@@ -529,6 +559,8 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - Branch deletion is expected and normal; the retention ref is what makes evidence survive it.
 - A projection that is ahead of the journal (`ProjectionError::CacheAhead`) indicates a stale or foreign cache, not journal damage. The response is rebuild, never truncate.
 - Replay cost is set by the bytes appended since the replay checkpoint, not by journal length. With a current checkpoint the post-tool-use hook measured 0.097 s on a 58.7 MB journal and 0.100 s on a 69.6 MB journal, about 0.08 s of it the hook's `git status`. The first command without a checkpoint replays from byte 0 once: 0.58 s on that 69.6 MB journal, writing a 2.55 MB checkpoint.
+- A large journal written before compaction existed is compacted once by the first transaction after the upgrade, or by `init --compact-journal`. A 134 MB journal became 9.1 MB, 14,054 records removed, in several seconds. After that, compaction runs about once per 16 MiB of superseded observations.
+- A tool that reads `journal.ndjson` directly must identify records by `event_id`. Compaction changes line numbers and byte offsets, shortens the file, and replaces its inode. A copied ledger can also hold `journal.ndjson.compact.tmp` from an interrupted compaction, or the refusal marker.
 - The replay checkpoint and the `Checkpoint` journal operation are unrelated. The operation records a reservation's protected tip; the replay checkpoint is a cache file of replayed state.
 - A clone starts with no ledger. Ledger state is deliberately not committed to the repository.
 - `.claude/config/berth.toml` is not tracked, so `git worktree add` does not bring it along. A linked worktree without one reads the main worktree's file (`WorktreeContext::configuration_lookup` names both roots; `BerthConfig::read` tries them in that order), so a worktree added after `init` coordinates from its first edit. A file the linked worktree does have wins, except for `trunk` and `gate_mode`: whenever the main worktree's file exists, it alone supplies both, because the gate hook is installed once for the repository and `integrate` must judge under the same mode the hook enforces. Only when neither exists is the worktree `unconfigured`, and the path it reports is the main worktree's, because `init` writes the file there from any worktree. A linked worktree of a bare repository has no main worktree and reads only its own file.
@@ -569,11 +601,13 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 
 **The ledger lives in the common git dir, not the working tree.** Coordination state is about the repository instance, not about its contents. Putting it in the working tree would make it a merge conflict, put it in diffs, and make a clone inherit another machine's reservations. Under the common git dir it is shared by every worktree of one repository and absent from a fresh clone, which is exactly the scope it needs.
 
-**The journal is append-only and the projection is disposable.** A mutable state file has no recovery story: once it is wrong, nothing can tell you what it should have been. An append-only record can always be replayed, which makes every corruption of the cache repairable and makes the history auditable without a separate audit log. The cost is a replay on every command, which the replay checkpoint bounds by the records appended since it was written rather than by the journal's length, and a transaction's append advances the replay it already holds instead of reading the journal again.
+**The journal is append-only between compactions and the projection is disposable.** A mutable state file has no recovery story: once it is wrong, nothing can tell you what it should have been. An append-only record can always be replayed, which makes every corruption of the cache repairable and makes the history auditable without a separate audit log. The cost is a replay on every command, which the replay checkpoint bounds by the records appended since it was written rather than by the journal's length, and a transaction's append advances the replay it already holds instead of reading the journal again.
+
+**Compaction removes only superseded merge extent observations.** They are most of a long-lived journal's bytes, and they are the one record whose effect a later record replaces entirely: the fold overwrites a merge extent and never reads the previous one. Every other record either reaches a coordination reader or accumulates into reservation state, so removing it would change a replay or the audit history. Verifying by replaying the written file, rather than trusting the keep rule, means a defect in the rule refuses a compaction instead of publishing a journal that replays differently.
 
 **The reservation fold is the only reader of most records.** In a measured 126 MB journal, merge-extent records were 119.8 MB and evidence revalidations another 3.2 MB, and no reader other than the reservation fold reads either. Folding reservations during the replay and handing the other readers only `coordination_events()` means each record is decoded once, and only the few records coordination depends on are kept in memory as events. Those readers keep their `&[JournalEvent]` code unchanged; the predicate, not each reader, decides what they see.
 
-**The replay checkpoint validates its boundary, not its prefix.** Hashing the checkpointed prefix on every load would cost the whole-journal read the checkpoint exists to avoid. Device and inode catch a journal replaced by a copy, the length check catches truncation, and the last record's digest catches a rewrite at the boundary. An edit inside the prefix of an append-only file that nothing in the tool edits in place is the case left undetected, and `init --repair-projection` deletes the checkpoint. The header sits on its own line ahead of the body so a stale checkpoint is rejected without decoding the replay it carries.
+**The replay checkpoint validates its boundary, not its prefix.** Hashing the checkpointed prefix on every load would cost the whole-journal read the checkpoint exists to avoid. Device and inode catch a journal replaced by a copy, the length check catches truncation, and the last record's digest catches a rewrite at the boundary. An edit inside the prefix of a file the tool only appends to, or replaces whole through compaction's rename, is the case left undetected, and `init --repair-projection` deletes the checkpoint. The header sits on its own line ahead of the body so a stale checkpoint is rejected without decoding the replay it carries.
 
 **One transaction function, not per-verb append paths.** The correctness argument for this system is short: everything that changes state does so under one lock, after one replay, against one generation. That argument only holds if there is one place to check. A second append path would not just add a bug, it would make the invariant unverifiable.
 

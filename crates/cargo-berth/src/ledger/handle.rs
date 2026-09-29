@@ -62,7 +62,7 @@ use crate::session;
 use crate::session::CurrentSessionMappingRemoval;
 use crate::session::SessionIdentityMappingPublication;
 
-/// The shared append-only ledger for one git common directory.
+/// The shared ledger for one git common directory.
 pub(crate) struct Ledger {
     pub(super) paths:                      LedgerPaths,
     /// The superseded record bytes past which a transaction compacts the journal after it.

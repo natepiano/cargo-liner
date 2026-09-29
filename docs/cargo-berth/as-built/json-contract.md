@@ -270,7 +270,12 @@ an envelope because its reported version differs from the one it was written
 against.
 
 Every section carries the same `journal_position`; a consumer can reject a mix
-of generations or offsets. Reservation rows occur at
+of generations or offsets. Across responses, `generation` rises with every
+appended record and is unchanged by journal compaction; only
+`init --reinitialize-after-review`, which discards the journal, lowers it.
+`journal_byte_offset` is the journal's length, which compaction lowers without
+changing any reservation, so order two responses by `generation`, not by
+offset. Reservation rows occur at
 `ready_now.entries[].reservation`, `unconstrained_reservations.entries[]`, and
 `resolved.entries[]`. Their complete tagged alternatives are:
 
@@ -598,6 +603,23 @@ enrollment. `enrollment` is optional when decoding and defaults to three empty a
   `unavailable`, or `record_too_large`. One candidate's failure does not stop
   the others.
 
+## Journal compaction report
+
+`cargo-berth init --compact-journal --json` returns status `journal_compacted`,
+exit code `0`, and `payload.kind = "journal_compaction"`. `payload.data` is
+tagged by `status`:
+
+- `{ "status": "nothing_to_compact" }`: no merge extent observation is
+  superseded, and `journal.ndjson` is byte-identical.
+- `{ "status": "compacted", "removed": { "records", "bytes" }, "remaining":
+  { "records", "bytes" } }`: `removed` counts the superseded merge extent
+  observations taken out, and `remaining` the records the compacted journal
+  holds. Byte counts include each record's newline.
+
+A refused compaction returns status `ledger_unreadable` and exit code `4`, with
+a `message` that names the cause and ends `the journal is unchanged`. Lock
+contention and I/O failures report as they do for any other `init` request.
+
 ## Coordination identity rejections
 
 Claim, check, drift, and sequence return a shared identity rejection with
@@ -773,6 +795,13 @@ accepts any reservation of the incident's run in its worktree.
 ## The journal record
 
 `.git/cargo-berth/journal.ndjson` contains one complete JSON object per line.
+Records are never rewritten. Journal compaction may remove a merge extent
+observation (`holder_merge_extent_observed` or `merge_extent_observed`) once
+later observations name every reservation it names; every other record keeps
+its bytes and its order. A record's `event_id` never changes, while its line
+number and byte offset can. The generations of the remaining records still rise
+from one record to the next, with gaps where records were removed.
+
 Every record has this envelope:
 
 - `schema_version`: the integer `2` on every record.
@@ -907,7 +936,10 @@ These operation fields use the following tagged values:
   `empty`, `protected`, or `unavailable`), and `reservations` is a non-empty
   array of `{ "reservation_id": <uuid-v7>, "run_status": "editing" | "ended" }`
   naming every reservation of that holder whose recorded extent it replaces.
-  Replay applies `extent` to each listed reservation in array order.
+  Replay applies `extent` to each listed reservation in array order. An
+  observation does not advance the reservation's revision, so the
+  `reservation_revision` in a payload's `conflicts` entries never counts a
+  merge extent observation and is the same before and after a compaction.
   `merge_extent_observed` is the single-reservation form written before it:
   replay still reads it, and the engine no longer writes it. Its `run_status`
   defaults to `editing` when absent.

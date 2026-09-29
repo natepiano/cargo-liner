@@ -1,6 +1,7 @@
 # cargo-berth operations
 
-Identity resolution, bypass auditing, and recovery from a damaged ledger.
+Identity resolution, bypass auditing, recovery from a damaged ledger, and journal
+compaction.
 Reach for this when something has gone wrong or when wiring `cargo-berth` into
 a harness.
 
@@ -194,7 +195,7 @@ way when it is invoked directly.
 
 ## Recovery
 
-`init` has three branches:
+`init` has four branches:
 
 - Plain `cargo berth init` creates a missing ledger and main-worktree config,
   installs or refreshes each managed hook without replacing an unmanaged hook,
@@ -202,7 +203,12 @@ way when it is invoked directly.
   [Worktree enrollment](#worktree-enrollment).
 - `cargo berth init --repair-projection` rebuilds `reservations.json` from
   journal truth and deletes `replay-checkpoint.json`, so the journal replays
-  from byte 0. It changes no journal record and loses nothing.
+  from byte 0, and `journal-compaction-refused.json`, so the next transaction
+  past the threshold compacts again. It changes no journal record and loses
+  nothing.
+- `cargo berth init --compact-journal` removes the merge extent observations
+  that later observations supersede from the journal, as described under
+  [Journal compaction](#journal-compaction). It installs nothing.
 - `cargo berth init --reinitialize-after-review` is the confirmed recovery for
   a corrupt journal. It replaces journal history and the projection after the
   user has reviewed the lost order, deletes `replay-checkpoint.json`, and
@@ -280,3 +286,65 @@ Exit 6 is the opposite: another mutation held the lock until the command's
 ten-second wait was exhausted, so nothing was decided. Run the command again by
 hand. Do not wrap it in another retry loop that multiplies the already-spent
 wait.
+
+## Journal compaction
+
+Reconciliation journals a merge extent observation whenever a holder checkout's
+merge extent changes, and each one replaces the extent recorded for every
+reservation it names. Once later observations have replaced an observation for
+every reservation it names, compaction removes it. Every other record stays,
+byte for byte and in order.
+
+Compaction runs on its own after any mutating command whose replay finds 16 MiB
+or more of superseded observations. It waits for no lock: when another command
+holds the ledger it skips, and the next command tries again. A failed automatic
+compaction never fails the command that triggered it, and the journal stays
+unchanged.
+
+`cargo berth init --compact-journal [--json]` compacts on demand, whatever the
+amount superseded. It reports envelope status `journal_compacted` (exit 0) and
+`payload.kind = "journal_compaction"`:
+
+```text
+Compacted the journal: removed 14054 superseded merge extent observation(s) (124768811 bytes); 8052 record(s) (9130711 bytes) remain.
+```
+
+or, when nothing is superseded:
+
+```text
+The journal holds no superseded merge extent observation; it is unchanged.
+```
+
+Compaction writes the kept records to `journal.ndjson.compact.tmp`, replays that
+file, and replaces the journal only when both replays agree. Anything else is a
+refusal that leaves the journal unchanged:
+
+```text
+The reservation ledger could not be read: journal compaction refused: the compacted journal replays differently from the original journal; the journal is unchanged
+[exit 4]
+```
+
+The other refusal causes are a record reservation replay rejects, a record that
+names another repository, and bytes after the journal's final newline. The
+first two are journal damage, handled under [Recovery](#recovery); the last is
+repaired by the next mutating command, which truncates an incomplete final
+record.
+
+After upgrading, a ledger with a large journal pays once. The first mutating
+command replays the whole journal and compacts it: a 134 MB journal became
+9.1 MB, with 14,054 records removed, in several seconds spent by that one
+command.
+Running `init --compact-journal` right after the upgrade pays the same cost at
+a moment you choose.
+
+A failed automatic compaction writes `journal-compaction-refused.json` beside
+the journal: the journal file's device and inode, its length then as
+`end_offset`, and the `cause`. While it names the current journal file,
+automatic compaction waits until 16 MiB more is appended, so a defect costs one
+attempt per 16 MiB instead of one per command. Read `cause` to see why. The
+marker clears itself on the next successful compaction; `init
+--repair-projection` deletes it, and `init --compact-journal` ignores it.
+
+Tools that read `journal.ndjson` directly identify records by `event_id`, which
+compaction never changes. Line numbers and byte offsets change, the file gets a
+new inode, and `journal_byte_offset` in `board --json` can drop.

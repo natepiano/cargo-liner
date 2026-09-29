@@ -122,9 +122,11 @@ invocation makes — `worktree_list_calls`, `worktree_ahead_behind_computations`
 `trunk_resolution_calls`, `reservation_evidence_revalidations` — so a per-second
 poll across every repository is expensive by construction.
 
-The journal is append-only and every board section reports a
-`journal_position.journal_byte_offset`, which is an exact change signal that
-costs a stat. Watch `.git/cargo-berth/journal.ndjson` per repository;
+Every append lengthens the journal and every compaction shortens it, so its
+length, reported by every board section as
+`journal_position.journal_byte_offset`, is an exact change signal that costs a
+stat. Compaction replaces the file by rename, so watch
+`.git/cargo-berth/journal.ndjson` by path per repository;
 `tui_pane::WatchedFile` already does this.
 
 ## Open input

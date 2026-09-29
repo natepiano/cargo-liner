@@ -1,4 +1,4 @@
-//! The append-only journal and its complete version-one operation union.
+//! The journal, append-only between compactions, and its complete version-one operation union.
 
 use std::collections::BTreeSet;
 use std::fmt;

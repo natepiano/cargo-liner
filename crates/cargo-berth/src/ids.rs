@@ -145,7 +145,7 @@ uuid_identifier!(WorktreeId);
 numeric_identifier!(
     JournalByteOffset,
     u64,
-    "A byte offset in the append-only journal."
+    "A byte offset in the journal, which compaction can shorten."
 );
 numeric_identifier!(
     ProjectionGeneration,
