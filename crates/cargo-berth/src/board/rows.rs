@@ -23,6 +23,7 @@ use super::answers::RecordedOverlapAnswer;
 use super::answers::ReleasedOverlapAnswerCount;
 use super::error::BoardError;
 use super::report::CompleteBoardReport;
+use crate::alert::AlertRouting;
 use crate::answer::OverlapAuthorizationReason;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeDeclaration;
@@ -579,9 +580,15 @@ impl BoardModel {
         }
     }
 
-    /// Render the complete board and every actionable notice without payload interpretation.
-    pub(crate) fn envelope_presentation(&self) -> EnvelopePresentation {
-        let mut blocks = self.actionable_notice_blocks();
+    /// Render the complete board and the actionable notices `alert_routing` delivers.
+    ///
+    /// Only the notices are routed: the complete report block still carries every alert, so
+    /// the board data a reader parses stays whole.
+    pub(crate) fn envelope_presentation(
+        &self,
+        alert_routing: &AlertRouting,
+    ) -> EnvelopePresentation {
+        let mut blocks = self.actionable_notice_blocks(alert_routing);
         match self.report_content() {
             BoardReportContent::Empty => {},
             BoardReportContent::Populated => blocks.push(self.complete_report_block()),
@@ -594,7 +601,7 @@ impl BoardModel {
         }
     }
 
-    fn actionable_notice_blocks(&self) -> Vec<RenderedOutputBlock> {
+    fn actionable_notice_blocks(&self, alert_routing: &AlertRouting) -> Vec<RenderedOutputBlock> {
         let mut immediate_stop_details = self
             .outstanding_incursions
             .entries
@@ -607,7 +614,13 @@ impl BoardModel {
             .iter()
             .map(PendingBypassMarkerId::file_name)
             .map(presentation::recovered_bypass_block)
-            .chain(self.alerts.entries.iter().map(alerts::board_alert_detail))
+            .chain(
+                self.alerts
+                    .entries
+                    .iter()
+                    .filter(|alert| alert_routing.delivers(alert.reservation_ids()))
+                    .map(alerts::board_alert_detail),
+            )
             .collect::<Vec<_>>();
         if immediate_stop_details.is_empty() {
             return match actionable_notice_details.as_slice() {

@@ -1,5 +1,6 @@
 //! Durable alerts derived from retained journal state and current git evidence.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -17,8 +18,10 @@ use crate::git::Reachability;
 use crate::git::ReferenceLookup;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationId;
+use crate::ids::WorktreeId;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::IntegrationTarget;
+use crate::output::EngineAnswerOccasion;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseRevalidationSubject;
@@ -74,6 +77,25 @@ impl Alert {
             } => waiting_reservations[0],
             Self::LostIntegrationEvidence(alert) => alert.reservation_id,
             Self::OrphanedOutstanding(alert) => alert.reservation_id,
+        }
+    }
+
+    /// Return every reservation whose holder this alert concerns.
+    ///
+    /// An uncovered target concerns every reservation waiting on it, so each of their holders
+    /// is one it is addressed to.
+    const fn reservation_ids(&self) -> &[ReservationId] {
+        match self {
+            Self::TargetMissing { reservation_id, .. }
+            | Self::MergeExtentUnavailable { reservation_id, .. } => {
+                std::slice::from_ref(reservation_id)
+            },
+            Self::TargetUncovered {
+                waiting_reservations,
+                ..
+            } => waiting_reservations.as_slice(),
+            Self::LostIntegrationEvidence(alert) => std::slice::from_ref(&alert.reservation_id),
+            Self::OrphanedOutstanding(alert) => std::slice::from_ref(&alert.reservation_id),
         }
     }
 
@@ -156,6 +178,97 @@ impl Display for Alert {
                 alert.retention_ref,
                 alert.recoverability,
             ),
+        }
+    }
+}
+
+/// The worktree recorded as holding one reservation, and whether git validates it now.
+#[derive(Clone, Copy)]
+pub(crate) struct AlertHolder {
+    /// The worktree whose journal actor holds the reservation.
+    pub(crate) worktree: WorktreeId,
+    /// Whether that worktree was validated by the reconciliation that derived the alerts.
+    pub(crate) liveness: WorktreeLiveness,
+}
+
+/// Whose work one alert concerns, measured from the worktree a response answers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AlertConcern {
+    /// The invoking worktree holds a reservation the alert names.
+    InvokingWorktree,
+    /// Another worktree that git validates as [`WorktreeLiveness::Live`] holds the alert's
+    /// reservations.
+    LiveHolderElsewhere,
+    /// No worktree that git validates as [`WorktreeLiveness::Live`] holds any reservation the
+    /// alert names.
+    NoLiveHolder,
+}
+
+/// Which alerts one response delivers, decided by the [`EngineAnswerOccasion`] it answers on.
+///
+/// A verb run by hand answers for the whole repository, so it delivers every alert. A harness
+/// hook answers one worktree's session, and an alert names work only the holder of its
+/// reservation can resolve. After a Bash call the hook therefore delivers only the alerts the
+/// invoking worktree holds. While a session opens it also delivers alerts no live worktree
+/// holds, so an alert whose holder is gone still reaches a session that can act on it.
+pub(crate) struct AlertRouting {
+    occasion:          EngineAnswerOccasion,
+    invoking_worktree: WorktreeId,
+    holders:           HashMap<ReservationId, AlertHolder>,
+}
+
+impl AlertRouting {
+    pub(crate) const fn new(
+        occasion: EngineAnswerOccasion,
+        invoking_worktree: WorktreeId,
+        holders: HashMap<ReservationId, AlertHolder>,
+    ) -> Self {
+        Self {
+            occasion,
+            invoking_worktree,
+            holders,
+        }
+    }
+
+    /// Keep only the alerts this response's occasion delivers.
+    pub(crate) fn route(&self, alerts: Vec<Alert>) -> Vec<Alert> {
+        alerts
+            .into_iter()
+            .filter(|alert| self.delivers(alert.reservation_ids()))
+            .collect()
+    }
+
+    /// Whether an alert naming these reservations reaches this response's reader.
+    pub(crate) fn delivers(&self, reservation_ids: &[ReservationId]) -> bool {
+        match self.occasion {
+            EngineAnswerOccasion::DirectInvocation => true,
+            EngineAnswerOccasion::CompletedBashCall => {
+                self.concern(reservation_ids) == AlertConcern::InvokingWorktree
+            },
+            EngineAnswerOccasion::OpeningSession => matches!(
+                self.concern(reservation_ids),
+                AlertConcern::InvokingWorktree | AlertConcern::NoLiveHolder
+            ),
+        }
+    }
+
+    fn concern(&self, reservation_ids: &[ReservationId]) -> AlertConcern {
+        let holders = reservation_ids
+            .iter()
+            .filter_map(|reservation_id| self.holders.get(reservation_id))
+            .collect::<Vec<_>>();
+        if holders
+            .iter()
+            .any(|holder| holder.worktree == self.invoking_worktree)
+        {
+            AlertConcern::InvokingWorktree
+        } else if holders
+            .iter()
+            .any(|holder| holder.liveness == WorktreeLiveness::Live)
+        {
+            AlertConcern::LiveHolderElsewhere
+        } else {
+            AlertConcern::NoLiveHolder
         }
     }
 }
@@ -707,8 +820,13 @@ fn retention_status(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::error::Error;
 
+    use super::Alert;
+    use super::AlertConcern;
+    use super::AlertHolder;
+    use super::AlertRouting;
     use super::BranchRefStatus;
     use super::LostEvidenceRecovery;
     use super::LostEvidenceRecoveryCommand;
@@ -723,6 +841,9 @@ mod tests {
     use crate::edge::RepositoryReservationEvidence;
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger::IntegrationTarget;
+    use crate::output::EngineAnswerOccasion;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
@@ -730,6 +851,7 @@ mod tests {
     use crate::reservation::ProtectedReservationTip;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
+    use crate::worktree::WorktreeLiveness;
 
     const CARRYING_COMMIT: &str = "cccccccccccccccccccccccccccccccccccccccc";
     const PROTECTED_TIP: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -946,6 +1068,184 @@ mod tests {
         for (evidence, expected) in cases {
             assert_eq!(OrphanIntegrationEvidence::from(&evidence), expected);
         }
+        Ok(())
+    }
+
+    /// Reservations held by the invoking worktree, by a live worktree elsewhere, and by one
+    /// worktree in each liveness state that git cannot validate.
+    struct RoutedReservations {
+        invoking_worktree: WorktreeId,
+        held_here:         ReservationId,
+        held_elsewhere:    ReservationId,
+        held_by_absent:    Vec<ReservationId>,
+        holders:           HashMap<ReservationId, AlertHolder>,
+    }
+
+    impl RoutedReservations {
+        fn new() -> Self {
+            let invoking_worktree = WorktreeId::new();
+            let held_here = ReservationId::new();
+            let held_elsewhere = ReservationId::new();
+            let mut holders = HashMap::from([
+                (
+                    held_here,
+                    AlertHolder {
+                        worktree: invoking_worktree,
+                        liveness: WorktreeLiveness::Live,
+                    },
+                ),
+                (
+                    held_elsewhere,
+                    AlertHolder {
+                        worktree: WorktreeId::new(),
+                        liveness: WorktreeLiveness::Live,
+                    },
+                ),
+            ]);
+            let mut held_by_absent = Vec::new();
+            for liveness in [
+                WorktreeLiveness::Unavailable,
+                WorktreeLiveness::OrphanCandidate,
+                WorktreeLiveness::Orphaned,
+                WorktreeLiveness::Unknown,
+            ] {
+                let reservation_id = ReservationId::new();
+                holders.insert(
+                    reservation_id,
+                    AlertHolder {
+                        worktree: WorktreeId::new(),
+                        liveness,
+                    },
+                );
+                held_by_absent.push(reservation_id);
+            }
+            Self {
+                invoking_worktree,
+                held_here,
+                held_elsewhere,
+                held_by_absent,
+                holders,
+            }
+        }
+
+        fn routing(&self, occasion: EngineAnswerOccasion) -> AlertRouting {
+            AlertRouting::new(occasion, self.invoking_worktree, self.holders.clone())
+        }
+    }
+
+    #[test]
+    fn alert_concern_names_the_invoking_worktree_before_any_other_holder() {
+        let reservations = RoutedReservations::new();
+        let routing = reservations.routing(EngineAnswerOccasion::DirectInvocation);
+        let mut cases = vec![
+            (vec![reservations.held_here], AlertConcern::InvokingWorktree),
+            (
+                vec![reservations.held_elsewhere, reservations.held_here],
+                AlertConcern::InvokingWorktree,
+            ),
+            (
+                vec![reservations.held_elsewhere],
+                AlertConcern::LiveHolderElsewhere,
+            ),
+            (
+                [
+                    reservations.held_by_absent.clone(),
+                    vec![reservations.held_elsewhere],
+                ]
+                .concat(),
+                AlertConcern::LiveHolderElsewhere,
+            ),
+            (
+                reservations.held_by_absent.clone(),
+                AlertConcern::NoLiveHolder,
+            ),
+            (vec![ReservationId::new()], AlertConcern::NoLiveHolder),
+            (Vec::new(), AlertConcern::NoLiveHolder),
+        ];
+        cases.extend(
+            reservations
+                .held_by_absent
+                .iter()
+                .map(|reservation_id| (vec![*reservation_id], AlertConcern::NoLiveHolder)),
+        );
+        for (reservation_ids, expected) in cases {
+            assert_eq!(routing.concern(&reservation_ids), expected);
+        }
+    }
+
+    #[test]
+    fn alert_routing_delivers_each_concern_by_occasion() {
+        let reservations = RoutedReservations::new();
+        let concerns = [
+            (reservations.held_here, AlertConcern::InvokingWorktree),
+            (
+                reservations.held_elsewhere,
+                AlertConcern::LiveHolderElsewhere,
+            ),
+            (reservations.held_by_absent[0], AlertConcern::NoLiveHolder),
+        ];
+        for (occasion, occasion_name) in [
+            (EngineAnswerOccasion::DirectInvocation, "direct invocation"),
+            (
+                EngineAnswerOccasion::CompletedBashCall,
+                "completed Bash call",
+            ),
+            (EngineAnswerOccasion::OpeningSession, "opening session"),
+        ] {
+            let routing = reservations.routing(occasion);
+            for (reservation_id, concern) in concerns {
+                let expected = match (occasion, concern) {
+                    (EngineAnswerOccasion::DirectInvocation, _)
+                    | (_, AlertConcern::InvokingWorktree)
+                    | (EngineAnswerOccasion::OpeningSession, AlertConcern::NoLiveHolder) => true,
+                    (
+                        EngineAnswerOccasion::CompletedBashCall,
+                        AlertConcern::LiveHolderElsewhere | AlertConcern::NoLiveHolder,
+                    )
+                    | (EngineAnswerOccasion::OpeningSession, AlertConcern::LiveHolderElsewhere) => {
+                        false
+                    },
+                };
+                assert_eq!(
+                    routing.delivers(&[reservation_id]),
+                    expected,
+                    "{occasion_name} delivering {concern:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn alert_routing_routes_an_uncovered_target_to_every_waiting_holder()
+    -> Result<(), Box<dyn Error>> {
+        let reservations = RoutedReservations::new();
+        let uncovered = Alert::TargetUncovered {
+            target:               IntegrationTarget::from_branch_argument("integration")?,
+            waiting_reservations: vec![reservations.held_elsewhere, reservations.held_here],
+        };
+        let elsewhere = Alert::MergeExtentUnavailable {
+            reservation_id: reservations.held_elsewhere,
+            failure:        "status failed".to_owned(),
+        };
+        let alerts = vec![uncovered.clone(), elsewhere.clone()];
+        assert_eq!(
+            reservations
+                .routing(EngineAnswerOccasion::CompletedBashCall)
+                .route(alerts.clone()),
+            vec![uncovered]
+        );
+        assert_eq!(
+            reservations
+                .routing(EngineAnswerOccasion::DirectInvocation)
+                .route(alerts.clone()),
+            alerts
+        );
+        assert_eq!(
+            reservations
+                .routing(EngineAnswerOccasion::OpeningSession)
+                .route(vec![elsewhere]),
+            Vec::new()
+        );
         Ok(())
     }
 }

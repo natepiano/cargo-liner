@@ -497,6 +497,15 @@ The envelope-level `payload.alerts[]` form carries the same fields under
 `{ "kind": "lost_integration_evidence", "data": { ... } }`. Board alerts are
 flattened under `payload.data.alerts.entries[]` as shown above.
 
+When a harness hook drives the verb, the alerts it states are routed by the invoking
+worktree (`AlertRouting` in `src/alert.rs`). A `PostToolUse` drift's `payload.alerts[]`
+carries only alerts whose reservation the invoking worktree holds; `TargetUncovered` counts as
+held when any of its `waiting_reservations` is. A `SessionStart` board states, among its notice
+blocks, those alerts and also alerts no live worktree holds (every holder is `unavailable`,
+`orphan_candidate`, `orphaned` or `unknown`). The board's complete report block and its
+`payload.data.alerts.entries[]` stay unfiltered. A verb run by hand, including `drift` under the
+post-commit hook, carries every alert.
+
 Journal, claim, and widen payloads use
 `authorization.kind = "existing_answers_cover_every_overlap"` for
 `ConflictAuthorization::ExistingAnswersCoverEveryOverlap`. Board JSON has no

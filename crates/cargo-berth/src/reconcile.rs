@@ -14,6 +14,8 @@ use std::thread;
 
 use crate::alert;
 use crate::alert::Alert;
+use crate::alert::AlertHolder;
+use crate::alert::AlertRouting;
 use crate::alert::OrphanIntegrationEvidence;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
@@ -100,6 +102,7 @@ use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
+use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::reservation;
 use crate::reservation::DurableScopedPatchComparison;
@@ -173,9 +176,40 @@ pub(crate) struct ReconciliationReport {
     pub(crate) recovered_bypass_markers:      Vec<RecoveredPendingBypassMarker>,
     /// Git query dimensions observed while reconciliation assembled this report.
     pub(crate) git_cost:                      ReconciliationGitCost,
+    /// The worktree whose invocation this reconciliation answered.
+    invoking_worktree:                        WorktreeId,
 }
 
 impl ReconciliationReport {
+    /// Route this report's alerts for a response that answers on `occasion`.
+    ///
+    /// Each retained reservation's holder is its journal actor's worktree, judged by the
+    /// liveness this same reconciliation observed; a reservation the repository snapshot did
+    /// not observe counts as [`WorktreeLiveness::Unknown`].
+    pub(crate) fn alert_routing(&self, occasion: EngineAnswerOccasion) -> AlertRouting {
+        let holders = self
+            .journal_snapshot
+            .reservations()
+            .iter()
+            .map(|reservation| {
+                let liveness = self
+                    .repository_snapshot
+                    .reservation(reservation.id())
+                    .map_or(WorktreeLiveness::Unknown, |snapshot| {
+                        snapshot.worktree_liveness
+                    });
+                (
+                    reservation.id(),
+                    AlertHolder {
+                        worktree: reservation.actor().worktree,
+                        liveness,
+                    },
+                )
+            })
+            .collect();
+        AlertRouting::new(occasion, self.invoking_worktree, holders)
+    }
+
     pub(crate) fn cover_is_missing(&self, reservation_id: ReservationId) -> bool {
         cover_is_missing(
             &self.repository_snapshot,
@@ -1549,7 +1583,13 @@ fn reconcile_with_open_ledger_once(
                         },
                         Err(error) => ReconciliationValidation::Reject(error),
                     },
-                    ReconciliationAction::commit,
+                    |action: ReconciliationAction, state, recoverable_failures| {
+                        action.commit(
+                            state,
+                            recoverable_failures,
+                            journal_mutation_actor.worktree_id,
+                        )
+                    },
                 )
                 .map_err(|error| match error {
                     LedgerCommittedActionError::Transaction(error) => {
@@ -3542,8 +3582,11 @@ impl<Decision> GateReconciliationAction<Decision> {
         self,
         state: &ReplayedLedgerState<'_>,
         recoverable_failures: &RecoverableReconciliationAppendFailures,
+        invoking_worktree: WorktreeId,
     ) -> Result<(ReconciliationReport, Decision), ReconcileError> {
-        let report = self.reconciliation.commit(state, recoverable_failures)?;
+        let report = self
+            .reconciliation
+            .commit(state, recoverable_failures, invoking_worktree)?;
         Ok((report, self.decision))
     }
 }
@@ -5049,6 +5092,7 @@ impl ReconciliationAction {
         mut self,
         state: &ReplayedLedgerState<'_>,
         recoverable_failures: &RecoverableReconciliationAppendFailures,
+        invoking_worktree: WorktreeId,
     ) -> Result<ReconciliationReport, ReconcileError> {
         let reservations = state.reservations().map_err(ReconcileError::Replay)?;
         let ordering_graph = OrderingGraph::replay(state.coordination_events())
@@ -5145,6 +5189,7 @@ impl ReconciliationAction {
                     .worktree_status_queries,
                 merge_extent_path_queries: self.merge_extent_git_cost.path_queries,
             },
+            invoking_worktree,
         })
     }
 }

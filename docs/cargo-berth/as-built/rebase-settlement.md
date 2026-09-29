@@ -195,6 +195,8 @@ Schema names `integration_witness` and `scoped_patch_evaluator_version` are pinn
 
 `src/board/rows.rs` passes `|id| report.target_for(id).clone()` into `board_alerts(.., target_for)`, so each orphan's action uses its own judged tip. `alert::for_lost_integration_evidence` takes the same per-reservation tip. The wire adapter `BoardOrphanResolutionAction::{Recover { flag }, RetireOrAbandon { flags }, RecoverWithTrunk { recovery }}` (`src/board/alerts.rs`) emits `RecoverWithTrunk` for new alerts. SessionStart and post-tool notices render through the board model to `board_alert_detail`. `src/output.rs` has no orphan renderer.
 
+Hook notices route these alerts through `AlertRouting` (`src/alert.rs`), built by `ReconciliationReport::alert_routing` from each reservation's journal-actor worktree and its observed liveness. A `PostToolUse` drift carries only alerts the invoking worktree holds; a `SessionStart` board's notice blocks add alerts no live worktree holds, so a lost-evidence or orphan alert whose holder is gone still reaches a session. Hand-run verbs and the post-commit drift keep every alert.
+
 ## Invariants
 
 - No path releases a reservation whose work did not reach its judged branch, and settlement at a present non-trunk target waits for that branch's cover. A rewrite map, a cherry-mark match, or a nominated candidate only nominates a location. Scoped replay must show that the whole `phase_start_head..protected_tip` is contained, and scoped work past the protected tip in the merge extent blocks release.

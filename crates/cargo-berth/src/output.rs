@@ -17,6 +17,7 @@ use serde_json::Map;
 use serde_json::Value;
 
 use crate::alert::Alert;
+use crate::alert::AlertRouting;
 use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::board;
@@ -1598,9 +1599,9 @@ impl OutputEnvelope {
     }
 
     /// Build a successful headless board response without requiring a terminal.
-    pub(crate) fn board(board: BoardModel) -> Self {
+    pub(crate) fn board(board: BoardModel, alert_routing: &AlertRouting) -> Self {
         let reservations = board.reservation_ids().into_vec();
-        let presentation = board.envelope_presentation();
+        let presentation = board.envelope_presentation(alert_routing);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Board,
@@ -1656,9 +1657,10 @@ impl OutputEnvelope {
     /// Build a successful board response after the terminal view could not open.
     pub(crate) fn board_with_terminal_view_opening_failure(
         board: BoardModel,
+        alert_routing: &AlertRouting,
         diagnostic: &str,
     ) -> Self {
-        let mut output_envelope = Self::board(board);
+        let mut output_envelope = Self::board(board, alert_routing);
         output_envelope
             .message
             .push_str("\nThe terminal view could not open: ");
@@ -3454,6 +3456,10 @@ fn claimed_presentation(
 /// naming the occasion after the verb would put a harness event in front of a reader no
 /// harness event ever reached. The hook process that owns the answer records the
 /// occasion instead, once, before the verb runs.
+///
+/// The occasion also decides which alerts a response carries: [`crate::alert::AlertRouting`]
+/// delivers every alert to a verb run by hand, and to a hook only the alerts that concern
+/// the invoking worktree.
 #[derive(Clone, Copy)]
 pub(crate) enum EngineAnswerOccasion {
     /// No harness hook drives this process, so the response names no event.
@@ -3475,7 +3481,7 @@ impl EngineAnswerOccasion {
     pub(crate) fn own_this_process(self) { ENGINE_ANSWER_OCCASION.get_or_init(|| self); }
 
     /// The occasion this process answers on, which is none until a hook records one.
-    fn current() -> Self {
+    pub(crate) fn current() -> Self {
         ENGINE_ANSWER_OCCASION
             .get()
             .copied()

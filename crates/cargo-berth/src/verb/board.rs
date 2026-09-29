@@ -11,6 +11,7 @@ use crate::cli::CliOutputFormat;
 use crate::config::Enrollment;
 use crate::ids::ReservationId;
 use crate::output::CommandVerb;
+use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::output::ReservationLifecycleQueryRejection;
 use crate::reconcile;
@@ -94,21 +95,23 @@ fn execute_complete_board(
             ));
         },
     };
+    let alert_routing = report.alert_routing(EngineAnswerOccasion::current());
 
     match output_format {
         CliOutputFormat::Json => {
-            BoardDisplayOutcome::HeadlessResponse(OutputEnvelope::board(board))
+            BoardDisplayOutcome::HeadlessResponse(OutputEnvelope::board(board, &alert_routing))
         },
         CliOutputFormat::Text => match tui::terminal_attachment() {
-            TerminalAttachment::Detached => {
-                BoardDisplayOutcome::TerminalDidNotOpen(OutputEnvelope::board(board))
-            },
+            TerminalAttachment::Detached => BoardDisplayOutcome::TerminalDidNotOpen(
+                OutputEnvelope::board(board, &alert_routing),
+            ),
             TerminalAttachment::Attached => match tui::run(&board) {
                 Ok(()) => BoardDisplayOutcome::TerminalRestored,
                 Err(BoardTerminalViewRunFailure::BeforeOpening(failure)) => {
                     BoardDisplayOutcome::TerminalDidNotOpen(
                         OutputEnvelope::board_with_terminal_view_opening_failure(
                             board,
+                            &alert_routing,
                             &failure.to_string(),
                         ),
                     )

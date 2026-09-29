@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hook notices carry only the invoking worktree's alerts. A `PostToolUse` drift states only alerts whose reservation the worktree holds, and `SessionStart` also states alerts no live worktree holds; hand-run verbs and the git gate still report every alert.
 - An approved `--before`, `--after`, `--defer`, or `--override` answer keeps
   authorizing edits to the files it names when the holder's merge extent grows
   elsewhere, as when the holder first-touches or dirties another file. The

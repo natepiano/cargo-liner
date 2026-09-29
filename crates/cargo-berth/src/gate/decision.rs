@@ -55,6 +55,7 @@ use crate::ledger::SkippedOrderingEdge;
 use crate::ledger::WorktreeContext;
 use crate::reconcile;
 use crate::reconcile::GateReconciliation;
+use crate::reconcile::GateReconciliationAction;
 use crate::reconcile::GateReconciliationError;
 use crate::reconcile::GateReconciliationPurpose;
 use crate::reconcile::ReconciliationReport;
@@ -267,7 +268,9 @@ pub(super) fn evaluate_locked(
                         action,
                     }
                 },
-                reconcile::GateReconciliationAction::commit,
+                |action: GateReconciliationAction<GateDecision>, state, failures| {
+                    action.commit(state, failures, journal_mutation_actor.worktree_id)
+                },
             )
             .map_err(|error| match error {
                 LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),

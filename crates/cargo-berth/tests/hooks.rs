@@ -3031,20 +3031,33 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
             ))
         })?;
     let derivation_failure = required_string(alert, "/data/failure", "unavailable merge extent")?;
+    let protection_line = format!(
+        "Reservation {foreign} retains its previous merge protection: {derivation_failure}."
+    );
+    // The alert belongs to the moved holder, not to this worktree, so the Bash-call notice
+    // here leaves it out.
     let output = run_post_tool_use(
         repository.path(),
         &bash_payload(repository.path(), WIDENING_SESSION),
     )?;
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(&protection_line),
+        "PostToolUse in a worktree that does not hold the reservation should omit its alert: {output:?}"
+    );
+    // No live worktree holds the reservation any more, so a session opening anywhere states it.
+    let output = run_session_start(
+        repository.path(),
+        &session_start_payload(repository.path(), Some(BOARD_SESSION)),
+        &AmbientHarnessSession::Absent,
+    )?;
     let feedback = hook_feedback(
         &output,
-        HookResponseEvent::PostToolUse,
+        HookResponseEvent::SessionStart,
         "unavailable merge protection",
     )?;
     assert!(
-        feedback.additional_context.contains(&format!(
-            "Reservation {foreign} retains its previous merge protection: {derivation_failure}."
-        )),
-        "unchanged PostToolUse feedback should carry the derivation-failure line: {feedback:?}"
+        feedback.additional_context.contains(&protection_line),
+        "SessionStart should state the alert no live holder can resolve: {feedback:?}"
     );
     Ok(())
 }
@@ -3729,13 +3742,20 @@ fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> Test
         &IntegrationProofLoss::TrunkRewrittenPastTheTip,
     )?;
 
-    let output = incursion.report_another_bash_call()?;
+    let notice = evidence.rewritten_trunk_notice(&trunk)?;
 
-    assert_hook_states_the_lost_evidence_notice(
-        &output,
-        HookResponseEvent::PostToolUse,
-        &evidence.rewritten_trunk_notice(&trunk)?,
-    )
+    // The released reservation belongs to the live evidence worktree, so the straying
+    // worktree's Bash-call notice leaves its alert out.
+    let output = incursion.report_another_bash_call()?;
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(notice.as_str()),
+        "PostToolUse in a worktree that does not hold the reservation should omit its alert: {output:?}"
+    );
+    let output = run_post_tool_use(
+        &evidence.reporting_root,
+        &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
+    )?;
+    assert_hook_states_the_lost_evidence_notice(&output, HookResponseEvent::PostToolUse, &notice)
 }
 
 /// A trunk that resolves but has moved past the tip is named only as the trunk that lost the

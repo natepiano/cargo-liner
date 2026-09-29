@@ -274,6 +274,26 @@ pub(super) struct BoardGitCost {
     merge_extent_path_queries:              u64,
 }
 
+impl BoardAlert {
+    /// Return every reservation whose holder this alert concerns.
+    ///
+    /// Unrecorded bypasses belong to no reservation, so no holder is theirs to resolve.
+    pub(super) const fn reservation_ids(&self) -> &[ReservationId] {
+        match self {
+            Self::TargetMissing { reservation_id, .. }
+            | Self::MergeExtentUnavailable { reservation_id, .. }
+            | Self::LostIntegrationEvidence { reservation_id, .. }
+            | Self::OrphanedOutstanding { reservation_id, .. }
+            | Self::StaleReservation { reservation_id, .. } => std::slice::from_ref(reservation_id),
+            Self::TargetUncovered {
+                waiting_reservations,
+                ..
+            } => waiting_reservations.as_slice(),
+            Self::UnrecordedBypasses { .. } => &[],
+        }
+    }
+}
+
 pub(super) fn outstanding_incursion_detail(incursion: &OutstandingIncursion) -> String {
     let entered_paths = incursion
         .entered_paths

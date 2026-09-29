@@ -54,6 +54,7 @@ use crate::ledger::ReservationScopeSet;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
+use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reconcile::ReconciledDriftPreflight;
@@ -198,7 +199,10 @@ pub(crate) fn execute(
         },
         Err(error) => OutputEnvelope::ledger_unreadable(CommandVerb::Drift, &error.to_string()),
     };
-    output_envelope.with_alerts(reconciliation_report.alerts)
+    // A hook-driven drift answers one worktree's session, so it carries only that worktree's
+    // alerts; a drift run by hand carries every alert.
+    let alert_routing = reconciliation_report.alert_routing(EngineAnswerOccasion::current());
+    output_envelope.with_alerts(alert_routing.route(reconciliation_report.alerts))
 }
 
 fn prepare_drift_execution(
