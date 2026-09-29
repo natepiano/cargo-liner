@@ -2986,20 +2986,7 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
     )?;
     require_success(&primed, "clean fingerprint publication")?;
     let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
-    let holder = worktrees.path().join("unavailable-merge-holder");
-    add_named_worktree(&repository, "unavailable-merge-holder", &holder)?;
-    dirty_source(&holder, "foreign.rs")?;
-    let foreign = run_berth_with_session(
-        &holder,
-        &["claim", "file:foreign.rs", "--json"],
-        "unavailable-merge-holder",
-    )?;
-    require_success(&foreign, "foreign merge holder claim")?;
-    let foreign = claimed_reservation_id(&foreign)?;
-    require_success(
-        &run_berth(repository.path(), &["board", "--json"])?,
-        "initial merge observation",
-    )?;
+    let (holder, foreign) = observed_merge_holder(&repository, worktrees.path())?;
     fs::rename(&holder, worktrees.path().join("moved-holder"))?;
 
     let unchanged = run_berth_with_session(
@@ -3017,23 +3004,7 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
         unchanged["payload"]["data"]["results"][0]["status"],
         "unchanged"
     );
-    let alert = unchanged["payload"]["alerts"]
-        .as_array()
-        .ok_or_else(|| failure("unchanged drift should list alerts"))?
-        .iter()
-        .find(|alert| {
-            alert["kind"] == "merge_extent_unavailable"
-                && alert["data"]["reservation_id"] == foreign
-        })
-        .ok_or_else(|| {
-            failure(format!(
-                "unchanged drift should retain derivation failure: {unchanged}"
-            ))
-        })?;
-    let derivation_failure = required_string(alert, "/data/failure", "unavailable merge extent")?;
-    let protection_line = format!(
-        "Reservation {foreign} retains its previous merge protection: {derivation_failure}."
-    );
+    let protection_line = retained_merge_protection_line(&unchanged, &foreign)?;
     // The alert belongs to the moved holder, not to this worktree, so the Bash-call notice
     // here leaves it out.
     let output = run_post_tool_use(
@@ -3060,6 +3031,83 @@ fn an_unchanged_post_tool_use_read_reports_unavailable_merge_protection() -> Tes
         "SessionStart should state the alert no live holder can resolve: {feedback:?}"
     );
     Ok(())
+}
+
+/// A live holder's own Bash call states the merge protection its reservation retains.
+///
+/// Trunk stops resolving, so the holder's merge extent cannot be derived again and keeps the
+/// protection it last observed. The alert names a reservation the invoking worktree holds, so
+/// `AlertRouting` delivers it to that worktree's `PostToolUse` notice.
+#[test]
+fn the_holders_post_tool_use_states_its_unavailable_merge_protection() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let (holder, reservation_id) = observed_merge_holder(&repository, worktrees.path())?;
+    run_git(
+        repository.path(),
+        &["update-ref", "-d", &format!("refs/heads/{TRUNK_BRANCH}")],
+    )?;
+    let unavailable = run_berth_with_session(
+        &holder,
+        &["drift", "--reservation", &reservation_id, "--json"],
+        HOLDER_SESSION,
+    )?;
+    require_success(&unavailable, "drift with an unavailable trunk")?;
+    let protection_line =
+        retained_merge_protection_line(&json_output(&unavailable)?, &reservation_id)?;
+
+    let output = run_post_tool_use(&holder, &bash_payload(&holder, HOLDER_SESSION))?;
+
+    let feedback = hook_feedback(
+        &output,
+        HookResponseEvent::PostToolUse,
+        "the holder's unavailable merge protection",
+    )?;
+    assert_eq!(
+        feedback.additional_context.lines().collect::<Vec<_>>(),
+        [protection_line.as_str()],
+        "the holder's PostToolUse should state its own alert: {feedback:?}"
+    );
+    Ok(())
+}
+
+/// Claim uncommitted work in a new holder worktree and observe its merge extent once.
+///
+/// The observed extent protects the claimed path, so a later failure to derive the extent
+/// leaves the reservation retaining that protection and raises `merge_extent_unavailable`.
+fn observed_merge_holder(repository: &TempDir, worktrees: &Path) -> TestResult<(PathBuf, String)> {
+    let holder = worktrees.join("unavailable-merge-holder");
+    add_named_worktree(repository, "unavailable-merge-holder", &holder)?;
+    dirty_source(&holder, "foreign.rs")?;
+    let claimed = run_berth_with_session(
+        &holder,
+        &["claim", "file:foreign.rs", "--json"],
+        HOLDER_SESSION,
+    )?;
+    require_success(&claimed, "merge holder claim")?;
+    let reservation_id = claimed_reservation_id(&claimed)?;
+    require_success(
+        &run_berth(repository.path(), &["board", "--json"])?,
+        "initial merge observation",
+    )?;
+    Ok((holder, reservation_id))
+}
+
+/// The notice line a drift envelope's `merge_extent_unavailable` alert renders for a reservation.
+fn retained_merge_protection_line(drift: &Value, reservation_id: &str) -> TestResult<String> {
+    let alert = drift["payload"]["alerts"]
+        .as_array()
+        .ok_or_else(|| failure("drift should list alerts"))?
+        .iter()
+        .find(|alert| {
+            alert["kind"] == "merge_extent_unavailable"
+                && alert["data"]["reservation_id"] == reservation_id
+        })
+        .ok_or_else(|| failure(format!("drift should retain derivation failure: {drift}")))?;
+    let derivation_failure = required_string(alert, "/data/failure", "unavailable merge extent")?;
+    Ok(format!(
+        "Reservation {reservation_id} retains its previous merge protection: {derivation_failure}."
+    ))
 }
 
 #[test]
@@ -3732,6 +3780,9 @@ fn post_tool_use_states_a_widening_after_the_incursion_was_answered(
 }
 
 /// An alert the recorded incursion never touched still reaches the reader after the answer.
+///
+/// The alert reaches the Bash call of the worktree that holds its reservation, and a board run
+/// by hand from any worktree; the straying worktree's Bash call leaves it out.
 #[test]
 fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> TestResult {
     let incursion = incursion_after_bash(1)?;
@@ -3751,11 +3802,46 @@ fn post_tool_use_states_lost_evidence_after_the_incursion_was_answered() -> Test
         !String::from_utf8_lossy(&output.stdout).contains(notice.as_str()),
         "PostToolUse in a worktree that does not hold the reservation should omit its alert: {output:?}"
     );
+    assert_hand_run_board_states_the_lost_evidence(&incursion.straying_root, &evidence, &notice)?;
     let output = run_post_tool_use(
         &evidence.reporting_root,
         &bash_payload(&evidence.reporting_root, EVIDENCE_SESSION),
     )?;
     assert_hook_states_the_lost_evidence_notice(&output, HookResponseEvent::PostToolUse, &notice)
+}
+
+/// Check a board run by hand from `root` states the lost-evidence alert in its notices and data.
+///
+/// A verb run by hand answers for the whole repository, so `AlertRouting` delivers it every
+/// alert, including one whose reservation a live worktree elsewhere holds.
+fn assert_hand_run_board_states_the_lost_evidence(
+    root: &Path,
+    evidence: &LostIntegrationEvidence,
+    notice: &str,
+) -> TestResult {
+    let board = run_berth(root, &["board", "--json"])?;
+    require_success(&board, "board run by hand")?;
+    let envelope = json_output(&board)?;
+    assert!(
+        required_array(&envelope, "/presentation/blocks", "board run by hand")?
+            .iter()
+            .any(|block| block["detail"] == notice),
+        "a board run by hand should state another worktree's alert among its notices: {envelope}"
+    );
+    assert!(
+        required_array(
+            &envelope,
+            "/payload/data/alerts/entries",
+            "board run by hand"
+        )?
+        .iter()
+        .any(|alert| {
+            alert["kind"] == "lost_integration_evidence"
+                && alert["reservation_id"] == evidence.reservation_id
+        }),
+        "a board run by hand should list another worktree's alert in its data: {envelope}"
+    );
+    Ok(())
 }
 
 /// A trunk that resolves but has moved past the tip is named only as the trunk that lost the
