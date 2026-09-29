@@ -22,7 +22,7 @@ pub(super) const SETTINGS_POPUP_WIDTH: u16 = 64;
 pub(super) const SETTINGS_TITLE: &str = " Settings ";
 
 // sections and labels
-/// Section holding the three `[appearance]` steppers.
+/// Section holding the four `[appearance]` steppers.
 pub(super) const APPEARANCE_SECTION: &str = "Appearance";
 /// Label of the `appearance.mode` stepper.
 pub(super) const MODE_LABEL: &str = "mode";
@@ -30,6 +30,8 @@ pub(super) const MODE_LABEL: &str = "mode";
 pub(super) const LIGHT_THEME_LABEL: &str = "light theme";
 /// Label of the `appearance.dark_theme` stepper.
 pub(super) const DARK_THEME_LABEL: &str = "dark theme";
+/// Label of the `appearance.transparent` stepper.
+pub(super) const TRANSPARENT_LABEL: &str = "transparent";
 /// Label of the `tiles.initial_rows` stepper.
 pub(super) const INITIAL_ROWS_LABEL: &str = "initial rows";
 /// Label of the `tiles.fill` stepper.

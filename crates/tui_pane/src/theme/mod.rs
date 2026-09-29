@@ -71,7 +71,9 @@ pub use self::state::registry;
 pub use self::state::replace_registry;
 pub use self::state::set_active_theme;
 pub use self::state::set_focused_pane_tint;
+pub use self::state::set_transparent_background;
 pub use self::state::theme;
+pub use self::state::transparent_background;
 pub use self::watch::ThemesWatch;
 
 /// Light vs dark variant target. Identifies which slot in a

@@ -18,6 +18,7 @@ use crate::inactive_border_color;
 use crate::inactive_title_color;
 use crate::theme;
 use crate::title_color;
+use crate::transparent_background;
 
 /// Pane chrome styling bundle: border and title styles for the
 /// focused / unfocused render paths of a bordered pane.
@@ -110,8 +111,9 @@ pub fn default_pane_chrome() -> PaneChrome {
     }
 }
 
-/// The background a pane sits on, or `None` when the tint is switched
-/// off and panes are left to the terminal's own background.
+/// The background a pane sits on, or `None` when panes are left to the
+/// terminal's own background: the tint is switched off, or the screen
+/// is transparent.
 ///
 /// Both states are painted, not just the focused one. A pane with no
 /// background of its own is the terminal's *default* background, which
@@ -125,7 +127,23 @@ pub fn default_pane_chrome() -> PaneChrome {
 /// pane drawn into a shared frame has no block to carry it, so
 /// [`crate::draw_clipped`] lays it down under the contents instead.
 pub(super) fn pane_fill(focused: bool) -> Option<Style> {
-    focused_pane_tint_enabled().then(|| Style::default().bg(pane_tint(focused)))
+    tint_painted().then(|| Style::default().bg(pane_tint(focused)))
+}
+
+/// Whether panes are painted with the tint: it is switched on, and the
+/// screen is not transparent.
+fn tint_painted() -> bool { focused_pane_tint_enabled() && !transparent_background() }
+
+/// The colour the app's main screen is painted solid in, or `None` when
+/// the screen is transparent and nothing may be painted under it.
+///
+/// The theme's own ground, so a pane whose tint is switched off stands
+/// on the colour the theme was written for. A terminal applying its
+/// window's transparency to the default background only draws a cell
+/// painted this colour opaque, which is the whole point.
+#[must_use]
+pub fn screen_ground() -> Option<Color> {
+    (!transparent_background()).then(|| theme().text.bg_focus.color)
 }
 
 /// The colour a pane's contents are drawn over.
@@ -133,11 +151,11 @@ pub(super) fn pane_fill(focused: bool) -> Option<Style> {
 /// `pane_fill` in the one form a caller outside this crate can work
 /// against: text carried toward the ground it stands on -- a row fading
 /// out of a closing tile -- has to name that ground, and a pane whose
-/// tint is switched off still stands on the appearance the theme was
-/// written for.
+/// tint is switched off or left transparent still stands on the
+/// appearance the theme was written for.
 #[must_use]
 pub fn pane_background(focused: bool) -> Color {
-    if focused_pane_tint_enabled() {
+    if tint_painted() {
         pane_tint(focused)
     } else {
         theme().text.bg_focus.color
