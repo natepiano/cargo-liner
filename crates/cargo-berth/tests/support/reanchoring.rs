@@ -58,17 +58,7 @@ impl RewriteFixture {
         );
         let worktrees = tempdir().expect("linked checkout parent should exist");
         let holder = worktrees.path().join("holder");
-        GIT.run(
-            repository.path(),
-            [
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
-                "holder",
-                holder.to_str().expect("holder path should be UTF-8"),
-            ],
-        );
+        GIT.add_worktree_without_hooks(repository.path(), &holder, "holder", "HEAD");
         assert!(
             repository
                 .path()
@@ -739,17 +729,7 @@ fn rebase_onto_another_reservation(stage: SplitReservationStage) {
     let fixture = RewriteFixture::new();
     let trunk = GIT.stdout(fixture.root(), ["rev-parse", "main"]);
     let other = fixture.worktrees.path().join("other-reservation");
-    GIT.run(
-        fixture.root(),
-        [
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "other-reservation",
-            other.to_str().expect("other holder path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(fixture.root(), &other, "other-reservation", "HEAD");
     let other_claim = claim(&other, "file:other.txt", super::SECOND_RUN);
     assert!(
         other_claim.status.success(),

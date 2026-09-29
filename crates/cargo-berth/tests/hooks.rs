@@ -11,6 +11,8 @@ mod reader_compat_hooks;
 mod timing;
 
 use cargo_berth_test_support::CLAUDE_CODE_SESSION_ENVIRONMENT;
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 use reader_compat_hooks::AmbientHarnessSession;
@@ -22,6 +24,13 @@ use reader_compat_hooks::spawn_hook_verb;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file adds a fixture worktree: optional locks taken, nothing held back from git.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Taken,
+    cleared_environment: &[],
+};
 
 use std::error::Error;
 use std::fs;
@@ -1914,13 +1923,7 @@ fn add_worktree_without_configuration(
 ) -> TestResult<(TempDir, PathBuf)> {
     let directory = TempDir::new_in(SCRATCH_ROOT)?;
     let root = directory.path().join(name);
-    let root_text = root
-        .to_str()
-        .ok_or_else(|| failure("scratch worktree path should be UTF-8"))?;
-    run_git(
-        repository.path(),
-        &["worktree", "add", "--quiet", "-b", name, root_text],
-    )?;
+    GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
     Ok((directory, root))
 }
 
@@ -2611,13 +2614,7 @@ fn take_the_integration_proof_away(
 }
 
 fn add_named_worktree(repository: &TempDir, branch: &str, root: &Path) -> TestResult {
-    let root_text = root
-        .to_str()
-        .ok_or_else(|| failure("scratch worktree path should be UTF-8"))?;
-    run_git(
-        repository.path(),
-        &["worktree", "add", "--quiet", "-b", branch, root_text],
-    )?;
+    GIT.add_worktree_without_hooks(repository.path(), root, branch, "HEAD");
     let configuration_path = root.join(CONFIGURATION_PATH);
     let configuration_directory = configuration_path
         .parent()

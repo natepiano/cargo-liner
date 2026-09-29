@@ -666,19 +666,7 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let phase_worktree = worktree_parent.path().join("phase");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "phase",
-            phase_worktree
-                .to_str()
-                .expect("worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &phase_worktree, "phase", "HEAD");
     commit_file(&phase_worktree, "src/lib.rs", "phase work\n", "phase work");
     let claim = run_berth(
         &phase_worktree,
@@ -713,18 +701,11 @@ fn prunable_and_pruned_worktrees_keep_blocking_and_pruned_work_reports_recovery(
     assert_orphan_recovery_evidence(repository.path(), &reservation_id, &protected_tip);
 
     let replacement_worktree = worktree_parent.path().join("replacement");
-    git(
+    GIT.add_worktree_without_hooks(
         repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "recovered",
-            replacement_worktree
-                .to_str()
-                .expect("replacement path should be UTF-8"),
-        ],
+        &replacement_worktree,
+        "recovered",
+        "HEAD",
     );
     let recovered = run_berth(
         &replacement_worktree,
@@ -822,19 +803,7 @@ fn moved_worktree_keeps_its_identity_and_updates_its_recorded_root() {
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let original_worktree = worktree_parent.path().join("original");
     let moved_worktree = worktree_parent.path().join("moved");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "moved-phase",
-            original_worktree
-                .to_str()
-                .expect("original path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &original_worktree, "moved-phase", "HEAD");
     let claim = run_berth(
         &original_worktree,
         &["claim", "file:moved", "--run", FIRST_RUN, "--json"],
@@ -874,18 +843,11 @@ fn nul_porcelain_preserves_a_worktree_root_that_git_would_quote() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let unusual_worktree = worktree_parent.path().join("phase\n\"backslash\\café");
-    git(
+    GIT.add_worktree_without_hooks(
         repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "unusual-path-phase",
-            unusual_worktree
-                .to_str()
-                .expect("unusual worktree path should be UTF-8"),
-        ],
+        &unusual_worktree,
+        "unusual-path-phase",
+        "HEAD",
     );
     commit_file(
         &unusual_worktree,
@@ -919,19 +881,7 @@ fn locked_missing_worktree_keeps_blocking_without_an_orphan_alert() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let locked_worktree = worktree_parent.path().join("locked");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "locked-phase",
-            locked_worktree
-                .to_str()
-                .expect("locked path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &locked_worktree, "locked-phase", "HEAD");
     assert!(
         run_berth(
             &locked_worktree,
@@ -968,18 +918,11 @@ fn locked_accessible_worktree_has_its_stale_marker_swept() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let locked_worktree = worktree_parent.path().join("locked-accessible");
-    git(
+    GIT.add_worktree_without_hooks(
         repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "locked-accessible-phase",
-            locked_worktree
-                .to_str()
-                .expect("locked path should be UTF-8"),
-        ],
+        &locked_worktree,
+        "locked-accessible-phase",
+        "HEAD",
     );
     commit_file(&locked_worktree, "locked", "locked work\n", "locked work");
     let claim = run_berth(
@@ -1063,29 +1006,12 @@ fn foreign_administrative_directory_is_refused_without_sweeping_its_marker() {
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let worktree = worktree_parent.path().join("local");
     let foreign_worktree = worktree_parent.path().join("foreign");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "local-phase",
-            worktree.to_str().expect("local path should be UTF-8"),
-        ],
-    );
-    git(
+    GIT.add_worktree_without_hooks(repository.path(), &worktree, "local-phase", "HEAD");
+    GIT.add_worktree_without_hooks(
         foreign_repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "foreign-phase",
-            foreign_worktree
-                .to_str()
-                .expect("foreign path should be UTF-8"),
-        ],
+        &foreign_worktree,
+        "foreign-phase",
+        "HEAD",
     );
     let local_claim = run_berth(
         &worktree,
@@ -1239,18 +1165,11 @@ fn terminal_release_omits_the_orphan_alert_it_resolves() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let phase_worktree = worktree_parent.path().join("release-alert");
-    git(
+    GIT.add_worktree_without_hooks(
         repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "release-alert-phase",
-            phase_worktree
-                .to_str()
-                .expect("phase worktree path should be UTF-8"),
-        ],
+        &phase_worktree,
+        "release-alert-phase",
+        "HEAD",
     );
     commit_file(
         &phase_worktree,
@@ -1435,19 +1354,7 @@ fn assert_check_session_rejections(repository: &TempDir) {
 
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let second_root = worktree_parent.path().join("check-second");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "check-second",
-            second_root
-                .to_str()
-                .expect("second worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &second_root, "check-second", "HEAD");
     let mismatch_session = "foreign-check-session";
     let live_claim = run_berth_with_session(
         repository.path(),
@@ -2245,19 +2152,7 @@ fn create_active_orphan(
     run: &str,
 ) -> String {
     let worktree = worktree_parent.join(branch);
-    git(
-        repository,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            branch,
-            worktree
-                .to_str()
-                .expect("active orphan worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository, &worktree, branch, "HEAD");
     let claim = run_berth(&worktree, &["claim", scope, "--run", run, "--json"]);
     assert!(claim.status.success());
     let reservation_id = reservation_id(&claim);

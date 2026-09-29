@@ -371,18 +371,7 @@ fn init_keeps_stacked_footprints_without_a_contained_overlap() {
     let parent = add_worktree(root, worktrees.path(), "parent");
     commit_enrollment_work(&parent, "parent.txt", "parent work\n");
     let child = worktrees.path().join("child");
-    git(
-        root,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "child",
-            child.to_str().expect("UTF-8 path"),
-            "parent",
-        ],
-    );
+    GIT.add_worktree_without_hooks(root, &child, "child", "parent");
     commit_enrollment_work(&child, "child.txt", "child work\n");
 
     let enrollment = enrollment_report(root);
@@ -1559,18 +1548,7 @@ fn scratch_repository() -> TempDir {
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {
     let root = parent.join(branch);
-    git(
-        repository_root,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            branch,
-            root.to_str().expect("worktree path should be UTF-8"),
-            "main",
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository_root, &root, branch, "main");
     // `git worktree add` registers the resolved path, and `WorktreeEnrollmentFailure` reports
     // whatever git registered, so a failure row names the resolved form. On macOS the tempdir
     // parent is reached through a symlink -- `/tmp` resolves to `/private/tmp` -- and the

@@ -33,6 +33,7 @@ const GIT: GitDriver = GitDriver {
     cleared_environment: &[BYPASS_ENVIRONMENT],
 };
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
@@ -740,6 +741,95 @@ fn unlisted_prepared_branch_update_does_not_start_cargo_berth() {
     assert!(
         marker.exists(),
         "listed control did not start recording shim"
+    );
+}
+
+/// `GitDriver::add_worktree_without_hooks` skips the hook this test runs. The hooked add of a
+/// branch that is neither the trunk nor a listed gate target starts `cargo-berth` at the
+/// committed phase, and every file under the common git directory apart from git's own records
+/// of the new branch and its worktree reads the same after it.
+#[test]
+fn hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged() {
+    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let lane = repository.lane("claimed-lane", "integration");
+    let claimed = repository.claim(&lane, "file:lane.txt", FIRST_RUN, Some("integration"));
+    assert_success(&claimed);
+    assert_eq!(gate_targets(repository.root()), ["refs/heads/integration"]);
+    let common_directory = repository.root().join(".git");
+    let before = files_under(&common_directory);
+    assert!(
+        before.contains_key(Path::new("cargo-berth/journal.ndjson")),
+        "the claim should have written the journal"
+    );
+
+    let wrapper_directory = tempdir().expect("wrapper directory");
+    let phases = wrapper_directory.path().join("phases");
+    let wrapper = wrapper_directory.path().join("cargo-berth");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> {}\nexec {} \"$@\"\n",
+            shell_single_quoted(&phases),
+            shell_single_quoted(Path::new(BERTH_EXECUTABLE))
+        ),
+    )
+    .expect("phase-recording wrapper writes");
+    let mut permissions = fs::metadata(&wrapper)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper, permissions).expect("wrapper executes");
+    let worktree_parent = tempdir().expect("worktree parent");
+    let worktree = worktree_parent.path().join("fixture-lane");
+    let added = GIT.output_with_environment(
+        repository.root(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "fixture-lane",
+            worktree.to_str().expect("worktree path should be UTF-8"),
+            "integration",
+        ],
+        EXECUTABLE_ENVIRONMENT,
+        wrapper.to_str().expect("wrapper path should be UTF-8"),
+    );
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let phases = fs::read_to_string(&phases).expect("the hook should start cargo-berth");
+    assert!(
+        phases.lines().any(|phase| phase == "committed"),
+        "phases: {phases}"
+    );
+
+    let after = files_under(&common_directory);
+    let branch_records = [
+        Path::new("refs/heads/fixture-lane"),
+        Path::new("logs/refs/heads/fixture-lane"),
+    ];
+    let new_branch_record =
+        |path: &Path| branch_records.contains(&path) || path.starts_with("worktrees/fixture-lane");
+    let changed: Vec<&PathBuf> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| !new_branch_record(path) && before.get(*path) != after.get(*path))
+        .collect();
+    assert!(changed.is_empty(), "the hooked add changed {changed:?}");
+    assert_eq!(
+        GIT.stdout(
+            &worktree,
+            [
+                "status",
+                "--porcelain",
+                "--ignored",
+                "--untracked-files=all"
+            ]
+        ),
+        ""
     );
 }
 
@@ -4923,19 +5013,7 @@ fn scratch_repository() -> TempDir {
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {
     let worktree_root = parent.join(branch);
-    git(
-        repository_root,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            branch,
-            worktree_root
-                .to_str()
-                .expect("worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository_root, &worktree_root, branch, "HEAD");
     worktree_root
 }
 
@@ -6547,6 +6625,29 @@ fn git_binary() -> PathBuf {
 
 fn shell_single_quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
+}
+
+/// Every file under `root`, keyed by its path relative to `root`.
+fn files_under(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory).expect("directory should read") {
+            let path = entry.expect("directory entry should read").path();
+            if path.is_dir() {
+                directories.push(path);
+            } else {
+                let contents = fs::read(&path).expect("file should read");
+                files.insert(
+                    path.strip_prefix(root)
+                        .expect("entry should lie under its root")
+                        .to_path_buf(),
+                    contents,
+                );
+            }
+        }
+    }
+    files
 }
 
 fn assert_enrollment_gate_decision(

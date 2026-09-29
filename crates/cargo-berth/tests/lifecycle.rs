@@ -692,20 +692,7 @@ fn foreign_active_reservation_cannot_checkpoint_the_invoking_head() {
     let repository = initialized_repository();
     let worktree_parent = tempdir().expect("worktree parent should exist");
     let foreign_worktree = worktree_parent.path().join("foreign");
-    let foreign_worktree_text = foreign_worktree
-        .to_str()
-        .expect("worktree path should be UTF-8");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "phase",
-            foreign_worktree_text,
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &foreign_worktree, "phase", "HEAD");
     assert!(run_berth(&foreign_worktree, &["init"]).status.success());
     commit_file(
         &foreign_worktree,
@@ -1584,18 +1571,7 @@ fn a_second_harness_session_adopts_the_incumbent_run_without_refusal() {
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            name,
-            root.to_str()
-                .expect("foreign worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
     let configuration = root.join(CONFIGURATION_PATH);
     if let Some(parent) = configuration.parent() {
         fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");

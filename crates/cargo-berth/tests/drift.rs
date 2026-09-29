@@ -4294,18 +4294,7 @@ fn assert_no_phase_ancestry_or_metadata_command(commands: &[String]) {
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            name,
-            root.to_str()
-                .expect("foreign worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
     let configuration = root.join(CONFIGURATION_PATH);
     if let Some(parent) = configuration.parent() {
         fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");
@@ -4385,17 +4374,7 @@ fn scratch_repository() -> TempDir {
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {
     let root = parent.join(branch);
-    git(
-        repository_root,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            branch,
-            root.to_str().expect("worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository_root, &root, branch, "HEAD");
     root
 }
 

@@ -1,10 +1,19 @@
 //! Real-binary acceptance guard for executable engine instructions.
 
+use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
+
+/// How this file adds a fixture worktree: optional locks taken, nothing held back from git.
+const GIT: GitDriver = GitDriver {
+    executable:          BERTH_EXECUTABLE,
+    optional_locks:      OptionalLocks::Taken,
+    cleared_environment: &[],
+};
 
 use std::error::Error;
 use std::fs;
@@ -596,13 +605,7 @@ fn initialized_repository() -> TestResult<TempDir> {
 fn add_worktree(repository: &TempDir, branch: &str) -> TestResult<(TempDir, PathBuf)> {
     let directory = TempDir::new_in(SCRATCH_ROOT)?;
     let root = directory.path().join(branch);
-    let worktree_path = root
-        .to_str()
-        .ok_or_else(|| failure("scratch worktree path should be valid UTF-8"))?;
-    run_git(
-        repository.path(),
-        &["worktree", "add", "--quiet", "-b", branch, worktree_path],
-    )?;
+    GIT.add_worktree_without_hooks(repository.path(), &root, branch, "HEAD");
     let configuration_path = root.join(CONFIGURATION_PATH);
     let configuration_directory = configuration_path
         .parent()

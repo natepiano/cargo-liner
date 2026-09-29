@@ -1534,18 +1534,7 @@ fn initialized_repository() -> TempDir {
 fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     let directory = tempdir().expect("foreign worktree parent should exist");
     let root = directory.path().join(name);
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            name,
-            root.to_str()
-                .expect("foreign worktree path should be UTF-8"),
-        ],
-    );
+    GIT.add_worktree_without_hooks(repository.path(), &root, name, "HEAD");
     let configuration = root.join(CONFIGURATION_PATH);
     if let Some(parent) = configuration.parent() {
         fs::create_dir_all(parent).expect("foreign worktree configuration should have a directory");

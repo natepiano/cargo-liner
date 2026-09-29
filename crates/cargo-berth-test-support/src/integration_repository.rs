@@ -93,21 +93,14 @@ impl IntegrationRepository {
             root,
             &["commit", "--quiet", "-m", "track berth configuration"],
         );
-        integration_repository.git(
-            root,
-            &[
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
+        integration_repository
+            .git_driver()
+            .add_worktree_without_hooks(
+                root,
+                &integration_repository.integration,
                 "integration",
-                integration_repository
-                    .integration
-                    .to_str()
-                    .expect("UTF-8 path"),
                 "main",
-            ],
-        );
+            );
         integration_repository.integration = fs::canonicalize(&integration_repository.integration)
             .expect("canonical integration worktree");
         integration_repository.commit_file(
@@ -365,18 +358,8 @@ impl IntegrationRepository {
 
     fn lane_from(&self, branch: &str, base: &str, target: &str) -> PathBuf {
         let checkout = self.worktrees.path().join(branch);
-        self.git(
-            self.root(),
-            &[
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
-                branch,
-                checkout.to_str().expect("UTF-8 path"),
-                base,
-            ],
-        );
+        self.git_driver()
+            .add_worktree_without_hooks(self.root(), &checkout, branch, base);
         self.git(
             self.root(),
             &[

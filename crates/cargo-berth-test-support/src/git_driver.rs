@@ -16,6 +16,9 @@ use crate::berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 /// Names a specific `cargo-berth` for a managed hook, ahead of the installed one.
 pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 
+/// Points git's hook lookup at a path that holds no hook on any platform.
+const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
+
 /// Start a git command whose managed hooks run the `cargo-berth` under test.
 ///
 /// A managed hook resolves `cargo-berth` when it runs, and an installed copy
@@ -141,6 +144,43 @@ impl GitDriver {
     pub fn succeeds(self, repository_root: &Path, arguments: &[&str]) -> bool {
         let (mut command, _) = self.prepare(repository_root, arguments);
         command.status().expect("git should run").success()
+    }
+
+    /// Add a linked worktree at `worktree_root` on a new `branch` started from
+    /// `start_point`, without running any hook.
+    ///
+    /// A hooked add starts `cargo-berth` from the `reference-transaction` hook for
+    /// the new branch, about 90 processes in all. For a branch that is neither the
+    /// trunk nor a listed gate target, with no apply rebase stopped in
+    /// `repository_root`, that run changes nothing in the repository, as the gate
+    /// test `hooked_worktree_add_of_a_new_branch_leaves_the_repository_unchanged`
+    /// proves. A fixture add under those conditions skips the hook and starts
+    /// only git.
+    ///
+    /// # Panics
+    ///
+    /// Panics when git cannot be started or reports failure.
+    pub fn add_worktree_without_hooks(
+        self,
+        repository_root: &Path,
+        worktree_root: &Path,
+        branch: &str,
+        start_point: &str,
+    ) {
+        self.run(
+            repository_root,
+            [
+                OsStr::new("-c"),
+                OsStr::new(HOOKS_DISABLED_CONFIGURATION),
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--quiet"),
+                OsStr::new("-b"),
+                OsStr::new(branch),
+                worktree_root.as_os_str(),
+                OsStr::new(start_point),
+            ],
+        );
     }
 
     /// Build the command this policy describes, and its arguments for diagnostics.
