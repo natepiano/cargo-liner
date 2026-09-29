@@ -59,7 +59,7 @@ case ${SHIM_TEST_SCENARIO-} in
         ;;
     signal-shim)
         kill -"$SHIM_TEST_SIGNAL" "$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")"
-        sleep 0.2
+        sleep 0.05
         printf 'after the signal\n' >&2
         true > "$SHIM_TEST_OBSERVATIONS/cargo-finished"
         exit "$SHIM_TEST_EXIT_STATUS"

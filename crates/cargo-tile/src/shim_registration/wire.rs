@@ -109,8 +109,10 @@ impl InstalledShim {
         command
                 .args([
                     "-c",
-                // Native birth comparisons need distinct shim and setup-child births,
-                // including macOS ps lstart's one-second resolution.
+                // Native birth comparisons need distinct shim and setup-child births:
+                // Linux /proc start times count 10 ms clock ticks, while macOS ps lstart
+                // resolves whole seconds, so macOS waits for the second to change.
+                // The wait reads SHIM_TEST_REAL_DATE because tools/date intercepts date.
                     r#"umask 0066
 printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
 if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
@@ -127,7 +129,13 @@ if [ -f "$SHIM_TEST_OBSERVATIONS/seed-predecessor" ]; then
     done
 fi
 if [ "$SHIM_TEST_BIRTH_TIME_SEPARATION" = required ]; then
-    sleep 1
+    case $SHIM_TEST_NATIVE_PLATFORM in
+        linux) sleep 0.05 ;;
+        *)
+            started=$("$SHIM_TEST_REAL_DATE" +%s)
+            while [ "$("$SHIM_TEST_REAL_DATE" +%s)" = "$started" ]; do sleep 0.05; done
+            ;;
+    esac
 fi
 if [ -f "$SHIM_TEST_OBSERVATIONS/repeat" ]; then
     for invocation in first second; do
