@@ -161,6 +161,7 @@ mode = \"auto\"
 light_theme = \"Default Light\"
 dark_theme = \"Default Dark\"
 iterm2_profile = \"cargo-handler\"
+transparent = true
 
 [tiles]
 initial_rows = 4

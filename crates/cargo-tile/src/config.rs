@@ -231,6 +231,7 @@ mode = \"auto\"
 light_theme = \"Default Light\"
 dark_theme = \"Default Dark\"
 iterm2_profile = \"cargo-tile\"
+transparent = true
 
 [capture]
 auto_install = true
