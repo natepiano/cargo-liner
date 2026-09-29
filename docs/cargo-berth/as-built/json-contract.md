@@ -820,6 +820,8 @@ The operation union is:
 | `op` | Operation fields |
 | --- | --- |
 | `claim` | `reservation_id`, `scopes`, `source`, `purpose`, `trunk_at_claim`, optional `target`, `head_snapshot`, `phase_start_head`, `worktree_root`, `worktree_administrative_locator`, `authorization`, `coordination_identity_provenance` |
+| `holder_merge_extent_observed` | `extent`, `reservations` |
+| `merge_extent_observed` | `reservation_id`, `extent`, optional `run_status` |
 | `widen` | `reservation_id`, `added_scopes`, `cause`, `authorization`, `edit_blocking_status` |
 | `checkpoint` | `reservation_id`, `protected_tip`, `trunk_snapshot` |
 | `resnapshot` | `reservation_id`, `snapshot` |
@@ -878,6 +880,15 @@ These operation fields use the following tagged values:
   made under, or whether the engine issued one because nothing identified the
   caller. The same-worktree occupancy refusal is a rule between two `presented`
   identities, so a `not_presented` holder refuses nobody.
+- `holder_merge_extent_observed` records one reconciliation's observation of a
+  holder checkout's merge extent. `extent` is a merge extent (`not_derived`,
+  `empty`, `protected`, or `unavailable`), and `reservations` is a non-empty
+  array of `{ "reservation_id": <uuid-v7>, "run_status": "editing" | "ended" }`
+  naming every reservation of that holder whose recorded extent it replaces.
+  Replay applies `extent` to each listed reservation in array order.
+  `merge_extent_observed` is the single-reservation form written before it:
+  replay still reads it, and the engine no longer writes it. Its `run_status`
+  defaults to `editing` when absent.
 - Widen `cause.kind` is `drift` or `explicit`; `explicit` adds `reason`.
 - `edit_blocking_status` is `blocking` or `clear`. `widen` and
   `evidence_revalidated` records carry it for audit, but replay treats it as

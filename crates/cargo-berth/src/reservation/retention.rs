@@ -878,11 +878,14 @@ impl RetainedReservationSet {
                 reservation_id,
                 extent,
                 ..
-            } => {
-                let reservation = self.find_mut(*reservation_id)?;
-                reservation.merge_extent = extent.clone();
-                reservation.advance_revision()
-            },
+            } => self.apply_merge_extent(*reservation_id, extent),
+            JournalOperation::HolderMergeExtentObserved {
+                extent,
+                reservations,
+            } => reservations
+                .as_slice()
+                .iter()
+                .try_for_each(|observed| self.apply_merge_extent(observed.reservation_id, extent)),
             JournalOperation::Claim { .. }
             | JournalOperation::Widen { .. }
             | JournalOperation::Renew { .. }
@@ -919,6 +922,17 @@ impl RetainedReservationSet {
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
             | JournalOperation::Bypass { .. } => Ok(()),
         }
+    }
+
+    /// Replace one reservation's recorded merge extent, advancing its revision.
+    fn apply_merge_extent(
+        &mut self,
+        reservation_id: ReservationId,
+        extent: &MergeExtent,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        reservation.merge_extent = extent.clone();
+        reservation.advance_revision()
     }
 
     /// Apply the operations that acquire, extend, renew, or retire a holder's reservation.
@@ -3386,6 +3400,69 @@ mod tests {
             return Err("either record should already cover the path".into());
         };
         assert_eq!(incident_id, INCIDENT_ID.parse::<IncursionIncidentId>()?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_holder_merge_extent_record_replays_as_one_record_per_listed_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let claims = [
+            claim_event_for(RESERVATION_ID, "presented")?,
+            claim_event_for(SIBLING_RESERVATION_ID, "presented")?,
+        ];
+        let key = json!({
+            "trunk": TRUNK_OID,
+            "head": PROTECTED_TIP,
+            "working_tree": {"tracked_paths": [], "untracked_paths": ["src/lib.rs"]},
+        });
+        let protected = json!({
+            "status": "protected",
+            "key": key,
+            "scopes": [{"path": "src/lib.rs", "kind": "file"}],
+        });
+        let empty = json!({"status": "empty", "key": key});
+        let mut single = claims.to_vec();
+        let mut grouped = claims.to_vec();
+        for (projection_generation, extent) in [(2, &protected), (4, &empty)] {
+            single.push(journal_event(
+                projection_generation,
+                &json!({"op": "merge_extent_observed", "reservation_id": RESERVATION_ID,
+                        "extent": extent, "run_status": "editing"}),
+            )?);
+            single.push(journal_event(
+                projection_generation + 1,
+                &json!({"op": "merge_extent_observed", "reservation_id": SIBLING_RESERVATION_ID,
+                        "extent": extent, "run_status": "ended"}),
+            )?);
+            grouped.push(journal_event(
+                projection_generation,
+                &json!({"op": "holder_merge_extent_observed", "extent": extent, "reservations": [
+                    {"reservation_id": RESERVATION_ID, "run_status": "editing"},
+                    {"reservation_id": SIBLING_RESERVATION_ID, "run_status": "ended"},
+                ]}),
+            )?);
+        }
+
+        let from_single = RetainedReservationSet::replay(&single)?;
+        let from_grouped = RetainedReservationSet::replay(&grouped)?;
+        assert_eq!(from_grouped, from_single);
+        let expected = serde_json::from_value::<super::MergeExtent>(empty.clone())?;
+        for reservation_id in [RESERVATION_ID, SIBLING_RESERVATION_ID] {
+            assert_eq!(
+                from_grouped
+                    .reservation(reservation_id.parse::<ReservationId>()?)?
+                    .merge_extent(),
+                &expected
+            );
+        }
+        assert!(
+            journal_event(
+                6,
+                &json!({"op": "holder_merge_extent_observed", "extent": empty, "reservations": []}),
+            )
+            .is_err(),
+            "a record naming no reservation must make the journal unreadable"
+        );
         Ok(())
     }
 

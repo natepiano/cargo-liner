@@ -985,6 +985,7 @@ mod tests {
     use crate::ledger::BypassRecording;
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
+    use crate::ledger::ObservedReservation;
     use crate::ledger::ReservationScope;
     use crate::ledger::ScopeKind;
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
@@ -1322,11 +1323,16 @@ mod tests {
         let extent = MergeExtent::derived(empty_merge_extent_key(), scopes.clone());
 
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-            TransactionValidation::<()>::Append(Box::new(JournalOperation::MergeExtentObserved {
-                reservation_id: ReservationId::new(),
-                extent:         extent.clone(),
-                run_status:     ReservationRunStatus::default(),
-            }))
+            TransactionValidation::<()>::Append(Box::new(
+                JournalOperation::HolderMergeExtentObserved {
+                    extent:       extent.clone(),
+                    reservations: ObservedReservation {
+                        reservation_id: ReservationId::new(),
+                        run_status:     ReservationRunStatus::default(),
+                    }
+                    .into(),
+                },
+            ))
         });
 
         assert!(
@@ -1358,11 +1364,16 @@ mod tests {
         let extent = MergeExtent::derived(empty_merge_extent_key(), scopes);
 
         let result = ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
-            TransactionValidation::<()>::Append(Box::new(JournalOperation::MergeExtentObserved {
-                reservation_id: ReservationId::new(),
-                extent:         extent.clone(),
-                run_status:     ReservationRunStatus::default(),
-            }))
+            TransactionValidation::<()>::Append(Box::new(
+                JournalOperation::HolderMergeExtentObserved {
+                    extent:       extent.clone(),
+                    reservations: ObservedReservation {
+                        reservation_id: ReservationId::new(),
+                        run_status:     ReservationRunStatus::default(),
+                    }
+                    .into(),
+                },
+            ))
         });
 
         // The ceiling still exists, so a runaway is caught -- but it is not the caller's to

@@ -1,5 +1,6 @@
 //! Shared liveness, evidence, retention-ref, and marker reconciliation.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -84,6 +85,8 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
+use crate::ledger::ObservedReservation;
+use crate::ledger::ObservedReservationSet;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
@@ -2202,6 +2205,13 @@ struct HolderMergeProtection {
     committed_paths: CommittedMergeEvidence,
 }
 
+/// One holder's new merge extent and every reservation of that holder whose extent it replaces.
+struct HolderMergeExtentChange {
+    holder:       (WorktreeId, IntegrationTarget),
+    extent:       MergeExtent,
+    reservations: ObservedReservationSet,
+}
+
 /// Journal updates and committed-path evidence derived together under the reconciliation lock.
 struct MergeExtentReconciliation {
     operations:          Vec<JournalOperation>,
@@ -2218,45 +2228,58 @@ fn derive_merge_extents(
     git_cost: &mut MergeExtentGitCost,
 ) -> Result<MergeExtentReconciliation, ReservationReplayError> {
     let mut observed_by_worktree = HashMap::new();
-    let mut operations = Vec::new();
+    let mut changes: Vec<HolderMergeExtentChange> = Vec::new();
     for reservation in reservations.iter().filter(|reservation| {
         !matches!(
             reservation.lifecycle(),
             ReservationLifecycle::Released { .. }
         )
     }) {
+        let holder = (
+            reservation.actor().worktree,
+            snapshot.recorded_target(reservation.id()).clone(),
+        );
         let observed = observed_by_worktree
-            .entry((
-                reservation.actor().worktree,
-                snapshot.recorded_target(reservation.id()).clone(),
-            ))
+            .entry(holder.clone())
             .or_insert_with(|| {
                 observe_merge_extent(reservation, reservations, snapshot, planned, git_cost)
             });
-        let extent = match observed {
-            Ok(observation) => observation.extent.clone(),
-            Err(failure) => reservation.merge_extent().unavailable(failure.clone()),
+        let extent = observed.as_ref().map_or_else(
+            |failure| Cow::Owned(reservation.merge_extent().unavailable(failure.clone())),
+            |observation| Cow::Borrowed(&observation.extent),
+        );
+        if *extent == *reservation.merge_extent() {
+            continue;
+        }
+        let observed_reservation = ObservedReservation {
+            reservation_id: reservation.id(),
+            run_status:     reservation.run_status(),
         };
-        if &extent != reservation.merge_extent() {
-            operations.push(JournalOperation::MergeExtentObserved {
-                reservation_id: reservation.id(),
-                extent,
-                run_status: reservation.run_status(),
+        // A failed observation keeps each reservation's own retained evidence, so a holder's
+        // reservations share a record only where their resulting extents are equal.
+        if let Some(change) = changes
+            .iter_mut()
+            .find(|change| change.holder == holder && change.extent == *extent)
+        {
+            change.reservations.push(observed_reservation);
+        } else {
+            changes.push(HolderMergeExtentChange {
+                holder,
+                extent: extent.into_owned(),
+                reservations: observed_reservation.into(),
             });
         }
     }
+    let mut operations = changes
+        .into_iter()
+        .map(|change| JournalOperation::HolderMergeExtentObserved {
+            extent:       change.extent,
+            reservations: change.reservations,
+        })
+        .collect::<Vec<_>>();
     for incident in reservations.outstanding_incursion_incidents() {
         let subject = reservations.reservation(incident.reservation_id())?;
-        let latest = operations
-            .iter()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == subject.id() => Some(extent),
-                _ => None,
-            })
+        let latest = planned_merge_extent(subject.id(), &operations)
             .unwrap_or_else(|| subject.merge_extent());
         // A distinct disposition preserves the incident's history after its branch has no work.
         if matches!(latest, reservation::MergeExtent::Empty { .. }) {
@@ -4163,18 +4186,7 @@ fn append_settlement_operations(
             .iter()
             .find(|evidence| evidence.reservation_id == reservation.id())
             .map_or(&integration_status, |evidence| &evidence.status);
-        let extent = reconciliation
-            .operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            })
+        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
         let SettlementSelection::Release(disposition) = settlement_selection(
             reservation,
@@ -4253,18 +4265,7 @@ fn append_merged_run_endings(
         if !matches!(reservation.lifecycle(), ReservationLifecycle::Active) {
             continue;
         }
-        let extent = reconciliation
-            .operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            })
+        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
         let MergeExtent::Empty { key } = extent else {
             continue;
@@ -4378,18 +4379,7 @@ fn append_orphan_retirements(
         // Read the extent this pass will commit rather than the one replay produced: observation
         // fails for an orphaned holder, and `derive_merge_extents` has already planned the
         // `MergeExtent::Unavailable` that retains the proof.
-        let extent = reconciliation
-            .operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            })
+        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
         if extent
             .proved_empty_key()
@@ -4404,6 +4394,17 @@ fn append_orphan_retirements(
             disposition: ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived()),
         });
     }
+}
+
+/// The merge extent this plan already records for a reservation, if it observes one.
+fn planned_merge_extent(
+    reservation_id: ReservationId,
+    operations: &[JournalOperation],
+) -> Option<&MergeExtent> {
+    operations
+        .iter()
+        .rev()
+        .find_map(|operation| operation.observed_merge_extent(reservation_id))
 }
 
 /// The disposition this plan already records for a reservation, if it ends one.
@@ -4495,17 +4496,7 @@ fn append_evidence_operations(
         });
     for evidence in &reconciliation.action.evidence {
         let reservation = reservations.reservation(evidence.reservation_id)?;
-        let planned_extent = operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            });
+        let planned_extent = planned_merge_extent(reservation.id(), &operations);
         let edit_blocking_status = planned_extent.map_or_else(
             || reservation.edit_blocking_status(),
             |extent| {

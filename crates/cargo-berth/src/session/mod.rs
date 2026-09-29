@@ -388,16 +388,39 @@ pub(crate) fn apply_journal_event(
             reservation_id,
             extent: MergeExtent::Empty { .. },
             run_status: ReservationRunStatus::Ended,
+        } => retire_reservation_mappings(ledger_directory, &mapping_path, &[*reservation_id]),
+        JournalOperation::HolderMergeExtentObserved {
+            extent: MergeExtent::Empty { .. },
+            reservations,
         } => {
-            let mut store = SessionIdentityStore::read_for_update(&mapping_path);
-            store
-                .identities
-                .retain(|_, identity| identity.reservation_id != *reservation_id);
-            store.publish(ledger_directory, &mapping_path)
+            let ended = reservations
+                .as_slice()
+                .iter()
+                .filter(|observed| observed.run_status == ReservationRunStatus::Ended)
+                .map(|observed| observed.reservation_id)
+                .collect::<Vec<_>>();
+            if ended.is_empty() {
+                Ok(())
+            } else {
+                retire_reservation_mappings(ledger_directory, &mapping_path, &ended)
+            }
         },
         _ => Ok(()),
     };
     publication.into()
+}
+
+/// Remove every harness-session mapping that names one of `retired`.
+fn retire_reservation_mappings(
+    ledger_directory: &Path,
+    mapping_path: &Path,
+    retired: &[ReservationId],
+) -> Result<(), SessionIdentityStoreError> {
+    let mut store = SessionIdentityStore::read_for_update(mapping_path);
+    store
+        .identities
+        .retain(|_, identity| !retired.contains(&identity.reservation_id));
+    store.publish(ledger_directory, mapping_path)
 }
 
 /// Publish the current harness session's known coordination identity.

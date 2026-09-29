@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reconciliation journals one `holder_merge_extent_observed` record per holder checkout's changed merge extent, listing each reservation it applies to, instead of one `merge_extent_observed` record per reservation. A holder with many outstanding reservations no longer repeats the same extent in each record; journals holding `merge_extent_observed` records still replay unchanged.
 - The reference-transaction gate and `integrate` hold every live integration target to the ordering rules. Run `cargo-berth init` again to install the new hook and publish `gate-targets`.
 
 - Ordering edges between reservations with the same target are judged at that target; edges across targets are judged at the repository trunk. The trunk gate holds an update that brings in a successor still held by a cross-target edge.

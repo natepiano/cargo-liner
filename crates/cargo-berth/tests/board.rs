@@ -10,7 +10,9 @@ use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
+use cargo_berth_test_support::observes_merge_extent_of;
 use cargo_berth_test_support::reservation_row;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -837,7 +839,7 @@ fn reservation_report_retains_declared_protection_when_first_derivation_fails() 
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "unobserved-holder");
     let id = reservation_id(&claim(&holder_root, "tree:src", FIRST_RUN));
     assert_eq!(
-        journal_operation_count_for_reservation(repository.path(), "merge_extent_observed", &id),
+        merge_extent_observation_count(repository.path(), &id),
         0,
         "the holder must disappear before its first merge observation"
     );
@@ -889,7 +891,7 @@ fn released_legacy_reservation_report_preserves_its_not_derived_declaration() {
         .expect("isolated journal should read")
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
-        .filter(|event| event["op"] != "merge_extent_observed")
+        .filter(|event| !is_merge_extent_observation(event))
         .enumerate()
         .map(|(index, mut event)| {
             event["projection_generation"] = serde_json::json!(index + 1);
@@ -7241,6 +7243,15 @@ fn journal_operation_count_for_reservation(
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|event| event["op"] == operation && event["reservation_id"] == reservation_id)
+        .count()
+}
+
+fn merge_extent_observation_count(repository_root: &Path, reservation_id: &str) -> usize {
+    fs::read_to_string(repository_root.join(JOURNAL_PATH))
+        .expect("journal should read")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| observes_merge_extent_of(event, reservation_id))
         .count()
 }
 

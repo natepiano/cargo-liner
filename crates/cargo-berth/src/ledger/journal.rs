@@ -405,7 +405,10 @@ pub(crate) enum JournalOperation {
         /// Whether a caller presented the coordination identity this claim was made under.
         coordination_identity_provenance: CoordinationIdentityProvenance,
     },
-    /// Record branch protection observed under the reconciliation lock, without widening it.
+    /// Record one reservation's branch protection observed under the reconciliation lock.
+    ///
+    /// Journals written before [`Self::HolderMergeExtentObserved`] hold this form, one record
+    /// per reservation of the observed holder. Replay still reads it; nothing writes it.
     MergeExtentObserved {
         /// The holder whose branch surface was observed.
         reservation_id: ReservationId,
@@ -414,6 +417,17 @@ pub(crate) enum JournalOperation {
         /// Checkpoint and release determine mapping retirement, never merge emptiness alone.
         #[serde(default)]
         run_status: crate::reservation::ReservationRunStatus,
+    },
+    /// Record one holder checkout's branch protection, observed under the reconciliation lock,
+    /// for every reservation of that holder whose recorded extent it replaces.
+    ///
+    /// Replay applies `extent` to each listed reservation in list order, exactly as one
+    /// [`Self::MergeExtentObserved`] per reservation would.
+    HolderMergeExtentObserved {
+        /// Successful emptiness, exact paths, or retained evidence explaining a failed read.
+        extent:       crate::reservation::MergeExtent,
+        /// The holder's reservations receiving `extent`, each with its run status.
+        reservations: ObservedReservationSet,
     },
     /// Enlarge only the run's editing scope and the answer authorizing that acquisition.
     Widen {
@@ -659,6 +673,7 @@ impl JournalOperation {
     pub(super) const fn record_ceiling(&self) -> RecordCeiling {
         match self {
             Self::MergeExtentObserved { .. }
+            | Self::HolderMergeExtentObserved { .. }
             | Self::Incursion { .. }
             | Self::Widen {
                 cause: WidenCause::Drift,
@@ -688,6 +703,29 @@ impl JournalOperation {
             | Self::Bypass { .. }
             | Self::RebindWorktree { .. }
             | Self::RelocateWorktree { .. } => RecordCeiling::Declared,
+        }
+    }
+
+    /// The merge extent this operation records for `reservation_id`, in either record form.
+    pub(crate) fn observed_merge_extent(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Option<&crate::reservation::MergeExtent> {
+        match self {
+            Self::MergeExtentObserved {
+                reservation_id: observed,
+                extent,
+                ..
+            } => (*observed == reservation_id).then_some(extent),
+            Self::HolderMergeExtentObserved {
+                extent,
+                reservations,
+            } => reservations
+                .as_slice()
+                .iter()
+                .any(|observed| observed.reservation_id == reservation_id)
+                .then_some(extent),
+            _ => None,
         }
     }
 }
@@ -1212,6 +1250,32 @@ nonempty_journal_set!(
     "The non-empty foreign-holder set proven by one incursion.",
     "an incursion must name at least one foreign reservation"
 );
+/// One reservation a [`JournalOperation::HolderMergeExtentObserved`] record applies to.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(crate) struct ObservedReservation {
+    /// The reservation whose recorded merge extent the observation replaces.
+    pub(crate) reservation_id: ReservationId,
+    /// Checkpoint and release determine mapping retirement, never merge emptiness alone.
+    pub(crate) run_status:     crate::reservation::ReservationRunStatus,
+}
+
+nonempty_journal_set!(
+    ObservedReservationSet,
+    ObservedReservation,
+    EmptyObservedReservationSet,
+    "The non-empty ordered reservations one holder merge extent observation applies to.",
+    "a holder merge extent observation must name at least one reservation"
+);
+
+impl ObservedReservationSet {
+    /// Append the next reservation the same observation applies to.
+    pub(crate) fn push(&mut self, observed: ObservedReservation) { self.0.push(observed); }
+}
+
+impl From<ObservedReservation> for ObservedReservationSet {
+    fn from(observed: ObservedReservation) -> Self { Self(vec![observed]) }
+}
+
 nonempty_journal_set!(
     IncursionPathSet,
     ReservationScopePath,

@@ -642,7 +642,7 @@ pub(crate) enum RaceExtent {
 }
 
 /// The authoritative editing lifetime carried by reconciliation bookkeeping.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReservationRunStatus {
     /// An empty merge extent ends the run only after the run has done work.
