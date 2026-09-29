@@ -1,5 +1,6 @@
 //! The append-only journal and its complete version-one operation union.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -57,6 +58,8 @@ use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::IntegrationWitness;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::ReservationReplayError;
+use crate::reservation::RetainedReservationSet;
 use crate::reservation::ScopedPatchEquivalenceVerdict;
 use crate::reservation::ScopedPatchEvaluatorVersion;
 use crate::reservation::SuccessorScopedPatchEquivalenceVerdict;
@@ -703,6 +706,52 @@ impl JournalOperation {
             | Self::Bypass { .. }
             | Self::RebindWorktree { .. }
             | Self::RelocateWorktree { .. } => RecordCeiling::Declared,
+        }
+    }
+
+    /// Whether a reader other than the reservation fold reads this record.
+    ///
+    /// The readers are [`crate::edge::OrderingGraph`] replay, the board's overlap answers and
+    /// alerts, worktree enrollment's reservation history and overlaps, forced-integration permits,
+    /// the gate decision, the bypass audit, and pending-bypass recovery. Together they read every
+    /// claim, a widen authorized by enrollment, sequence, defer or override, deferral resolutions,
+    /// forced-integration permits and their consumption, and bypasses. Every other record is read
+    /// only by [`RetainedReservationSet`] replay, which reads every record.
+    ///
+    /// The match has no wildcard arm, so a new operation must be placed on one side.
+    pub(crate) const fn is_coordination_record(&self) -> bool {
+        match self {
+            Self::Claim { .. }
+            | Self::ResolveDefer { .. }
+            | Self::ForcedIntegrationPermit { .. }
+            | Self::ConsumeForcedIntegrationPermit { .. }
+            | Self::Bypass { .. } => true,
+            Self::Widen { authorization, .. } => match authorization {
+                ConflictAuthorization::Enrollment { .. }
+                | ConflictAuthorization::Sequence { .. }
+                | ConflictAuthorization::Defer { .. }
+                | ConflictAuthorization::Override { .. } => true,
+                ConflictAuthorization::NoConflict
+                | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => false,
+            },
+            Self::MergeExtentObserved { .. }
+            | Self::HolderMergeExtentObserved { .. }
+            | Self::Checkpoint { .. }
+            | Self::Resnapshot { .. }
+            | Self::Retarget { .. }
+            | Self::UnrecordedTargetsPinned { .. }
+            | Self::Renew { .. }
+            | Self::Release { .. }
+            | Self::ReplaceReleaseDisposition { .. }
+            | Self::EvidenceRevalidated { .. }
+            | Self::ScopedPatchEquivalenceChecked { .. }
+            | Self::ScopedPatchComparisonAttempted { .. }
+            | Self::SuccessorScopedPatchEquivalenceChecked { .. }
+            | Self::SuccessorScopedPatchComparisonAttempted { .. }
+            | Self::Incursion { .. }
+            | Self::ResolveIncursion { .. }
+            | Self::RebindWorktree { .. }
+            | Self::RelocateWorktree { .. } => false,
         }
     }
 
@@ -1862,13 +1911,24 @@ impl std::error::Error for EmptySkippedIntegrationHoldSet {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct JournalReplay {
     /// Every fully parsed journal event in append order.
-    pub(super) events:      Vec<JournalEvent>,
+    pub(super) events:              Vec<JournalEvent>,
+    /// The reservation set folded record by record, or the first record it could not apply.
+    ///
+    /// Equal to [`RetainedReservationSet::replay`] over `events`: no record after the first
+    /// failure is applied.
+    pub(super) reservations:        Result<RetainedReservationSet, ReservationReplayError>,
+    /// Every event whose operation [`JournalOperation::is_coordination_record`], in append order.
+    pub(super) coordination_events: Vec<JournalEvent>,
+    /// Every repository identity that wrote a complete record.
+    pub(super) repositories:        BTreeSet<RepoInstanceId>,
+    /// The number of complete records replayed.
+    pub(super) record_count:        u64,
     /// The byte length of the repaired journal.
-    pub(super) end_offset:  JournalByteOffset,
+    pub(super) end_offset:          JournalByteOffset,
     /// A deterministic digest of the exact journal bytes.
-    pub(super) fingerprint: JournalFingerprint,
+    pub(super) fingerprint:         JournalFingerprint,
     /// The generation represented by the final event, or zero for an empty journal.
-    pub(super) generation:  ProjectionGeneration,
+    pub(super) generation:          ProjectionGeneration,
 }
 
 /// A deterministic fingerprint over a journal's bytes.
@@ -1980,11 +2040,15 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
         .map_or(0, |index| index + 1);
     let complete_records = &bytes[..complete_end];
     let records = complete_records.split(|byte| *byte == b'\n');
-    let record_count = records.clone().count();
+    let line_count = records.clone().count();
     let mut events = Vec::new();
+    let mut reservations = Ok(RetainedReservationSet::default());
+    let mut coordination_events = Vec::new();
+    let mut repositories = BTreeSet::new();
+    let mut record_count = 0_u64;
     for (line_index, record) in records.enumerate() {
         if record.is_empty() {
-            if line_index + 1 == record_count {
+            if line_index + 1 == line_count {
                 continue;
             }
             return Err(JournalError::CorruptInteriorRecord {
@@ -1997,7 +2061,14 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
                 line:  line_index + 1,
                 error: error.to_string(),
             })?;
-        events.push(decode_record(record, line_index + 1)?);
+        let event = decode_record(record, line_index + 1)?;
+        fold_reservations(&mut reservations, &event);
+        repositories.insert(event.actor.repository);
+        record_count += 1;
+        if event.operation.is_coordination_record() {
+            coordination_events.push(event.clone());
+        }
+        events.push(event);
     }
 
     let generation = events.last().map_or_else(
@@ -2008,6 +2079,10 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
     Ok((
         JournalReplay {
             events,
+            reservations,
+            coordination_events,
+            repositories,
+            record_count,
             end_offset: JournalByteOffset::from(
                 u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?,
             ),
@@ -2016,6 +2091,21 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
         },
         complete_end,
     ))
+}
+
+/// Apply one event to a reservation fold that has not yet failed.
+///
+/// The first failure replaces the set and no later event is applied, as
+/// [`RetainedReservationSet::replay`] stops at its first error.
+fn fold_reservations(
+    reservations: &mut Result<RetainedReservationSet, ReservationReplayError>,
+    event: &JournalEvent,
+) {
+    if let Ok(retained) = reservations
+        && let Err(error) = retained.apply(event)
+    {
+        *reservations = Err(error);
+    }
 }
 
 /// Decode one complete record with a single `JournalEvent` parse.
@@ -2146,6 +2236,7 @@ impl From<std::io::Error> for JournalAppendError {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::io::Write;
 
@@ -2182,9 +2273,11 @@ mod tests {
     use super::ProjectionGeneration;
     use super::ProtectedPhaseStartHead;
     use super::ReservationPurpose;
+    use super::ReservationReplayError;
     use super::ReservationScope;
     use super::ReservationScopeAdditionSet;
     use super::ReservationScopeSet;
+    use super::RetainedReservationSet;
     use super::ScopeKind;
     use super::TrunkCommitAtClaim;
     use super::WidenCause;
@@ -2779,6 +2872,217 @@ mod tests {
                 "{valid_locator}"
             );
         }
+    }
+
+    #[test]
+    fn replay_folds_equal_whole_journal_replays_at_every_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = fold_sequence_events()?;
+        let mut journal = Vec::new();
+        for prefix_length in 0..=events.len() {
+            if let Some(event) = prefix_length
+                .checked_sub(1)
+                .and_then(|index| events.get(index))
+            {
+                journal.extend(serde_json::to_vec(event)?);
+                journal.push(b'\n');
+            }
+            let (replay, _) = replay_complete_records(&journal)?;
+
+            assert_eq!(replay.events, events[..prefix_length]);
+            assert_eq!(
+                replay.reservations,
+                RetainedReservationSet::replay(&replay.events)
+            );
+            assert_eq!(
+                replay.reservations.is_ok(),
+                prefix_length <= FOLD_FAILING_RECORD_INDEX,
+                "the fold fails from the rejected record onward"
+            );
+            assert_eq!(
+                replay.coordination_events,
+                replay
+                    .events
+                    .iter()
+                    .filter(|event| event.operation.is_coordination_record())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                replay.repositories,
+                replay
+                    .events
+                    .iter()
+                    .map(|event| event.actor.repository)
+                    .collect::<BTreeSet<_>>()
+            );
+            assert_eq!(replay.record_count, u64::try_from(prefix_length)?);
+        }
+
+        let (replay, _) = replay_complete_records(&journal)?;
+        assert!(matches!(
+            replay.reservations,
+            Err(ReservationReplayError::WidenRequiresUnreleased(reservation_id))
+                if reservation_id == parse_reservation_id(FOLD_RESERVATION_ID)
+        ));
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .map(|event| event.operation.is_coordination_record())
+                .collect::<Vec<_>>(),
+            [
+                true, true, false, true, false, true, false, false, false, false, false, true,
+                true,
+            ]
+        );
+        assert_eq!(replay.repositories.len(), 3);
+        Ok(())
+    }
+
+    const FOLD_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a30";
+    const FOLD_SECOND_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a31";
+    const FOLD_THIRD_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a32";
+    const FOLD_TRUNK: &str = "1111111111111111111111111111111111111111";
+    const FOLD_TIP: &str = "2222222222222222222222222222222222222222";
+    /// The index in [`fold_sequence_events`] of the widen that reservation replay rejects.
+    const FOLD_FAILING_RECORD_INDEX: usize = 9;
+
+    /// A journal from three repositories covering claims, widens under two authorizations, a
+    /// holder merge extent, a bypass, and a full lifecycle, followed by a widen of the released
+    /// reservation that reservation replay rejects and records after it.
+    fn fold_sequence_events() -> Result<Vec<JournalEvent>, Box<dyn std::error::Error>> {
+        let first = test_actor();
+        let second = test_actor();
+        let third = test_actor();
+        let populated_claim = fully_populated_claim_event().operation;
+        let JournalOperation::Claim {
+            authorization: sequence_authorization,
+            ..
+        } = populated_claim.clone()
+        else {
+            return Err("the populated claim should carry a sequence authorization".into());
+        };
+        let mut sequenced_widen = fold_widen(FOLD_SECOND_RESERVATION_ID)?;
+        if let JournalOperation::Widen { authorization, .. } = &mut sequenced_widen {
+            *authorization = sequence_authorization;
+        }
+        let key = serde_json::json!({
+            "trunk": FOLD_TRUNK,
+            "head": FOLD_TIP,
+            "working_tree": {"tracked_paths": [], "untracked_paths": []},
+        });
+        let operations = [
+            (&first, fold_claim(FOLD_RESERVATION_ID, "src")?),
+            (&second, fold_claim(FOLD_SECOND_RESERVATION_ID, "docs")?),
+            (&first, fold_widen(FOLD_RESERVATION_ID)?),
+            (&second, sequenced_widen),
+            (
+                &first,
+                fold_operation(&serde_json::json!({
+                    "op": "holder_merge_extent_observed",
+                    "extent": {"status": "empty", "key": key},
+                    "reservations": [{"reservation_id": FOLD_RESERVATION_ID, "run_status": "editing"}],
+                }))?,
+            ),
+            (
+                &second,
+                fold_operation(&serde_json::json!({
+                    "op": "bypass",
+                    "action": "integration",
+                    "cause": {
+                        "kind": "environment_override",
+                        "bypassed_merge": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a33",
+                    },
+                }))?,
+            ),
+            (
+                &first,
+                fold_operation(&serde_json::json!({
+                    "op": "checkpoint",
+                    "reservation_id": FOLD_RESERVATION_ID,
+                    "protected_tip": FOLD_TIP,
+                    "trunk_snapshot": FOLD_TRUNK,
+                }))?,
+            ),
+            (
+                &first,
+                fold_operation(&serde_json::json!({
+                    "op": "evidence_revalidated",
+                    "reservation_id": FOLD_RESERVATION_ID,
+                    "status": {"status": "integrated", "trunk_oid": FOLD_TRUNK},
+                    "edit_blocking_status": "clear",
+                }))?,
+            ),
+            (
+                &first,
+                fold_operation(&serde_json::json!({
+                    "op": "release",
+                    "reservation_id": FOLD_RESERVATION_ID,
+                    "disposition": {"kind": "integrated"},
+                }))?,
+            ),
+            (&first, fold_widen(FOLD_RESERVATION_ID)?),
+            (
+                &second,
+                fold_operation(&serde_json::json!({
+                    "op": "renew",
+                    "reservation_id": FOLD_SECOND_RESERVATION_ID,
+                }))?,
+            ),
+            (&third, fold_claim(FOLD_THIRD_RESERVATION_ID, "tests")?),
+            (&third, populated_claim),
+        ];
+        let at = "2026-08-23T17:34:54.123Z"
+            .parse::<RecordedAt>()
+            .expect("recorded timestamp should parse");
+        let mut events = Vec::new();
+        for (generation, (actor, operation)) in (1_u64..).zip(operations) {
+            events.push(JournalEvent {
+                schema_version: SchemaVersion::from(CURRENT_SCHEMA_VERSION),
+                event_id: EventId::new(),
+                actor: actor.clone(),
+                identity_inputs: JournalMutationIdentityInputs::Unrecorded,
+                at: at.clone(),
+                projection_generation: ProjectionGeneration::from(generation),
+                operation,
+            });
+        }
+        Ok(events)
+    }
+
+    fn fold_claim(reservation_id: &str, tree: &str) -> Result<JournalOperation, serde_json::Error> {
+        fold_operation(&serde_json::json!({
+            "op": "claim",
+            "reservation_id": reservation_id,
+            "scopes": [{"path": tree, "kind": "tree"}],
+            "source": {"kind": "explicit"},
+            "purpose": {"kind": "not_provided_by_caller"},
+            "trunk_at_claim": FOLD_TRUNK,
+            "head_snapshot": {"kind": "branch", "full_ref": "refs/heads/phase", "head": FOLD_TIP},
+            "phase_start_head": FOLD_TRUNK,
+            "worktree_root": "/repo",
+            "worktree_administrative_locator": ".",
+            "authorization": {"kind": "no_conflict"},
+            "coordination_identity_provenance": "presented",
+        }))
+    }
+
+    fn fold_widen(reservation_id: &str) -> Result<JournalOperation, serde_json::Error> {
+        fold_operation(&serde_json::json!({
+            "op": "widen",
+            "reservation_id": reservation_id,
+            "added_scopes": [{"path": "added.rs", "kind": "file"}],
+            "cause": {"kind": "explicit", "reason": "cover the added file"},
+            "authorization": {"kind": "no_conflict"},
+            "edit_blocking_status": "blocking",
+        }))
+    }
+
+    fn fold_operation(
+        operation: &serde_json::Value,
+    ) -> Result<JournalOperation, serde_json::Error> {
+        serde_json::from_value(operation.clone())
     }
 
     fn test_actor() -> JournalActor {

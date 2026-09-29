@@ -31,7 +31,6 @@ use crate::reservation::MergeExtent;
 use crate::reservation::RaceExtent;
 use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
-use crate::reservation::RetainedReservationSet;
 
 /// User-facing complete-board sections, named as the text report presents them.
 #[derive(Serialize)]
@@ -142,8 +141,10 @@ pub(crate) fn reservation_lifecycle_snapshot(
     report: &ReconciliationReport,
     reservation_id: ReservationId,
 ) -> Result<ReservationReportSnapshot, ReservationReplayError> {
-    let reservations = RetainedReservationSet::replay(report.journal_snapshot.events())?;
-    let reservation = reservations.reservation(reservation_id)?;
+    let reservation = report
+        .journal_snapshot
+        .reservations()
+        .reservation(reservation_id)?;
     Ok(ReservationReportSnapshot {
         reservation_id,
         lifecycle: ReservationLifecycleSnapshot::from(reservation.evidence_state()?),

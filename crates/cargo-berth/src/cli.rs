@@ -102,7 +102,6 @@ use crate::recovery::ResolveRequest;
 use crate::reservation::AbandonmentReason;
 use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReservationReplayError;
-use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::session;
@@ -1583,7 +1582,7 @@ fn pin_unrecorded_targets(
     let mut pinned_ids = Vec::new();
     let outcome = ledger
         .transact(actor.worktree_id, actor.coordination_run_id, |state| {
-            let reservations = match RetainedReservationSet::replay(state.events()) {
+            let reservations = match state.reservations() {
                 Ok(reservations) => reservations,
                 Err(error) => {
                     return TransactionValidation::Reject(TargetPinRejection::Replay(error));

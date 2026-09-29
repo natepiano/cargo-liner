@@ -642,11 +642,11 @@ fn enroll_candidate(
             diagnostic,
         )
     };
-    let events = ledger
-        .read_validated_events()
+    let reservations = ledger
+        .read_validated_journal()
+        .map_err(|error| git_failure(error.to_string()))?
+        .into_reservations()
         .map_err(|error| git_failure(error.to_string()))?;
-    let reservations =
-        RetainedReservationSet::replay(&events).map_err(|error| git_failure(error.to_string()))?;
     let containment = ActingHeadContainment::observe_at_head(
         &reservations,
         &candidate.context,
@@ -676,8 +676,10 @@ fn enroll_candidate(
             ) {
                 return TransactionValidation::Reject(EnrollmentRejection::AlreadyReserved);
             }
-            let reservations = match RetainedReservationSet::replay(state.events()) {
-                Ok(reservations) => reservations.with_acting_head_containment(containment),
+            let reservations = match state.reservations() {
+                Ok(reservations) => reservations
+                    .clone()
+                    .with_acting_head_containment(containment),
                 Err(error) => {
                     return TransactionValidation::Reject(EnrollmentRejection::InvalidReplay(
                         error.to_string(),

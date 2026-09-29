@@ -44,7 +44,6 @@ use crate::git;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::ledger;
-use crate::ledger::JournalEvent;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
@@ -134,8 +133,13 @@ pub(crate) fn execute(
     };
     let reconciled_drift_preflight = match reconcile::reconcile_for_drift(
         &invocation_directory,
-        |worktree_context, _, events| {
-            prepare_drift_execution(request, worktree_context, events, recovery_command_line)
+        |worktree_context, _, reservations| {
+            prepare_drift_execution(
+                request,
+                worktree_context,
+                reservations,
+                recovery_command_line,
+            )
         },
     ) {
         Ok(Enrollment::Enrolled(reconciled_drift_preflight)) => reconciled_drift_preflight,
@@ -200,7 +204,7 @@ pub(crate) fn execute(
 fn prepare_drift_execution(
     request: DriftRequest,
     worktree_context: &WorktreeContext,
-    events: &[JournalEvent],
+    initial_reservations: RetainedReservationSet,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<PreparedDriftExecution, DriftExecutionError> {
     let (resolved_edit_authorization, worktree_id) = match request.reservation {
@@ -236,7 +240,6 @@ fn prepare_drift_execution(
         worktree_context,
         recovery_command_line,
     );
-    let initial_reservations = RetainedReservationSet::replay(events)?;
     let acting_identity =
         validated_drift_identity(worktree_id, &initial_reservations, &identity_validation)?;
     let initial_subjects = request
@@ -675,8 +678,9 @@ fn transact_classification(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
         |state| {
-            let reservations = match RetainedReservationSet::replay(state.events()) {
+            let reservations = match state.reservations() {
                 Ok(reservations) => reservations
+                    .clone()
                     .with_acting_head_containment(context.acting_head_containment.clone()),
                 Err(error) => {
                     return ReconciliationValidation::Reject(DriftTransactionRejection::Replay(
@@ -897,6 +901,7 @@ mod tests {
     use crate::ledger::LedgerError;
     use crate::ledger::WorktreeContext;
     use crate::output::OutputEnvelope;
+    use crate::reservation::RetainedReservationSet;
 
     struct WorktreeComparisonFixture {
         repository:       TempDir,
@@ -955,7 +960,7 @@ mod tests {
         let prepared = prepare_drift_execution(
             request,
             &fixture.worktree_context,
-            &[],
+            RetainedReservationSet::default(),
             &RecoveryCommandLine::current_process(),
         )
         .expect("missing post-commit identity should be accepted");
@@ -983,7 +988,7 @@ mod tests {
         let prepared = prepare_drift_execution(
             request,
             &fixture.worktree_context,
-            &[],
+            RetainedReservationSet::default(),
             &RecoveryCommandLine::current_process(),
         )
         .expect("pending rewrite should defer comparison");

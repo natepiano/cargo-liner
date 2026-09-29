@@ -46,7 +46,7 @@ pub(super) struct ReplayedClaim<'event> {
 }
 
 /// A journal sequence that cannot represent valid reservation state.
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReservationReplayError {
     /// Two claims reused one non-recyclable reservation identity.
     DuplicateClaim(ReservationId),

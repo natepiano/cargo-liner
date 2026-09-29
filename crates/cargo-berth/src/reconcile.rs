@@ -228,6 +228,7 @@ struct MergeExtentGitCost {
 /// Complete journal truth retained from one reconciliation lock acquisition.
 pub(crate) struct ReconciledJournalSnapshot {
     events:             Vec<JournalEvent>,
+    reservations:       RetainedReservationSet,
     generation:         ProjectionGeneration,
     journal_end_offset: JournalByteOffset,
 }
@@ -235,6 +236,9 @@ pub(crate) struct ReconciledJournalSnapshot {
 impl ReconciledJournalSnapshot {
     /// Borrow every event visible at the reconciled replay point.
     pub(crate) fn events(&self) -> &[JournalEvent] { &self.events }
+
+    /// Borrow the reservation set folded from every event at the reconciled replay point.
+    pub(crate) const fn reservations(&self) -> &RetainedReservationSet { &self.reservations }
 
     /// Return the projection generation shared by every board section.
     pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
@@ -1353,7 +1357,8 @@ pub(crate) fn reconcile(
 /// Reconcile once while retaining the discovered worktree and opened ledger for drift.
 pub(crate) fn reconcile_for_drift<ConcurrentObservation>(
     invocation_directory: &Path,
-    observe: impl FnOnce(&WorktreeContext, &Ledger, &[JournalEvent]) -> ConcurrentObservation + Send,
+    observe: impl FnOnce(&WorktreeContext, &Ledger, RetainedReservationSet) -> ConcurrentObservation
+    + Send,
 ) -> Result<Enrollment<ReconciledDriftPreflight<ConcurrentObservation>>, ReconcileError>
 where
     ConcurrentObservation: Send,
@@ -1362,11 +1367,14 @@ where
     match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => {
             let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
-            let observation_events =
-                drift_observation_events_after_current_marker_sweep(&worktree_context, &ledger)?;
+            let observation_reservations =
+                drift_observation_reservations_after_current_marker_sweep(
+                    &worktree_context,
+                    &ledger,
+                )?;
             let (report, observation) = thread::scope(|scope| {
                 let observation_worker =
-                    scope.spawn(|| observe(&worktree_context, &ledger, &observation_events));
+                    scope.spawn(|| observe(&worktree_context, &ledger, observation_reservations));
                 let report = reconcile_with_open_ledger(
                     &worktree_context,
                     &ledger,
@@ -1399,17 +1407,18 @@ where
     }
 }
 
-fn drift_observation_events_after_current_marker_sweep(
+fn drift_observation_reservations_after_current_marker_sweep(
     worktree_context: &WorktreeContext,
     ledger: &Ledger,
-) -> Result<Vec<JournalEvent>, ReconcileError> {
+) -> Result<RetainedReservationSet, ReconcileError> {
     let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
     let outcome = ledger
         .transact(worktree_identity.id, CoordinationRunId::new(), |state| {
-            let prepared_events = RetainedReservationSet::replay(state.events())
+            let prepared_reservations = state
+                .reservations()
                 .map_err(ReconcileError::Replay)
                 .and_then(|reservations| {
                     worktree_context
@@ -1422,13 +1431,13 @@ fn drift_observation_events_after_current_marker_sweep(
                             })
                         })
                         .map_err(ReconcileError::Ledger)?;
-                    Ok(state.events().to_vec())
+                    Ok(reservations.clone())
                 });
-            TransactionValidation::Reject(prepared_events)
+            TransactionValidation::Reject(prepared_reservations)
         })
         .map_err(ReconcileError::Transaction)?;
     match outcome {
-        LedgerTransactionOutcome::Rejected(prepared_events) => prepared_events,
+        LedgerTransactionOutcome::Rejected(prepared_reservations) => prepared_reservations,
         LedgerTransactionOutcome::Appended { .. } => {
             Err(ReconcileError::UnexpectedDriftPreflightMutation)
         },
@@ -1815,7 +1824,9 @@ pub(crate) fn prepare_rewrite_reconciliation(
     if markers.is_empty() {
         return Ok(preflight);
     }
-    let mut reservations = RetainedReservationSet::replay(&ledger.read_validated_events()?)
+    let mut reservations = ledger
+        .read_validated_journal()?
+        .into_reservations()
         .map_err(ReconcileError::Replay)?;
     let repository_trunk = berth_config.repository_trunk().map_err(|reason| {
         ReconcileError::Config(ConfigError::InvalidValue {
@@ -2128,9 +2139,10 @@ fn prepare_reconciliation_transaction(
     worktree_context: &WorktreeContext,
     rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<PreparedReconciliationTransaction, ReconciliationPlanningError> {
-    let reservations = RetainedReservationSet::replay(state.events())
+    let reservations = state
+        .reservations()
         .map_err(ReconciliationPlanningError::Reservation)?;
-    let reservations = rewrite_preflight.project(&reservations)?;
+    let reservations = rewrite_preflight.project(reservations)?;
     let ordering_graph =
         OrderingGraph::replay(state.events()).map_err(ReconciliationPlanningError::Edge)?;
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
@@ -3147,9 +3159,10 @@ pub(crate) fn prepare_gate_reconciliation(
     purpose: GateReconciliationPurpose,
     rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<GateReconciliation, GateReconciliationError> {
-    let reservations = RetainedReservationSet::replay(state.events())
+    let reservations = state
+        .reservations()
         .map_err(GateReconciliationError::Reservation)?;
-    let reservations = rewrite_preflight.project(&reservations)?;
+    let reservations = rewrite_preflight.project(reservations)?;
     let ordering_graph =
         OrderingGraph::replay(state.events()).map_err(GateReconciliationError::Edge)?;
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
@@ -5035,12 +5048,11 @@ impl ReconciliationAction {
         state: &ReplayedLedgerState<'_>,
         recoverable_failures: &RecoverableReconciliationAppendFailures,
     ) -> Result<ReconciliationReport, ReconcileError> {
-        let reservations =
-            RetainedReservationSet::replay(state.events()).map_err(ReconcileError::Replay)?;
+        let reservations = state.reservations().map_err(ReconcileError::Replay)?;
         let ordering_graph =
             OrderingGraph::replay(state.events()).map_err(ReconcileError::EdgeReplay)?;
         let constraints = ordering_graph
-            .integration_constraints(&reservations, &self.repository_snapshot, state.generation())
+            .integration_constraints(reservations, &self.repository_snapshot, state.generation())
             .map_err(ReconcileError::MissingReadinessFact)?;
         for pending_import in self.pending_bypass_imports {
             if recoverable_failures.contains(pending_import.operation()) {
@@ -5066,7 +5078,7 @@ impl ReconciliationAction {
             &self.cover_marker_publications,
         )?;
         let mut alerts = reservation_alerts(
-            &reservations,
+            reservations,
             &self.repository_snapshot,
             &self.confirmed_lost_evidence,
         )?;
@@ -5117,6 +5129,7 @@ impl ReconciliationAction {
             constraints,
             journal_snapshot: ReconciledJournalSnapshot {
                 events:             state.events().to_vec(),
+                reservations:       reservations.clone(),
                 generation:         state.generation(),
                 journal_end_offset: state.journal_end_offset(),
             },

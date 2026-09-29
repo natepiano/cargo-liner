@@ -281,6 +281,10 @@ impl From<&ReservationSnapshot> for PhaseStartHeadUpdate {
 
 impl RetainedReservationSet {
     /// Replay journal operations into the current retained reservation set.
+    ///
+    /// Production reads the set the journal replay folds record by record; this whole-slice
+    /// replay is the reference that fold is tested against.
+    #[cfg(test)]
     pub(crate) fn replay(events: &[JournalEvent]) -> Result<Self, ReservationReplayError> {
         let mut reservations = Self::default();
         for event in events {
@@ -872,7 +876,7 @@ impl RetainedReservationSet {
     }
 
     /// Dispatch one journal operation to the replay step that owns it.
-    fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
+    pub(crate) fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
         match &event.operation {
             JournalOperation::MergeExtentObserved {
                 reservation_id,

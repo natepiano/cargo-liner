@@ -21,7 +21,6 @@ use crate::reconcile;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
-use crate::reservation::RetainedReservationSet;
 
 enum RetargetRejection {
     InvalidInput(String),
@@ -93,7 +92,7 @@ fn execute_after_reconciliation(
         Err(error) => return OutputEnvelope::ledger_error(CommandVerb::Retarget, &error),
     };
     let outcome = ledger.transact(actor.worktree_id, actor.coordination_run_id, |state| {
-        let reservations = match RetainedReservationSet::replay(state.events()) {
+        let reservations = match state.reservations() {
             Ok(reservations) => reservations,
             Err(error) => return TransactionValidation::Reject(RetargetRejection::Replay(error)),
         };

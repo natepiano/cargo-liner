@@ -477,7 +477,7 @@ pub(super) fn reanchor_rewritten_phases(
             journal_mutation_actor.worktree_id,
             journal_mutation_actor.coordination_run_id,
             |state| {
-                let reservations = match RetainedReservationSet::replay(state.events()) {
+                let reservations = match state.reservations() {
                     Ok(reservations) => reservations,
                     Err(error) => {
                         return ReconciliationValidation::Reject(
@@ -491,7 +491,7 @@ pub(super) fn reanchor_rewritten_phases(
                     cover_actors:           std::collections::HashMap::default(),
                     operations:             resnapshot_operations(
                         repository_root,
-                        &reservations,
+                        reservations,
                         events,
                     ),
                     recoverable_operations: Vec::new(),

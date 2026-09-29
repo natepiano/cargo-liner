@@ -50,6 +50,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::reservation::RecordedTarget;
 use crate::reservation::ReservationLifecycle;
+use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::session;
 use crate::session::CurrentSessionMappingRemoval;
@@ -62,8 +63,23 @@ pub(crate) struct Ledger {
 
 /// Validated journal truth for a mutation-free edit check.
 pub(crate) struct EditCheckLedgerSnapshot {
-    events:           Vec<JournalEvent>,
+    reservations:     Result<RetainedReservationSet, ReservationReplayError>,
     worktree_context: WorktreeContext,
+}
+
+/// Validated journal truth read without holding the mutation lock.
+pub(crate) struct ValidatedJournal {
+    events:       Vec<JournalEvent>,
+    reservations: Result<RetainedReservationSet, ReservationReplayError>,
+}
+
+impl ValidatedJournal {
+    /// Take the reservation set folded from every record, or the first record replay rejected.
+    pub(crate) fn into_reservations(
+        self,
+    ) -> Result<RetainedReservationSet, ReservationReplayError> {
+        self.reservations
+    }
 }
 
 /// The initialized resources reported through the typed `init` result payload.
@@ -85,23 +101,40 @@ pub(crate) struct LedgerReinitialization {
 }
 
 impl EditCheckLedgerSnapshot {
-    /// Borrow every complete journal fact visible to this read.
-    pub(crate) fn events(&self) -> &[JournalEvent] { &self.events }
-
-    /// Return the filesystem-discovered worktree context.
-    pub(crate) const fn worktree_context(&self) -> &WorktreeContext { &self.worktree_context }
+    /// Split this read into its folded reservation set and the filesystem-discovered worktree
+    /// context.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Result<RetainedReservationSet, ReservationReplayError>,
+        WorktreeContext,
+    ) {
+        (self.reservations, self.worktree_context)
+    }
 }
 
 /// The replayed journal facts visible to a transaction's validation step.
 pub(crate) struct ReplayedLedgerState<'replay> {
     events:             &'replay [JournalEvent],
+    reservations:       &'replay Result<RetainedReservationSet, ReservationReplayError>,
     generation:         ProjectionGeneration,
     journal_end_offset: JournalByteOffset,
 }
 
-impl ReplayedLedgerState<'_> {
+impl<'replay> ReplayedLedgerState<'replay> {
     /// Borrow every replayed fact in append order.
     pub(crate) const fn events(&self) -> &[JournalEvent] { self.events }
+
+    /// Borrow the reservation set folded from every replayed record.
+    ///
+    /// # Errors
+    ///
+    /// Returns a copy of the first record the fold could not apply.
+    pub(crate) fn reservations(
+        &self,
+    ) -> Result<&'replay RetainedReservationSet, ReservationReplayError> {
+        self.reservations.as_ref().map_err(Clone::clone)
+    }
 
     /// Return the projection generation represented by the replay.
     pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
@@ -264,23 +297,31 @@ impl Ledger {
             worktree_context.common_git_directory(),
             worktree_context.repository_root(),
         );
-        let events = ledger.read_validated_events()?;
+        let reservations = ledger.read_validated_journal()?.into_reservations();
         Ok(Enrollment::Enrolled(EditCheckLedgerSnapshot {
-            events,
+            reservations,
             worktree_context,
         }))
     }
 
     /// Read validated journal truth without holding the mutation lock.
-    pub(crate) fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
+    pub(crate) fn read_validated_journal(&self) -> Result<ValidatedJournal, LedgerError> {
         self.require_existing()?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
         retry_concurrent_projection_publication(|| {
             let replay = Journal::replay_read_only(&self.paths.journal)?;
             identity::validate_journal_repository(repo_instance_id, &replay)?;
             projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
-            Ok(replay.events)
+            Ok(ValidatedJournal {
+                events:       replay.events,
+                reservations: replay.reservations,
+            })
         })
+    }
+
+    /// Read every validated journal fact without holding the mutation lock.
+    pub(crate) fn read_validated_events(&self) -> Result<Vec<JournalEvent>, LedgerError> {
+        self.read_validated_journal().map(|journal| journal.events)
     }
 
     /// Validate against one locked replay and append only the approved operation.
@@ -295,6 +336,7 @@ impl Ledger {
             .map_err(LedgerTransactionError::from_ledger_error)?;
         let replayed_state = ReplayedLedgerState {
             events:             &transaction.replay.events,
+            reservations:       &transaction.replay.reservations,
             generation:         transaction.replay.generation,
             journal_end_offset: transaction.replay.end_offset,
         };
@@ -331,6 +373,7 @@ impl Ledger {
             .map_err(LedgerTransactionError::from_ledger_error)?;
         let replayed_state = ReplayedLedgerState {
             events:             &transaction.replay.events,
+            reservations:       &transaction.replay.reservations,
             generation:         transaction.replay.generation,
             journal_end_offset: transaction.replay.end_offset,
         };
@@ -411,6 +454,7 @@ impl Ledger {
             .map_err(LedgerCommittedActionError::Transaction)?;
         let replayed_state = ReplayedLedgerState {
             events:             &transaction.replay.events,
+            reservations:       &transaction.replay.reservations,
             generation:         transaction.replay.generation,
             journal_end_offset: transaction.replay.end_offset,
         };
@@ -475,6 +519,7 @@ impl Ledger {
             .map_err(LedgerCommittedActionError::Transaction)?;
         let replayed_state = ReplayedLedgerState {
             events:             &transaction.replay.events,
+            reservations:       &transaction.replay.reservations,
             generation:         transaction.replay.generation,
             journal_end_offset: transaction.replay.end_offset,
         };
@@ -512,6 +557,7 @@ impl Ledger {
                 }
                 let committed_state = ReplayedLedgerState {
                     events:             &transaction.replay.events,
+                    reservations:       &transaction.replay.reservations,
                     generation:         transaction.replay.generation,
                     journal_end_offset: transaction.replay.end_offset,
                 };
@@ -813,7 +859,7 @@ fn publish_gate_targets(
     let Ok(trunk) = configuration.repository_trunk() else {
         return Ok(());
     };
-    let Ok(reservations) = RetainedReservationSet::replay(&replay.events) else {
+    let Ok(reservations) = &replay.reservations else {
         return Ok(());
     };
     let targets = reservations
