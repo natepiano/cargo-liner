@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tempfile::TempDir;
 
 use super::mend_json::expected_summary;
-use super::mend_json::mend_command;
+use super::mend_json::mend_command_for;
 use super::mend_json::parse_mend_json_output;
 use super::report::Finding;
 use super::report::Report;
@@ -105,12 +105,8 @@ impl DiagnosticBatch {
     pub(crate) fn path(&self) -> &Path { self.temp.path() }
 
     pub(crate) fn command(&self) -> Command {
-        let mut command = mend_command();
-        command
-            .current_dir(self.path())
-            .arg("--manifest-path")
-            .arg(self.path().join("Cargo.toml"))
-            .arg("--workspace");
+        let mut command = mend_command_for(&self.path().join("Cargo.toml"));
+        command.arg("--workspace");
         command
     }
 

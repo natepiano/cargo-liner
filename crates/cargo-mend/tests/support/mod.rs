@@ -37,7 +37,12 @@ pub(super) use self::diagnostics::diagnostic_spec;
 pub(super) use self::diagnostics::findings_at;
 pub(super) use self::diagnostics::member_report;
 pub(super) use self::mend_json::fix_support_for;
+#[allow(
+    unused_imports,
+    reason = "`cli_smoke` runs mend without a fixture manifest; the diagnostics suite always names one"
+)]
 pub(super) use self::mend_json::mend_command;
+pub(super) use self::mend_json::mend_command_for;
 pub(super) use self::mend_json::parse_mend_json_output;
 pub(super) use self::report::ExpectedFinding;
 pub(super) use self::report::Finding;
@@ -86,6 +91,20 @@ pub(super) fn allow_pub_use_outside_subtree(project_root: &Path) {
         format!("[diagnostics]\npub_use_outside_subtree = false\n\n{existing}"),
     )
     .expect("write fixture mend.toml");
+}
+
+/// Makes a fixture a git repository. `cargo fix`, which `--fix-compiler`,
+/// `--fix-all` and the unused-import cleanup chain, refuses to edit a package
+/// that is not under version control. An empty repository is enough — mend
+/// already passes `--allow-dirty` and `--allow-staged`.
+pub(super) fn init_git_repo(project_root: &Path) {
+    let status = Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .arg(project_root)
+        .status()
+        .expect("run git init");
+    assert!(status.success(), "git init failed for the fixture");
 }
 
 /// The suffix mend gives each stored report: the unit's `.rmeta` file name with

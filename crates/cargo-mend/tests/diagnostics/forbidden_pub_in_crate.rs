@@ -500,9 +500,7 @@ edition = "2024"
         "a required-mode bare `pub` with a resolved boundary must be offered to `--fix`: {report:#?}"
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -555,9 +553,7 @@ edition = "2024"
     assert_codes(&report, "src/a/b/c.rs", &[]);
     assert_eq!(report.summary.fixable_with_fix, 0, "{report:#?}");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -975,9 +971,7 @@ edition = "2024"
         "consider using: `pub(in crate::root::panel)`",
     );
 
-    mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1594,9 +1588,7 @@ edition = "2024"
         "two compilations of one declaration must advertise one fix: {report:#?}"
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1675,9 +1667,7 @@ edition = "2024"
 
     // The run exits non-zero: the module declaration is still reported and is
     // not repairable here, which is the other half of what this asserts.
-    mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1776,9 +1766,7 @@ edition = "2024"
         );
     }
 
-    mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1885,9 +1873,7 @@ fn bounded_pub_in_path_is_fixable_when_the_boundary_widens_or_respells_it() {
         "severity must follow fixability: {report:#?}"
     );
 
-    mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2035,9 +2021,7 @@ fn widening_past_a_trait_impl_interface_is_reported_without_a_fix() {
         "a widening past an interface ceiling must not advertise a fix: {report:#?}"
     );
 
-    mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

@@ -142,9 +142,7 @@ pub fn call(handle: &Handle) -> u64 {
     )
     .expect("write lib.rs");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -225,9 +223,7 @@ pub fn native_id(handle: &Handle) -> u64 {
     )
     .expect("write lib.rs");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

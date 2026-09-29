@@ -32,9 +32,7 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--all-targets")
         .arg("--json")
         .output()
@@ -81,9 +79,7 @@ edition = "2024"
     .expect("write foo");
 
     let manifest_path = temp.path().join("Cargo.toml");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--json")
         .output()
         .expect("run cargo-mend --json");
@@ -107,9 +103,7 @@ edition = "2024"
         "unused crate visibility must narrow to private: {report:#?}",
     );
 
-    let strict_output = mend_command()
-        .arg("--manifest-path")
-        .arg(manifest_path)
+    let strict_output = mend_command_for(&manifest_path)
         .arg("--fail-on-warn")
         .output()
         .expect("run cargo-mend --fail-on-warn");
@@ -881,9 +875,7 @@ impl Saved {
 
     assert_human_report_advertises_warning_fix(&manifest_path);
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -927,9 +919,7 @@ fn named_fields_are_rewritten_to_their_caller_boundaries() {
 
     assert_human_report_advertises_warning_fix(&manifest_path);
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1199,9 +1189,7 @@ edition = "2024"
         "the tuple-field boundary must be offered to `--fix`: {report:#?}",
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1272,9 +1260,7 @@ edition = "2024"
 }
 
 fn assert_human_report_advertises_warning_fix(manifest_path: &std::path::Path) {
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(manifest_path)
+    let output = mend_command_for(manifest_path)
         .output()
         .expect("run cargo-mend human report");
     assert!(
@@ -1372,9 +1358,7 @@ reexport_upstream_fixture = { path = "../upstream" }
     )
     .expect("write readiness");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("app/Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("app/Cargo.toml"))
         .arg("--json")
         .output()
         .expect("run cargo-mend --json");

@@ -1,3 +1,5 @@
+use std::env;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -14,25 +16,63 @@ use super::report::ExpectedFinding;
 use super::report::Report;
 use super::report::Summary;
 
-fn clear_wrappers(command: &mut Command) -> &mut Command {
+/// Names the `CARGO_HOME` every harness cargo runs under: a directory under the
+/// target's test scratch space that holds no `config.toml`, so a developer's
+/// `build.rustc-wrapper` (sccache) or other cargo settings never reach a
+/// fixture build. Fixture dependencies are path-only, so cargo needs nothing
+/// from a real home.
+fn empty_cargo_home() -> PathBuf {
+    let cargo_home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cargo-mend-empty-cargo-home");
+    fs::create_dir_all(&cargo_home).expect("create empty CARGO_HOME for fixture builds");
+    cargo_home
+}
+
+/// Keeps the developer's cargo setup out of a fixture build while leaving
+/// cargo's rustc-info cache working.
+///
+/// The wrapper variables are removed, not set to `""`: cargo fingerprints each
+/// wrapper's executable for its `.rustc_info.json` cache, cannot resolve an
+/// empty path, and then re-probes `rustc` on every invocation. Config-file
+/// wrappers stay out because cargo reads config from the working directory's
+/// ancestors and from `CARGO_HOME`: the working directory is the system temp
+/// directory every fixture lives in, outside any checkout or home directory
+/// on Linux and macOS, and `CARGO_HOME` is [`empty_cargo_home`]. Callers that
+/// run in a fixture set their own `current_dir` over this one.
+fn isolate_cargo(command: &mut Command) -> &mut Command {
     command
         .env_remove("RUSTC")
-        .env("RUSTC_WRAPPER", "")
-        .env("CARGO_BUILD_RUSTC_WRAPPER", "")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("CARGO_BUILD_RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env("CARGO_HOME", empty_cargo_home())
+        .current_dir(env::temp_dir())
 }
 
 pub(super) fn cargo_command() -> Command {
     let mut command = Command::new("cargo");
-    clear_wrappers(&mut command);
+    isolate_cargo(&mut command);
     command
 }
 
 pub(crate) fn mend_command() -> Command {
     let mut command = Command::new(mend_bin());
-    clear_wrappers(&mut command);
+    isolate_cargo(&mut command);
+    command
+}
+
+/// Runs mend on `manifest_path` from the fixture's own directory, the way a
+/// user runs it in a project: `cargo fix`, which `--fix-compiler`, `--fix-all`
+/// and the unused-import cleanup run, looks for version control from its
+/// working directory.
+pub(crate) fn mend_command_for(manifest_path: &Path) -> Command {
+    let mut command = mend_command();
+    command.arg("--manifest-path").arg(manifest_path);
+    if let Some(fixture_root) = manifest_path.parent() {
+        command.current_dir(fixture_root);
+    }
     command
 }
 
@@ -167,9 +207,7 @@ pub(super) fn expected_summary_text(report: &Report) -> String {
 }
 
 pub(super) fn run_mend_json(manifest_path: &Path) -> Report {
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(manifest_path)
+    let output = mend_command_for(manifest_path)
         .arg("--json")
         .output()
         .expect("run cargo-mend --json");

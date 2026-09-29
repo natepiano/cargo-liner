@@ -414,9 +414,7 @@ fn assert_forbidden_visibility_human(rendered: &str, report: &Report) {
 fn fixture_renders_every_current_diagnostic() {
     let temp = create_all_diagnostics_fixture();
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--json")
         .output()
         .expect("run cargo-mend against fixture");
@@ -450,9 +448,7 @@ fn fixture_renders_every_current_diagnostic() {
     assert_summary_matches_findings(&report);
     assert_forbidden_visibility_json(&stdout, &report);
 
-    let rendered_output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let rendered_output = mend_command_for(&temp.path().join("Cargo.toml"))
         .output()
         .expect("run cargo-mend human output");
     assert!(
@@ -474,9 +470,7 @@ fn suspicious_pub_dynamic_help_matches_all_renderers() {
     let expected_help =
         "remove the parent facade and the now-unneeded `pub(in crate::a)` annotation";
 
-    let json_output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let json_output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--json")
         .output()
         .expect("run JSON suspicious-pub fixture");
@@ -513,9 +507,7 @@ fn suspicious_pub_dynamic_help_matches_all_renderers() {
         .and_then(Value::as_str)
         .expect("cargo rendered diagnostic");
 
-    let human_output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let human_output = mend_command_for(&temp.path().join("Cargo.toml"))
         .output()
         .expect("run human suspicious-pub fixture");
     let human_rendered =
@@ -622,9 +614,7 @@ edition = "2024"
     // After the lib was just compiled, an `--all-targets` run must
     // surface the same finding even though cargo will skip recompiling
     // the lib (its rmeta is fresh from the baseline run).
-    let all_targets_output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest)
+    let all_targets_output = mend_command_for(&manifest)
         .arg("--all-targets")
         .arg("--json")
         .output()

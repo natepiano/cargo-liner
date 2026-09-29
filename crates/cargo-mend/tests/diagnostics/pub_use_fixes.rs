@@ -33,6 +33,7 @@ edition = "2024"
         let child_path = temp.path().join("src/a/b/c.rs");
         let child_source = "pub(in crate::a) struct Thing;\n";
         fs::write(&child_path, child_source).expect("write restricted child");
+        init_git_repo(temp.path());
 
         let report = run_mend_json(&temp.path().join("Cargo.toml"));
         let finding = report
@@ -45,9 +46,7 @@ edition = "2024"
         assert_eq!(report.summary.fixable_with_fix_pub_use, 0);
         assert_no_stored_pub_use_fix_facts(&temp);
 
-        let output = mend_command()
-            .arg("--manifest-path")
-            .arg(temp.path().join("Cargo.toml"))
+        let output = mend_command_for(&temp.path().join("Cargo.toml"))
             .arg(fix_flag)
             .output()
             .expect("run restricted stale-facade fixer");
@@ -122,9 +121,8 @@ edition = "2024"
         "pub struct SpawnStats;\npub struct Leftover;\n",
     )
     .expect("write child");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    init_git_repo(temp.path());
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -225,9 +223,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -284,9 +280,7 @@ edition = "2024"
         "pub struct SpawnStats;\n",
     )
     .expect("write child");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .arg("--dry-run")
         .output()
@@ -394,9 +388,7 @@ edition = "2024"
         "#[derive(Debug)]\npub struct SpawnStats;\n",
     )
     .expect("write child");
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -443,9 +435,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -501,9 +491,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -573,9 +561,7 @@ edition = "2024"
     let child_source = "pub struct SpawnStats;\n";
     fs::write(&child_path, child_source).expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -675,9 +661,7 @@ edition = "2024"
     )
     .expect("write broken");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -727,9 +711,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -1216,9 +1198,7 @@ pub struct Sha256Cache;
 fn fix_pub_use_preserves_exports_used_outside_parent_via_normal_paths() {
     let temp = create_preserve_exports_fixture();
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .arg("--dry-run")
         .output()
@@ -1449,9 +1429,8 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    init_git_repo(temp.path());
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -1524,9 +1503,8 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    init_git_repo(temp.path());
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-all")
         .output()
         .expect("run cargo-mend --fix-all");
@@ -1589,9 +1567,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -1642,9 +1618,7 @@ fn write_internal_facade_fixture(temp: &TempDir, subtree_use_site: &str) {
 }
 
 fn apply_pub_use_fix(temp: &TempDir) {
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");
@@ -1849,16 +1823,7 @@ pub_in_path = "permitted"
         return;
     }
 
-    let initialized = std::process::Command::new("git")
-        .arg("init")
-        .current_dir(batch.path())
-        .output()
-        .expect("initialize renamed facade repository");
-    assert!(
-        initialized.status.success(),
-        "git init failed: {}",
-        String::from_utf8_lossy(&initialized.stderr)
-    );
+    init_git_repo(batch.path());
     let applied = batch
         .command()
         .arg("--fix-pub-use")

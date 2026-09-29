@@ -78,9 +78,7 @@ edition = "2024"
     let report = run_mend_json(&manifest);
     assert_fixable_findings(&report);
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest)
+    let output = mend_command_for(&manifest)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -242,9 +240,7 @@ edition = "2024"
         "`BuildPlan` reaches no interface and must still be narrowed: {report:#?}",
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest)
+    let output = mend_command_for(&manifest)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -331,9 +327,7 @@ edition = "2024"
         String::from_utf8_lossy(&check.stderr),
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest)
+    let output = mend_command_for(&manifest)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

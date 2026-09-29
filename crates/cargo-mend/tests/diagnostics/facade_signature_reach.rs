@@ -60,9 +60,7 @@ edition = "2024"
     let manifest = temp.path().join("Cargo.toml");
     assert_fixture_compiles(&manifest, "fixture must compile before mend");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest)
+    let output = mend_command_for(&manifest)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

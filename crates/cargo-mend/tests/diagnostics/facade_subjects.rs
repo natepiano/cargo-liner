@@ -670,9 +670,7 @@ edition = "2024"
     )
     .expect("write renamed extern crate declaration");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--json")
         .output()
         .expect("run cargo-mend against renamed dependency fixture");
@@ -1532,9 +1530,7 @@ fn facade_fix_leaves_a_facade_a_proc_macro_reaches_in_place() {
     let temp = tempdir().expect("create macro consumed facade fixture dir");
     write_macro_consumed_facade_fixture(&temp);
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
         .expect("run cargo-mend --fix-pub-use");

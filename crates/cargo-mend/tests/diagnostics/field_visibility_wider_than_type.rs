@@ -280,9 +280,7 @@ edition = "2024"
     )
     .expect("write inner");
 
-    let status = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let status = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .status()
         .expect("run cargo-mend --fix");

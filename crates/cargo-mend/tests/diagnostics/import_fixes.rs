@@ -32,9 +32,7 @@ pub struct Thing;
     )
     .expect("write fixture inner");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -82,9 +80,7 @@ edition = "2024"
     )
     .expect("write fixture child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -132,9 +128,7 @@ edition = "2024"
     )
     .expect("write fixture child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -178,9 +172,7 @@ edition = "2024"
     )
     .expect("write fixture child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -235,9 +227,7 @@ pub struct Thing;
     )
     .expect("write fixture broken");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -276,9 +266,7 @@ edition = "2024"
     )
     .expect("write fixture main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -315,9 +303,7 @@ edition = "2024"
     )
     .expect("write fixture main");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -371,9 +357,7 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -423,9 +407,7 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .arg("--dry-run")
         .output()
@@ -729,9 +711,7 @@ edition = "2024"
     )
     .expect("write fixture detached module");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

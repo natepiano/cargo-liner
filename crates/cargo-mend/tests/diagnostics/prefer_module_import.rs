@@ -56,10 +56,9 @@ edition = "2024"
     )
     .expect("write consumer");
     let manifest_path = temp.path().join("Cargo.toml");
+    init_git_repo(temp.path());
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--fix-all")
         .output()
         .expect("run cargo-mend --fix-all");
@@ -119,10 +118,9 @@ edition = "2024"
     fs::write(&consumer_path, original).expect("write consumer");
     let manifest_path = temp.path().join("Cargo.toml");
     assert_prefer_module_fixture_compiles(&manifest_path);
+    init_git_repo(temp.path());
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--fix-compiler")
         .output()
         .expect("run cargo-mend --fix-compiler");
@@ -183,9 +181,7 @@ fn example() -> i32 {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -253,9 +249,7 @@ fn third() -> i32 { do_thing() }
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -311,9 +305,7 @@ fn example() -> i32 { do_thing() }
     )
     .expect("write sibling");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -392,9 +384,7 @@ fn example() -> i32 { func_a() + func_b() }
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1063,9 +1053,7 @@ fn example() -> i32 {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1135,9 +1123,7 @@ fn example(obs: &[Obstacle]) -> bool {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1288,9 +1274,7 @@ fn example() -> bool {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1361,9 +1345,7 @@ fn example() -> String {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1531,9 +1513,7 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1617,9 +1597,7 @@ fn example() {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1706,9 +1684,7 @@ mod tests {
          scope would break if the use were inserted at file top"
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1785,9 +1761,7 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1867,9 +1841,7 @@ fn example(font_size: f32, scale: f32) -> f32 {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -1960,9 +1932,7 @@ fn build(font_size: f32, scale: f32, origin_y: f32) -> ArrowGeometry {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2031,9 +2001,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2116,9 +2084,7 @@ fn second() -> i32 { do_thing() + 1 }
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2208,9 +2174,7 @@ mod tests {
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2278,9 +2242,7 @@ edition = "2024"
     .expect("write tests");
     let manifest_path = temp.path().join("Cargo.toml");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(&manifest_path)
+    let output = mend_command_for(&manifest_path)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2347,9 +2309,7 @@ fn example() -> i32 { do_thing() + other_thing() }
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2424,9 +2384,7 @@ edition = "2024"
     )
     .expect("write child");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2513,9 +2471,7 @@ pub_in_path = "permitted"
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2587,9 +2543,7 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2667,9 +2621,7 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2747,9 +2699,7 @@ mod tests {
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2818,9 +2768,7 @@ test = []
     )
     .expect("write plugin module");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -2869,9 +2817,7 @@ fn write_lib_fixture(directory: &Path, package: &str, modules: &[(&str, &str)]) 
 }
 
 fn run_mend_fix(manifest_path: &Path) {
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(manifest_path)
+    let output = mend_command_for(manifest_path)
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -3082,9 +3028,7 @@ edition = "2024"
     .expect("write child");
     assert_prefer_module_fixture_compiles(&temp.path().join("Cargo.toml"));
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

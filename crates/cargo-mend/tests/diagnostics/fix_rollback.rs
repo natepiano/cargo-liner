@@ -1,6 +1,3 @@
-use std::path::Path;
-use std::process::Command;
-
 use crate::support::*;
 
 /// A `--fix-all` fixture that needs more than one convergence pass.
@@ -54,19 +51,6 @@ version = "0.1.0"
 edition = "2024"
 "#;
 
-/// `--fix-all` chains `cargo fix`, which refuses to edit a package that is not
-/// under version control. An empty repository is enough — mend already passes
-/// `--allow-dirty` and `--allow-staged`.
-fn init_git_repo(project_root: &Path) {
-    let status = Command::new("git")
-        .arg("init")
-        .arg("--quiet")
-        .arg(project_root)
-        .status()
-        .expect("run git init");
-    assert!(status.success(), "git init failed for the fixture");
-}
-
 /// Rollback covers the whole invocation, not the pass that failed.
 ///
 /// `main` loops `MendRunner::run` until the fixable set stops shrinking. A
@@ -97,9 +81,7 @@ fn failed_later_pass_restores_the_edits_earlier_passes_left_on_disk() {
     }
     init_git_repo(temp.path());
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-all")
         .output()
         .expect("run cargo-mend --fix-all");

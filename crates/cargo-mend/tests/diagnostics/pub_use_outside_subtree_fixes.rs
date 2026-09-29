@@ -48,9 +48,7 @@ fn rust_sources(root: &Path) -> BTreeMap<PathBuf, String> {
 
 /// Runs `--fix` on the fixture, asserts it succeeded, and returns its stderr.
 fn run_fix(root: &Path) -> String {
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
+    let output = mend_command_for(&root.join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");

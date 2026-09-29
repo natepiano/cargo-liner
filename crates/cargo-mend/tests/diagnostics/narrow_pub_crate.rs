@@ -201,9 +201,7 @@ edition = "2024"
         report.findings
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -293,9 +291,7 @@ define_public_tool!();
         report.findings
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
@@ -457,9 +453,7 @@ edition = "2024"
     )
     .expect("write helpers");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .arg("--dry-run")
         .output()
@@ -824,9 +818,7 @@ edition = "2024"
     )
     .expect("write consumer");
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--all-targets")
         .arg("--json")
         .output()
@@ -1217,10 +1209,9 @@ edition = "2024"
         "pub fn helper(_n: i32) {}\n",
     )
     .expect("write inner_facade/child.rs");
+    init_git_repo(temp.path());
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-compiler")
         .output()
         .expect("run cargo-mend --fix-compiler");
@@ -1240,7 +1231,7 @@ edition = "2024"
 
     // And the project must still compile under `cargo nextest run --no-run` —
     // i.e. mend left the tree in a state where every target builds.
-    let test_build = std::process::Command::new("cargo")
+    let test_build = cargo_command()
         .arg("nextest")
         .arg("run")
         .arg("--no-run")
@@ -1309,17 +1300,7 @@ hidden = []
     )
     .expect("write hidden");
 
-    let git_init = std::process::Command::new("git")
-        .arg("init")
-        .current_dir(temp.path())
-        .output()
-        .expect("initialize fixture git repository");
-    assert!(
-        git_init.status.success(),
-        "git init failed:\n{}\n{}",
-        String::from_utf8_lossy(&git_init.stdout),
-        String::from_utf8_lossy(&git_init.stderr)
-    );
+    init_git_repo(temp.path());
 
     assert_feature_fixture_compiles(
         temp.path(),
@@ -1327,9 +1308,7 @@ hidden = []
         "hidden feature before --fix-compiler",
     );
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-compiler")
         .output()
         .expect("run cargo-mend --fix-compiler");
@@ -1413,21 +1392,9 @@ emit_feature_gated_items!();
     )
     .expect("write negated-feature module");
 
-    let git_init = std::process::Command::new("git")
-        .arg("init")
-        .current_dir(temp.path())
-        .output()
-        .expect("initialize fixture git repository");
-    assert!(
-        git_init.status.success(),
-        "git init failed:\n{}\n{}",
-        String::from_utf8_lossy(&git_init.stdout),
-        String::from_utf8_lossy(&git_init.stderr)
-    );
+    init_git_repo(temp.path());
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-compiler")
         .output()
         .expect("run cargo-mend --fix-compiler");
@@ -1446,7 +1413,7 @@ emit_feature_gated_items!();
 }
 
 fn assert_feature_fixture_compiles(fixture_dir: &Path, cargo_args: &[&str], configuration: &str) {
-    let output = std::process::Command::new("cargo")
+    let output = cargo_command()
         .arg("check")
         .args(cargo_args)
         .current_dir(fixture_dir)
@@ -1790,9 +1757,7 @@ edition = "2024"
     );
     assert_summary_matches_findings(&report);
 
-    let output = mend_command()
-        .arg("--manifest-path")
-        .arg(temp.path().join("Cargo.toml"))
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
         .output()
         .expect("run cargo-mend --fix");
