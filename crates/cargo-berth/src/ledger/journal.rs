@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::compaction::SupersededExtents;
 use super::constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 use super::constants::COORDINATION_RUN_ENVIRONMENT;
 use super::constants::CURRENT_SCHEMA_VERSION;
@@ -783,6 +784,24 @@ impl JournalOperation {
                 .iter()
                 .any(|observed| observed.reservation_id == reservation_id)
                 .then_some(extent),
+            _ => None,
+        }
+    }
+
+    /// The distinct reservations whose recorded merge extent this operation replaces, in either
+    /// record form, or `None` for an operation that records no merge extent.
+    pub(super) fn merge_extent_reservations(&self) -> Option<BTreeSet<ReservationId>> {
+        match self {
+            Self::MergeExtentObserved { reservation_id, .. } => {
+                Some(BTreeSet::from([*reservation_id]))
+            },
+            Self::HolderMergeExtentObserved { reservations, .. } => Some(
+                reservations
+                    .as_slice()
+                    .iter()
+                    .map(|observed| observed.reservation_id)
+                    .collect(),
+            ),
             _ => None,
         }
     }
@@ -1936,6 +1955,8 @@ pub(super) struct JournalReplay {
     pub(super) fingerprint:         JournalFingerprint,
     /// The generation represented by the final event, or zero for an empty journal.
     pub(super) generation:          ProjectionGeneration,
+    /// The merge extent observations that later observations supersede.
+    pub(super) superseded:          SupersededExtents,
 }
 
 /// A deterministic fingerprint over a journal's bytes.
@@ -2105,15 +2126,18 @@ impl JournalReplay {
             end_offset:          JournalByteOffset::from(0),
             fingerprint:         JournalFingerprint::EMPTY,
             generation:          ProjectionGeneration::from(0),
+            superseded:          SupersededExtents::default(),
         }
     }
 
-    /// Fold one decoded record, the next after every record already replayed.
+    /// Fold one decoded record, `record_bytes` long, the next after every record already replayed.
     ///
     /// Updates every field except the byte range, which [`Self::cover`] extends.
-    fn apply_record(&mut self, event: JournalEvent) {
+    fn apply_record(&mut self, event: JournalEvent, record_bytes: u64) {
         fold_reservations(&mut self.reservations, &event);
         self.repositories.insert(event.actor.repository);
+        self.superseded
+            .observe(self.record_count, record_bytes, &event.operation);
         self.record_count += 1;
         self.generation = event.projection_generation;
         if event.operation.is_coordination_record() {
@@ -2138,12 +2162,14 @@ impl JournalReplay {
     fn advance_over(&mut self, appended: &[u8]) -> Result<usize, JournalError> {
         let replayed_lines =
             usize::try_from(self.record_count).map_err(JournalError::JournalTooLarge)?;
-        let mut events = Vec::new();
+        let mut records = Vec::new();
         let complete_end =
-            decode_complete_records(appended, replayed_lines + 1, |event| events.push(event))?;
+            decode_complete_records(appended, replayed_lines + 1, |event, bytes| {
+                records.push((event, bytes));
+            })?;
         self.cover(&appended[..complete_end])?;
-        for event in events {
-            self.apply_record(event);
+        for (event, bytes) in records {
+            self.apply_record(event, bytes);
         }
         Ok(complete_end)
     }
@@ -2156,9 +2182,10 @@ impl JournalReplay {
     pub(super) fn extended_over(mut self, appended: &[u8]) -> Result<(Self, usize), JournalError> {
         let replayed_lines =
             usize::try_from(self.record_count).map_err(JournalError::JournalTooLarge)?;
-        let complete_end = decode_complete_records(appended, replayed_lines + 1, |event| {
-            self.apply_record(event);
-        })?;
+        let complete_end =
+            decode_complete_records(appended, replayed_lines + 1, |event, bytes| {
+                self.apply_record(event, bytes);
+            })?;
         self.cover(&appended[..complete_end])?;
         Ok((self, complete_end))
     }
@@ -2168,7 +2195,8 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
     JournalReplay::empty().extended_over(bytes)
 }
 
-/// Decode every newline-terminated record in append order, passing each event to `visit`.
+/// Decode every newline-terminated record in append order, passing each event and its record's
+/// byte length, newline included, to `visit`.
 ///
 /// Returns the byte length of the complete records; bytes after the last newline are ignored.
 /// Corrupt records are numbered from `first_line`, the one-based journal line of the first
@@ -2176,7 +2204,7 @@ fn replay_complete_records(bytes: &[u8]) -> Result<(JournalReplay, usize), Journ
 fn decode_complete_records(
     bytes: &[u8],
     first_line: usize,
-    mut visit: impl FnMut(JournalEvent),
+    mut visit: impl FnMut(JournalEvent, u64),
 ) -> Result<usize, JournalError> {
     let complete_end = bytes
         .iter()
@@ -2196,12 +2224,14 @@ fn decode_complete_records(
                 error: "blank journal record".to_owned(),
             });
         }
+        let record_bytes =
+            u64::try_from(record.len() + 1).map_err(JournalError::JournalTooLarge)?;
         let record =
             std::str::from_utf8(record).map_err(|error| JournalError::CorruptInteriorRecord {
                 line,
                 error: error.to_string(),
             })?;
-        visit(decode_record(record, line)?);
+        visit(decode_record(record, line)?, record_bytes);
     }
     Ok(complete_end)
 }
@@ -2210,7 +2240,7 @@ fn decode_complete_records(
 #[cfg(test)]
 pub(super) fn complete_record_events(bytes: &[u8]) -> Result<Vec<JournalEvent>, JournalError> {
     let mut events = Vec::new();
-    decode_complete_records(bytes, 1, |event| events.push(event))?;
+    decode_complete_records(bytes, 1, |event, _| events.push(event))?;
     Ok(events)
 }
 
@@ -3375,9 +3405,10 @@ mod tests {
     }
 
     /// [`fold_sequence_events`] with records inserted between the release and the rejected widen
-    /// that populate what the fold sequence leaves empty: a claim with a fallback target, a
-    /// protected merge extent, a resolved and an outstanding incursion, and scoped patch verdicts
-    /// and attempts for the released reservation. Also returns the rejected widen's index.
+    /// that populate what the fold sequence leaves empty: a claim with a fallback target,
+    /// protected merge extents in both forms, each superseding an earlier observation wholly or in
+    /// part, a resolved and an outstanding incursion, and scoped patch verdicts and attempts for
+    /// the released reservation. Also returns the rejected widen's index.
     pub(in crate::ledger) fn round_trip_sequence_events()
     -> Result<(Vec<JournalEvent>, usize), Box<dyn std::error::Error>> {
         let mut events = fold_sequence_events()?;
@@ -3393,69 +3424,56 @@ mod tests {
             "source": "repository_trunk",
             "fallback": {"requested": "refs/heads/phase", "reason": "own_branch"},
         });
-        let key = serde_json::json!({
-            "trunk": FOLD_TRUNK,
-            "head": FOLD_TIP,
-            "working_tree": {"tracked_paths": ["docs/guide.md"], "untracked_paths": []},
-        });
         let blocked_paths = serde_json::json!([
             {"path": "src/lib.rs", "holders": [FOLD_RESERVATION_ID]},
         ]);
-        let operations = [
-            targeted_claim,
-            serde_json::json!({
-                "op": "merge_extent_observed",
-                "reservation_id": FOLD_SECOND_RESERVATION_ID,
-                "extent": {
-                    "status": "protected",
-                    "key": key,
-                    "scopes": [{"path": "docs", "kind": "tree"}],
-                },
-                "run_status": "editing",
-            }),
-            serde_json::json!({
-                "op": "incursion",
-                "incident_id": ROUND_TRIP_RESOLVED_INCIDENT_ID,
-                "reservation_id": FOLD_SECOND_RESERVATION_ID,
-                "blocked_paths": blocked_paths,
-            }),
-            serde_json::json!({
-                "op": "resolve_incursion",
-                "incident_id": ROUND_TRIP_RESOLVED_INCIDENT_ID,
-            }),
-            serde_json::json!({
-                "op": "incursion",
-                "incident_id": ROUND_TRIP_OUTSTANDING_INCIDENT_ID,
-                "reservation_id": ROUND_TRIP_CLAIM_ID,
-                "blocked_paths": blocked_paths,
-            }),
-            serde_json::json!({
-                "op": "scoped_patch_equivalence_checked",
-                "reservation_id": FOLD_RESERVATION_ID,
-                "subject": subject,
-                "target": FOLD_TRUNK,
-                "verdict": "integrated",
-            }),
-            serde_json::json!({
-                "op": "scoped_patch_comparison_attempted",
-                "reservation_id": FOLD_RESERVATION_ID,
-                "subject": subject,
-                "target": FOLD_TIP,
-            }),
-            serde_json::json!({
-                "op": "successor_scoped_patch_equivalence_checked",
-                "predecessor_reservation_id": FOLD_RESERVATION_ID,
-                "subject": subject,
-                "successor_head": FOLD_TIP,
-                "verdict": "different",
-            }),
-            serde_json::json!({
-                "op": "successor_scoped_patch_comparison_attempted",
-                "predecessor_reservation_id": FOLD_RESERVATION_ID,
-                "subject": subject,
-                "successor_head": FOLD_TRUNK,
-            }),
-        ];
+        let operations = std::iter::once(targeted_claim)
+            .chain(superseding_merge_extents())
+            .chain([
+                serde_json::json!({
+                    "op": "incursion",
+                    "incident_id": ROUND_TRIP_RESOLVED_INCIDENT_ID,
+                    "reservation_id": FOLD_SECOND_RESERVATION_ID,
+                    "blocked_paths": blocked_paths,
+                }),
+                serde_json::json!({
+                    "op": "resolve_incursion",
+                    "incident_id": ROUND_TRIP_RESOLVED_INCIDENT_ID,
+                }),
+                serde_json::json!({
+                    "op": "incursion",
+                    "incident_id": ROUND_TRIP_OUTSTANDING_INCIDENT_ID,
+                    "reservation_id": ROUND_TRIP_CLAIM_ID,
+                    "blocked_paths": blocked_paths,
+                }),
+                serde_json::json!({
+                    "op": "scoped_patch_equivalence_checked",
+                    "reservation_id": FOLD_RESERVATION_ID,
+                    "subject": subject,
+                    "target": FOLD_TRUNK,
+                    "verdict": "integrated",
+                }),
+                serde_json::json!({
+                    "op": "scoped_patch_comparison_attempted",
+                    "reservation_id": FOLD_RESERVATION_ID,
+                    "subject": subject,
+                    "target": FOLD_TIP,
+                }),
+                serde_json::json!({
+                    "op": "successor_scoped_patch_equivalence_checked",
+                    "predecessor_reservation_id": FOLD_RESERVATION_ID,
+                    "subject": subject,
+                    "successor_head": FOLD_TIP,
+                    "verdict": "different",
+                }),
+                serde_json::json!({
+                    "op": "successor_scoped_patch_comparison_attempted",
+                    "predecessor_reservation_id": FOLD_RESERVATION_ID,
+                    "subject": subject,
+                    "successor_head": FOLD_TRUNK,
+                }),
+            ])
+            .collect::<Vec<_>>();
         let actor = test_actor();
         let mut inserted = Vec::new();
         for operation in &operations {
@@ -3477,6 +3495,49 @@ mod tests {
             event.projection_generation = ProjectionGeneration::from(generation);
         }
         Ok((events, FOLD_FAILING_RECORD_INDEX + operations.len()))
+    }
+
+    /// Protected merge extents in both record forms: an observation of the second fold
+    /// reservation, a holder observation of it and the round-trip claim, an observation of the
+    /// claim that supersedes the holder observation in part, and a holder observation of the
+    /// second fold reservation that supersedes it wholly.
+    fn superseding_merge_extents() -> [Value; 4] {
+        let extent = serde_json::json!({
+            "status": "protected",
+            "key": {
+                "trunk": FOLD_TRUNK,
+                "head": FOLD_TIP,
+                "working_tree": {"tracked_paths": ["docs/guide.md"], "untracked_paths": []},
+            },
+            "scopes": [{"path": "docs", "kind": "tree"}],
+        });
+        let holder_observation = |reservation_ids: &[&str]| {
+            let reservations = reservation_ids
+                .iter()
+                .map(|reservation_id| {
+                    serde_json::json!({"reservation_id": reservation_id, "run_status": "editing"})
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "op": "holder_merge_extent_observed",
+                "extent": extent,
+                "reservations": reservations,
+            })
+        };
+        let observation = |reservation_id: &str| {
+            serde_json::json!({
+                "op": "merge_extent_observed",
+                "reservation_id": reservation_id,
+                "extent": extent,
+                "run_status": "editing",
+            })
+        };
+        [
+            observation(FOLD_SECOND_RESERVATION_ID),
+            holder_observation(&[FOLD_SECOND_RESERVATION_ID, ROUND_TRIP_CLAIM_ID]),
+            observation(ROUND_TRIP_CLAIM_ID),
+            holder_observation(&[FOLD_SECOND_RESERVATION_ID]),
+        ]
     }
 
     fn fold_claim(reservation_id: &str, tree: &str) -> Result<JournalOperation, serde_json::Error> {

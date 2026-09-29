@@ -1,6 +1,7 @@
 //! Shared-ledger location, initialization, identity storage, and transactions.
 
 mod authorization;
+mod compaction;
 mod constants;
 mod coordination_run_marker;
 mod error;

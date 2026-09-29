@@ -935,7 +935,7 @@ impl RetainedReservationSet {
         }
     }
 
-    /// Replace one reservation's recorded merge extent, advancing its revision.
+    /// Replace one reservation's recorded merge extent.
     fn apply_merge_extent(
         &mut self,
         reservation_id: ReservationId,
@@ -943,7 +943,7 @@ impl RetainedReservationSet {
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         reservation.merge_extent = extent.clone();
-        reservation.advance_revision()
+        Ok(())
     }
 
     /// Apply the operations that acquire, extend, renew, or retire a holder's reservation.

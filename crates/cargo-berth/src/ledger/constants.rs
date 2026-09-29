@@ -83,7 +83,7 @@ pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// checkpoint written by another build is ignored instead of decoded.
 ///
 /// [`JournalReplay`]: super::journal::JournalReplay
-pub(super) const FOLD_FORMAT_VERSION: u32 = 1;
+pub(super) const FOLD_FORMAT_VERSION: u32 = 2;
 
 /// Shorten a supplied duration using unsigned milliseconds from a debug-only test hook.
 pub(crate) fn shortened_by_environment(variable: &str, supplied: Duration) -> Duration {
