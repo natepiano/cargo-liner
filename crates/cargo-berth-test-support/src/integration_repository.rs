@@ -30,6 +30,15 @@ const CLEARED_GIT_ENVIRONMENT: &[&str] = &[
     "GIT_COMMON_DIR",
 ];
 
+/// What [`IntegrationRepository::capture`] took from one repository, for
+/// [`IntegrationRepository::restore`] to write back.
+pub struct IntegrationSnapshot {
+    /// The main worktree, with the `.git` directory every linked worktree shares.
+    repository: DirectorySnapshot,
+    /// The parent of every linked worktree, `integration` and each lane.
+    worktrees:  DirectorySnapshot,
+}
+
 /// A temporary repository with berth initialized on `main` and an `integration`
 /// branch checked out in a linked worktree.
 pub struct IntegrationRepository {
@@ -119,11 +128,11 @@ impl IntegrationRepository {
     ///
     /// Panics as [`DirectorySnapshot::capture`] does.
     #[must_use]
-    pub fn capture(&self) -> [DirectorySnapshot; 2] {
-        [
-            DirectorySnapshot::capture(self.repository.path()),
-            DirectorySnapshot::capture(self.worktrees.path()),
-        ]
+    pub fn capture(&self) -> IntegrationSnapshot {
+        IntegrationSnapshot {
+            repository: DirectorySnapshot::capture(self.repository.path()),
+            worktrees:  DirectorySnapshot::capture(self.worktrees.path()),
+        }
     }
 
     /// Write back what [`Self::capture`] took, discarding everything written since.
@@ -134,9 +143,13 @@ impl IntegrationRepository {
     /// # Panics
     ///
     /// Panics as [`DirectorySnapshot::restore`] does.
-    pub fn restore(&self, [repository, worktrees]: &[DirectorySnapshot; 2]) {
-        repository.restore(self.repository.path());
-        worktrees.restore(self.worktrees.path());
+    pub fn restore(&self, integration_snapshot: &IntegrationSnapshot) {
+        integration_snapshot
+            .repository
+            .restore(self.repository.path());
+        integration_snapshot
+            .worktrees
+            .restore(self.worktrees.path());
     }
 
     /// The main worktree, which has `main` checked out and holds the berth
