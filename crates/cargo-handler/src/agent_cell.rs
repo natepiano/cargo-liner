@@ -71,14 +71,14 @@ use crate::wrap;
 #[derive(Clone, Debug)]
 pub(crate) struct AgentEntry<'a> {
     /// The cell's id in the grid.
-    pub(crate) id:  AgentCell,
+    pub(crate) id:      AgentCell,
     /// The agent the cell draws.
-    pub(crate) row: &'a AgentRow,
+    pub(crate) row:     &'a AgentRow,
     /// The name of the agent that opened this one in tmux, where that
     /// agent is listed on the same machine.
-    launcher:       Option<&'a str>,
+    launcher:           Option<&'a str>,
     /// The heading of the machine the agent runs on.
-    machine:        &'a str,
+    machine:            &'a str,
     /// The hue the cell's title and the agent's name in the summary are
     /// drawn in: the next of the rainbow, in cell order.
     pub(crate) hue:     RainbowHue,

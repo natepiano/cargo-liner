@@ -1724,12 +1724,7 @@ fn handle_settings_adjust_key(app: &mut App, key: KeyCode, setting: Option<Setti
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
         Some(SettingOption::Transparent) => {
-            let next = !app
-                .config
-                .current()
-                .appearance
-                .transparent
-                .is_transparent();
+            let next = !app.config.current().appearance.transparent.is_transparent();
             let _ = save_app_setting_with_toast(app, |table| set_transparent(table, next));
         },
         Some(
@@ -1879,12 +1874,7 @@ fn toggle_setting(app: &mut App, setting: SettingOption) {
             let _ = save_app_setting_with_toast(app, |table| set_focused_pane_tint(table, next));
         },
         SettingOption::Transparent => {
-            let next = !app
-                .config
-                .current()
-                .appearance
-                .transparent
-                .is_transparent();
+            let next = !app.config.current().appearance.transparent.is_transparent();
             let _ = save_app_setting_with_toast(app, |table| set_transparent(table, next));
         },
         _ => {},
@@ -2099,6 +2089,7 @@ pub(super) fn focus_terminal_command(app: &mut App) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use super::config::Transparency;
     use super::config::WorkspaceMemberInclusion;
     use super::*;
 
@@ -2249,7 +2240,7 @@ mod tests {
         let table = settings_table_from_config(&cargo_port_config).expect("settings table");
         assert!(get_transparent(&table));
 
-        cargo_port_config.appearance.transparent = config::Transparency::Solid;
+        cargo_port_config.appearance.transparent = Transparency::Solid;
         let table = settings_table_from_config(&cargo_port_config).expect("settings table");
         assert!(!get_transparent(&table));
     }

@@ -1032,7 +1032,11 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         lines.render(&mut buffer, chrome(), PaneBorders::Shared);
         assert_eq!(buffer[(0, 1)].fg, Color::Green);
-        assert_eq!(buffer[(3, 1)].fg, Color::Green, "the shared line keeps the first");
+        assert_eq!(
+            buffer[(3, 1)].fg,
+            Color::Green,
+            "the shared line keeps the first"
+        );
         assert_eq!(buffer[(6, 1)].fg, Color::Blue);
     }
 

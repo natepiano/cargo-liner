@@ -1,8 +1,12 @@
 // pane tint
 //
-// Every pane paints its own background, focused or not, so focus is a
-// difference between two opaque colours rather than the difference
-// between a painted pane and a bare one.
+// Painted only while the screen is not transparent: under
+// `[appearance] transparent`, the default, nothing paints a background
+// and every cell shows the desktop through a transparent window.
+//
+// Where it is painted, every pane paints its own background, focused or
+// not, so focus is a difference between two opaque colours rather than
+// the difference between a painted pane and a bare one.
 //
 // That matters under a transparent terminal window. A cell with no
 // background of its own is the *default* background, and terminals that

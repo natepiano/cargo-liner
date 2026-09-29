@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A top-level agent with sessions outlines its group -- its own cell and every session's below it -- in its rainbow color. A line two cells share takes the color of the one drawn first, and a cell standing alone keeps the plain border.
+- `[appearance] transparent`, on by default and stepped under Appearance in the settings overlay: the grid paints nothing under its cells, the focused cell's tint included, so a transparent terminal window shows the desktop behind every cell, and the focused cell's border lights to mark focus, over a group's outline. Off, the grid is painted solid in the theme's background while its cells are shown, and focus is the tint. The attract screen draws the same either way.
 - First version, at `0.1.0-dev`: a terminal UI on `tui_pane`, reached as `cargo-handler` or `cargo handler`.
 - A tile grid opening on the summary cell. `+` opens a cell, `-` closes an empty one, the arrows and Tab move the focus ring, and a click focuses the cell under it.
 - The summary cell lists the top-level Claude Code and Codex agents on this machine and on each remote machine: pid, agent, name, status, age and directory, oldest first under a heading and a column-label row per machine. An agent started by another agent is left out, and so is a session another agent opened in tmux, found by the `tmux new-session` call in that agent's transcript; so is a `codex app-server`, except the one the ChatGPT desktop app runs on macOS, listed as `ChatGPT`.
