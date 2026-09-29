@@ -1231,4 +1231,43 @@ mod tests {
             ]
         );
     }
+
+    /// A top-level agent with sessions outlines its whole group in its
+    /// own hue, sessions of sessions included, and two rows naming only
+    /// each other form a group of their own. A cell standing alone has
+    /// no outline.
+    #[test]
+    fn a_group_is_outlined_in_its_top_level_agents_hue() {
+        let (natedev, mac) = natedev_and_mac();
+        let machines = [
+            Machine {
+                name:  "natedev",
+                state: &natedev,
+            },
+            Machine {
+                name:  "mac",
+                state: &mac,
+            },
+        ];
+
+        let outlines: Vec<(&str, Option<RainbowHue>)> = cell_order(&machines)
+            .iter()
+            .map(|cell| (cell.row.name.as_str(), cell.outline))
+            .collect();
+
+        assert_eq!(
+            outlines,
+            [
+                ("boss of bosses", Some(RainbowHue::Red)),
+                ("trunk", Some(RainbowHue::Red)),
+                ("under trunk", Some(RainbowHue::Red)),
+                ("arrange", Some(RainbowHue::Red)),
+                ("enh/handler", None),
+                ("orphan", None),
+                ("left", Some(RainbowHue::Violet)),
+                ("right", Some(RainbowHue::Violet)),
+                ("natemccoy-30", None),
+            ]
+        );
+    }
 }

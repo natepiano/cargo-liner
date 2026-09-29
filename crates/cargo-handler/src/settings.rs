@@ -194,4 +194,43 @@ mod tests {
         assert_eq!(app.loaded_config.config.tiles.fill, TileFill::Redistribute);
         assert_eq!(fill_row_value(&app), "redistribute");
     }
+
+    /// Stepping the `transparent` row flips the config, the row, and
+    /// whether the screen is left see-through. The save goes to the
+    /// test build's fixed config root, never the user's file.
+    #[test]
+    fn stepping_the_transparent_row_paints_the_screen_solid_and_back() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let settings = rows(&app);
+        let selection = (0..settings.rows().len())
+            .find(|&selection| {
+                settings.target(selection)
+                    == Some(SettingTarget::Framework(FrameworkSetting::Transparent))
+            })
+            .expect("the settings list a transparent row");
+        app.framework
+            .settings_pane
+            .viewport_mut()
+            .set_pos(selection);
+        let row_value = |app: &App| {
+            rows(app)
+                .rows()
+                .iter()
+                .find(|row| row.label == "transparent")
+                .map(|row| row.value.clone())
+                .expect("the settings list a transparent row")
+        };
+        assert!(app.loaded_config.config.appearance.transparent);
+        assert_eq!(row_value(&app), "true");
+
+        cycle(&mut app, SettingStep::Next);
+        assert!(!app.loaded_config.config.appearance.transparent);
+        assert_eq!(row_value(&app), "false");
+        assert!(!tui_pane::transparent_background());
+
+        cycle(&mut app, SettingStep::Prev);
+        assert!(app.loaded_config.config.appearance.transparent);
+        assert_eq!(row_value(&app), "true");
+        assert!(tui_pane::transparent_background());
+    }
 }
