@@ -30,11 +30,10 @@ if TYPE_CHECKING:
     Snapshot = tuple[str, list[list[Foreground]]]
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario, cpu_scans_argument, report_argument, smoothing_argument = sys.argv[2:]
-cpu_scans = int(cpu_scans_argument)
-# The reader's CensusCadence: how long the table holds a cpu reading, and how
-# long a reading takes to travel most of the way to a changed share, in seconds.
-report_window = float(report_argument)
+binary, source, scenario, observation_argument, smoothing_argument = sys.argv[2:]
+# How long the CPU scenario reads the table, and how long the reader's
+# CensusCadence takes a reading most of the way to a changed share, in seconds.
+observation_window = float(observation_argument)
 smoothing_window = float(smoothing_argument)
 READER_SCENARIOS = (
     'child-source-switch', 'locale', 'root-headings', 'settings-scroll-burst',
@@ -402,8 +401,8 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter) -> str:
     readings: list[tuple[float, int]] = []
     other_readings: list[int] = []
     started = time.monotonic()
-    # Readings climb for one smoothing window; the sustained set then spans three report windows.
-    deadline = started + smoothing_window + 3 * report_window
+    # Readings climb for one smoothing window; the sustained set fills the rest of the window.
+    deadline = started + observation_window
     def observe_cpu() -> bool:
         nonlocal rendered
         readings.append((time.monotonic() - started, rendered_cpu(rendered, writer)))
@@ -423,7 +422,9 @@ def finish_cpu_scans() -> list[list[str]]:
     scanner = required(scan_reader, 'cpu-cache-server setup does not assign scan_reader')
     assert scanner.wait(timeout=10) == 0, (root / 'cpu-scanner-output').read_text()
     observations = [line.split('\t') for line in (root / 'cpu-scans').read_text().splitlines()]
-    assert [int(index) for index, _ in observations] == list(range(cpu_scans)), observations
+    # The child stops once its scans span the observation window, so load sets their count.
+    assert len(observations) > 1, observations
+    assert [int(index) for index, _ in observations] == list(range(len(observations))), observations
     assert all(re.fullmatch(r'\d+%', cpu) for _, cpu in observations[1:]), (
         'each completed scan after the first must publish a measurement', observations)
     return observations
@@ -1093,11 +1094,13 @@ finally:
             _ = scan_reader.wait(timeout=5)
         for observations in parent_owned_children:
             (observations / 'release').touch()
-        for child, observations in writers:
+        # Release every writer before waiting on any, so their release polls overlap.
+        for _, observations in writers:
             for nested_command in ('check', 'test'):
                 if (observations / nested_command).is_dir():
                     (observations / nested_command / 'release').touch()
             (observations / 'release').touch()
+        for child, _ in writers:
             try:
                 _ = child.wait(timeout=5)
             except subprocess.TimeoutExpired:

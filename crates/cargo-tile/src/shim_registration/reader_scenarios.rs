@@ -10,6 +10,7 @@ use std::io::Write;
 use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
+use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -37,9 +38,6 @@ use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::progress::capture_roots::CaptureRoots;
 use crate::render;
 use crate::settings;
-
-/// Span several reporting windows while retaining every completed observation.
-const CPU_OBSERVATION_SCANS: usize = 16;
 
 /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
 ///
@@ -76,6 +74,13 @@ fn scenario_scope() -> CensusScope {
     CensusScope::descendants_of(Pid::from_u32(std::os::unix::process::parent_id()))
 }
 
+/// How long the CPU scenario reads the table and [`cpu_scan_child`] takes
+/// scans: readings climb for one smoothing window, then the sustained set
+/// spans three report windows.
+fn cpu_observation_window(cadence: CensusCadence) -> Duration {
+    cadence.smoothing + cadence.report * 3
+}
+
 /// PTY read boundaries cannot expose a partly redrawn invocation twice.
 #[test]
 fn reader_snapshots_publish_only_completed_terminal_frames() {
@@ -89,6 +94,10 @@ fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
 }
 
 /// Consume every production scan so PTY polling cannot miss a brief unavailable row.
+///
+/// The scans span [`cpu_observation_window`] by time rather than by
+/// count: under load one scan costs several poll intervals, and a fixed
+/// count outlasts the window it was sized for.
 #[test]
 fn cpu_scan_child() -> std::io::Result<()> {
     let Ok(pid) = std::env::var("CARGO_TILE_TEST_CPU_PID") else {
@@ -112,17 +121,19 @@ fn cpu_scan_child() -> std::io::Result<()> {
     let parent = std::env::current_dir()?.join("capture");
     let mut output = fs::File::create("cpu-scans")?;
     let excluded = census::ExcludedCommands::new(Config::default().commands.excluded);
-    let (receiver, worker) = census::spawn_with_resolver(
-        excluded,
-        CensusCadence::for_test(),
-        scenario_scope(),
-        move || CaptureRoots::from_parent(&parent),
-    );
+    let cadence = CensusCadence::for_test();
+    let (receiver, worker) =
+        census::spawn_with_resolver(excluded, cadence, scenario_scope(), move || {
+            CaptureRoots::from_parent(&parent)
+        });
+    let window = cpu_observation_window(cadence);
     let result = (|| {
-        for index in 0..CPU_OBSERVATION_SCANS {
+        let mut first_scan = None;
+        for index in 0.. {
             let scan = receiver
                 .recv_timeout(Duration::from_secs(10))
                 .map_err(std::io::Error::other)?;
+            let arrived = Instant::now();
             let rows: Vec<_> = scan
                 .groups
                 .iter()
@@ -140,6 +151,9 @@ fn cpu_scan_child() -> std::io::Result<()> {
                 Measurement::Unavailable(reason) => writeln!(output, "{index}\t{reason:?}")?,
             }
             output.flush()?;
+            if arrived.duration_since(*first_scan.get_or_insert(arrived)) >= window {
+                break;
+            }
         }
         Ok(())
     })();
@@ -166,8 +180,7 @@ fn run_reader_script(scenario: &str) {
             "/src/cargo-capture-shim.sh"
         ))
         .arg(scenario)
-        .arg(CPU_OBSERVATION_SCANS.to_string())
-        .arg(cadence.report.as_secs_f64().to_string())
+        .arg(cpu_observation_window(cadence).as_secs_f64().to_string())
         .arg(cadence.smoothing.as_secs_f64().to_string())
         .output()
         .expect("run isolated production reader regression");
