@@ -4403,9 +4403,15 @@ fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
     );
     assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
+    // Each cell builds its own repository, so a cell already traced is reused instead of
+    // rebuilt: the baseline is the (1, 1) cell, and the wide cells skip the small grid.
     for path_count in [0, 1, 2] {
         for commit_count in [0, 1, 2] {
-            let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
+            let observed = if (path_count, commit_count) == (1, 1) {
+                attributed_baseline.clone()
+            } else {
+                post_commit_path_commit_cardinality_trace(path_count, commit_count)
+            };
             assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
             if path_count > 0 && commit_count > 0 {
                 assert_same_git_process_multiset(&attributed_baseline, &observed);
@@ -4416,7 +4422,7 @@ fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
         }
     }
 
-    for (path_count, commit_count) in [(0, 0), (0, 1), (0, 14), (0, 100), (1, 0), (4, 0), (33, 0)] {
+    for (path_count, commit_count) in [(0, 14), (0, 100), (4, 0), (33, 0)] {
         let observed = post_commit_path_commit_cardinality_trace(path_count, commit_count);
         assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
         assert_eq!(git_command_count(&observed, "log"), 0);
@@ -4641,7 +4647,7 @@ fn deleting_the_retention_ref_leaves_no_hook_owned_reference() {
     assert!(!object_status.success());
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct RawGitInvocation {
     arguments: Vec<String>,
 }
@@ -5649,13 +5655,18 @@ fn post_commit_path_commit_cardinality_trace(
             )
             .expect("entered cardinality path should update");
         }
-        git(&subject_root, &["add", "-A"]);
+        // Only the first commit adds new paths; `commit --all` stages every later edit
+        // without a separate `git add` process per commit.
+        if commit_index == 0 {
+            git(&subject_root, &["add", "-A"]);
+        }
         git(
             &subject_root,
             &[
                 "-c",
                 "core.hooksPath=/dev/null",
                 "commit",
+                "--all",
                 "--quiet",
                 "-m",
                 &format!("hook cardinality commit {commit_index}"),
