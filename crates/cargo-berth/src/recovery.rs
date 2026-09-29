@@ -233,7 +233,7 @@ fn execute_every_incursion_resolution(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
         |state| {
-            let reservations = match RetainedReservationSet::replay(state.events()) {
+            let reservations = match state.reservations() {
                 Ok(reservations) => reservations,
                 Err(error) => {
                     return ReconciliationValidation::Reject(RecoveryRejection::Replay(error));
@@ -298,7 +298,7 @@ fn execute_one_incursion_resolution(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
         |state| {
-            let reservations = match RetainedReservationSet::replay(state.events()) {
+            let reservations = match state.reservations() {
                 Ok(reservations) => reservations,
                 Err(error) => {
                     return TransactionValidation::Reject(
@@ -407,13 +407,13 @@ fn execute_reservation_resolution(
             journal_mutation_actor.worktree_id,
             journal_mutation_actor.coordination_run_id,
             |state| {
-                let reservations = match RetainedReservationSet::replay(state.events()) {
+                let reservations = match state.reservations() {
                     Ok(reservations) => reservations,
                     Err(error) => {
                         return CommittedActionValidation::Reject(RecoveryRejection::Replay(error));
                     },
                 };
-                let ordering_graph = match OrderingGraph::replay(state.events()) {
+                let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
                     Ok(ordering_graph) => ordering_graph,
                     Err(error) => {
                         return CommittedActionValidation::Reject(RecoveryRejection::EdgeReplay(
@@ -434,7 +434,7 @@ fn execute_reservation_resolution(
                 };
                 let recovery_request = match validate_recovery_request(
                     repository_root,
-                    &reservations,
+                    reservations,
                     resolve_request.reservation_id,
                     &repository_trunk,
                     resolve_request.recovery,
@@ -456,7 +456,7 @@ fn execute_reservation_resolution(
                             &operation,
                             &ordering_graph,
                             resolve_request.reservation_id,
-                            &reservations,
+                            reservations,
                         ) {
                             Ok(retention_deletions) => retention_deletions,
                             Err(error) => return CommittedActionValidation::Reject(error),
@@ -525,7 +525,7 @@ fn execute_renewal(renew_request: RenewRequest) -> Result<(), RecoveryError> {
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
         |state| {
-            let reservations = match RetainedReservationSet::replay(state.events()) {
+            let reservations = match state.reservations() {
                 Ok(reservations) => reservations,
                 Err(error) => {
                     return TransactionValidation::Reject(RecoveryRejection::Replay(error));

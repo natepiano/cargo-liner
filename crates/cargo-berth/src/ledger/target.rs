@@ -144,7 +144,7 @@ pub(crate) struct ClaimTarget {
 }
 
 /// Whether automatic target selection used the requested branch.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum TargetSelectionOutcome {
     Selected,
     FellBack(TargetFallback),

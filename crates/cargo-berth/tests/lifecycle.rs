@@ -1975,10 +1975,13 @@ mod merge_extent {
     use std::process::Output;
 
     use cargo_berth_test_support::GitDriver;
+    use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
     use cargo_berth_test_support::IntegrationRepository;
     use cargo_berth_test_support::OptionalLocks;
     use cargo_berth_test_support::assert_success;
     use cargo_berth_test_support::berth_command;
+    use cargo_berth_test_support::is_merge_extent_observation;
+    use cargo_berth_test_support::observes_merge_extent_of;
     use serde_json::Value;
     use tempfile::TempDir;
     use tempfile::tempdir;
@@ -2610,6 +2613,42 @@ mod merge_extent {
     }
 
     #[test]
+    fn a_holder_with_several_reservations_journals_one_record_per_changed_extent() {
+        let fixture = Repository::new();
+        let ids = ["file:first.rs", "file:second.rs", "file:third.rs"]
+            .map(|scope| claim(&fixture.holder, scope, FIRST_RUN));
+        board(fixture.trunk());
+
+        for (path, contents) in [
+            ("branch.rs", "unmerged work\n"),
+            ("later.rs", "more unmerged work\n"),
+        ] {
+            let before = events(fixture.trunk()).len();
+            commit(&fixture.holder, path, contents);
+            board(fixture.trunk());
+            let appended = events(fixture.trunk()).split_off(before);
+            let observations = appended
+                .iter()
+                .filter(|event| is_merge_extent_observation(event))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                observations.len(),
+                1,
+                "one holder observation must journal one record: {appended:?}"
+            );
+            assert_eq!(observations[0]["op"], HOLDER_MERGE_EXTENT_OBSERVED);
+            assert_eq!(observations[0]["extent"]["status"], "protected");
+            for id in &ids {
+                assert!(
+                    observes_merge_extent_of(observations[0], id),
+                    "the record must name {id}: {}",
+                    observations[0]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn repeated_board_reads_do_not_journal_the_same_extent_again() {
         let fixture = Repository::new();
         claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
@@ -2619,7 +2658,7 @@ mod merge_extent {
         assert_eq!(
             events(fixture.trunk())
                 .iter()
-                .filter(|event| event["op"] == "merge_extent_observed"
+                .filter(|event| is_merge_extent_observation(event)
                     && event["extent"]["status"] == "protected")
                 .count(),
             1
@@ -3085,9 +3124,9 @@ mod merge_extent {
         let fixture = Repository::new();
         let id = claim(&fixture.holder, "file:declared.rs", FIRST_RUN);
         assert!(
-            !events(fixture.trunk()).iter().any(
-                |event| event["reservation_id"] == id && event["op"] == "merge_extent_observed"
-            ),
+            !events(fixture.trunk())
+                .iter()
+                .any(|event| observes_merge_extent_of(event, &id)),
             "the fixture must fail before its first derived answer"
         );
         fs::rename(
@@ -3156,9 +3195,7 @@ mod merge_extent {
         assert_eq!(
             events(fixture.trunk())
                 .iter()
-                .filter(
-                    |event| event["op"] == "merge_extent_observed" && event["reservation_id"] == id
-                )
+                .filter(|event| observes_merge_extent_of(event, &id))
                 .count(),
             1
         );
@@ -3666,9 +3703,9 @@ mod merge_extent {
             .as_str()
             .expect("accepted override should return the younger holder id");
         assert!(
-            !events(fixture.trunk()).iter().any(|event| {
-                event["reservation_id"] == newer && event["op"] == "merge_extent_observed"
-            }),
+            !events(fixture.trunk())
+                .iter()
+                .any(|event| observes_merge_extent_of(event, newer)),
             "the second holder must become unavailable before its first derivation"
         );
         fs::rename(
@@ -4240,9 +4277,9 @@ mod merge_extent {
             );
             let newer = claim(&self.holder, "file:b.rs", FIRST_RUN);
             assert!(
-                !events(self.trunk()).iter().any(|event| {
-                    event["reservation_id"] == newer && event["op"] == "merge_extent_observed"
-                }),
+                !events(self.trunk())
+                    .iter()
+                    .any(|event| observes_merge_extent_of(event, &newer)),
                 "the second holder must become unavailable before its first derivation"
             );
             fs::rename(
@@ -4392,9 +4429,7 @@ mod merge_extent {
         );
         let extent_position = journal
             .iter()
-            .rposition(|event| {
-                event["op"] == "merge_extent_observed" && event["reservation_id"] == id
-            })
+            .rposition(|event| observes_merge_extent_of(event, id))
             .expect("reservation should have an observed extent");
         let evidence_position = journal
             .iter()

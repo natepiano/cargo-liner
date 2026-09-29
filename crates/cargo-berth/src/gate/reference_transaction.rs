@@ -28,7 +28,6 @@ use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
 use crate::reservation::RecordedTarget;
 use crate::reservation::ReservationLifecycle;
-use crate::reservation::RetainedReservationSet;
 
 const LOCAL_BRANCH_REFERENCE_PREFIX: &str = "refs/heads/";
 pub(crate) const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -413,8 +412,9 @@ fn gated_updates<'transaction>(
     trunk_reference: &FullRefName,
 ) -> Result<Vec<&'transaction ReferenceUpdate>, GateError> {
     let ledger = Ledger::open(worktree_context.repository_root())?;
-    let events = ledger.read_validated_events()?;
-    let reservations = RetainedReservationSet::replay(&events)
+    let reservations = ledger
+        .read_validated_journal()?
+        .into_reservations()
         .map_err(|error| GateError::Ledger(LedgerError::ReservationReplay(error)))?;
     let mut gated_references = vec![trunk_reference.clone()];
     for reference in reservations.iter().filter_map(|reservation| {

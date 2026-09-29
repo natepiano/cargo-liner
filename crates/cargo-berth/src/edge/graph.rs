@@ -126,6 +126,7 @@ impl OrderingGraph {
                 | JournalOperation::Bypass { .. }
                 | JournalOperation::RebindWorktree { .. }
                 | JournalOperation::MergeExtentObserved { .. }
+                | JournalOperation::HolderMergeExtentObserved { .. }
                 | JournalOperation::RelocateWorktree { .. } => {},
             }
         }

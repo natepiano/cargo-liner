@@ -6,8 +6,10 @@
 //! Built-binary tests for proposal-bound overlap answers.
 
 use cargo_berth_test_support::GitDriver;
+use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::observes_merge_extent_of;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -939,8 +941,8 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
         .expect("existing journal records must remain an exact raw-byte prefix");
     let observation: serde_json::Value = serde_json::from_slice(appended)
         .expect("the only appended record must be one merge observation");
-    assert_eq!(observation["op"], "merge_extent_observed");
-    assert_eq!(observation["reservation_id"], holder_id);
+    assert_eq!(observation["op"], HOLDER_MERGE_EXTENT_OBSERVED);
+    assert!(observes_merge_extent_of(&observation, &holder_id));
 
     // The recovery the refusal names must work: the same paths claim with no answer at all.
     assert!(

@@ -11,6 +11,7 @@ use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
 
@@ -1762,7 +1763,7 @@ fn journal_events(repository_root: &Path) -> Vec<serde_json::Value> {
         .expect("journal should read")
         .lines()
         .map(|line| serde_json::from_str(line).expect("journal event should decode"))
-        .filter(|event: &serde_json::Value| event["op"] != "merge_extent_observed")
+        .filter(|event: &serde_json::Value| !is_merge_extent_observation(event))
         .collect()
 }
 

@@ -8,6 +8,9 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::lifecycle::LifecycleTransitionError;
 use crate::answer::ConflictAuthorization;
 use crate::coordination_identity::CoordinationIdentityProvenance;
@@ -46,7 +49,7 @@ pub(super) struct ReplayedClaim<'event> {
 }
 
 /// A journal sequence that cannot represent valid reservation state.
-#[derive(Debug)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum ReservationReplayError {
     /// Two claims reused one non-recyclable reservation identity.
     DuplicateClaim(ReservationId),

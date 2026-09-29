@@ -200,12 +200,13 @@ way when it is invoked directly.
   installs or refreshes each managed hook without replacing an unmanaged hook,
   and enrolls existing worktree work as described under
   [Worktree enrollment](#worktree-enrollment).
-- `cargo berth init --repair-projection` rebuilds only `reservations.json` from
-  journal truth. It changes no journal record and loses nothing.
+- `cargo berth init --repair-projection` rebuilds `reservations.json` from
+  journal truth and deletes `replay-checkpoint.json`, so the journal replays
+  from byte 0. It changes no journal record and loses nothing.
 - `cargo berth init --reinitialize-after-review` is the confirmed recovery for
   a corrupt journal. It replaces journal history and the projection after the
-  user has reviewed the lost order, and clears `gate-targets` from the empty
-  replay. Reservations, ordering, answers, releases, incursions, and bypass
+  user has reviewed the lost order, deletes `replay-checkpoint.json`, and
+  clears `gate-targets` from the empty replay. Reservations, ordering, answers, releases, incursions, and bypass
   audit facts in that journal are lost.
 
 The projection-only branch reports:

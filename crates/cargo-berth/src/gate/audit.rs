@@ -82,7 +82,7 @@ pub(super) fn commit_forced_permit_audits(
                         &repository_trunk,
                     );
                     let (_, operations) = match decision::decide(
-                        state.events(),
+                        state.coordination_events(),
                         prepared.constraints(),
                         &entering,
                         &purpose,

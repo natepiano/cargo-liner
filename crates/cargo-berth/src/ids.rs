@@ -22,7 +22,7 @@ use uuid::Uuid;
 macro_rules! uuid_identifier {
     ($name:ident) => {
         #[doc = concat!("An opaque UUID-v7 ", stringify!($name), ".")]
-        #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd)]
         #[schemars(rename = "uuid_v7_identifier")]
         #[schemars(transparent)]
         pub(crate) struct $name(#[schemars(with = "String", length(min = 1))] Uuid);

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A disposable replay checkpoint, `replay-checkpoint.json` in the ledger directory, so a command replays only the journal records appended since it was written. The first command after upgrading replays the whole journal once and writes it; a checkpoint from another build, repository, or journal file, or one whose last record no longer matches the journal, is rebuilt the same way. `init --repair-projection` and `init --reinitialize-after-review` delete it.
 - A present non-trunk integration target's worktree holds a cover reservation against its own target. `target_uncovered` reports a present target with waiting reservations and no registered checkout.
 
 - Report `target_missing` when an unlanded live reservation's recorded branch disappears; board JSON now includes each row's `target` and a sorted top-level `targets` list.
@@ -28,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reconciliation journals one `holder_merge_extent_observed` record per holder checkout's changed merge extent, listing each reservation it applies to, instead of one `merge_extent_observed` record per reservation. A holder with many outstanding reservations no longer repeats the same extent in each record; journals holding `merge_extent_observed` records still replay unchanged.
+- Hook and command cost no longer grows with journal length. Replay decodes each record once, folding reservation state as it goes and keeping only the records ordering, answers, enrollment, permits, the gate decision, and the bypass audit read; an append advances the held replay over the appended bytes instead of reading the journal again. On a 69.6 MB journal the post-tool-use hook drops from 1.43 s to 0.10 s, the same as on a 58.7 MB journal.
 - The reference-transaction gate and `integrate` hold every live integration target to the ordering rules. Run `cargo-berth init` again to install the new hook and publish `gate-targets`.
 
 - Ordering edges between reservations with the same target are judged at that target; edges across targets are judged at the repository trunk. The trunk gate holds an update that brings in a successor still held by a cross-target edge.

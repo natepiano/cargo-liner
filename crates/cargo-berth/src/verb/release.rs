@@ -313,7 +313,8 @@ fn sweep_current_marker_against_active_reservations(
     coordination_run_id: CoordinationRunId,
 ) -> Result<(), ReleaseError> {
     let outcome = ledger.transact(worktree_id, coordination_run_id, |state| {
-        let result = RetainedReservationSet::replay(state.events())
+        let result = state
+            .reservations()
             .map_err(ReleaseError::ReservationReplay)
             .and_then(|reservations| {
                 worktree_context
@@ -341,11 +342,11 @@ fn validate_release_transaction(
     state: &ReplayedLedgerState<'_>,
     context: ReleaseTransactionContext<'_>,
 ) -> CommittedActionValidation<ReleaseRejection, ReleaseCommittedAction> {
-    let reservations = match RetainedReservationSet::replay(state.events()) {
+    let reservations = match state.reservations() {
         Ok(reservations) => reservations,
         Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Replay(error)),
     };
-    let ordering_graph = match OrderingGraph::replay(state.events()) {
+    let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
         Ok(ordering_graph) => ordering_graph,
         Err(error) => {
             return CommittedActionValidation::Reject(ReleaseRejection::EdgeReplay(error));
@@ -368,7 +369,7 @@ fn validate_release_transaction(
             Err(error) => return CommittedActionValidation::Reject(ReleaseRejection::Git(error)),
         };
     let marker_plan = marker_plan_for(
-        &reservations,
+        reservations,
         reservation.actor().run,
         reservation.actor().worktree,
         context.invoking_worktree_id,
@@ -397,7 +398,7 @@ fn validate_release_transaction(
         &release_append.operation,
         &ordering_graph,
         context.reservation_id,
-        &reservations,
+        reservations,
     ) {
         Ok(retention_deletions) => retention_deletions,
         Err(error) => return CommittedActionValidation::Reject(error),

@@ -7,16 +7,18 @@
 //!
 //! Each integration test is its own crate, so what two test files share lives
 //! here: `berth_command` starts `cargo-berth` without the test process's Claude
-//! Code session, `GitDriver` runs git under one test file's policy, and
+//! Code session, `GitDriver` runs git under one test file's policy,
 //! `IntegrationRepository` builds a repository whose lanes target an
-//! `integration` branch. Only a test crate of the `cargo-berth` package can
-//! expand `env!("CARGO_BIN_EXE_cargo-berth")`, so each entry point here that
+//! `integration` branch, and `observes_merge_extent_of` reads a merge extent
+//! observation in either record form. Only a test crate of the `cargo-berth`
+//! package can expand `env!("CARGO_BIN_EXE_cargo-berth")`, so each entry point here that
 //! runs `cargo-berth`, directly or through a git hook, takes that path as its
 //! `executable`.
 
 mod berth_command;
 mod git_driver;
 mod integration_repository;
+mod journal_records;
 
 pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
@@ -31,3 +33,7 @@ pub use integration_repository::json;
 pub use integration_repository::reservation_row;
 pub use integration_repository::worktree_identity_and_marker_run;
 pub use integration_repository::write_file;
+pub use journal_records::HOLDER_MERGE_EXTENT_OBSERVED;
+pub use journal_records::MERGE_EXTENT_OBSERVED;
+pub use journal_records::is_merge_extent_observation;
+pub use journal_records::observes_merge_extent_of;

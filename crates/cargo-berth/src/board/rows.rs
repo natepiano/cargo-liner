@@ -674,8 +674,8 @@ impl BoardModel {
             generation:          report.journal_snapshot.generation(),
             journal_byte_offset: report.journal_snapshot.journal_end_offset(),
         };
-        let events = report.journal_snapshot.events();
-        let reservations = RetainedReservationSet::replay(events)?;
+        let events = report.journal_snapshot.coordination_events();
+        let reservations = report.journal_snapshot.reservations();
         if report.constraints.generation != position.generation {
             return Err(BoardError::MismatchedProjectionGeneration {
                 replay:      position.generation,
@@ -685,7 +685,7 @@ impl BoardModel {
         let observed_at = RecordedAt::now();
         let (reservation_snapshots, ahead_behind_computations) = board_reservation_snapshots(
             repository_root,
-            &reservations,
+            reservations,
             &report.repository_snapshot,
             &observed_at,
         )?;
@@ -719,16 +719,16 @@ impl BoardModel {
         let available_forced_permits = alerts::available_forced_permits(events)?;
         let bypass_audit = alerts::bypass_audit(events);
         let (outstanding_incursions, recorded_incursion_answers) =
-            alerts::incursion_sections(&reservations);
+            alerts::incursion_sections(reservations);
         let alerts = alerts::board_alerts(
             &report.alerts,
             &reservation_snapshots,
             &report.unrecorded_bypass_occurrences,
             |id| report.target_for(id).clone(),
         )?;
-        let targets = board_targets(&reservations, &report.repository_snapshot);
+        let targets = board_targets(reservations, &report.repository_snapshot);
         let git_cost = alerts::board_git_cost(
-            &reservations,
+            reservations,
             &report.constraints,
             &report.repository_snapshot,
             ahead_behind_computations,

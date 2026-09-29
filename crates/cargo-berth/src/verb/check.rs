@@ -268,10 +268,10 @@ fn decide(
     declared_scopes: DeclaredReservationScopeSet,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<CheckDecision>, CheckDecisionError> {
-    let snapshot = match Ledger::read_for_edit_check(invocation_directory)
+    let (reservations, worktree_context) = match Ledger::read_for_edit_check(invocation_directory)
         .map_err(CheckDecisionError::Ledger)?
     {
-        Enrollment::Enrolled(snapshot) => snapshot,
+        Enrollment::Enrolled(snapshot) => snapshot.into_parts(),
         Enrollment::Unconfigured {
             expected_configuration_path,
         } => {
@@ -280,31 +280,30 @@ fn decide(
             });
         },
     };
-    let path_case = PathCase::read(snapshot.worktree_context().common_git_directory())
+    let path_case = PathCase::read(worktree_context.common_git_directory())
         .map_err(CheckDecisionError::PathCase)?;
     // Refusal follows the full declared edit, including every child of a tree scope.
     // First-touch acquisition separately retains its exact-file scope contract.
     let scopes = declared_scopes.into_minimal_antichain(path_case);
-    let reservations = RetainedReservationSet::replay(snapshot.events())
-        .map_err(CheckDecisionError::ReservationReplay)?;
-    let resolved_edit_authorization = ledger::resolve_identity(snapshot.worktree_context())
-        .map_err(CheckDecisionError::Ledger)?;
+    let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
+    let resolved_edit_authorization =
+        ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
     let acting_head_containment = ActingHeadContainment::observe_for_actor(
         &reservations,
-        snapshot.worktree_context(),
+        &worktree_context,
         resolved_edit_authorization,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
         resolved_edit_authorization,
-        snapshot.worktree_context(),
+        &worktree_context,
         recovery_command_line,
     );
     coordination_identity::validate_coordination_identity(&reservations, &identity_validation)
         .map_err(CheckDecisionError::from)?;
     validate_edit_worktree_occupancy(
         &reservations,
-        snapshot.worktree_context(),
+        &worktree_context,
         resolved_edit_authorization,
     )
     .map_err(CheckDecisionError::from)?;

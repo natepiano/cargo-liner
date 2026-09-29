@@ -52,7 +52,7 @@ use crate::ledger::TrunkObservationAtClaim;
 use crate::ledger::WorktreeAdministrativeLocator;
 
 /// One reservation retained for overlap, evidence, and audit decisions.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Reservation {
     pub(super) id:                                                ReservationId,
     pub(super) revision:                                          ReservationRevision,
@@ -87,7 +87,7 @@ pub(crate) struct Reservation {
 }
 
 /// Whether a reservation has a durable integration branch in the journal.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum RecordedTarget {
     /// The claim or a later mutation selected this local branch.
     Recorded {
@@ -642,7 +642,7 @@ pub(crate) enum RaceExtent {
 }
 
 /// The authoritative editing lifetime carried by reconciliation bookkeeping.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReservationRunStatus {
     /// An empty merge extent ends the run only after the run has done work.

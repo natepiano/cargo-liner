@@ -9,7 +9,9 @@
 use std::collections::VecDeque;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error as _;
 
 use super::constants::SCOPED_PATCH_TARGET_RETENTION_LIMIT;
 use super::constants::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
@@ -104,7 +106,7 @@ pub(super) struct ScopedPatchVerdictEvidence {
 }
 
 /// One definitive scoped patch verdict retained for an immutable target.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct RetainedScopedPatchTargetVerdict {
     subject:           IntegrationProofSubjectRevision,
     target:            GitObjectId,
@@ -114,8 +116,10 @@ struct RetainedScopedPatchTargetVerdict {
 }
 
 /// Durable scoped patch verdicts retained for the most recently recorded reconciliation targets.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub(crate) struct RetainedScopedPatchTargetVerdicts {
+    #[serde(deserialize_with = "bounded_entries::<_, _, SCOPED_PATCH_TARGET_RETENTION_LIMIT>")]
     entries: VecDeque<RetainedScopedPatchTargetVerdict>,
 }
 
@@ -146,7 +150,7 @@ declare_wire_enum! {
 }
 
 /// One definitive successor-incorporation verdict retained for an immutable head.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct RetainedSuccessorScopedPatchTargetVerdict {
     subject:           IntegrationProofSubjectRevision,
     successor_head:    GitObjectId,
@@ -155,8 +159,12 @@ struct RetainedSuccessorScopedPatchTargetVerdict {
 }
 
 /// Durable scoped patch verdicts retained for recently observed successor heads.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub(crate) struct RetainedSuccessorScopedPatchTargetVerdicts {
+    #[serde(
+        deserialize_with = "bounded_entries::<_, _, SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT>"
+    )]
     entries: VecDeque<RetainedSuccessorScopedPatchTargetVerdict>,
 }
 
@@ -179,7 +187,7 @@ pub(crate) enum ScopedPatchEvaluationPriority {
 }
 
 /// One comparison attempt retained for target-specific round-robin scheduling.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct ScopedPatchComparisonAttempt {
     subject:    IntegrationProofSubjectRevision,
     target:     GitObjectId,
@@ -187,8 +195,10 @@ struct ScopedPatchComparisonAttempt {
 }
 
 /// The bounded evaluation schedule for the most recently recorded reconciliation targets.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub(super) struct ScopedPatchTargetEvaluationSchedule {
+    #[serde(deserialize_with = "bounded_entries::<_, _, SCOPED_PATCH_TARGET_RETENTION_LIMIT>")]
     entries: VecDeque<ScopedPatchComparisonAttempt>,
 }
 
@@ -230,8 +240,12 @@ impl ScopedPatchTargetEvaluationSchedule {
 /// The retention limit matches the retained successor verdict limit, so an unvisited retained
 /// head sorts ahead of retried transient failures. Recording a new proof subject removes every
 /// superseded subject before applying that limit.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub(super) struct SuccessorScopedPatchTargetEvaluationSchedule {
+    #[serde(
+        deserialize_with = "bounded_entries::<_, _, SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT>"
+    )]
     entries: VecDeque<ScopedPatchComparisonAttempt>,
 }
 
@@ -368,8 +382,29 @@ impl RetainedSuccessorScopedPatchTargetVerdicts {
     }
 }
 
+/// Decode retained entries, refusing more than `LIMIT`: `record` evicts only at the limit, so a
+/// longer sequence would never shrink.
+fn bounded_entries<'de, DeserializerType, Entry, const LIMIT: usize>(
+    deserializer: DeserializerType,
+) -> Result<VecDeque<Entry>, DeserializerType::Error>
+where
+    DeserializerType: Deserializer<'de>,
+    Entry: Deserialize<'de>,
+{
+    let entries = VecDeque::<Entry>::deserialize(deserializer)?;
+    if entries.len() > LIMIT {
+        return Err(DeserializerType::Error::invalid_length(
+            entries.len(),
+            &format!("at most {LIMIT} retained entries").as_str(),
+        ));
+    }
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::IntegrationProofSubjectRevision;
     use super::SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT;
     use super::ScopedPatchEvaluationPriority;
@@ -411,6 +446,37 @@ mod tests {
         assert_eq!(
             evaluation_schedule.priority(current_subject, &oldest_retained_head),
             ScopedPatchEvaluationPriority::LastAttemptedAt(generation)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_entries_decode_only_up_to_the_retention_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let subject = IntegrationProofSubjectRevision::INITIAL;
+        let generation = ProjectionGeneration::from(3);
+        let mut evaluation_schedule = SuccessorScopedPatchTargetEvaluationSchedule::default();
+        for successor_number in 1..=SUCCESSOR_SCOPED_PATCH_TARGET_RETENTION_LIMIT {
+            let successor_head = format!("{successor_number:040x}").parse::<GitObjectId>()?;
+            evaluation_schedule.record(subject, &successor_head, generation);
+        }
+        let mut encoded = serde_json::to_value(&evaluation_schedule)?;
+        assert_eq!(
+            serde_json::from_value::<SuccessorScopedPatchTargetEvaluationSchedule>(
+                encoded.clone()
+            )?,
+            evaluation_schedule
+        );
+
+        let Value::Array(entries) = &mut encoded else {
+            return Err("a schedule encodes as its entries".into());
+        };
+        let first_entry = entries.first().cloned().ok_or("the schedule is full")?;
+        entries.push(first_entry);
+        assert!(
+            serde_json::from_value::<SuccessorScopedPatchTargetEvaluationSchedule>(encoded)
+                .is_err(),
+            "one entry past the retention limit is refused"
         );
         Ok(())
     }

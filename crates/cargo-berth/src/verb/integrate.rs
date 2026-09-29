@@ -22,7 +22,6 @@ use crate::output::IntegratedGateOutcome;
 use crate::output::IntegrationPayload;
 use crate::output::OutputEnvelope;
 use crate::reconcile::ReconcileError;
-use crate::reservation::RetainedReservationSet;
 
 /// One reservation and its inseparable normal-or-forced integration policy.
 pub(crate) struct IntegrateRequest {
@@ -175,15 +174,16 @@ fn integration_target(
     })?;
     let ledger = Ledger::open(repository_root)
         .map_err(|error| Box::new(OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)))?;
-    let events = ledger
-        .read_validated_events()
-        .map_err(|error| Box::new(OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)))?;
-    let reservations = RetainedReservationSet::replay(&events).map_err(|error| {
-        Box::new(OutputEnvelope::replay_failure(
-            CommandVerb::Integrate,
-            &error,
-        ))
-    })?;
+    let reservations = ledger
+        .read_validated_journal()
+        .map_err(|error| Box::new(OutputEnvelope::ledger_error(CommandVerb::Integrate, &error)))?
+        .into_reservations()
+        .map_err(|error| {
+            Box::new(OutputEnvelope::replay_failure(
+                CommandVerb::Integrate,
+                &error,
+            ))
+        })?;
     let recorded = reservations
         .target_of(reservation_id, &trunk)
         .map_err(|error| {

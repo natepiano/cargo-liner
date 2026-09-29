@@ -206,7 +206,7 @@ pub(crate) fn enroll_worktrees(
     config: &BerthConfig,
 ) -> Result<WorktreeEnrollmentReport, LedgerError> {
     let ledger = Ledger::open_from_discovered_worktree(context)?;
-    let events = ledger.read_validated_events()?;
+    let events = ledger.read_validated_journal()?.into_coordination_events();
     let mut report = WorktreeEnrollmentReport::default();
     let registry = match WorktreeRegistry::read(context) {
         Ok(registry) => registry,
@@ -280,7 +280,9 @@ pub(crate) fn enroll_worktrees(
             Err(error) => report.failures.push(error),
         }
     }
-    report.overlaps = unresolved_enrollment_overlaps(&ledger.read_validated_events()?);
+    report.overlaps = unresolved_enrollment_overlaps(
+        &ledger.read_validated_journal()?.into_coordination_events(),
+    );
     Ok(report)
 }
 
@@ -642,11 +644,11 @@ fn enroll_candidate(
             diagnostic,
         )
     };
-    let events = ledger
-        .read_validated_events()
+    let reservations = ledger
+        .read_validated_journal()
+        .map_err(|error| git_failure(error.to_string()))?
+        .into_reservations()
         .map_err(|error| git_failure(error.to_string()))?;
-    let reservations =
-        RetainedReservationSet::replay(&events).map_err(|error| git_failure(error.to_string()))?;
     let containment = ActingHeadContainment::observe_at_head(
         &reservations,
         &candidate.context,
@@ -671,13 +673,15 @@ fn enroll_candidate(
     let outcome = ledger
         .transact(candidate.worktree_id, run, |state| {
             if matches!(
-                reservation_history(state.events(), candidate.worktree_id),
+                reservation_history(state.coordination_events(), candidate.worktree_id),
                 ReservationHistory::AlreadyReserved
             ) {
                 return TransactionValidation::Reject(EnrollmentRejection::AlreadyReserved);
             }
-            let reservations = match RetainedReservationSet::replay(state.events()) {
-                Ok(reservations) => reservations.with_acting_head_containment(containment),
+            let reservations = match state.reservations() {
+                Ok(reservations) => reservations
+                    .clone()
+                    .with_acting_head_containment(containment),
                 Err(error) => {
                     return TransactionValidation::Reject(EnrollmentRejection::InvalidReplay(
                         error.to_string(),

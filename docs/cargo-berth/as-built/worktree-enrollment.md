@@ -37,14 +37,14 @@
    - Footprints are also observed for worktrees that already have history. Those are used only to compute the pairwise overlap checks below, and their observation failures are dropped silently.
 5. **Enroll each `NeverReserved` footprint** (`enroll_candidate`):
    - Outside the lock:
-     - Replay `RetainedReservationSet`.
+     - Read the replayed `RetainedReservationSet` through `Ledger::read_validated_journal`.
      - Call `ActingHeadContainment::observe_at_head(&reservations, &context, worktree_id, &target, &repository_trunk, &head)`, with the candidate's selected target as the acting target and the configured repository trunk.
      - Compute `mutual_remainders` against every other observed footprint. For each pair, `MutualWorkRemainder { candidate_paths, holder_paths }` holds what each side would still bring to the other's HEAD: `unmerged_branch_paths(other_head, this_head)` plus its working-tree paths.
      - Build the `CanonicalWorktreeRoot` and the purpose `Enroll existing work on <branch>`.
      - Generate a new `ReservationId` and `CoordinationRunId`.
    - `Ledger::transact(worktree_id, run, validate)` then does all of the following under the lock:
      - Re-checks history on the locked replay. `AlreadyReserved` means a skip, not a failure.
-     - Replays with `.with_acting_head_containment(containment)`, which sets `ForeignProtectionPolicy::ExcludeContainedWork`.
+     - Clones the locked replay's `RetainedReservationSet` and applies `.with_acting_head_containment(containment)`, which sets `ForeignProtectionPolicy::ExcludeContainedWork`.
      - `enrollment_authorization` runs `conflicts_for_claim(&scopes, worktree_id, path_case)` and narrows each conflict's `overlapping_scopes` to scopes found in both sides of that holder's `MutualWorkRemainder`. A conflict with nothing left is dropped. A holder with no remainder entry (not observed this run) keeps its full overlap. The remaining conflicts become `AuthorizedOverlap::from(&conflict)`, then `ConflictAuthorization::Enrollment { overlaps }`, or `NoConflict` if none remain.
      - Appends `JournalOperation::Claim` with:
        - `source: ClaimSource::Enrolled`

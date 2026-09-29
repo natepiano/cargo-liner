@@ -972,8 +972,8 @@ fn validate_claim_transaction(
         maximum_ordering_edges,
         repository_trunk,
     } = context;
-    let reservations = match RetainedReservationSet::replay(state.events()) {
-        Ok(reservations) => reservations,
+    let reservations = match state.reservations() {
+        Ok(reservations) => reservations.clone(),
         Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
     };
     let acting_head_containment = ActingHeadContainment::observe(
@@ -997,7 +997,7 @@ fn validate_claim_transaction(
             maximum_reservations,
         ));
     }
-    let ordering_graph = match OrderingGraph::replay(state.events()) {
+    let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
         Ok(ordering_graph) => ordering_graph,
         Err(error) => {
             return TransactionValidation::Reject(ClaimRejection::EdgeReplay(error));
@@ -1043,8 +1043,8 @@ fn validate_first_touch_transaction(
         maximum_reservations,
         repository_trunk,
     } = context;
-    let reservations = match RetainedReservationSet::replay(state.events()) {
-        Ok(reservations) => reservations,
+    let reservations = match state.reservations() {
+        Ok(reservations) => reservations.clone(),
         Err(error) => {
             return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
         },

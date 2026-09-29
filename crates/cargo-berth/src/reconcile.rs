@@ -1,5 +1,6 @@
 //! Shared liveness, evidence, retention-ref, and marker reconciliation.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -84,6 +85,8 @@ use crate::ledger::LedgerCommittedActionOutcome;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
+use crate::ledger::ObservedReservation;
+use crate::ledger::ObservedReservationSet;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
@@ -224,14 +227,20 @@ struct MergeExtentGitCost {
 
 /// Complete journal truth retained from one reconciliation lock acquisition.
 pub(crate) struct ReconciledJournalSnapshot {
-    events:             Vec<JournalEvent>,
-    generation:         ProjectionGeneration,
-    journal_end_offset: JournalByteOffset,
+    coordination_events: Vec<JournalEvent>,
+    reservations:        RetainedReservationSet,
+    generation:          ProjectionGeneration,
+    journal_end_offset:  JournalByteOffset,
 }
 
 impl ReconciledJournalSnapshot {
-    /// Borrow every event visible at the reconciled replay point.
-    pub(crate) fn events(&self) -> &[JournalEvent] { &self.events }
+    /// Borrow every record a coordination reader reads at the reconciled replay point.
+    ///
+    /// See [`crate::ledger::JournalOperation::is_coordination_record`].
+    pub(crate) fn coordination_events(&self) -> &[JournalEvent] { &self.coordination_events }
+
+    /// Borrow the reservation set folded from every event at the reconciled replay point.
+    pub(crate) const fn reservations(&self) -> &RetainedReservationSet { &self.reservations }
 
     /// Return the projection generation shared by every board section.
     pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
@@ -1350,7 +1359,8 @@ pub(crate) fn reconcile(
 /// Reconcile once while retaining the discovered worktree and opened ledger for drift.
 pub(crate) fn reconcile_for_drift<ConcurrentObservation>(
     invocation_directory: &Path,
-    observe: impl FnOnce(&WorktreeContext, &Ledger, &[JournalEvent]) -> ConcurrentObservation + Send,
+    observe: impl FnOnce(&WorktreeContext, &Ledger, RetainedReservationSet) -> ConcurrentObservation
+    + Send,
 ) -> Result<Enrollment<ReconciledDriftPreflight<ConcurrentObservation>>, ReconcileError>
 where
     ConcurrentObservation: Send,
@@ -1359,11 +1369,14 @@ where
     match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => {
             let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
-            let observation_events =
-                drift_observation_events_after_current_marker_sweep(&worktree_context, &ledger)?;
+            let observation_reservations =
+                drift_observation_reservations_after_current_marker_sweep(
+                    &worktree_context,
+                    &ledger,
+                )?;
             let (report, observation) = thread::scope(|scope| {
                 let observation_worker =
-                    scope.spawn(|| observe(&worktree_context, &ledger, &observation_events));
+                    scope.spawn(|| observe(&worktree_context, &ledger, observation_reservations));
                 let report = reconcile_with_open_ledger(
                     &worktree_context,
                     &ledger,
@@ -1396,17 +1409,18 @@ where
     }
 }
 
-fn drift_observation_events_after_current_marker_sweep(
+fn drift_observation_reservations_after_current_marker_sweep(
     worktree_context: &WorktreeContext,
     ledger: &Ledger,
-) -> Result<Vec<JournalEvent>, ReconcileError> {
+) -> Result<RetainedReservationSet, ReconcileError> {
     let worktree_identity = ledger::worktree_identity(
         worktree_context.administrative_directory(),
         worktree_context.worktree_kind(),
     )?;
     let outcome = ledger
         .transact(worktree_identity.id, CoordinationRunId::new(), |state| {
-            let prepared_events = RetainedReservationSet::replay(state.events())
+            let prepared_reservations = state
+                .reservations()
                 .map_err(ReconcileError::Replay)
                 .and_then(|reservations| {
                     worktree_context
@@ -1419,13 +1433,13 @@ fn drift_observation_events_after_current_marker_sweep(
                             })
                         })
                         .map_err(ReconcileError::Ledger)?;
-                    Ok(state.events().to_vec())
+                    Ok(reservations.clone())
                 });
-            TransactionValidation::Reject(prepared_events)
+            TransactionValidation::Reject(prepared_reservations)
         })
         .map_err(ReconcileError::Transaction)?;
     match outcome {
-        LedgerTransactionOutcome::Rejected(prepared_events) => prepared_events,
+        LedgerTransactionOutcome::Rejected(prepared_reservations) => prepared_reservations,
         LedgerTransactionOutcome::Appended { .. } => {
             Err(ReconcileError::UnexpectedDriftPreflightMutation)
         },
@@ -1812,7 +1826,9 @@ pub(crate) fn prepare_rewrite_reconciliation(
     if markers.is_empty() {
         return Ok(preflight);
     }
-    let mut reservations = RetainedReservationSet::replay(&ledger.read_validated_events()?)
+    let mut reservations = ledger
+        .read_validated_journal()?
+        .into_reservations()
         .map_err(ReconcileError::Replay)?;
     let repository_trunk = berth_config.repository_trunk().map_err(|reason| {
         ReconcileError::Config(ConfigError::InvalidValue {
@@ -2125,11 +2141,12 @@ fn prepare_reconciliation_transaction(
     worktree_context: &WorktreeContext,
     rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<PreparedReconciliationTransaction, ReconciliationPlanningError> {
-    let reservations = RetainedReservationSet::replay(state.events())
+    let reservations = state
+        .reservations()
         .map_err(ReconciliationPlanningError::Reservation)?;
-    let reservations = rewrite_preflight.project(&reservations)?;
-    let ordering_graph =
-        OrderingGraph::replay(state.events()).map_err(ReconciliationPlanningError::Edge)?;
+    let reservations = rewrite_preflight.project(reservations)?;
+    let ordering_graph = OrderingGraph::replay(state.coordination_events())
+        .map_err(ReconciliationPlanningError::Edge)?;
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
@@ -2164,7 +2181,7 @@ fn prepare_reconciliation_transaction(
     reconciliation_plan.action.trunk_resolution_calls += rewrite_preflight.trunk_resolution_calls;
     let mut pending_bypasses = permit::prepare_pending_bypass_recovery(
         worktree_context.common_git_directory(),
-        state.events(),
+        state.coordination_events(),
     )
     .map_err(ReconciliationPlanningError::PendingBypass)?;
     let pending_bypass_imports = pending_bypasses.take_imports();
@@ -2202,6 +2219,13 @@ struct HolderMergeProtection {
     committed_paths: CommittedMergeEvidence,
 }
 
+/// One holder's new merge extent and every reservation of that holder whose extent it replaces.
+struct HolderMergeExtentChange {
+    holder:       (WorktreeId, IntegrationTarget),
+    extent:       MergeExtent,
+    reservations: ObservedReservationSet,
+}
+
 /// Journal updates and committed-path evidence derived together under the reconciliation lock.
 struct MergeExtentReconciliation {
     operations:          Vec<JournalOperation>,
@@ -2218,45 +2242,58 @@ fn derive_merge_extents(
     git_cost: &mut MergeExtentGitCost,
 ) -> Result<MergeExtentReconciliation, ReservationReplayError> {
     let mut observed_by_worktree = HashMap::new();
-    let mut operations = Vec::new();
+    let mut changes: Vec<HolderMergeExtentChange> = Vec::new();
     for reservation in reservations.iter().filter(|reservation| {
         !matches!(
             reservation.lifecycle(),
             ReservationLifecycle::Released { .. }
         )
     }) {
+        let holder = (
+            reservation.actor().worktree,
+            snapshot.recorded_target(reservation.id()).clone(),
+        );
         let observed = observed_by_worktree
-            .entry((
-                reservation.actor().worktree,
-                snapshot.recorded_target(reservation.id()).clone(),
-            ))
+            .entry(holder.clone())
             .or_insert_with(|| {
                 observe_merge_extent(reservation, reservations, snapshot, planned, git_cost)
             });
-        let extent = match observed {
-            Ok(observation) => observation.extent.clone(),
-            Err(failure) => reservation.merge_extent().unavailable(failure.clone()),
+        let extent = observed.as_ref().map_or_else(
+            |failure| Cow::Owned(reservation.merge_extent().unavailable(failure.clone())),
+            |observation| Cow::Borrowed(&observation.extent),
+        );
+        if *extent == *reservation.merge_extent() {
+            continue;
+        }
+        let observed_reservation = ObservedReservation {
+            reservation_id: reservation.id(),
+            run_status:     reservation.run_status(),
         };
-        if &extent != reservation.merge_extent() {
-            operations.push(JournalOperation::MergeExtentObserved {
-                reservation_id: reservation.id(),
-                extent,
-                run_status: reservation.run_status(),
+        // A failed observation keeps each reservation's own retained evidence, so a holder's
+        // reservations share a record only where their resulting extents are equal.
+        if let Some(change) = changes
+            .iter_mut()
+            .find(|change| change.holder == holder && change.extent == *extent)
+        {
+            change.reservations.push(observed_reservation);
+        } else {
+            changes.push(HolderMergeExtentChange {
+                holder,
+                extent: extent.into_owned(),
+                reservations: observed_reservation.into(),
             });
         }
     }
+    let mut operations = changes
+        .into_iter()
+        .map(|change| JournalOperation::HolderMergeExtentObserved {
+            extent:       change.extent,
+            reservations: change.reservations,
+        })
+        .collect::<Vec<_>>();
     for incident in reservations.outstanding_incursion_incidents() {
         let subject = reservations.reservation(incident.reservation_id())?;
-        let latest = operations
-            .iter()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == subject.id() => Some(extent),
-                _ => None,
-            })
+        let latest = planned_merge_extent(subject.id(), &operations)
             .unwrap_or_else(|| subject.merge_extent());
         // A distinct disposition preserves the incident's history after its branch has no work.
         if matches!(latest, reservation::MergeExtent::Empty { .. }) {
@@ -3124,11 +3161,12 @@ pub(crate) fn prepare_gate_reconciliation(
     purpose: GateReconciliationPurpose,
     rewrite_preflight: RewriteReconciliationPreflight,
 ) -> Result<GateReconciliation, GateReconciliationError> {
-    let reservations = RetainedReservationSet::replay(state.events())
+    let reservations = state
+        .reservations()
         .map_err(GateReconciliationError::Reservation)?;
-    let reservations = rewrite_preflight.project(&reservations)?;
-    let ordering_graph =
-        OrderingGraph::replay(state.events()).map_err(GateReconciliationError::Edge)?;
+    let reservations = rewrite_preflight.project(reservations)?;
+    let ordering_graph = OrderingGraph::replay(state.coordination_events())
+        .map_err(GateReconciliationError::Edge)?;
     let mut scoped_patch_evaluation_budget = rewrite_preflight.budget;
     let mut successor_scoped_patch_evaluation_budget =
         ReconciliationSuccessorScopedPatchEvaluationBudget::default();
@@ -4163,18 +4201,7 @@ fn append_settlement_operations(
             .iter()
             .find(|evidence| evidence.reservation_id == reservation.id())
             .map_or(&integration_status, |evidence| &evidence.status);
-        let extent = reconciliation
-            .operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            })
+        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
         let SettlementSelection::Release(disposition) = settlement_selection(
             reservation,
@@ -4253,18 +4280,7 @@ fn append_merged_run_endings(
         if !matches!(reservation.lifecycle(), ReservationLifecycle::Active) {
             continue;
         }
-        let extent = reconciliation
-            .operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            })
+        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
         let MergeExtent::Empty { key } = extent else {
             continue;
@@ -4378,18 +4394,7 @@ fn append_orphan_retirements(
         // Read the extent this pass will commit rather than the one replay produced: observation
         // fails for an orphaned holder, and `derive_merge_extents` has already planned the
         // `MergeExtent::Unavailable` that retains the proof.
-        let extent = reconciliation
-            .operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            })
+        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
         if extent
             .proved_empty_key()
@@ -4404,6 +4409,17 @@ fn append_orphan_retirements(
             disposition: ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived()),
         });
     }
+}
+
+/// The merge extent this plan already records for a reservation, if it observes one.
+fn planned_merge_extent(
+    reservation_id: ReservationId,
+    operations: &[JournalOperation],
+) -> Option<&MergeExtent> {
+    operations
+        .iter()
+        .rev()
+        .find_map(|operation| operation.observed_merge_extent(reservation_id))
 }
 
 /// The disposition this plan already records for a reservation, if it ends one.
@@ -4495,17 +4511,7 @@ fn append_evidence_operations(
         });
     for evidence in &reconciliation.action.evidence {
         let reservation = reservations.reservation(evidence.reservation_id)?;
-        let planned_extent = operations
-            .iter()
-            .rev()
-            .find_map(|operation| match operation {
-                JournalOperation::MergeExtentObserved {
-                    reservation_id,
-                    extent,
-                    ..
-                } if *reservation_id == reservation.id() => Some(extent),
-                _ => None,
-            });
+        let planned_extent = planned_merge_extent(reservation.id(), &operations);
         let edit_blocking_status = planned_extent.map_or_else(
             || reservation.edit_blocking_status(),
             |extent| {
@@ -5044,12 +5050,11 @@ impl ReconciliationAction {
         state: &ReplayedLedgerState<'_>,
         recoverable_failures: &RecoverableReconciliationAppendFailures,
     ) -> Result<ReconciliationReport, ReconcileError> {
-        let reservations =
-            RetainedReservationSet::replay(state.events()).map_err(ReconcileError::Replay)?;
-        let ordering_graph =
-            OrderingGraph::replay(state.events()).map_err(ReconcileError::EdgeReplay)?;
+        let reservations = state.reservations().map_err(ReconcileError::Replay)?;
+        let ordering_graph = OrderingGraph::replay(state.coordination_events())
+            .map_err(ReconcileError::EdgeReplay)?;
         let constraints = ordering_graph
-            .integration_constraints(&reservations, &self.repository_snapshot, state.generation())
+            .integration_constraints(reservations, &self.repository_snapshot, state.generation())
             .map_err(ReconcileError::MissingReadinessFact)?;
         for pending_import in self.pending_bypass_imports {
             if recoverable_failures.contains(pending_import.operation()) {
@@ -5075,7 +5080,7 @@ impl ReconciliationAction {
             &self.cover_marker_publications,
         )?;
         let mut alerts = reservation_alerts(
-            &reservations,
+            reservations,
             &self.repository_snapshot,
             &self.confirmed_lost_evidence,
         )?;
@@ -5125,9 +5130,10 @@ impl ReconciliationAction {
             repository_snapshot: self.repository_snapshot,
             constraints,
             journal_snapshot: ReconciledJournalSnapshot {
-                events:             state.events().to_vec(),
-                generation:         state.generation(),
-                journal_end_offset: state.journal_end_offset(),
+                coordination_events: state.coordination_events().to_vec(),
+                reservations:        reservations.clone(),
+                generation:          state.generation(),
+                journal_end_offset:  state.journal_end_offset(),
             },
             unrecorded_bypass_occurrences: self.unrecorded_bypass_occurrences,
             recovered_bypass_markers,

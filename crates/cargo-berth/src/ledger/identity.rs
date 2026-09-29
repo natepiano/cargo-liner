@@ -37,9 +37,9 @@ pub(super) fn validate_journal_repository(
     replay: &JournalReplay,
 ) -> Result<(), LedgerError> {
     if replay
-        .events
+        .repositories
         .iter()
-        .any(|event| event.actor.repository != repo_instance_id)
+        .any(|repository| *repository != repo_instance_id)
     {
         Err(LedgerError::RepositoryIdentityMismatch)
     } else {

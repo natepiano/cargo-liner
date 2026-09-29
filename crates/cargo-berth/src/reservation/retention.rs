@@ -7,6 +7,9 @@
 
 use std::collections::HashSet;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::conflict::ReservationConflict;
 use super::containment::ActingHeadContainment;
 use super::evidence::ProtectedReservationTip;
@@ -149,11 +152,15 @@ impl Reservation {
 }
 
 /// Every retained reservation after replaying the journal in append order.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RetainedReservationSet {
     reservations:            Vec<Reservation>,
     incursion_incidents:     Vec<IncursionIncident>,
     /// Whether foreign protection excludes work already present in the acting HEAD.
+    ///
+    /// Never serialized: a replayed set always holds [`ForeignProtectionPolicy::FullProtection`],
+    /// and callers narrow it afterwards through [`Self::with_acting_head_containment`].
+    #[serde(skip)]
     acting_head_containment: ForeignProtectionPolicy,
 }
 
@@ -168,7 +175,7 @@ enum ForeignProtectionPolicy {
 }
 
 /// Whether replay has recorded a protected tip for this reservation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) enum RetainedProtectedTip {
     /// An active reservation has not checkpointed a commit.
     NotCheckpointed,
@@ -177,7 +184,7 @@ pub(super) enum RetainedProtectedTip {
 }
 
 /// The trunk comparison point retained for the reservation's current state.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum IntegrationTrunkSnapshot {
     /// The trunk commit observed when the reservation was acquired.
     AtClaim(TrunkObservationAtClaim),
@@ -186,7 +193,7 @@ pub(crate) enum IntegrationTrunkSnapshot {
 }
 
 /// One incursion incident and its current replayed disposition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct IncursionIncident {
     id:             IncursionIncidentId,
     reservation_id: ReservationId,
@@ -195,7 +202,7 @@ pub(crate) struct IncursionIncident {
 }
 
 /// Whether an incursion still requires a user disposition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) enum IncursionIncidentStatus {
     /// No disposition record has answered this incident.
     Outstanding,
@@ -281,6 +288,10 @@ impl From<&ReservationSnapshot> for PhaseStartHeadUpdate {
 
 impl RetainedReservationSet {
     /// Replay journal operations into the current retained reservation set.
+    ///
+    /// Production reads the set the journal replay folds record by record; this whole-slice
+    /// replay is the reference that fold is tested against.
+    #[cfg(test)]
     pub(crate) fn replay(events: &[JournalEvent]) -> Result<Self, ReservationReplayError> {
         let mut reservations = Self::default();
         for event in events {
@@ -872,17 +883,20 @@ impl RetainedReservationSet {
     }
 
     /// Dispatch one journal operation to the replay step that owns it.
-    fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
+    pub(crate) fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
         match &event.operation {
             JournalOperation::MergeExtentObserved {
                 reservation_id,
                 extent,
                 ..
-            } => {
-                let reservation = self.find_mut(*reservation_id)?;
-                reservation.merge_extent = extent.clone();
-                reservation.advance_revision()
-            },
+            } => self.apply_merge_extent(*reservation_id, extent),
+            JournalOperation::HolderMergeExtentObserved {
+                extent,
+                reservations,
+            } => reservations
+                .as_slice()
+                .iter()
+                .try_for_each(|observed| self.apply_merge_extent(observed.reservation_id, extent)),
             JournalOperation::Claim { .. }
             | JournalOperation::Widen { .. }
             | JournalOperation::Renew { .. }
@@ -919,6 +933,17 @@ impl RetainedReservationSet {
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
             | JournalOperation::Bypass { .. } => Ok(()),
         }
+    }
+
+    /// Replace one reservation's recorded merge extent, advancing its revision.
+    fn apply_merge_extent(
+        &mut self,
+        reservation_id: ReservationId,
+        extent: &MergeExtent,
+    ) -> Result<(), ReservationReplayError> {
+        let reservation = self.find_mut(reservation_id)?;
+        reservation.merge_extent = extent.clone();
+        reservation.advance_revision()
     }
 
     /// Apply the operations that acquire, extend, renew, or retire a holder's reservation.
@@ -3386,6 +3411,69 @@ mod tests {
             return Err("either record should already cover the path".into());
         };
         assert_eq!(incident_id, INCIDENT_ID.parse::<IncursionIncidentId>()?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_holder_merge_extent_record_replays_as_one_record_per_listed_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let claims = [
+            claim_event_for(RESERVATION_ID, "presented")?,
+            claim_event_for(SIBLING_RESERVATION_ID, "presented")?,
+        ];
+        let key = json!({
+            "trunk": TRUNK_OID,
+            "head": PROTECTED_TIP,
+            "working_tree": {"tracked_paths": [], "untracked_paths": ["src/lib.rs"]},
+        });
+        let protected = json!({
+            "status": "protected",
+            "key": key,
+            "scopes": [{"path": "src/lib.rs", "kind": "file"}],
+        });
+        let empty = json!({"status": "empty", "key": key});
+        let mut single = claims.to_vec();
+        let mut grouped = claims.to_vec();
+        for (projection_generation, extent) in [(2, &protected), (4, &empty)] {
+            single.push(journal_event(
+                projection_generation,
+                &json!({"op": "merge_extent_observed", "reservation_id": RESERVATION_ID,
+                        "extent": extent, "run_status": "editing"}),
+            )?);
+            single.push(journal_event(
+                projection_generation + 1,
+                &json!({"op": "merge_extent_observed", "reservation_id": SIBLING_RESERVATION_ID,
+                        "extent": extent, "run_status": "ended"}),
+            )?);
+            grouped.push(journal_event(
+                projection_generation,
+                &json!({"op": "holder_merge_extent_observed", "extent": extent, "reservations": [
+                    {"reservation_id": RESERVATION_ID, "run_status": "editing"},
+                    {"reservation_id": SIBLING_RESERVATION_ID, "run_status": "ended"},
+                ]}),
+            )?);
+        }
+
+        let from_single = RetainedReservationSet::replay(&single)?;
+        let from_grouped = RetainedReservationSet::replay(&grouped)?;
+        assert_eq!(from_grouped, from_single);
+        let expected = serde_json::from_value::<super::MergeExtent>(empty.clone())?;
+        for reservation_id in [RESERVATION_ID, SIBLING_RESERVATION_ID] {
+            assert_eq!(
+                from_grouped
+                    .reservation(reservation_id.parse::<ReservationId>()?)?
+                    .merge_extent(),
+                &expected
+            );
+        }
+        assert!(
+            journal_event(
+                6,
+                &json!({"op": "holder_merge_extent_observed", "extent": empty, "reservations": []}),
+            )
+            .is_err(),
+            "a record naming no reservation must make the journal unreadable"
+        );
         Ok(())
     }
 

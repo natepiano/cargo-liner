@@ -249,7 +249,7 @@ pub(super) fn evaluate_locked(
                         &repository_trunk,
                     );
                     let (decision, operations) = match decide(
-                        state.events(),
+                        state.coordination_events(),
                         prepared.constraints(),
                         &entering,
                         purpose,

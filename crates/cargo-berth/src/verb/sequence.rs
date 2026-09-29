@@ -32,7 +32,6 @@ use crate::output::OutputEnvelope;
 use crate::output::SequenceRejectionKind;
 use crate::reconcile;
 use crate::reservation::ReservationReplayError;
-use crate::reservation::RetainedReservationSet;
 
 /// A parsed request to order two reservations that already share a deferral.
 pub(crate) struct SequenceRequest {
@@ -157,7 +156,7 @@ fn execute_sequence(
         journal_mutation_actor.worktree_id,
         journal_mutation_actor.coordination_run_id,
         |state| {
-            let reservations = match RetainedReservationSet::replay(state.events()) {
+            let reservations = match state.reservations() {
                 Ok(reservations) => reservations,
                 Err(error) => {
                     return TransactionValidation::Reject(SequenceRejection::ReservationReplay(
@@ -166,7 +165,7 @@ fn execute_sequence(
                 },
             };
             if let Err(error) = coordination_identity::validate_coordination_identity(
-                &reservations,
+                reservations,
                 &identity_validation,
             ) {
                 let rejection = match error {
@@ -179,7 +178,7 @@ fn execute_sequence(
                 };
                 return TransactionValidation::Reject(rejection);
             }
-            let ordering_graph = match OrderingGraph::replay(state.events()) {
+            let ordering_graph = match OrderingGraph::replay(state.coordination_events()) {
                 Ok(ordering_graph) => ordering_graph,
                 Err(error) => {
                     return TransactionValidation::Reject(SequenceRejection::EdgeReplay(error));

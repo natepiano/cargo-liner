@@ -23,6 +23,8 @@ All coordination state lives in a `cargo-berth` directory under the repository's
 | `journal.ndjson` | Append-only NDJSON record of every mutation. Truth. |
 | `reservations.json` | Materialized projection of the journal. Disposable cache. |
 | `reservations.json.tmp` | Staging path for the atomic rename that publishes a projection. |
+| `replay-checkpoint.json` | Serialized replay of the journal's first bytes, so a replay decodes only the records after them. Disposable cache. |
+| `replay-checkpoint.json.<uuid v7>.tmp` | Uniquely named staging path for the rename that publishes a replay checkpoint. |
 | `mutation.lock` | The single file lock every mutating verb takes. |
 | `repo-instance-id` | Identifies the ledger's repository instance. |
 | `cargo-berth-worktree-id` | Per-worktree identity file, written in the worktree's git dir. |
@@ -47,21 +49,49 @@ pub(crate) fn transact<Rejection>(
 ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError>
 ```
 
-The sequence inside is fixed: acquire the mutation lock, replay the journal to a `ReplayedLedgerState`, hand that state to the caller's `validate` closure, and — only if the closure returns an accepting `TransactionValidation` — append the record it produced. `transact_with_committed_action` extends the same hold to git side effects that must not be observed apart from the record, so the ref write and the journal append cannot be seen out of order.
+The sequence inside is fixed: acquire the mutation lock, replay the journal (resuming from the replay checkpoint) to a `ReplayedLedgerState`, hand that state to the caller's `validate` closure, and — only if the closure returns an accepting `TransactionValidation` — append the record it produced. `transact_with_committed_action` extends the same hold to git side effects that must not be observed apart from the record, so the ref write and the journal append cannot be seen out of order.
 
 `MutationLock::acquire` polls with backoff from `MUTATION_LOCK_INITIAL_RETRY_INTERVAL` (50 ms) to `MUTATION_LOCK_MAXIMUM_RETRY_INTERVAL` (1 s), giving up after `MUTATING_VERB_CONTENTION_TOLERANCE` (10 s) with exit 6. The lock is `std::fs::File::lock`; there is no advisory protocol layered on top and no lock-free append path. `PIPE_BUF` atomicity governs pipes, not regular files, so no record small enough exists to make an unlocked append safe.
 
-Read paths do not take the lock. `Ledger::read_for_edit_check` replays without locking and without invoking git, which is what makes the hot `check` path cheap.
+Read paths do not take the lock. `Ledger::read_for_edit_check` replays through `read_validated_journal` without locking and without invoking git, which is what makes the hot `check` path cheap.
 
 Projection maintenance is `ProjectionSynchronization`, and `ProjectionError::CacheAhead` is the specific case where the cache claims a generation the journal cannot justify — treated as corruption of the cache, never of the journal, and repaired by rebuild.
 
 ### The journal operation union
 
-`JournalOperation` carries twenty-three variants: `Claim`, `MergeExtentObserved`, `Widen`, `Checkpoint`, `Resnapshot`, `Retarget`, `UnrecordedTargetsPinned`, `Renew`, `Release`, `ReplaceReleaseDisposition`, `EvidenceRevalidated`, `ResolveDefer`, `Incursion`, `ResolveIncursion`, `ForcedIntegrationPermit`, `ConsumeForcedIntegrationPermit`, `Bypass`, `RebindWorktree`, `RelocateWorktree`, and the four that carry integration proof across a restart — `ScopedPatchEquivalenceChecked`, `ScopedPatchComparisonAttempted`, `SuccessorScopedPatchEquivalenceChecked`, and `SuccessorScopedPatchComparisonAttempted`. Every record also carries its actor — worktree id and coordination run id — and a `RecordedAt`.
+`JournalOperation` carries twenty-four variants: `Claim`, `HolderMergeExtentObserved`, `MergeExtentObserved` (replayed from older journals, no longer written), `Widen`, `Checkpoint`, `Resnapshot`, `Retarget`, `UnrecordedTargetsPinned`, `Renew`, `Release`, `ReplaceReleaseDisposition`, `EvidenceRevalidated`, `ResolveDefer`, `Incursion`, `ResolveIncursion`, `ForcedIntegrationPermit`, `ConsumeForcedIntegrationPermit`, `Bypass`, `RebindWorktree`, `RelocateWorktree`, and the four that carry integration proof across a restart — `ScopedPatchEquivalenceChecked`, `ScopedPatchComparisonAttempted`, `SuccessorScopedPatchEquivalenceChecked`, and `SuccessorScopedPatchComparisonAttempted`. Every record also carries its actor — worktree id and coordination run id — and a `RecordedAt`.
 
 Every record also carries `identity_inputs`: the process inputs available when its actor was resolved — the invocation directory plus `CARGO_BERTH_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CARGO_BERTH_RUN`, `GIT_DIR`, and `GIT_COMMON_DIR`. Both session variables are recorded because either can name the harness session: `CARGO_BERTH_SESSION_ID` when set, otherwise `CLAUDE_CODE_SESSION_ID` for any command other than `cargo-berth hook` and the managed git hooks. Each is a tagged state rather than a bare string (the directory as `utf8`/`too_long`/`non_utf8`/`unavailable`, each environment value as `unset`/`utf8`/`too_long`/`non_utf8`), each is bounded at `MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES` (256 JSON-content bytes) with `too_long` retaining only `observed_bytes`, and both the field and its `claude_code_session_id` input are additive: a record that omits `identity_inputs` decodes it as `JournalMutationIdentityInputs::Unrecorded`, and a `recorded` set that omits `claude_code_session_id` decodes that input as `ClaudeCodeSessionAtMutation::Unrecorded`; neither `Unrecorded` is ever written. These bytes are journal evidence, not replay state. A record may not exceed `MAXIMUM_JOURNAL_RECORD_BYTES` (16 KiB) including its terminating newline; the writer refuses rather than emitting a line a reader could not decode.
 
 `Claim` carries the origin of the reservation as `ClaimSource::{WorkPlan, FirstTouch, Explicit, Enrolled, Cover { covered_branch }}` — a claim made under a named plan and phase, one created by first touch, one a user stated outright, one `init` enrolled from a worktree's existing changes (see [worktree-enrollment.md](worktree-enrollment.md)), or one reconciliation made to cover a checked-out integration branch. `Widen` carries a reason distinguishing drift-driven widening from an explicit one.
+
+### Journal replay
+
+`ledger/journal.rs` replays the journal into a `JournalReplay`: the folded `RetainedReservationSet`, or the first `ReservationReplayError` the fold met; the coordination events; the repository identities that wrote records; the record count; the end offset; the FNV-1a fingerprint; and the generation. Each complete record is decoded once and handed to `JournalReplay::apply_record`, which folds it into the reservation set through `RetainedReservationSet::apply` and moves it into `coordination_events` when `JournalOperation::is_coordination_record` holds. After the first fold error no later record is applied to the set, so the result equals a fold of the whole record list that stops at that error.
+
+Coordination readers receive `coordination_events()` and nothing else: `OrderingGraph` replay, the board's overlap answers and alerts, worktree enrollment's reservation history and overlaps, forced-integration permits, the gate's `decide`, the bypass audit, and pending-bypass recovery. The predicate admits every `Claim`; a `Widen` whose authorization is `Enrollment`, `Sequence`, `Defer`, or `Override`; `ResolveDefer`; `ForcedIntegrationPermit`; `ConsumeForcedIntegrationPermit`; and `Bypass`. Every other record, merge-extent observations, evidence revalidations, and scoped-patch verdicts among them, is read only by the reservation fold. `ReplayedLedgerState`, `ValidatedJournal` (from `Ledger::read_validated_journal`), and `ReconciledJournalSnapshot` expose `reservations()` and `coordination_events()`; `EditCheckLedgerSnapshot` holds only the reservations. None carries the full event list.
+
+An append advances the transaction's replay instead of replaying the journal again. `Journal::advance_repairing_tail` seeks to the replay's end offset, reads only the bytes after it, folds their complete records through `JournalReplay::advance_over`, continues the fingerprint over those bytes, and truncates an incomplete final record. `advance_over` is all-or-nothing: a decode error leaves the replay unchanged, and a corrupt record reports its line number over the whole journal, as a full replay does. A journal shorter than the replay's end offset no longer holds the replayed bytes and is replayed whole. `append`, `append_reconciliation_operations`, and `recover_after_recoverable_append_failure` all advance this way.
+
+### The replay checkpoint
+
+`ledger/replay_checkpoint.rs` keeps `replay-checkpoint.json`: a serialized `JournalReplay` of the journal's first `end_offset` bytes, which always end at a complete record, so a replay decodes only the records appended after it. Both replay entry points resume from it: the locked replay in `begin_locked_transaction` (`Journal::replay_repairing_tail_from_checkpoint`) and the lock-free `read_validated_journal` behind `read_for_edit_check` (`Journal::replay_read_only_from_checkpoint`). Like the projection it holds no truth: deleting it costs one replay from byte 0 and changes no result.
+
+The file holds two JSON lines. Line one is a `CheckpointHeader`: `fold_format_version`, `repo_instance_id`, the journal file's `device` and `inode`, `end_offset`, `last_record_offset`, and `last_record_digest`, the FNV-1a digest of the last checkpointed record's bytes with its newline. Line two is the `JournalReplay`. The header decodes and is checked before the much larger body is decoded. `load` checks, in order:
+
+1. The file reads and its first line decodes as a header.
+2. `fold_format_version` equals this build's `FOLD_FORMAT_VERSION`.
+3. `repo_instance_id` is this ledger's.
+4. The journal path names the same file by device and inode; a journal replaced by a copy of its bytes fails here.
+5. The journal is at least `end_offset` bytes long.
+6. The bytes at `[last_record_offset, end_offset)` read back and match `last_record_digest`.
+7. The second line decodes as a `JournalReplay` whose `end_offset` equals the header's.
+
+Any failure, a missing file included, discards the checkpoint and replays from byte 0; none is an error. The body decode enforces leaf invariants and the scoped-patch retention bounds, not the cross-record invariants only `apply` maintains, so the header checks are what reject a checkpoint that describes another journal. `RetainedReservationSet.acting_head_containment` is not serialized and decodes to `FullProtection`, the value every replay holds.
+
+A replay writes a new checkpoint once it has folded `REPLAY_CHECKPOINT_INTERVAL_BYTES` or `REPLAY_CHECKPOINT_INTERVAL_RECORDS` past where it started: the loaded checkpoint, or byte 0. Locked and lock-free replays both write it; an append's advance does not. The write goes to `replay-checkpoint.json.<uuid v7>.tmp` through `fs::write` and is renamed into place without an fsync, so a concurrent reader never opens a partial file, and a crash that leaves one behind fails decode and rebuilds. A failed write removes its temporary file and never fails the replay. `init --repair-projection` deletes the checkpoint under the lock before its replay from byte 0, and `init --reinitialize-after-review` deletes it before truncating the journal.
+
+Only the last checkpointed record is compared with the journal. An edit to, or corruption of, an earlier record inside the checkpointed prefix is not detected until the checkpoint is deleted or fails a header check, and until then the replay's fingerprint continues from the checkpointed fingerprint instead of covering the edited bytes, so the projection's fingerprint check does not see the edit either. A periodic rewrite resumes from the checkpoint it loaded and does not re-read the prefix; `init --repair-projection` forces a replay from byte 0.
 
 ### Scopes and overlap
 
@@ -219,7 +249,7 @@ Two dispositions rest on a decision rather than on a checkpoint's protected tip,
 
 `edit_blocking_status` is computed, never stored. `Reservation::edit_blocking_status()` is a `const` projection of lifecycle — `Active` blocks, `Outstanding` defers to its integration evidence, `Released` is `Clear` unconditionally — and the blocking filter runs before either identity predicate, so a clear holder is dropped before foreignness is consulted. The journalled `edit_blocking_status` field is recorded for audit and is not authoritative on replay: a journalled `Released` + `Blocking` contradiction replays to an effective `Clear`.
 
-`reservation/mod.rs` holds `RetainedReservationSet::replay`, the only path by which live reservation state is derived. Every consumer — board, gate, drift, integration — reads the same replay rather than maintaining a parallel view.
+`RetainedReservationSet::apply` (`reservation/retention.rs`) folds one record into live reservation state, and the journal replay is its only production caller. Every consumer — board, gate, drift, integration — reads the set that replay folded rather than maintaining a parallel view. `RetainedReservationSet::replay`, the fold over a whole event list, is `#[cfg(test)]`: it is the reference the replay fold is tested against, and production code cannot call it.
 
 Integration evidence is git, not a flag. A reservation's protected tip is pinned by a retention ref at `refs/cargo-berth/reservations/<id>`, so the commit survives branch deletion and `git gc --prune=now`. `git/` wraps `std::process::Command`; there is no git library dependency and no libgit2.
 
@@ -399,7 +429,10 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - Scope validation stays lexical. No path check may require the file to exist.
 - Scope sets stay a minimal antichain.
 - All four overlap answers, and an `Enrollment` authorization, leave both parties able to edit the shared path. Any conflict query on the first-touch path must apply authorization filtering, or recorded answers are silently ignored.
-- `RetainedReservationSet::replay` is the only path by which live reservation state is derived.
+- Live reservation state is derived only by the journal replay's record-by-record fold through `RetainedReservationSet::apply`; `RetainedReservationSet::replay` is test-only.
+- Coordination readers receive only `coordination_events()`. A reader that needs an operation `is_coordination_record` excludes moves that operation into the predicate, whose match has no wildcard arm, so a new operation is placed on one side at compile time.
+- A transaction replays the journal once. An append advances the held replay over the appended bytes; only a journal found shorter than the replay's end offset is replayed again.
+- `replay-checkpoint.json` is a cache like the projection: a checkpoint that fails any header check or does not decode is ignored, never an error, and deleting it changes no result. `FOLD_FORMAT_VERSION` changes with any change to the serialized form of `JournalReplay` or a type it holds.
 - `lifecycle.rs` and `evidence.rs` carry no `Option`. A new state is a new variant.
 - The four lifecycle types stay orthogonal. Fusing them into one stage enum is not an available simplification.
 - Integration evidence is derived from git, never a stored boolean: ancestry against the retention ref, scoped patch equivalence when ancestry fails, or witness ancestry for a rewritten integration. `trunk_oid` is always the evaluated tip of the reservation's judging branch, and the integration commit always comes from `witness.resolve(trunk_oid)`.
@@ -477,6 +510,9 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 | Cold scoped comparisons | one per target per reconciliation pass |
 | Scoped-patch fallback | roughly 12 git invocations per evaluation |
 | `CURRENT_PROJECTION_SCHEMA_VERSION` | 3, independent of the journal's 2 |
+| `REPLAY_CHECKPOINT_INTERVAL_BYTES` | 256 KiB folded past the replay's start before the checkpoint is rewritten |
+| `REPLAY_CHECKPOINT_INTERVAL_RECORDS` | 256 records folded past the replay's start before the checkpoint is rewritten |
+| `FOLD_FORMAT_VERSION` | 1 |
 | `MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES` | 256 JSON-content bytes |
 
 - Reservation freshness is computed from owner activity events only. Unrelated journal traffic from other worktrees does not refresh a reservation, so a busy repository does not mask an abandoned claim.
@@ -492,6 +528,8 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - `git gc --prune=now` will drop a reservation's tip if the retention ref is missing, which is why the ref is written under the same lock as the record.
 - Branch deletion is expected and normal; the retention ref is what makes evidence survive it.
 - A projection that is ahead of the journal (`ProjectionError::CacheAhead`) indicates a stale or foreign cache, not journal damage. The response is rebuild, never truncate.
+- Replay cost is set by the bytes appended since the replay checkpoint, not by journal length. With a current checkpoint the post-tool-use hook measured 0.097 s on a 58.7 MB journal and 0.100 s on a 69.6 MB journal, about 0.08 s of it the hook's `git status`. The first command without a checkpoint replays from byte 0 once: 0.58 s on that 69.6 MB journal, writing a 2.55 MB checkpoint.
+- The replay checkpoint and the `Checkpoint` journal operation are unrelated. The operation records a reservation's protected tip; the replay checkpoint is a cache file of replayed state.
 - A clone starts with no ledger. Ledger state is deliberately not committed to the repository.
 - `.claude/config/berth.toml` is not tracked, so `git worktree add` does not bring it along. A linked worktree without one reads the main worktree's file (`WorktreeContext::configuration_lookup` names both roots; `BerthConfig::read` tries them in that order), so a worktree added after `init` coordinates from its first edit. A file the linked worktree does have wins, except for `trunk` and `gate_mode`: whenever the main worktree's file exists, it alone supplies both, because the gate hook is installed once for the repository and `integrate` must judge under the same mode the hook enforces. Only when neither exists is the worktree `unconfigured`, and the path it reports is the main worktree's, because `init` writes the file there from any worktree. A linked worktree of a bare repository has no main worktree and reads only its own file.
 - The `reference-transaction` hook fires for every ref update including ones no porcelain command names. Filtering on branch name alone is not sufficient; the trunk name comes from configuration and the other gated branches from `gate-targets`.
@@ -531,7 +569,11 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 
 **The ledger lives in the common git dir, not the working tree.** Coordination state is about the repository instance, not about its contents. Putting it in the working tree would make it a merge conflict, put it in diffs, and make a clone inherit another machine's reservations. Under the common git dir it is shared by every worktree of one repository and absent from a fresh clone, which is exactly the scope it needs.
 
-**The journal is append-only and the projection is disposable.** A mutable state file has no recovery story: once it is wrong, nothing can tell you what it should have been. An append-only record can always be replayed, which makes every corruption of the cache repairable and makes the history auditable without a separate audit log. The cost is replay on every mutation, which is bounded by the journal being small and the read-only path never replaying under lock.
+**The journal is append-only and the projection is disposable.** A mutable state file has no recovery story: once it is wrong, nothing can tell you what it should have been. An append-only record can always be replayed, which makes every corruption of the cache repairable and makes the history auditable without a separate audit log. The cost is a replay on every command, which the replay checkpoint bounds by the records appended since it was written rather than by the journal's length, and a transaction's append advances the replay it already holds instead of reading the journal again.
+
+**The reservation fold is the only reader of most records.** In a measured 126 MB journal, merge-extent records were 119.8 MB and evidence revalidations another 3.2 MB, and no reader other than the reservation fold reads either. Folding reservations during the replay and handing the other readers only `coordination_events()` means each record is decoded once, and only the few records coordination depends on are kept in memory as events. Those readers keep their `&[JournalEvent]` code unchanged; the predicate, not each reader, decides what they see.
+
+**The replay checkpoint validates its boundary, not its prefix.** Hashing the checkpointed prefix on every load would cost the whole-journal read the checkpoint exists to avoid. Device and inode catch a journal replaced by a copy, the length check catches truncation, and the last record's digest catches a rewrite at the boundary. An edit inside the prefix of an append-only file that nothing in the tool edits in place is the case left undetected, and `init --repair-projection` deletes the checkpoint. The header sits on its own line ahead of the body so a stale checkpoint is rejected without decoding the replay it carries.
 
 **One transaction function, not per-verb append paths.** The correctness argument for this system is short: everything that changes state does so under one lock, after one replay, against one generation. That argument only holds if there is one place to check. A second append path would not just add a bug, it would make the invariant unverifiable.
 

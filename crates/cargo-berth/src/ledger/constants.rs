@@ -11,6 +11,7 @@ pub(super) const JOURNAL_FILE_NAME: &str = "journal.ndjson";
 pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
 pub(super) const PROJECTION_FILE_NAME: &str = "reservations.json";
 pub(super) const PROJECTION_TEMPORARY_FILE_NAME: &str = "reservations.json.tmp";
+pub(super) const REPLAY_CHECKPOINT_FILE_NAME: &str = "replay-checkpoint.json";
 pub(super) const REPO_INSTANCE_ID_FILE_NAME: &str = "repo-instance-id";
 pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 
@@ -58,6 +59,12 @@ pub(super) const GIT_COMMON_DIRECTORY_ENVIRONMENT: &str = "GIT_COMMON_DIR";
 pub(super) const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
 pub(crate) const HARNESS_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 
+// replay checkpoint
+/// A replay that folds at least this many journal bytes past its start rewrites the checkpoint.
+pub(super) const REPLAY_CHECKPOINT_INTERVAL_BYTES: u64 = 256 * 1_024;
+/// A replay that folds at least this many journal records past its start rewrites the checkpoint.
+pub(super) const REPLAY_CHECKPOINT_INTERVAL_RECORDS: u64 = 256;
+
 // test deadlines
 /// Test-only milliseconds that can shorten the total gate deadline in debug builds.
 pub(crate) const GATE_DEADLINE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GATE_DEADLINE_MS";
@@ -70,6 +77,13 @@ pub(super) const MUTATION_LOCK_CONTENTION_TOLERANCE_ENVIRONMENT: &str =
 pub(super) const CURRENT_PROJECTION_SCHEMA_VERSION: u32 = 3;
 /// The schema version written by new append-only journal records.
 pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// The format of the replay checkpoint, which stores a [`JournalReplay`] serialized.
+///
+/// Bump on any change to the serialized form of [`JournalReplay`] or of any type it holds, so a
+/// checkpoint written by another build is ignored instead of decoded.
+///
+/// [`JournalReplay`]: super::journal::JournalReplay
+pub(super) const FOLD_FORMAT_VERSION: u32 = 1;
 
 /// Shorten a supplied duration using unsigned milliseconds from a debug-only test hook.
 pub(crate) fn shortened_by_environment(variable: &str, supplied: Duration) -> Duration {

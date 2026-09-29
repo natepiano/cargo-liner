@@ -10,6 +10,7 @@ mod journal;
 mod lock;
 mod path;
 mod projection;
+mod replay_checkpoint;
 mod target;
 #[cfg(test)]
 #[allow(
@@ -65,6 +66,8 @@ pub(crate) use journal::JournalActor;
 pub(crate) use journal::JournalEvent;
 pub(crate) use journal::JournalOperation;
 pub(crate) use journal::NonEmptyReservationPurpose;
+pub(crate) use journal::ObservedReservation;
+pub(crate) use journal::ObservedReservationSet;
 pub(crate) use journal::OrderingDirection;
 pub(crate) use journal::PendingBypassMarkerId;
 pub(crate) use journal::ProtectedPhaseStartHead;
