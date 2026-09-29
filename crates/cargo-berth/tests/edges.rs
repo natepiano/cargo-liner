@@ -2607,7 +2607,8 @@ fn retain_protected_tip_release(fixture: &RewrittenSuccessorFixture) {
     fs::write(root.join(JOURNAL_PATH), journal).expect("legacy proof and release should append");
 }
 
-/// Start successor scale fixtures with the same tracked scope files.
+/// Start successor scale fixtures with the same tracked scope files, committed without hooks
+/// before any reservation exists.
 fn successor_scope_repository(successor_count: usize) -> TempDir {
     let repository = initialized_repository();
     commit_configuration(repository.path());
@@ -2625,7 +2626,14 @@ fn successor_scope_repository(successor_count: usize) -> TempDir {
     git(repository.path(), &["add", "successors"]);
     git(
         repository.path(),
-        &["commit", "--quiet", "-m", "successor reservation scopes"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "successor reservation scopes",
+        ],
     );
     repository
 }
@@ -2734,9 +2742,17 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
         .expect("predecessor scope source should write");
     }
     git(repository.path(), &["add", "predecessors"]);
+    // No reservation exists yet, so the hooks would write no berth state.
     git(
         repository.path(),
-        &["commit", "--quiet", "-m", "predecessor reservation scopes"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "predecessor reservation scopes",
+        ],
     );
     let worktrees = tempdir().expect("worktree parent should exist");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
@@ -2885,11 +2901,20 @@ fn defer_claim_scopes(repository_root: &Path, scopes: &[&str], run: &str, blocke
     run_berth(repository_root, &apply_arguments)
 }
 
+/// Commit the policy without hooks: before any reservation exists, the trunk gate and the
+/// post-commit drift check write no berth state.
 fn commit_configuration(repository_root: &Path) {
     git(repository_root, &["add", ".claude/config/berth.toml"]);
     git(
         repository_root,
-        &["commit", "--quiet", "-m", "configure berth"],
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "configure berth",
+        ],
     );
 }
 
@@ -3005,6 +3030,7 @@ fn initialized_repository() -> TempDir {
         &["config", "user.email", "test@example.com"],
     );
     git(repository.path(), &["config", "user.name", "Test User"]);
+    git(repository.path(), &["config", "maintenance.auto", "false"]);
     fs::create_dir_all(repository.path().join("src")).expect("source directory should exist");
     fs::write(repository.path().join("src/lib.rs"), "pub fn value() {}\n")
         .expect("source should write");
