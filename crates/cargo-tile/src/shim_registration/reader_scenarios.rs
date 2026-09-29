@@ -13,9 +13,7 @@ use std::time::Duration;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
-use ratatui::layout::Rect;
 use sysinfo::Pid;
 use sysinfo::ProcessRefreshKind;
 use sysinfo::ProcessesToUpdate;
@@ -32,14 +30,13 @@ use tui_pane::TerminalApp;
 use crate::app::App;
 use crate::census;
 use crate::census::CensusCadence;
+use crate::census::CensusScope;
 use crate::census::Measurement;
 use crate::config::Config;
 use crate::constants::POPUP_CHROME_HEIGHT;
 use crate::progress::capture_roots::CaptureRoots;
 use crate::render;
-use crate::roster::Roster;
 use crate::settings;
-use crate::tiles::TileContent;
 
 /// Span several reporting windows while retaining every completed observation.
 const CPU_OBSERVATION_SCANS: usize = 16;
@@ -53,11 +50,21 @@ fn reader_child() -> std::io::Result<()> {
     if std::env::var_os("CARGO_TILE_TEST_READER").is_some() {
         let parent = std::env::current_dir()?.join("capture");
         assert_eq!(
-            crate::terminal::run_with_capture_parent(parent, CensusCadence::for_test()),
+            crate::terminal::run_with_capture_parent(
+                parent,
+                CensusCadence::for_test(),
+                scenario_scope()
+            ),
             std::process::ExitCode::SUCCESS
         );
     }
     Ok(())
+}
+
+/// The scenario script starts the reader and every writer it watches, so
+/// the census counts only cargo processes running under that script.
+fn scenario_scope() -> CensusScope {
+    CensusScope::descendants_of(Pid::from_u32(std::os::unix::process::parent_id()))
 }
 
 /// PTY read boundaries cannot expose a partly redrawn invocation twice.
@@ -96,10 +103,12 @@ fn cpu_scan_child() -> std::io::Result<()> {
     let parent = std::env::current_dir()?.join("capture");
     let mut output = fs::File::create("cpu-scans")?;
     let excluded = census::ExcludedCommands::new(Config::default().commands.excluded);
-    let (receiver, worker) =
-        census::spawn_with_resolver(excluded, CensusCadence::for_test(), move || {
-            CaptureRoots::from_parent(&parent)
-        });
+    let (receiver, worker) = census::spawn_with_resolver(
+        excluded,
+        CensusCadence::for_test(),
+        scenario_scope(),
+        move || CaptureRoots::from_parent(&parent),
+    );
     let result = (|| {
         for index in 0..CPU_OBSERVATION_SCANS {
             let scan = receiver
@@ -139,23 +148,7 @@ fn run_reader_script(scenario: &str) {
     let directory = tempfile::tempdir().expect("isolate writer and reader processes");
     // The script times its CPU observation against the reader's own windows.
     let cadence = CensusCadence::for_test();
-    let mut command = Command::new("python3");
-    if scenario == "--terminal-frame-self-check" {
-        let inner = Rect::new(0, 0, 80, 10);
-        let mut buffer = Buffer::empty(inner);
-        render::draw_cell_for_test(
-            &mut buffer,
-            &Roster::new(),
-            &TileContent::Summary,
-            inner,
-            11,
-        );
-        let readout: String = (0..inner.width)
-            .map(|x| buffer[(x, inner.height - 1)].symbol())
-            .collect();
-        command.env("CARGO_TILE_TEST_ROWS_READOUT", readout);
-    }
-    let output = command
+    let output = Command::new("python3")
         .args(["-c", READER_SCENARIO_SCRIPT])
         .arg(directory.path())
         .arg(std::env::current_exe().expect("integration reader executable"))

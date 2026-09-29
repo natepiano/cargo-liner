@@ -380,20 +380,63 @@ impl ExcludedCommands {
     }
 }
 
+/// Which cargo processes a scan counts as invocations.
+///
+/// The executable takes [`CensusScope::default`], every cargo on the
+/// machine. PTY tests take `CensusScope::descendants_of` their scenario
+/// script, so another session's builds and a parallel test's writers
+/// never reach the grid under test. Registrations need no scope: each
+/// test already reads its own capture parent.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CensusScope {
+    /// The process every counted cargo runs under, at any depth; `None`
+    /// counts every cargo.
+    root: Option<Pid>,
+}
+
+impl CensusScope {
+    /// Only the cargo processes running under `root`.
+    #[cfg(test)]
+    pub(crate) const fn descendants_of(root: Pid) -> Self { Self { root: Some(root) } }
+
+    /// Whether `pid` is counted, walking `parents` up from it.
+    ///
+    /// Bounded by [`PARENT_WALK_LIMIT`], like every other walk here, so a
+    /// reparented chain that loops cannot spin.
+    fn contains(self, pid: Pid, parents: &HashMap<Pid, Pid>) -> bool {
+        let Some(root) = self.root else {
+            return true;
+        };
+        let mut current = pid;
+        for _ in 0..PARENT_WALK_LIMIT {
+            let Some(&parent) = parents.get(&current) else {
+                return false;
+            };
+            if parent == root {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+}
+
 /// Start the scanner thread and hand back the channel it publishes on.
 ///
 /// The thread ends when the receiver is dropped.
 ///
-/// Each scan reads `excluded` afresh, and `cadence` sets the pause between
-/// scans and how the `cpu` column follows them. Parent resolution runs once
-/// inside the worker before its scan loop, so a slow filesystem cannot block
-/// terminal startup; each scan still opens every root to recheck access and
+/// Each scan reads `excluded` afresh, `cadence` sets the pause between
+/// scans and how the `cpu` column follows them, and `scope` sets which
+/// cargo processes they count. Parent resolution runs once inside the
+/// worker before its scan loop, so a slow filesystem cannot block terminal
+/// startup; each scan still opens every root to recheck access and
 /// ownership. Keep root resolution on the worker even when it stalls. The
 /// resolver and join handle let tests hold resolution and observe repeated
 /// scans and shutdown.
 pub(crate) fn spawn_with_resolver(
     excluded: ExcludedCommands,
     cadence: CensusCadence,
+    scope: CensusScope,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
 ) -> (Receiver<Scan>, JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel();
@@ -412,6 +455,7 @@ pub(crate) fn spawn_with_resolver(
                     scanner_home,
                     &excluded.snapshot(),
                     &roots,
+                    scope,
                 ))
                 .is_err()
             {
@@ -435,6 +479,7 @@ fn scan(
     home: ScannerHome<'_>,
     excluded: &[String],
     roots: &CaptureRoots,
+    scope: CensusScope,
 ) -> Scan {
     let previous = system
         .processes()
@@ -472,6 +517,7 @@ fn scan(
         .collect();
     let mut observations = ProcessObservations::from_discovery(&discovery, &previous);
     let mut census = Census::take(observations.records.values());
+    census.restrict_to(scope);
     census.identities = smoothing.identities.observe(&census.lifetimes);
 
     // Phase two reads cargo, its ancestors, and compiler drivers. Ancestors name
@@ -835,6 +881,14 @@ impl Census {
             }
         }
         census
+    }
+
+    /// Drop each cargo `scope` leaves out before anything reads
+    /// [`Self::cargo`], so it owns no row, compiler or CPU and stands in a
+    /// parent chain like any other process.
+    fn restrict_to(&mut self, scope: CensusScope) {
+        let parents = &self.parents;
+        self.cargo.retain(|&pid| scope.contains(pid, parents));
     }
 
     /// Classify sysinfo's sample before a zero can lose its availability meaning.
@@ -5276,16 +5330,21 @@ mod tests {
         let worker_resolutions = Arc::clone(&resolutions);
         let (started, resolution_started) = mpsc::channel();
         let (release, resolution_release) = mpsc::channel();
-        let (scans, worker) = spawn_with_resolver(excluded, CensusCadence::for_test(), move || {
-            assert_ne!(thread::current().id(), caller);
-            worker_resolutions.fetch_add(1, Ordering::SeqCst);
-            started.send(()).expect("startup observer is alive");
-            resolution_release
-                .recv_timeout(WORKER_REPLY_TIMEOUT)
-                .expect("spawn must return before resolution is released");
-            // No capture root is scanned; this test owns only worker scheduling.
-            CaptureRoots::from_parent(&capture)
-        });
+        let (scans, worker) = spawn_with_resolver(
+            excluded,
+            CensusCadence::for_test(),
+            CensusScope::default(),
+            move || {
+                assert_ne!(thread::current().id(), caller);
+                worker_resolutions.fetch_add(1, Ordering::SeqCst);
+                started.send(()).expect("startup observer is alive");
+                resolution_release
+                    .recv_timeout(WORKER_REPLY_TIMEOUT)
+                    .expect("spawn must return before resolution is released");
+                // No capture root is scanned; this test owns only worker scheduling.
+                CaptureRoots::from_parent(&capture)
+            },
+        );
 
         resolution_started
             .recv_timeout(WORKER_REPLY_TIMEOUT)
@@ -5681,6 +5740,7 @@ mod tests {
             ScannerHome::Unavailable,
             &[],
             &roots,
+            CensusScope::default(),
         );
         assert!(
             !root
@@ -5707,6 +5767,7 @@ mod tests {
             ScannerHome::Unavailable,
             &[],
             &roots,
+            CensusScope::default(),
         );
 
         assert!(

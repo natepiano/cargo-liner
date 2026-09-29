@@ -20,6 +20,7 @@ use crate::capture;
 use crate::census;
 use crate::census::CargoGroup;
 use crate::census::CensusCadence;
+use crate::census::CensusScope;
 use crate::census::ExcludedCommands;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
@@ -52,14 +53,23 @@ pub(crate) struct Scan {
 /// Load configuration, install the theme, build the keymap, and run the
 /// event loop with the terminal in the alternate screen.
 pub(crate) fn run() -> ExitCode {
-    run_with_capture_parent(PathBuf::from(CAPTURE_ROOT), CensusCadence::default())
+    run_with_capture_parent(
+        PathBuf::from(CAPTURE_ROOT),
+        CensusCadence::default(),
+        CensusScope::default(),
+    )
 }
 
-/// The executable supplies the fixed parent and the production cadence;
-/// PTY tests supply an isolated path and a shorter cadence.
-pub(crate) fn run_with_capture_parent(parent: PathBuf, cadence: CensusCadence) -> ExitCode {
+/// The executable supplies the fixed parent, the production cadence and
+/// every cargo on the machine; PTY tests supply an isolated path, a shorter
+/// cadence and only their own processes.
+pub(crate) fn run_with_capture_parent(
+    parent: PathBuf,
+    cadence: CensusCadence,
+    scope: CensusScope,
+) -> ExitCode {
     run_with_scanner(move |excluded| {
-        census::spawn_with_resolver(excluded, cadence, move || {
+        census::spawn_with_resolver(excluded, cadence, scope, move || {
             crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
         })
         .0

@@ -43,7 +43,7 @@ READER_SCENARIOS = (
 assert scenario in READER_SCENARIOS or scenario == '--terminal-frame-self-check', scenario
 # Ratatui completes every cursorless draw with Crossterm's Hide command.
 frame_end = b'\x1b[?25l'
-# Parallel reader tests share the host census; leave room for every fixture's rows.
+# The reader counts only this script's writers; leave room for every fixture's rows.
 terminal_rows = 300
 terminal_columns = 300
 # How long wait_for polls before it fails.
@@ -90,10 +90,6 @@ if scenario == 'root-headings':
 configuration += '[tiles]\ninitial_rows = 100\n'
 if scenario == 'excluded':
     configuration += '[commands]\nexcluded = ["clippy"]\n'
-if scenario == 'child-source-switch':
-    # These rows must lead their own groups to appear in the summary. Exclude
-    # the outer test driver, using the operator's ordinary configuration surface.
-    configuration += '[commands]\nexcluded = ["nextest"]\n'
 for directory in (root / 'config/cargo-tile', home / 'Library/Application Support/cargo-tile'):
     _ = (directory / 'config.toml').write_text(configuration)
 shim_source = Path(source).read_text()
@@ -400,8 +396,7 @@ def rendered_cpu(rendered: str, writer: StartedWriter) -> int:
     return int(percentages[0][:-1])
 
 def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter) -> str:
-    # Independent invocations share a pane under a leading test driver and lead their own
-    # groups without one; each is looked up in the one pane that draws it.
+    # Independent invocations lead their own groups; each is looked up in the one pane that draws it.
     panes = ((writer[1].name,), (unrelated[1].name,))
     rendered = wait_for_fixture_panes(*panes)
     readings: list[tuple[float, int]] = []
@@ -623,24 +618,10 @@ def unavailable_measurements(row: str) -> int:
     # A border delimits that cell just as whitespace delimits the inner cells.
     return row.replace('│', ' ').split().count('--')
 
-rows_readout = re.compile(r'content rows: (\d+)(?: @ \d+)?  r/c: (\d+)/(\d+)')
-
 def carrier_source_is_rendered(writer: RegistrationCarrier, source: str) -> bool:
-    global terminal_rows
     read_terminal(0.1)
     rendered = screen()
     rows = [line for pane in command_panes(rendered) for line in pane if writer[1].name in line]
-    if not rows and scenario == 'child-source-switch' and terminal_rows < 2400:
-        # Concurrent host rows can compress the parent's pane below its child.
-        # Resize only an observed clipped pane, not the reader's startup frame.
-        panes = fixture_panes(rendered, (first[1].name,))
-        if len(panes) == 1:
-            # The final interior row belongs to the readout, not the content.
-            sizes = [rows_readout.search(line) for line in panes[0]]
-            if any(size and int(size[1]) > int(size[2]) - 1 for size in sizes):
-                terminal_rows *= 2
-                _ = fcntl.ioctl(reader_terminal(), termios.TIOCSWINSZ,
-                                struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
     if len(rows) != 1:
         return False
     # A sleeping process may never earn a CPU baseline. Its observed compiler
@@ -862,16 +843,6 @@ def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path) ->
 
 def assert_completed_terminal_frames() -> None:
     global terminal_rows, terminal_columns
-    # The readout comes from draw_cell_for_test, including the reserved footer.
-    readout = os.environ['CARGO_TILE_TEST_ROWS_READOUT']
-    size = rows_readout.search(readout)
-    assert size is not None, 'resize-on-clip regex misses production output: ' + readout
-    assert tuple(map(int, size.groups())) == (11, 10, 80), readout
-    assert int(size[1]) > int(size[2]) - 1, 'clipped content must trigger a resize'
-    suffixed = rows_readout.search('content rows: 11 @ 60  r/c: 10/80')
-    assert suffixed is not None, 'resize-on-clip regex misses a readout with its optional @ field'
-    assert suffixed.groups() == size.groups()
-
     def split_frame(frame: bytes) -> Snapshot:
         previous = terminal_snapshot()
         for byte in frame[:-1]:
