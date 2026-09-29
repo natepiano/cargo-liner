@@ -273,11 +273,18 @@ impl App {
         // terminal's actual background (e.g. a forced dark theme on a
         // light terminal), paint the theme's base background so the text
         // stays readable; otherwise leave the terminal showing through.
-        let frame_background = background_when_mismatched(
-            self.themes.terminal_appearance(),
-            resolved.appearance,
-            resolved.theme.text.bg_focus.color,
-        );
+        // A solid screen paints that background whatever the terminal is.
+        let ground = resolved.theme.text.bg_focus.color;
+        let transparent = appearance_cfg.transparent.is_transparent();
+        let frame_background = if transparent {
+            background_when_mismatched(
+                self.themes.terminal_appearance(),
+                resolved.appearance,
+                ground,
+            )
+        } else {
+            Some(ground)
+        };
         self.themes.set_frame_background(frame_background);
         let mut active_theme = (*resolved.theme).clone();
         theme_roles::apply_role_defaults_to_theme(&mut active_theme, None, resolved.appearance);
@@ -288,6 +295,7 @@ impl App {
                 .appearance
                 .focused_pane_tint
                 .is_enabled(),
+            transparent,
         );
 
         // Dismiss the prior miss toast unconditionally; we'll push a

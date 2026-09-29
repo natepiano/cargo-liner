@@ -296,6 +296,33 @@ impl FocusedPaneTint {
     pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
+/// Whether the main screen is left transparent or painted solid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum Transparency {
+    #[default]
+    Transparent,
+    Solid,
+}
+
+impl From<bool> for Transparency {
+    fn from(transparent: bool) -> Self {
+        if transparent {
+            Self::Transparent
+        } else {
+            Self::Solid
+        }
+    }
+}
+
+impl From<Transparency> for bool {
+    fn from(value: Transparency) -> Self { matches!(value, Transparency::Transparent) }
+}
+
+impl Transparency {
+    pub(crate) const fn is_transparent(self) -> bool { matches!(self, Self::Transparent) }
+}
+
 /// Whether GitHub HTTP calls synthesize rate-limit responses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -895,6 +922,12 @@ pub struct AppearanceConfig {
     /// window-level transparency).
     #[config(default = true)]
     pub focused_pane_tint: FocusedPaneTint,
+    /// Leaves the main screen transparent: nothing paints a background
+    /// under it, the focused-pane tint included, so a transparent
+    /// terminal window shows the desktop behind every cell. `false`
+    /// paints it solid in the theme's ground.
+    #[config(default = true)]
+    pub transparent:       Transparency,
 }
 
 impl Default for AppearanceConfig {
@@ -904,6 +937,7 @@ impl Default for AppearanceConfig {
             light_theme:       DEFAULT_LIGHT_THEME.to_string(),
             dark_theme:        DEFAULT_DARK_THEME.to_string(),
             focused_pane_tint: FocusedPaneTint::Enabled,
+            transparent:       Transparency::Transparent,
         }
     }
 }
