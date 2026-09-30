@@ -3688,10 +3688,20 @@ fn board_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentati
 /// these conditions blocks anything; what is at stake is only that the reader learns no
 /// drift comparison covered it, and learns which of the three reasons applies. An
 /// unconfigured repository is not one of them, so it stays silent.
+///
+/// An exhausted lock deadline after Bash is silent too. Contention returns before drift
+/// publishes a fingerprint, so the cached one stays where the last completed comparison left
+/// it and the next Bash call's comparison still covers every change this one saw. A reader
+/// told to retry would be retrying a command it never ran.
 fn drift_presentation(condition: &HookFacingCondition<'_>) -> EnvelopePresentation {
     let occasion = EngineAnswerOccasion::current();
     match condition {
         HookFacingCondition::Unconfigured | HookFacingCondition::OutsideCoordinationDomain => {
+            EnvelopePresentation::nothing_to_show()
+        },
+        HookFacingCondition::Contention { .. }
+            if matches!(occasion, EngineAnswerOccasion::CompletedBashCall) =>
+        {
             EnvelopePresentation::nothing_to_show()
         },
         HookFacingCondition::LedgerUnreadable { message } => presentation::engine_message_block(

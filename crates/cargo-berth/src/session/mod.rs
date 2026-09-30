@@ -163,18 +163,27 @@ impl FromStr for HarnessSessionId {
     type Err = InvalidHarnessSessionId;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let character_count = value.chars().try_fold(0, |character_count, character| {
-            if character_count == Self::MAXIMUM_CHARACTERS || character.is_control() {
-                Err(InvalidHarnessSessionId)
-            } else {
-                Ok(character_count + 1)
-            }
-        })?;
-        if character_count > 0 {
-            Ok(Self(value.to_owned()))
-        } else {
+        validate_harness_identifier(value).map(|()| Self(value.to_owned()))
+    }
+}
+
+/// Accept one identifier a harness hook payload supplied.
+///
+/// It must hold 1 to [`HarnessSessionId::MAXIMUM_CHARACTERS`] characters and no control
+/// character. A payload's `session_id` and a subagent's `agent_id` arrive through the same
+/// boundary and are both kept in files under the ledger, so both are held to this one bound.
+pub(crate) fn validate_harness_identifier(value: &str) -> Result<(), InvalidHarnessSessionId> {
+    let character_count = value.chars().try_fold(0, |character_count, character| {
+        if character_count == HarnessSessionId::MAXIMUM_CHARACTERS || character.is_control() {
             Err(InvalidHarnessSessionId)
+        } else {
+            Ok(character_count + 1)
         }
+    })?;
+    if character_count > 0 {
+        Ok(())
+    } else {
+        Err(InvalidHarnessSessionId)
     }
 }
 

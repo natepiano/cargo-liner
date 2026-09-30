@@ -17,6 +17,8 @@ use super::context_notice;
 use super::context_notice::HarnessContinuationStatement;
 use super::process_binding::HarnessSessionIdentityAvailability;
 use super::process_binding::HookWorkingDirectorySelection;
+use super::told_record::HookReader;
+use super::told_record::UntoldDetail;
 use crate::cli::CliOutputFormat;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::drift::DriftComparisonChoice;
@@ -28,7 +30,6 @@ use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
 use crate::output::PostToolUseRendering;
 use crate::presentation;
-use crate::session::HarnessSessionId;
 use crate::verb::board;
 use crate::verb::board::BoardDisplayOutcome;
 use crate::verb::board::BoardOutputSelection;
@@ -47,12 +48,14 @@ const UNAVAILABLE_WORKING_DIRECTORY_DETAIL: &str =
 /// [`PostToolUseObservationError::InvalidPayload`] rather than being coerced to an empty
 /// string, for the reason the pre-edit boundary states: an empty `cwd` silently observes a
 /// different repository and an empty `session_id` silently attributes drift to a different
-/// session's reservation.
+/// session's reservation. An `agent_id` of any other type only names no subagent, so it is read
+/// as a raw value and an unusable one leaves the main agent as the reader.
 #[derive(Deserialize)]
 struct PostToolUsePayloadBoundary {
     tool_name:  Option<String>,
     cwd:        Option<String>,
     session_id: Option<String>,
+    agent_id:   Option<Value>,
 }
 
 /// Whether the completed tool call this payload reports is one drift can observe.
@@ -79,7 +82,7 @@ impl PostToolUseObservableToolCall {
 
 /// The completed Bash call one raw `PostToolUse` payload reports.
 struct ObservedBashCall {
-    harness_session_id:          HarnessSessionId,
+    reader:                      HookReader,
     working_directory_selection: HookWorkingDirectorySelection,
 }
 
@@ -122,7 +125,10 @@ impl ObservedBashCall {
             return Err(PostToolUseObservationError::InvalidPayload);
         };
         Ok(Self {
-            harness_session_id,
+            reader:                      HookReader::for_payload(
+                harness_session_id,
+                boundary.agent_id.as_ref().and_then(Value::as_str),
+            ),
             working_directory_selection: HookWorkingDirectorySelection::from_boundary(boundary.cwd),
         })
     }
@@ -131,15 +137,16 @@ impl ObservedBashCall {
     ///
     /// This verb is the only route that reaches a completed Bash call, and it binds all
     /// three before it reports anything, so every response it produces names the Bash call
-    /// it was taken after.
-    fn enter_current_process(self) -> Result<(), PostToolUseObservationError> {
+    /// it was taken after. The reader comes back, since what the answer states depends on what
+    /// that reader was already told.
+    fn enter_current_process(self) -> Result<HookReader, PostToolUseObservationError> {
         self.working_directory_selection
             .enter_current_process()
             .map_err(|_| PostToolUseObservationError::WorkingDirectoryUnavailable)?;
-        HarnessSessionIdentityAvailability::Available(self.harness_session_id)
+        HarnessSessionIdentityAvailability::Available(self.reader.harness_session_id().clone())
             .select_for_current_process();
         EngineAnswerOccasion::CompletedBashCall.own_this_process();
-        Ok(())
+        Ok(self.reader)
     }
 }
 
@@ -185,6 +192,19 @@ impl PostToolUseAnswer {
         }
     }
 
+    /// Keep only the lines `reader` has not been told, and nothing when every line was told.
+    ///
+    /// The summary stays as the engine stated it, so the user still reads the whole state.
+    fn told_once_to(self, reader: &HookReader) -> Self {
+        match self {
+            Self::Silent => Self::Silent,
+            Self::Stated { summary, detail } => match reader.tell_once(&detail) {
+                UntoldDetail::NothingNew => Self::Silent,
+                UntoldDetail::Untold(detail) => Self::Stated { summary, detail },
+            },
+        }
+    }
+
     fn publish(&self) {
         match self {
             Self::Silent => {},
@@ -204,13 +224,15 @@ impl PostToolUseAnswer {
 ///
 /// The Bash call is already done, so nothing this verb reports can block it. Every
 /// answer therefore leaves the process status successful and speaks through the
-/// response object alone.
+/// response object alone. A drift answer states each line once to each reader; a payload this
+/// verb cannot read has no reader to record against, so its refusal is always stated.
 pub(crate) fn execute() -> ExitCode {
     let answer = match read_observed_bash_call().and_then(ObservedBashCall::enter_current_process) {
-        Ok(()) => answer_for(&drift::execute(
+        Ok(reader) => answer_for(&drift::execute(
             post_tool_use_drift_request(),
             &drift_recovery(),
-        )),
+        ))
+        .told_once_to(&reader),
         Err(error) => error.answer(),
     };
     answer.publish();
@@ -305,12 +327,9 @@ mod tests {
                 expected_harness_session_id,
             ),
             (
-                Ok(ObservedBashCall {
-                    harness_session_id,
-                    ..
-                }),
+                Ok(ObservedBashCall { reader, .. }),
                 Ok(expected_harness_session_id),
-            ) if harness_session_id == expected_harness_session_id
+            ) if *reader.harness_session_id() == expected_harness_session_id
         ));
 
         let rejected_session_id = "é".repeat(HarnessSessionId::MAXIMUM_CHARACTERS + 1);

@@ -3068,6 +3068,82 @@ fn the_holders_post_tool_use_states_its_unavailable_merge_protection() -> TestRe
     Ok(())
 }
 
+/// A standing notice reaches each reader once, and `SessionStart` resets only the main agent.
+///
+/// A subagent's payload carries its parent's `session_id` beside its own `agent_id`, and it keeps
+/// a context of its own, so it is told the same line once more. A line with new facts is new text.
+#[test]
+fn post_tool_use_states_each_line_once_to_each_reader() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
+    let (holder, reservation_id) = observed_merge_holder(&repository, worktrees.path())?;
+    run_git(
+        repository.path(),
+        &["update-ref", "-d", &format!("refs/heads/{TRUNK_BRANCH}")],
+    )?;
+    let main = bash_payload(&holder, HOLDER_SESSION);
+    let mut subagent = main.clone();
+    subagent["agent_id"] = Value::String("holder-subagent".to_owned());
+    let stated = |payload: &Value| -> TestResult<Vec<String>> {
+        let output = run_post_tool_use(&holder, payload)?;
+        if output.stdout.is_empty() {
+            return Ok(Vec::new());
+        }
+        let feedback = hook_feedback(&output, HookResponseEvent::PostToolUse, "told once")?;
+        Ok(feedback
+            .additional_context
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    };
+
+    let standing = stated(&main)?;
+    assert!(
+        matches!(standing.as_slice(), [line] if line.contains(&reservation_id)),
+        "the main agent should be told the standing notice: {standing:?}"
+    );
+    assert_eq!(stated(&main)?, Vec::<String>::new());
+    assert_eq!(stated(&subagent)?, standing);
+    assert_eq!(stated(&subagent)?, Vec::<String>::new());
+    fs::write(holder.join("widened.rs"), "// widened\n")?;
+    let changed = stated(&main)?;
+    assert!(
+        matches!(changed.as_slice(), [line] if line.starts_with("AUTO-WIDEN: ")),
+        "only the new line should be stated: {changed:?}"
+    );
+    run_session_start(
+        &holder,
+        &session_start_payload(&holder, Some(HOLDER_SESSION)),
+        &AmbientHarnessSession::Absent,
+    )?;
+    assert!(
+        stated(&main)?.contains(&standing[0]),
+        "SessionStart should reset what the main agent was told"
+    );
+    assert_eq!(stated(&subagent)?, Vec::<String>::new());
+    Ok(())
+}
+
+/// An exhausted lock deadline after Bash is silent: the next Bash call's drift covers the change.
+#[test]
+fn post_tool_use_stays_silent_when_the_ledger_lock_is_held() -> TestResult {
+    let repository = initialized_repository()?;
+    let competing_lock = File::options()
+        .read(true)
+        .write(true)
+        .open(repository.path().join(MUTATION_LOCK_PATH))?;
+    competing_lock
+        .try_lock()
+        .map_err(|_| failure("the competing mutation lock should start free"))?;
+    let output = run_contended_hook(
+        repository.path(),
+        "post-tool-use",
+        &bash_payload(repository.path(), QUIET_DRIFT_SESSION),
+    )?;
+    drop(competing_lock);
+    assert_hook_output(&output, 0, b"", b"")
+}
+
 /// Claim uncommitted work in a new holder worktree and observe its merge extent once.
 ///
 /// The observed extent protects the claimed path, so a later failure to derive the extent

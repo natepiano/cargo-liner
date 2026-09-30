@@ -11,6 +11,7 @@ use super::context_notice::HarnessContinuationStatement;
 use super::process_binding::HarnessSessionIdentityAvailability;
 use super::process_binding::HookWorkingDirectorySelection;
 use super::process_binding::HookWorkingDirectoryUnavailable;
+use super::told_record;
 use crate::cli::CliOutputFormat;
 use crate::output::EngineAnswerOccasion;
 use crate::output::OutputEnvelope;
@@ -98,6 +99,7 @@ fn reconcile_session() -> SessionStartReport {
             detail:  unreconciled_detail(&error),
         };
     }
+    told_record::forget_for_opening_session(&harness_session_id_availability);
     harness_session_id_availability.select_for_current_process();
     EngineAnswerOccasion::OpeningSession.own_this_process();
     read_board()

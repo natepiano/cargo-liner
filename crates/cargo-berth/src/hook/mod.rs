@@ -11,3 +11,4 @@ pub(crate) mod post_tool_use;
 pub(crate) mod pre_tool_use;
 mod process_binding;
 pub(crate) mod session_start;
+mod told_record;
