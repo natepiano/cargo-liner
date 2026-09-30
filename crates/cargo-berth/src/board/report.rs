@@ -2,25 +2,6 @@
 
 use serde::Serialize;
 
-use super::alerts::AvailableForcedPermit;
-use super::alerts::BoardAlert;
-use super::alerts::BoardGitCost;
-use super::alerts::BypassAuditEntry;
-use super::alerts::OutstandingIncursion;
-use super::alerts::RecordedIncursionAnswer;
-use super::answers::RecordedOverlapAnswer;
-use super::answers::ReleasedOverlapAnswerCount;
-use super::rows::BoardJournalPosition;
-use super::rows::BoardSection;
-use super::rows::BoardTarget;
-use super::rows::HumanBoardSection;
-use super::rows::HumanReadyReservation;
-use super::rows::HumanReservationSnapshot;
-use super::rows::HumanWaitingEntry;
-use super::rows::IntegrationOrderDeclaration;
-use super::rows::RecoveredBypassesThisInvocation;
-use super::rows::SettledOrderingConstraint;
-use super::rows::UnresolvedOverlap;
 use crate::ids::ReservationId;
 use crate::output::ReservationReportSnapshot;
 use crate::presentation;
@@ -31,48 +12,6 @@ use crate::reservation::MergeExtent;
 use crate::reservation::RaceExtent;
 use crate::reservation::ReservationLifecycleSnapshot;
 use crate::reservation::ReservationReplayError;
-
-/// User-facing complete-board sections, named as the text report presents them.
-#[derive(Serialize)]
-pub(super) struct CompleteBoardReport<'board> {
-    #[serde(rename = "Journal position")]
-    pub(super) journal_position:                   &'board BoardJournalPosition,
-    #[serde(rename = "Recovered bypasses this invocation")]
-    pub(super) recovered_bypasses_this_invocation: &'board RecoveredBypassesThisInvocation,
-    #[serde(rename = "Integration order")]
-    pub(super) integration_order:                  &'board IntegrationOrderDeclaration,
-    #[serde(rename = "Targets", skip_serializing_if = "Option::is_none")]
-    pub(super) targets:                            Option<&'board [BoardTarget]>,
-    #[serde(rename = "Ready now")]
-    pub(super) ready_now: HumanBoardSection<'board, HumanReadyReservation<'board>>,
-    #[serde(rename = "Waiting")]
-    pub(super) waiting: HumanBoardSection<'board, HumanWaitingEntry<'board>>,
-    #[serde(rename = "Settled ordering constraints")]
-    pub(super) settled_ordering_constraints:       &'board BoardSection<SettledOrderingConstraint>,
-    #[serde(rename = "Unresolved overlaps")]
-    pub(super) unresolved_overlaps:                &'board BoardSection<UnresolvedOverlap>,
-    #[serde(rename = "Live overlap answers")]
-    pub(super) live_overlap_answers:               &'board BoardSection<RecordedOverlapAnswer>,
-    #[serde(rename = "Released overlap answer count")]
-    pub(super) released_overlap_answer_count:      &'board ReleasedOverlapAnswerCount,
-    #[serde(rename = "Unconstrained reservations")]
-    pub(super) unconstrained_reservations:
-        HumanBoardSection<'board, HumanReservationSnapshot<'board>>,
-    #[serde(rename = "Resolved reservations")]
-    pub(super) resolved_reservations: HumanBoardSection<'board, HumanReservationSnapshot<'board>>,
-    #[serde(rename = "Available forced permits")]
-    pub(super) available_forced_permits:           &'board BoardSection<AvailableForcedPermit>,
-    #[serde(rename = "Bypass audit")]
-    pub(super) bypass_audit:                       &'board BoardSection<BypassAuditEntry>,
-    #[serde(rename = "Outstanding incursions")]
-    pub(super) outstanding_incursions:             &'board BoardSection<OutstandingIncursion>,
-    #[serde(rename = "Recorded incursion answers")]
-    pub(super) recorded_incursion_answers:         &'board BoardSection<RecordedIncursionAnswer>,
-    #[serde(rename = "Alerts")]
-    pub(super) alerts:                             &'board BoardSection<BoardAlert>,
-    #[serde(rename = "Git cost")]
-    pub(super) git_cost:                           &'board BoardGitCost,
-}
 
 /// One reservation's placement-independent lifecycle and extent report.
 #[derive(Serialize)]

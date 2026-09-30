@@ -87,10 +87,6 @@ pub(super) enum RecordedOverlapAnswer {
 #[serde(transparent)]
 pub(super) struct ReleasedOverlapAnswerCount(usize);
 
-impl ReleasedOverlapAnswerCount {
-    pub(super) const fn is_zero(self) -> bool { self.0 == 0 }
-}
-
 /// The overlap answers the board presents: live reservations' answers in full, and a count of
 /// the answers that released reservations recorded.
 pub(super) struct BoardOverlapAnswers {

@@ -3796,7 +3796,7 @@ fn session_start_answers_the_same_with_and_without_an_ambient_session_identity()
 
 /// A board holding only resolved history gives an opening session nothing to read.
 ///
-/// The complete report restates every retained reservation, so an opening session reads only
+/// The complete board restates every retained reservation, so an opening session reads only
 /// its notices and the integration order it may act on. A released reservation is neither.
 #[test]
 fn session_start_on_a_settled_board_emits_nothing() -> TestResult {

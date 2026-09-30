@@ -23,10 +23,8 @@ use super::answers::RecordedOverlapAnswer;
 use super::answers::ReleasedOverlapAnswerCount;
 use super::error::BoardError;
 use super::overview;
-use super::report::CompleteBoardReport;
 use crate::alert::AlertRouting;
 use crate::answer::OverlapAuthorizationReason;
-use crate::cli::CliOutputFormat;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeDeclaration;
 use crate::edge::EdgeHold;
@@ -113,92 +111,23 @@ pub(super) struct BoardTarget {
 /// What a board response's presentation states about the board beside its actionable notices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BoardReportRendering {
-    /// The complete report, in a text-format response.
-    CompleteReport,
-    /// Nothing beyond the notices, in a JSON response read by hand or after a Bash call.
-    ///
-    /// The envelope's payload already carries the complete board, and a pretty-printed copy in
-    /// the presentation made up most of the response.
+    /// Nothing beyond the notices: the envelope's payload carries the complete board.
     PayloadAlone,
     /// The integration order an opening session may act on, and the commands that read the rest.
     ///
-    /// Most of a complete report is resolved history, which a session that just opened has no
-    /// use for, and the whole report can run to megabytes.
+    /// Most of the board is resolved history, which a session that just opened has no use for,
+    /// and the whole board can run to megabytes.
     SessionOverview,
 }
 
 impl BoardReportRendering {
-    /// The rendering a response on `occasion` in `output_format` states.
-    pub(crate) const fn for_request(
-        occasion: EngineAnswerOccasion,
-        output_format: CliOutputFormat,
-    ) -> Self {
-        match (occasion, output_format) {
-            (EngineAnswerOccasion::OpeningSession, _) => Self::SessionOverview,
-            (
-                EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall,
-                CliOutputFormat::Json,
-            ) => Self::PayloadAlone,
-            (
-                EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall,
-                CliOutputFormat::Text,
-            ) => Self::CompleteReport,
-        }
-    }
-}
-
-/// Whether the complete board has retained facts beyond its journal position and read cost.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BoardReportContent {
-    Empty,
-    Populated,
-}
-
-impl<'board> From<&'board BoardModel> for CompleteBoardReport<'board> {
-    fn from(board: &'board BoardModel) -> Self {
-        let visibility = HumanTargetVisibility::for_target_count(board.targets.len());
-        Self {
-            journal_position:                   &board.journal_position,
-            recovered_bypasses_this_invocation: &board.recovered_bypasses_this_invocation,
-            integration_order:                  &board.integration_order,
-            targets:                            match visibility {
-                HumanTargetVisibility::TrunkOnly => None,
-                HumanTargetVisibility::MultipleTargets => Some(board.targets.as_slice()),
+    /// The rendering a response on `occasion` states.
+    pub(crate) const fn for_occasion(occasion: EngineAnswerOccasion) -> Self {
+        match occasion {
+            EngineAnswerOccasion::OpeningSession => Self::SessionOverview,
+            EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall => {
+                Self::PayloadAlone
             },
-            ready_now:                          board.ready_now.for_human_report(|ready| {
-                HumanReadyReservation {
-                    relation:    &ready.relation,
-                    reservation: HumanReservationSnapshot::from_snapshot(
-                        &ready.reservation,
-                        visibility,
-                    ),
-                }
-            }),
-            waiting:                            board.waiting.for_human_report(|entry| {
-                HumanWaitingEntry {
-                    hold:        &entry.hold,
-                    reservation: HumanReservationSnapshot::from_snapshot(
-                        &entry.reservation,
-                        visibility,
-                    ),
-                }
-            }),
-            settled_ordering_constraints:       &board.settled_ordering_constraints,
-            unresolved_overlaps:                &board.unresolved_overlaps,
-            live_overlap_answers:               &board.live_overlap_answers,
-            released_overlap_answer_count:      &board.released_overlap_answer_count,
-            unconstrained_reservations:         board.unconstrained_reservations.for_human_report(
-                |reservation| HumanReservationSnapshot::from_snapshot(reservation, visibility),
-            ),
-            resolved_reservations:              board.resolved.for_human_report(|reservation| {
-                HumanReservationSnapshot::from_snapshot(reservation, visibility)
-            }),
-            available_forced_permits:           &board.available_forced_permits,
-            bypass_audit:                       &board.bypass_audit,
-            outstanding_incursions:             &board.outstanding_incursions,
-            recorded_incursion_answers:         &board.recorded_incursion_answers,
-            alerts:                             &board.alerts,
-            git_cost:                           &board.git_cost,
         }
     }
 }
@@ -303,95 +232,6 @@ impl HumanTargetVisibility {
             }
         }
     }
-}
-
-#[derive(Serialize)]
-pub(super) struct HumanBoardSection<'board, Entry> {
-    journal_position: &'board BoardJournalPosition,
-    entries:          Vec<Entry>,
-}
-
-impl<Entry> BoardSection<Entry> {
-    fn for_human_report<'board, HumanEntry>(
-        &'board self,
-        convert: impl Fn(&'board Entry) -> HumanEntry,
-    ) -> HumanBoardSection<'board, HumanEntry> {
-        HumanBoardSection {
-            journal_position: &self.journal_position,
-            entries:          self.entries.iter().map(convert).collect(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub(super) struct HumanReservationSnapshot<'board> {
-    reservation_id:       &'board ReservationId,
-    #[serde(skip_serializing_if = "HumanRowTarget::is_omitted")]
-    target:               HumanRowTarget<'board>,
-    holder:               &'board ReservationHolder,
-    source:               &'board ClaimSource,
-    purpose:              &'board ReservationPurpose,
-    scopes:               &'board ReservationScopeSet,
-    race_extent:          &'board RaceExtent,
-    merge_extent:         &'board EffectiveMergeExtent,
-    lifecycle:            &'board ReservationLifecycle,
-    integration_evidence: &'board BoardIntegrationEvidence,
-    edit_blocking_status: &'board EditBlockingStatus,
-    visibility:           &'board BoardReservationVisibility,
-    freshness:            &'board ReservationFreshness,
-    ahead_behind_main:    &'board AheadBehind,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum HumanRowTarget<'board> {
-    Visible(&'board TargetView),
-    Omitted,
-}
-
-impl HumanRowTarget<'_> {
-    const fn is_omitted(&self) -> bool { matches!(self, Self::Omitted) }
-}
-
-impl<'board> HumanReservationSnapshot<'board> {
-    const fn from_snapshot(
-        reservation: &'board BoardReservationSnapshot,
-        visibility: HumanTargetVisibility,
-    ) -> Self {
-        let target = match visibility {
-            HumanTargetVisibility::TrunkOnly => HumanRowTarget::Omitted,
-            HumanTargetVisibility::MultipleTargets => HumanRowTarget::Visible(&reservation.target),
-        };
-        Self {
-            reservation_id: &reservation.reservation_id,
-            target,
-            holder: &reservation.holder,
-            source: &reservation.source,
-            purpose: &reservation.purpose,
-            scopes: &reservation.scopes,
-            race_extent: &reservation.race_extent,
-            merge_extent: &reservation.merge_extent,
-            lifecycle: &reservation.lifecycle,
-            integration_evidence: &reservation.integration_evidence,
-            edit_blocking_status: &reservation.edit_blocking_status,
-            visibility: &reservation.visibility,
-            freshness: &reservation.freshness,
-            ahead_behind_main: &reservation.ahead_behind_main,
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub(super) struct HumanReadyReservation<'board> {
-    relation:    &'board ReadinessTie,
-    reservation: HumanReservationSnapshot<'board>,
-}
-
-#[derive(Serialize)]
-pub(super) struct HumanWaitingEntry<'board> {
-    #[serde(flatten)]
-    hold:        &'board WaitingHold,
-    reservation: HumanReservationSnapshot<'board>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -623,21 +463,17 @@ impl BoardModel {
     /// Render the actionable notices `alert_routing` delivers, then the board as `rendering`
     /// states it.
     ///
-    /// Only the notices are routed: the payload, and the complete report block where one is
-    /// rendered, still carry every alert, so the board data a reader parses stays whole.
+    /// Only the notices are routed: the payload still carries every alert, so the board data a
+    /// reader parses stays whole.
     pub(crate) fn envelope_presentation(
         &self,
         alert_routing: &AlertRouting,
         rendering: BoardReportRendering,
     ) -> EnvelopePresentation {
         let mut blocks = self.actionable_notice_blocks(alert_routing);
-        match (rendering, self.report_content()) {
-            (BoardReportRendering::CompleteReport, BoardReportContent::Empty)
-            | (BoardReportRendering::PayloadAlone, _) => {},
-            (BoardReportRendering::CompleteReport, BoardReportContent::Populated) => {
-                blocks.push(self.complete_report_block());
-            },
-            (BoardReportRendering::SessionOverview, _) => {
+        match rendering {
+            BoardReportRendering::PayloadAlone => {},
+            BoardReportRendering::SessionOverview => {
                 blocks.extend(overview::session_overview_block(self, alert_routing));
             },
         }
@@ -683,47 +519,6 @@ impl BoardModel {
             "cargo-berth detected drift that requires an immediate stop.",
             &immediate_stop_details.join("\n"),
         )]
-    }
-
-    fn report_content(&self) -> BoardReportContent {
-        if self.recovered_bypasses_this_invocation.0.is_empty()
-            && self.integration_order == IntegrationOrderDeclaration::Undeclared
-            && self.ready_now.entries.is_empty()
-            && self.waiting.entries.is_empty()
-            && self.settled_ordering_constraints.entries.is_empty()
-            && self.unresolved_overlaps.entries.is_empty()
-            && self.live_overlap_answers.entries.is_empty()
-            && self.released_overlap_answer_count.is_zero()
-            && self.unconstrained_reservations.entries.is_empty()
-            && self.resolved.entries.is_empty()
-            && self.available_forced_permits.entries.is_empty()
-            && self.bypass_audit.entries.is_empty()
-            && self.outstanding_incursions.entries.is_empty()
-            && self.recorded_incursion_answers.entries.is_empty()
-            && self.alerts.entries.is_empty()
-        {
-            BoardReportContent::Empty
-        } else {
-            BoardReportContent::Populated
-        }
-    }
-
-    fn complete_report_block(&self) -> RenderedOutputBlock {
-        let complete_board_report = CompleteBoardReport::from(self);
-        serde_json::to_string_pretty(&complete_board_report).map_or_else(
-            |error| {
-                presentation::engine_message_block(
-                    "cargo-berth could not render the reservation board report.",
-                    &format!("BOARD REPORT SERIALIZATION FAILED: {error}"),
-                )
-            },
-            |detail| {
-                presentation::engine_message_block(
-                    "cargo-berth read the complete reservation board report.",
-                    &detail,
-                )
-            },
-        )
     }
 
     /// Project the reconciled repository observation and its exact locked journal replay.
