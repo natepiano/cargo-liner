@@ -383,6 +383,7 @@ mod tests {
             pid,
             desktop: None,
             directory: directory.to_string(),
+            branch: None,
             launched_by: None,
             children: Vec::new(),
         }

@@ -14,6 +14,7 @@
 //! probes on threads of their own and hands each answer to the event
 //! loop as a [`CensusUpdate`].
 
+mod branch;
 pub(crate) mod classify;
 pub(crate) mod codex;
 pub(crate) mod desktop;
@@ -93,6 +94,11 @@ pub(crate) struct AgentRow {
     /// The directory the agent runs in, with its machine's home
     /// directory written as `~`.
     pub(crate) directory:   String,
+    /// The branch checked out where the agent runs, or for a detached
+    /// `HEAD` the start of its commit; none outside a repository.
+    /// Missing from a probe printed before it existed.
+    #[serde(default)]
+    pub(crate) branch:      Option<String>,
     /// The pid of the agent that opened this one in a tmux session; none
     /// for an agent a person started, which is what makes it top level.
     pub(crate) launched_by: Option<u32>,
@@ -368,6 +374,7 @@ mod tests {
             pid: 428_044,
             desktop: None,
             directory: "~/rust/handler".to_string(),
+            branch: None,
             launched_by: None,
             children: Vec::new(),
         }

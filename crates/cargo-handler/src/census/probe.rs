@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
+//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -111,6 +111,7 @@ mod tests {
                     pid:         76_130,
                     desktop:     None,
                     directory:   "/".to_string(),
+                    branch:      None,
                     launched_by: None,
                     children:    Vec::new(),
                 },
@@ -122,6 +123,7 @@ mod tests {
                     pid:         80_020,
                     desktop:     None,
                     directory:   "~".to_string(),
+                    branch:      Some("main".to_string()),
                     launched_by: None,
                     children:    vec![
                         child(
@@ -157,6 +159,7 @@ mod tests {
                     pid:         81_020,
                     desktop:     None,
                     directory:   "~".to_string(),
+                    branch:      None,
                     launched_by: Some(80_020),
                     children:    Vec::new(),
                 },
@@ -174,14 +177,14 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","launched_by":null,"children":["#,
+                r#"{"agent":"codex","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","launched_by":80020,"children":[]}]}"#,
+                r#"{"agent":"claude","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
             )
         );
         assert_eq!(
@@ -190,22 +193,29 @@ mod tests {
         );
     }
 
-    /// A row printed before the desktop was read, with no `desktop`
-    /// field, reads back with no desktop, and a row naming one keeps it.
+    /// A row printed before the desktop and the branch were read, with
+    /// neither field, reads back with neither, and a row naming them
+    /// keeps them.
     #[test]
-    fn a_row_without_a_desktop_reads_back_with_none() {
+    fn a_row_without_a_desktop_or_branch_reads_back_with_none() {
         let output = concat!(
             r#"{"schema":3,"machine":"natedev","rows":["#,
             r#"{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"directory":"~/rust/handler","launched_by":null,"children":[]},"#,
-            r#"{"agent":"claude","name":"berth-fix","status":"idle","started":1790000100,"pid":2165974,"desktop":"berth_fix","directory":"~/rust/berth","launched_by":null,"children":[]}]}"#,
+            r#"{"agent":"claude","name":"berth-fix","status":"idle","started":1790000100,"pid":2165974,"desktop":"berth_fix","directory":"~/rust/berth","branch":"fix/berth","launched_by":null,"children":[]}]}"#,
         );
 
-        let desktops: Vec<Option<String>> = parse_report(output.as_bytes())
+        let read: Vec<(Option<String>, Option<String>)> = parse_report(output.as_bytes())
             .expect("a report should parse")
             .into_iter()
-            .map(|row| row.desktop)
+            .map(|row| (row.desktop, row.branch))
             .collect();
-        assert_eq!(desktops, [None, Some("berth_fix".to_string())]);
+        assert_eq!(
+            read,
+            [
+                (None, None),
+                (Some("berth_fix".to_string()), Some("fix/berth".to_string())),
+            ]
+        );
     }
 
     /// Another version's report is named by its version, whatever else

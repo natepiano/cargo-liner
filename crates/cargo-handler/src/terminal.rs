@@ -182,6 +182,7 @@ mod tests {
             pid:         428_044,
             desktop:     None,
             directory:   "~/rust/handler".to_string(),
+            branch:      None,
             launched_by: None,
             children:    Vec::new(),
         };

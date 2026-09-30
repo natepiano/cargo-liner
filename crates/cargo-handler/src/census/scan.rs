@@ -25,6 +25,7 @@ use sysinfo::UpdateKind;
 
 use super::Agent;
 use super::AgentRow;
+use super::branch;
 use super::classify;
 use super::classify::HeldSession;
 use super::classify::ProcessEntry;
@@ -186,6 +187,7 @@ impl LocalScanner {
         };
         tree::attach_children(&mut rows, &processes, &sources);
         self.attach_desktops(&processes, &mut rows);
+        branch::attach_branches(&mut rows, home.as_deref());
         rows
     }
 
@@ -745,6 +747,7 @@ mod tests {
             pid,
             desktop: None,
             directory: "~".to_string(),
+            branch: None,
             launched_by: None,
             children: Vec::new(),
         }

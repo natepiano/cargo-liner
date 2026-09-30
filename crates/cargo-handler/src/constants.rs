@@ -110,9 +110,19 @@ pub(crate) const HEADER_DESKTOP_LABEL: &str = "desktop";
 pub(crate) const HEADER_MACHINE_LABEL: &str = "machine";
 /// Labels the agent's status in an agent cell's header block.
 pub(crate) const HEADER_STATUS_LABEL: &str = "status";
-/// Rows the first line of a child drawn as a stacked entry takes: its
-/// `via`, `runs`, age and pid, above its name.
-pub(crate) const STACKED_CHILD_HEAD_HEIGHT: u16 = 1;
+/// Columns of a line in an agent cell's tree of sessions: the
+/// session's name after its glyphs, status, branch, directory and age.
+pub(crate) const TREE_COLUMNS: usize = 5;
+/// Leads a session in an agent cell's tree that has a later session
+/// beside it.
+pub(crate) const TREE_BRANCH: &str = "├─ ";
+/// Leads the last session its launcher opened in an agent cell's tree.
+pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
+/// Carries a level's line of an agent cell's tree down past a line
+/// that does not branch at it.
+pub(crate) const TREE_RAIL: &str = "│  ";
+/// Stands for a level of an agent cell's tree whose line has ended.
+pub(crate) const TREE_SPACE: &str = "   ";
 /// Rows the line naming the agent that launched a session takes.
 pub(crate) const LAUNCHER_LINE_HEIGHT: u16 = 1;
 /// Blank rows between an agent cell's header and what it runs.
@@ -408,6 +418,19 @@ pub(crate) const PROC_DIRNAME: &str = "/proc";
 pub(crate) const PROC_FD_DIRNAME: &str = "fd";
 /// Written in place of the home directory in a row's directory.
 pub(crate) const HOME_ABBREVIATION: &str = "~";
+/// The entry marking a repository: a directory holding its `HEAD`, or,
+/// in a worktree or a submodule, a file naming the directory that does.
+pub(crate) const GIT_DIRNAME: &str = ".git";
+/// The file naming what a repository has checked out.
+pub(crate) const GIT_HEAD_FILENAME: &str = "HEAD";
+/// Leads the line of a `.git` file naming the directory holding `HEAD`.
+pub(crate) const GITDIR_PREFIX: &str = "gitdir:";
+/// Leads a `HEAD` that names a reference rather than a commit.
+pub(crate) const HEAD_REF_PREFIX: &str = "ref: ";
+/// Leads a branch's reference; an agent's branch is shown without it.
+pub(crate) const BRANCH_REF_PREFIX: &str = "refs/heads/";
+/// Characters of a detached `HEAD`'s commit shown in place of a branch.
+pub(crate) const DETACHED_HEAD_LENGTH: usize = 8;
 /// This machine's heading when its host name cannot be read.
 pub(crate) const LOCAL_MACHINE_FALLBACK: &str = "localhost";
 /// How often the scheduler scans this machine.

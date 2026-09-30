@@ -264,6 +264,7 @@ fn claude_row(
         pid:         process.pid,
         desktop:     None,
         directory:   directory_label(directory, home),
+        branch:      None,
         launched_by: None,
         children:    Vec::new(),
     })
@@ -303,6 +304,7 @@ fn codex_row(
         pid: process.pid,
         desktop: None,
         directory: directory_label(process.directory.as_deref(), home),
+        branch: None,
         launched_by: None,
         children: Vec::new(),
     })

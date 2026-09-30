@@ -239,6 +239,7 @@ mod tests {
                 pid:         80_020,
                 desktop:     None,
                 directory:   "~".to_string(),
+                branch:      None,
                 launched_by: None,
                 children:    Vec::new(),
             }])

@@ -696,6 +696,7 @@ mod tests {
             pid,
             desktop: None,
             directory: HOME.to_string(),
+            branch: None,
             launched_by: None,
             children: Vec::new(),
         }

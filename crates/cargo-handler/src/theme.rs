@@ -144,9 +144,9 @@ impl RainbowHue {
         Self::Violet,
     ];
 
-    /// The hue of the cell at `position` in cell order, counted from
+    /// The hue of the agent at `position` in cell order, counted from
     /// zero and starting over at red past violet.
-    pub(crate) const fn of_cell(position: usize) -> Self { Self::ALL[position % Self::ALL.len()] }
+    pub(crate) const fn of_agent(position: usize) -> Self { Self::ALL[position % Self::ALL.len()] }
 
     /// The hue's key in `[variants.roles]`.
     const fn key(self) -> &'static str {
@@ -615,11 +615,11 @@ mod tests {
         );
     }
 
-    /// The cells take the rainbow red to violet, and the eighth starts
+    /// The agents take the rainbow red to violet, and the eighth starts
     /// over at red.
     #[test]
-    fn cells_take_the_rainbow_in_order_and_start_over_past_violet() {
-        let hues: Vec<RainbowHue> = (0..9).map(RainbowHue::of_cell).collect();
+    fn agents_take_the_rainbow_in_order_and_start_over_past_violet() {
+        let hues: Vec<RainbowHue> = (0..9).map(RainbowHue::of_agent).collect();
 
         assert_eq!(
             hues,
