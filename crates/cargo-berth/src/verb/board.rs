@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::board;
 use crate::board::BoardModel;
+use crate::board::BoardReportRendering;
 use crate::board::tui;
 use crate::board::tui::BoardTerminalViewRunFailure;
 use crate::board::tui::TerminalAttachment;
@@ -95,15 +96,19 @@ fn execute_complete_board(
             ));
         },
     };
-    let alert_routing = report.alert_routing(EngineAnswerOccasion::current());
+    let occasion = EngineAnswerOccasion::current();
+    let alert_routing = report.alert_routing(occasion);
+    let rendering = BoardReportRendering::for_occasion(occasion);
 
     match output_format {
-        CliOutputFormat::Json => {
-            BoardDisplayOutcome::HeadlessResponse(OutputEnvelope::board(board, &alert_routing))
-        },
+        CliOutputFormat::Json => BoardDisplayOutcome::HeadlessResponse(OutputEnvelope::board(
+            board,
+            &alert_routing,
+            rendering,
+        )),
         CliOutputFormat::Text => match tui::terminal_attachment() {
             TerminalAttachment::Detached => BoardDisplayOutcome::TerminalDidNotOpen(
-                OutputEnvelope::board(board, &alert_routing),
+                OutputEnvelope::board(board, &alert_routing, rendering),
             ),
             TerminalAttachment::Attached => match tui::run(&board) {
                 Ok(()) => BoardDisplayOutcome::TerminalRestored,
@@ -112,6 +117,7 @@ fn execute_complete_board(
                         OutputEnvelope::board_with_terminal_view_opening_failure(
                             board,
                             &alert_routing,
+                            rendering,
                             &failure.to_string(),
                         ),
                     )

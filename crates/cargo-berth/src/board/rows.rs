@@ -22,6 +22,7 @@ use super::answers::BoardOverlapAnswers;
 use super::answers::RecordedOverlapAnswer;
 use super::answers::ReleasedOverlapAnswerCount;
 use super::error::BoardError;
+use super::overview;
 use super::report::CompleteBoardReport;
 use crate::alert::AlertRouting;
 use crate::answer::OverlapAuthorizationReason;
@@ -57,6 +58,7 @@ use crate::ledger::IntegrationTarget;
 use crate::ledger::PendingBypassMarkerId;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
+use crate::output::EngineAnswerOccasion;
 use crate::output::TargetView;
 use crate::presentation;
 use crate::presentation::EmptyRenderedBlocks;
@@ -85,7 +87,7 @@ pub(crate) struct BoardModel {
     pub(super) ready_now:                  BoardSection<ReadyReservation>,
     pub(super) waiting:                    BoardSection<WaitingEntry>,
     settled_ordering_constraints:          BoardSection<SettledOrderingConstraint>,
-    unresolved_overlaps:                   BoardSection<UnresolvedOverlap>,
+    pub(super) unresolved_overlaps:        BoardSection<UnresolvedOverlap>,
     pub(super) live_overlap_answers:       BoardSection<RecordedOverlapAnswer>,
     released_overlap_answer_count:         ReleasedOverlapAnswerCount,
     pub(super) unconstrained_reservations: BoardSection<BoardReservationSnapshot>,
@@ -105,6 +107,30 @@ pub(super) struct BoardTarget {
     reference:    IntegrationTarget,
     commit:       String,
     reservations: Vec<ReservationId>,
+}
+
+/// What a board response's presentation states about the board beside its actionable notices.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BoardReportRendering {
+    /// The complete report, for a reader who asked for the board itself.
+    CompleteReport,
+    /// The integration order an opening session may act on, and the commands that read the rest.
+    ///
+    /// Most of a complete report is resolved history, which a session that just opened has no
+    /// use for, and the whole report can run to megabytes.
+    SessionOverview,
+}
+
+impl BoardReportRendering {
+    /// The rendering a response on `occasion` states.
+    pub(crate) const fn for_occasion(occasion: EngineAnswerOccasion) -> Self {
+        match occasion {
+            EngineAnswerOccasion::OpeningSession => Self::SessionOverview,
+            EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall => {
+                Self::CompleteReport
+            },
+        }
+    }
 }
 
 /// Whether the complete board has retained facts beyond its journal position and read cost.
@@ -403,7 +429,7 @@ enum ReadinessTie {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(super) struct WaitingEntry {
     #[serde(flatten)]
-    hold:                   WaitingHold,
+    pub(super) hold:        WaitingHold,
     pub(super) reservation: BoardReservationSnapshot,
 }
 
@@ -482,13 +508,13 @@ enum EdgeSettlement {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(super) struct UnresolvedOverlap {
-    declaration_event_id: EventId,
-    deferred:             ReservationId,
-    blocker:              ReservationId,
-    scopes:               ReservationScopeSet,
-    reason:               OverlapAuthorizationReason,
-    origin:               DeferralOrigin,
-    consequence:          DeferralConsequence,
+    declaration_event_id:   EventId,
+    pub(super) deferred:    ReservationId,
+    pub(super) blocker:     ReservationId,
+    scopes:                 ReservationScopeSet,
+    reason:                 OverlapAuthorizationReason,
+    origin:                 DeferralOrigin,
+    pub(super) consequence: DeferralConsequence,
 }
 
 /// Which integrations one unresolved deferral holds until `sequence` orders the pair.
@@ -580,18 +606,25 @@ impl BoardModel {
         }
     }
 
-    /// Render the complete board and the actionable notices `alert_routing` delivers.
+    /// Render the actionable notices `alert_routing` delivers, then the board as `rendering`
+    /// states it.
     ///
     /// Only the notices are routed: the complete report block still carries every alert, so
     /// the board data a reader parses stays whole.
     pub(crate) fn envelope_presentation(
         &self,
         alert_routing: &AlertRouting,
+        rendering: BoardReportRendering,
     ) -> EnvelopePresentation {
         let mut blocks = self.actionable_notice_blocks(alert_routing);
-        match self.report_content() {
-            BoardReportContent::Empty => {},
-            BoardReportContent::Populated => blocks.push(self.complete_report_block()),
+        match (rendering, self.report_content()) {
+            (BoardReportRendering::CompleteReport, BoardReportContent::Empty) => {},
+            (BoardReportRendering::CompleteReport, BoardReportContent::Populated) => {
+                blocks.push(self.complete_report_block());
+            },
+            (BoardReportRendering::SessionOverview, _) => {
+                blocks.extend(overview::session_overview_block(self, alert_routing));
+            },
         }
         match NonEmptyRenderedBlocks::try_from(blocks) {
             Ok(non_empty_rendered_blocks) => EnvelopePresentation::RenderedBlocks {

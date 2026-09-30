@@ -35,10 +35,11 @@ The reader selected for the actual check must still decode the original record.
 The JSON files freeze the command status and complete payload, or the complete
 hook response. Comparisons restate the temporary worktree path, journal byte
 offsets, and renewed activity timestamps. All other fields remain asserted,
-including journal generations and both extents. SessionStart must publish the
-complete board; PostToolUse sees a newly written `additional.txt` and must
+including journal generations and both extents. SessionStart must state
+nothing, because the fixture's reservation is on no integration order and
+raises no notice; PostToolUse sees a newly written `additional.txt` and must
 publish the frozen auto-widen notice. Neither hook can pass by returning zero
-or remaining silent after a ledger error.
+or remaining silent after a ledger error, which both hooks state.
 
 Run `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth reader_compat`.
 Set `CARGO_BERTH_EXECUTABLE` to an absolute executable path to inspect an

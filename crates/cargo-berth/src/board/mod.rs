@@ -3,6 +3,7 @@
 mod alerts;
 mod answers;
 mod error;
+mod overview;
 mod report;
 mod rows;
 pub(crate) mod tui;
@@ -13,4 +14,5 @@ mod test_support;
 pub(crate) use report::reservation_lifecycle_presentation;
 pub(crate) use report::reservation_lifecycle_snapshot;
 pub(crate) use rows::BoardModel;
+pub(crate) use rows::BoardReportRendering;
 pub(crate) use rows::LiveIncursionMembership;

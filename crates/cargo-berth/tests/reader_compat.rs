@@ -4,6 +4,10 @@
 //! own repository, so an incompatible reader cannot damage another test's ledger.
 
 #[path = "support/reader_compat_hooks.rs"]
+#[expect(
+    dead_code,
+    reason = "SessionStart states nothing for this fixture, so no SessionStart response is read"
+)]
 mod reader_compat_hooks;
 
 use std::error::Error;
@@ -31,8 +35,6 @@ const JOURNAL: &str = include_str!("fixtures/reader_compat/journal.ndjson");
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 /// The session payload deliberately overrides any ambient harness identity.
 const SESSION: &str = "reader-compat";
-/// Frozen hook reports carry this heading before their JSON board contents.
-const BOARD_REPORT_PREFIX: &str = "cargo-berth read the complete reservation board report.\n\n";
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -263,6 +265,9 @@ fn assert_command_in(repository: &Path, arguments: &[&str], expected: &str) -> T
     Ok(())
 }
 
+/// The fixture's one reservation is on no integration order and raises no notice, so a reader
+/// that decoded every record states nothing. A ledger error at `SessionStart` is stated, and
+/// `require_readable` refuses it, so silence cannot come from one.
 fn assert_session_start(repository: &Path) -> TestResult {
     let payload = serde_json::json!({
         "hook_event_name": "SessionStart",
@@ -277,12 +282,15 @@ fn assert_session_start(repository: &Path) -> TestResult {
         &serde_json::to_vec(&payload)?,
         &AmbientHarnessSession::Present("ignored-ambient-session"),
     )?;
-    assert_hook_response(
-        &output,
-        HookResponseEvent::SessionStart,
-        repository,
-        include_str!("fixtures/reader_compat/session-start.json"),
+    require_readable(&output, "reader session start")?;
+    if output.stdout.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "SessionStart should state nothing for this fixture: {}",
+        String::from_utf8_lossy(&output.stdout)
     )
+    .into())
 }
 
 /// Write an unclaimed file first, so the hook has a widening to report.
@@ -393,19 +401,10 @@ fn normalize_under_canonical_root(value: &mut Value, repository: &Path) -> TestR
             }
         },
         Value::String(text) => {
-            if let Some(report) = text.strip_prefix(BOARD_REPORT_PREFIX) {
-                let mut report: Value = serde_json::from_str(report)?;
-                normalize_under_canonical_root(&mut report, repository)?;
-                *text = format!(
-                    "{BOARD_REPORT_PREFIX}{}",
-                    serde_json::to_string_pretty(&report)?
-                );
-            } else {
-                *text = text.replace(
-                    repository.to_str().ok_or("fixture path must be UTF-8")?,
-                    "{WORKTREE_ROOT}",
-                );
-            }
+            *text = text.replace(
+                repository.to_str().ok_or("fixture path must be UTF-8")?,
+                "{WORKTREE_ROOT}",
+            );
         },
         Value::Null | Value::Bool(_) | Value::Number(_) => {},
     }

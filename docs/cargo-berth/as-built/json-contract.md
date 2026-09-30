@@ -507,7 +507,8 @@ worktree (`AlertRouting` in `src/alert.rs`). A `PostToolUse` drift's `payload.al
 carries only alerts whose reservation the invoking worktree holds; `TargetUncovered` counts as
 held when any of its `waiting_reservations` is. A `SessionStart` board states, among its notice
 blocks, those alerts and also alerts no live worktree holds (every holder is `unavailable`,
-`orphan_candidate`, `orphaned` or `unknown`). The board's complete report block and its
+`orphan_candidate`, `orphaned` or `unknown`); in place of the complete report block it states an
+overview of the integration-order sections. The board's complete report block and its
 `payload.data.alerts.entries[]` stay unfiltered. A verb run by hand, including `drift` under the
 post-commit hook, carries every alert.
 

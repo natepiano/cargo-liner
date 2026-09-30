@@ -121,7 +121,7 @@ const ACCEPTANCE_TEXT_COMPARED_ENTRIES: [(&str, &str); 20] = [
     ),
     (
         "test_session_start_renders_real_orphan_recovery_actions",
-        "session_start_publishes_the_engine_board_report",
+        "session_start_publishes_the_engine_board_notices",
     ),
 ];
 /// Every corpus entry no test drives, and what in the engine accounts for it.

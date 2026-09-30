@@ -252,6 +252,11 @@ impl AlertRouting {
         }
     }
 
+    /// Whether the invoking worktree holds any of these reservations.
+    pub(crate) fn invoking_worktree_holds(&self, reservation_ids: &[ReservationId]) -> bool {
+        self.concern(reservation_ids) == AlertConcern::InvokingWorktree
+    }
+
     fn concern(&self, reservation_ids: &[ReservationId]) -> AlertConcern {
         let holders = reservation_ids
             .iter()

@@ -181,8 +181,8 @@ const TRUNK_REFERENCE_PATH: &str = ".git/refs/heads/main";
 enum FrozenTextCoverage {
     /// The produced lines are exactly the frozen lines and carry nothing else.
     ExactlyTheFrozenLines,
-    /// The produced lines carry the frozen lines inside the engine's wider report.
-    TheFrozenLinesInsideTheReport,
+    /// The produced lines carry the frozen lines among other lines the engine states.
+    TheFrozenLinesAmongOtherLines,
 }
 
 /// One token of a recovery argv frozen by the front-end corpus.
@@ -2795,7 +2795,7 @@ fn assert_session_start_feedback_matches_corpus(
         HookResponseEvent::SessionStart,
         corpus_entry_name,
         identifiers,
-        &FrozenTextCoverage::TheFrozenLinesInsideTheReport,
+        &FrozenTextCoverage::TheFrozenLinesAmongOtherLines,
         summary,
     )
 }
@@ -2806,8 +2806,8 @@ fn assert_session_start_feedback_matches_corpus(
 /// the corpus froze before the comparison. `PostToolUse` states exactly the notice lines,
 /// so its produced lines and its frozen lines have to be the same set and a line the corpus
 /// never froze fails here. `SessionStart` publishes every rendered block, so its response
-/// carries the engine's complete board report around the frozen notices and only the frozen
-/// lines are required to appear.
+/// can carry notices and an integration-order overview the corpus never froze, and only the
+/// frozen lines are required to appear.
 fn assert_hook_feedback_matches_corpus(
     output: &Output,
     event: HookResponseEvent,
@@ -3505,7 +3505,7 @@ fn post_tool_use_rejects_a_payload_it_cannot_read() -> TestResult {
 }
 
 #[test]
-fn session_start_publishes_the_engine_board_report() -> TestResult {
+fn session_start_publishes_the_engine_board_notices() -> TestResult {
     let orphans = orphaned_reservations(2)?;
     let elsewhere = TempDir::new_in(SCRATCH_ROOT)?;
     for working_directory in [orphans.repository.path(), elsewhere.path()] {
@@ -3773,14 +3773,12 @@ fn session_start_answers_the_same_with_and_without_an_ambient_session_identity()
     Ok(())
 }
 
-/// A populated board with nothing actionable keeps the report block's own summary.
+/// A board holding only resolved history gives an opening session nothing to read.
 ///
-/// `berth_session_start.sh` counted rendered blocks, so a board carrying only its complete
-/// report announced one actionable coordination notice when there were none. The verb
-/// states the leading block's own summary instead, which is a deliberate divergence from
-/// the installed hook rather than parity with it.
+/// The complete report restates every retained reservation, so an opening session reads only
+/// its notices and the integration order it may act on. A released reservation is neither.
 #[test]
-fn session_start_never_counts_the_board_report_as_an_actionable_notice() -> TestResult {
+fn session_start_on_a_settled_board_emits_nothing() -> TestResult {
     let repository = committed_configuration_repository()?;
     let claimed = run_berth_with_session(
         repository.path(),
@@ -3800,19 +3798,70 @@ fn session_start_never_counts_the_board_report_as_an_actionable_notice() -> Test
         &AmbientHarnessSession::Absent,
     )?;
 
-    let feedback = hook_feedback(&output, HookResponseEvent::SessionStart, "settled board")?;
-    assert!(
-        !feedback
-            .system_message
-            .contains("actionable coordination notice"),
-        "a board with nothing actionable announced an actionable notice: {feedback:?}"
+    assert_hook_output(&output, 0, b"", b"")
+}
+
+/// An opening session reads its integration order as counts and its own worktree's entries.
+///
+/// A defer claim leaves one unresolved overlap holding both live sides, so the board lists
+/// two waiting entries and one overlap. Each worktree holds one side: it reads the counts of
+/// both sections, its own side's waiting entry with its `sequence` instruction, the overlap,
+/// and the commands that read the rest.
+#[test]
+fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult {
+    let repository = initialized_repository()?;
+    let holder = run_berth_with_session(
+        repository.path(),
+        &["claim", "file:shared.rs", "--json"],
+        HOLDER_SESSION,
+    )?;
+    require_success(&holder, "the holder's claim")?;
+    let holder_id = claimed_reservation_id(&holder)?;
+    dirty_source(repository.path(), "shared.rs")?;
+    let (_requester_directory, requester_root) = add_worktree(&repository, "deferring-requester")?;
+    let deferred = defer_claim_with_claude_code_session(
+        &requester_root,
+        "shared.rs",
+        &holder_id,
+        DEFERRING_SESSION,
+    )?;
+    require_success(&deferred, "the approved defer claim")?;
+    let deferred_id = claimed_reservation_id(&deferred)?;
+    let instruction = format!(
+        "order this pair: cargo berth sequence <first> <then> --why '<reason>', naming {deferred_id} and {holder_id} in the order they must integrate"
     );
-    assert!(
-        feedback
-            .additional_context
-            .contains("cargo-berth read the complete reservation board report."),
-        "a populated board should still publish the engine's complete report: {feedback:?}"
-    );
+
+    for (worktree, held) in [
+        (repository.path(), &holder_id),
+        (requester_root.as_path(), &deferred_id),
+    ] {
+        let output = run_session_start(
+            worktree,
+            &session_start_payload(worktree, Some(BOARD_SESSION)),
+            &AmbientHarnessSession::Absent,
+        )?;
+        let feedback = hook_feedback(&output, HookResponseEvent::SessionStart, "overview")?;
+        assert_eq!(
+            feedback.system_message,
+            "cargo-berth summarized the board's integration order for this session."
+        );
+        assert_eq!(
+            feedback.additional_context.lines().collect::<Vec<_>>(),
+            [
+                feedback.system_message.as_str(),
+                "",
+                "Waiting: 2 entries.",
+                "Unresolved overlaps: 1 entry.",
+                "Entries naming a reservation this worktree holds: 2.",
+                &format!("Waiting: reservation {held}: {instruction}."),
+                &format!(
+                    "Unresolved overlap: reservation {deferred_id} deferred to {holder_id}; both integrations are held until `sequence` orders the pair."
+                ),
+                "Read one reservation with `cargo-berth board --reservation <id> --json`, or filter the whole board with jq, as in `cargo-berth board --json | jq '.payload.data.waiting.entries'`.",
+            ],
+            "{worktree:?} should read its own side of the overlap"
+        );
+    }
     Ok(())
 }
 

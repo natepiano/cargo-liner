@@ -22,6 +22,7 @@ use crate::answer::OverlapEscalationPayload;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::board;
 use crate::board::BoardModel;
+use crate::board::BoardReportRendering;
 use crate::board::LiveIncursionMembership;
 use crate::config::InitializationState;
 use crate::coordination_identity;
@@ -1633,9 +1634,13 @@ impl OutputEnvelope {
     }
 
     /// Build a successful headless board response without requiring a terminal.
-    pub(crate) fn board(board: BoardModel, alert_routing: &AlertRouting) -> Self {
+    pub(crate) fn board(
+        board: BoardModel,
+        alert_routing: &AlertRouting,
+        rendering: BoardReportRendering,
+    ) -> Self {
         let reservations = board.reservation_ids().into_vec();
-        let presentation = board.envelope_presentation(alert_routing);
+        let presentation = board.envelope_presentation(alert_routing, rendering);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Board,
@@ -1692,9 +1697,10 @@ impl OutputEnvelope {
     pub(crate) fn board_with_terminal_view_opening_failure(
         board: BoardModel,
         alert_routing: &AlertRouting,
+        rendering: BoardReportRendering,
         diagnostic: &str,
     ) -> Self {
-        let mut output_envelope = Self::board(board, alert_routing);
+        let mut output_envelope = Self::board(board, alert_routing, rendering);
         output_envelope
             .message
             .push_str("\nThe terminal view could not open: ");
