@@ -390,7 +390,7 @@ Drift selects only `Active` reservations. An `Outstanding` reservation is past t
 
 ### The integration target gate
 
-`gate/` enforces on git's `reference-transaction` hook, so any prepared update to the repository trunk or a live recorded target is evaluated regardless of which porcelain command produced it. The hook reads replay-derived `gate-targets` only to decide whether to start the binary; the binary replays the journal before deciding. `GateMode` is `Observe` or `Enforce`; `Observe` records and warns, `Enforce` refuses. `GateDecision` has five variants and every one carries the generation it was decided against. `evaluate_reference_transaction` handles the hook path and `evaluate_integration` the verb path, sharing the readiness derivation.
+`gate/` enforces on git's `reference-transaction` hook, so any prepared update to the repository trunk or a live recorded target is evaluated regardless of which porcelain command produced it. The hook reads replay-derived `gate-targets` only to decide whether to start the binary; the binary replays the journal before deciding. `GateMode` is `Observe` or `Enforce`; `Observe` records and warns, `Enforce` refuses. On the hook path an observed update gets one line naming the target ref and how many entering reservations are held, and points at `cargo-berth board`; a refused update gets one explanation per held reservation (`output::trunk_gate_refusal_text`) that counts scopes where `integrate` lists paths, followed once by the reconciliation alerts. `GateDecision` has five variants and every one carries the generation it was decided against. `evaluate_reference_transaction` handles the hook path and `evaluate_integration` the verb path, sharing the readiness derivation.
 
 `gate/install.rs` manages exactly two hooks:
 
@@ -652,7 +652,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 
 **Enforcement is at the ref level.** A pre-commit hook can be skipped, and a verb-level check only covers the verbs. `reference-transaction` fires for every ref update, which means the gate sees merges, resets, and pushes made by tools that never heard of `cargo-berth`.
 
-**The gate ships observing before it enforces.** A gate that starts refusing on day one gets disabled on day one. `Observe` produces the same records and the same warnings without blocking, so a repository can see what enforcement would have done before turning it on.
+**The gate ships observing before it enforces.** A gate that starts refusing on day one gets disabled on day one. `Observe` produces the same records without blocking and warns in one line per update, so a repository can see on the board what enforcement would have done before turning it on.
 
 **Two release valves, not one.** Forced permits handle the case where the gate is right about the facts and wrong about this particular merge; they are one-use and journalled, so the exception does not become the norm. `CARGO_BERTH_BYPASS` handles the case where the tool itself is the problem. Collapsing them would mean either no way out when the tool is broken, or a permanent global off switch for a single exception.
 

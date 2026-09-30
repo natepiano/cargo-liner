@@ -1880,7 +1880,12 @@ impl OutputEnvelope {
         violations: Vec<IntegrationViolation>,
     ) -> Self {
         let blocked_by = integration_blockers(&violations).into_vec();
-        let message = integration_blocked_message(reservation_id, target, &violations);
+        let message = integration_blocked_message(
+            reservation_id,
+            target,
+            &violations,
+            IntegrationPathListing::Listed,
+        );
         let summary = format!("cargo-berth refused integration for reservation {reservation_id}.");
         let presentation = engine_result_presentation(&summary, &message);
         Self {
@@ -4427,10 +4432,47 @@ fn integration_blockers(violations: &[IntegrationViolation]) -> WireOrderedReser
     )
 }
 
+/// How an integration refusal names the paths each reservation and hold covers.
+#[derive(Clone, Copy)]
+enum IntegrationPathListing {
+    /// Every path, for a reader who asked to integrate one reservation.
+    Listed,
+    /// How many scopes, for the trunk gate, which restates its refusal for every entering
+    /// reservation of one git command.
+    Counted,
+}
+
+impl IntegrationPathListing {
+    fn render(self, scopes: &ReservationScopeSet) -> String {
+        match (self, scopes.as_slice().len()) {
+            (Self::Listed, _) => render_scopes(scopes),
+            (Self::Counted, 1) => "1 scope".to_owned(),
+            (Self::Counted, count) => format!("{count} scopes"),
+        }
+    }
+}
+
+/// The trunk gate's refusal of one entering reservation, with scope counts in place of path lists.
+///
+/// The envelope payload an `integrate` run returns carries the paths, and so does
+/// `cargo-berth board --reservation <id> --json`.
+pub(crate) fn trunk_gate_refusal_text(
+    target: &IntegrationTarget,
+    violation: &IntegrationViolation,
+) -> String {
+    integration_blocked_message(
+        violation.reservation.reservation_id,
+        target,
+        std::slice::from_ref(violation),
+        IntegrationPathListing::Counted,
+    )
+}
+
 fn integration_blocked_message(
     reservation_id: ReservationId,
     target: &IntegrationTarget,
     violations: &[IntegrationViolation],
+    path_listing: IntegrationPathListing,
 ) -> String {
     let target_name = target.short_name();
     let mut message = format!(
@@ -4443,7 +4485,7 @@ fn integration_blocked_message(
             violation.reservation.reservation_id,
             source_description(&violation.reservation.source),
             purpose_description(&violation.reservation.purpose),
-            render_scopes(&violation.reservation.scopes),
+            path_listing.render(&violation.reservation.scopes),
         );
         for blocker in &violation.blocking_reservations {
             let _ = write!(
@@ -4452,7 +4494,7 @@ fn integration_blocked_message(
                 blocker.reservation_id,
                 source_description(&blocker.source),
                 purpose_description(&blocker.purpose),
-                render_scopes(&blocker.scopes),
+                path_listing.render(&blocker.scopes),
             );
         }
         for hold in &violation.holds {
@@ -4460,6 +4502,7 @@ fn integration_blocked_message(
             message.push_str(&integration_hold_message(
                 violation.reservation.reservation_id,
                 hold,
+                path_listing,
             ));
         }
     }
@@ -4470,7 +4513,11 @@ fn integration_blocked_message(
     message
 }
 
-fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> String {
+fn integration_hold_message(
+    subject: ReservationId,
+    hold: &IntegrationHold,
+    path_listing: IntegrationPathListing,
+) -> String {
     match hold {
         IntegrationHold::OrderingEdge {
             edge_id,
@@ -4534,7 +4581,7 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
             };
             format!(
                 "Ordering edge {edge_id} waits on reservation {predecessor}; covered paths: {}; recorded reason: {reason}; recovery: {recovery}.",
-                render_scopes(scopes),
+                path_listing.render(scopes),
             )
         },
         IntegrationHold::DeferredOverlap {
@@ -4551,7 +4598,7 @@ fn integration_hold_message(subject: ReservationId, hold: &IntegrationHold) -> S
             };
             format!(
                 "Unresolved deferral with reservation {counterpart}; covered paths: {}; recorded reason: {reason}; recovery: cargo-berth sequence {counterpart} {subject} --why \"{}\".",
-                render_scopes(scopes),
+                path_listing.render(scopes),
                 shell_double_quoted(&reason.to_string()),
             )
         },
@@ -4790,7 +4837,11 @@ mod tests {
                 },
             },
         };
-        let rendered = super::integration_hold_message(successor, &hold);
+        let rendered = super::integration_hold_message(
+            successor,
+            &hold,
+            super::IntegrationPathListing::Listed,
+        );
         assert!(
             rendered.contains("repair the unresolvable git object, then rerun the integration")
         );

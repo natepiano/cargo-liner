@@ -126,13 +126,11 @@ pub(crate) enum GateDecision {
 /// A complete gate result with reconciliation alerts from the same lock hold.
 pub(crate) struct GateResult {
     /// The local branch whose proposed tip was judged.
-    pub(crate) target:           IntegrationTarget,
-    /// The configured branch used for default-trunk message compatibility.
-    pub(crate) repository_trunk: IntegrationTarget,
+    pub(crate) target:   IntegrationTarget,
     /// The integration decision.
-    pub(crate) decision:         GateDecision,
+    pub(crate) decision: GateDecision,
     /// Durable alerts produced by the preceding actual-trunk reconciliation.
-    pub(crate) alerts:           Vec<Alert>,
+    pub(crate) alerts:   Vec<Alert>,
 }
 
 #[derive(Clone)]
@@ -276,7 +274,7 @@ pub(super) fn evaluate_locked(
                 LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
                 LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
             })?;
-        finish_gate_decision(outcome, &update.target, &repository_trunk)
+        finish_gate_decision(outcome, &update.target)
     })
 }
 
@@ -286,7 +284,6 @@ fn finish_gate_decision(
         (ReconciliationReport, GateDecision),
     >,
     target: &IntegrationTarget,
-    repository_trunk: &IntegrationTarget,
 ) -> Result<Enrollment<GateResult>, GateError> {
     match outcome {
         LedgerCommittedActionOutcome::Appended {
@@ -294,7 +291,6 @@ fn finish_gate_decision(
             ..
         } => Ok(Enrollment::Enrolled(GateResult {
             target: target.clone(),
-            repository_trunk: repository_trunk.clone(),
             decision,
             alerts: report.alerts,
         })),

@@ -92,6 +92,7 @@ use crate::ledger::ScopeKind;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorkPlanReference;
 use crate::ledger::WorktreeContext;
+use crate::output;
 use crate::output::CommandVerb;
 use crate::output::OutputEnvelope;
 use crate::output::PostCommitRendering;
@@ -2127,48 +2128,22 @@ fn exit_for_reference_transaction_results(results: Vec<GateResult>) -> ExitCode 
     let mut blocked = false;
     for result in results {
         match result.decision {
-            GateDecision::Observed {
-                generation,
-                violations,
-            } => {
-                for violation in violations {
-                    let reservation_id = violation.reservation.reservation_id;
-                    let rendered = OutputEnvelope::integration_blocked(
-                        reservation_id,
-                        &result.target,
-                        generation,
-                        vec![violation],
-                    )
-                    .with_alerts(result.alerts.clone())
-                    .render_text();
-                    write_reference_transaction_diagnostic(format_args!(
-                        "Observe-only cargo-berth {} gate: {rendered}",
-                        if result.target == result.repository_trunk {
-                            "trunk"
-                        } else {
-                            result.target.short_name()
-                        }
-                    ));
-                }
+            GateDecision::Observed { violations, .. } => {
+                write_reference_transaction_diagnostic(format_args!(
+                    "{}",
+                    observe_only_gate_line(&result.target, violations.len())
+                ));
             },
-            GateDecision::Blocked {
-                generation,
-                violations,
-            } => {
+            GateDecision::Blocked { violations, .. } => {
                 blocked = true;
-                for violation in violations {
-                    let reservation_id = violation.reservation.reservation_id;
+                for violation in &violations {
                     write_reference_transaction_diagnostic(format_args!(
                         "{}",
-                        OutputEnvelope::integration_blocked(
-                            reservation_id,
-                            &result.target,
-                            generation,
-                            vec![violation],
-                        )
-                        .with_alerts(result.alerts.clone())
-                        .render_text()
+                        output::trunk_gate_refusal_text(&result.target, violation)
                     ));
+                }
+                for alert in &result.alerts {
+                    write_reference_transaction_diagnostic(format_args!("{alert}"));
                 }
             },
             GateDecision::Clear { .. }
@@ -2181,6 +2156,21 @@ fn exit_for_reference_transaction_results(results: Vec<GateResult>) -> ExitCode 
     } else {
         BerthExit::Clear.into()
     }
+}
+
+/// The one line an observe-only gate states for an update enforcing mode would refuse.
+///
+/// Observe-only mode permits the update, so the holds are the board's to explain; a refusal's
+/// full explanation for every held reservation restated them on each update of the target.
+fn observe_only_gate_line(target: &IntegrationTarget, held_reservations: usize) -> String {
+    let held = match held_reservations {
+        1 => "1 entering reservation is held".to_owned(),
+        count => format!("{count} entering reservations are held"),
+    };
+    format!(
+        "cargo-berth (observe-only): enforcing mode would refuse this update of {}, where {held}; see `cargo-berth board`.",
+        target.reference()
+    )
 }
 
 fn reference_transaction_error(error: &GateError) -> ExitCode {

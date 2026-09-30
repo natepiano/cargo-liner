@@ -73,6 +73,8 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const GATE_TARGETS_PATH: &str = ".git/cargo-berth/gate-targets";
 const LOCK_PATH: &str = ".git/cargo-berth/mutation.lock";
 const MARKER_PATH: &str = ".git/cargo-berth-run-id";
+/// The observe-only gate's line for a trunk update that brings in one held reservation.
+const OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION: &str = "cargo-berth (observe-only): enforcing mode would refuse this update of refs/heads/main, where 1 entering reservation is held; see `cargo-berth board`.";
 const PENDING_BYPASS_PREFIX: &str = "cargo-berth-pending-bypass-";
 /// Attribution and merge observations remain fixed for these two holder checkouts, including
 /// the acting HEAD read and the merge-tree and diff that narrow the foreign holder to work HEAD
@@ -655,21 +657,22 @@ fn target_gate_observe_and_enforce_messages_name_the_target() {
             &pair.successor_tip,
         );
         let text = String::from_utf8_lossy(&result.stderr);
-        assert!(text.contains("integration"), "{text}");
-        assert!(
-            text.contains(&format!(
-                "Reservation {} cannot enter integration while its integration order is held",
-                pair.successor_id
-            )),
-            "{text}"
-        );
         if mode == "observe" {
             assert_eq!(result.status.code(), Some(0), "{text}");
-            assert!(
-                text.contains("Observe-only cargo-berth integration gate:"),
-                "{text}"
+            assert_eq!(
+                text,
+                "cargo-berth (observe-only): enforcing mode would refuse this update of \
+                 refs/heads/integration, where 1 entering reservation is held; see `cargo-berth \
+                 board`.\n"
             );
         } else {
+            assert!(
+                text.contains(&format!(
+                    "Reservation {} cannot enter integration while its integration order is held",
+                    pair.successor_id
+                )),
+                "{text}"
+            );
             assert!(!result.status.success(), "{text}");
             let input = format!(
                 "{} {} refs/heads/integration\n",
@@ -3611,8 +3614,10 @@ fn observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints() {
     let holder_observed = propose_trunk(repository.path(), &base, &holder_head);
     assert!(holder_observed.status.success());
     let holder_observation = String::from_utf8_lossy(&holder_observed.stderr);
-    assert!(holder_observation.contains("Observe-only"));
-    assert!(holder_observation.contains(&requester_id));
+    assert!(
+        holder_observation.contains(OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION),
+        "{holder_observation}"
+    );
     restore_trunk(repository.path(), &holder_head, &base);
 
     let requester_head = commit_work(
@@ -3624,7 +3629,10 @@ fn observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints() {
 
     let observed = propose_trunk(repository.path(), &base, &requester_head);
     assert!(observed.status.success());
-    assert!(String::from_utf8_lossy(&observed.stderr).contains("Observe-only"));
+    assert!(
+        String::from_utf8_lossy(&observed.stderr)
+            .contains(OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION)
+    );
     restore_trunk(repository.path(), &requester_head, &base);
     set_gate_mode(repository.path(), "enforce");
 
@@ -5332,7 +5340,8 @@ fn assert_denial_context(denial: &str, requester_id: &str, holder_id: &str) {
         holder_id,
         "docs/requester-plan.md",
         "phase-8",
-        "file:src/lib.rs",
+        "protected paths: 1 scope.",
+        "covered paths: 1 scope;",
         "cargo-berth sequence",
         "cargo-berth integrate",
         "CARGO_BERTH_BYPASS=1",
@@ -5342,6 +5351,8 @@ fn assert_denial_context(denial: &str, requester_id: &str, holder_id: &str) {
             "denial omitted {required}: {denial}"
         );
     }
+    // The gate counts scopes; the board and the integrate payload list them.
+    assert!(!denial.contains("file:src/lib.rs"), "{denial}");
 }
 
 fn assert_forced_permit_consumed(repository_root: &Path) {
