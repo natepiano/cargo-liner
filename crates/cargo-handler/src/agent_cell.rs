@@ -158,8 +158,9 @@ impl SessionEntry<'_> {
 const fn rail_glyphs(rail: bool) -> &'static str { if rail { TREE_RAIL } else { TREE_SPACE } }
 
 /// Every cell across `machines`, in the order the grid shows them:
-/// machine by machine, one for each top-level agent, oldest first,
-/// holding the sessions it opened, depth first and oldest first. A
+/// machine by machine, one for each top-level agent, holding the
+/// sessions it opened, depth first and oldest first. The agents that
+/// opened sessions come first, then the rest, each oldest first. A
 /// session whose launcher is not listed stands as a top-level agent.
 /// Each agent takes the next hue of the rainbow in that order, a
 /// session as much as the agent titling its cell.
@@ -170,14 +171,20 @@ pub(crate) fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
         let rows = machine.state.rows();
         let listed: HashSet<u32> = rows.iter().map(|row| row.pid).collect();
         let mut placed = HashSet::new();
-        let roots = rows.iter().filter(|row| {
-            row.launched_by
-                .is_none_or(|launcher| launcher == row.pid || !listed.contains(&launcher))
-        });
+        let (groups, lone): (Vec<&AgentRow>, Vec<&AgentRow>) = rows
+            .iter()
+            .filter(|row| {
+                row.launched_by
+                    .is_none_or(|launcher| launcher == row.pid || !listed.contains(&launcher))
+            })
+            .partition(|row| {
+                rows.iter()
+                    .any(|other| other.pid != row.pid && other.launched_by == Some(row.pid))
+            });
         // Rows that only name one another as launcher reach no root, so
         // the first of them not yet placed stands as one rather than
         // going without a cell.
-        for row in roots.chain(rows) {
+        for row in groups.into_iter().chain(lone).chain(rows) {
             if !placed.insert(row.pid) {
                 continue;
             }
@@ -1675,14 +1682,14 @@ mod tests {
         assert_eq!(Some(buffer[right].fg), hue_of(&cells, 3_700_000));
     }
 
-    /// natedev's answer and the mac's: two top-level agents, the
-    /// sessions they opened, one under another, a session whose
-    /// launcher is not listed and two rows naming only each other, then
-    /// the mac's one agent.
+    /// natedev's answer and the mac's: two top-level agents, the older
+    /// opening no session and the other the sessions under it, one under
+    /// another, then a session whose launcher is not listed and two rows
+    /// naming only each other, then the mac's one agent.
     fn natedev_and_mac() -> (MachineState, MachineState) {
         let natedev = MachineState::Answered(vec![
+            agent(428_044, "enh/handler", 24 * HOUR, None),
             agent(BOSS, "boss of bosses", 23 * HOUR, None),
-            agent(428_044, "enh/handler", 22 * HOUR, None),
             agent(3_266_367, "trunk", 21 * HOUR, Some(BOSS)),
             agent(3_337_048, "arrange", 3 * HOUR, Some(BOSS)),
             agent(3_400_000, "under trunk", 2 * HOUR, Some(3_266_367)),
@@ -1715,9 +1722,10 @@ mod tests {
     /// agent's launcher, and each session's glyphs and name.
     type ReadCell<'a> = (&'a str, &'a str, Option<&'a str>, Vec<(String, &'a str)>);
 
-    /// Machine by machine, each top-level agent has a cell, oldest
-    /// first, holding the sessions it opened depth first, each led by
-    /// the glyphs that hang it from its launcher. A session whose
+    /// Machine by machine, each top-level agent has a cell, those that
+    /// opened sessions before the rest and each oldest first, holding
+    /// the sessions it opened depth first, each led by the glyphs that
+    /// hang it from its launcher. A session whose
     /// launcher is not listed has a cell of its own, and of two rows
     /// naming only each other the first has one holding the other.
     #[test]

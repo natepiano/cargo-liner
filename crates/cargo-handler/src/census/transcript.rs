@@ -39,6 +39,7 @@ use crate::constants::SUBAGENT_PREFIX;
 use crate::constants::SUBAGENT_QUIET_LIMIT;
 use crate::constants::SUBAGENTS_DIRNAME;
 use crate::constants::TOOL_USE_BLOCK;
+use crate::constants::TRANSCRIPT_BEGIN_READ_LIMIT;
 use crate::constants::TRANSCRIPT_BISECT_GRAIN;
 use crate::constants::TRANSCRIPT_EXTENSION;
 use crate::constants::TRANSCRIPT_SPAN_READ_LIMIT;
@@ -63,6 +64,30 @@ pub(super) fn transcript_path(projects: &Path, cwd: &Path, session_id: &str) -> 
     projects
         .join(directory)
         .join(format!("{session_id}.{TRANSCRIPT_EXTENSION}"))
+}
+
+/// The transcript of the session `session_id` under Claude Code's
+/// `projects` directory: where `cwd`, the session's directory, says when
+/// it is there, else in whichever project holds it, as the transcript of
+/// a session resumed or moved away from where it started does. None
+/// when no project holds it yet.
+pub(super) fn find_transcript(
+    projects: &Path,
+    cwd: Option<&Path>,
+    session_id: &str,
+) -> Option<PathBuf> {
+    if let Some(path) = cwd
+        .map(|cwd| transcript_path(projects, cwd, session_id))
+        .filter(|path| path.is_file())
+    {
+        return Some(path);
+    }
+    let file_name = format!("{session_id}.{TRANSCRIPT_EXTENSION}");
+    fs::read_dir(projects)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|project| project.path().join(&file_name))
+        .find(|path| path.is_file())
 }
 
 /// One call a session made to its shell tool.
@@ -195,6 +220,16 @@ pub(super) fn bash_calls(path: &Path, span: &RangeInclusive<u64>) -> Vec<BashCal
         );
     }
     calls
+}
+
+/// When the session whose transcript is at `path` began, in unix
+/// seconds: the time of its first stamped line. None when there is no
+/// transcript, or no stamped line in its first
+/// [`TRANSCRIPT_BEGIN_READ_LIMIT`] bytes.
+pub(super) fn began(path: &Path) -> Option<u64> {
+    let file = File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    first_time_after(&file, 0, length.min(TRANSCRIPT_BEGIN_READ_LIMIT)).map(|at| at / 1_000)
 }
 
 /// A byte offset at or before the first line written at or after
@@ -538,6 +573,61 @@ mod tests {
         assert!(bash_calls(&path, &(0..=4_999)).is_empty());
         assert!(bash_calls(&path, &(5_001..=9_000)).is_empty());
         assert_eq!(bash_calls(&path, &(5_000..=5_000)).len(), 1);
+    }
+
+    /// A transcript is found where the session's directory says, else in
+    /// the project it started in, and not at all before it is written.
+    #[test]
+    fn a_transcript_is_found_where_its_session_started() {
+        let directory = TempDir::new().expect("a temporary directory should open");
+        let projects = directory.path();
+        let started = projects.join("-home-me-rust-hana-catalyst-docs-hana");
+        fs::create_dir_all(&started).expect("the project directory should be made");
+        write_lines(&started.join("439f.jsonl"), &[result_line(1_000)]);
+        fs::create_dir_all(projects.join("-home-me-rust-other"))
+            .expect("the project directory should be made");
+        let moved = Path::new("/home/me/rust/hana_catalyst");
+
+        assert_eq!(
+            find_transcript(projects, Some(moved), "439f"),
+            Some(started.join("439f.jsonl"))
+        );
+        assert_eq!(
+            find_transcript(
+                projects,
+                Some(Path::new("/home/me/rust/hana_catalyst/docs/hana")),
+                "439f"
+            ),
+            Some(started.join("439f.jsonl"))
+        );
+        assert_eq!(
+            find_transcript(projects, None, "439f"),
+            Some(started.join("439f.jsonl"))
+        );
+        assert_eq!(find_transcript(projects, Some(moved), "c0de"), None);
+    }
+
+    /// A session began at its transcript's first stamped line, past the
+    /// unstamped lines before it; a transcript that is not there, or
+    /// holds no stamped line, gives no time.
+    #[test]
+    fn a_session_began_at_its_first_stamped_line() {
+        let directory = TempDir::new().expect("a temporary directory should open");
+        let path = directory.path().join("session.jsonl");
+        assert_eq!(began(&path), None);
+
+        write_lines(&path, &[r#"{"type":"mode","mode":"normal"}"#.to_string()]);
+        assert_eq!(began(&path), None);
+
+        write_lines(
+            &path,
+            &[
+                r#"{"type":"mode","mode":"normal"}"#.to_string(),
+                result_line(1_790_000_000_400),
+                bash_line(1_790_000_009_000, "ls", "list"),
+            ],
+        );
+        assert_eq!(began(&path), Some(1_790_000_000));
     }
 
     /// A subagent is running until its transcript ends on a finished

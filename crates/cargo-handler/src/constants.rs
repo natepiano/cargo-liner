@@ -313,6 +313,9 @@ pub(crate) const SUBAGENT_META_SUFFIX: &str = ".meta.json";
 /// How long a subagent's transcript may go unwritten before the
 /// subagent counts as stopped rather than working.
 pub(crate) const SUBAGENT_QUIET_LIMIT: Duration = Duration::from_mins(30);
+/// Bytes of a transcript's start read at most for the time of its first
+/// stamped line.
+pub(crate) const TRANSCRIPT_BEGIN_READ_LIMIT: u64 = 4 * 1024 * 1024;
 /// Bytes a bisection of a transcript narrows the start of a span to
 /// before reading forward line by line.
 pub(crate) const TRANSCRIPT_BISECT_GRAIN: u64 = 64 * 1024;

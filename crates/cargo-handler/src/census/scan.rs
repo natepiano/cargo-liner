@@ -69,17 +69,22 @@ type ProcessKey = (u32, u64);
 pub(super) struct LocalScanner {
     /// This machine's home directory: where the session records live,
     /// and what a row's directory is written against.
-    home:        Option<PathBuf>,
+    home:             Option<PathBuf>,
     /// The call found for each shell wrapper, or none found once the
     /// wrapper was [`CALL_SEARCH_SETTLE`] old.
-    shell_calls: HashMap<ProcessKey, Option<ShellCall>>,
+    shell_calls:      HashMap<ProcessKey, Option<ShellCall>>,
     /// The launcher found for each session tmux holds, by the launcher's
     /// pid and start, or none found once the session was
     /// [`CALL_SEARCH_SETTLE`] old.
-    launchers:   HashMap<ProcessKey, Option<ProcessKey>>,
+    launchers:        HashMap<ProcessKey, Option<ProcessKey>>,
+    /// Where each session's transcript was found, by session id.
+    transcript_paths: HashMap<String, PathBuf>,
+    /// When the session each transcript holds began, by the
+    /// transcript's path, or none where it holds no stamped line yet.
+    session_starts:   HashMap<PathBuf, Option<u64>>,
     /// What `KWin` and tmux last answered, kept for
     /// [`DESKTOP_QUERY_INTERVAL`]; none before the first scan with rows.
-    desktops:    Option<DesktopRead>,
+    desktops:         Option<DesktopRead>,
 }
 
 /// What `KWin` and tmux answered at one moment.
@@ -119,10 +124,12 @@ impl LocalScanner {
     /// A scanner of the user running this process.
     pub(super) fn new() -> Self {
         Self {
-            home:        dirs::home_dir(),
-            shell_calls: HashMap::new(),
-            launchers:   HashMap::new(),
-            desktops:    None,
+            home:             dirs::home_dir(),
+            shell_calls:      HashMap::new(),
+            launchers:        HashMap::new(),
+            transcript_paths: HashMap::new(),
+            session_starts:   HashMap::new(),
+            desktops:         None,
         }
     }
 
@@ -146,30 +153,14 @@ impl LocalScanner {
             .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
             .unwrap_or_default();
         let mut rows = classify::agent_rows(&processes, &sessions, &codex_threads, home.as_deref());
-        let table = classify::pid_table(&processes);
-        let transcripts: HashMap<u32, PathBuf> = home
+        let transcripts = home
             .as_deref()
             .map(|home| home.join(CLAUDE_DIRNAME).join(PROJECTS_DIRNAME))
-            .map(|projects| {
-                sessions
-                    .iter()
-                    .filter(|session| {
-                        table
-                            .get(&session.pid)
-                            .is_some_and(|process| process.is_claude())
-                    })
-                    .filter_map(|session| {
-                        let cwd = session.cwd.as_deref()?;
-                        Some((
-                            session.pid,
-                            transcript::transcript_path(&projects, cwd, &session.session_id),
-                        ))
-                    })
-                    .collect()
-            })
+            .map(|projects| self.find_transcripts(&projects, &processes, &sessions))
             .unwrap_or_default();
         let now = unix_now();
         self.find_launchers(&processes, &sessions, &transcripts, &mut rows, now);
+        self.attach_session_starts(&transcripts, &mut rows);
         let subagents: HashMap<u32, Vec<Subagent>> = transcripts
             .iter()
             .map(|(pid, path)| (*pid, transcript::running_subagents(path, SystemTime::now())))
@@ -212,7 +203,9 @@ impl LocalScanner {
     }
 
     /// Set `launched_by` on each of `rows` a tmux server holds, from the
-    /// transcripts of the Claude Code rows started before it.
+    /// transcripts of the other Claude Code rows. Each row still carries
+    /// its process's start, which is when the call that opened it was
+    /// written.
     fn find_launchers(
         &mut self,
         processes: &[ProcessEntry],
@@ -249,6 +242,79 @@ impl LocalScanner {
         for (index, launcher) in found {
             rows[index].launched_by = Some(launcher);
         }
+    }
+
+    /// The transcript of each live Claude Code session among `sessions`,
+    /// by its pid, under Claude Code's `projects` directory. One found
+    /// away from the session's directory, as a session resumed or moved
+    /// since has, is kept; one not found yet is where the session's
+    /// directory says it will be written.
+    fn find_transcripts(
+        &mut self,
+        projects: &Path,
+        processes: &[ProcessEntry],
+        sessions: &[SessionRecord],
+    ) -> HashMap<u32, PathBuf> {
+        let table = classify::pid_table(processes);
+        let live: Vec<&SessionRecord> = sessions
+            .iter()
+            .filter(|session| {
+                table
+                    .get(&session.pid)
+                    .is_some_and(|process| process.is_claude())
+            })
+            .collect();
+        let ids: HashSet<&str> = live
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect();
+        self.transcript_paths
+            .retain(|id, _| ids.contains(id.as_str()));
+        let mut found = HashMap::new();
+        for session in live {
+            let cwd = session.cwd.as_deref();
+            let path = if let Some(kept) = self.transcript_paths.get(&session.session_id) {
+                Some(kept.clone())
+            } else if let Some(path) =
+                transcript::find_transcript(projects, cwd, &session.session_id)
+            {
+                self.transcript_paths
+                    .insert(session.session_id.clone(), path.clone());
+                Some(path)
+            } else {
+                cwd.map(|cwd| transcript::transcript_path(projects, cwd, &session.session_id))
+            };
+            if let Some(path) = path {
+                found.insert(session.pid, path);
+            }
+        }
+        found
+    }
+
+    /// Date each Claude Code row among `rows` from the first line of its
+    /// transcript in `transcripts` where that is earlier than its
+    /// process, then put the rows back in order, oldest first. A
+    /// transcript's first line never changes, so each is read once.
+    fn attach_session_starts(
+        &mut self,
+        transcripts: &HashMap<u32, PathBuf>,
+        rows: &mut [AgentRow],
+    ) {
+        let current: HashSet<&PathBuf> = transcripts.values().collect();
+        self.session_starts.retain(|path, _| current.contains(path));
+        for row in rows.iter_mut() {
+            let Some(path) = transcripts.get(&row.pid) else {
+                continue;
+            };
+            let began = *self
+                .session_starts
+                .entry(path.clone())
+                .or_insert_with(|| transcript::began(path));
+            if let Some(began) = began {
+                row.started = row.started.min(began);
+            }
+        }
+        rows.sort_by_key(|row| (row.started, row.pid));
     }
 
     /// The call that started each shell wrapper under a Claude Code
@@ -294,8 +360,9 @@ impl LocalScanner {
 }
 
 /// The launcher of `held`, a row tmux holds, by its pid and start: the
-/// Claude Code row among `rows` started before it whose transcript
-/// holds the call that opened it.
+/// other Claude Code row among `rows` whose transcript holds the call
+/// that opened it. The launcher's own process may have started later,
+/// as one restarted since does.
 fn search_launcher(
     processes: &[ProcessEntry],
     sessions: &[SessionRecord],
@@ -323,9 +390,7 @@ fn search_launcher(
     let span = session.call_span();
     let calls: Vec<(u32, BashCall)> = rows
         .iter()
-        .filter(|other| {
-            other.agent == Agent::Claude && other.pid != held.pid && other.started < held.started
-        })
+        .filter(|other| other.agent == Agent::Claude && other.pid != held.pid)
         .filter_map(|other| Some((other.pid, transcripts.get(&other.pid)?)))
         .flat_map(|(pid, path)| {
             transcript::bash_calls(path, &span)
@@ -705,10 +770,12 @@ mod tests {
     /// A scanner with nothing found yet, reading no home directory.
     fn scanner() -> LocalScanner {
         LocalScanner {
-            home:        None,
-            shell_calls: HashMap::new(),
-            launchers:   HashMap::new(),
-            desktops:    None,
+            home:             None,
+            shell_calls:      HashMap::new(),
+            launchers:        HashMap::new(),
+            transcript_paths: HashMap::new(),
+            session_starts:   HashMap::new(),
+            desktops:         None,
         }
     }
 
@@ -829,6 +896,78 @@ mod tests {
         alone.truncate(1);
         scanner.find_launchers(&processes, &[], &transcripts, &mut alone, LAUNCH + 730);
         assert!(scanner.launchers.is_empty());
+    }
+
+    /// A launcher whose process was restarted after it opened a session,
+    /// as one resumed in a new process is, is still that session's
+    /// launcher: its transcript holds the call.
+    #[test]
+    fn a_launcher_restarted_since_keeps_the_sessions_it_opened() {
+        let directory = TempDir::new().expect("a temporary directory should open");
+        let transcript = directory.path().join("boss.jsonl");
+        write_call(
+            &transcript,
+            (LAUNCH - 1) * 1_000,
+            "tmux new-session -d -s tool-based-ui-trunk zsh -ic claude",
+            "Resume trunk",
+        );
+        let transcripts = HashMap::from([(BOSS, transcript)]);
+        let processes = [
+            entry(1, 0, "systemd", 0, &[]),
+            entry(3_261_729, 1, "tmux: server", LAUNCH, &[]),
+            entry(3_266_307, 3_261_729, "zsh", LAUNCH, &[]),
+            entry(TRUNK, 3_266_307, "claude", LAUNCH, &["claude"]),
+            entry(45_494, 1, "zsh", LAUNCH - 100, &[]),
+            entry(BOSS, 45_494, "claude", LAUNCH + 200, &["claude"]),
+        ];
+        let mut rows = vec![
+            claude_row(TRUNK, "tool-based-ui-trunk", LAUNCH),
+            claude_row(BOSS, "boss of bosses", LAUNCH + 200),
+        ];
+
+        scanner().find_launchers(&processes, &[], &transcripts, &mut rows, LAUNCH + 210);
+
+        assert_eq!(rows[0].launched_by, Some(BOSS));
+    }
+
+    /// A Claude Code row dates from its transcript's first line where
+    /// that is earlier than its process, and from its process where the
+    /// transcript begins later or is not there; the rows are put back in
+    /// order, and a transcript no longer listed is forgotten.
+    #[test]
+    fn a_session_dates_from_its_transcript_and_the_rows_reorder() {
+        let directory = TempDir::new().expect("a temporary directory should open");
+        let resumed = directory.path().join("resumed.jsonl");
+        write_call(&resumed, (LAUNCH - 1_000) * 1_000, "ls", "List");
+        let fresh = directory.path().join("fresh.jsonl");
+        write_call(&fresh, (LAUNCH + 3) * 1_000, "ls", "List");
+        let transcripts = HashMap::from([(BOSS, resumed), (TRUNK, fresh.clone())]);
+        let mut rows = vec![
+            claude_row(ARRANGE, "no transcript", LAUNCH - 500),
+            claude_row(TRUNK, "fresh", LAUNCH),
+            claude_row(BOSS, "resumed", LAUNCH + 200),
+        ];
+        let mut scanner = scanner();
+
+        scanner.attach_session_starts(&transcripts, &mut rows);
+
+        let dated: Vec<(&str, u64)> = rows
+            .iter()
+            .map(|row| (row.name.as_str(), row.started))
+            .collect();
+        assert_eq!(
+            dated,
+            [
+                ("resumed", LAUNCH - 1_000),
+                ("no transcript", LAUNCH - 500),
+                ("fresh", LAUNCH),
+            ]
+        );
+        scanner.attach_session_starts(&HashMap::from([(TRUNK, fresh.clone())]), &mut rows);
+        assert_eq!(
+            scanner.session_starts,
+            HashMap::from([(fresh, Some(LAUNCH + 3))])
+        );
     }
 
     /// A shell wrapper's call is found in its session's transcript or a

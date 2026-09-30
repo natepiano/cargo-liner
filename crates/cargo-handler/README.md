@@ -53,7 +53,8 @@ agent started:
 - **Claude Code**: each `~/.claude/sessions/<pid>.json` whose process is alive
   and is `claude`. The row shows the session's name (or the start of its session
   id), its status (`busy`, `shell`, `idle`, or `—` when the record has none),
-  the age of the process, the desktop its window is on (see
+  the session's age -- from its transcript's first line, so a session resumed
+  or restarted keeps its age -- the desktop its window is on (see
   [desktops](#desktops)), and the session's directory.
 - **Codex**: an interactive `codex` process -- not `codex app-server`, which
   runs for another program. Its name is that of the thread it started with:
@@ -95,7 +96,8 @@ launcher's.
 Each top-level agent gets a cell, titled in its top border with its name
 (`boss of bosses` above), and the cell holds every session the agent opened in
 tmux, sessions those opened included. The cells follow the machines in summary
-order, each machine's top-level agents oldest first. Every agent takes the next
+order, each machine's top-level agents that opened sessions first, then the
+rest, each oldest first. Every agent takes the next
 color of a rainbow in cell order -- the cell's agent, then its sessions depth
 first and oldest first -- red, orange, yellow, green, cyan, blue, violet, then
 red again. The cell's title and the agent's name in the summary are drawn in
@@ -196,7 +198,8 @@ Each kind of row comes from its own place:
 
 A tmux server runs apart from whoever started it, so nothing in the process
 tree says which agent opened a session it holds. For each agent held by tmux,
-the transcripts of the Claude Code agents started before it are read for Bash
+the transcripts of the other Claude Code agents -- one whose process restarted
+since, as a session resumed in a new process does, included -- are read for Bash
 calls from 10 minutes before it started to 5 seconds after that run tmux
 `new-session`. A call whose `new-session` commands all name their session with
 a literal `-s` other than the session's own name is passed over, unless the

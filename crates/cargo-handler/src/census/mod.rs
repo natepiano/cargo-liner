@@ -80,7 +80,9 @@ pub(crate) struct AgentRow {
     /// What the session says it is doing: `idle`, `busy` or `shell`
     /// for Claude Code, and nothing for Codex, which reports none.
     pub(crate) status:      Option<String>,
-    /// When the agent's process started, in unix seconds.
+    /// When the agent's session began, in unix seconds: for Claude Code
+    /// the first line of its transcript, so a session resumed or
+    /// restarted keeps its age, else when its process started.
     pub(crate) started:     u64,
     /// The agent's process id on its own machine.
     pub(crate) pid:         u32,

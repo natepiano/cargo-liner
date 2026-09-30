@@ -199,16 +199,18 @@ pub(super) fn attach_children(
                     }),
             );
             // An app server a mesh moved out from under the agent names it
-            // in `CLAUDE_PID`. A Claude Code process is never attached this
-            // way: a terminal window an agent opened carries the variable
-            // too, and the session in it is top level.
+            // in `CLAUDE_PID`, and started after the agent's process did.
+            // A Claude Code process is never attached this way: a terminal
+            // window an agent opened carries the variable too, and the
+            // session in it is top level.
+            let agent_started = table.get(&row.pid).map(|agent| agent.started);
             let detached: Vec<&ProcessEntry> = processes
                 .iter()
                 .filter(|process| {
                     process.is_codex()
                         && process.is_app_server()
                         && process.claude_pid == Some(row.pid)
-                        && process.started >= row.started
+                        && agent_started.is_some_and(|started| process.started >= started)
                         && !classify::under_an_agent(&table, process)
                 })
                 .collect();
