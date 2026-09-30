@@ -146,26 +146,28 @@ impl Display for Alert {
             Self::LostIntegrationEvidence(alert) => match &alert.recovery {
                 LostEvidenceRecovery::VerifyResolvedTrunk { trunk_oid, .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and integration target commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --json`.",
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and integration target commit {} carries protected tip {}. Run `cargo-berth resolve {} --integrated-as {}`. Inspect `cargo-berth board --reservation {} --json`.",
                     alert.reservation_id,
                     trunk_oid,
                     alert.protected_tip,
                     alert.reservation_id,
                     trunk_oid,
+                    alert.reservation_id,
                 ),
                 LostEvidenceRecovery::NameCarryingTrunkCommit { trunk_oid, .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --json`.",
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, but its integration target at {} no longer proves protected tip {}. If an integration target commit carries the released work, run `cargo-berth resolve {} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --reservation {} --json`.",
                     alert.reservation_id,
                     trunk_oid,
                     alert.protected_tip,
+                    alert.reservation_id,
                     alert.reservation_id,
                     alert.reservation_id,
                 ),
                 LostEvidenceRecovery::ResolveTrunkFirst { .. } => write!(
                     formatter,
-                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --json`.",
-                    alert.reservation_id, alert.protected_tip,
+                    "INTEGRATION EVIDENCE LOST: released reservation {} remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip {} cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --reservation {} --json`.",
+                    alert.reservation_id, alert.protected_tip, alert.reservation_id,
                 ),
             },
             Self::OrphanedOutstanding(alert) => write!(

@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An `INTEGRATION EVIDENCE LOST` notice tells the reader to inspect `cargo-berth board --reservation <id> --json` for the reservation it names, where it pointed at the whole `cargo-berth board --json`.
 - The `reference-transaction` trunk gate in observe-only mode states one line per gated target update, naming the ref and how many entering reservations enforcing mode would refuse it for and pointing at `cargo-berth board`, in place of a full refusal for each held reservation. In enforce mode each refusal counts scopes where it listed every path, and the reconciliation alerts follow the refusals once instead of after each one. `cargo-berth integrate` still lists the paths.
 - An overlap refusal is shorter. The edit refusal `hook pre-tool-use` prints names each holder on one line with its reservation id, branch and last activity, adding its shared scopes only when they differ from the requested ones; the envelope payload keeps the other holder facts. The answer menu, which a refused edit and a refused `claim` share, states each answer on one numbered line with its exact command and consequence, and drops the paragraph that repeated which answers add an ordering edge. Every answer, command and rule is unchanged.
 - `cargo-berth board --json` no longer repeats the complete board as a pretty-printed block in `presentation` beside `payload`, which carries the same data; that copy made up most of the response. The presentation states only the board's notices.

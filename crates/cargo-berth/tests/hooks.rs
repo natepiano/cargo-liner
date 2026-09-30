@@ -2487,7 +2487,7 @@ impl LostIntegrationEvidence {
         let reservation_id = &self.reservation_id;
         let protected_tip = &self.protected_tip;
         Ok(format!(
-            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but its integration target at {trunk_oid} no longer proves protected tip {protected_tip}. If an integration target commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --json`."
+            "INTEGRATION EVIDENCE LOST: released reservation {reservation_id} remains non-blocking, but its integration target at {trunk_oid} no longer proves protected tip {protected_tip}. If an integration target commit carries the released work, run `cargo-berth resolve {reservation_id} --integrated-as <TARGET_COMMIT>` naming that commit. If the work landed where git cannot match it, such as a reworked squash or a branch other than the integration target, run `cargo-berth resolve {reservation_id} --retire-orphan --why <reason>`. Otherwise restore the work first. Inspect `cargo-berth board --reservation {reservation_id} --json`."
         ))
     }
 }

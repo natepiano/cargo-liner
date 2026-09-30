@@ -531,7 +531,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth detected lost integration evidence for released work.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --json`.\"}}\n"
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth detected lost integration evidence for released work.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --reservation reservation-lost-evidence --json`.\"}}\n"
       },
       "expected_cargo_berth_calls": [
         [
@@ -598,7 +598,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\"systemMessage\":\"cargo-berth found 1 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --json`.\"}}\n"
+        "stdout": "{\"systemMessage\":\"cargo-berth found 1 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --reservation reservation-lost-evidence --json`.\"}}\n"
       },
       "expected_cargo_berth_calls": [
         [
@@ -660,7 +660,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth detected lost integration evidence for released work.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip 1111111111111111111111111111111111111111 cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --json`.\"}}\n"
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth detected lost integration evidence for released work.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip 1111111111111111111111111111111111111111 cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --reservation reservation-lost-evidence --json`.\"}}\n"
       },
       "expected_cargo_berth_calls": [
         [
@@ -726,7 +726,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\"systemMessage\":\"cargo-berth found 1 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip 1111111111111111111111111111111111111111 cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --json`.\"}}\n"
+        "stdout": "{\"systemMessage\":\"cargo-berth found 1 actionable coordination notice(s).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, and its integration target does not currently resolve to a known object, so protected tip 1111111111111111111111111111111111111111 cannot be proved either way. Resolve the integration target first, then rerun. Inspect `cargo-berth board --reservation reservation-lost-evidence --json`.\"}}\n"
       },
       "expected_cargo_berth_calls": [
         [
@@ -2587,7 +2587,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth detected lost integration evidence for released work.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --json`.\"\n  }\n}\n"
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth detected lost integration evidence for released work.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"INTEGRATION EVIDENCE LOST: released reservation reservation-lost-evidence remains non-blocking, but trunk 2222222222222222222222222222222222222222 no longer proves protected tip 1111111111111111111111111111111111111111. If trunk 2222222222222222222222222222222222222222 contains the released work, run `cargo-berth resolve reservation-lost-evidence --integrated-as 2222222222222222222222222222222222222222`. Otherwise restore the work first. Inspect `cargo-berth board --reservation reservation-lost-evidence --json`.\"\n  }\n}\n"
       },
       "expected_cargo_berth_calls": [
         [
