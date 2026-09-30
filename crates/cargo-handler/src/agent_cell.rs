@@ -1711,6 +1711,10 @@ mod tests {
         ])
     }
 
+    /// A cell as the order test reads it: its machine, its agent, the
+    /// agent's launcher, and each session's glyphs and name.
+    type ReadCell<'a> = (&'a str, &'a str, Option<&'a str>, Vec<(String, &'a str)>);
+
     /// Machine by machine, each top-level agent has a cell, oldest
     /// first, holding the sessions it opened depth first, each led by
     /// the glyphs that hang it from its launcher. A session whose
@@ -1722,7 +1726,7 @@ mod tests {
 
         let cells = natedev_and_mac_cells(&natedev, &mac);
 
-        let order: Vec<(&str, &str, Option<&str>, Vec<(String, &str)>)> = cells
+        let order: Vec<ReadCell<'_>> = cells
             .iter()
             .map(|cell| {
                 (

@@ -59,16 +59,16 @@ fn branch(directory: &Path) -> Option<String> {
     };
     let head = fs::read_to_string(git_directory.join(GIT_HEAD_FILENAME)).ok()?;
     let head = head.trim();
-    match head.strip_prefix(HEAD_REF_PREFIX) {
-        Some(reference) => Some(
+    let branch: String = head.strip_prefix(HEAD_REF_PREFIX).map_or_else(
+        || head.chars().take(DETACHED_HEAD_LENGTH).collect(),
+        |reference| {
             reference
                 .strip_prefix(BRANCH_REF_PREFIX)
                 .unwrap_or(reference)
-                .to_string(),
-        ),
-        None => Some(head.chars().take(DETACHED_HEAD_LENGTH).collect()),
-    }
-    .filter(|branch| !branch.is_empty())
+                .to_string()
+        },
+    );
+    (!branch.is_empty()).then_some(branch)
 }
 
 #[cfg(test)]
