@@ -262,8 +262,11 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
         )
         .ok_or_else(|| failure("blocking presentation should separate its summary and detail"))?;
     assert!(refusal_detail.ends_with('\n'));
-    assert!(refusal_detail.contains("Choose exactly one answer for one named holder."));
+    assert!(refusal_detail.contains("One answer settles one named holder."));
     assert!(refusal_detail.contains("cargo-berth claim <paths...> --before"));
+    assert!(
+        refusal_detail.contains("No approver is configured, so this session chooses the answer.")
+    );
     // One line names the holder by id, branch and activity. Its shared scopes are the requested
     // scopes the line above names, so the holder line does not repeat them.
     let holder_line = refusal_detail
@@ -541,17 +544,17 @@ fn a_pre_edit_ambiguity_prints_a_plain_command_its_claude_code_session_runs() ->
     )
 }
 
-/// An approved `--defer` claim a Claude Code session runs directly authorizes its edit.
+/// A `--defer` claim a Claude Code session runs directly authorizes its edit.
 ///
 /// The session's pre-edit hook has already first-touched two files into one reservation
 /// when another session's reservation refuses it a third. The session answers with a
-/// `--defer` claim under only `CLAUDE_CODE_SESSION_ID`, the user approves the proposal,
-/// and the resubmitted claim appends a second reservation carrying the answer. Unless that
+/// `--defer` claim under only `CLAUDE_CODE_SESSION_ID`, and that one claim appends a second
+/// reservation carrying the answer. Unless that
 /// reservation binds to the session, the hook widens the first-touch reservation, which
 /// carries no answer for the holder, and refuses the same edit again. The files the
 /// first-touch reservation holds must stay editable after the claim.
 #[test]
-fn an_approved_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResult {
+fn a_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResult {
     let repository = initialized_repository()?;
     let holder = run_berth_with_session(
         repository.path(),
@@ -588,7 +591,7 @@ fn an_approved_defer_claim_under_the_claude_code_session_authorizes_its_edit() -
         &holder_id,
         DEFERRING_SESSION,
     )?;
-    require_success(&deferred, "the approved defer claim")?;
+    require_success(&deferred, "the defer claim")?;
 
     for edited in ["shared.rs", "first.rs", "second.rs"] {
         let output = run_pre_tool_use(
@@ -597,20 +600,20 @@ fn an_approved_defer_claim_under_the_claude_code_session_authorizes_its_edit() -
         )?;
         require_success(
             &output,
-            &format!("the session's edit to {edited} after its approved defer claim"),
+            &format!("the session's edit to {edited} after its defer claim"),
         )?;
     }
     Ok(())
 }
 
-/// An approved `--defer` answer keeps authorizing its file after the holder widens elsewhere.
+/// A `--defer` answer keeps authorizing its file after the holder widens elsewhere.
 ///
 /// The holder dirties a second file after the answer, and the reconcile each edit check runs
 /// records the holder's wider merge extent. The answer names the shared file, not the holder's
 /// whole extent, so the session's edit of that file still passes, while the holder's new file
 /// is shared work the answer never covered and the hook refuses it.
 #[test]
-fn an_approved_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file() -> TestResult {
+fn a_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file() -> TestResult {
     let repository = initialized_repository()?;
     let holder = run_berth_with_session(
         repository.path(),
@@ -627,7 +630,7 @@ fn an_approved_defer_claim_keeps_its_edit_after_the_holder_dirties_another_file(
         &holder_id,
         DEFERRING_SESSION,
     )?;
-    require_success(&deferred, "the approved defer claim")?;
+    require_success(&deferred, "the defer claim")?;
 
     dirty_source(repository.path(), "widened.rs")?;
 
@@ -1986,15 +1989,14 @@ fn run_berth_with_claude_code_session(
         .output()?)
 }
 
-/// Defer `path` behind `holder_id` under only the Claude Code session, then resubmit the
-/// claim with the proposal token the user approved.
+/// Defer `path` behind `holder_id` under only the Claude Code session, in one claim.
 fn defer_claim_with_claude_code_session(
     repository_root: &Path,
     path: &str,
     holder_id: &str,
     session_id: &str,
 ) -> TestResult<Output> {
-    let mut arguments = vec![
+    let arguments = [
         "claim",
         path,
         "--defer",
@@ -2005,20 +2007,6 @@ fn defer_claim_with_claude_code_session(
         "the integration order is not known yet",
         "--json",
     ];
-    let proposal = run_berth_with_claude_code_session(repository_root, &arguments, session_id)?;
-    let envelope = json_output(&proposal)?;
-    if proposal.status.code() != Some(3) || envelope["status"] != "needs_user_authorization" {
-        return Err(failure(format!(
-            "the defer claim should ask for user authorization, exited with {:?}: {envelope}",
-            proposal.status.code()
-        )));
-    }
-    let proposal_token =
-        required_string(&envelope, "/payload/data/proposal_token", "defer proposal")?;
-    arguments.splice(
-        arguments.len() - 1..arguments.len() - 1,
-        ["--proposal", proposal_token],
-    );
     run_berth_with_claude_code_session(repository_root, &arguments, session_id)
 }
 
@@ -3846,7 +3834,7 @@ fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult 
         &holder_id,
         DEFERRING_SESSION,
     )?;
-    require_success(&deferred, "the approved defer claim")?;
+    require_success(&deferred, "the defer claim")?;
     let deferred_id = claimed_reservation_id(&deferred)?;
     let instruction = format!(
         "order this pair: cargo berth sequence <first> <then> --why '<reason>', naming {deferred_id} and {holder_id} in the order they must integrate"

@@ -1,21 +1,17 @@
-//! Proposal-bound answers to reservation overlap conflicts.
+//! Answers to reservation overlap conflicts, each bound to the holder it names.
 
+mod approver;
 mod conflict_authorization;
 mod constants;
-mod proposal;
+mod request;
 mod scope_binding;
 
+pub(crate) use approver::OverlapApprover;
 pub(crate) use conflict_authorization::ConflictAuthorization;
-pub(crate) use proposal::OverlapAuthorizationReason;
-pub(crate) use proposal::OverlapAuthorizationRequest;
-pub(crate) use proposal::OverlapEscalationPayload;
-pub(crate) use proposal::OverlapProposal;
-pub(crate) use proposal::OverlapProposalSubmission;
-pub(crate) use proposal::OverlapProposalToken;
-pub(crate) use proposal::OverlapRequester;
-pub(crate) use proposal::PermissiveOverlapAnswer;
-pub(crate) use proposal::PermissiveOverlapAuthorizationRequest;
-pub(crate) use proposal::RequesterCoordinationIdentity;
+pub(crate) use request::OverlapAuthorizationReason;
+pub(crate) use request::OverlapAuthorizationRequest;
+pub(crate) use request::PermissiveOverlapAnswer;
+pub(crate) use request::PermissiveOverlapAuthorizationRequest;
 pub(crate) use scope_binding::AuthorizedOverlap;
 #[cfg(test)]
 pub(crate) use scope_binding::AuthorizedOverlapScopeSet;

@@ -43,12 +43,6 @@ struct RenderedBlock<'envelope> {
     detail:  &'envelope str,
 }
 
-#[derive(Clone, Copy)]
-enum DeferredClaimApproval<'proposal> {
-    AwaitingApproval,
-    Approved(&'proposal str),
-}
-
 #[test]
 fn blocked_claim_renders_every_holder_fact_and_first_touch_dispositions() -> TestResult {
     let repository = initialized_repository()?;
@@ -142,106 +136,6 @@ fn blocked_check_names_each_holder_on_one_line() -> TestResult {
         "{holder_line}"
     );
     assert!(!rendered_block.detail.contains("- coordination run id:"));
-    Ok(())
-}
-
-#[test]
-fn claim_proposal_renders_approval_material_without_the_answer_menu() -> TestResult {
-    let repository = initialized_repository()?;
-    dirty_source(repository.path(), "src/lib.rs")?;
-    let holder = run_berth_with_run(
-        repository.path(),
-        &["check", "file:src/lib.rs", "--json"],
-        FIRST_RUN,
-    )?;
-    require_success(&holder, "first-touch proposal holder")?;
-    let holder_envelope = json_output(&holder)?;
-    let holder_id = required_string(&holder_envelope, "/payload/data/acquisition/reservation_id")?;
-    let (_requester_directory, requester_root) = add_worktree(&repository, "proposal-requester")?;
-
-    let proposal = run_berth(
-        &requester_root,
-        &[
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            "--why",
-            holder_id,
-            "--after",
-            holder_id,
-            "--overlap-why",
-            holder_id,
-            "--json",
-        ],
-    )?;
-    let envelope = json_output(&proposal)?;
-    assert_eq!(proposal.status.code(), Some(3));
-    assert_eq!(envelope["status"], "needs_user_authorization");
-    assert_eq!(
-        envelope["payload"]["data"]["status"],
-        "needs_user_authorization"
-    );
-    let rendered_block = only_rendered_block(&envelope)?;
-    let conflicts = required_array(&envelope, "/payload/data/conflicts")?;
-    assert_eq!(conflicts.len(), 1);
-    let conflict = conflicts
-        .first()
-        .ok_or_else(|| failure("proposal should carry its holder conflict"))?;
-    assert_eq!(required_string(conflict, "/source/kind")?, "first_touch");
-    assert_conflict_facts_are_rendered(conflict, rendered_block.detail)?;
-
-    let proposal_token = required_string(&envelope, "/payload/data/proposal_token")?;
-    let authorization_reason = required_string(&envelope, "/payload/data/authorization_reason")?;
-    assert_eq!(authorization_reason, holder_id);
-    assert!(rendered_block.detail.contains("file:src/lib.rs"));
-    assert!(rendered_block.detail.contains(&format!(
-        "- selected direction: holder {holder_id} before requester"
-    )));
-    assert!(
-        rendered_block
-            .detail
-            .contains(&format!("- authorization reason: {authorization_reason}"))
-    );
-    assert!(
-        rendered_block
-            .detail
-            .contains("- consequence: editing proceeds on the shown scopes")
-    );
-    assert!(rendered_block.detail.contains("- proposal:"));
-    assert!(rendered_block.detail.contains("- transient token:"));
-    assert!(rendered_block.detail.contains(proposal_token));
-    assert!(rendered_block.detail.contains("--proposal"));
-    assert!(
-        rendered_block
-            .detail
-            .contains(&format!("cargo-berth release {holder_id}"))
-    );
-    assert!(
-        rendered_block
-            .detail
-            .contains(&format!("cargo-berth resolve {holder_id} --integrated-as"))
-    );
-    assert!(
-        rendered_block
-            .detail
-            .contains(&format!("cargo-berth resolve {holder_id} --abandon --why"))
-    );
-    assert!(
-        !rendered_block
-            .detail
-            .to_ascii_lowercase()
-            .contains("answers above")
-    );
-    for answer_title in [
-        "1. Land before the holder:",
-        "2. Land after the holder:",
-        "3. Defer the order:",
-        "4. Override:",
-        "5. Leave it alone:",
-    ] {
-        assert!(!rendered_block.detail.contains(answer_title));
-    }
     Ok(())
 }
 
@@ -432,19 +326,7 @@ fn integration_denial_has_a_one_line_summary_and_complete_detail() -> TestResult
     let holder_id = required_string(&holder_envelope, "/payload/data/reservation_id")?;
 
     let (_blocked_directory, blocked_root) = add_worktree(&repository, "integration-blocked")?;
-    let proposal = deferred_claim(
-        &blocked_root,
-        holder_id,
-        DeferredClaimApproval::AwaitingApproval,
-    )?;
-    assert_eq!(proposal.status.code(), Some(3));
-    let proposal_envelope = json_output(&proposal)?;
-    let proposal_token = required_string(&proposal_envelope, "/payload/data/proposal_token")?;
-    let blocked = deferred_claim(
-        &blocked_root,
-        holder_id,
-        DeferredClaimApproval::Approved(proposal_token),
-    )?;
+    let blocked = deferred_claim(&blocked_root, holder_id)?;
     require_success(&blocked, "deferred claim")?;
     let blocked_envelope = json_output(&blocked)?;
     let blocked_id = required_string(&blocked_envelope, "/payload/data/reservation_id")?;
@@ -898,31 +780,23 @@ fn claim(repository_root: &Path, scope: &str, run: &str) -> TestResult<Output> {
     Ok(output)
 }
 
-fn deferred_claim(
-    repository_root: &Path,
-    holder_id: &str,
-    approval: DeferredClaimApproval<'_>,
-) -> TestResult<Output> {
-    let mut arguments = vec![
-        "claim",
-        "file:src/lib.rs",
-        "--run",
-        SECOND_RUN,
-        "--defer",
-        holder_id,
-        "--overlap-why",
-        holder_id,
-        "--why",
-        holder_id,
-    ];
-    match approval {
-        DeferredClaimApproval::AwaitingApproval => {},
-        DeferredClaimApproval::Approved(proposal_token) => {
-            arguments.extend(["--proposal", proposal_token]);
-        },
-    }
-    arguments.push("--json");
-    run_berth(repository_root, &arguments)
+fn deferred_claim(repository_root: &Path, holder_id: &str) -> TestResult<Output> {
+    run_berth(
+        repository_root,
+        &[
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            "--defer",
+            holder_id,
+            "--overlap-why",
+            holder_id,
+            "--why",
+            holder_id,
+            "--json",
+        ],
+    )
 }
 
 fn commit_file(repository_root: &Path, path: &str, contents: &str) -> TestResult {

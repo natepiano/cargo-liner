@@ -12,15 +12,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::answer::AuthorizedOverlap;
 use crate::answer::ConflictAuthorization;
+use crate::answer::OverlapApprover;
 use crate::answer::OverlapAuthorizationRequest;
-use crate::answer::OverlapEscalationPayload;
-use crate::answer::OverlapProposal;
-use crate::answer::OverlapProposalSubmission;
-use crate::answer::OverlapRequester;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::answer::PermissiveOverlapAuthorizationRequest;
-use crate::answer::RequesterCoordinationIdentity;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
 use crate::config::Enrollment;
@@ -110,7 +107,7 @@ pub(crate) struct ClaimRequest {
     pub(crate) coordination_run_selection: ClaimCoordinationRunSelection,
     /// The phase-start commit selection.
     pub(crate) phase_start:                PhaseStartSelection,
-    /// The semantic overlap answer, its reason, and proposal state.
+    /// The semantic overlap answer and its reason.
     pub(crate) overlap_authorization:      OverlapAuthorizationRequest,
 }
 
@@ -205,7 +202,6 @@ struct ClaimValidationContext {
     recovery_command_line:  RecoveryCommandLine,
     worktree_id:            WorktreeId,
     path_case:              PathCase,
-    requester:              OverlapRequester,
     overlap_authorization:  OverlapAuthorizationRequest,
     maximum_reservations:   u32,
     maximum_ordering_edges: u32,
@@ -257,9 +253,10 @@ pub(crate) fn execute(
             marker_publication,
             session_mapping_publication,
         ),
-        Ok(Enrollment::Enrolled(ClaimExecution::Blocked { conflicts })) => {
-            OutputEnvelope::blocked_claim(conflicts)
-        },
+        Ok(Enrollment::Enrolled(ClaimExecution::Blocked {
+            conflicts,
+            approver,
+        })) => OutputEnvelope::blocked_claim(conflicts, approver),
         Ok(Enrollment::Enrolled(ClaimExecution::AnsweredWithoutOverlap(blocker))) => {
             OutputEnvelope::invalid_input(
                 CommandVerb::Claim,
@@ -267,9 +264,6 @@ pub(crate) fn execute(
                     "No foreign reservation overlaps the requested paths, so the overlap answer naming reservation {blocker} has nothing to authorize. Claim the same paths again with no overlap answer."
                 ),
             )
-        },
-        Ok(Enrollment::Enrolled(ClaimExecution::AuthorizationRequired(escalation))) => {
-            OutputEnvelope::claim_authorization_required(*escalation)
         },
         Ok(Enrollment::Enrolled(ClaimExecution::ReservationLimitReached(maximum))) => {
             OutputEnvelope::reservation_limit_reached(maximum)
@@ -296,9 +290,9 @@ enum ClaimExecution {
     },
     Blocked {
         conflicts: Vec<ReservationConflict>,
+        approver:  Option<OverlapApprover>,
     },
     AnsweredWithoutOverlap(ReservationId),
-    AuthorizationRequired(Box<OverlapEscalationPayload>),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
 }
@@ -606,12 +600,7 @@ fn acquire(
         worktree_administrative_locator: worktree_context.administrative_locator().clone(),
         coordination_identity_provenance: claim_run_validation.coordination_identity_provenance(),
     };
-    let requester = OverlapRequester::new(
-        claim_run_validation.presented_coordination_identity(),
-        journal_mutation_actor.worktree_id,
-        prepared_claim.source.clone(),
-        prepared_claim.purpose.clone(),
-    );
+    let approver = berth_config.overlap_approver(worktree_context.repository_root());
     let target_view =
         TargetView::from_claim(&prepared_claim.target, &prepared_claim.trunk_at_claim);
     let repository_trunk = berth_config
@@ -630,7 +619,6 @@ fn acquire(
                     recovery_command_line: recovery_command_line.clone(),
                     worktree_id: journal_mutation_actor.worktree_id,
                     path_case,
-                    requester,
                     overlap_authorization,
                     maximum_reservations: berth_config.maximum_reservations,
                     maximum_ordering_edges: berth_config.maximum_ordering_edges,
@@ -645,6 +633,7 @@ fn acquire(
         target_view,
         scopes,
         &worktree_context,
+        approver,
     )
     .map(Enrollment::Enrolled)
 }
@@ -907,6 +896,7 @@ fn claim_execution_from_outcome(
     target: TargetView,
     scopes: ReservationScopeSet,
     worktree_context: &WorktreeContext,
+    approver: Option<OverlapApprover>,
 ) -> Result<ClaimExecution, ClaimError> {
     match outcome {
         LedgerTransactionOutcome::Appended {
@@ -926,13 +916,13 @@ fn claim_execution_from_outcome(
             })
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Conflict(conflicts)) => {
-            Ok(ClaimExecution::Blocked { conflicts })
+            Ok(ClaimExecution::Blocked {
+                conflicts,
+                approver,
+            })
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::AnsweredWithoutOverlap(blocker)) => {
             Ok(ClaimExecution::AnsweredWithoutOverlap(blocker))
-        },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::AuthorizationRequired(escalation)) => {
-            Ok(ClaimExecution::AuthorizationRequired(escalation))
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
@@ -966,7 +956,6 @@ fn validate_claim_transaction(
         recovery_command_line,
         worktree_id,
         path_case,
-        requester,
         overlap_authorization,
         maximum_reservations,
         maximum_ordering_edges,
@@ -1017,7 +1006,6 @@ fn validate_claim_transaction(
         OverlapAuthorizationRequest::Permissive(request) => validate_authorization(
             *request,
             conflicts,
-            requester,
             prepared_claim,
             &ordering_graph,
             maximum_ordering_edges,
@@ -1485,7 +1473,12 @@ fn validate_first_touch_run(
     }
 }
 
-/// Bind one overlap answer to the single conflict it names, or say why it binds nothing.
+/// Record one overlap answer when its named holder is the only conflict, or say why it cannot.
+///
+/// The answer records in the invocation that carries it. Naming the holder's reservation id is
+/// what keeps the decision from applying to changed facts: the conflicts are recomputed here,
+/// under the ledger lock, and any holder other than the named one refuses the claim exactly as
+/// an unanswered claim is refused.
 ///
 /// An answer reaches here because the caller supplied `--before`, `--after`, `--defer`, or
 /// `--override`, which the pre-edit refusal asks for by name. By the time the caller runs the
@@ -1497,16 +1490,11 @@ fn validate_first_touch_run(
 fn validate_authorization(
     request: PermissiveOverlapAuthorizationRequest,
     conflicts: Vec<ReservationConflict>,
-    requester: OverlapRequester,
     prepared_claim: PreparedClaim,
     ordering_graph: &OrderingGraph,
     maximum_ordering_edges: u32,
 ) -> TransactionValidation<ClaimRejection> {
-    let PermissiveOverlapAuthorizationRequest {
-        answer,
-        reason,
-        proposal_submission,
-    } = request;
+    let PermissiveOverlapAuthorizationRequest { answer, reason } = request;
     if conflicts.is_empty() {
         return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(
             answer.blocker(),
@@ -1518,38 +1506,16 @@ fn validate_authorization(
     if conflict.reservation_id != answer.blocker() {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
     }
-    let edge_effect = match &answer {
-        PermissiveOverlapAnswer::Sequence { .. } => ClaimEdgeEffect::Adds,
-        PermissiveOverlapAnswer::Defer { .. } | PermissiveOverlapAnswer::Override { .. } => {
-            ClaimEdgeEffect::Unchanged
-        },
-    };
-    let proposal =
-        OverlapProposal::recompute(requester, reason, &prepared_claim.scopes, answer, conflict);
-    match proposal_submission {
-        OverlapProposalSubmission::Apply(proposal_token) if proposal_token.matches(&proposal) => {
-            if matches!(edge_effect, ClaimEdgeEffect::Adds)
-                && count_reaches_limit(ordering_graph.edge_count(), maximum_ordering_edges)
-            {
-                return TransactionValidation::Reject(ClaimRejection::OrderingEdgeLimitReached(
-                    maximum_ordering_edges,
-                ));
-            }
-            let authorization = ConflictAuthorization::from_approved_proposal(proposal);
-            TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
-        },
-        OverlapProposalSubmission::Issue | OverlapProposalSubmission::Apply(_) => {
-            TransactionValidation::Reject(ClaimRejection::AuthorizationRequired(Box::new(
-                proposal.escalation(conflicts),
-            )))
-        },
+    if matches!(answer, PermissiveOverlapAnswer::Sequence { .. })
+        && count_reaches_limit(ordering_graph.edge_count(), maximum_ordering_edges)
+    {
+        return TransactionValidation::Reject(ClaimRejection::OrderingEdgeLimitReached(
+            maximum_ordering_edges,
+        ));
     }
-}
-
-#[derive(Clone, Copy)]
-enum ClaimEdgeEffect {
-    Unchanged,
-    Adds,
+    let overlaps = AuthorizedOverlap::from(conflict).into();
+    let authorization = ConflictAuthorization::answered(answer, overlaps, reason);
+    TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
 }
 
 fn count_reaches_limit(count: usize, maximum: u32) -> bool {
@@ -1621,32 +1587,15 @@ impl ClaimRunValidation {
         }
     }
 
-    const fn presented_coordination_identity(self) -> RequesterCoordinationIdentity {
-        match self {
-            Self::IndependentWithPresentedIdentity(acting_run) => {
-                RequesterCoordinationIdentity::Presented(acting_run.coordination_run_id())
-            },
-            Self::IndependentWithoutPresentedIdentity { .. } => {
-                RequesterCoordinationIdentity::NotPresented
-            },
-            Self::ResolvedIdentityRequired(resolved_edit_authorization) => {
-                RequesterCoordinationIdentity::Presented(
-                    resolved_edit_authorization.coordination_run_id,
-                )
-            },
-        }
-    }
-
     /// Record whether the caller presented the coordination identity this claim carries.
     ///
-    /// Derived from [`Self::presented_coordination_identity`] so the requester answer and the
-    /// stored incumbent fact can never disagree.
+    /// Only a caller that presented nothing had its run created by this process.
     const fn coordination_identity_provenance(self) -> CoordinationIdentityProvenance {
-        match self.presented_coordination_identity() {
-            RequesterCoordinationIdentity::Presented(_) => {
+        match self {
+            Self::IndependentWithPresentedIdentity(_) | Self::ResolvedIdentityRequired(_) => {
                 CoordinationIdentityProvenance::Presented
             },
-            RequesterCoordinationIdentity::NotPresented => {
+            Self::IndependentWithoutPresentedIdentity { .. } => {
                 CoordinationIdentityProvenance::NotPresented
             },
         }
@@ -1982,7 +1931,6 @@ enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
     /// An overlap answer named this blocker while nothing overlapped the requested scopes.
     AnsweredWithoutOverlap(ReservationId),
-    AuthorizationRequired(Box<OverlapEscalationPayload>),
     Replay(ReservationReplayError),
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidCanonicalWorktreeRoot,

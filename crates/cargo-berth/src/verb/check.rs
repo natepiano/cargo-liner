@@ -9,6 +9,7 @@ use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
+use crate::answer::OverlapApprover;
 use crate::config::Enrollment;
 use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
@@ -46,6 +47,7 @@ struct CheckDecision {
     scopes:            ReservationScopeSet,
     conflicts:         Vec<ReservationConflict>,
     merge_observation: MergeObservationRequirement,
+    approver:          Option<OverlapApprover>,
 }
 
 /// Whether a cached overlap answer can grant an edit without observing other branches.
@@ -129,8 +131,7 @@ pub(crate) fn execute(
         return reconcile_and_retry(
             &invocation_directory,
             check_request.declared_scopes,
-            first_decision.scopes,
-            first_decision.conflicts,
+            first_decision,
             check_request.reservation_selection,
             recovery_command_line,
         );
@@ -145,30 +146,31 @@ pub(crate) fn execute(
                 reconcile_and_retry(
                     &invocation_directory,
                     check_request.declared_scopes,
-                    first_decision.scopes,
-                    conflicts,
+                    CheckDecision {
+                        conflicts,
+                        ..first_decision
+                    },
                     check_request.reservation_selection,
                     recovery_command_line,
                 )
             },
-            acquisition => render_acquisition(acquisition),
+            acquisition => render_acquisition(acquisition, first_decision.approver),
         };
     }
     reconcile_and_retry(
         &invocation_directory,
         check_request.declared_scopes,
-        first_decision.scopes,
-        first_decision.conflicts,
+        first_decision,
         check_request.reservation_selection,
         recovery_command_line,
     )
 }
 
+/// Reconcile, then decide again; `fallback` answers when reconciliation fails.
 fn reconcile_and_retry(
     invocation_directory: &Path,
     declared_scopes: DeclaredReservationScopeSet,
-    fallback_scopes: ReservationScopeSet,
-    fallback_conflicts: Vec<ReservationConflict>,
+    fallback: CheckDecision,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
@@ -184,7 +186,11 @@ fn reconcile_and_retry(
                 );
             },
             Err(_) => {
-                return OutputEnvelope::blocked_check(fallback_scopes, fallback_conflicts);
+                return OutputEnvelope::blocked_check(
+                    fallback.scopes,
+                    fallback.conflicts,
+                    fallback.approver,
+                );
             },
         };
     let retried_decision = match decide(
@@ -206,15 +212,22 @@ fn reconcile_and_retry(
         },
     };
     if retried_decision.conflicts.is_empty() {
-        render_acquisition(acquire_first_touch(
-            declared_scopes,
-            reservation_selection,
-            recovery_command_line,
-        ))
+        render_acquisition(
+            acquire_first_touch(
+                declared_scopes,
+                reservation_selection,
+                recovery_command_line,
+            ),
+            retried_decision.approver,
+        )
         .with_alerts(reconciliation_report.alerts)
     } else {
-        OutputEnvelope::blocked_check(retried_decision.scopes, retried_decision.conflicts)
-            .with_alerts(reconciliation_report.alerts)
+        OutputEnvelope::blocked_check(
+            retried_decision.scopes,
+            retried_decision.conflicts,
+            retried_decision.approver,
+        )
+        .with_alerts(reconciliation_report.alerts)
     }
 }
 
@@ -235,6 +248,7 @@ fn acquire_first_touch(
 
 fn render_acquisition(
     acquisition: Result<Enrollment<FirstTouchClaimExecution>, ClaimError>,
+    approver: Option<OverlapApprover>,
 ) -> OutputEnvelope {
     match acquisition {
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
@@ -249,7 +263,7 @@ fn render_acquisition(
                 ..
             }
             | FirstTouchClaimExecution::Blocked { scopes, conflicts },
-        )) => OutputEnvelope::blocked_check(scopes, conflicts),
+        )) => OutputEnvelope::blocked_check(scopes, conflicts, approver),
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::ReservationLimitReached(maximum))) => {
             OutputEnvelope::invalid_input(
                 CommandVerb::Check,
@@ -268,18 +282,19 @@ fn decide(
     declared_scopes: DeclaredReservationScopeSet,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<CheckDecision>, CheckDecisionError> {
-    let (reservations, worktree_context) = match Ledger::read_for_edit_check(invocation_directory)
-        .map_err(CheckDecisionError::Ledger)?
-    {
-        Enrollment::Enrolled(snapshot) => snapshot.into_parts(),
-        Enrollment::Unconfigured {
-            expected_configuration_path,
-        } => {
-            return Ok(Enrollment::Unconfigured {
+    let (reservations, worktree_context, approver) =
+        match Ledger::read_for_edit_check(invocation_directory)
+            .map_err(CheckDecisionError::Ledger)?
+        {
+            Enrollment::Enrolled(snapshot) => snapshot.into_parts(),
+            Enrollment::Unconfigured {
                 expected_configuration_path,
-            });
-        },
-    };
+            } => {
+                return Ok(Enrollment::Unconfigured {
+                    expected_configuration_path,
+                });
+            },
+        };
     let path_case = PathCase::read(worktree_context.common_git_directory())
         .map_err(CheckDecisionError::PathCase)?;
     // Refusal follows the full declared edit, including every child of a tree scope.
@@ -324,6 +339,7 @@ fn decide(
         scopes,
         conflicts,
         merge_observation,
+        approver,
     }))
 }
 

@@ -43,6 +43,7 @@ use super::projection::ProjectionSynchronization;
 use super::replay_checkpoint;
 use super::replay_checkpoint::ReplayCheckpoint;
 use super::worktree_context::WorktreeContext;
+use crate::answer::OverlapApprover;
 use crate::config::BerthConfig;
 use crate::config::ConfigurationLookup;
 use crate::config::Enrollment;
@@ -73,6 +74,7 @@ pub(crate) struct Ledger {
 pub(crate) struct EditCheckLedgerSnapshot {
     reservations:     Result<RetainedReservationSet, ReservationReplayError>,
     worktree_context: WorktreeContext,
+    approver:         Option<OverlapApprover>,
 }
 
 /// Validated journal truth read without holding the mutation lock.
@@ -114,15 +116,16 @@ pub(crate) struct LedgerReinitialization {
 }
 
 impl EditCheckLedgerSnapshot {
-    /// Split this read into its folded reservation set and the filesystem-discovered worktree
-    /// context.
+    /// Split this read into its folded reservation set, the filesystem-discovered worktree
+    /// context, and the configured approver a refusal names.
     pub(crate) fn into_parts(
         self,
     ) -> (
         Result<RetainedReservationSet, ReservationReplayError>,
         WorktreeContext,
+        Option<OverlapApprover>,
     ) {
-        (self.reservations, self.worktree_context)
+        (self.reservations, self.worktree_context, self.approver)
     }
 }
 
@@ -217,14 +220,14 @@ impl RecoverableReconciliationAppendFailures {
 
 /// The durable result of a validation-controlled ledger transaction.
 pub(crate) enum LedgerTransactionOutcome<Rejection> {
-    /// Exactly one approved event was appended and published.
+    /// Exactly one validated event was appended and published.
     Appended {
         /// The durable journal event.
         event:                       Box<JournalEvent>,
         /// Whether the event's session identity consequence was published.
         session_mapping_publication: SessionIdentityMappingPublication,
     },
-    /// Validation rejected the proposal before any append.
+    /// Validation rejected the operation before any append.
     Rejected(Rejection),
 }
 
@@ -237,7 +240,7 @@ pub(crate) enum LedgerCommittedActionOutcome<Rejection, CommittedActionOutput> {
         /// Whether the event's session identity consequence was published.
         session_mapping_publication: SessionIdentityMappingPublication,
     },
-    /// Validation rejected the proposal before any append or side effect.
+    /// Validation rejected the operation before any append or side effect.
     Rejected(Rejection),
 }
 
@@ -298,8 +301,10 @@ impl Ledger {
         invocation_directory: &Path,
     ) -> Result<Enrollment<EditCheckLedgerSnapshot>, LedgerError> {
         let worktree_context = WorktreeContext::discover(invocation_directory)?;
-        match BerthConfig::read(&worktree_context.configuration_lookup())? {
-            Enrollment::Enrolled(_) => {},
+        let approver = match BerthConfig::read(&worktree_context.configuration_lookup())? {
+            Enrollment::Enrolled(berth_config) => {
+                berth_config.overlap_approver(worktree_context.repository_root())
+            },
             Enrollment::Unconfigured {
                 expected_configuration_path,
             } => {
@@ -307,7 +312,7 @@ impl Ledger {
                     expected_configuration_path,
                 });
             },
-        }
+        };
         let ledger = Self::at_common_git_directory(
             worktree_context.common_git_directory(),
             worktree_context.repository_root(),
@@ -316,6 +321,7 @@ impl Ledger {
         Ok(Enrollment::Enrolled(EditCheckLedgerSnapshot {
             reservations,
             worktree_context,
+            approver,
         }))
     }
 
@@ -337,7 +343,7 @@ impl Ledger {
         })
     }
 
-    /// Validate against one locked replay and append only the approved operation.
+    /// Validate against one locked replay and append only the validated operation.
     pub(crate) fn transact<Rejection>(
         &self,
         worktree_id: WorktreeId,

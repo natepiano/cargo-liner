@@ -175,17 +175,26 @@ holders they reached, and leaves the decision with the user. Run `cargo berth
 drift` for the same check on demand. `CARGO_BERTH_BYPASS=1` skips the post-commit
 check.
 
-Permissive overlap answers also have a stated limit. An answer takes two
-deliberate invocations: the first returns a scoped proposal at exit 3, and a
-second invocation applies that exact token. The resulting fact records the
-submitting repository, worktree, and coordination run, the reason, and the exact
-overlap. It guarantees that the answer was deliberate, reasoned, limited to the
-conflict shown, attributed to the submitting coordination identity, and visible
-on the board until the reservation that recorded it is released; the journal
-keeps it after that. It does not identify a person or prove that a human
-supplied the answer. A published binary has nowhere to send an escalation that
-its caller cannot also read. The invoking harness is responsible for enforcing
-a human-in-the-loop rule.
+Permissive overlap answers also have a stated limit. An answer records in the
+one `claim` invocation that carries it, and only when the holder it names is the
+only conflict the engine finds under the ledger lock; any other conflicting
+holder refuses the claim. The resulting fact records the submitting repository,
+worktree, and coordination run, the reason, and the exact overlap. It guarantees
+that the answer was reasoned, limited to the named holder's current overlap,
+attributed to the submitting coordination identity, and visible on the board
+until the reservation that recorded it is released; the journal keeps it after
+that. It does not identify who chose the answer.
+
+A repository can name the session that chooses overlap answers with the
+optional `approver` key in `.claude/config/berth.toml`, an absolute worktree
+path such as `approver = "/home/me/rust/project_catalyst"`. The main worktree's
+file supplies it whenever that file exists. A refusal then tells the approver's
+own session to choose, and tells every other session to send the overlap (the
+holder ids, the shared paths, and the answer choices) to the session working in
+that worktree and record the order it chooses with the claim command. Without
+the key, the refused session chooses. The approver is routing only: the engine
+does not check who records an answer. An empty or relative path is rejected like
+any other invalid configuration value.
 
 The gate has four intentional permit paths:
 
@@ -212,7 +221,7 @@ Initialized the cargo-berth ledger. Hook 'reference-transaction' is occupied by 
 
 Journal loss follows a stricter rule. `integrate` and the trunk gate fail closed
 on an absent, corrupt, or unknown-epoch journal because losing the journal can
-erase an approved merge order. An unreadable configuration file instead means
+erase a recorded merge order. An unreadable configuration file instead means
 the gate cannot determine repository policy, so it permits and explains. These
 are different inputs: coordination facts are retained conservatively, while an
 unavailable policy file never silently selects enforce mode.
@@ -238,8 +247,8 @@ under `.claude/config` use ordinary exact exclusive claims. Paths touched only
 for verification do not need claims.
 
 Here is an actual collision from two linked worktrees. Branch `holder` owns
-`tree:crates/shared`; branch `requester` asks for the same tree. The UUIDs and
-proposal token below are the binary's output from that repository.
+`tree:crates/shared`; branch `requester` asks for the same tree. The UUIDs below
+are the binary's output from that repository.
 
 ```console
 requester$ cargo berth claim tree:crates/shared --run 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c --plan docs/work.md --phase requester --why "consume the shared API"
@@ -247,11 +256,6 @@ Reservation 01a0370c-860c-7d90-bd62-3497dd7063aa on refs/heads/holder (plan docs
 [exit 1]
 
 requester$ cargo berth claim tree:crates/shared --run 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c --plan docs/work.md --phase requester --why "consume the shared API" --after 01a0370c-860c-7d90-bd62-3497dd7063aa --overlap-why "the holder API must land first"
-User authorization is required before this overlap can be recorded: editing proceeds on the shown scopes and integration enforces the selected order. Review every holder, shared scope, plan, phase, direction, and reason in the payload, then rerun this claim with --proposal '{"requester":{"coordination_identity":{"status":"presented","coordination_run_id":"01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c"},"worktree_id":"01a0370c-8679-7211-825a-c5ab5ea91162","source":{"kind":"work_plan","plan":"docs/work.md","phase":"requester"},"purpose":{"kind":"explained","explanation":"consume the shared API"}},"authorization_reason":"the holder API must land first","candidate_scopes":[{"path":"crates/shared","kind":"tree"}],"answer":{"kind":"sequence","blocker":"01a0370c-860c-7d90-bd62-3497dd7063aa","direction":"holder_before_requester"},"overlaps":[{"reservation_id":"01a0370c-860c-7d90-bd62-3497dd7063aa","scope_revision":[{"path":"crates/shared","kind":"tree"}],"scopes":[{"path":"crates/shared","kind":"tree"}]}]}'.
-Holder 01a0370c-860c-7d90-bd62-3497dd7063aa: plan docs/work.md, phase holder; shared scopes: tree:crates/shared; direction: holder 01a0370c-860c-7d90-bd62-3497dd7063aa before requester; reason: the holder API must land first; consequence: editing proceeds on the shown scopes and integration enforces the selected order.
-[exit 3]
-
-requester$ cargo berth claim tree:crates/shared --run 01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c --plan docs/work.md --phase requester --why "consume the shared API" --after 01a0370c-860c-7d90-bd62-3497dd7063aa --overlap-why "the holder API must land first" --proposal '<the token from the exit-3 payload, byte for byte>'
 Claimed 1 reservation scope(s) as 01a0370c-890c-7312-969f-0af2605dfc82.
 [exit 0]
 ```
@@ -264,9 +268,10 @@ The four answers are:
   supplies an order.
 - `--override <holder>`: editing is authorized without an integration order.
 
-Each answer requires `--overlap-why <text>`. The exit-3 proposal changes no
-state; only a separate invocation carrying the byte-for-byte token can append
-the answer.
+Each answer requires `--overlap-why <text>` and records in that one
+invocation. An answer naming a holder while another holder also conflicts is
+refused at exit 1 and records nothing; narrow the requested scopes until one
+holder remains.
 
 ## Drift and the post-commit warning
 
@@ -397,6 +402,12 @@ gate_mode = "observe"
 - `maximum_ordering_edges`: the maximum number of live ordering constraints.
 - `gate_mode`: `observe` reports and permits; `enforce` reports and rejects.
 
+One optional field is not written by default:
+
+- `approver`: the absolute worktree path whose session chooses overlap answers,
+  for example `approver = "/home/me/rust/project_catalyst"`. Unset, the refused
+  session chooses.
+
 Missing fields take these defaults. Unknown fields, duplicates, invalid values,
 and an unreadable file are configuration errors.
 
@@ -414,7 +425,6 @@ The meanings in this table are the executable's public contract:
 | 0 | The command may proceed. |
 | 1 | A reservation overlap blocks the command. |
 | 2 | An unsatisfied ordering edge blocks the command, or `hook pre-tool-use` refuses the edit. |
-| 3 | The command needs user authorization. |
 | 4 | The ledger cannot be read. Edit paths fail open; `integrate` fails closed. |
 | 5 | The command line is invalid. |
 | 6 | Another mutation holds the ledger lock; retry the command. |

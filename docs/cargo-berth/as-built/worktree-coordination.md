@@ -155,17 +155,19 @@ Two hidden subcommands exist solely for git to invoke — `__reference-transacti
 
 Every command returns an `OutputEnvelope` with six frozen fields plus a `payload`. `OutputPayload` is a struct: `#[serde(flatten)] facts: OutputFacts` and `alerts: Vec<Alert>`. `OutputFacts` is tagged `kind`/`data` across twenty variants — `NoFacts`, `ReplayFailure`, `Init`, `ProjectionRepair`, `JournalCompaction`, `Reinitialize`, `Board`, `Reservation`, `FirstTouchReservationSelection`, `Check`, `Claim`, `Drift`, `Release`, `Sequence`, `Integrate`, `Resolve`, `Renew`, `Retarget`, `Identity`, `CoordinationIdentity` — so a consumer switches on `kind` and reads `data` directly. Alerts travel with the facts on every envelope rather than being a payload variant, because an alert is orthogonal to what the command was asked to do.
 
-`OutputStatus` names each terminal state — `Clear`, `Claimed`, `Widened`, `Incursion`, `DriftCollision`, `BlockedByOverlap`, `BlockedByOrdering`, `NeedsUserAuthorization`, `Contention`, `Sequenced`, `OrderingCycle`, `Integrated`, `TrunkRewritten`, `Released`, `Recovered`, `Renewed`, and the rest — so the status is readable without parsing prose.
+`OutputStatus` names each terminal state — `Clear`, `Claimed`, `Widened`, `Incursion`, `DriftCollision`, `BlockedByOverlap`, `BlockedByOrdering`, `Contention`, `Sequenced`, `OrderingCycle`, `Integrated`, `TrunkRewritten`, `Released`, `Recovered`, `Renewed`, and the rest — so the status is readable without parsing prose.
 
 Exit codes are a `#[repr(u8)]` enum in `exit.rs` with a serde round-trip through `u8`:
 
 ```rust
 pub(crate) enum BerthExit {
     Clear = 0, BlockedByOverlap = 1, BlockedByOrdering = 2,
-    NeedsUserAuthorization = 3, LedgerUnreadable = 4, UsageError = 5,
+    LedgerUnreadable = 4, UsageError = 5,
     BlockedByContention = 6, TerminalViewFailed = 7,
 }
 ```
+
+No status uses `3`.
 
 ### The harness hook surface
 
@@ -312,7 +314,9 @@ pub(crate) enum ConflictAuthorization {
 
 All four user-selectable answers — before, after, defer, override — exist so that **both** parties may continue editing the overlapping path. Only the integration order differs between them. An answer never revokes edit access. Each answer covers the shared scopes it recorded and ignores `scope_revision`, so a holder whose merge extent grows elsewhere leaves the answer standing, while a newly shared path asks again. `Enrollment` is engine-written by `init`: it binds every counterpart at once, holds integration like a deferral until `sequence` orders the pair, and covers the same way. The board reports such a pair while at least one endpoint is live and drops it once both have ended.
 
-Answering is a two-invocation handshake. The first invocation exits 3 with a proposal and an `OverlapProposalToken`. The token is transient — nothing is journalled for it — and the second invocation recomputes the proposal under the lock and matches it against the token. If state moved in between, the token no longer matches and the user is asked again against the new facts. `from_approved_proposal` is the only way an approved proposal becomes an authorization.
+An answer records in the one `claim` invocation that carries it. `validate_authorization` recomputes the conflicts under the ledger lock; when the holder the answer names is the only one, `ConflictAuthorization::answered` builds the authorization from that conflict's exact holder binding and the claim appends at exit 0 with the ordinary `claimed` envelope. Naming the holder's reservation id is what keeps a decision from applying to changed facts: any other conflicting holder refuses the claim as `blocked_by_overlap`, exactly as an unanswered claim is refused, and an answer whose holder no longer overlaps is `invalid_input`. The journalled authorization keeps the answer kind, the named blocker, the direction and edge for a sequence, the exact shared scopes, and the caller's reason.
+
+Who chooses the answer is routing, not validation. The optional `approver` key names the worktree whose session chooses overlap answers; like `trunk` and `gate_mode`, the main worktree's file supplies it whenever that file exists. A blocked claim or edit check carries `OverlapApprover { worktree, caller_is_approver }` in its payload, and the refusal text says either that this session chooses, or to send the overlap to the session in the approver worktree and record the order it chooses with the claim command. With no approver configured, the calling session chooses. The engine never checks who records an answer.
 
 ### The edge graph
 
@@ -488,7 +492,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - A readiness question about an absent snapshot entry fails closed with exit 4.
 - Ordering edges never form a cycle; `sequence` refuses one.
 - The overlap answer set is closed. A new answer is a new `ConflictAuthorization` variant, not a flag on an existing one.
-- Overlap proposal tokens are never journalled and are always re-derived and matched under the lock.
+- An overlap answer is bound to the holder it names and to the conflicts recomputed under the lock; any other conflicting holder refuses it.
 - A post-write first-touch claim acquires only paths modified at the time of the claim. Drift reporting still classifies every path that moved.
 - A path that reached a drift observation only through a commit is classified against the holders whose `claimed_at` does not follow that commit's committer time; a path the working tree holds open is classified against the present. The commits an incursion names are cut the same way. Incursion attribution reads git once, before the lock, and never inside it.
 - Nothing is removed on inference. Reconciliation raises an alert; a user action abandons, retires, or recovers a reservation. A live holder proven clean is no exception; the block message names the verbs that clear it. Settlement is proof, not inference: only ordinary reconciliation releases an `Outstanding` reservation on its own, and only when git shows the whole scoped phase on the actual tip of its judging branch and the merge guard finds no unproven work.
@@ -566,10 +570,9 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 - A tool that reads `journal.ndjson` directly must identify records by `event_id`. Compaction changes line numbers and byte offsets, shortens the file, and replaces its inode. A copied ledger can also hold `journal.ndjson.compact.tmp` from an interrupted compaction, or the refusal marker.
 - The replay checkpoint and the `Checkpoint` journal operation are unrelated. The operation records a reservation's protected tip; the replay checkpoint is a cache file of replayed state.
 - A clone starts with no ledger. Ledger state is deliberately not committed to the repository.
-- `.claude/config/berth.toml` is not tracked, so `git worktree add` does not bring it along. A linked worktree without one reads the main worktree's file (`WorktreeContext::configuration_lookup` names both roots; `BerthConfig::read` tries them in that order), so a worktree added after `init` coordinates from its first edit. A file the linked worktree does have wins, except for `trunk` and `gate_mode`: whenever the main worktree's file exists, it alone supplies both, because the gate hook is installed once for the repository and `integrate` must judge under the same mode the hook enforces. Only when neither exists is the worktree `unconfigured`, and the path it reports is the main worktree's, because `init` writes the file there from any worktree. A linked worktree of a bare repository has no main worktree and reads only its own file.
+- `.claude/config/berth.toml` is not tracked, so `git worktree add` does not bring it along. A linked worktree without one reads the main worktree's file (`WorktreeContext::configuration_lookup` names both roots; `BerthConfig::read` tries them in that order), so a worktree added after `init` coordinates from its first edit. A file the linked worktree does have wins, except for `trunk`, `gate_mode`, and `approver`: whenever the main worktree's file exists, it alone supplies them, because the gate hook is installed once for the repository, `integrate` must judge under the same mode the hook enforces, and every worktree must route overlaps to the same approver. Only when neither exists is the worktree `unconfigured`, and the path it reports is the main worktree's, because `init` writes the file there from any worktree. A linked worktree of a bare repository has no main worktree and reads only its own file.
 - The `reference-transaction` hook fires for every ref update including ones no porcelain command names. Filtering on branch name alone is not sufficient; the trunk name comes from configuration and the other gated branches from `gate-targets`.
-- Exit 3 is not a failure. It means the tool needs an answer and has produced a proposal; the caller re-invokes with the token.
-- An overlap proposal token that no longer matches is the correct outcome when state moved, not an error to retry through.
+- An overlap answer that names a holder while another holder also conflicts is refused, not partially applied. Narrow the requested scopes until one holder remains.
 - The board's `git_cost` block exists because board rendering is the most git-expensive operation; a change that adds queries shows up there.
 - `Alert::recovery_evidence_query_count` returns 4, 3, or 2 depending on branch status, so alert-heavy boards cost proportionally more.
 - The board TUI requires a real terminal. Piping it exits 7, distinct from any data problem. Under a sandbox that blocks `openpty`, the terminal-attached tests fail for that reason alone.
@@ -636,7 +639,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 
 **Four lifecycle types instead of one stage enum.** A fused enum forces every combination into a named state and produces states that cannot occur alongside states that can. Keeping lifecycle, integration evidence, edit blocking, and release disposition separate means each has only its own legal values, and a new value in one does not multiply against the others. The related choice to ban `Option` in those modules is the same reasoning: `None` names the absence of information without saying which absence it is.
 
-**Exit codes separate conditions that call for different actions.** Blocked by overlap and blocked by ordering call for different responses from a caller, so they are different codes. Needing authorization is not a failure at all. Contention means retry. An unreadable ledger means repair. A terminal that will not render is not a data problem and does not share the data-error code — collapsing them would make a display problem look like corruption.
+**Exit codes separate conditions that call for different actions.** Blocked by overlap and blocked by ordering call for different responses from a caller, so they are different codes. Contention means retry. An unreadable ledger means repair. A terminal that will not render is not a data problem and does not share the data-error code — collapsing them would make a display problem look like corruption.
 
 **Nothing is removed on inference.** The tool can prove a worktree is gone; it cannot prove the work is abandoned. Auto-removing a reservation on that evidence would silently discard someone's claim on the strength of an inference. An alert plus an explicit `resolve` keeps the decision with the person who has the missing context. Automatic release rests on proof instead. Settlement releases an outstanding checkpoint when git shows the whole scoped phase on the actual tip of the branch it is judged at and the merge guard shows no reserved work outside that proof.
 

@@ -3,7 +3,7 @@
     reason = "tests should panic on unexpected values"
 )]
 
-//! Built-binary tests for proposal-bound overlap answers.
+//! Built-binary tests for overlap answers, which record in the claim that carries them.
 
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
@@ -58,17 +58,12 @@ const THIRD_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1d";
 
 #[derive(Clone, Copy)]
 struct AnswerReasons<'text> {
-    purpose:       &'text str,
-    authorization: &'text str,
+    purpose: &'text str,
+    overlap: &'text str,
 }
 
 impl<'text> AnswerReasons<'text> {
-    const fn new(purpose: &'text str, authorization: &'text str) -> Self {
-        Self {
-            purpose,
-            authorization,
-        }
-    }
+    const fn new(purpose: &'text str, overlap: &'text str) -> Self { Self { purpose, overlap } }
 }
 
 struct PausedBerthProcess {
@@ -135,7 +130,7 @@ impl PausedBerthProcess {
 }
 
 #[test]
-fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
+fn an_answer_records_separate_reasons_and_exact_file_scope() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     dirty_source(repository.path(), "crates/a/lib.rs");
@@ -149,10 +144,8 @@ fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
         "protect the holder tree",
     );
     let holder_id = reservation_id(&holder);
-    reconcile_fixture(repository.path());
-    let journal_before = journal_bytes(repository.path());
 
-    let proposed = propose_answer(
+    let applied = answer_claim(
         &second_root,
         "file:crates/a/lib.rs",
         SECOND_RUN,
@@ -163,40 +156,9 @@ fn proposal_round_trip_records_separate_reasons_and_exact_file_scope() {
             "the plans intentionally edit this file together",
         ),
     );
-    let proposal_envelope = json_output(&proposed);
-
-    assert_eq!(proposed.status.code(), Some(3));
-    assert_complete_escalation(&proposal_envelope);
-    assert_eq!(journal_bytes(repository.path()), journal_before);
-
-    let changed_reason = apply_proposal(
-        &second_root,
-        "file:crates/a/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new(
-            "protect only the requested implementation file",
-            "a different authorization reason",
-        ),
-        proposal_token(&proposal_envelope),
-    );
-    assert_eq!(changed_reason.status.code(), Some(3));
-    assert_eq!(journal_bytes(repository.path()), journal_before);
-
-    let applied = apply_proposal(
-        &second_root,
-        "file:crates/a/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new(
-            "protect only the requested implementation file",
-            "the plans intentionally edit this file together",
-        ),
-        proposal_token(&proposal_envelope),
-    );
-    assert!(applied.status.success());
+    let applied_envelope = json_output(&applied);
+    assert!(applied.status.success(), "{applied_envelope:#}");
+    assert_eq!(applied_envelope["status"], "claimed");
     let recorded = last_journal_event(repository.path());
     assert_eq!(recorded["purpose"]["kind"], "explained");
     assert_eq!(
@@ -252,7 +214,7 @@ fn multi_path_first_touch_widens_the_single_answered_reservation() {
         "protect the holder file",
     );
     let holder_id = reservation_id(&holder);
-    let proposed = propose_answer(
+    let applied = answer_claim(
         &second_root,
         "file:src/lib.rs",
         SECOND_RUN,
@@ -262,20 +224,6 @@ fn multi_path_first_touch_widens_the_single_answered_reservation() {
             "protect the requester file",
             "the integration order is not known yet",
         ),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert_eq!(proposed.status.code(), Some(3));
-    let applied = apply_proposal(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--defer",
-        &holder_id,
-        AnswerReasons::new(
-            "protect the requester file",
-            "the integration order is not known yet",
-        ),
-        proposal_token(&proposal_envelope),
     );
     assert!(applied.status.success());
     let answered_reservation_id = reservation_id(&applied);
@@ -398,7 +346,7 @@ fn checkpointed_first_touch_reservation_is_neither_reused_nor_widened() {
 /// marked `tree:`. `src` is a directory prefix here, which is what makes the two readings differ,
 /// and a holder of `src/lib.rs` is what makes the difference observable: a file scope on `src`
 /// shares nothing with that holder, while the tree scope this used to record covers the held file
-/// and stops for authorization.
+/// and is refused as an overlap.
 #[test]
 fn an_unprefixed_claim_reserves_one_exact_file_rather_than_its_subtree() {
     let repository = initialized_repository();
@@ -437,7 +385,7 @@ fn an_unprefixed_claim_reserves_one_exact_file_rather_than_its_subtree() {
 }
 
 #[test]
-fn unidentified_caller_can_issue_and_spend_its_proposal() {
+fn an_unidentified_caller_records_its_answer() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     dirty_source(repository.path(), "src/lib.rs");
@@ -451,67 +399,23 @@ fn unidentified_caller_can_issue_and_spend_its_proposal() {
     );
     let holder_id = reservation_id(&holder);
 
-    let proposed = propose_answer_without_run(
+    let applied = answer_claim_without_run(
         &second_root,
         "file:src/lib.rs",
         "--override",
         &holder_id,
         AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert_eq!(proposed.status.code(), Some(3));
-
-    let applied = apply_proposal_without_run(
-        &second_root,
-        "file:src/lib.rs",
-        "--override",
-        &holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        proposal_token(&proposal_envelope),
     );
 
     assert!(
         applied.status.success(),
-        "unidentified proposal application failed: {}",
+        "an unidentified answer failed: {}",
         String::from_utf8_lossy(&applied.stdout)
     );
 }
 
 #[test]
-fn text_escalation_renders_explicit_holder_material() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    dirty_source(repository.path(), "src/lib.rs");
-    let holder = claim_explicit(repository.path(), "tree:src", FIRST_RUN, "protect source");
-    let holder_id = reservation_id(&holder);
-
-    let escalation = run_berth(
-        &second_root,
-        [
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            "--why",
-            "protect the requester file",
-            "--after",
-            &holder_id,
-            "--overlap-why",
-            "the holder must integrate first",
-        ],
-    );
-    let text = String::from_utf8(escalation.stdout).expect("text output should be UTF-8");
-
-    assert_eq!(escalation.status.code(), Some(3));
-    assert!(text.contains(&format!("Holder {holder_id}: explicit claim")));
-    assert!(text.contains("shared scopes: file:src/lib.rs"));
-    assert!(text.contains(&format!("direction: holder {holder_id} before requester")));
-    assert!(text.contains("reason: the holder must integrate first"));
-    assert!(text.contains("consequence: editing proceeds on the shown scopes"));
-}
-
-#[test]
-fn every_permissive_answer_requires_a_reason_and_a_proposal() {
+fn every_permissive_answer_requires_a_reason() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     dirty_source(repository.path(), "src/lib.rs");
@@ -544,127 +448,12 @@ fn every_permissive_answer_requires_a_reason_and_a_proposal() {
         );
         assert_eq!(missing_reason.status.code(), Some(5));
         assert!(missing_reason.stdout.is_empty());
-
-        let proposed = propose_answer(
-            &second_root,
-            "file:src/lib.rs",
-            SECOND_RUN,
-            answer,
-            &holder_id,
-            AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        );
-        let envelope = json_output(&proposed);
-        assert_eq!(proposed.status.code(), Some(3));
-        assert_eq!(envelope["exit_code"], 3);
-        assert_eq!(envelope["status"], "needs_user_authorization");
-        assert!(
-            envelope["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("--proposal"))
-        );
-        assert!(
-            envelope["payload"]["data"]["proposal_token"]
-                .as_str()
-                .is_some_and(|token| !token.is_empty())
-        );
         assert_eq!(journal_bytes(repository.path()), journal_before);
     }
 }
 
 #[test]
-fn renewal_and_race_widening_preserve_a_proposal_while_merge_changes_invalidate_it() {
-    let renewed_repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&renewed_repository, "second");
-    dirty_source(renewed_repository.path(), "src/lib.rs");
-    let holder = claim(
-        renewed_repository.path(),
-        "tree:src",
-        FIRST_RUN,
-        "docs/holder.md",
-        "phase-a",
-        "protect source",
-    );
-    let holder_id = reservation_id(&holder);
-    let proposed = propose_answer(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--after",
-        &holder_id,
-        AnswerReasons::new(
-            "protect the requester file",
-            "the holder must integrate first",
-        ),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert!(
-        run_berth(renewed_repository.path(), ["renew", &holder_id, "--json"])
-            .status
-            .success()
-    );
-    append_widen(renewed_repository.path(), &holder_id, "docs/race-only.rs");
-    let applied = apply_proposal(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--after",
-        &holder_id,
-        AnswerReasons::new(
-            "protect the requester file",
-            "the holder must integrate first",
-        ),
-        proposal_token(&proposal_envelope),
-    );
-    assert!(applied.status.success());
-
-    let widened_repository = initialized_repository();
-    let (_widened_second_directory, widened_second_root) =
-        foreign_worktree(&widened_repository, "second");
-    dirty_source(widened_repository.path(), "src/lib.rs");
-    let holder = claim(
-        widened_repository.path(),
-        "tree:src",
-        FIRST_RUN,
-        "docs/holder.md",
-        "phase-a",
-        "protect source",
-    );
-    let holder_id = reservation_id(&holder);
-    let proposed = propose_answer(
-        &widened_second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-    );
-    let proposal_envelope = json_output(&proposed);
-    let old_token = proposal_token(&proposal_envelope).to_owned();
-    append_widen(widened_repository.path(), &holder_id, "docs/new.rs");
-    dirty_source(widened_repository.path(), "docs/new.rs");
-    reconcile_fixture(widened_repository.path());
-    let journal_after_widen = journal_bytes(widened_repository.path());
-
-    let stale = apply_proposal(
-        &widened_second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        &old_token,
-    );
-    let stale_envelope = json_output(&stale);
-    assert_eq!(stale.status.code(), Some(3));
-    assert_ne!(proposal_token(&stale_envelope), old_token);
-    assert_eq!(
-        journal_bytes(widened_repository.path()),
-        journal_after_widen
-    );
-}
-
-#[test]
-fn authorization_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
+fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), ["switch", "--quiet", "-c", "phase"]);
@@ -683,7 +472,7 @@ fn authorization_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
         "protect source",
     );
     let holder_id = reservation_id(&holder);
-    let proposed = propose_answer(
+    let applied = answer_claim(
         &second_root,
         "file:src/lib.rs",
         SECOND_RUN,
@@ -693,19 +482,6 @@ fn authorization_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
             "protect the requester file",
             "the holder must integrate first",
         ),
-    );
-    let proposal_envelope = json_output(&proposed);
-    let applied = apply_proposal(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--after",
-        &holder_id,
-        AnswerReasons::new(
-            "protect the requester file",
-            "the holder must integrate first",
-        ),
-        proposal_token(&proposal_envelope),
     );
     assert!(applied.status.success());
     assert_eq!(
@@ -768,78 +544,76 @@ fn authorization_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
     );
 }
 
+/// An ordering answer records in the claim that carries it: exit 0, the ordinary claim envelope,
+/// and the ordering edge in the journal and on the board.
 #[test]
-fn proposal_tokens_are_bound_to_the_holder_and_requester() {
+fn a_one_step_after_answer_records_its_ordering_edge() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
-    dirty_source(repository.path(), "src/first.rs");
-    let first_holder = claim(
+    dirty_source(repository.path(), "src/lib.rs");
+    let holder = claim(
         repository.path(),
-        "file:src/first.rs",
+        "tree:src",
         FIRST_RUN,
-        "docs/first-holder.md",
+        "docs/holder.md",
         "phase-a",
-        "protect first",
+        "protect source",
     );
-    let first_holder_id = reservation_id(&first_holder);
-    dirty_source(&third_root, "src/second.rs");
-    let second_holder = claim(
-        &third_root,
-        "file:src/second.rs",
-        THIRD_RUN,
-        "docs/second-holder.md",
-        "phase-c",
-        "protect second",
-    );
-    let second_holder_id = reservation_id(&second_holder);
-    let proposed = propose_answer(
-        &second_root,
-        "file:src/first.rs",
-        SECOND_RUN,
-        "--override",
-        &first_holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-    );
-    let proposal_envelope = json_output(&proposed);
-    let token = proposal_token(&proposal_envelope);
+    let holder_id = reservation_id(&holder);
 
-    let different_holder = apply_proposal(
+    let answered = answer_claim(
         &second_root,
-        "file:src/second.rs",
+        "file:src/lib.rs",
         SECOND_RUN,
-        "--override",
-        &second_holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        token,
+        "--after",
+        &holder_id,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the requester builds on the holder",
+        ),
     );
-    assert_eq!(different_holder.status.code(), Some(3));
+    let envelope = json_output(&answered);
 
-    let third_requester = apply_proposal(
-        &third_root,
-        "file:src/first.rs",
-        THIRD_RUN,
-        "--override",
-        &first_holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        token,
+    assert_eq!(answered.status.code(), Some(0), "{envelope:#}");
+    assert_eq!(envelope["exit_code"], 0);
+    assert_eq!(envelope["status"], "claimed");
+    assert_eq!(envelope["payload"]["kind"], "claim");
+    let recorded = last_journal_event(repository.path());
+    assert_eq!(recorded["op"], "claim");
+    assert_eq!(
+        recorded["reservation_id"],
+        envelope["payload"]["data"]["reservation_id"]
     );
-    assert_eq!(third_requester.status.code(), Some(3));
-
-    let same_holder_and_requester = apply_proposal(
-        &second_root,
-        "file:src/first.rs",
-        SECOND_RUN,
-        "--override",
-        &first_holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        token,
+    assert_eq!(recorded["authorization"]["kind"], "sequence");
+    assert_eq!(recorded["authorization"]["blocker"], holder_id);
+    assert_eq!(
+        recorded["authorization"]["direction"],
+        "holder_before_requester"
     );
-    assert!(same_holder_and_requester.status.success());
+    assert_eq!(
+        recorded["authorization"]["reason"],
+        "the requester builds on the holder"
+    );
+    let edge_id = recorded["authorization"]["edge_id"]
+        .as_str()
+        .expect("a sequence answer records its ordering edge");
+    let board = run_berth(repository.path(), ["board", "--json"]);
+    assert!(board.status.success());
+    assert!(
+        String::from_utf8_lossy(&board.stdout).contains(edge_id),
+        "the board should report the recorded ordering edge"
+    );
+    assert!(
+        check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
 }
 
+/// An answer settles only the holder it names: while a second holder also conflicts, the claim
+/// is refused as an unanswered one would be, and nothing records.
 #[test]
-fn permissive_answer_is_blocked_by_multiple_holders_without_issuing() {
+fn an_answer_naming_one_holder_is_refused_while_another_holder_conflicts() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
@@ -866,34 +640,133 @@ fn permissive_answer_is_blocked_by_multiple_holders_without_issuing() {
     reconcile_fixture(repository.path());
     let journal_before = journal_bytes(repository.path());
 
-    let blocked = propose_answer(
+    let blocked = answer_claim(
         &second_root,
         "tree:src",
         SECOND_RUN,
-        "--override",
+        "--after",
         &first_holder_id,
         AnswerReasons::new(
             "protect the requester tree",
-            "the first overlap was reviewed",
+            "the first holder must integrate first",
         ),
     );
     let blocked_envelope = json_output(&blocked);
 
-    assert_eq!(blocked.status.code(), Some(1));
+    assert_eq!(blocked.status.code(), Some(1), "{blocked_envelope:#}");
+    assert_eq!(blocked_envelope["status"], "blocked_by_overlap");
+    assert_eq!(blocked_envelope["payload"]["data"]["status"], "blocked");
     assert_eq!(
         blocked_envelope["blocked_by"],
         serde_json::json!([first_holder_id, second_holder_id])
     );
-    assert!(
-        blocked_envelope
-            .pointer("/payload/data/proposal_token")
-            .is_none()
-    );
     assert_eq!(journal_bytes(repository.path()), journal_before);
 }
 
+/// The refusal routes the answer choice: the calling session chooses when no approver is
+/// configured or when it is the approver, and otherwise sends the overlap to the approver.
 #[test]
-fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
+fn a_configured_approver_is_named_in_the_overlap_refusal() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_approver_directory, approver_root) = foreign_worktree(&repository, "approver");
+    dirty_source(repository.path(), "src/lib.rs");
+    claim(
+        repository.path(),
+        "tree:src",
+        FIRST_RUN,
+        "docs/holder.md",
+        "phase-a",
+        "protect source",
+    );
+    let unanswered_claim = [
+        "claim",
+        "file:src/lib.rs",
+        "--run",
+        SECOND_RUN,
+        "--why",
+        "protect the requester file",
+        "--json",
+    ];
+
+    let unrouted = json_output(&run_berth(&second_root, unanswered_claim));
+    assert_eq!(unrouted["status"], "blocked_by_overlap");
+    assert!(
+        refusal_detail(&unrouted)
+            .contains("No approver is configured, so this session chooses the answer."),
+        "{unrouted:#}"
+    );
+    assert!(unrouted["payload"]["data"].get("approver").is_none());
+
+    let approver_path = approver_root
+        .to_str()
+        .expect("approver worktree path should be UTF-8");
+    let configuration_path = repository.path().join(CONFIGURATION_PATH);
+    let mut configuration = fs::OpenOptions::new()
+        .append(true)
+        .open(&configuration_path)
+        .expect("configuration should open");
+    writeln!(configuration, "approver = \"{approver_path}\"").expect("approver should write");
+
+    let routed = json_output(&run_berth(&second_root, unanswered_claim));
+    assert_eq!(routed["status"], "blocked_by_overlap");
+    assert!(
+        refusal_detail(&routed).contains(&format!(
+            "The configured approver is the session working in `{approver_path}`. Send it this overlap"
+        )),
+        "{routed:#}"
+    );
+    assert_eq!(
+        routed["payload"]["data"]["approver"],
+        serde_json::json!({"worktree": approver_path, "caller_is_approver": false})
+    );
+
+    let approving = json_output(&check(&approver_root, &["file:src/lib.rs"], THIRD_RUN));
+    assert_eq!(approving["status"], "blocked_by_overlap");
+    assert!(
+        refusal_detail(&approving).contains(&format!(
+            "This worktree is the configured approver, `{approver_path}`, so this session chooses the answer."
+        )),
+        "{approving:#}"
+    );
+    assert_eq!(
+        approving["payload"]["data"]["approver"],
+        serde_json::json!({"worktree": approver_path, "caller_is_approver": true})
+    );
+}
+
+/// An approver must name one absolute worktree every worktree resolves alike.
+#[test]
+fn an_empty_or_relative_approver_is_rejected_like_other_configuration_errors() {
+    let repository = initialized_repository();
+    let configuration_path = repository.path().join(CONFIGURATION_PATH);
+    let configuration = fs::read_to_string(&configuration_path).expect("configuration should read");
+    for approver in ["\"\"", "\"relative/worktree\""] {
+        fs::write(
+            &configuration_path,
+            format!("{}\napprover = {approver}\n", configuration.trim_end()),
+        )
+        .expect("configuration should write");
+
+        let refused = run_berth(
+            repository.path(),
+            ["claim", "file:src/lib.rs", "--run", FIRST_RUN, "--json"],
+        );
+        let envelope = json_output(&refused);
+
+        assert_eq!(refused.status.code(), Some(4), "{envelope:#}");
+        assert_eq!(envelope["status"], "ledger_unreadable");
+        assert!(
+            envelope["message"].as_str().is_some_and(|message| {
+                message.contains(&format!("invalid value for approver: {approver}"))
+            }),
+            "{envelope:#}"
+        );
+    }
+}
+
+#[test]
+fn an_answer_without_a_conflict_is_invalid_input() {
     let repository = initialized_repository();
     let holder = claim(
         repository.path(),
@@ -908,7 +781,7 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
 
     // One run for one worktree: the requester's run is incidental here, because the refusal
     // is about a named holder that does not overlap, not about who asked.
-    let blocked = propose_answer(
+    let blocked = answer_claim(
         repository.path(),
         "file:src/unrelated.rs",
         FIRST_RUN,
@@ -928,11 +801,6 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
     assert_eq!(blocked.status.code(), Some(5));
     assert_eq!(blocked_envelope["status"], "invalid_input");
     assert_eq!(blocked_envelope["blocked_by"], serde_json::json!([]));
-    assert!(
-        blocked_envelope
-            .pointer("/payload/data/proposal_token")
-            .is_none()
-    );
     assert!(
         blocked_envelope["message"]
             .as_str()
@@ -963,7 +831,7 @@ fn permissive_answer_without_a_conflict_is_blocked_without_issuing() {
 }
 
 #[test]
-fn proposal_is_blocked_when_its_sole_holder_is_released() {
+fn an_answer_is_invalid_input_once_its_sole_holder_is_released() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     dirty_source(repository.path(), "src/lib.rs");
@@ -976,17 +844,6 @@ fn proposal_is_blocked_when_its_sole_holder_is_released() {
         "protect source",
     );
     let holder_id = reservation_id(&holder);
-    let proposed = propose_answer(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert_eq!(proposed.status.code(), Some(3));
-    let token = proposal_token(&proposal_envelope).to_owned();
     fs::remove_file(repository.path().join("src/lib.rs")).expect("holder restores its work");
     assert!(
         run_berth(repository.path(), ["release", &holder_id, "--json"])
@@ -1001,14 +858,13 @@ fn proposal_is_blocked_when_its_sole_holder_is_released() {
     reconcile_fixture(repository.path());
     let journal_before_apply = journal_bytes(repository.path());
 
-    let blocked = apply_proposal(
+    let blocked = answer_claim(
         &second_root,
         "file:src/lib.rs",
         SECOND_RUN,
         "--override",
         &holder_id,
         AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        &token,
     );
     let blocked_envelope = json_output(&blocked);
 
@@ -1018,85 +874,11 @@ fn proposal_is_blocked_when_its_sole_holder_is_released() {
     assert_eq!(blocked.status.code(), Some(5));
     assert_eq!(blocked_envelope["status"], "invalid_input");
     assert_eq!(blocked_envelope["blocked_by"], serde_json::json!([]));
-    assert!(
-        blocked_envelope
-            .pointer("/payload/data/proposal_token")
-            .is_none()
-    );
     assert_eq!(journal_bytes(repository.path()), journal_before_apply);
 }
 
 #[test]
-fn single_holder_proposal_is_blocked_when_a_second_holder_appears() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
-    dirty_source(repository.path(), "src/first.rs");
-    let first_holder = claim(
-        repository.path(),
-        "file:src/first.rs",
-        FIRST_RUN,
-        "docs/first-holder.md",
-        "phase-a",
-        "protect first",
-    );
-    let first_holder_id = reservation_id(&first_holder);
-    let proposed = propose_answer(
-        &second_root,
-        "tree:src",
-        SECOND_RUN,
-        "--override",
-        &first_holder_id,
-        AnswerReasons::new(
-            "protect the requester tree",
-            "the first overlap was reviewed",
-        ),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert_eq!(proposed.status.code(), Some(3));
-    let token = proposal_token(&proposal_envelope).to_owned();
-
-    dirty_source(&third_root, "src/second.rs");
-    let second_holder = claim(
-        &third_root,
-        "file:src/second.rs",
-        THIRD_RUN,
-        "docs/second-holder.md",
-        "phase-c",
-        "protect second",
-    );
-    let second_holder_id = reservation_id(&second_holder);
-    reconcile_fixture(repository.path());
-    let journal_before_apply = journal_bytes(repository.path());
-    let blocked = apply_proposal(
-        &second_root,
-        "tree:src",
-        SECOND_RUN,
-        "--override",
-        &first_holder_id,
-        AnswerReasons::new(
-            "protect the requester tree",
-            "the first overlap was reviewed",
-        ),
-        &token,
-    );
-    let blocked_envelope = json_output(&blocked);
-
-    assert_eq!(blocked.status.code(), Some(1));
-    assert_eq!(
-        blocked_envelope["blocked_by"],
-        serde_json::json!([first_holder_id, second_holder_id])
-    );
-    assert!(
-        blocked_envelope
-            .pointer("/payload/data/proposal_token")
-            .is_none()
-    );
-    assert_eq!(journal_bytes(repository.path()), journal_before_apply);
-}
-
-#[test]
-fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
+fn an_answer_claim_reports_reconciliation_alerts_on_its_own_envelope() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     git(repository.path(), ["add", ".claude/config/berth.toml"]);
@@ -1140,33 +922,13 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
     fs::remove_dir_all(&orphan_worktree).expect("orphan worktree should be removed");
     git(repository.path(), ["worktree", "prune", "--expire", "now"]);
 
-    let proposed = propose_answer(
+    let applied = answer_claim(
         &second_root,
         "file:src/lib.rs",
         SECOND_RUN,
         "--override",
         &holder_id,
         AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert_eq!(proposed.status.code(), Some(3));
-    assert!(
-        proposal_envelope["payload"]["alerts"]
-            .as_array()
-            .expect("proposal reports alerts")
-            .iter()
-            .any(|alert| alert["kind"] == "orphaned_outstanding"
-                && alert["data"]["reservation_id"] == orphan_id)
-    );
-
-    let applied = apply_proposal(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-        proposal_token(&proposal_envelope),
     );
     let applied_envelope = json_output(&applied);
     assert!(applied.status.success());
@@ -1184,12 +946,12 @@ fn authorization_claim_reports_reconciliation_alerts_on_its_own_envelope() {
 fn claim_rejects_invalid_coordination_identities() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    assert_authorization_marker_revalidation(&repository, &second_root);
+    assert_answer_marker_revalidation(&repository, &second_root);
     assert_stale_claim_session_rejection(&repository, &second_root);
     assert_foreign_claim_session_rejection(&repository, &second_root);
 }
 
-fn assert_authorization_marker_revalidation(repository: &TempDir, second_root: &Path) {
+fn assert_answer_marker_revalidation(repository: &TempDir, second_root: &Path) {
     dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(
         repository.path(),
@@ -1209,16 +971,6 @@ fn assert_authorization_marker_revalidation(repository: &TempDir, second_root: &
         "keep the requester marker active",
     );
     let marker_seed_id = reservation_id(&marker_seed);
-    let proposed = propose_answer_without_run(
-        second_root,
-        "file:src/lib.rs",
-        "--override",
-        &holder_id,
-        AnswerReasons::new("protect the requester file", "the shared edit was reviewed"),
-    );
-    let proposal_envelope = json_output(&proposed);
-    assert_eq!(proposed.status.code(), Some(3));
-    let token = proposal_token(&proposal_envelope).to_owned();
     let arguments = [
         "claim",
         "file:src/lib.rs",
@@ -1232,8 +984,6 @@ fn assert_authorization_marker_revalidation(repository: &TempDir, second_root: &
         holder_id.as_str(),
         "--overlap-why",
         "the shared edit was reviewed",
-        "--proposal",
-        token.as_str(),
         "--json",
     ];
     let mut applying_claim = PausedBerthProcess::spawn(second_root, &arguments);
@@ -1480,20 +1230,8 @@ fn answers_are_not_transitive_to_a_third_reservation() {
         "protect unrelated documentation",
     );
     let third_id = reservation_id(&third);
-    let proposed = propose_answer(
-        &second_root,
-        "file:crates/a/lib.rs",
-        SECOND_RUN,
-        "--override",
-        &holder_id,
-        AnswerReasons::new(
-            "protect the requester file",
-            "the A and B overlap was reviewed",
-        ),
-    );
-    let envelope = json_output(&proposed);
     assert!(
-        apply_proposal(
+        answer_claim(
             &second_root,
             "file:crates/a/lib.rs",
             SECOND_RUN,
@@ -1503,7 +1241,6 @@ fn answers_are_not_transitive_to_a_third_reservation() {
                 "protect the requester file",
                 "the A and B overlap was reviewed",
             ),
-            proposal_token(&envelope),
         )
         .status
         .success()
@@ -1534,24 +1271,8 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
         "protect source",
     );
     let holder_id = reservation_id(&holder);
-    let proposed = propose_answer(
-        &second_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        "--defer",
-        &holder_id,
-        AnswerReasons::new(
-            "protect the requester file",
-            "the integration order is not known yet",
-        ),
-    );
-    let envelope = json_output(&proposed);
-    assert_eq!(
-        envelope["payload"]["data"]["consequence"],
-        "both_integrations_held"
-    );
     assert!(
-        apply_proposal(
+        answer_claim(
             &second_root,
             "file:src/lib.rs",
             SECOND_RUN,
@@ -1561,7 +1282,6 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
                 "protect the requester file",
                 "the integration order is not known yet",
             ),
-            proposal_token(&envelope),
         )
         .status
         .success()
@@ -1719,7 +1439,7 @@ fn claim_explicit(repository_root: &Path, scope: &str, run: &str, purpose: &str)
     output
 }
 
-fn propose_answer(
+fn answer_claim(
     repository_root: &Path,
     scope: &str,
     run: &str,
@@ -1743,13 +1463,13 @@ fn propose_answer(
             answer,
             holder_id,
             "--overlap-why",
-            reasons.authorization,
+            reasons.overlap,
             "--json",
         ],
     )
 }
 
-fn propose_answer_without_run(
+fn answer_claim_without_run(
     repository_root: &Path,
     scope: &str,
     answer: &str,
@@ -1770,70 +1490,7 @@ fn propose_answer_without_run(
             answer,
             holder_id,
             "--overlap-why",
-            reasons.authorization,
-            "--json",
-        ],
-    )
-}
-
-fn apply_proposal(
-    repository_root: &Path,
-    scope: &str,
-    run: &str,
-    answer: &str,
-    holder_id: &str,
-    reasons: AnswerReasons<'_>,
-    proposal_token: &str,
-) -> Output {
-    run_berth(
-        repository_root,
-        [
-            "claim",
-            scope,
-            "--run",
-            run,
-            "--plan",
-            "docs/requester.md",
-            "--phase",
-            "requester-phase",
-            "--why",
-            reasons.purpose,
-            answer,
-            holder_id,
-            "--overlap-why",
-            reasons.authorization,
-            "--proposal",
-            proposal_token,
-            "--json",
-        ],
-    )
-}
-
-fn apply_proposal_without_run(
-    repository_root: &Path,
-    scope: &str,
-    answer: &str,
-    holder_id: &str,
-    reasons: AnswerReasons<'_>,
-    proposal_token: &str,
-) -> Output {
-    run_berth(
-        repository_root,
-        [
-            "claim",
-            scope,
-            "--plan",
-            "docs/requester.md",
-            "--phase",
-            "requester-phase",
-            "--why",
-            reasons.purpose,
-            answer,
-            holder_id,
-            "--overlap-why",
-            reasons.authorization,
-            "--proposal",
-            proposal_token,
+            reasons.overlap,
             "--json",
         ],
     )
@@ -2048,48 +1705,11 @@ fn reservation_id(output: &Output) -> String {
         .to_owned()
 }
 
-fn proposal_token(envelope: &serde_json::Value) -> &str {
-    envelope["payload"]["data"]["proposal_token"]
-        .as_str()
-        .expect("authorization escalation should return a proposal token")
-}
-
-fn assert_complete_escalation(envelope: &serde_json::Value) {
-    assert_eq!(envelope["exit_code"], 3);
-    assert_eq!(envelope["status"], "needs_user_authorization");
-    assert_eq!(envelope["payload"]["kind"], "claim");
-    assert_eq!(
-        envelope["payload"]["data"]["status"],
-        "needs_user_authorization"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["conflicts"][0]["source"]["plan"],
-        "docs/holder.md"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["conflicts"][0]["source"]["phase"],
-        "holder-phase"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["conflicts"][0]["overlapping_scopes"][0]["kind"],
-        "file"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["authorization_reason"],
-        "the plans intentionally edit this file together"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["proposal"]["requester"]["source"]["plan"],
-        "docs/requester.md"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["proposal"]["requester"]["source"]["phase"],
-        "requester-phase"
-    );
-    assert_eq!(
-        envelope["payload"]["data"]["proposal"]["requester"]["purpose"]["explanation"],
-        "protect only the requested implementation file"
-    );
+fn refusal_detail(envelope: &serde_json::Value) -> &str {
+    envelope
+        .pointer("/presentation/blocks/0/detail")
+        .and_then(serde_json::Value::as_str)
+        .expect("a refusal should render its detail")
 }
 
 fn run_berth<Arguments, Argument>(repository_root: &Path, arguments: Arguments) -> Output

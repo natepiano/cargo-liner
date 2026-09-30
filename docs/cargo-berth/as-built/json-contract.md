@@ -89,7 +89,7 @@ bypass:
 
 ```json
 {
-  "output_contract_version": 4,
+  "output_contract_version": 5,
   "verb": "board",
   "status": "board_ready",
   "exit_code": 0,
@@ -262,12 +262,20 @@ bypass:
 }
 ```
 
-The binary reports top-level `output_contract_version = 4`. It identifies the
+The binary reports top-level `output_contract_version = 5`. It identifies the
 contract generation that produced the response and has the same value as the
 generated contract's top-level `version`; both values come from one binary
 constant. This is reported information and gates nothing: no consumer refuses
 an envelope because its reported version differs from the one it was written
 against.
+
+Version 5 removed the `needs_user_authorization` status, its exit code `3`, and
+the claim payload that carried a proposal and its token: an overlap answer now
+records in the one `claim` that carries it. Version 5 also added the optional
+`approver` member on `claim` and `check` payloads whose `status` is `blocked`:
+`{"worktree": "<absolute path>", "caller_is_approver": <bool>}`, present only
+when `.claude/config/berth.toml` names an `approver`. It routes the answer
+choice and gates nothing.
 
 Every section carries the same `journal_position`; a consumer can reject a mix
 of generations or offsets. Across responses, `generation` rises with every

@@ -3252,33 +3252,6 @@ mod merge_extent {
         let id = claim(&fixture.holder, "file:tracked.rs", FIRST_RUN);
         commit(&fixture.holder, "tracked.rs", "predecessor work\n");
         let tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
-        let proposal = berth(
-            &fixture.outsider,
-            &[
-                "claim",
-                "file:tracked.rs",
-                "--run",
-                THIRD_RUN,
-                "--after",
-                &id,
-                "--overlap-why",
-                "successor edits the same source",
-                "--why",
-                "successor depends on predecessor",
-                "--json",
-            ],
-            THIRD_RUN,
-        );
-        assert_eq!(
-            proposal.status.code(),
-            Some(3),
-            "overlap should request its concrete proposal: {}",
-            json(&proposal)
-        );
-        let token = json(&proposal)["payload"]["data"]["proposal_token"]
-            .as_str()
-            .expect("proposal should name token")
-            .to_owned();
         let successor = berth(
             &fixture.outsider,
             &[
@@ -3292,8 +3265,6 @@ mod merge_extent {
                 "successor edits the same source",
                 "--why",
                 "successor depends on predecessor",
-                "--proposal",
-                &token,
                 "--json",
             ],
             THIRD_RUN,
@@ -3551,7 +3522,7 @@ mod merge_extent {
         );
         assert_eq!(conflicts[0]["reservation_id"], oldest);
 
-        let mut arguments = vec![
+        let arguments = [
             "claim",
             "file:second.rs",
             "--run",
@@ -3562,13 +3533,6 @@ mod merge_extent {
             "reviewed shared branch work",
             "--json",
         ];
-        let proposed = berth(&fixture.outsider, &arguments, THIRD_RUN);
-        assert_eq!(proposed.status.code(), Some(3), "{}", json(&proposed));
-        let proposed = json(&proposed);
-        let proposal = proposed["payload"]["data"]["proposal_token"]
-            .as_str()
-            .expect("override should publish an answerable proposal");
-        arguments.extend(["--proposal", proposal]);
         let applied = berth(&fixture.outsider, &arguments, THIRD_RUN);
         succeed(&applied);
         assert_allowed(&fixture.outsider, "file:second.rs", THIRD_RUN);
@@ -3600,7 +3564,7 @@ mod merge_extent {
             BTreeSet::from(["b.rs".to_owned()])
         );
 
-        let mut arguments = vec![
+        let arguments = [
             "claim",
             "file:b.rs",
             "--run",
@@ -3611,15 +3575,8 @@ mod merge_extent {
             "reviewed retained branch protection",
             "--json",
         ];
-        let proposed = berth(&fixture.outsider, &arguments, THIRD_RUN);
-        assert_eq!(proposed.status.code(), Some(3), "{}", json(&proposed));
-        let proposed = json(&proposed);
-        let proposal = proposed["payload"]["data"]["proposal_token"]
-            .as_str()
-            .expect("override should publish an answerable proposal");
         fs::remove_file(fixture.trunk().join(PROJECTION))
             .expect("journal replay should reconstruct the same union and representative");
-        arguments.extend(["--proposal", proposal]);
         succeed(&berth(&fixture.outsider, &arguments, THIRD_RUN));
         assert_allowed(&fixture.outsider, "file:b.rs", THIRD_RUN);
         write(&fixture.outsider, "b.rs", "answered edit\n");
@@ -3658,7 +3615,7 @@ mod merge_extent {
         assert_eq!(conflicts.len(), 1, "{refused}");
         assert_eq!(conflicts[0]["reservation_id"], outsider);
 
-        let mut arguments = vec![
+        let arguments = [
             "claim",
             "file:b.rs",
             "--run",
@@ -3669,13 +3626,6 @@ mod merge_extent {
             "reviewed shared b.rs work",
             "--json",
         ];
-        let proposed = berth(&fixture.holder, &arguments, FIRST_RUN);
-        assert_eq!(proposed.status.code(), Some(3), "{}", json(&proposed));
-        let proposed = json(&proposed);
-        let proposal = proposed["payload"]["data"]["proposal_token"]
-            .as_str()
-            .expect("override should publish an answerable proposal");
-        arguments.extend(["--proposal", proposal]);
         let applied = berth(&fixture.holder, &arguments, FIRST_RUN);
         succeed(&applied);
         let applied = json(&applied);

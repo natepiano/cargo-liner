@@ -2375,23 +2375,6 @@ fn assert_claim_time_direction(flag: &str, direction: &str) {
     dirty_source(repository.path(), "src/lib.rs");
     let holder = claim(repository.path(), "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
-    let proposal = run_berth(
-        &second_root,
-        &[
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            flag,
-            &holder_id,
-            "--overlap-why",
-            "the shared API needs an explicit order",
-            "--why",
-            "update the requester",
-            "--json",
-        ],
-    );
-    let proposal_token = proposal_token(&proposal);
     let applied = run_berth(
         &second_root,
         &[
@@ -2405,8 +2388,6 @@ fn assert_claim_time_direction(flag: &str, direction: &str) {
             "the shared API needs an explicit order",
             "--why",
             "update the requester",
-            "--proposal",
-            &proposal_token,
             "--json",
         ],
     );
@@ -2425,23 +2406,6 @@ fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) 
     dirty_source(holder_root, "src/lib.rs");
     let holder = claim(holder_root, "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
-    let proposal = run_berth(
-        requester_root,
-        &[
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            "--defer",
-            &holder_id,
-            "--overlap-why",
-            "the order is not known yet",
-            "--why",
-            "update the requester",
-            "--json",
-        ],
-    );
-    let proposal_token = proposal_token(&proposal);
     let requester = run_berth(
         requester_root,
         &[
@@ -2455,8 +2419,6 @@ fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) 
             "the order is not known yet",
             "--why",
             "update the requester",
-            "--proposal",
-            &proposal_token,
             "--json",
         ],
     );
@@ -2863,9 +2825,9 @@ fn defer_claim(repository_root: &Path, scope: &str, run: &str, blocker: &str) ->
 }
 
 fn defer_claim_scopes(repository_root: &Path, scopes: &[&str], run: &str, blocker: &str) -> Output {
-    let mut proposal_arguments = vec!["claim"];
-    proposal_arguments.extend_from_slice(scopes);
-    proposal_arguments.extend_from_slice(&[
+    let mut arguments = vec!["claim"];
+    arguments.extend_from_slice(scopes);
+    arguments.extend_from_slice(&[
         "--run",
         run,
         "--defer",
@@ -2876,24 +2838,7 @@ fn defer_claim_scopes(repository_root: &Path, scopes: &[&str], run: &str, blocke
         "protect deferred work",
         "--json",
     ]);
-    let proposal = run_berth(repository_root, &proposal_arguments);
-    let proposal_token = proposal_token(&proposal);
-    let mut apply_arguments = vec!["claim"];
-    apply_arguments.extend_from_slice(scopes);
-    apply_arguments.extend_from_slice(&[
-        "--run",
-        run,
-        "--defer",
-        blocker,
-        "--overlap-why",
-        "the order is not known yet",
-        "--why",
-        "protect deferred work",
-        "--proposal",
-        &proposal_token,
-        "--json",
-    ]);
-    run_berth(repository_root, &apply_arguments)
+    run_berth(repository_root, &arguments)
 }
 
 /// Commit the policy without hooks: before any reservation exists, the trunk gate and the
@@ -3079,14 +3024,6 @@ fn reservation_id(output: &Output) -> String {
     json_output(output)["payload"]["data"]["reservation_id"]
         .as_str()
         .expect("claim should report a reservation id")
-        .to_owned()
-}
-
-fn proposal_token(output: &Output) -> String {
-    assert_eq!(output.status.code(), Some(3));
-    json_output(output)["payload"]["data"]["proposal_token"]
-        .as_str()
-        .expect("proposal should report its token")
         .to_owned()
 }
 

@@ -5,11 +5,12 @@
 //! | `0` | [`BerthExit::Clear`] | The command may proceed. |
 //! | `1` | [`BerthExit::BlockedByOverlap`] | A reservation overlap blocks the command. |
 //! | `2` | [`BerthExit::BlockedByOrdering`] | An unsatisfied ordering edge blocks the command. |
-//! | `3` | [`BerthExit::NeedsUserAuthorization`] | The command needs user authorization. |
 //! | `4` | [`BerthExit::LedgerUnreadable`] | The ledger cannot be read. Edit paths fail open; `integrate` fails closed. |
 //! | `5` | [`BerthExit::UsageError`] | The command line is invalid. |
 //! | `6` | [`BerthExit::BlockedByContention`] | Another mutation holds the ledger lock; retry the command. |
 //! | `7` | [`BerthExit::TerminalViewFailed`] | The board was handed a terminal and the terminal failed. |
+//!
+//! No status uses `3`.
 
 use std::error::Error;
 use std::fmt;
@@ -26,21 +27,19 @@ use serde::Serialize;
 #[serde(into = "u8", try_from = "u8")]
 pub(crate) enum BerthExit {
     /// The command is clear to proceed.
-    Clear                  = 0,
+    Clear               = 0,
     /// A reservation overlap blocks the command.
-    BlockedByOverlap       = 1,
+    BlockedByOverlap    = 1,
     /// An unsatisfied ordering edge blocks the command.
-    BlockedByOrdering      = 2,
-    /// The command needs user authorization.
-    NeedsUserAuthorization = 3,
+    BlockedByOrdering   = 2,
     /// The ledger cannot be read.
-    LedgerUnreadable       = 4,
+    LedgerUnreadable    = 4,
     /// The command line is invalid.
-    UsageError             = 5,
+    UsageError          = 5,
     /// Another mutation holds the ledger lock through the bounded wait.
-    BlockedByContention    = 6,
+    BlockedByContention = 6,
     /// The board was handed a terminal and the terminal failed.
-    TerminalViewFailed     = 7,
+    TerminalViewFailed  = 7,
 }
 
 impl BerthExit {
@@ -61,7 +60,6 @@ impl TryFrom<u8> for BerthExit {
             0 => Ok(Self::Clear),
             1 => Ok(Self::BlockedByOverlap),
             2 => Ok(Self::BlockedByOrdering),
-            3 => Ok(Self::NeedsUserAuthorization),
             4 => Ok(Self::LedgerUnreadable),
             5 => Ok(Self::UsageError),
             6 => Ok(Self::BlockedByContention),
@@ -95,7 +93,6 @@ mod tests {
         assert_eq!(BerthExit::Clear.code(), 0);
         assert_eq!(BerthExit::BlockedByOverlap.code(), 1);
         assert_eq!(BerthExit::BlockedByOrdering.code(), 2);
-        assert_eq!(BerthExit::NeedsUserAuthorization.code(), 3);
         assert_eq!(BerthExit::LedgerUnreadable.code(), 4);
         assert_eq!(BerthExit::UsageError.code(), 5);
         assert_eq!(BerthExit::BlockedByContention.code(), 6);
@@ -112,6 +109,7 @@ mod tests {
                 .is_ok_and(|serialized_exit| serialized_exit == "0")
         );
         assert!(serde_json::from_str::<BerthExit>("7").is_ok());
+        assert!(serde_json::from_str::<BerthExit>("3").is_err());
         assert!(serde_json::from_str::<BerthExit>("8").is_err());
     }
 }

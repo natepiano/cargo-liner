@@ -5393,30 +5393,6 @@ fn defer_claim(
     phase: &str,
     blocker: &str,
 ) -> Output {
-    let proposal = run_berth(
-        repository_root,
-        &[
-            "claim",
-            scope,
-            "--run",
-            run,
-            "--plan",
-            plan,
-            "--phase",
-            phase,
-            "--defer",
-            blocker,
-            "--overlap-why",
-            "the order is not known yet",
-            "--why",
-            "protect deferred work",
-            "--json",
-        ],
-    );
-    let proposal_token = json_output(&proposal)["payload"]["data"]["proposal_token"]
-        .as_str()
-        .expect("proposal should contain a token")
-        .to_owned();
     run_berth(
         repository_root,
         &[
@@ -5434,8 +5410,6 @@ fn defer_claim(
             "the order is not known yet",
             "--why",
             "protect deferred work",
-            "--proposal",
-            &proposal_token,
             "--json",
         ],
     )

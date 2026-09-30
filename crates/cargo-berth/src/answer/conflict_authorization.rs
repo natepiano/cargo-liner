@@ -3,9 +3,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::proposal::OverlapAuthorizationReason;
-use super::proposal::OverlapProposal;
-use super::proposal::PermissiveOverlapAnswer;
+use super::request::OverlapAuthorizationReason;
+use super::request::PermissiveOverlapAnswer;
 use super::scope_binding::AuthorizedOverlapSet;
 use super::scope_binding::OverlapScopeRevision;
 use crate::ids::EdgeId;
@@ -27,7 +26,7 @@ pub(crate) enum ConflictAuthorization {
     },
     /// An ordering edge authorizes the shared scopes of this observed overlap set.
     Sequence {
-        /// The exact holder bindings shown to the user.
+        /// The exact holder bindings observed under the ledger lock.
         overlaps:  AuthorizedOverlapSet,
         /// The holder named as the other endpoint of the ordering edge.
         blocker:   ReservationId,
@@ -35,25 +34,25 @@ pub(crate) enum ConflictAuthorization {
         direction: OrderingDirection,
         /// The edge born with this acquisition.
         edge_id:   EdgeId,
-        /// The approved reason for selecting an order.
+        /// The caller's reason for selecting an order.
         reason:    OverlapAuthorizationReason,
     },
     /// Editing can proceed while integration remains held pending an order.
     Defer {
-        /// The exact holder bindings shown to the user.
+        /// The exact holder bindings observed under the ledger lock.
         overlaps: AuthorizedOverlapSet,
         /// The holder whose overlap the caller answered.
         blocker:  ReservationId,
-        /// The approved reason for delaying the order.
+        /// The caller's reason for delaying the order.
         reason:   OverlapAuthorizationReason,
     },
     /// Editing can proceed without declaring an ordering relationship.
     Override {
-        /// The exact holder bindings shown to the user.
+        /// The exact holder bindings observed under the ledger lock.
         overlaps: AuthorizedOverlapSet,
         /// The holder whose overlap the caller answered.
         blocker:  ReservationId,
-        /// The approved reason for accepting the conflict.
+        /// The caller's reason for accepting the conflict.
         reason:   OverlapAuthorizationReason,
     },
     /// Existing answers cover every current foreign overlap after a widen.
@@ -64,35 +63,38 @@ pub(crate) enum ConflictAuthorization {
 }
 
 impl ConflictAuthorization {
-    /// Build the durable authorization from a proposal that matched under the lock.
-    pub(crate) fn from_approved_proposal(proposal: OverlapProposal) -> Self {
-        let (answer, overlaps, authorization_reason) = proposal.into_authorization_parts();
+    /// Record an answer whose named holder is the only conflict observed under the lock.
+    pub(crate) fn answered(
+        answer: PermissiveOverlapAnswer,
+        overlaps: AuthorizedOverlapSet,
+        reason: OverlapAuthorizationReason,
+    ) -> Self {
         match answer {
             PermissiveOverlapAnswer::Sequence { blocker, direction } => Self::Sequence {
                 overlaps,
                 blocker,
                 direction,
                 edge_id: EdgeId::new(),
-                reason: authorization_reason,
+                reason,
             },
             PermissiveOverlapAnswer::Defer { blocker } => Self::Defer {
                 overlaps,
                 blocker,
-                reason: authorization_reason,
+                reason,
             },
             PermissiveOverlapAnswer::Override { blocker } => Self::Override {
                 overlaps,
                 blocker,
-                reason: authorization_reason,
+                reason,
             },
         }
     }
 
     /// Return whether this answer covers one exact counterpart and scope.
     ///
-    /// An enrollment or an approved answer covers the shared scopes it names whatever else
+    /// An enrollment or a recorded answer covers the shared scopes it names whatever else
     /// the counterpart later protects, so a holder that widens elsewhere leaves the answer
-    /// standing. A scope newly shared with that holder is outside the approved set and still
+    /// standing. A scope newly shared with that holder is outside the answered set and still
     /// needs an answer of its own. A widen covered by existing answers binds only the exact
     /// counterpart revision it observed.
     pub(crate) fn covers(

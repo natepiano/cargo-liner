@@ -939,7 +939,7 @@
           "type": "string"
         },
         "OverlapAuthorizationReason": {
-          "description": "Why a user approved one specific overlap answer.",
+          "description": "Why the caller chose one specific overlap answer.",
           "minLength": 1,
           "type": "string"
         },
@@ -4850,91 +4850,28 @@
           ],
           "type": "object"
         },
-        "OverlapAnswerConsequence": {
-          "description": "The integration effect attached to an overlap escalation.",
-          "oneOf": [
-            {
-              "const": "sequenced_integration",
-              "description": "Editing proceeds and the declared requester/holder order constrains integration.",
-              "type": "string"
+        "OverlapApprover": {
+          "description": "The worktree whose session chooses overlap answers, relative to one refused caller.\n\nThis is routing information only: the engine records an answer from whichever session runs\nthe claim command.",
+          "properties": {
+            "caller_is_approver": {
+              "description": "Whether the refused caller works in that worktree.",
+              "type": "boolean"
             },
-            {
-              "const": "both_integrations_held",
-              "description": "Editing proceeds while both reservations remain held until an order exists.",
-              "type": "string"
-            },
-            {
-              "const": "integration_unconstrained",
-              "description": "Editing and integration proceed without an ordering constraint.",
+            "worktree": {
+              "description": "The configured approver worktree path.",
               "type": "string"
             }
-          ]
+          },
+          "required": [
+            "worktree",
+            "caller_is_approver"
+          ],
+          "type": "object"
         },
         "OverlapAuthorizationReason": {
-          "description": "Why a user approved one specific overlap answer.",
+          "description": "Why the caller chose one specific overlap answer.",
           "minLength": 1,
           "type": "string"
-        },
-        "OverlapProposal": {
-          "description": "The complete locked conflict observation to which an answer is bound.",
-          "properties": {
-            "answer": {
-              "$ref": "#/$defs/PermissiveOverlapAnswer",
-              "description": "The permissive answer the caller proposed."
-            },
-            "authorization_reason": {
-              "$ref": "#/$defs/OverlapAuthorizationReason",
-              "description": "Why the user accepts this specific overlap answer."
-            },
-            "candidate_scopes": {
-              "$ref": "#/$defs/ReservationScopeSet",
-              "description": "The candidate's normalized requested scopes."
-            },
-            "overlaps": {
-              "$ref": "#/$defs/AuthorizedOverlapSet",
-              "description": "The sole holder, scope revision, and exact overlap observed under the lock."
-            },
-            "requester": {
-              "$ref": "#/$defs/OverlapRequester",
-              "description": "The actor whose candidate reservation does not exist yet."
-            }
-          },
-          "required": [
-            "requester",
-            "authorization_reason",
-            "candidate_scopes",
-            "answer",
-            "overlaps"
-          ],
-          "type": "object"
-        },
-        "OverlapRequester": {
-          "description": "The requester identity included in a proposal but not repeated in the journal answer.",
-          "properties": {
-            "coordination_identity": {
-              "$ref": "#/$defs/RequesterCoordinationIdentity",
-              "description": "The coordination identity the caller actually presented."
-            },
-            "purpose": {
-              "$ref": "#/$defs/ReservationPurpose",
-              "description": "Why the candidate paths are being protected."
-            },
-            "source": {
-              "$ref": "#/$defs/ClaimSource",
-              "description": "The candidate claim's work-plan or explicit provenance."
-            },
-            "worktree_id": {
-              "$ref": "#/$defs/uuid_v7_identifier",
-              "description": "The worktree in which the candidate claim would be created."
-            }
-          },
-          "required": [
-            "coordination_identity",
-            "worktree_id",
-            "source",
-            "purpose"
-          ],
-          "type": "object"
         },
         "OverlapScopeRevision": {
           "description": "A deterministic revision that changes only when a reservation's scopes change.",
@@ -4975,70 +4912,6 @@
           "description": "A stable pending-bypass identity derived from its unique filename.",
           "minLength": 1,
           "type": "string"
-        },
-        "PermissiveOverlapAnswer": {
-          "description": "One of the three overlap answers that permits concurrent editing.",
-          "oneOf": [
-            {
-              "description": "Declare an integration order between requester and named blocker.",
-              "properties": {
-                "blocker": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The blocker named by the caller."
-                },
-                "direction": {
-                  "$ref": "#/$defs/OrderingDirection",
-                  "description": "Which endpoint must integrate first."
-                },
-                "kind": {
-                  "const": "sequence",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "blocker",
-                "direction"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Permit editing while holding both endpoints at integration.",
-              "properties": {
-                "blocker": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The blocker named by the caller."
-                },
-                "kind": {
-                  "const": "defer",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "blocker"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Permit editing without adding an integration constraint.",
-              "properties": {
-                "blocker": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The blocker named by the caller."
-                },
-                "kind": {
-                  "const": "override",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "blocker"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "PostWriteFreePathProtection": {
           "description": "The protection result for free paths observed alongside a post-write incursion.",
@@ -5407,41 +5280,6 @@
           "format": "uint",
           "minimum": 0,
           "type": "integer"
-        },
-        "RequesterCoordinationIdentity": {
-          "description": "The requester's coordination identity included in an overlap proposal.",
-          "oneOf": [
-            {
-              "description": "An argument, environment value, or honored marker identified the caller.",
-              "properties": {
-                "coordination_run_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier"
-                },
-                "status": {
-                  "const": "presented",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "coordination_run_id"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "The caller presented no coordination identity.",
-              "properties": {
-                "status": {
-                  "const": "not_presented",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "ReservationConflict": {
           "description": "One foreign holder whose retained reservation intersects requested scopes.",
@@ -6942,6 +6780,17 @@
             {
               "description": "Foreign holders block one or more requested paths.",
               "properties": {
+                "approver": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OverlapApprover"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The configured session that chooses the answer, when the repository names one."
+                },
                 "conflicts": {
                   "description": "Every holder whose live scopes intersected the request.",
                   "items": {
@@ -7016,6 +6865,17 @@
             {
               "description": "Foreign holders prevented the append.",
               "properties": {
+                "approver": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OverlapApprover"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The configured session that chooses the answer, when the repository names one."
+                },
                 "conflicts": {
                   "description": "Every holder whose live scopes intersected the request.",
                   "items": {
@@ -7031,54 +6891,6 @@
               "required": [
                 "status",
                 "conflicts"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A permissive answer was proposed but has not supplied the current exact token.",
-              "properties": {
-                "answer": {
-                  "$ref": "#/$defs/PermissiveOverlapAnswer",
-                  "description": "The requested answer and ordering direction, if any."
-                },
-                "authorization_reason": {
-                  "$ref": "#/$defs/OverlapAuthorizationReason",
-                  "description": "The user-supplied reason for accepting the overlap."
-                },
-                "conflicts": {
-                  "description": "Every holder and provenance record involved in the conflict.",
-                  "items": {
-                    "$ref": "#/$defs/ReservationConflict"
-                  },
-                  "minItems": 1,
-                  "type": "array"
-                },
-                "consequence": {
-                  "$ref": "#/$defs/OverlapAnswerConsequence",
-                  "description": "The editing and integration effect of applying the answer."
-                },
-                "proposal": {
-                  "$ref": "#/$defs/OverlapProposal",
-                  "description": "The exact current proposal material."
-                },
-                "proposal_token": {
-                  "description": "The token required on the applying invocation.",
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "status": {
-                  "const": "needs_user_authorization",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "conflicts",
-                "answer",
-                "authorization_reason",
-                "consequence",
-                "proposal",
-                "proposal_token"
               ],
               "type": "object"
             },
@@ -8928,11 +8740,6 @@
             {
               "const": "blocked_by_ordering",
               "description": "One or more ordering or deferral holds reject integration.",
-              "type": "string"
-            },
-            {
-              "const": "needs_user_authorization",
-              "description": "A permissive overlap answer needs a matching reviewed proposal.",
               "type": "string"
             },
             {
@@ -12744,91 +12551,28 @@
           ],
           "type": "object"
         },
-        "OverlapAnswerConsequence": {
-          "description": "The integration effect attached to an overlap escalation.",
-          "oneOf": [
-            {
-              "const": "sequenced_integration",
-              "description": "Editing proceeds and the declared requester/holder order constrains integration.",
-              "type": "string"
+        "OverlapApprover": {
+          "description": "The worktree whose session chooses overlap answers, relative to one refused caller.\n\nThis is routing information only: the engine records an answer from whichever session runs\nthe claim command.",
+          "properties": {
+            "caller_is_approver": {
+              "description": "Whether the refused caller works in that worktree.",
+              "type": "boolean"
             },
-            {
-              "const": "both_integrations_held",
-              "description": "Editing proceeds while both reservations remain held until an order exists.",
-              "type": "string"
-            },
-            {
-              "const": "integration_unconstrained",
-              "description": "Editing and integration proceed without an ordering constraint.",
+            "worktree": {
+              "description": "The configured approver worktree path.",
               "type": "string"
             }
-          ]
+          },
+          "required": [
+            "worktree",
+            "caller_is_approver"
+          ],
+          "type": "object"
         },
         "OverlapAuthorizationReason": {
-          "description": "Why a user approved one specific overlap answer.",
+          "description": "Why the caller chose one specific overlap answer.",
           "minLength": 1,
           "type": "string"
-        },
-        "OverlapProposal": {
-          "description": "The complete locked conflict observation to which an answer is bound.",
-          "properties": {
-            "answer": {
-              "$ref": "#/$defs/PermissiveOverlapAnswer",
-              "description": "The permissive answer the caller proposed."
-            },
-            "authorization_reason": {
-              "$ref": "#/$defs/OverlapAuthorizationReason",
-              "description": "Why the user accepts this specific overlap answer."
-            },
-            "candidate_scopes": {
-              "$ref": "#/$defs/ReservationScopeSet",
-              "description": "The candidate's normalized requested scopes."
-            },
-            "overlaps": {
-              "$ref": "#/$defs/AuthorizedOverlapSet",
-              "description": "The sole holder, scope revision, and exact overlap observed under the lock."
-            },
-            "requester": {
-              "$ref": "#/$defs/OverlapRequester",
-              "description": "The actor whose candidate reservation does not exist yet."
-            }
-          },
-          "required": [
-            "requester",
-            "authorization_reason",
-            "candidate_scopes",
-            "answer",
-            "overlaps"
-          ],
-          "type": "object"
-        },
-        "OverlapRequester": {
-          "description": "The requester identity included in a proposal but not repeated in the journal answer.",
-          "properties": {
-            "coordination_identity": {
-              "$ref": "#/$defs/RequesterCoordinationIdentity",
-              "description": "The coordination identity the caller actually presented."
-            },
-            "purpose": {
-              "$ref": "#/$defs/ReservationPurpose",
-              "description": "Why the candidate paths are being protected."
-            },
-            "source": {
-              "$ref": "#/$defs/ClaimSource",
-              "description": "The candidate claim's work-plan or explicit provenance."
-            },
-            "worktree_id": {
-              "$ref": "#/$defs/uuid_v7_identifier",
-              "description": "The worktree in which the candidate claim would be created."
-            }
-          },
-          "required": [
-            "coordination_identity",
-            "worktree_id",
-            "source",
-            "purpose"
-          ],
-          "type": "object"
         },
         "OverlapScopeRevision": {
           "description": "A deterministic revision that changes only when a reservation's scopes change.",
@@ -12869,70 +12613,6 @@
           "description": "A stable pending-bypass identity derived from its unique filename.",
           "minLength": 1,
           "type": "string"
-        },
-        "PermissiveOverlapAnswer": {
-          "description": "One of the three overlap answers that permits concurrent editing.",
-          "oneOf": [
-            {
-              "description": "Declare an integration order between requester and named blocker.",
-              "properties": {
-                "blocker": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The blocker named by the caller."
-                },
-                "direction": {
-                  "$ref": "#/$defs/OrderingDirection",
-                  "description": "Which endpoint must integrate first."
-                },
-                "kind": {
-                  "const": "sequence",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "blocker",
-                "direction"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Permit editing while holding both endpoints at integration.",
-              "properties": {
-                "blocker": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The blocker named by the caller."
-                },
-                "kind": {
-                  "const": "defer",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "blocker"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Permit editing without adding an integration constraint.",
-              "properties": {
-                "blocker": {
-                  "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The blocker named by the caller."
-                },
-                "kind": {
-                  "const": "override",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "blocker"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "PostWriteFreePathProtection": {
           "description": "The protection result for free paths observed alongside a post-write incursion.",
@@ -13301,41 +12981,6 @@
           "format": "uint",
           "minimum": 0,
           "type": "integer"
-        },
-        "RequesterCoordinationIdentity": {
-          "description": "The requester's coordination identity included in an overlap proposal.",
-          "oneOf": [
-            {
-              "description": "An argument, environment value, or honored marker identified the caller.",
-              "properties": {
-                "coordination_run_id": {
-                  "$ref": "#/$defs/uuid_v7_identifier"
-                },
-                "status": {
-                  "const": "presented",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "coordination_run_id"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "The caller presented no coordination identity.",
-              "properties": {
-                "status": {
-                  "const": "not_presented",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "ReservationConflict": {
           "description": "One foreign holder whose retained reservation intersects requested scopes.",
@@ -14633,6 +14278,17 @@
             {
               "description": "Foreign holders block one or more requested paths.",
               "properties": {
+                "approver": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OverlapApprover"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The configured session that chooses the answer, when the repository names one."
+                },
                 "conflicts": {
                   "description": "Every holder whose live scopes intersected the request.",
                   "items": {
@@ -14707,6 +14363,17 @@
             {
               "description": "Foreign holders prevented the append.",
               "properties": {
+                "approver": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OverlapApprover"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The configured session that chooses the answer, when the repository names one."
+                },
                 "conflicts": {
                   "description": "Every holder whose live scopes intersected the request.",
                   "items": {
@@ -14722,54 +14389,6 @@
               "required": [
                 "status",
                 "conflicts"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A permissive answer was proposed but has not supplied the current exact token.",
-              "properties": {
-                "answer": {
-                  "$ref": "#/$defs/PermissiveOverlapAnswer",
-                  "description": "The requested answer and ordering direction, if any."
-                },
-                "authorization_reason": {
-                  "$ref": "#/$defs/OverlapAuthorizationReason",
-                  "description": "The user-supplied reason for accepting the overlap."
-                },
-                "conflicts": {
-                  "description": "Every holder and provenance record involved in the conflict.",
-                  "items": {
-                    "$ref": "#/$defs/ReservationConflict"
-                  },
-                  "minItems": 1,
-                  "type": "array"
-                },
-                "consequence": {
-                  "$ref": "#/$defs/OverlapAnswerConsequence",
-                  "description": "The editing and integration effect of applying the answer."
-                },
-                "proposal": {
-                  "$ref": "#/$defs/OverlapProposal",
-                  "description": "The exact current proposal material."
-                },
-                "proposal_token": {
-                  "description": "The token required on the applying invocation.",
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "status": {
-                  "const": "needs_user_authorization",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "conflicts",
-                "answer",
-                "authorization_reason",
-                "consequence",
-                "proposal",
-                "proposal_token"
               ],
               "type": "object"
             },
@@ -18587,5 +18206,5 @@
       "title": "scoped_patch_evaluator_version"
     }
   },
-  "version": 4
+  "version": 5
 }

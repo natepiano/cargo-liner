@@ -529,7 +529,6 @@ fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope) -> ExitCode {
         BerthExit::LedgerUnreadable => render_fail_open(output_envelope),
         BerthExit::BlockedByOverlap
         | BerthExit::BlockedByOrdering
-        | BerthExit::NeedsUserAuthorization
         | BerthExit::UsageError
         | BerthExit::BlockedByContention
         | BerthExit::TerminalViewFailed => render_refusal(output_envelope.presentation()),

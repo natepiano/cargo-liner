@@ -10,8 +10,10 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::answer::OverlapApprover;
 use crate::ledger::IntegrationTarget;
 
+const APPROVER_KEY: &str = "approver";
 const CLAUDE_DIRECTORY: &str = ".claude";
 const CONFIGURATION_DIRECTORY: &str = "config";
 const CONFIGURATION_FILE: &str = "berth.toml";
@@ -38,8 +40,9 @@ pub(crate) enum Enrollment<T> {
 /// The files one worktree consults for its configuration.
 ///
 /// The configuration file is untracked and per-worktree. A linked worktree reads
-/// its own limits and gate mode first, but only the main worktree's `trunk` key
-/// defines the repository trunk when the main configuration exists.
+/// its own limits and gate mode first, but only the main worktree's `trunk` and
+/// `approver` keys define the repository trunk and approver when the main
+/// configuration exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigurationLookup<'a> {
     /// Only the worktree's own file counts: a main worktree, or a linked worktree of a
@@ -68,7 +71,16 @@ pub(crate) struct BerthConfig {
     pub(crate) maximum_ordering_edges: u32,
     /// Whether the trunk gate reports or rejects an invalid integration.
     pub(crate) gate_mode:              GateMode,
+    /// The worktree whose session chooses overlap answers, when the repository names one.
+    approver:                          Option<ApproverWorktree>,
 }
+
+/// The absolute worktree path whose session chooses overlap answers.
+///
+/// Overlap refusals route their answer choice here. The engine does not check who records an
+/// answer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ApproverWorktree(PathBuf);
 
 /// Whether a configuration file exists and contains validated repository policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +116,7 @@ impl Default for BerthConfig {
             maximum_reservations:   DEFAULT_MAXIMUM_RESERVATIONS,
             maximum_ordering_edges: DEFAULT_MAXIMUM_ORDERING_EDGES,
             gate_mode:              GateMode::Observe,
+            approver:               None,
         }
     }
 }
@@ -169,9 +182,9 @@ impl BerthConfig {
     /// Read and validate this worktree's configuration.
     ///
     /// A linked worktree's own file supplies its limits, but whenever the main worktree's
-    /// file exists it alone supplies `trunk` and `gate_mode`: the gate hook is installed
-    /// once for the repository, so every worktree must judge against the same trunk
-    /// under the same policy the hook enforces.
+    /// file exists it alone supplies `trunk`, `gate_mode`, and `approver`: the gate hook is
+    /// installed once for the repository, so every worktree must judge against the same trunk
+    /// under the same policy the hook enforces, and route overlaps to the same approver.
     ///
     /// When no file answers, the reported path is the one `cargo-berth init` should
     /// create: a linked worktree names the main worktree's file, because a file written
@@ -195,6 +208,7 @@ impl BerthConfig {
             {
                 configuration.trunk = main.trunk;
                 configuration.gate_mode = main.gate_mode;
+                configuration.approver = main.approver;
             }
             return Ok(Enrollment::Enrolled(configuration));
         }
@@ -216,6 +230,13 @@ impl BerthConfig {
         IntegrationTarget::from_branch_argument(&self.trunk).map_err(|reason| reason.to_string())
     }
 
+    /// Name the configured approver relative to a caller working in `caller_worktree_root`.
+    pub(crate) fn overlap_approver(&self, caller_worktree_root: &Path) -> Option<OverlapApprover> {
+        self.approver
+            .as_ref()
+            .map(|approver| OverlapApprover::for_caller(&approver.0, caller_worktree_root))
+    }
+
     /// Read and validate one configuration file, or report that it does not exist.
     fn read_file(configuration_path: &Path) -> Result<ConfigurationFilePresence, ConfigError> {
         match fs::read_to_string(configuration_path) {
@@ -232,8 +253,11 @@ impl BerthConfig {
             GateMode::Observe => "observe",
             GateMode::Enforce => "enforce",
         };
+        let approver = self.approver.as_ref().map_or_else(String::new, |approver| {
+            format!("{APPROVER_KEY} = \"{}\"\n", approver.0.display())
+        });
         format!(
-            "{TRUNK_KEY} = \"{}\"\n{MAXIMUM_RESERVATIONS_KEY} = {}\n{MAXIMUM_ORDERING_EDGES_KEY} = {}\n{GATE_MODE_KEY} = \"{gate_mode}\"\n",
+            "{TRUNK_KEY} = \"{}\"\n{MAXIMUM_RESERVATIONS_KEY} = {}\n{MAXIMUM_ORDERING_EDGES_KEY} = {}\n{GATE_MODE_KEY} = \"{gate_mode}\"\n{approver}",
             self.trunk, self.maximum_reservations, self.maximum_ordering_edges
         )
     }
@@ -260,6 +284,7 @@ struct ParsedConfigValues {
     maximum_reservations:   ConfigValue<u32>,
     maximum_ordering_edges: ConfigValue<u32>,
     gate_mode:              ConfigValue<GateMode>,
+    approver:               ConfigValue<Option<ApproverWorktree>>,
 }
 
 impl ParsedConfigValues {
@@ -273,6 +298,9 @@ impl ParsedConfigValues {
                 .maximum_ordering_edges
                 .set(key, parse_unsigned_integer(key, value)?),
             GATE_MODE_KEY => self.gate_mode.set(key, GateMode::parse(value)?),
+            APPROVER_KEY => self
+                .approver
+                .set(key, Some(ApproverWorktree::parse(value)?)),
             _ => Err(ConfigError::UnknownKey(key.to_owned())),
         }
     }
@@ -283,12 +311,14 @@ impl ParsedConfigValues {
             maximum_reservations,
             maximum_ordering_edges,
             gate_mode,
+            approver,
         } = BerthConfig::default();
         BerthConfig {
             trunk:                  self.trunk.into_or(trunk),
             maximum_reservations:   self.maximum_reservations.into_or(maximum_reservations),
             maximum_ordering_edges: self.maximum_ordering_edges.into_or(maximum_ordering_edges),
             gate_mode:              self.gate_mode.into_or(gate_mode),
+            approver:               self.approver.into_or(approver),
         }
     }
 }
@@ -331,6 +361,21 @@ impl GateMode {
                 key:   GATE_MODE_KEY.to_owned(),
                 value: value.to_owned(),
             }),
+        }
+    }
+}
+
+impl ApproverWorktree {
+    /// Accept only a non-empty absolute path, so every worktree resolves the same approver.
+    fn parse(value: &str) -> Result<Self, ConfigError> {
+        let path = PathBuf::from(parse_toml_string(value)?);
+        if path.is_absolute() {
+            Ok(Self(path))
+        } else {
+            Err(ConfigError::InvalidValue {
+                key:   APPROVER_KEY.to_owned(),
+                value: value.to_owned(),
+            })
         }
     }
 }
@@ -437,9 +482,11 @@ mod tests {
     use std::io::Error;
     use std::io::ErrorKind;
     use std::path::Path;
+    use std::path::PathBuf;
 
     use tempfile::tempdir;
 
+    use super::ApproverWorktree;
     use super::BerthConfig;
     use super::ConfigError;
     use super::ConfigurationFilePresence;
@@ -478,6 +525,41 @@ mod tests {
             BerthConfig::from_toml("trunk = \"release\"")
                 .is_ok_and(|configuration| configuration == expected_configuration)
         );
+    }
+
+    #[test]
+    fn an_absolute_approver_round_trips() {
+        let configuration = BerthConfig {
+            approver: Some(ApproverWorktree(PathBuf::from("/work/hana_catalyst"))),
+            ..BerthConfig::default()
+        };
+
+        assert!(
+            BerthConfig::from_toml("approver = \"/work/hana_catalyst\"")
+                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+        );
+        assert!(
+            BerthConfig::from_toml(&configuration.to_toml())
+                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+        );
+    }
+
+    #[test]
+    fn an_empty_or_relative_approver_is_an_invalid_value() {
+        for approver in ["\"\"", "\"work/hana_catalyst\"", "\"./hana_catalyst\""] {
+            assert!(
+                matches!(
+                    BerthConfig::from_toml(&format!("approver = {approver}")),
+                    Err(ConfigError::InvalidValue { ref key, ref value })
+                        if key == "approver" && value == approver
+                ),
+                "approver = {approver} should be rejected"
+            );
+        }
+        assert!(matches!(
+            BerthConfig::from_toml("approver = /work/hana_catalyst"),
+            Err(ConfigError::InvalidSyntax(_))
+        ));
     }
 
     #[test]
@@ -549,6 +631,44 @@ mod tests {
     }
 
     #[test]
+    fn only_the_main_worktree_names_the_approver() -> Result<(), Box<dyn std::error::Error>> {
+        let main = tempdir()?;
+        let linked = tempdir()?;
+        write_configuration(main.path(), "main")?;
+        fs::write(
+            BerthConfig::path(main.path()),
+            "approver = \"/work/main-approver\"\n",
+        )?;
+        write_configuration(linked.path(), "main")?;
+        fs::write(
+            BerthConfig::path(linked.path()),
+            "approver = \"/work/linked-approver\"\n",
+        )?;
+        let Enrollment::Enrolled(configuration) =
+            BerthConfig::read(&ConfigurationLookup::OwnThenMain {
+                repository_root:      linked.path(),
+                main_repository_root: main.path(),
+            })?
+        else {
+            return Err("linked policy was unconfigured".into());
+        };
+        assert_eq!(
+            configuration.approver,
+            Some(ApproverWorktree(PathBuf::from("/work/main-approver")))
+        );
+        let approver = configuration
+            .overlap_approver(Path::new("/work/main-approver"))
+            .ok_or("the approver should be named")?;
+        assert!(approver.caller_is_approver);
+        assert!(
+            !configuration
+                .overlap_approver(Path::new("/work/requester"))
+                .is_some_and(|approver| approver.caller_is_approver)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn configuration_file_presence_distinguishes_missing_and_valid_files()
     -> Result<(), Box<dyn std::error::Error>> {
         let repository = tempdir()?;
@@ -599,6 +719,7 @@ mod tests {
             maximum_reservations:   17,
             maximum_ordering_edges: 29,
             gate_mode:              GateMode::Enforce,
+            approver:               Some(ApproverWorktree(PathBuf::from("/work/approver"))),
         };
         write_configuration(linked.path(), &policy.trunk)?;
         let linked_contents = format!("# Linked policy\n{}", policy.to_toml());

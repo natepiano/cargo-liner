@@ -1364,7 +1364,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
             SECOND_RUN,
             answer_flag,
             &blocker_id,
-            "the exact overlap answer is approved",
+            "the exact overlap answer was chosen",
         );
         let answered_id = reservation_id(&answered);
         let data = board_data(repository.path());
@@ -1374,7 +1374,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
         let answer = answers
             .iter()
             .find(|answer| answer["answer"] == expected_answer)
-            .expect("approved answer should render");
+            .expect("recorded answer should render");
         assert_eq!(answer["reservation_id"], answered_id);
         assert_eq!(answer["blocker"], blocker_id);
         assert_eq!(
@@ -1387,7 +1387,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
         );
         assert_eq!(
             answer["authorization_reason"],
-            "the exact overlap answer is approved"
+            "the exact overlap answer was chosen"
         );
         match expected_direction {
             Some(direction) => assert_eq!(answer["direction"], direction),
@@ -1413,7 +1413,6 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
                 assert_eq!(answer["consequence"], expected);
             },
         }
-        assert!(!data.to_string().contains("proposal_token"));
     }
 }
 
@@ -1980,7 +1979,7 @@ fn assert_preserved_board_envelope_fields(
             "verb",
         ]
     );
-    assert_eq!(envelope["output_contract_version"], 4);
+    assert_eq!(envelope["output_contract_version"], 5);
     assert_eq!(envelope["verb"], "board");
     assert_eq!(envelope["status"], "board_ready");
     assert_eq!(envelope["exit_code"], 0);
@@ -6962,26 +6961,6 @@ fn answered_claim(
     blocker: &str,
     answer_reason: &str,
 ) -> Output {
-    let proposal = run_berth(
-        repository_root,
-        &[
-            "claim",
-            scope,
-            "--run",
-            run,
-            answer_flag,
-            blocker,
-            "--overlap-why",
-            answer_reason,
-            "--why",
-            "protect answered board work",
-            "--json",
-        ],
-    );
-    let token = json_output(&proposal)["payload"]["data"]["proposal_token"]
-        .as_str()
-        .expect("proposal should carry a token")
-        .to_owned();
     run_berth(
         repository_root,
         &[
@@ -6995,8 +6974,6 @@ fn answered_claim(
             answer_reason,
             "--why",
             "protect answered board work",
-            "--proposal",
-            &token,
             "--json",
         ],
     )

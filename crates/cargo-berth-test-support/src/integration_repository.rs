@@ -305,26 +305,22 @@ impl IntegrationRepository {
         self.run(checkout, &arguments)
     }
 
-    /// Claim `path` from `checkout` deferred behind reservation `blocker`,
-    /// authorizing the proposal the first claim returns.
+    /// Claim `path` from `checkout` deferred behind reservation `blocker`.
     ///
     /// # Panics
     ///
-    /// Panics when `cargo-berth` cannot be started or the first claim does not
-    /// ask for authorization with a proposal token.
+    /// Panics when `cargo-berth` cannot be started.
     #[must_use]
     pub fn defer_claim(&self, checkout: &Path, path: &str, run_id: &str, blocker: &str) -> Output {
         self.defer_claim_to(checkout, path, run_id, blocker, None)
     }
 
     /// Claim `path` from `checkout` deferred behind reservation `blocker`,
-    /// naming `target` when one is given, and authorize the proposal the first
-    /// claim returns.
+    /// naming `target` when one is given. The answer records in this one claim.
     ///
     /// # Panics
     ///
-    /// Panics when `cargo-berth` cannot be started or the first claim does not
-    /// ask for authorization with a proposal token.
+    /// Panics when `cargo-berth` cannot be started.
     #[must_use]
     pub fn defer_claim_to(
         &self,
@@ -350,20 +346,6 @@ impl IntegrationRepository {
             arguments.extend(["--target", target]);
         }
         arguments.push("--json");
-        let proposal = self.run(checkout, &arguments);
-        let proposal_json = json(&proposal);
-        assert_eq!(
-            proposal_json["status"], "needs_user_authorization",
-            "{proposal_json}"
-        );
-        let token = proposal_json["payload"]["data"]["proposal_token"]
-            .as_str()
-            .expect("deferred claim proposal token")
-            .to_owned();
-        arguments.splice(
-            arguments.len() - 1..arguments.len() - 1,
-            ["--proposal", &token],
-        );
         self.run(checkout, &arguments)
     }
 

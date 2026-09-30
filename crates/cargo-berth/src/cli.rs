@@ -29,8 +29,6 @@ use clap::error::ErrorKind;
 
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapAuthorizationRequest;
-use crate::answer::OverlapProposalSubmission;
-use crate::answer::OverlapProposalToken;
 use crate::answer::PermissiveOverlapAnswer;
 use crate::answer::PermissiveOverlapAuthorizationRequest;
 use crate::config::BerthConfig;
@@ -38,8 +36,6 @@ use crate::config::Enrollment;
 use crate::constants::OVERLAP_WHY_ARGUMENT;
 use crate::constants::OVERLAP_WHY_ARGUMENT_ID;
 use crate::constants::OVERLAP_WHY_VALUE_NAME;
-use crate::constants::PROPOSAL_ARGUMENT;
-use crate::constants::PROPOSAL_VALUE_NAME;
 use crate::coordination_identity::PresentedCoordinationRun;
 use crate::coordination_identity::RecoveryCommandLine;
 use crate::drift::DriftComparisonChoice;
@@ -558,20 +554,13 @@ struct ClaimArguments {
     /// Explain why these paths are being protected.
     #[arg(long = WHY_ARGUMENT, value_name = WHY_VALUE_NAME)]
     why:                  Option<String>,
-    /// Explain why this specific overlap answer is authorized.
+    /// Explain why the caller chose this overlap answer.
     #[arg(
         long = OVERLAP_WHY_ARGUMENT,
         value_name = OVERLAP_WHY_VALUE_NAME,
         requires = CLAIM_RESOLUTION_GROUP
     )]
     overlap_why:          Option<String>,
-    /// Apply the exact overlap proposal returned by the preceding invocation.
-    #[arg(
-        long = PROPOSAL_ARGUMENT,
-        value_name = PROPOSAL_VALUE_NAME,
-        requires = CLAIM_RESOLUTION_GROUP
-    )]
-    proposal:             Option<String>,
     /// Name the external work plan that originated this claim.
     #[arg(
         long = PLAN_ARGUMENT,
@@ -1120,7 +1109,6 @@ impl ClaimArguments {
             override_reservation,
             why,
             overlap_why,
-            proposal,
             plan,
             phase,
             run,
@@ -1160,7 +1148,6 @@ impl ClaimArguments {
             defer,
             override_reservation,
             overlap_why.as_deref(),
-            proposal.as_deref(),
         )?;
         let overlap_authorization = overlap_authorization_request(overlap_selection);
         Ok(ClaimRequest {
@@ -1189,63 +1176,48 @@ fn overlap_selection(
     defer: Option<ReservationId>,
     override_reservation: Option<ReservationId>,
     overlap_why: Option<&str>,
-    proposal: Option<&str>,
 ) -> Result<OverlapSelection, String> {
-    let permissive_overlap_details = || {
-        let authorization_reason = overlap_why
+    let authorization_reason = || {
+        overlap_why
             .ok_or_else(|| "a permissive overlap answer requires --overlap-why".to_owned())?
             .parse::<OverlapAuthorizationReason>()
-            .map_err(|error| error.to_string())?;
-        let proposal_submission = match proposal {
-            Some(token) => OverlapProposalSubmission::Apply(Box::new(
-                token
-                    .parse::<OverlapProposalToken>()
-                    .map_err(|error| error.to_string())?,
-            )),
-            None => OverlapProposalSubmission::Issue,
-        };
-        Ok::<_, String>((authorization_reason, proposal_submission))
+            .map_err(|error| error.to_string())
     };
     Ok(match (before, after, defer, override_reservation) {
         (None, None, None, None) => {
-            if overlap_why.is_some() || proposal.is_some() {
+            if overlap_why.is_some() {
                 return Err(
-                    "--overlap-why and --proposal require --before, --after, --defer, or --override"
-                        .to_owned(),
+                    "--overlap-why requires --before, --after, --defer, or --override".to_owned(),
                 );
             }
             OverlapSelection::NoOverlapRequested
         },
         (Some(blocker_reservation_id), None, None, None) => {
-            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            let authorization_reason = authorization_reason()?;
             OverlapSelection::RequesterBeforeHolder {
                 blocker_reservation_id,
                 authorization_reason,
-                proposal_submission,
             }
         },
         (None, Some(blocker_reservation_id), None, None) => {
-            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            let authorization_reason = authorization_reason()?;
             OverlapSelection::RequesterAfterHolder {
                 blocker_reservation_id,
                 authorization_reason,
-                proposal_submission,
             }
         },
         (None, None, Some(blocker_reservation_id), None) => {
-            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            let authorization_reason = authorization_reason()?;
             OverlapSelection::Defer {
                 blocker_reservation_id,
                 authorization_reason,
-                proposal_submission,
             }
         },
         (None, None, None, Some(blocker_reservation_id)) => {
-            let (authorization_reason, proposal_submission) = permissive_overlap_details()?;
+            let authorization_reason = authorization_reason()?;
             OverlapSelection::Override {
                 blocker_reservation_id,
                 authorization_reason,
-                proposal_submission,
             }
         },
         _ => return Err("choose only one overlap answer".to_owned()),
@@ -1260,82 +1232,69 @@ enum OverlapSelection {
     RequesterBeforeHolder {
         blocker_reservation_id: ReservationId,
         authorization_reason:   OverlapAuthorizationReason,
-        proposal_submission:    OverlapProposalSubmission,
     },
     /// The current reservation holder must integrate before the requester.
     RequesterAfterHolder {
         blocker_reservation_id: ReservationId,
         authorization_reason:   OverlapAuthorizationReason,
-        proposal_submission:    OverlapProposalSubmission,
     },
     /// The requester defers its integration until the overlap is resolved.
     Defer {
         blocker_reservation_id: ReservationId,
         authorization_reason:   OverlapAuthorizationReason,
-        proposal_submission:    OverlapProposalSubmission,
     },
     /// The requester proceeds despite the current reservation holder's overlap.
     Override {
         blocker_reservation_id: ReservationId,
         authorization_reason:   OverlapAuthorizationReason,
-        proposal_submission:    OverlapProposalSubmission,
     },
 }
 
 fn overlap_authorization_request(selection: OverlapSelection) -> OverlapAuthorizationRequest {
-    let (answer, reason, proposal_submission) = match selection {
+    let (answer, reason) = match selection {
         OverlapSelection::NoOverlapRequested => return OverlapAuthorizationRequest::Absent,
         OverlapSelection::RequesterBeforeHolder {
             blocker_reservation_id,
             authorization_reason,
-            proposal_submission,
         } => (
             PermissiveOverlapAnswer::Sequence {
                 blocker:   blocker_reservation_id,
                 direction: OrderingDirection::RequesterBeforeHolder,
             },
             authorization_reason,
-            proposal_submission,
         ),
         OverlapSelection::RequesterAfterHolder {
             blocker_reservation_id,
             authorization_reason,
-            proposal_submission,
         } => (
             PermissiveOverlapAnswer::Sequence {
                 blocker:   blocker_reservation_id,
                 direction: OrderingDirection::HolderBeforeRequester,
             },
             authorization_reason,
-            proposal_submission,
         ),
         OverlapSelection::Defer {
             blocker_reservation_id,
             authorization_reason,
-            proposal_submission,
         } => (
             PermissiveOverlapAnswer::Defer {
                 blocker: blocker_reservation_id,
             },
             authorization_reason,
-            proposal_submission,
         ),
         OverlapSelection::Override {
             blocker_reservation_id,
             authorization_reason,
-            proposal_submission,
         } => (
             PermissiveOverlapAnswer::Override {
                 blocker: blocker_reservation_id,
             },
             authorization_reason,
-            proposal_submission,
         ),
     };
     OverlapAuthorizationRequest::Permissive(Box::new(PermissiveOverlapAuthorizationRequest {
         answer,
         reason,
-        proposal_submission,
     }))
 }
 
@@ -2925,43 +2884,28 @@ mod tests {
     }
 
     #[test]
-    fn proposal_tokens_are_parsed_at_the_cli_boundary() {
-        assert!(
-            claim_request(&[
-                BINARY_NAME,
-                "claim",
-                "src",
-                "--override",
-                RESERVATION_ID,
-                "--overlap-why",
-                "the overlap is accepted",
-                "--proposal",
-                "not-a-proposal",
-            ])
-            .is_err()
-        );
-        assert!(
-            parsed_verb(&[BINARY_NAME, "claim", "src", "--proposal", "not-a-proposal",]).is_err()
-        );
-    }
-
-    #[test]
-    fn a_valid_proposal_token_without_an_answer_is_refused() -> Result<(), String> {
+    fn an_overlap_reason_without_an_answer_is_refused() -> Result<(), String> {
         let error = parsed_verb(&[
             BINARY_NAME,
             "claim",
             "file:src/lib.rs",
             "--run",
             RESERVATION_ID,
-            "--proposal",
-            "01991f4d-77d8-7f5f-9a1f-000000000001",
+            "--overlap-why",
+            "the two changes are coordinated",
             "--json",
         ])
         .err()
-        .ok_or("a proposal requires its overlap answer")?;
+        .ok_or("an overlap reason requires its overlap answer")?;
         assert_eq!(exit_for_parser_error(&error), BerthExit::UsageError);
         let refusal = error.to_string();
-        for named in ["--proposal", "--before", "--after", "--defer", "--override"] {
+        for named in [
+            "--overlap-why",
+            "--before",
+            "--after",
+            "--defer",
+            "--override",
+        ] {
             assert!(
                 refusal.contains(named),
                 "the refusal should name {named}: {refusal}"

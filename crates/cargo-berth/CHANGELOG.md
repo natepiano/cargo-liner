@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An optional `approver` key in `.claude/config/berth.toml` names the absolute worktree path whose session chooses overlap answers; the main worktree's file supplies it whenever that file exists. An overlap refusal tells the approver's own session to choose, and tells every other session to send the overlap to the session in that worktree and record the order it chooses with the claim command. Blocked `claim` and `check` payloads carry `approver: {worktree, caller_is_approver}` when it is set. The engine does not check who records an answer. An empty or relative path is an invalid configuration value.
+
 - A disposable replay checkpoint, `replay-checkpoint.json` in the ledger directory, so a command replays only the journal records appended since it was written. The first command after upgrading replays the whole journal once and writes it; a checkpoint from another build, repository, or journal file, or one whose last record no longer matches the journal, is rebuilt the same way. `init --repair-projection` and `init --reinitialize-after-review` delete it.
 - `cargo-berth` compacts `journal.ndjson`: merge extent observations that later observations replace for every reservation they name are removed, automatically once 16 MiB of them accumulate or on `init --compact-journal [--json]`, which reports status `journal_compacted` with a `journal_compaction` payload of the records and bytes removed and remaining. Surviving records are unchanged and in order. The compacted journal replaces the original only when both replay alike; a refused compaction reports `ledger_unreadable` and leaves the journal unchanged, and a failed automatic one leaves `journal-compaction-refused.json`, which holds the next automatic attempt back until 16 MiB more is appended and which `init --repair-projection` deletes. The first command after upgrading a ledger with a large journal compacts it once, in several seconds.
 - A present non-trunk integration target's worktree holds a cover reservation against its own target. `target_uncovered` reports a present target with waiting reservations and no registered checkout.
@@ -29,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Record each reservation's local integration target from `claim --target`, the claimant branch's `branch.<name>.cargoBerthTarget` setting, or the repository trunk; `init` pins older claims and `retarget` replaces a live target.
 
 ### Changed
+
+- **Breaking:** an overlap answer records in one invocation. `claim <paths> --before|--after|--defer|--override <holder> --overlap-why "<reason>"` appends at exit 0 with the ordinary `claimed` envelope when the named holder is the only conflict under the ledger lock, and is refused as `blocked_by_overlap` at exit 1 when any other holder also conflicts. The `--proposal` flag, the `needs_user_authorization` status, exit code `3`, and the proposal payload are removed; `output_contract_version` is 5. The blocked-edit guidance no longer asks for a separate approval step: it says who chooses the answer.
 
 - An `INTEGRATION EVIDENCE LOST` notice tells the reader to inspect `cargo-berth board --reservation <id> --json` for the reservation it names, where it pointed at the whole `cargo-berth board --json`.
 - The `reference-transaction` trunk gate in observe-only mode states one line per gated target update, naming the ref and how many entering reservations enforcing mode would refuse it for and pointing at `cargo-berth board`, in place of a full refusal for each held reservation. In enforce mode each refusal counts scopes where it listed every path, and the reconciliation alerts follow the refusals once instead of after each one. `cargo-berth integrate` still lists the paths.
@@ -62,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `git pack-refs --prune`, which `git gc --auto` and `git maintenance run --auto` run after ordinary commits, no longer reports that the trunk was deleted with no proven rename. Git reports each loose ref it prunes as a deletion after writing it to `packed-refs`; a trunk that still resolves leaves the managed hook unchanged and prints nothing.
 - Hook notices carry only the invoking worktree's alerts. A `PostToolUse` drift states only alerts whose reservation the worktree holds, and `SessionStart` also states alerts no live worktree holds; hand-run verbs and the git gate still report every alert.
-- An approved `--before`, `--after`, `--defer`, or `--override` answer keeps
+- A recorded `--before`, `--after`, `--defer`, or `--override` answer keeps
   authorizing edits to the files it names when the holder's merge extent grows
   elsewhere, as when the holder first-touches or dirties another file. The
   answer covers its recorded shared scopes whatever the holder's scope revision

@@ -18,8 +18,7 @@ use serde_json::Value;
 
 use crate::alert::Alert;
 use crate::alert::AlertRouting;
-use crate::answer::OverlapEscalationPayload;
-use crate::answer::PermissiveOverlapAnswer;
+use crate::answer::OverlapApprover;
 use crate::board;
 use crate::board::BoardModel;
 use crate::board::BoardReportRendering;
@@ -68,7 +67,6 @@ use crate::ledger::JournalCompaction;
 use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
-use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
@@ -166,7 +164,7 @@ const SCOPE_ACQUISITION_REFUSED_SUMMARY: &str =
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
 /// The generated-output contract version reported by every response envelope.
-pub(crate) const OUTPUT_CONTRACT_VERSION: u32 = 4;
+pub(crate) const OUTPUT_CONTRACT_VERSION: u32 = 5;
 
 /// The JSON Schema extension that records a failed closed-value selector transform.
 pub(crate) const CLOSED_VALUE_SELECTOR_TRANSFORM_FAILURE_KEY: &str =
@@ -644,8 +642,6 @@ declare_output_contract_metadata! {
         BlockedByOverlap => ("blocked_by_overlap", BlockedByOverlap);
         /// One or more ordering or deferral holds reject integration.
         BlockedByOrdering => ("blocked_by_ordering", BlockedByOrdering);
-        /// A permissive overlap answer needs a matching reviewed proposal.
-        NeedsUserAuthorization => ("needs_user_authorization", NeedsUserAuthorization);
         /// The caller can correct the request and retry without repairing the ledger.
         InvalidInput => ("invalid_input", UsageError);
         /// Another mutation retained the ledger lock through the retry window.
@@ -1276,12 +1272,9 @@ enum ClaimPayload {
     Blocked {
         /// Every holder whose live scopes intersected the request.
         conflicts: Vec<ReservationConflict>,
-    },
-    /// A permissive answer was proposed but has not supplied the current exact token.
-    NeedsUserAuthorization {
-        /// The conflicts, proposed answer, reason, consequence, and proposal token.
-        #[serde(flatten)]
-        escalation: Box<OverlapEscalationPayload>,
+        /// The configured session that chooses the answer, when the repository names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approver:  Option<OverlapApprover>,
     },
     /// Repository policy rejected another live reservation.
     ReservationLimitReached {
@@ -1453,6 +1446,9 @@ enum CheckPayload {
         scopes:    ReservationScopeSet,
         /// Every holder whose live scopes intersected the request.
         conflicts: Vec<ReservationConflict>,
+        /// The configured session that chooses the answer, when the repository names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approver:  Option<OverlapApprover>,
     },
 }
 
@@ -2402,14 +2398,17 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build a claim rejection that names every foreign holder.
-    pub(crate) fn blocked_claim(conflicts: Vec<ReservationConflict>) -> Self {
+    /// Build a claim rejection that names every foreign holder and who chooses the answer.
+    pub(crate) fn blocked_claim(
+        conflicts: Vec<ReservationConflict>,
+        approver: Option<OverlapApprover>,
+    ) -> Self {
         let blocked_by = conflicts
             .iter()
             .map(|conflict| conflict.reservation_id)
             .collect();
         let message = blocked_message(&conflicts);
-        let refusal_detail = blocked_claim_refusal_detail(&conflicts);
+        let refusal_detail = blocked_claim_refusal_detail(&conflicts, approver.as_ref());
         let presentation = presentation::blocked_edit_refusal_block(&refusal_detail).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -2422,70 +2421,8 @@ impl OutputEnvelope {
             presentation,
             payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Blocked {
                 conflicts,
+                approver,
             })),
-        }
-    }
-
-    /// Build a claim response that requires a second invocation with the current token.
-    pub(crate) fn claim_authorization_required(escalation: OverlapEscalationPayload) -> Self {
-        let blocked_by = escalation
-            .conflicts
-            .iter()
-            .map(|conflict| conflict.reservation_id)
-            .collect();
-        let mut message = format!(
-            "User authorization is required before this overlap can be recorded: {}. Review every holder, shared scope, plan, phase, direction, and reason in the payload, then rerun this claim with --proposal '{}'.",
-            escalation.consequence, escalation.proposal_token
-        );
-        let direction = overlap_direction_description(&escalation.answer);
-        let holder_material = escalation
-            .conflicts
-            .iter()
-            .map(|conflict| {
-                let shared_scopes = conflict
-                    .overlapping_scopes
-                    .as_slice()
-                    .iter()
-                    .map(|scope| {
-                        let kind = match scope.kind {
-                            ScopeKind::File => "file",
-                            ScopeKind::Tree => "tree",
-                        };
-                        format!("{kind}:{}", scope.path)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "Holder {}: {}; shared scopes: {}; direction: {}; reason: {}; consequence: {}.",
-                    conflict.reservation_id,
-                    source_description(&conflict.source),
-                    shared_scopes,
-                    direction,
-                    escalation.authorization_reason,
-                    escalation.consequence,
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !holder_material.is_empty() {
-            message.push('\n');
-            message.push_str(&holder_material);
-        }
-        let presentation = claim_authorization_presentation(&escalation);
-        Self {
-            output_contract_version: OUTPUT_CONTRACT_VERSION,
-            verb: CommandVerb::Claim,
-            status: OutputStatus::NeedsUserAuthorization,
-            exit_code: BerthExit::NeedsUserAuthorization,
-            reservations: Vec::new(),
-            blocked_by,
-            message,
-            presentation,
-            payload: OutputPayload::from_facts(OutputFacts::Claim(
-                ClaimPayload::NeedsUserAuthorization {
-                    escalation: Box::new(escalation),
-                },
-            )),
         }
     }
 
@@ -2570,17 +2507,18 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build a blocked mutation-free edit check.
+    /// Build a blocked mutation-free edit check that names who chooses the answer.
     pub(crate) fn blocked_check(
         scopes: ReservationScopeSet,
         conflicts: Vec<ReservationConflict>,
+        approver: Option<OverlapApprover>,
     ) -> Self {
         let blocked_by = conflicts
             .iter()
             .map(|conflict| conflict.reservation_id)
             .collect();
         let message = blocked_message(&conflicts);
-        let refusal_detail = blocked_edit_refusal_detail(&scopes, &conflicts);
+        let refusal_detail = blocked_edit_refusal_detail(&scopes, &conflicts, approver.as_ref());
         let presentation = presentation::blocked_edit_refusal_block(&refusal_detail).into();
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -2594,6 +2532,7 @@ impl OutputEnvelope {
             payload: OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Blocked {
                 scopes,
                 conflicts,
+                approver,
             })),
         }
     }
@@ -2653,7 +2592,6 @@ impl OutputEnvelope {
             | OutputStatus::OrderingEdgeLimitReached
             | OutputStatus::BlockedByOverlap
             | OutputStatus::BlockedByOrdering
-            | OutputStatus::NeedsUserAuthorization
             | OutputStatus::InvalidInput
             | OutputStatus::Sequenced
             | OutputStatus::DuplicateOrderingEdge
@@ -3757,63 +3695,37 @@ fn engine_result_presentation(summary: &str, detail: &str) -> EnvelopePresentati
     presentation::engine_message_block(summary, detail).into()
 }
 
-fn blocked_claim_refusal_detail(conflicts: &[ReservationConflict]) -> String {
+fn blocked_claim_refusal_detail(
+    conflicts: &[ReservationConflict],
+    approver: Option<&OverlapApprover>,
+) -> String {
     let mut sections = vec![claim_holder_facts(conflicts)];
-    sections.push(blocked_edit_answer_guidance(conflicts));
-    append_first_touch_holder_recovery_guidance(
-        &mut sections,
-        conflicts,
-        FirstTouchHolderRecoveryContext::Refusal,
-    );
-    if conflicts.len() > 1 {
-        sections.push(
-            "More than one holder remains. Narrow the requested scopes before asking for a proposal, because one proposal binds exactly one blocker."
-                .to_owned(),
-        );
-    }
+    sections.push(blocked_edit_answer_guidance(conflicts, approver));
+    append_first_touch_holder_recovery_guidance(&mut sections, conflicts);
+    append_several_holders_guidance(&mut sections, conflicts);
     sections.join("\n\n")
-}
-
-fn claim_authorization_presentation(escalation: &OverlapEscalationPayload) -> EnvelopePresentation {
-    let direction = overlap_direction_description(&escalation.answer);
-    let proposal_token = escalation.proposal_token.to_string();
-    let mut sections = vec![
-        claim_holder_facts(&escalation.conflicts),
-        format!(
-            "- selected direction: {direction}.\n- authorization reason: {}.\n- consequence: {}.\n- proposal: after explicit approval, repeat the claim with the selected answer and supply the exact transient token through `--proposal`.\n- transient token:\n\n`{proposal_token}`",
-            escalation.authorization_reason, escalation.consequence,
-        ),
-    ];
-    append_first_touch_holder_recovery_guidance(
-        &mut sections,
-        &escalation.conflicts,
-        FirstTouchHolderRecoveryContext::Proposal,
-    );
-    presentation::engine_message_block(
-        "cargo-berth prepared an overlap proposal that awaits explicit approval.",
-        &sections.join("\n\n"),
-    )
-    .into()
 }
 
 fn blocked_edit_refusal_detail(
     requested_scopes: &ReservationScopeSet,
     conflicts: &[ReservationConflict],
+    approver: Option<&OverlapApprover>,
 ) -> String {
     let mut sections = vec![blocked_edit_holder_facts(requested_scopes, conflicts)];
-    sections.push(blocked_edit_answer_guidance(conflicts));
-    append_first_touch_holder_recovery_guidance(
-        &mut sections,
-        conflicts,
-        FirstTouchHolderRecoveryContext::Refusal,
-    );
+    sections.push(blocked_edit_answer_guidance(conflicts, approver));
+    append_first_touch_holder_recovery_guidance(&mut sections, conflicts);
+    append_several_holders_guidance(&mut sections, conflicts);
+    sections.join("\n\n")
+}
+
+/// One answer binds one holder, so a refusal naming several says how to reach one.
+fn append_several_holders_guidance(sections: &mut Vec<String>, conflicts: &[ReservationConflict]) {
     if conflicts.len() > 1 {
         sections.push(
-            "More than one holder remains. Narrow the requested scopes before asking for a proposal, because one proposal binds exactly one blocker."
+            "More than one holder remains. Narrow the requested scopes until one holder remains, because one answer binds exactly one holder."
                 .to_owned(),
         );
     }
-    sections.join("\n\n")
 }
 
 fn blocked_edit_holder_facts(
@@ -3879,41 +3791,61 @@ fn claim_holder_facts(conflicts: &[ReservationConflict]) -> String {
 /// The token standing in for a holder id in the answer-command template.
 pub(crate) const HOLDER_RESERVATION_ID_PLACEHOLDER: &str = "<holder-reservation-id>";
 
-/// The four reasoned answers, each command naming the holder it would answer.
+/// The five answers, each command naming the holder it would answer, and who chooses one.
 ///
 /// A refusal that says it wants an answer "for one named holder" and then prints
 /// `<holder-reservation-id>` in every command it offers has named nobody, and the reader cannot
 /// run a single line of it. With one holder there is exactly one id those commands could carry,
 /// so it is substituted and they run as printed. With several, the placeholder stands: one answer
 /// binds one blocker, and only the reader can say which blocker they mean.
-fn blocked_edit_answer_guidance(conflicts: &[ReservationConflict]) -> String {
+fn blocked_edit_answer_guidance(
+    conflicts: &[ReservationConflict],
+    approver: Option<&OverlapApprover>,
+) -> String {
     let template = blocked_edit_answer_guidance_template();
-    match conflicts {
+    let answers = match conflicts {
         [conflict] => template.replace(
             HOLDER_RESERVATION_ID_PLACEHOLDER,
             &conflict.reservation_id.to_string(),
         ),
         _ => template.to_owned(),
-    }
+    };
+    format!(
+        "{answers}\n\n{}\n\nThe trunk-gate bypass is not an edit answer and cannot permit this edit.",
+        overlap_answer_chooser(approver)
+    )
 }
 
 pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
-    r#"Choose exactly one answer for one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason.
+    r#"One answer settles one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
 
 1. Land before the holder: `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates first; the holder stays held until the requester is on trunk. For a holder that will build on the requester's change.
 2. Land after the holder: `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates second, held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. For a requester that will build on the holder.
 3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the unresolved overlap stays on the board until someone later sequences it.
 4. Override: `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the override and its reason stay on the board.
-5. Leave it alone: run no engine command, append nothing, and work elsewhere.
+5. Leave it alone: run no engine command, append nothing, and work elsewhere."#
+}
 
-An answered claim only produces a proposal at exit 3. Show that proposal and wait for explicit approval in a later turn before submitting its exact `--proposal` token. Never produce and submit a token in the same turn.
-
-The trunk-gate bypass is not an edit answer and cannot permit this edit."#
+/// Say who chooses the answer: the configured approver's session, or the caller.
+///
+/// The approver is routing only. The engine records whichever answer a claim carries, so the
+/// caller runs the command either way; a configured approver elsewhere only chooses it.
+fn overlap_answer_chooser(approver: Option<&OverlapApprover>) -> String {
+    match approver {
+        None => "No approver is configured, so this session chooses the answer.".to_owned(),
+        Some(approver) if approver.caller_is_approver => format!(
+            "This worktree is the configured approver, `{}`, so this session chooses the answer.",
+            approver.worktree.display()
+        ),
+        Some(approver) => format!(
+            "The configured approver is the session working in `{}`. Send it this overlap: the holder ids, the shared paths, and answers 1-5. Then record the order it chooses by running that answer's claim command from this worktree.",
+            approver.worktree.display()
+        ),
+    }
 }
 
 fn first_touch_holder_recovery_guidance(
     conflicts: &[ReservationConflict],
-    context: FirstTouchHolderRecoveryContext,
 ) -> FirstTouchHolderRecoveryDescription {
     let dispositions = conflicts
         .iter()
@@ -3925,14 +3857,10 @@ fn first_touch_holder_recovery_guidance(
             )
         })
         .collect::<Vec<_>>();
-    let clearing_relationship = match context {
-        FirstTouchHolderRecoveryContext::Refusal => "An overlap answer does not clear one",
-        FirstTouchHolderRecoveryContext::Proposal => "The proposal does not clear one",
-    };
     match dispositions.as_slice() {
         [] => FirstTouchHolderRecoveryDescription::NotApplicable,
         [_, ..] => FirstTouchHolderRecoveryDescription::Described(format!(
-            "A first-touch holder was acquired by whichever edit reached the paths first, so it may protect no work at all. {clearing_relationship}; these commands do, and they belong to the holder:\n\n{}\n\n`release` records the protected checkpoint and must run from the holder's own worktree. Both `resolve` dispositions run from anywhere but assert facts about the holder's work, so ask the holder before recording one.",
+            "A first-touch holder was acquired by whichever edit reached the paths first, so it may protect no work at all. An overlap answer does not clear one; these commands do, and they belong to the holder:\n\n{}\n\n`release` records the protected checkpoint and must run from the holder's own worktree. Both `resolve` dispositions run from anywhere but assert facts about the holder's work, so ask the holder before recording one.",
             dispositions.join("\n")
         )),
     }
@@ -3941,21 +3869,11 @@ fn first_touch_holder_recovery_guidance(
 fn append_first_touch_holder_recovery_guidance(
     sections: &mut Vec<String>,
     conflicts: &[ReservationConflict],
-    context: FirstTouchHolderRecoveryContext,
 ) {
-    match first_touch_holder_recovery_guidance(conflicts, context) {
+    match first_touch_holder_recovery_guidance(conflicts) {
         FirstTouchHolderRecoveryDescription::NotApplicable => {},
         FirstTouchHolderRecoveryDescription::Described(guidance) => sections.push(guidance),
     }
-}
-
-/// Which claim document explains how a first-touch holder is cleared.
-#[derive(Clone, Copy)]
-enum FirstTouchHolderRecoveryContext {
-    /// A refusal presents overlap answers and holder recovery separately.
-    Refusal,
-    /// A proposal presents the selected answer without the refusal's answer menu.
-    Proposal,
 }
 
 /// Whether blocked first-touch holders need a disposition description.
@@ -4638,25 +4556,6 @@ fn purpose_description(reservation_purpose: &ReservationPurpose) -> String {
     match reservation_purpose {
         ReservationPurpose::Explained(explanation) => explanation.to_string(),
         ReservationPurpose::NotProvidedByCaller => "no reason provided by caller".to_owned(),
-    }
-}
-
-fn overlap_direction_description(answer: &PermissiveOverlapAnswer) -> String {
-    match answer {
-        PermissiveOverlapAnswer::Sequence { blocker, direction } => match direction {
-            OrderingDirection::RequesterBeforeHolder => {
-                format!("requester before holder {blocker}")
-            },
-            OrderingDirection::HolderBeforeRequester => {
-                format!("holder {blocker} before requester")
-            },
-        },
-        PermissiveOverlapAnswer::Defer { blocker } => {
-            format!("none declared; deferred with holder {blocker}")
-        },
-        PermissiveOverlapAnswer::Override { blocker } => {
-            format!("none declared; overridden with holder {blocker}")
-        },
     }
 }
 

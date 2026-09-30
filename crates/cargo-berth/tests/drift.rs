@@ -4469,21 +4469,10 @@ fn claim_with_override(repository_root: &Path, scope: &str, run: &str, holder_id
         "the shared edit was reviewed",
         "--json",
     ];
-    let proposed = run_berth(repository_root, &arguments);
-    assert_eq!(proposed.status.code(), Some(3));
-    let proposed_envelope = json_output(&proposed);
-    let proposal_token = proposed_envelope["payload"]["data"]["proposal_token"]
-        .as_str()
-        .expect("proposal should return a token");
-    let mut applying_arguments = arguments.to_vec();
-    applying_arguments.splice(
-        applying_arguments.len() - 1..applying_arguments.len() - 1,
-        ["--proposal", proposal_token],
-    );
-    let applied = run_berth(repository_root, &applying_arguments);
+    let applied = run_berth(repository_root, &arguments);
     assert!(
         applied.status.success(),
-        "authorized claim failed: {}",
+        "the override claim failed: {}",
         String::from_utf8_lossy(&applied.stdout)
     );
     json_output(&applied)["payload"]["data"]["reservation_id"]
