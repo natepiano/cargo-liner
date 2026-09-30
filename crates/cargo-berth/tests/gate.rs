@@ -3061,6 +3061,48 @@ fn deleting_trunk_with_two_proven_same_tip_renames_leaves_dispatch_unchanged() {
     );
 }
 
+/// `git gc --auto` packs refs after ordinary commits, and git reports each loose ref it prunes
+/// as a deletion even though the branch lives on in `packed-refs`.
+#[test]
+fn packing_a_loose_trunk_ref_leaves_dispatch_unchanged_without_a_notice() {
+    let repository = initialized_repository();
+    let loose_trunk = repository.path().join(".git/refs/heads/main");
+    assert!(
+        loose_trunk.exists(),
+        "the fixture trunk ref should start loose"
+    );
+    let hook_path = repository.path().join(HOOK_PATH);
+    let installed = fs::read(&hook_path).expect("managed hook should read");
+    let before = HookFileIdentity::read(&hook_path);
+
+    let packed = git_output(repository.path(), &["pack-refs", "--all", "--prune"]);
+
+    assert!(
+        packed.status.success(),
+        "pack-refs failed: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    assert!(
+        !loose_trunk.exists(),
+        "pack-refs should prune the loose trunk ref"
+    );
+    assert!(
+        fs::read_to_string(repository.path().join(".git/packed-refs"))
+            .expect("packed refs should read")
+            .contains(" refs/heads/main\n")
+    );
+    assert!(
+        packed.stderr.is_empty(),
+        "pruning a packed trunk ref is not a deletion: {}",
+        String::from_utf8_lossy(&packed.stderr)
+    );
+    assert_eq!(HookFileIdentity::read(&hook_path), before);
+    assert_eq!(
+        fs::read(&hook_path).expect("managed hook should read"),
+        installed
+    );
+}
+
 #[test]
 fn stale_trunk_reference_invokes_for_a_prepared_local_update() {
     let repository = initialized_repository();

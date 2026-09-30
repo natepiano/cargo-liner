@@ -63,6 +63,7 @@ use crate::gate::TrunkReferencePresence;
 use crate::gate::permit::EnvironmentBypassRetentionOutcome;
 use crate::git;
 use crate::git::LocalBranchRenameTargetResolution;
+use crate::git::ReferenceLookup;
 use crate::hook;
 use crate::ids::CoordinationRunId;
 use crate::ids::GitObjectId;
@@ -1929,6 +1930,21 @@ fn refresh_managed_hook_after_trunk_deletion(
             return;
         },
     };
+    // `git pack-refs --prune` reports every loose ref it removes as a deletion, but only after
+    // writing that ref to `packed-refs`. A trunk that still resolves was packed, not deleted.
+    match git::reference_lookup(
+        worktree_context.repository_root(),
+        deleted_reference.as_str(),
+    ) {
+        Ok(ReferenceLookup::Present(_)) => return,
+        Ok(ReferenceLookup::Missing) => {},
+        Err(error) => {
+            write_reference_transaction_diagnostic(format_args!(
+                "cargo-berth could not confirm that {deleted_reference} was deleted: {error}. The stale hook will invoke cargo-berth defensively until cargo berth init refreshes it."
+            ));
+            return;
+        },
+    }
     let mut renamed_reference = LocalBranchRenameTargetResolution::NotProven;
     for attempt in 0..MAXIMUM_REPLACEMENT_LOOKUP_ATTEMPTS {
         renamed_reference = match git::local_branch_rename_target_resolution(

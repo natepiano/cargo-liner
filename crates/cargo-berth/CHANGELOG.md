@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git pack-refs --prune`, which `git gc --auto` and `git maintenance run --auto` run after ordinary commits, no longer reports that the trunk was deleted with no proven rename. Git reports each loose ref it prunes as a deletion after writing it to `packed-refs`; a trunk that still resolves leaves the managed hook unchanged and prints nothing.
 - Hook notices carry only the invoking worktree's alerts. A `PostToolUse` drift states only alerts whose reservation the worktree holds, and `SessionStart` also states alerts no live worktree holds; hand-run verbs and the git gate still report every alert.
 - An approved `--before`, `--after`, `--defer`, or `--override` answer keeps
   authorizing edits to the files it names when the holder's merge extent grows
