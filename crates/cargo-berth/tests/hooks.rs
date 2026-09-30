@@ -3070,22 +3070,18 @@ fn the_holders_post_tool_use_states_its_unavailable_merge_protection() -> TestRe
 
 /// A standing notice reaches each reader once, and `SessionStart` resets only the main agent.
 ///
-/// A subagent's payload carries its parent's `session_id` beside its own `agent_id`, and it keeps
-/// a context of its own, so it is told the same line once more. A line with new facts is new text.
+/// An unreadable ledger is the standing notice: every Bash call states the same message until the
+/// journal is repaired. A subagent's payload carries its parent's `session_id` beside its own
+/// `agent_id`, and it keeps a context of its own, so it is told the same line once more. Which
+/// lines count as new text is covered by `told_record`'s own tests.
 #[test]
 fn post_tool_use_states_each_line_once_to_each_reader() -> TestResult {
-    let repository = committed_configuration_repository()?;
-    let worktrees = TempDir::new_in(SCRATCH_ROOT)?;
-    let (holder, reservation_id) = observed_merge_holder(&repository, worktrees.path())?;
-    run_git(
-        repository.path(),
-        &["update-ref", "-d", &format!("refs/heads/{TRUNK_BRANCH}")],
-    )?;
-    let main = bash_payload(&holder, HOLDER_SESSION);
+    let repository = unreadable_ledger_repository()?;
+    let main = bash_payload(repository.path(), UNREADABLE_DRIFT_SESSION);
     let mut subagent = main.clone();
-    subagent["agent_id"] = Value::String("holder-subagent".to_owned());
+    subagent["agent_id"] = Value::String("unreadable-subagent".to_owned());
     let stated = |payload: &Value| -> TestResult<Vec<String>> {
-        let output = run_post_tool_use(&holder, payload)?;
+        let output = run_post_tool_use(repository.path(), payload)?;
         if output.stdout.is_empty() {
             return Ok(Vec::new());
         }
@@ -3099,25 +3095,22 @@ fn post_tool_use_states_each_line_once_to_each_reader() -> TestResult {
 
     let standing = stated(&main)?;
     assert!(
-        matches!(standing.as_slice(), [line] if line.contains(&reservation_id)),
+        standing
+            .iter()
+            .any(|line| line.contains("The reservation ledger could not be read")),
         "the main agent should be told the standing notice: {standing:?}"
     );
     assert_eq!(stated(&main)?, Vec::<String>::new());
     assert_eq!(stated(&subagent)?, standing);
     assert_eq!(stated(&subagent)?, Vec::<String>::new());
-    fs::write(holder.join("widened.rs"), "// widened\n")?;
-    let changed = stated(&main)?;
-    assert!(
-        matches!(changed.as_slice(), [line] if line.starts_with("AUTO-WIDEN: ")),
-        "only the new line should be stated: {changed:?}"
-    );
     run_session_start(
-        &holder,
-        &session_start_payload(&holder, Some(HOLDER_SESSION)),
+        repository.path(),
+        &session_start_payload(repository.path(), Some(UNREADABLE_DRIFT_SESSION)),
         &AmbientHarnessSession::Absent,
     )?;
-    assert!(
-        stated(&main)?.contains(&standing[0]),
+    assert_eq!(
+        stated(&main)?,
+        standing,
         "SessionStart should reset what the main agent was told"
     );
     assert_eq!(stated(&subagent)?, Vec::<String>::new());
@@ -3125,9 +3118,20 @@ fn post_tool_use_states_each_line_once_to_each_reader() -> TestResult {
 }
 
 /// An exhausted lock deadline after Bash is silent: the next Bash call's drift covers the change.
+///
+/// The hook only has to reach the mutation lock, so the repository needs no commit.
 #[test]
 fn post_tool_use_stays_silent_when_the_ledger_lock_is_held() -> TestResult {
-    let repository = initialized_repository()?;
+    fs::create_dir_all(SCRATCH_ROOT)?;
+    let repository = TempDir::new_in(SCRATCH_ROOT)?;
+    run_git(
+        repository.path(),
+        &["init", "--quiet", "--initial-branch", TRUNK_BRANCH],
+    )?;
+    require_success(
+        &run_berth(repository.path(), &["init", "--json"])?,
+        "cargo-berth init",
+    )?;
     let competing_lock = File::options()
         .read(true)
         .write(true)
