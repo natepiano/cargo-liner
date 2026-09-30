@@ -4000,7 +4000,7 @@ fn hooks_state_the_rewritten_trunk_evidence_recovery() -> TestResult {
 /// Check one hook response states the lost-evidence notice the engine renders.
 ///
 /// `PostToolUse` states exactly its notice lines, so the notice is the only line it may carry.
-/// `SessionStart` publishes the engine's complete board report around the notice.
+/// `SessionStart` publishes the notice among its other notice blocks and its session overview.
 fn assert_hook_states_the_lost_evidence_notice(
     output: &Output,
     event: HookResponseEvent,

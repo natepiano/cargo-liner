@@ -98,7 +98,7 @@ fn execute_complete_board(
     };
     let occasion = EngineAnswerOccasion::current();
     let alert_routing = report.alert_routing(occasion);
-    let rendering = BoardReportRendering::for_occasion(occasion);
+    let rendering = BoardReportRendering::for_request(occasion, output_format);
 
     match output_format {
         CliOutputFormat::Json => BoardDisplayOutcome::HeadlessResponse(OutputEnvelope::board(

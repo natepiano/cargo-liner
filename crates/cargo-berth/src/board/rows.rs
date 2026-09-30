@@ -26,6 +26,7 @@ use super::overview;
 use super::report::CompleteBoardReport;
 use crate::alert::AlertRouting;
 use crate::answer::OverlapAuthorizationReason;
+use crate::cli::CliOutputFormat;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeDeclaration;
 use crate::edge::EdgeHold;
@@ -112,8 +113,13 @@ pub(super) struct BoardTarget {
 /// What a board response's presentation states about the board beside its actionable notices.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BoardReportRendering {
-    /// The complete report, for a reader who asked for the board itself.
+    /// The complete report, in a text-format response.
     CompleteReport,
+    /// Nothing beyond the notices, in a JSON response read by hand or after a Bash call.
+    ///
+    /// The envelope's payload already carries the complete board, and a pretty-printed copy in
+    /// the presentation made up most of the response.
+    PayloadAlone,
     /// The integration order an opening session may act on, and the commands that read the rest.
     ///
     /// Most of a complete report is resolved history, which a session that just opened has no
@@ -122,13 +128,21 @@ pub(crate) enum BoardReportRendering {
 }
 
 impl BoardReportRendering {
-    /// The rendering a response on `occasion` states.
-    pub(crate) const fn for_occasion(occasion: EngineAnswerOccasion) -> Self {
-        match occasion {
-            EngineAnswerOccasion::OpeningSession => Self::SessionOverview,
-            EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall => {
-                Self::CompleteReport
-            },
+    /// The rendering a response on `occasion` in `output_format` states.
+    pub(crate) const fn for_request(
+        occasion: EngineAnswerOccasion,
+        output_format: CliOutputFormat,
+    ) -> Self {
+        match (occasion, output_format) {
+            (EngineAnswerOccasion::OpeningSession, _) => Self::SessionOverview,
+            (
+                EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall,
+                CliOutputFormat::Json,
+            ) => Self::PayloadAlone,
+            (
+                EngineAnswerOccasion::DirectInvocation | EngineAnswerOccasion::CompletedBashCall,
+                CliOutputFormat::Text,
+            ) => Self::CompleteReport,
         }
     }
 }
@@ -609,8 +623,8 @@ impl BoardModel {
     /// Render the actionable notices `alert_routing` delivers, then the board as `rendering`
     /// states it.
     ///
-    /// Only the notices are routed: the complete report block still carries every alert, so
-    /// the board data a reader parses stays whole.
+    /// Only the notices are routed: the payload, and the complete report block where one is
+    /// rendered, still carry every alert, so the board data a reader parses stays whole.
     pub(crate) fn envelope_presentation(
         &self,
         alert_routing: &AlertRouting,
@@ -618,7 +632,8 @@ impl BoardModel {
     ) -> EnvelopePresentation {
         let mut blocks = self.actionable_notice_blocks(alert_routing);
         match (rendering, self.report_content()) {
-            (BoardReportRendering::CompleteReport, BoardReportContent::Empty) => {},
+            (BoardReportRendering::CompleteReport, BoardReportContent::Empty)
+            | (BoardReportRendering::PayloadAlone, _) => {},
             (BoardReportRendering::CompleteReport, BoardReportContent::Populated) => {
                 blocks.push(self.complete_report_block());
             },

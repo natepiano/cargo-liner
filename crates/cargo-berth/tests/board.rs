@@ -473,8 +473,9 @@ fn empty_board_is_headless_and_declares_no_integration_order() {
     assert!(!String::from_utf8_lossy(&text.stdout).contains("BoardReservationSnapshot"));
 }
 
+/// The payload carries the complete board, so the JSON presentation adds no copy of it.
 #[test]
-fn populated_board_presentation_carries_the_complete_board_report() {
+fn populated_board_json_leaves_the_complete_board_to_its_payload() {
     let fixture = ordered_fixture();
     let output = run_berth(fixture.repository.path(), &["board", "--json"]);
     assert!(
@@ -491,66 +492,13 @@ fn populated_board_presentation_carries_the_complete_board_report() {
         BOARD_READY_MESSAGE,
     );
     assert_complete_board_payload_sections(&envelope["payload"]["data"]);
-
-    let report = rendered_board_report(&envelope, "complete board");
-    let report_object = report
-        .as_object()
-        .expect("complete board report should be a JSON object");
-    assert_eq!(report_object.len(), 17);
-    let board_data = &envelope["payload"]["data"];
-    for (report_property, payload_field) in [
-        ("Journal position", "journal_position"),
-        (
-            "Recovered bypasses this invocation",
-            "recovered_bypasses_this_invocation",
-        ),
-        ("Integration order", "integration_order"),
-        ("Ready now", "ready_now"),
-        ("Waiting", "waiting"),
-        (
-            "Settled ordering constraints",
-            "settled_ordering_constraints",
-        ),
-        ("Unresolved overlaps", "unresolved_overlaps"),
-        ("Live overlap answers", "live_overlap_answers"),
-        (
-            "Released overlap answer count",
-            "released_overlap_answer_count",
-        ),
-        ("Unconstrained reservations", "unconstrained_reservations"),
-        ("Resolved reservations", "resolved"),
-        ("Available forced permits", "available_forced_permits"),
-        ("Bypass audit", "bypass_audit"),
-        ("Outstanding incursions", "outstanding_incursions"),
-        ("Recorded incursion answers", "recorded_incursion_answers"),
-        ("Alerts", "alerts"),
-        ("Git cost", "git_cost"),
-    ] {
-        let mut payload_section = board_data[payload_field].clone();
-        if matches!(
-            payload_field,
-            "ready_now" | "waiting" | "unconstrained_reservations" | "resolved"
-        ) {
-            for entry in payload_section["entries"]
-                .as_array_mut()
-                .expect("board entries")
-            {
-                let reservation = if entry.get("reservation").is_some() {
-                    &mut entry["reservation"]
-                } else {
-                    entry
-                };
-                reservation
-                    .as_object_mut()
-                    .expect("reservation row")
-                    .remove("target");
-            }
-        }
-        assert_eq!(
-            report[report_property], payload_section,
-            "complete board report property {report_property:?} diverged from payload field {payload_field:?}"
-        );
-    }
+    assert_eq!(
+        envelope["presentation"],
+        serde_json::json!({
+            "kind": "rendered_blocks",
+            "blocks": [],
+        })
+    );
 }
 
 #[test]

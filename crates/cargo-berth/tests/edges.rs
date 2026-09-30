@@ -132,11 +132,6 @@ fn same_target_edge_waits_for_predecessor_to_reach_integration() {
         row["action"]["instruction"],
         "wait for the predecessor to reach integration"
     );
-    assert!(
-        waiting["presentation"]
-            .to_string()
-            .contains("predecessor to reach integration")
-    );
     for root in [repo.root(), successor.as_path()] {
         let configuration = root.join(CONFIGURATION_PATH);
         let contents = fs::read_to_string(&configuration).expect("gate configuration reads");
