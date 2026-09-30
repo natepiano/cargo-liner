@@ -3815,11 +3815,39 @@ fn blocked_edit_holder_facts(
     requested_scopes: &ReservationScopeSet,
     conflicts: &[ReservationConflict],
 ) -> String {
+    let holder_lines = conflicts
+        .iter()
+        .map(|conflict| blocked_edit_holder_line(requested_scopes, conflict))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
-        "The requested edit is blocked for these scopes: {}.\n\n{}",
+        "The requested edit is blocked for these scopes: {}.\n{holder_lines}",
         render_scopes(requested_scopes),
-        claim_holder_facts(conflicts),
     )
+}
+
+/// One holder of a refused edit: its id, branch and last activity.
+///
+/// The envelope payload carries every other holder fact. The holder's shared scopes are named
+/// only when they differ from the requested scopes the line above already names.
+fn blocked_edit_holder_line(
+    requested_scopes: &ReservationScopeSet,
+    conflict: &ReservationConflict,
+) -> String {
+    let holder = format!(
+        "- Holder `{}` (`{}`): {}",
+        conflict.reservation_id,
+        conflict.holder_branch(),
+        conflict.holder_activity_description(),
+    );
+    if conflict.overlapping_scopes == *requested_scopes {
+        format!("{holder}.")
+    } else {
+        format!(
+            "{holder}; shares {}.",
+            render_scopes(&conflict.overlapping_scopes)
+        )
+    }
 }
 
 fn claim_holder_facts(conflicts: &[ReservationConflict]) -> String {
@@ -3865,15 +3893,13 @@ fn blocked_edit_answer_guidance(conflicts: &[ReservationConflict]) -> String {
 }
 
 pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
-    r#"Choose exactly one answer for one named holder. The first four are reasoned `cargo-berth claim` answers, and each requires a non-empty reason. Run the `cargo-berth` invocation shown for each answer from the repository:
+    r#"Choose exactly one answer for one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason.
 
-1. **Land before the holder** — `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths and integrates first; the holder remains held until the requester is on trunk. Use this when the holder will build on the requester's change.
-2. **Land after the holder** — `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths and integrates second; it remains held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. Use this when the requester will build on the holder.
-3. **Defer the order** — `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths, no ordering edge is added, and the unresolved overlap remains visible on the board until someone later sequences it.
-4. **Override** — `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. The requester takes the paths, no ordering edge is added, and the override plus its reason remains visible on the board.
-5. **Leave it alone.** Run no engine command, append nothing, and work elsewhere.
-
-Only **Land before the holder** and **Land after the holder** add an ordering edge. Defer and override add no edge; their recorded overlap remains visible on the board.
+1. Land before the holder: `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates first; the holder stays held until the requester is on trunk. For a holder that will build on the requester's change.
+2. Land after the holder: `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates second, held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. For a requester that will build on the holder.
+3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the unresolved overlap stays on the board until someone later sequences it.
+4. Override: `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the override and its reason stay on the board.
+5. Leave it alone: run no engine command, append nothing, and work elsewhere.
 
 An answered claim only produces a proposal at exit 3. Show that proposal and wait for explicit approval in a later turn before submitting its exact `--proposal` token. Never produce and submit a token in the same turn.
 

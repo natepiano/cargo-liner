@@ -96,12 +96,52 @@ fn blocked_claim_renders_every_holder_fact_and_first_touch_dispositions() -> Tes
     assert_first_touch_holder_is_rendered(conflicts, rendered_block.detail)?;
     assert_explicit_holder_is_rendered(conflicts, rendered_block.detail)?;
     assert_work_plan_holder_is_rendered(conflicts, rendered_block.detail)?;
+    assert!(rendered_block.detail.contains("1. Land before the holder:"));
+    assert!(rendered_block.detail.contains("5. Leave it alone:"));
+    Ok(())
+}
+
+/// A refused edit names each holder on one line, with the holder's shared scopes when they are
+/// not the whole request, and leaves the other holder facts to the payload.
+#[test]
+fn blocked_check_names_each_holder_on_one_line() -> TestResult {
+    let repository = initialized_repository()?;
+    let holder = run_berth(
+        repository.path(),
+        &["claim", "file:held.rs", "--run", FIRST_RUN, "--json"],
+    )?;
+    require_success(&holder, "holder claim")?;
+    let holder_envelope = json_output(&holder)?;
+    let holder_id = required_string(&holder_envelope, "/payload/data/reservation_id")?;
+    dirty_source(repository.path(), "held.rs")?;
+    let (_requester_directory, requester_root) = add_worktree(&repository, "check-requester")?;
+
+    let blocked = run_berth_with_run(
+        &requester_root,
+        &["check", "file:held.rs", "file:free.rs", "--json"],
+        SECOND_RUN,
+    )?;
+    let envelope = json_output(&blocked)?;
+    assert_eq!(blocked.status.code(), Some(1), "{envelope}");
+    let rendered_block = only_rendered_block(&envelope)?;
+    let holder_lines = rendered_block
+        .detail
+        .lines()
+        .filter(|line| line.starts_with("- Holder "))
+        .collect::<Vec<_>>();
+    let [holder_line] = holder_lines.as_slice() else {
+        return Err(failure(format!(
+            "the refusal should name one holder line: {}",
+            rendered_block.detail
+        )));
+    };
     assert!(
-        rendered_block
-            .detail
-            .contains("1. **Land before the holder**")
+        holder_line.starts_with(&format!("- Holder `{holder_id}` (`refs/heads/"))
+            && holder_line.contains("): active; last activity at ")
+            && holder_line.ends_with("; shares file:held.rs."),
+        "{holder_line}"
     );
-    assert!(rendered_block.detail.contains("5. **Leave it alone.**"));
+    assert!(!rendered_block.detail.contains("- coordination run id:"));
     Ok(())
 }
 
@@ -194,11 +234,11 @@ fn claim_proposal_renders_approval_material_without_the_answer_menu() -> TestRes
             .contains("answers above")
     );
     for answer_title in [
-        "1. **Land before the holder**",
-        "2. **Land after the holder**",
-        "3. **Defer the order**",
-        "4. **Override**",
-        "5. **Leave it alone.**",
+        "1. Land before the holder:",
+        "2. Land after the holder:",
+        "3. Defer the order:",
+        "4. Override:",
+        "5. Leave it alone:",
     ] {
         assert!(!rendered_block.detail.contains(answer_title));
     }

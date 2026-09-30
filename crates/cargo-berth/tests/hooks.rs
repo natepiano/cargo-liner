@@ -242,6 +242,10 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
         &["claim", "tree:src", "--run", FIRST_RUN, "--json"],
     )?;
     require_success(&holder, "holder claim")?;
+    let holder_id = json_output(&holder)?["payload"]["data"]["reservation_id"]
+        .as_str()
+        .ok_or_else(|| failure("the holder claim should return a reservation id"))?
+        .to_owned();
     dirty_source(repository.path(), "src/lib.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "requester")?;
     let output = run_pre_tool_use(
@@ -260,6 +264,23 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
     assert!(refusal_detail.ends_with('\n'));
     assert!(refusal_detail.contains("Choose exactly one answer for one named holder."));
     assert!(refusal_detail.contains("cargo-berth claim <paths...> --before"));
+    // One line names the holder by id, branch and activity. Its shared scopes are the requested
+    // scopes the line above names, so the holder line does not repeat them.
+    let holder_line = refusal_detail
+        .lines()
+        .find(|line| line.starts_with(&format!("- Holder `{holder_id}` (`")))
+        .ok_or_else(|| {
+            failure(format!(
+                "the refusal named no holder line: {refusal_detail}"
+            ))
+        })?;
+    assert!(
+        holder_line.contains("(`refs/heads/main`): active; last activity at ")
+            && holder_line.ends_with('.')
+            && !holder_line.contains("shares"),
+        "{holder_line}"
+    );
+    assert!(!refusal_detail.contains("- coordination run id:"));
     Ok(())
 }
 
@@ -1131,7 +1152,7 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
         format!("cargo-berth claim <paths...> --after {holder_id}"),
         format!("cargo-berth claim <paths...> --defer {holder_id}"),
         format!("cargo-berth claim <paths...> --override {holder_id}"),
-        "Leave it alone.".to_owned(),
+        "5. Leave it alone:".to_owned(),
     ] {
         assert!(
             refusal.contains(&expected),
