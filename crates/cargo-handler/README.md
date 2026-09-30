@@ -76,74 +76,76 @@ launcher's.
 ## agent cells
 
 ```text
- pid 3266367 · claude · busy · 23h · natedev · berth_fix
- ~/rust/tool-based-ui-trunk
- launched by boss of bosses
+ pid 1579022 · claude · busy · 23h · natedev · —
+ main · ~/rust/cargo-liner
+ ├─ tool-based-ui-trunk    busy  enh/trunk    ~/rust/ui-trunk    21h
+ │  └─ trunk-impl          idle  —            ~/scratch/impl     2h
+ └─ tool-based-ui-arrange  idle  enh/arrange  ~/rust/ui-arrange  3h
 
- pid      via         runs     name                                    age
- 468060   detached    codex    app-server                              22h
- 2371669  shell       command  Launch the Phase 1 implementation seat  12m
- 2372720    shell     codex    app-server                              12m
- —            thread  codex    tool-based-ui-trunk-impl                11m
- —        subagent    claude   Review the permission queue             5m 3s
- 2424763    shell     command  cargo nextest run -p hana_video         45s
- 3337048  session     claude   tool-based-ui-arrange                   30s
+ pid      via         runs     name                             age
+ 4000001  shell       command  Run the tests                    2m
+ 3266367  session     claude   tool-based-ui-trunk              21h
+ —          subagent  claude   Review the permission queue      5m 3s
+ 2424763      shell   command  cargo nextest run -p hana_video  45s
+ 3400000    session   claude   trunk-impl                       2h
+ 3337048  session     claude   tool-based-ui-arrange            3h
+ 468060     detached  codex    app-server                       1h
 ```
 
-Every agent someone can talk to gets a cell, titled in its top border with its
-name (`tool-based-ui-trunk` above): each
-top-level agent, and each session another agent opened in tmux. The cells
-follow the machines in summary order; within a machine each top-level agent
-comes oldest first, followed by the sessions it opened, depth first and oldest
-first. Each cell takes the next color of a rainbow in that order -- red,
-orange, yellow, green, cyan, blue, violet, then red again -- and its title and
-the agent's name in the summary are both drawn in it, so a summary row and its
-cell pair up at a glance. Inside a cell, a name with a cell of its own takes
-that cell's color too: the agent after `launched by`, and each session the
-agent opened. A launched session takes a color of its own even
-though the summary leaves it out, and when a cell closes, the cells after it
-each take the color before. A top-level agent that opened sessions outlines its
-group -- its own cell and each session's after it -- in its own color, so the
-cells that belong together read as one block; a line two cells share takes the
-color of the one drawn first, and a cell standing alone keeps the plain border. The header gives the agent's pid, program, status, age, machine and
-desktop, colored as the summary colors them, then its directory, and for a launched
-session the agent that opened it. Below it is a table of everything the agent
-started that is still running. Each row's `via` says how the agent holds it,
+Each top-level agent gets a cell, titled in its top border with its name
+(`boss of bosses` above), and the cell holds every session the agent opened in
+tmux, sessions those opened included. The cells follow the machines in summary
+order, each machine's top-level agents oldest first. Every agent takes the next
+color of a rainbow in cell order -- the cell's agent, then its sessions depth
+first and oldest first -- red, orange, yellow, green, cyan, blue, violet, then
+red again. The cell's title and the agent's name in the summary are drawn in
+its color, so a summary row and its cell pair up at a glance, and a session's
+name is drawn in its own color wherever the cell shows it. The header gives the agent's pid, program, status, age, machine and
+desktop, colored as the summary colors them, then its branch and directory, `<branch> · <directory>`, and for an agent another
+agent opened the one that opened it. Below that hangs the tree of the agent's
+sessions: a line to each after `├─`, `└─` and `│` glyphs, giving its name,
+status, branch, directory and age, with `—` for a session outside a repository.
+The branch is read from the `HEAD` of the repository the directory sits in,
+following a worktree's `.git` file; a detached `HEAD` shows the start of its
+commit. Below it is a table of everything the agent
+started that is still running, what each session runs nested under the row
+naming the session. Each row's `via` says how the agent holds it,
 indented two cells under the row that started it; `runs` says what it is,
 `command` for a shell and otherwise the program, `claude` or `codex`, drawn in
 that program's color. A row that has no process of its own shows `—` for its
 pid. An agent running nothing says `nothing running`.
 
 A cell is laid out for its width, spending rows where a narrow cell would
-otherwise cut its header, its directory or a name short. The same session in a
-cell 38 columns wide, working in a longer directory:
+otherwise cut its header, its branch and directory, a session's line or a name
+short. The same cell 38 columns wide, cut here after its first rows:
 
 ```text
  agent    claude
- pid      3266367
+ pid      1579022
  status   busy
  age      23h
  machine  natedev
- desktop  berth_fix
- ~/rust/
- tool-based-ui-geometry-material-impl
- launched by boss of bosses
+ desktop  —
+ main · ~/rust/cargo-liner
+ ├─ tool-based-ui-trunk
+ │  busy · 21h
+ │  enh/trunk · ~/rust/ui-trunk
+ │  └─ trunk-impl
+ │     idle · 2h
+ │     ~/scratch/impl
+ └─ tool-based-ui-arrange
+    idle · 3h
+    enh/arrange · ~/rust/ui-arrange
 
- detached · codex · 22h · pid 468060
-   app-server
- shell · command · 12m · pid 2371669
-   Launch the Phase 1 implementation
-   seat
-   shell · codex · 12m · pid 2372720
-     app-server
-     thread · codex · 11m
-       tool-based-ui-trunk-impl
- subagent · claude · 5m 3s
-   Review the permission queue
-   shell · command · 45s · pid 2424763
-     cargo nextest run -p hana_video
- session · claude · 30s · pid 3337048
-   tool-based-ui-arrange
+ shell · command · 2m · pid 4000001
+   Run the tests
+ session · claude · 21h · pid 3266367
+   tool-based-ui-trunk
+   subagent · claude · 5m 3s
+     Review the permission queue
+     shell · command · 45s
+     pid 2424763
+       cargo nextest run -p hana_video
 ```
 
 Where the header's one line would be cut, it stands as a block, one fact to a

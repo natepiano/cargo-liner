@@ -98,12 +98,6 @@ pub trait TileCells<Id> {
     ///
     /// [`summary_title`]: Self::summary_title
     fn group_title(&self, _id: &Id) -> Option<Span<'static>> { None }
-
-    /// The colour the border of the cell drawing `id` is outlined in,
-    /// which is how cells that belong together say so. None unless the
-    /// app groups its cells; a line two groups share takes the colour
-    /// of the cell drawn first.
-    fn group_outline(&self, _id: &Id) -> Option<Color> { None }
 }
 
 /// Draw `grid` into `area`, its columns laid out by `growth`, with
@@ -192,11 +186,6 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
             TileContent::Empty(_) => {
                 grid_lines.add(placement.frame);
             },
-        }
-        if let TileContent::Group(id) = &placement.content
-            && let Some(color) = cells.group_outline(id)
-        {
-            grid_lines.outline(placement.frame, color);
         }
     }
     // Neighbouring tiles meet on one line, so no cell belongs to a
