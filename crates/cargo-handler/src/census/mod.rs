@@ -101,7 +101,7 @@ impl ServiceTier {
     }
 
     /// `program` marked with this tier, as an `agent` or `runs` cell shows
-    /// it: `codex fast`, `codex standard`, or `program` alone when
+    /// it: `codex fast`, `codex --`, or `program` alone when
     /// [`Self::Unrecorded`].
     fn mark(self, program: &'static str) -> Cow<'static, str> {
         match self {

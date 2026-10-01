@@ -1252,13 +1252,13 @@ mod tests {
                 " pid 4039085 · codex fast · — · 12m · natedev · —",
                 " ~/rust/handler",
                 "",
-                " pid     via       runs            name        age",
-                " 468060  detached  codex           app-server  11m",
-                " —         thread  codex standard  trunk mesh  10m",
+                " pid     via       runs      name        age",
+                " 468060  detached  codex     app-server  11m",
+                " —         thread  codex --  trunk mesh  10m",
             ]
         );
         let role = |x, y| Some(buffer[(x, y)].fg);
-        for (x, y) in [(15, 0), (24, 0), (19, 5), (32, 5)] {
+        for (x, y) in [(15, 0), (24, 0), (19, 5), (26, 5)] {
             assert_eq!(role(x, y), Role::Codex.style().fg, "column {x} of row {y}");
         }
     }

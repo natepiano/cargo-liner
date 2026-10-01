@@ -265,7 +265,7 @@ pub(crate) const CODEX_FAST_TIERS: [&str; 2] = ["fast", "priority"];
 pub(crate) const FAST_TIER_LABEL: &str = "fast";
 /// Marks a Codex agent or thread that asked for any other tier, after
 /// its program.
-pub(crate) const STANDARD_TIER_LABEL: &str = "standard";
+pub(crate) const STANDARD_TIER_LABEL: &str = "--";
 /// The flags that pass `codex` one `key=value` setting in the next
 /// argument.
 pub(crate) const CODEX_CONFIG_FLAGS: [&str; 2] = ["-c", "--config"];
