@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use proc_macro2::LineColumn;
 use syn::ExprPath;
@@ -14,6 +13,7 @@ use super::function_imports::ImportTarget;
 use super::scan::InlineCallFindingInputs;
 use super::scan::ScanFileContext;
 use super::support;
+use super::support::CrateSources;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
@@ -46,7 +46,7 @@ pub(super) struct InlineCallCandidate {
 }
 
 pub(super) struct InlineCallDetector<'a> {
-    pub(super) source_root:            &'a Path,
+    pub(super) crate_sources:          CrateSources<'a>,
     pub(super) text:                   &'a str,
     pub(super) offsets:                &'a [usize],
     pub(super) current_module_path:    &'a [String],
@@ -89,7 +89,7 @@ impl Visit<'_> for InlineCallDetector<'_> {
             return;
         }
         if let Some(candidate) = analyze_inline_call(
-            self.source_root,
+            self.crate_sources,
             self.current_module_path,
             self.declared_modules,
             node,
@@ -275,7 +275,7 @@ fn covering_gates(
 }
 
 fn analyze_inline_call(
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     current_module_path: &[String],
     declared_modules: &BTreeSet<String>,
     node: &ExprPath,
@@ -305,12 +305,12 @@ fn analyze_inline_call(
     if absolute_segments.is_empty() {
         return None;
     }
-    if support::leaf_is_module(source_root, &absolute_segments) {
+    if support::leaf_is_module(crate_sources, &absolute_segments) {
         return None;
     }
 
     let absolute_module = absolute_segments[..absolute_segments.len() - 1].to_vec();
-    if absolute_module.is_empty() || !support::leaf_is_module(source_root, &absolute_module) {
+    if absolute_module.is_empty() || !support::leaf_is_module(crate_sources, &absolute_module) {
         return None;
     }
 

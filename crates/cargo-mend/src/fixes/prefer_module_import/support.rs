@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -12,7 +11,15 @@ use syn::UseTree;
 use syn::Visibility;
 
 use crate::rust_syntax;
+use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::PathAnchor;
+
+/// A crate's source root, and the sources its module files are read through.
+#[derive(Clone, Copy)]
+pub(super) struct CrateSources<'a> {
+    pub(super) source_root: &'a Path,
+    pub(super) sources:     &'a ParsedSources,
+}
 
 pub(super) struct FlattenedImport {
     pub(super) segments: Vec<String>,
@@ -39,9 +46,12 @@ pub(super) fn resolve_to_absolute(
     }
 }
 
-pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -> bool {
+pub(super) fn leaf_is_module(
+    crate_sources: CrateSources<'_>,
+    absolute_segments: &[String],
+) -> bool {
     let mut visited = BTreeSet::new();
-    resolves_to_module(source_root, absolute_segments, &mut visited)
+    resolves_to_module(crate_sources, absolute_segments, &mut visited)
 }
 
 /// Walks `absolute_segments` from the crate root through file-backed modules,
@@ -49,7 +59,7 @@ pub(super) fn leaf_is_module(source_root: &Path, absolute_segments: &[String]) -
 /// file-backed module. `visited` holds the paths already under resolution, so a
 /// re-export cycle ends instead of recursing forever.
 fn resolves_to_module(
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     absolute_segments: &[String],
     visited: &mut BTreeSet<Vec<String>>,
 ) -> bool {
@@ -57,8 +67,8 @@ fn resolves_to_module(
         return false;
     }
 
-    let mut dir = source_root.to_path_buf();
-    let mut module_file = crate_root_file(source_root);
+    let mut dir = crate_sources.source_root.to_path_buf();
+    let mut module_file = crate_root_file(crate_sources.source_root);
     let mut module_path: Vec<String> = Vec::new();
     for (index, segment) in absolute_segments.iter().enumerate() {
         let file = dir.join(format!("{segment}.rs"));
@@ -73,7 +83,13 @@ fn resolves_to_module(
             // file-backed module.
             let remainder = &absolute_segments[index..];
             return module_file.is_some_and(|module_file| {
-                declares_module(source_root, &module_file, &module_path, remainder, visited)
+                declares_module(
+                    crate_sources,
+                    &module_file,
+                    &module_path,
+                    remainder,
+                    visited,
+                )
             });
         }
         module_path.push(segment.clone());
@@ -86,7 +102,7 @@ fn resolves_to_module(
 /// `module_path` — makes `segments` reachable, either as inline `mod` blocks or
 /// through a `use` re-export naming the first segment.
 fn declares_module(
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     file: &Path,
     module_path: &[String],
     segments: &[String],
@@ -95,17 +111,17 @@ fn declares_module(
     let Some(first) = segments.first() else {
         return false;
     };
-    let Ok(text) = fs::read_to_string(file) else {
+    let Ok(source) = crate_sources.sources.source(file) else {
         return false;
     };
-    if !text.contains(first.as_str()) {
+    if !source.text().contains(first.as_str()) {
         return false;
     }
-    let Ok(syntax) = syn::parse_file(&text) else {
+    let Ok(syntax) = source.syntax() else {
         return false;
     };
-    declares_inline_mod_path(&syntax, segments)
-        || reexports_module(source_root, &syntax, module_path, segments, visited)
+    declares_inline_mod_path(syntax, segments)
+        || reexports_module(crate_sources, syntax, module_path, segments, visited)
 }
 
 fn crate_root_file(source_root: &Path) -> Option<PathBuf> {
@@ -139,7 +155,7 @@ fn declares_inline_mod_path(syntax: &File, segments: &[String]) -> bool {
 /// naming the inline `mod proof_fixture` a file further down. A private `use`
 /// binds nothing outside its own module, so only a `pub`-flavoured one counts.
 fn reexports_module(
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     syntax: &File,
     module_path: &[String],
     segments: &[String],
@@ -154,7 +170,7 @@ fn reexports_module(
             reexport_target(item_use, module_path, name).is_some_and(|target| {
                 let mut target = target;
                 target.extend(tail.iter().cloned());
-                resolves_to_module(source_root, &target, visited)
+                resolves_to_module(crate_sources, &target, visited)
             })
         },
         _ => false,

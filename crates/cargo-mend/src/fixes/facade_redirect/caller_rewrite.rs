@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::fs;
 use std::iter;
 use std::mem;
 use std::path::Path;
@@ -23,7 +22,6 @@ use syn::Stmt;
 use syn::UseTree;
 use syn::Visibility;
 use syn::ext::IdentExt;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit;
 use syn::visit::Visit;
@@ -39,6 +37,7 @@ use crate::fixes::imports;
 use crate::fixes::imports::UseBinding;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
+use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::PathAnchor;
 
 /// Which builds compile a caller, ordered from fewest to most.
@@ -68,24 +67,35 @@ pub(in crate::fixes) struct FileRedirects {
 /// module bindings a caller path may go through.
 pub(in crate::fixes) fn redirect_callers_in_file(
     file: &Path,
+    sources: &ParsedSources,
     module_path: Vec<String>,
     redirects: &[FacadeRedirect],
     module_aliases: &ModuleAliases,
 ) -> Result<FileRedirects> {
-    let source =
-        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
-    redirect_callers_in_source(file, &source, module_path, redirects, module_aliases)
+    let source = sources
+        .source(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    let syntax = source
+        .syntax()
+        .with_context(|| format!("failed to parse {}", file.display()))?;
+    Ok(redirect_callers_in_syntax(
+        file,
+        source.text(),
+        syntax,
+        module_path,
+        redirects,
+        module_aliases,
+    ))
 }
 
-fn redirect_callers_in_source(
+fn redirect_callers_in_syntax(
     file: &Path,
     source: &str,
+    syntax: &File,
     module_path: Vec<String>,
     redirects: &[FacadeRedirect],
     module_aliases: &ModuleAliases,
-) -> Result<FileRedirects> {
-    let syntax =
-        parse_file(source).with_context(|| format!("failed to parse {}", file.display()))?;
+) -> FileRedirects {
     let mut rewriter = CallerRewriter {
         file,
         source,
@@ -99,12 +109,12 @@ fn redirect_callers_in_source(
         named_owner_modules: BTreeSet::new(),
         cfg_test_depth: 0,
     };
-    rewriter.visit_file(&syntax);
-    Ok(FileRedirects {
+    rewriter.visit_file(syntax);
+    FileRedirects {
         fixes:               rewriter.fixes,
         outside_used:        rewriter.outside_used,
         named_owner_modules: rewriter.named_owner_modules,
-    })
+    }
 }
 
 /// Whether a binding scope is a module, where name lookup stops, or a block,
@@ -733,10 +743,29 @@ mod tests {
     use std::path::Path;
 
     use super::CallerBuilds;
-    use super::redirect_callers_in_source;
+    use super::FileRedirects;
+    use super::redirect_callers_in_syntax;
     use crate::fixes::facade_redirect::FacadeRedirect;
     use crate::fixes::facade_redirect::ModuleAliases;
     use crate::fixes::facade_redirect::RedirectTarget;
+
+    fn redirect_callers_in_source(
+        file: &Path,
+        source: &str,
+        module_path: Vec<String>,
+        redirects: &[FacadeRedirect],
+        module_aliases: &ModuleAliases,
+    ) -> syn::Result<FileRedirects> {
+        let syntax = syn::parse_file(source)?;
+        Ok(redirect_callers_in_syntax(
+            file,
+            source,
+            &syntax,
+            module_path,
+            redirects,
+            module_aliases,
+        ))
+    }
 
     fn path(text: &str) -> Vec<String> {
         text.split("::")

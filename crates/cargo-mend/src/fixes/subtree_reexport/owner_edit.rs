@@ -1,20 +1,19 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::ops::Range;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
+use syn::File;
 use syn::Ident;
 use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
-use syn::parse_file;
 use syn::spanned::Spanned;
 
-use super::crate_files::CrateFiles;
+use super::crate_files::OwnerCrate;
 use super::local_use::GlobReach;
 use super::local_use::LocalUse;
 use crate::fixes::constants::CFG_TEST_ATTRIBUTE;
@@ -75,23 +74,27 @@ struct ItemRewrite {
 pub(super) fn edit_owner_region(
     file: &Path,
     facts: &[OwnerFact<'_>],
-    crate_files: &CrateFiles,
+    owner_crate: OwnerCrate<'_>,
     emptied: EmptiedOwner,
 ) -> Result<RegionEdit> {
-    let source =
-        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
-    edit_owner_source(file, &source, facts, crate_files, emptied)
+    let source = owner_crate
+        .sources
+        .source(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    let syntax = source
+        .syntax()
+        .with_context(|| format!("failed to parse {}", file.display()))?;
+    edit_owner_source(file, source.text(), syntax, facts, owner_crate, emptied)
 }
 
 fn edit_owner_source(
     file: &Path,
     source: &str,
+    syntax: &File,
     facts: &[OwnerFact<'_>],
-    crate_files: &CrateFiles,
+    owner_crate: OwnerCrate<'_>,
     emptied: EmptiedOwner,
 ) -> Result<RegionEdit> {
-    let syntax =
-        parse_file(source).with_context(|| format!("failed to parse {}", file.display()))?;
     let lines = SourceLines::new(source);
     let mut located = Vec::new();
     let mut unmatched = Vec::new();
@@ -122,7 +125,7 @@ fn edit_owner_source(
             &lines,
             &syntax.items,
             &region,
-            crate_files,
+            owner_crate,
             emptied,
         )?);
     }
@@ -135,7 +138,7 @@ fn edit_region(
     lines: &SourceLines<'_>,
     file_items: &[Item],
     region: &[Located<'_, '_>],
-    crate_files: &CrateFiles,
+    owner_crate: OwnerCrate<'_>,
     emptied: EmptiedOwner,
 ) -> Result<Vec<UseFix>> {
     let enclosing = region.first().and_then(|found| found.enclosing);
@@ -189,7 +192,7 @@ fn edit_region(
                     if inline == LocalUse::Always {
                         inline
                     } else {
-                        inline.max(reach.files_reach(crate_files, file)?)
+                        inline.max(reach.files_reach(owner_crate, file)?)
                     }
                 };
             if local_use != LocalUse::Unused {
@@ -375,9 +378,11 @@ mod tests {
     use super::RegionEdit;
     use super::edit_owner_source;
     use crate::fixes::subtree_reexport::crate_files::CrateFiles;
+    use crate::fixes::subtree_reexport::crate_files::OwnerCrate;
     use crate::reporting::AncestorReexport;
     use crate::reporting::ModuleForm;
     use crate::reporting::SubtreeReexportFixFact;
+    use crate::rust_syntax::ParsedSources;
 
     fn fact(
         line: usize,
@@ -412,11 +417,16 @@ mod tests {
             .enumerate()
             .map(|(index, fact)| OwnerFact { index, fact })
             .collect::<Vec<_>>();
+        let syntax = syn::parse_file(source).expect("parse owner");
         edit_owner_source(
             Path::new("owner.rs"),
             source,
+            &syntax,
             &owner_facts,
-            &CrateFiles::default(),
+            OwnerCrate {
+                files:   &CrateFiles::default(),
+                sources: &ParsedSources::default(),
+            },
             emptied,
         )
         .expect("edit owner")

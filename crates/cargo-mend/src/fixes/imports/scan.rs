@@ -1,12 +1,10 @@
 use std::ffi::OsStr;
-use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
 use syn::ItemMod;
 use syn::ItemUse;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use walkdir::WalkDir;
@@ -22,6 +20,7 @@ use crate::reporting::FixSupport;
 use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::Selection;
 
 #[derive(Debug, Clone)]
@@ -130,8 +129,11 @@ impl Visit<'_> for UseVisitor<'_> {
     }
 }
 
-pub(in crate::fixes) fn scan_selection(selection: &Selection) -> Result<ImportScan> {
-    let findings_with_fixes = scan_selection_with_fixes(selection)?;
+pub(in crate::fixes) fn scan_selection(
+    selection: &Selection,
+    sources: &ParsedSources,
+) -> Result<ImportScan> {
+    let findings_with_fixes = scan_selection_with_fixes(selection, sources)?;
     let fixes = ValidatedFixSet::try_from(
         findings_with_fixes
             .iter()
@@ -147,14 +149,17 @@ pub(in crate::fixes) fn scan_selection(selection: &Selection) -> Result<ImportSc
     })
 }
 
-fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>> {
+fn scan_selection_with_fixes(
+    selection: &Selection,
+    sources: &ParsedSources,
+) -> Result<Vec<ImportFinding>> {
     let mut findings = Vec::new();
     for package_root in &selection.package_roots {
         let source_root = package_root.join(SOURCE_DIR_SRC);
         if !source_root.is_dir() {
             continue;
         }
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = sources.module_map(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
@@ -170,6 +175,7 @@ fn scan_selection_with_fixes(selection: &Selection) -> Result<Vec<ImportFinding>
                 &source_root,
                 path,
                 &module_map,
+                sources,
             )?);
         }
     }
@@ -200,23 +206,27 @@ fn scan_file(
     source_root: &Path,
     path: &Path,
     module_map: &ModuleMap,
+    sources: &ParsedSources,
 ) -> Result<Vec<ImportFinding>> {
     let Some(base_module_path) = module_map.scannable_module_path(source_root, path)? else {
         return Ok(Vec::new());
     };
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let offsets = import_path::line_offsets(&text);
+    let source = sources
+        .source(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let syntax = source
+        .syntax()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let text = source.text();
+    let offsets = import_path::line_offsets(text);
     let mut visitor = UseVisitor {
         analysis_root,
         path,
-        text: &text,
+        text,
         offsets: &offsets,
         current_module_path: base_module_path,
         findings: Vec::new(),
     };
-    visitor.visit_file(&syntax);
+    visitor.visit_file(syntax);
     Ok(visitor.findings)
 }

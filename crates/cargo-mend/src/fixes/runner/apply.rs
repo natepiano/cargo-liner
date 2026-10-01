@@ -59,7 +59,8 @@ impl MendRunner<'_> {
             BuildOutputMode::Quiet
         };
         match self.build_selection(validation_output_mode) {
-            Ok(validation) => {
+            Ok(checked) => {
+                let validation = checked.result;
                 let check_duration = plan_check_duration + validation.check_duration;
                 let notice = Self::build_fix_notice(
                     planned.operation_mode.intent,

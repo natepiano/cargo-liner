@@ -13,7 +13,7 @@ use crate::fixes::facade_redirect::FacadeRedirect;
 use crate::fixes::facade_redirect::ModuleAliases;
 use crate::fixes::facade_redirect::RedirectTarget;
 use crate::fixes::imports::UseFix;
-use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 
 pub(super) struct ValidatedPubUsePlan {
     pub(super) parent_boundary:    ParentBoundaryKey,
@@ -27,6 +27,7 @@ pub(super) struct ValidatedPubUsePlan {
 
 pub(super) fn rewrite_subtree_imports_for_plans(
     plans: &[ValidatedPubUsePlan],
+    sources: &ParsedSources,
 ) -> Result<Vec<UseFix>> {
     let mut plan_groups: BTreeMap<PathBuf, Vec<&ValidatedPubUsePlan>> = BTreeMap::new();
     for plan in plans {
@@ -47,7 +48,7 @@ pub(super) fn rewrite_subtree_imports_for_plans(
                 parent_module.display()
             )
         })?;
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = sources.module_map(&source_root);
         let redirects = parent_plans
             .iter()
             .copied()
@@ -66,6 +67,7 @@ pub(super) fn rewrite_subtree_imports_for_plans(
             fixes.extend(
                 facade_redirect::redirect_callers_in_file(
                     &file,
+                    sources,
                     module_path,
                     &redirects,
                     &ModuleAliases::default(),

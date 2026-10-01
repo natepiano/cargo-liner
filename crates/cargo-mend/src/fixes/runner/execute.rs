@@ -7,12 +7,35 @@ use crate::config::DiagnosticCode;
 use crate::config::DiagnosticStatus;
 use crate::config::OperationIntent;
 use crate::fixes::imports;
+use crate::fixes::imports::ImportScan;
 use crate::fixes::imports_at_top;
+use crate::fixes::imports_at_top::ImportsAtTopScan;
 use crate::fixes::inline_path_qualified_type;
+use crate::fixes::inline_path_qualified_type::InlinePathScan;
 use crate::fixes::prefer_module_import;
+use crate::fixes::prefer_module_import::PreferModuleImportScan;
 use crate::reporting::ExecutionOutcome;
 use crate::reporting::MendFailure;
 use crate::reporting::PassEdits;
+use crate::rust_syntax::ParsedSources;
+
+/// A checked selection, with the syntax scans that added findings to its
+/// report and the sources they read, kept so the fix scans that follow reuse
+/// both instead of reading the tree again.
+pub(super) struct CheckedSelection {
+    pub(super) result:  SelectionResult,
+    pub(super) scans:   SyntaxScans,
+    pub(super) sources: ParsedSources,
+}
+
+/// The syntax scans whose diagnostics are enabled; a fix kind is enabled only
+/// with one of its diagnostics, so each fix scan finds its scan here.
+pub(super) struct SyntaxScans {
+    pub(super) imports:              Option<ImportScan>,
+    pub(super) prefer_module_import: Option<PreferModuleImportScan>,
+    pub(super) inline_path:          Option<InlinePathScan>,
+    pub(super) imports_at_top:       Option<ImportsAtTopScan>,
+}
 
 impl MendRunner<'_> {
     pub(super) fn execute(&mut self, planned: RunPlan) -> Result<ExecutionOutcome, MendFailure> {
@@ -62,7 +85,7 @@ impl MendRunner<'_> {
     pub(super) fn build_selection(
         &self,
         output_mode: BuildOutputMode,
-    ) -> Result<SelectionResult, MendFailure> {
+    ) -> Result<CheckedSelection, MendFailure> {
         let mut result = compiler::run_selection(
             self.selection,
             self.cargo_plan,
@@ -70,37 +93,49 @@ impl MendRunner<'_> {
             output_mode,
             self.color_mode,
         )?;
-        let report = &mut result.report;
+        // Created after the check, which `cargo fix` may have rewritten files
+        // during.
+        let sources = ParsedSources::default();
         let diagnostics_config = &self.loaded_config.diagnostics_config;
-        if diagnostics_config.is_enabled(DiagnosticCode::ShortenLocalCrateImport)
-            == DiagnosticStatus::Enabled
-            || diagnostics_config.is_enabled(DiagnosticCode::ReplaceDeepSuperImport)
-                == DiagnosticStatus::Enabled
-        {
-            let import_scan =
-                imports::scan_selection(self.selection).map_err(MendFailure::Unexpected)?;
-            report.findings.extend(import_scan.findings);
-        }
-        if diagnostics_config.is_enabled(DiagnosticCode::PreferModuleImport)
-            == DiagnosticStatus::Enabled
-        {
-            let prefer_module_import_scan = prefer_module_import::scan_selection(self.selection)
-                .map_err(MendFailure::Unexpected)?;
-            report.findings.extend(prefer_module_import_scan.findings);
-        }
-        if diagnostics_config.is_enabled(DiagnosticCode::InlinePathQualifiedType)
-            == DiagnosticStatus::Enabled
-        {
-            let inline_path_scan = inline_path_qualified_type::scan_selection(self.selection)
-                .map_err(MendFailure::Unexpected)?;
-            report.findings.extend(inline_path_scan.findings);
-        }
-        if diagnostics_config.is_enabled(DiagnosticCode::ImportsAtTop) == DiagnosticStatus::Enabled
-        {
-            let imports_at_top_scan =
-                imports_at_top::scan_selection(self.selection).map_err(MendFailure::Unexpected)?;
-            report.findings.extend(imports_at_top_scan.findings);
-        }
+        let enabled = |codes: &[DiagnosticCode]| {
+            codes
+                .iter()
+                .any(|&code| diagnostics_config.is_enabled(code) == DiagnosticStatus::Enabled)
+        };
+        let scans = SyntaxScans {
+            imports:              enabled(&[
+                DiagnosticCode::ShortenLocalCrateImport,
+                DiagnosticCode::ReplaceDeepSuperImport,
+            ])
+            .then(|| imports::scan_selection(self.selection, &sources))
+            .transpose()
+            .map_err(MendFailure::Unexpected)?,
+            prefer_module_import: enabled(&[DiagnosticCode::PreferModuleImport])
+                .then(|| prefer_module_import::scan_selection(self.selection, &sources))
+                .transpose()
+                .map_err(MendFailure::Unexpected)?,
+            inline_path:          enabled(&[DiagnosticCode::InlinePathQualifiedType])
+                .then(|| inline_path_qualified_type::scan_selection(self.selection, &sources))
+                .transpose()
+                .map_err(MendFailure::Unexpected)?,
+            imports_at_top:       enabled(&[DiagnosticCode::ImportsAtTop])
+                .then(|| imports_at_top::scan_selection(self.selection, &sources))
+                .transpose()
+                .map_err(MendFailure::Unexpected)?,
+        };
+        let report = &mut result.report;
+        let scan_findings = [
+            scans.imports.as_ref().map(|scan| &scan.findings),
+            scans
+                .prefer_module_import
+                .as_ref()
+                .map(|scan| &scan.findings),
+            scans.inline_path.as_ref().map(|scan| &scan.findings),
+            scans.imports_at_top.as_ref().map(|scan| &scan.findings),
+        ];
+        report
+            .findings
+            .extend(scan_findings.into_iter().flatten().flatten().cloned());
         report.findings.sort_by(|a, b| {
             (
                 a.severity,
@@ -141,6 +176,10 @@ impl MendRunner<'_> {
                 == DiagnosticStatus::Enabled
         });
         report.refresh_summary();
-        Ok(result)
+        Ok(CheckedSelection {
+            result,
+            scans,
+            sources,
+        })
     }
 }

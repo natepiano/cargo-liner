@@ -15,8 +15,8 @@ use syn::ItemMod;
 use syn::Lit;
 use syn::Meta;
 use syn::ext::IdentExt;
-use syn::parse_file;
 
+use super::ParsedSources;
 use super::file_module_path;
 use super::is_cfg_test;
 use super::parse_meta_list;
@@ -144,25 +144,28 @@ pub(crate) struct ModuleMap {
 }
 
 impl ModuleMap {
-    /// Resolve every file reachable from a crate root under `source_root`.
-    pub(crate) fn resolve(source_root: &Path) -> Self {
+    /// Resolve every file reachable from a crate root under `source_root`,
+    /// reading each through `sources`. Callers ask
+    /// [`ParsedSources::module_map`], which resolves each source root once.
+    pub(super) fn resolve(source_root: &Path, sources: &ParsedSources) -> Self {
         let mut merged = Self {
             declarations: FxHashMap::default(),
             ungated:      FxHashSet::default(),
         };
         for crate_root in crate_root_files(source_root) {
-            merged.absorb(Self::for_crate_root(&crate_root));
+            merged.absorb(Self::for_crate_root(&crate_root, sources));
         }
         merged
     }
 
     /// Resolve every file reachable from the one crate root `crate_root`,
     /// which may sit anywhere: `src/lib.rs`, `src/bin/tool.rs`, `tests/it.rs`.
-    pub(crate) fn for_crate_root(crate_root: &Path) -> Self {
+    pub(crate) fn for_crate_root(crate_root: &Path, sources: &ParsedSources) -> Self {
         let mut walk = ModuleWalk {
+            sources,
             declarations: FxHashMap::default(),
-            ungated:      FxHashSet::default(),
-            visiting:     FxHashSet::default(),
+            ungated: FxHashSet::default(),
+            visiting: FxHashSet::default(),
         };
         let root = Declared {
             module_path: Vec::new(),
@@ -262,7 +265,8 @@ struct Declared {
     test_only:   bool,
 }
 
-struct ModuleWalk {
+struct ModuleWalk<'a> {
+    sources:      &'a ParsedSources,
     declarations: FxHashMap<PathBuf, Vec<Vec<String>>>,
     ungated:      FxHashSet<PathBuf>,
     /// The `(file, module path)` pairs already being walked, so a `#[path]`
@@ -270,7 +274,7 @@ struct ModuleWalk {
     visiting:     FxHashSet<(PathBuf, Vec<String>)>,
 }
 
-impl ModuleWalk {
+impl ModuleWalk<'_> {
     fn declare(&mut self, file: &Path, module: &Declared) {
         let file = lexically_normalized(file);
         if !module.test_only {
@@ -287,8 +291,8 @@ impl ModuleWalk {
         if !self.visiting.insert(visit.clone()) {
             return;
         }
-        if let Ok(text) = fs::read_to_string(file)
-            && let Ok(syntax) = parse_file(&text)
+        if let Ok(source) = self.sources.source(file)
+            && let Ok(syntax) = source.syntax()
         {
             self.walk_items(&syntax.items, directories, module);
         }
@@ -358,7 +362,7 @@ fn crate_root_files(source_root: &Path) -> Vec<PathBuf> {
 /// `src/screen/capture_stream.rs` but does not compare equal to it. Canonicalizing
 /// would also resolve symlinks, and the callers' paths come from a directory walk
 /// that does not.
-fn lexically_normalized(path: &Path) -> PathBuf {
+pub(super) fn lexically_normalized(path: &Path) -> PathBuf {
     path.components()
         .fold(PathBuf::new(), |mut normalized, component| {
             match component {
@@ -448,6 +452,7 @@ mod tests {
     use super::FileModulePath;
     use super::ModuleDirectories;
     use super::ModuleMap;
+    use crate::rust_syntax::ParsedSources;
 
     /// A `#[path]` written at the top level of a non-`mod.rs` file resolves
     /// against that file's directory, while a plain `mod name;` in the same file
@@ -499,7 +504,8 @@ fn main() {}
         .expect("write binary root");
         fs::write(binary_dir.join("helper.rs"), "").expect("write sibling helper");
         fs::write(binary_dir.join("tool/helper.rs"), "").expect("write nested helper");
-        let module_map = ModuleMap::for_crate_root(&binary_dir.join("tool.rs"));
+        let module_map =
+            ModuleMap::for_crate_root(&binary_dir.join("tool.rs"), &ParsedSources::default());
 
         assert_eq!(
             module_map.file_module_path(&source_root, &binary_dir.join("helper.rs")),
@@ -534,7 +540,8 @@ fn main() {}
         )
         .expect("write common");
         fs::write(tests_dir.join("common/fixtures.rs"), "").expect("write fixtures");
-        let module_map = ModuleMap::for_crate_root(&tests_dir.join("it.rs"));
+        let module_map =
+            ModuleMap::for_crate_root(&tests_dir.join("it.rs"), &ParsedSources::default());
 
         assert_eq!(
             module_map.file_module_path(&tests_dir, &tests_dir.join("common/fixtures.rs")),
@@ -560,7 +567,7 @@ fn main() {}
     fn a_path_attribute_moves_a_file_off_its_directory_module_path() {
         let crate_dir = crate_with_detached_module();
         let source_root = crate_dir.path().join("src");
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = ModuleMap::resolve(&source_root, &ParsedSources::default());
 
         assert_eq!(
             module_map.file_module_path(&source_root, &source_root.join("stream/macos.rs")),
@@ -580,7 +587,7 @@ fn main() {}
         let crate_dir = crate_with_detached_module();
         let source_root = crate_dir.path().join("src");
         fs::write(source_root.join("stream/orphan.rs"), "").expect("write orphan");
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = ModuleMap::resolve(&source_root, &ParsedSources::default());
 
         assert_eq!(
             module_map.file_module_path(&source_root, &source_root.join("stream/orphan.rs")),
@@ -601,7 +608,7 @@ fn main() {}
              #[path = \"../stream/macos.rs\"]\nmod camera_stream_again;\n",
         )
         .expect("write platform module");
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = ModuleMap::resolve(&source_root, &ParsedSources::default());
 
         assert_eq!(
             module_map.file_module_path(&source_root, &source_root.join("stream/macos.rs")),
@@ -627,7 +634,7 @@ fn main() {}
         fs::write(source_root.join("tests/mod.rs"), "mod helper;\n").expect("write tests");
         fs::write(source_root.join("tests/helper.rs"), "").expect("write helper");
         fs::write(source_root.join("gated/inner.rs"), "").expect("write inner");
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = ModuleMap::resolve(&source_root, &ParsedSources::default());
 
         assert!(!module_map.is_test_only(&source_root.join("lib.rs")));
         assert!(!module_map.is_test_only(&source_root.join("plain.rs")));

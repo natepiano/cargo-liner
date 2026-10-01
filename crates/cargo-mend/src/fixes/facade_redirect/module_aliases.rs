@@ -1,17 +1,16 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
 use syn::Item;
 use syn::ext::IdentExt;
-use syn::parse_file;
 
 use super::module_path;
 use crate::fixes::imports;
 use crate::fixes::imports::UseBinding;
+use crate::rust_syntax::ParsedSources;
 
 /// The module-level `use` items of a crate that bind one of its modules under
 /// another path, such as `pub(super) use crate::platform::stream as capture;`
@@ -35,16 +34,20 @@ pub(in crate::fixes) struct ModuleAliases {
 
 impl ModuleAliases {
     /// The module bindings of `files`, each paired with the module path it
-    /// occupies. A binding counts only when its target is a module of these
-    /// files: an inline `mod` or a file's own module.
+    /// occupies and read through `sources`. A binding counts only when its
+    /// target is a module of these files: an inline `mod` or a file's own
+    /// module.
     pub(in crate::fixes) fn collect<'file>(
         files: impl Iterator<Item = (&'file Path, &'file [String])>,
+        sources: &ParsedSources,
     ) -> Result<Self> {
         let mut collector = AliasCollector::default();
         for (file, module_path) in files {
-            let source = fs::read_to_string(file)
+            let source = sources
+                .source(file)
                 .with_context(|| format!("failed to read {}", file.display()))?;
-            let syntax = parse_file(&source)
+            let syntax = source
+                .syntax()
                 .with_context(|| format!("failed to parse {}", file.display()))?;
             collector.modules.insert(module_path.to_vec());
             collector.collect_items(module_path, &syntax.items);

@@ -1,10 +1,8 @@
 use std::ffi::OsStr;
-use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
-use syn::parse_file;
 use walkdir::WalkDir;
 
 use super::in_body_use_finder;
@@ -12,6 +10,7 @@ use crate::compiler::SOURCE_DIR_SRC;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::Selection;
 
 pub(crate) struct ImportsAtTopScan {
@@ -19,7 +18,10 @@ pub(crate) struct ImportsAtTopScan {
     pub fixes:    ValidatedFixSet,
 }
 
-pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportsAtTopScan> {
+pub(crate) fn scan_selection(
+    selection: &Selection,
+    sources: &ParsedSources,
+) -> Result<ImportsAtTopScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
@@ -37,7 +39,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportsAtTopScan> 
             {
                 continue;
             }
-            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), path)?;
+            let (findings, fixes) = scan_file(selection.analysis_root.as_path(), path, sources)?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
         }
@@ -54,11 +56,17 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<ImportsAtTopScan> 
     })
 }
 
-fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<UseFix>)> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+fn scan_file(
+    analysis_root: &Path,
+    path: &Path,
+    sources: &ParsedSources,
+) -> Result<(Vec<Finding>, Vec<UseFix>)> {
+    let source = sources
+        .source(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let syntax = source
+        .syntax()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
     let display_path = path
         .strip_prefix(analysis_root)
         .unwrap_or(path)
@@ -66,8 +74,8 @@ fn scan_file(analysis_root: &Path, path: &Path) -> Result<(Vec<Finding>, Vec<Use
         .replace('\\', "/");
 
     Ok(in_body_use_finder::scan(
-        &syntax,
-        &text,
+        syntax,
+        source.text(),
         path,
         &display_path,
     ))

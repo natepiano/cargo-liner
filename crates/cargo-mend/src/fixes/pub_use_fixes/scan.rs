@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
-use rustc_hash::FxHashMap;
 
 use super::parent_boundary;
 use super::parent_boundary::ParentBoundaryKey;
@@ -17,7 +15,7 @@ use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Report;
 use crate::rust_syntax::FileModulePath;
-use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::Selection;
 
 pub(crate) struct PubUseFixScan {
@@ -83,10 +81,14 @@ struct NarrowablePubUseCandidate {
     bare_pub_keyword: BarePubKeyword,
 }
 
-pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<PubUseFixScan> {
+pub(crate) fn scan_selection(
+    selection: &Selection,
+    report: &Report,
+    sources: &ParsedSources,
+) -> Result<PubUseFixScan> {
     let mut fixes = Vec::new();
     let facts = collect_pub_use_fix_facts(selection, report);
-    let analysis = analyze_pub_use_candidates(&facts)?;
+    let analysis = analyze_pub_use_candidates(&facts, sources)?;
     let parent_fix_groups = group_parent_pub_use_plans(&analysis.supported_plans);
 
     for plan in &analysis.supported_plans {
@@ -94,13 +96,17 @@ pub(crate) fn scan_selection(selection: &Selection, report: &Report) -> Result<P
     }
 
     for (parent_boundary, exports) in parent_fix_groups {
-        let removal =
-            parent_boundary::build_parent_pub_use_edit_for_exports(&parent_boundary, &exports)?;
+        let removal = parent_boundary::build_parent_pub_use_edit_for_exports(
+            &parent_boundary,
+            &exports,
+            sources,
+        )?;
         fixes.push(removal);
     }
 
     fixes.extend(validated_plan::rewrite_subtree_imports_for_plans(
         &analysis.supported_plans,
+        sources,
     )?);
     let fixes = ValidatedFixSet::try_from(fixes)?;
 
@@ -129,14 +135,18 @@ fn collect_pub_use_fix_facts(selection: &Selection, report: &Report) -> Vec<PubU
     facts
 }
 
-fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis> {
+fn analyze_pub_use_candidates(
+    facts: &[PubUseFixFact],
+    sources: &ParsedSources,
+) -> Result<PubUseAnalysis> {
     let mut supported_plans = Vec::new();
     let mut skipped = 0usize;
-    let mut module_maps: FxHashMap<PathBuf, ModuleMap> = FxHashMap::default();
     for fact in facts {
-        let child_source = fs::read_to_string(&fact.child_file)
+        let child_source = sources
+            .source(&fact.child_file)
             .with_context(|| format!("failed to read {}", fact.child_file.display()))?;
-        let parent_source = fs::read_to_string(&fact.parent_module)
+        let parent_source = sources
+            .source(&fact.parent_module)
             .with_context(|| format!("failed to read {}", fact.parent_module.display()))?;
         let Some(parent_export) = parent_boundary::resolve_parent_pub_use_export(
             &parent_source,
@@ -159,9 +169,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
         let source_root = facade_redirect::find_source_root(&fact.parent_module)
             .context("failed to determine src root for parent module")?;
 
-        let module_map = module_maps
-            .entry(source_root.clone())
-            .or_insert_with(|| ModuleMap::resolve(&source_root));
+        let module_map = sources.module_map(&source_root);
         let parent_module_path = match module_map
             .file_module_path(&source_root, &fact.parent_module)
             .context("failed to determine parent module path")?
@@ -188,7 +196,7 @@ fn analyze_pub_use_candidates(facts: &[PubUseFixFact]) -> Result<PubUseAnalysis>
             parent_module_path,
             target_item_path,
         };
-        match screen_candidate(candidate, &fact.child_item_name, &child_source)? {
+        match screen_candidate(candidate, &fact.child_item_name, child_source.text())? {
             CandidateScreening::Accept(narrowable) => {
                 supported_plans.push(build_validated_plan(narrowable, parent_boundary));
             },

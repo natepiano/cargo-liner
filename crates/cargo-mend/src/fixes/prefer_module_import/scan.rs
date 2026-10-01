@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
@@ -11,7 +10,6 @@ use syn::Item;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
-use syn::parse_file;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::visit::visit_item_mod;
@@ -28,6 +26,7 @@ use super::inline_calls::InlineCallDetector;
 use super::references::BareReference;
 use super::references::ReferenceCollector;
 use super::support;
+use super::support::CrateSources;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
 use crate::fixes::imports::ConditionalAttributes;
@@ -39,6 +38,7 @@ use crate::reporting::FixSupport;
 use crate::reporting::ItemVisibility;
 use crate::reporting::Severity;
 use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::Selection;
 
 pub(crate) struct PreferModuleImportScan {
@@ -101,7 +101,10 @@ pub(super) struct FileInsertion {
     pub(super) before_first_item: bool,
 }
 
-pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImportScan> {
+pub(crate) fn scan_selection(
+    selection: &Selection,
+    sources: &ParsedSources,
+) -> Result<PreferModuleImportScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
@@ -109,7 +112,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
         if !source_root.is_dir() {
             continue;
         }
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = sources.module_map(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
@@ -122,7 +125,10 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
             }
             let (findings, fixes) = scan_file(
                 selection.analysis_root.as_path(),
-                &source_root,
+                CrateSources {
+                    source_root: &source_root,
+                    sources,
+                },
                 path,
                 &module_map,
             )?;
@@ -144,69 +150,53 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<PreferModuleImport
 
 fn scan_file(
     analysis_root: &Path,
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     path: &Path,
     module_map: &ModuleMap,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
-    let Some(current_module_path) = module_map.scannable_module_path(source_root, path)? else {
+    let Some(current_module_path) =
+        module_map.scannable_module_path(crate_sources.source_root, path)?
+    else {
         return Ok((Vec::new(), Vec::new()));
     };
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let offsets = support::line_offsets(&text);
+    let source = crate_sources
+        .sources
+        .source(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let syntax = source
+        .syntax()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let text = source.text();
+    let offsets = support::line_offsets(text);
     let file_context = ScanFileContext {
         analysis_root,
         path,
-        text: &text,
+        text,
         offsets: &offsets,
     };
 
-    let declared_modules = collect_declared_modules(&syntax);
-
-    let mut detector = ImportDetector {
-        source_root,
-        text: &text,
-        offsets: &offsets,
-        current_module_path: current_module_path.clone(),
-        inline_scope: Vec::new(),
-        declared_modules: &declared_modules,
-        candidates: Vec::new(),
-    };
-    Visit::visit_file(&mut detector, &syntax);
-
-    let mut inline_detector = InlineCallDetector {
-        source_root,
-        text: &text,
-        offsets: &offsets,
-        current_module_path: &current_module_path,
-        declared_modules: &declared_modules,
-        candidates: Vec::new(),
-        inline_mod_depth: 0,
-        conditional_attributes: ConditionalAttributes::default(),
-    };
-    Visit::visit_file(&mut inline_detector, &syntax);
-
-    if detector.candidates.is_empty() && inline_detector.candidates.is_empty() {
+    let (candidates, mut inline_candidates) =
+        detect_candidates(crate_sources, &file_context, &current_module_path, syntax);
+    if candidates.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
     let existing_module_imports =
-        collect_existing_module_imports(&syntax, source_root, &current_module_path);
+        collect_existing_module_imports(syntax, crate_sources, &current_module_path);
 
     let module_to_functions = fixable_function_candidates(
         &FileScope {
-            syntax: &syntax,
+            syntax,
             module_map,
+            sources: crate_sources.sources,
             current_module_path: &current_module_path,
             existing_module_imports: &existing_module_imports,
         },
-        detector.candidates,
-        &mut inline_detector.candidates,
+        candidates,
+        &mut inline_candidates,
     );
 
-    if module_to_functions.is_empty() && inline_detector.candidates.is_empty() {
+    if module_to_functions.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
@@ -217,7 +207,7 @@ fn scan_file(
         .collect();
 
     let mut collector = ReferenceCollector::new(&offsets, &imported_names);
-    Visit::visit_file(&mut collector, &syntax);
+    Visit::visit_file(&mut collector, syntax);
 
     let mut func_to_module: BTreeMap<&str, (&str, ImportTarget)> = BTreeMap::new();
     for functions in module_to_functions.values() {
@@ -239,14 +229,14 @@ fn scan_file(
         },
     );
 
-    if !inline_detector.candidates.is_empty() {
+    if !inline_candidates.is_empty() {
         let will_import_modules =
             build_will_import_modules(&existing_module_imports, &module_to_functions);
-        let file_insertion = file_level_insertion(&syntax, &text, &offsets);
+        let file_insertion = file_level_insertion(syntax, text, &offsets);
         let (inline_findings, inline_fixes) = inline_calls::build_inline_call_findings_and_fixes(
             &file_context,
             &InlineCallFindingInputs {
-                candidates: &inline_detector.candidates,
+                candidates: &inline_candidates,
                 will_import_modules: &will_import_modules,
                 file_insertion,
             },
@@ -258,10 +248,44 @@ fn scan_file(
     Ok((findings, fixes))
 }
 
+/// The function import and inline call candidates the two detectors find in
+/// `syntax`.
+fn detect_candidates<'a>(
+    crate_sources: CrateSources<'a>,
+    file_context: &ScanFileContext<'a>,
+    current_module_path: &'a [String],
+    syntax: &File,
+) -> (Vec<RawCandidate>, Vec<InlineCallCandidate>) {
+    let declared_modules = collect_declared_modules(syntax);
+    let mut detector = ImportDetector {
+        crate_sources,
+        text: file_context.text,
+        offsets: file_context.offsets,
+        current_module_path: current_module_path.to_vec(),
+        inline_scope: Vec::new(),
+        declared_modules: &declared_modules,
+        candidates: Vec::new(),
+    };
+    Visit::visit_file(&mut detector, syntax);
+    let mut inline_detector = InlineCallDetector {
+        crate_sources,
+        text: file_context.text,
+        offsets: file_context.offsets,
+        current_module_path,
+        declared_modules: &declared_modules,
+        candidates: Vec::new(),
+        inline_mod_depth: 0,
+        conditional_attributes: ConditionalAttributes::default(),
+    };
+    Visit::visit_file(&mut inline_detector, syntax);
+    (detector.candidates, inline_detector.candidates)
+}
+
 /// What the candidate drops read about the scanned file.
 struct FileScope<'a> {
     syntax:                  &'a File,
     module_map:              &'a ModuleMap,
+    sources:                 &'a ParsedSources,
     current_module_path:     &'a [String],
     existing_module_imports: &'a BTreeSet<ScopedModuleImport>,
 }
@@ -287,6 +311,7 @@ fn fixable_function_candidates(
 
     descendant_globs::drop_candidates_reached_by_descendant_globs(
         scope.module_map,
+        scope.sources,
         scope.current_module_path,
         &mut module_to_functions,
     );
@@ -328,11 +353,11 @@ fn collect_declared_modules(syntax: &File) -> BTreeSet<String> {
 
 fn collect_existing_module_imports(
     syntax: &File,
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     current_module_path: &[String],
 ) -> BTreeSet<ScopedModuleImport> {
     let mut collector = ExistingModuleImportCollector {
-        source_root,
+        crate_sources,
         current_module_path: current_module_path.to_vec(),
         inline_scope: Vec::new(),
         imports: BTreeSet::new(),
@@ -342,7 +367,7 @@ fn collect_existing_module_imports(
 }
 
 struct ExistingModuleImportCollector<'a> {
-    source_root:         &'a Path,
+    crate_sources:       CrateSources<'a>,
     current_module_path: Vec<String>,
     inline_scope:        Vec<String>,
     imports:             BTreeSet<ScopedModuleImport>,
@@ -355,7 +380,7 @@ impl Visit<'_> for ExistingModuleImportCollector<'_> {
             && let Some(absolute) =
                 support::resolve_to_absolute(&flat.segments, &self.current_module_path)
             && !absolute.is_empty()
-            && support::leaf_is_module(self.source_root, &absolute)
+            && support::leaf_is_module(self.crate_sources, &absolute)
         {
             self.imports.insert(ScopedModuleImport {
                 inline_scope:    self.inline_scope.clone(),

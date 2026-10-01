@@ -8,6 +8,7 @@ use anyhow::Result;
 use super::ancestor;
 use super::crate_files;
 use super::crate_files::CrateFiles;
+use super::crate_files::OwnerCrate;
 use super::owner_edit;
 use super::owner_edit::EmptiedOwner;
 use super::owner_edit::OwnerFact;
@@ -24,6 +25,7 @@ use crate::reporting::AncestorReexport;
 use crate::reporting::FixSupport;
 use crate::reporting::Report;
 use crate::reporting::SubtreeReexportFixFact;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::Selection;
 
 /// The `pub_use_outside_subtree` fixes of one pass.
@@ -53,10 +55,11 @@ struct Round {
 pub(in crate::fixes) fn scan_selection(
     selection: &Selection,
     report: &Report,
+    sources: &ParsedSources,
 ) -> Result<SubtreeReexportScan> {
     let root = &selection.analysis_root;
     let (facts, mut skipped) = fixable_facts(report);
-    let crates = crate_file_sets(root, report, &facts);
+    let crates = crate_file_sets(root, report, &facts, sources);
     let mut excluded = facts
         .iter()
         .enumerate()
@@ -72,7 +75,7 @@ pub(in crate::fixes) fn scan_selection(
     // Each round drops the facts it could not place or whose edits overlap
     // another fix, then rebuilds every edit without them.
     let fixes = loop {
-        let round = build_round(root, &facts, &crates, &excluded)?;
+        let round = build_round(root, &facts, &crates, &excluded, sources)?;
         let mut rejected = round.unmatched.clone();
         rejected.extend(overlapping_facts(&round.fixes));
         if rejected.is_empty() {
@@ -131,6 +134,7 @@ fn crate_file_sets(
     root: &Path,
     report: &Report,
     facts: &[&SubtreeReexportFixFact],
+    sources: &ParsedSources,
 ) -> BTreeMap<String, CrateFiles> {
     let crate_roots = facts
         .iter()
@@ -145,7 +149,7 @@ fn crate_file_sets(
                 .iter()
                 .filter(|mount| mount.crate_root_file == crate_root)
                 .map(|mount| (root.join(&mount.file), mount.module_path.clone()));
-            let files = CrateFiles::resolve(&root.join(&crate_root), mounts);
+            let files = CrateFiles::resolve(&root.join(&crate_root), mounts, sources);
             (crate_root, files)
         })
         .collect()
@@ -181,6 +185,7 @@ fn build_round(
     facts: &[&SubtreeReexportFixFact],
     crates: &BTreeMap<String, CrateFiles>,
     excluded: &BTreeSet<usize>,
+    sources: &ParsedSources,
 ) -> Result<Round> {
     let active = (0..facts.len())
         .filter(|index| !excluded.contains(index))
@@ -209,10 +214,11 @@ fn build_round(
             .iter()
             .map(|&index| redirect(facts[index]))
             .collect::<Vec<_>>();
-        let module_aliases = ModuleAliases::collect(files.scannable())?;
+        let module_aliases = ModuleAliases::collect(files.scannable(), sources)?;
         for (file, module_path) in files.scannable() {
             let result = facade_redirect::redirect_callers_in_file(
                 file,
+                sources,
                 module_path.to_vec(),
                 &redirects,
                 &module_aliases,
@@ -261,7 +267,8 @@ fn build_round(
         } else {
             EmptiedOwner::Delete
         };
-        match owner_edit::edit_owner_region(file, region, files, emptied)? {
+        let owner_crate = OwnerCrate { files, sources };
+        match owner_edit::edit_owner_region(file, region, owner_crate, emptied)? {
             RegionEdit::Edited(edits) => {
                 let owners = region.iter().map(|owner| owner.index).collect::<Vec<_>>();
                 round.fixes.extend(edits.into_iter().map(|fix| OwnedFix {
@@ -282,7 +289,7 @@ fn build_round(
         if let AncestorReexport::Insert(insertion) = &facts[index].ancestor_reexport {
             let file = crate_files::canonical(&root.join(&insertion.file));
             round.fixes.push(OwnedFix {
-                fix:   ancestor::insertion_fix(&file, insertion, builds)?,
+                fix:   ancestor::insertion_fix(&file, insertion, builds, sources)?,
                 facts: vec![index],
             });
         }

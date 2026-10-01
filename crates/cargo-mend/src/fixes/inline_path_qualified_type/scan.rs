@@ -1,11 +1,9 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
 use anyhow::Result;
-use syn::parse_file;
 use syn::visit::Visit;
 use walkdir::WalkDir;
 
@@ -22,6 +20,7 @@ use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
 use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 use crate::selection::Selection;
 
 pub(crate) struct InlinePathScan {
@@ -29,7 +28,10 @@ pub(crate) struct InlinePathScan {
     pub fixes:    ValidatedFixSet,
 }
 
-pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
+pub(crate) fn scan_selection(
+    selection: &Selection,
+    sources: &ParsedSources,
+) -> Result<InlinePathScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
     for package_root in &selection.package_roots {
@@ -37,7 +39,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
         if !source_root.is_dir() {
             continue;
         }
-        let module_map = ModuleMap::resolve(&source_root);
+        let module_map = sources.module_map(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
             .filter_map(Result::ok)
@@ -53,6 +55,7 @@ pub(crate) fn scan_selection(selection: &Selection) -> Result<InlinePathScan> {
                 &source_root,
                 path,
                 &module_map,
+                sources,
             )?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
@@ -71,20 +74,24 @@ fn scan_file(
     source_root: &Path,
     path: &Path,
     module_map: &ModuleMap,
+    sources: &ParsedSources,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let Some(base_module_path) = module_map.scannable_module_path(source_root, path)? else {
         return Ok((Vec::new(), Vec::new()));
     };
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let syntax =
-        parse_file(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-    let offsets = offsets::line_offsets(&text);
+    let source = sources
+        .source(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let syntax = source
+        .syntax()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let text = source.text();
+    let offsets = offsets::line_offsets(text);
     let mut scopes = Vec::new();
     let mut scope_collection_context = ScopeCollectionContext {
-        text:    &text,
+        text,
         offsets: &offsets,
-        scopes:  &mut scopes,
+        scopes: &mut scopes,
     };
     scope::collect_scopes(
         &syntax.items,
@@ -94,15 +101,15 @@ fn scan_file(
     );
 
     let mut visitor = InlinePathVisitor {
-        occurrences:            Vec::new(),
-        bare_type_names:        BTreeSet::new(),
-        mod_depth:              0,
-        generic_scopes:         Vec::new(),
-        text:                   &text,
-        offsets:                &offsets,
+        occurrences: Vec::new(),
+        bare_type_names: BTreeSet::new(),
+        mod_depth: 0,
+        generic_scopes: Vec::new(),
+        text,
+        offsets: &offsets,
         conditional_attributes: ConditionalAttributes::default(),
     };
-    visitor.visit_file(&syntax);
+    visitor.visit_file(syntax);
 
     if visitor.occurrences.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -121,7 +128,7 @@ fn scan_file(
     let resolve_ctx = OccurrenceContext {
         path,
         display_path: &display_path,
-        text: &text,
+        text,
         offsets: &offsets,
         scopes: &scopes,
         collision_names: &no_collision_names,

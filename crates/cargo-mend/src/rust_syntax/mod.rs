@@ -1,5 +1,6 @@
 mod lexical_regions;
 mod module_map;
+mod parsed_sources;
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -8,6 +9,8 @@ pub(crate) use lexical_regions::LexicalRegions;
 pub(crate) use module_map::FileModulePath;
 pub(crate) use module_map::ModuleDirectories;
 pub(crate) use module_map::ModuleMap;
+pub(crate) use parsed_sources::ParsedSource;
+pub(crate) use parsed_sources::ParsedSources;
 use syn::Attribute;
 use syn::Ident;
 use syn::Meta;

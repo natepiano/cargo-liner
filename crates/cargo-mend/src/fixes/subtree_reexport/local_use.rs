@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use anyhow::Context;
@@ -6,9 +5,8 @@ use anyhow::Result;
 use syn::Item;
 use syn::UseTree;
 use syn::ext::IdentExt;
-use syn::parse_file;
 
-use super::crate_files::CrateFiles;
+use super::crate_files::OwnerCrate;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::rust_syntax;
@@ -92,7 +90,12 @@ impl GlobReach<'_> {
     /// module. A file module compiled only under test (`#[cfg(test)]` on its
     /// declaration or an ancestor's) counts `TestOnly`, unless `owner_file`
     /// is itself test-only and the gate adds nothing.
-    pub(super) fn files_reach(&self, files: &CrateFiles, owner_file: &Path) -> Result<LocalUse> {
+    pub(super) fn files_reach(
+        &self,
+        owner_crate: OwnerCrate<'_>,
+        owner_file: &Path,
+    ) -> Result<LocalUse> {
+        let files = owner_crate.files;
         let owner_test_only = files.is_test_only(owner_file);
         let mut reach = LocalUse::Unused;
         for (file, module) in files.scannable() {
@@ -104,15 +107,19 @@ impl GlobReach<'_> {
             } else {
                 LocalUse::Always
             };
-            let source = fs::read_to_string(file)
+            let source = owner_crate
+                .sources
+                .source(file)
                 .with_context(|| format!("failed to read {}", file.display()))?;
-            let syntax = parse_file(&source)
+            let syntax = source
+                .syntax()
                 .with_context(|| format!("failed to parse {}", file.display()))?;
-            let lines = SourceLines::new(&source);
-            if self.module_reaches(&source, &syntax.items, module) {
+            let text = source.text();
+            let lines = SourceLines::new(text);
+            if self.module_reaches(text, &syntax.items, module) {
                 reach = reach.max(gate);
             }
-            reach = reach.max(self.items_reach_gated(&source, &lines, &syntax.items, module, gate));
+            reach = reach.max(self.items_reach_gated(text, &lines, &syntax.items, module, gate));
             if reach == LocalUse::Always {
                 break;
             }
@@ -177,6 +184,8 @@ mod tests {
     use crate::fixes::facade_redirect::SourceLines;
     use crate::fixes::subtree_reexport::crate_files;
     use crate::fixes::subtree_reexport::crate_files::CrateFiles;
+    use crate::fixes::subtree_reexport::crate_files::OwnerCrate;
+    use crate::rust_syntax::ParsedSources;
 
     fn reaches(source: &str, name: &str) -> LocalUse {
         let syntax = parse_file(source).expect("parse");
@@ -233,13 +242,20 @@ mod tests {
         );
         write(&owner_dir.join("tests.rs"), tests_source);
         write(&owner_dir.join("plain.rs"), plain_source);
-        let files = CrateFiles::resolve(&source_root.join("lib.rs"), []);
+        let sources = ParsedSources::default();
+        let files = CrateFiles::resolve(&source_root.join("lib.rs"), [], &sources);
         let owner = vec!["owner".to_string()];
         GlobReach {
             owner: &owner,
             name:  "Widget",
         }
-        .files_reach(&files, &crate_files::canonical(&owner_dir.join("mod.rs")))
+        .files_reach(
+            OwnerCrate {
+                files:   &files,
+                sources: &sources,
+            },
+            &crate_files::canonical(&owner_dir.join("mod.rs")),
+        )
         .expect("read crate files")
     }
 

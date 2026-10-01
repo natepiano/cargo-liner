@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use proc_macro2::LineColumn;
 use syn::ItemMod;
@@ -10,6 +9,7 @@ use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
 use super::support;
+use super::support::CrateSources;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::rust_syntax::PathAnchor;
 
@@ -38,7 +38,7 @@ pub(super) struct RawCandidate {
 }
 
 pub(super) struct ImportDetector<'a> {
-    pub(super) source_root:         &'a Path,
+    pub(super) crate_sources:       CrateSources<'a>,
     pub(super) text:                &'a str,
     pub(super) offsets:             &'a [usize],
     pub(super) current_module_path: Vec<String>,
@@ -50,7 +50,7 @@ pub(super) struct ImportDetector<'a> {
 impl Visit<'_> for ImportDetector<'_> {
     fn visit_item_use(&mut self, node: &ItemUse) {
         if let Some(candidate) = analyze_function_import(
-            self.source_root,
+            self.crate_sources,
             self.text,
             self.offsets,
             &self.current_module_path,
@@ -76,7 +76,7 @@ impl Visit<'_> for ImportDetector<'_> {
 }
 
 fn analyze_function_import(
-    source_root: &Path,
+    crate_sources: CrateSources<'_>,
     text: &str,
     offsets: &[usize],
     current_module_path: &[String],
@@ -112,7 +112,7 @@ fn analyze_function_import(
     }
 
     let absolute_segments = support::resolve_to_absolute(&flat.segments, current_module_path)?;
-    if support::leaf_is_module(source_root, &absolute_segments) {
+    if support::leaf_is_module(crate_sources, &absolute_segments) {
         return None;
     }
 

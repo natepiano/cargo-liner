@@ -1,4 +1,3 @@
-use std::fs;
 use std::iter;
 use std::path::Path;
 
@@ -9,6 +8,7 @@ use crate::fixes::constants::CFG_TEST_ATTRIBUTE;
 use crate::fixes::facade_redirect::CallerBuilds;
 use crate::fixes::imports::UseFix;
 use crate::reporting::AncestorReexportInsertion;
+use crate::rust_syntax::ParsedSources;
 
 /// The re-export added to the common ancestor module so callers outside the
 /// target scope still find the item there: whole lines at the insertion
@@ -18,14 +18,16 @@ pub(super) fn insertion_fix(
     file: &Path,
     insertion: &AncestorReexportInsertion,
     builds: CallerBuilds,
+    sources: &ParsedSources,
 ) -> Result<UseFix> {
-    let source =
-        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    let source = sources
+        .source(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
     Ok(UseFix {
         path:         file.to_path_buf(),
         start:        insertion.offset,
         end:          insertion.offset,
-        replacement:  insertion_text(&source, insertion, builds),
+        replacement:  insertion_text(source.text(), insertion, builds),
         import_group: None,
     })
 }

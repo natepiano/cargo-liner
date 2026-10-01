@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use crate::rust_syntax::FileModulePath;
 use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 
 /// The source files of one crate root, keyed by canonical path, each with the
 /// module path it occupies — `None` when `#[path]` attaches it to several
@@ -25,8 +26,9 @@ impl CrateFiles {
     pub(super) fn resolve(
         crate_root: &Path,
         mounts: impl IntoIterator<Item = (PathBuf, Vec<String>)>,
+        sources: &ParsedSources,
     ) -> Self {
-        let module_map = ModuleMap::for_crate_root(crate_root);
+        let module_map = ModuleMap::for_crate_root(crate_root, sources);
         let mut modules = BTreeMap::new();
         let mut test_only = BTreeSet::new();
         for (file, module_path) in module_map.declared_files() {
@@ -61,6 +63,14 @@ impl CrateFiles {
     pub(super) fn has_several_parents(&self, file: &Path) -> bool {
         matches!(self.modules.get(file), Some(None))
     }
+}
+
+/// The crate an owner module sits in: its files, and the sources they are
+/// read through.
+#[derive(Clone, Copy)]
+pub(super) struct OwnerCrate<'a> {
+    pub(super) files:   &'a CrateFiles,
+    pub(super) sources: &'a ParsedSources,
 }
 
 /// `path` with symlinks and `..` resolved, so a path the module walk built and

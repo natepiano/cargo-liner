@@ -1,4 +1,3 @@
-use std::fs;
 use std::iter;
 use std::path::PathBuf;
 
@@ -9,13 +8,14 @@ use syn::Item;
 use syn::ItemUse;
 use syn::UseTree;
 use syn::Visibility;
-use syn::parse_file;
 use syn::spanned::Spanned;
 
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
+use crate::rust_syntax::ParsedSource;
+use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::PathAnchor;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -33,26 +33,31 @@ pub(super) struct ParentExportResolution {
 pub(super) fn build_parent_pub_use_edit_for_exports(
     parent_boundary: &ParentBoundaryKey,
     exports: &[(String, String)],
+    sources: &ParsedSources,
 ) -> Result<UseFix> {
-    let source = fs::read_to_string(&parent_boundary.parent_module)
+    let parsed = sources
+        .source(&parent_boundary.parent_module)
         .with_context(|| format!("failed to read {}", parent_boundary.parent_module.display()))?;
-    let file = parse_file(&source).context("failed to parse parent module file")?;
-    let lines = SourceLines::new(&source);
-    for item in file.items {
+    let file = parsed
+        .syntax()
+        .context("failed to parse parent module file")?;
+    let source = parsed.text();
+    let lines = SourceLines::new(source);
+    for item in &file.items {
         let Item::Use(item_use) = item else {
             continue;
         };
         let Some(use_prefix) = facade_use_prefix(&item_use.vis) else {
             continue;
         };
-        let (start, end) = facade_redirect::item_use_byte_range(&lines, &item_use);
+        let (start, end) = facade_redirect::item_use_byte_range(&lines, item_use);
         if start != parent_boundary.item_start || end != parent_boundary.item_end {
             continue;
         }
 
-        let local_exports = locally_used_exports(&source, (start, end), exports);
+        let local_exports = locally_used_exports(source, (start, end), exports);
         let replacement =
-            rewrite_parent_pub_use_item_for_exports(&item_use, exports, &local_exports, use_prefix);
+            rewrite_parent_pub_use_item_for_exports(item_use, exports, &local_exports, use_prefix);
         return Ok(UseFix {
             path: parent_boundary.parent_module.clone(),
             start,
@@ -71,14 +76,16 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
 }
 
 pub(super) fn resolve_parent_pub_use_export(
-    source: &str,
+    parent: &ParsedSource,
     line: usize,
     child_module_name: &str,
     item_name: &str,
 ) -> Result<Option<ParentExportResolution>> {
-    let file = parse_file(source).context("failed to parse parent module file")?;
-    let lines = SourceLines::new(source);
-    for item in file.items {
+    let file = parent
+        .syntax()
+        .context("failed to parse parent module file")?;
+    let lines = SourceLines::new(parent.text());
+    for item in &file.items {
         let Item::Use(item_use) = item else {
             continue;
         };
@@ -96,7 +103,7 @@ pub(super) fn resolve_parent_pub_use_export(
             // textual match as authoritative.
             continue;
         }
-        let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, &item_use);
+        let (item_start, item_end) = facade_redirect::item_use_byte_range(&lines, item_use);
         return Ok(Some(ParentExportResolution {
             exported_name:   item_name.to_string(),
             parent_boundary: ParentBoundaryKey {

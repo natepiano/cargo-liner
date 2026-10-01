@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::fs;
 use std::str::FromStr;
 
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
+use syn::File;
 use syn::ItemMod;
 use syn::ItemUse;
 use syn::UseTree;
-use syn::parse_file;
 use syn::visit::Visit;
 use syn::visit::visit_item_mod;
 
@@ -16,6 +15,7 @@ use super::function_imports::RawCandidate;
 use super::support;
 use crate::rust_syntax::FileModulePath;
 use crate::rust_syntax::ModuleMap;
+use crate::rust_syntax::ParsedSources;
 
 /// Drop candidates a descendant file module reaches through a glob import.
 ///
@@ -30,6 +30,7 @@ use crate::rust_syntax::ModuleMap;
 /// rest of the file and rewrites their references along with the import.
 pub(super) fn drop_candidates_reached_by_descendant_globs(
     module_map: &ModuleMap,
+    sources: &ParsedSources,
     current_module_path: &[String],
     module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
 ) {
@@ -52,11 +53,12 @@ pub(super) fn drop_candidates_reached_by_descendant_globs(
             {
                 return None;
             }
-            let text = fs::read_to_string(file).ok()?;
+            let source = sources.source(file).ok()?;
+            let text = source.text();
             if !names.iter().any(|name| text.contains(name.as_str())) {
                 return None;
             }
-            DescendantFile::parse(module_path, &text)
+            DescendantFile::parse(module_path, text, source.syntax().ok()?)
         })
         .collect();
     if descendants.is_empty() {
@@ -83,13 +85,12 @@ struct DescendantFile {
 }
 
 impl DescendantFile {
-    fn parse(module_path: Vec<String>, text: &str) -> Option<Self> {
-        let syntax = parse_file(text).ok()?;
+    fn parse(module_path: Vec<String>, text: &str, syntax: &File) -> Option<Self> {
         let mut collector = GlobCollector {
             module_path,
             globs: Vec::new(),
         };
-        Visit::visit_file(&mut collector, &syntax);
+        Visit::visit_file(&mut collector, syntax);
         if collector.globs.is_empty() {
             return None;
         }
