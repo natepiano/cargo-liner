@@ -231,7 +231,7 @@ fn agent_row(row: &AgentRow, name_style: Style, now: u64) -> Row<'static> {
     let text = Style::default().fg(text_default());
     Row::new([
         Span::styled(row.pid.to_string(), text),
-        Span::styled(row.agent.label(), agent_role(row.agent).style()),
+        Span::styled(row.agent_label(), agent_role(row.agent).style()),
         Span::styled(
             truncated(&row.name, usize::from(NAME_COLUMN_MAX)),
             name_style,
@@ -316,7 +316,7 @@ fn column_widths(machines: &[Machine<'_>], now: u64) -> ColumnWidths {
         .flat_map(|machine| machine.state.top_level())
     {
         widths.observe_cell_usize(PID_COLUMN, row.pid.to_string().chars().count());
-        widths.observe_cell_usize(AGENT_COLUMN, row.agent.label().chars().count());
+        widths.observe_cell_usize(AGENT_COLUMN, row.agent_label().chars().count());
         widths.observe_cell_usize(NAME_COLUMN, row.name.chars().count());
         widths.observe_cell_usize(STATUS_COLUMN, status_text(row).chars().count());
         let age = age_label(now.saturating_sub(row.started));
@@ -352,6 +352,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::census::ServiceTier;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_000_000;
@@ -377,6 +378,7 @@ mod tests {
     ) -> AgentRow {
         AgentRow {
             agent,
+            service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
             status: status.map(str::to_string),
             started: NOW - age,
@@ -568,6 +570,65 @@ mod tests {
             ],
             "red, then yellow past trunk's orange, green, cyan, and the mac's blue"
         );
+    }
+
+    /// A Codex agent's tier follows its program in the `agent` column,
+    /// in the Codex color, and the column widens to hold it.
+    #[test]
+    fn a_codex_tier_follows_its_program() {
+        let natedev = MachineState::Answered(vec![
+            row(
+                428_044,
+                Agent::Claude,
+                "enh/handler",
+                Some("busy"),
+                HOUR,
+                "~/rust/handler",
+            ),
+            AgentRow {
+                service_tier: ServiceTier::Fast,
+                ..row(
+                    4_039_085,
+                    Agent::Codex,
+                    "--model gpt-5",
+                    None,
+                    12 * MINUTE,
+                    "~/rust/handler",
+                )
+            },
+        ]);
+        let machines = [Machine {
+            name:  "natedev",
+            state: &natedev,
+        }];
+        let height = u16::try_from(height(&machines)).expect("the height should fit a u16");
+        let area = Rect::new(0, 0, WIDTH, height);
+        let mut buffer = Buffer::empty(area);
+
+        draw(
+            &mut buffer,
+            area,
+            &machines,
+            &agent_cell::cell_order(&machines),
+            NOW,
+        );
+
+        assert_eq!(
+            lines(&buffer),
+            [
+                " natedev · 2 agents",
+                " pid      agent       name           status  age  desktop  directory",
+                " 428044   claude      enh/handler    busy    1h   —        ~/rust/handler",
+                " 4039085  codex fast  --model gpt-5  —       12m  —        ~/rust/handler",
+            ]
+        );
+        for x in [10, 19] {
+            assert_eq!(
+                Some(buffer[(x, 3)].fg),
+                Role::Codex.style().fg,
+                "column {x}"
+            );
+        }
     }
 
     /// The summary asks for its widest line: the table with every

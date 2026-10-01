@@ -25,15 +25,20 @@ use sysinfo::UpdateKind;
 
 use super::Agent;
 use super::AgentRow;
+use super::ServiceTier;
 use super::branch;
 use super::classify;
 use super::classify::HeldSession;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
 use super::codex;
+use super::codex::CodexThread;
 use super::desktop;
 use super::desktop::TmuxLayout;
 use super::desktop::WindowEntry;
+use super::tier;
+use super::tier::PacerHistory;
+use super::tier::Rollouts;
 use super::transcript;
 use super::transcript::BashCall;
 use super::transcript::Subagent;
@@ -49,6 +54,7 @@ use crate::constants::CLAUDE_PID_VARIABLE;
 use crate::constants::CLAUDE_SESSIONS_DIRNAME;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_DIRNAME;
+use crate::constants::CODEX_PACER_STATE;
 use crate::constants::CODEX_SESSIONS_DIRNAME;
 use crate::constants::DESKTOP_QUERY_INTERVAL;
 use crate::constants::PROC_DIRNAME;
@@ -82,6 +88,8 @@ pub(super) struct LocalScanner {
     /// When the session each transcript holds began, by the
     /// transcript's path, or none where it holds no stamped line yet.
     session_starts:   HashMap<PathBuf, Option<u64>>,
+    /// Each Codex rollout read for its tier, as far as it was read.
+    rollouts:         Rollouts,
     /// What `KWin` and tmux last answered, kept for
     /// [`DESKTOP_QUERY_INTERVAL`]; none before the first scan with rows.
     desktops:         Option<DesktopRead>,
@@ -129,6 +137,7 @@ impl LocalScanner {
             launchers:        HashMap::new(),
             transcript_paths: HashMap::new(),
             session_starts:   HashMap::new(),
+            rollouts:         Rollouts::default(),
             desktops:         None,
         }
     }
@@ -153,6 +162,18 @@ impl LocalScanner {
             .map(|(home, window)| codex::read_threads(&home.join(CODEX_DIRNAME), &window))
             .unwrap_or_default();
         let mut rows = classify::agent_rows(&processes, &sessions, &codex_threads, home.as_deref());
+        // The pacer's state is read only while some Codex runs.
+        let pacer = home
+            .as_deref()
+            .filter(|_| processes.iter().any(ProcessEntry::is_codex))
+            .map(|home| PacerHistory::read(&home.join(CODEX_PACER_STATE)))
+            .unwrap_or_default();
+        let service_tiers = self.codex_tiers(&processes, &codex_threads, &pacer);
+        for row in &mut rows {
+            if let Some(tier) = service_tiers.get(&row.pid) {
+                row.service_tier = *tier;
+            }
+        }
         let transcripts = home
             .as_deref()
             .map(|home| home.join(CLAUDE_DIRNAME).join(PROJECTS_DIRNAME))
@@ -168,18 +189,50 @@ impl LocalScanner {
         let shell_calls = self.find_shell_calls(&processes, &transcripts, &subagents, now);
         let threads = home
             .as_deref()
-            .map(|home| app_server_threads(&processes, &home.join(CODEX_DIRNAME)))
+            .map(|home| {
+                app_server_threads(
+                    &processes,
+                    &home.join(CODEX_DIRNAME),
+                    &mut self.rollouts,
+                    &pacer,
+                )
+            })
             .unwrap_or_default();
+        self.rollouts.forget_unread();
         let sources = TreeSources {
             sessions: &sessions,
             subagents,
             shell_calls,
             threads,
+            service_tiers,
         };
         tree::attach_children(&mut rows, &processes, &sources);
         self.attach_desktops(&processes, &mut rows);
         branch::attach_branches(&mut rows, home.as_deref());
         rows
+    }
+
+    /// The tier each Codex among `processes` that is not an app server
+    /// asked for, by pid, from the rollout of the thread it started with
+    /// among `codex_threads`, its command line, then `pacer`.
+    fn codex_tiers(
+        &mut self,
+        processes: &[ProcessEntry],
+        codex_threads: &[CodexThread],
+        pacer: &PacerHistory,
+    ) -> HashMap<u32, ServiceTier> {
+        let startup = classify::codex_startup_threads(processes, codex_threads);
+        processes
+            .iter()
+            .filter(|process| process.is_codex() && !process.is_app_server())
+            .map(|process| {
+                let thread = startup.get(&process.pid);
+                let rollout = thread.map(|thread| self.rollouts.read(&thread.rollout));
+                let started = thread.map_or(process.started, |thread| thread.created_ms / 1_000);
+                let tier = tier::requested(rollout, &process.arguments, pacer, started);
+                (process.pid, tier)
+            })
+            .collect()
     }
 
     /// Set the desktop of each of `rows`. `KWin` and tmux are asked
@@ -434,55 +487,61 @@ const fn settled(started: u64, now: u64) -> bool {
 }
 
 /// The threads each Codex app server in `processes` holds open, by its
-/// pid, named from the thread database in `codex_dir`. Only Linux lists
-/// a process's open files, so elsewhere there are none.
+/// pid, named from the thread database in `codex_dir`, each with the
+/// tier its rollout in `rollouts` or `pacer` names. Only Linux lists a
+/// process's open files, so elsewhere there are none.
 fn app_server_threads(
     processes: &[ProcessEntry],
     codex_dir: &Path,
+    rollouts: &mut Rollouts,
+    pacer: &PacerHistory,
 ) -> HashMap<u32, Vec<ThreadEntry>> {
     if !cfg!(target_os = "linux") {
         return HashMap::new();
     }
     let conversations = codex_dir.join(CODEX_SESSIONS_DIRNAME);
-    let held: Vec<(&ProcessEntry, Vec<String>)> = processes
+    let held: Vec<(&ProcessEntry, Vec<(String, PathBuf)>)> = processes
         .iter()
         .filter(|process| process.is_codex() && process.is_app_server())
         .map(|process| {
             let descriptors = Path::new(PROC_DIRNAME)
                 .join(process.pid.to_string())
                 .join(PROC_FD_DIRNAME);
-            let mut ids: Vec<String> = fs::read_dir(descriptors)
+            let mut ids: Vec<(String, PathBuf)> = fs::read_dir(descriptors)
                 .into_iter()
                 .flatten()
                 .filter_map(Result::ok)
                 .filter_map(|entry| fs::read_link(entry.path()).ok())
                 .filter(|target| target.starts_with(&conversations))
-                .filter_map(|target| tree::thread_id(&target))
+                .filter_map(|target| Some((tree::thread_id(&target)?, target)))
                 .collect();
             ids.sort();
-            ids.dedup();
+            ids.dedup_by(|left, right| left.0 == right.0);
             (process, ids)
         })
         .filter(|(_, ids)| !ids.is_empty())
         .collect();
     let every_id: Vec<String> = held
         .iter()
-        .flat_map(|(_, ids)| ids.iter().cloned())
+        .flat_map(|(_, ids)| ids.iter().map(|(id, _)| id.clone()))
         .collect();
     let named = codex::read_threads_by_id(codex_dir, &every_id);
     held.into_iter()
         .map(|(process, ids)| {
             let threads = ids
                 .into_iter()
-                .map(|id| match named.get(&id) {
-                    Some(thread) => ThreadEntry {
-                        name:    thread.label().unwrap_or(id),
-                        started: thread.created_ms / 1_000,
-                    },
-                    None => ThreadEntry {
-                        name:    id,
-                        started: process.started,
-                    },
+                .map(|(id, rollout)| {
+                    let (name, started) = match named.get(&id) {
+                        Some(thread) => (thread.label().unwrap_or(id), thread.created_ms / 1_000),
+                        None => (id, process.started),
+                    };
+                    let service_tier =
+                        tier::requested(Some(rollouts.read(&rollout)), &[], pacer, started);
+                    ThreadEntry {
+                        name,
+                        started,
+                        service_tier,
+                    }
                 })
                 .collect();
             (process.pid, threads)
@@ -775,6 +834,7 @@ mod tests {
             launchers:        HashMap::new(),
             transcript_paths: HashMap::new(),
             session_starts:   HashMap::new(),
+            rollouts:         Rollouts::default(),
             desktops:         None,
         }
     }
@@ -808,6 +868,7 @@ mod tests {
     fn claude_row(pid: u32, name: &str, started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
             status: None,
             started,

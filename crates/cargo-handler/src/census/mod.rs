@@ -22,10 +22,12 @@ pub(crate) mod probe;
 pub(crate) mod remote;
 pub(crate) mod scan;
 pub(crate) mod schedule;
+pub(crate) mod tier;
 pub(crate) mod tmux;
 pub(crate) mod transcript;
 pub(crate) mod tree;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::PoisonError;
@@ -39,12 +41,15 @@ use sysinfo::System;
 
 use crate::constants::CLAUDE_AGENT;
 use crate::constants::CODEX_AGENT;
+use crate::constants::CODEX_FAST_TIERS;
 use crate::constants::COMMAND_RUNS;
 use crate::constants::DETACHED_VIA;
 use crate::constants::DIRECT_VIA;
+use crate::constants::FAST_TIER_LABEL;
 use crate::constants::LOCAL_MACHINE_FALLBACK;
 use crate::constants::SESSION_VIA;
 use crate::constants::SHELL_VIA;
+use crate::constants::STANDARD_TIER_LABEL;
 use crate::constants::SUBAGENT_VIA;
 use crate::constants::THREAD_VIA;
 
@@ -60,10 +65,62 @@ pub(crate) enum Agent {
 
 impl Agent {
     /// The row's `agent` cell.
-    pub(crate) const fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Claude => CLAUDE_AGENT,
             Self::Codex => CODEX_AGENT,
+        }
+    }
+}
+
+/// The service tier a Codex agent or thread asked for. No source reports
+/// the tier served, so this is always the one requested.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ServiceTier {
+    /// The fast tier: `fast`, or `priority` as a rollout records it.
+    Fast,
+    /// Any other tier: `default`, a rollout's `null`, or one such as
+    /// `flex`.
+    Standard,
+    /// No source names a tier: every Claude Code row, every row that is
+    /// not a Codex thread or process, and a Codex one nothing recorded a
+    /// tier for.
+    #[default]
+    Unrecorded,
+}
+
+impl ServiceTier {
+    /// This tier, else the one `other` names when this one is
+    /// [`Self::Unrecorded`].
+    fn or_else(self, other: impl FnOnce() -> Self) -> Self {
+        match self {
+            Self::Unrecorded => other(),
+            Self::Fast | Self::Standard => self,
+        }
+    }
+
+    /// `program` marked with this tier, as an `agent` or `runs` cell shows
+    /// it: `codex fast`, `codex standard`, or `program` alone when
+    /// [`Self::Unrecorded`].
+    fn mark(self, program: &'static str) -> Cow<'static, str> {
+        match self {
+            Self::Fast => Cow::Owned(format!("{program} {FAST_TIER_LABEL}")),
+            Self::Standard => Cow::Owned(format!("{program} {STANDARD_TIER_LABEL}")),
+            Self::Unrecorded => Cow::Borrowed(program),
+        }
+    }
+}
+
+impl From<&str> for ServiceTier {
+    /// A tier as Codex, its rollouts or the pacer name it: one of
+    /// [`CODEX_FAST_TIERS`] is [`Self::Fast`], any other
+    /// [`Self::Standard`].
+    fn from(tier: &str) -> Self {
+        if CODEX_FAST_TIERS.contains(&tier) {
+            Self::Fast
+        } else {
+            Self::Standard
         }
     }
 }
@@ -74,44 +131,53 @@ impl Agent {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct AgentRow {
     /// Claude Code or Codex.
-    pub(crate) agent:       Agent,
+    pub(crate) agent:        Agent,
+    /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
+    /// Claude Code. Missing from a probe printed before it existed.
+    #[serde(default)]
+    pub(crate) service_tier: ServiceTier,
     /// The session's name, or what stands in for one.
-    pub(crate) name:        String,
+    pub(crate) name:         String,
     /// What the session says it is doing: `idle`, `busy` or `shell`
     /// for Claude Code, and nothing for Codex, which reports none.
-    pub(crate) status:      Option<String>,
+    pub(crate) status:       Option<String>,
     /// When the agent's session began, in unix seconds: for Claude Code
     /// the first line of its transcript, so a session resumed or
     /// restarted keeps its age, else when its process started.
-    pub(crate) started:     u64,
+    pub(crate) started:      u64,
     /// The agent's process id on its own machine.
-    pub(crate) pid:         u32,
+    pub(crate) pid:          u32,
     /// The names of the KDE virtual desktops the agent's terminal window
     /// is on, or [`ALL_DESKTOPS_LABEL`](crate::constants::ALL_DESKTOPS_LABEL)
     /// for a window on every one; none where no window was matched to
     /// the agent. Read on Linux under `KWin` alone, and missing from a
     /// probe printed before it existed.
     #[serde(default)]
-    pub(crate) desktop:     Option<String>,
+    pub(crate) desktop:      Option<String>,
     /// The directory the agent runs in, with its machine's home
     /// directory written as `~`.
-    pub(crate) directory:   String,
+    pub(crate) directory:    String,
     /// The branch checked out where the agent runs, or for a detached
     /// `HEAD` the start of its commit; none outside a repository.
     /// Missing from a probe printed before it existed.
     #[serde(default)]
-    pub(crate) branch:      Option<String>,
+    pub(crate) branch:       Option<String>,
     /// The pid of the agent that opened this one in a tmux session; none
     /// for an agent a person started, which is what makes it top level.
-    pub(crate) launched_by: Option<u32>,
+    pub(crate) launched_by:  Option<u32>,
     /// What the agent is running, in the order its cell draws it: each
     /// row is followed by the rows it started, one level deeper.
-    pub(crate) children:    Vec<ChildRow>,
+    pub(crate) children:     Vec<ChildRow>,
 }
 
 impl AgentRow {
     /// Whether a person started this agent rather than another agent.
     const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
+
+    /// The `agent` cell: the program, marked with its tier.
+    pub(crate) fn agent_label(&self) -> Cow<'static, str> {
+        self.service_tier.mark(self.agent.label())
+    }
 }
 
 /// What one row of an agent's cell is: how the agent holds it, its
@@ -166,7 +232,7 @@ impl ChildKind {
 
     /// The row's `runs` cell: its agent's program, or `command` for a
     /// shell.
-    pub(crate) const fn runs(self) -> &'static str {
+    const fn runs(self) -> &'static str {
         match self.agent() {
             Some(agent) => agent.label(),
             None => COMMAND_RUNS,
@@ -180,18 +246,30 @@ impl ChildKind {
 pub(crate) struct ChildRow {
     /// How many levels below the agent the row sits; the rows directly
     /// under the agent are at 0.
-    pub(crate) depth:   u8,
+    pub(crate) depth:        u8,
     /// What the row is.
-    pub(crate) kind:    ChildKind,
+    pub(crate) kind:         ChildKind,
+    /// The tier a Codex thread or process asked for;
+    /// [`ServiceTier::Unrecorded`] for any other row. Missing from a
+    /// probe printed before it existed.
+    #[serde(default)]
+    pub(crate) service_tier: ServiceTier,
     /// Its process; none for a subagent or a thread, which have none of
     /// their own.
-    pub(crate) pid:     Option<u32>,
+    pub(crate) pid:          Option<u32>,
     /// What the row says it is doing: a shell's description or command,
     /// a subagent's description, a session's or thread's name, or a
     /// process's.
-    pub(crate) name:    String,
+    pub(crate) name:         String,
     /// When it started, in unix seconds.
-    pub(crate) started: u64,
+    pub(crate) started:      u64,
+}
+
+impl ChildRow {
+    /// The `runs` cell: what the row runs, marked with its tier.
+    pub(crate) fn runs_label(&self) -> Cow<'static, str> {
+        self.service_tier.mark(self.kind.runs())
+    }
 }
 
 /// What is known about one machine's agents.
@@ -370,6 +448,7 @@ mod tests {
     fn row(started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
             name: "enh/handler".to_string(),
             status: Some("busy".to_string()),
             started,

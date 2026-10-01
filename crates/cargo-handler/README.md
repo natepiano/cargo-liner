@@ -65,7 +65,15 @@ agent started:
   thread goes to the one that started last. Without a thread the name is the
   command line after `codex`, or `pid <n>`. The one exception is the ChatGPT
   desktop app on macOS: its `codex app-server` child is listed once, named
-  `ChatGPT`.
+  `ChatGPT`. The `agent` column reads `codex fast` or `codex standard` for the
+  service tier the agent asked for, from the first source that names one: the
+  last `thread_settings_applied` event in its thread's rollout under
+  `~/.codex/sessions`, then `-c service_tier=` on its command line, then the
+  codex-pacer's history in `~/.local/state/codex-pacer/state.json` at the time
+  the thread began; it reads `codex` where none does. No source reports the
+  tier served, only the one asked for, and `~/.codex/config.toml` is never read,
+  since a mesh's threads override it. Each rollout is read only as far as it
+  has grown since the last scan.
 
 A process is dropped when any of its ancestors is another agent (a `claude` or
 `codex` process): it shows up in that agent's cell instead. An agent held by a
@@ -114,7 +122,9 @@ started that is still running, what each session runs nested under the row
 naming the session. Each row's `via` says how the agent holds it,
 indented two cells under the row that started it; `runs` says what it is,
 `command` for a shell and otherwise the program, `claude` or `codex`, drawn in
-that program's color. A row that has no process of its own shows `—` for its
+that program's color. A Codex thread or process is marked with its tier as the
+summary marks an agent, `codex fast` or `codex standard`, and an app server
+with none. A row that has no process of its own shows `—` for its
 pid. An agent running nothing says `nothing running`.
 
 A cell is laid out for its width, spending rows where a narrow cell would

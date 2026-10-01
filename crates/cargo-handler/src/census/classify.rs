@@ -30,6 +30,7 @@ use serde::Deserialize;
 
 use super::Agent;
 use super::AgentRow;
+use super::ServiceTier;
 use super::codex::CodexThread;
 use super::tmux;
 use super::transcript::BashCall;
@@ -157,7 +158,7 @@ pub(super) fn agent_rows(
     home: Option<&Path>,
 ) -> Vec<AgentRow> {
     let table = pid_table(processes);
-    let threads = startup_threads(&interactive_codex(&table, processes), codex_threads);
+    let threads = codex_startup_threads(processes, codex_threads);
     let mut rows: Vec<AgentRow> = sessions
         .iter()
         .filter_map(|session| claude_row(&table, session, home))
@@ -167,6 +168,18 @@ pub(super) fn agent_rows(
         .collect();
     rows.sort_by_key(|row| (row.started, row.pid));
     rows
+}
+
+/// The thread each interactive Codex among `processes` started with,
+/// among `codex_threads`, by pid.
+pub(super) fn codex_startup_threads<'a>(
+    processes: &[ProcessEntry],
+    codex_threads: &'a [CodexThread],
+) -> HashMap<u32, &'a CodexThread> {
+    startup_threads(
+        &interactive_codex(&pid_table(processes), processes),
+        codex_threads,
+    )
 }
 
 /// The creation times, in unix milliseconds, that a thread must fall in
@@ -257,16 +270,17 @@ fn claude_row(
     }
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
-        agent:       Agent::Claude,
-        name:        session.label(),
-        status:      session.status.clone(),
-        started:     process.started,
-        pid:         process.pid,
-        desktop:     None,
-        directory:   directory_label(directory, home),
-        branch:      None,
-        launched_by: None,
-        children:    Vec::new(),
+        agent:        Agent::Claude,
+        service_tier: ServiceTier::Unrecorded,
+        name:         session.label(),
+        status:       session.status.clone(),
+        started:      process.started,
+        pid:          process.pid,
+        desktop:      None,
+        directory:    directory_label(directory, home),
+        branch:       None,
+        launched_by:  None,
+        children:     Vec::new(),
     })
 }
 
@@ -298,6 +312,7 @@ fn codex_row(
     };
     Some(AgentRow {
         agent: Agent::Codex,
+        service_tier: ServiceTier::Unrecorded,
         name,
         status: None,
         started: process.started,
@@ -763,6 +778,7 @@ mod tests {
             created_ms,
             name: name.map(str::to_string),
             first_prompt: prompt.to_string(),
+            rollout: PathBuf::from(format!("/rollouts/{created_ms}.jsonl")),
         };
         let threads = [
             thread(work, 111_800, Some("codex test"), ""),

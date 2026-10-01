@@ -141,6 +141,7 @@ mod tests {
     use super::*;
     use crate::census::Agent;
     use crate::census::AgentRow;
+    use crate::census::ServiceTier;
 
     fn key(code: KeyCode) -> KeyEvent { KeyEvent::new(code, KeyModifiers::NONE) }
 
@@ -175,16 +176,17 @@ mod tests {
         let mut ticker = Ticker::new(receiver);
         let now = Instant::now();
         let row = AgentRow {
-            agent:       Agent::Claude,
-            name:        "enh/handler".to_string(),
-            status:      Some("busy".to_string()),
-            started:     90,
-            pid:         428_044,
-            desktop:     None,
-            directory:   "~/rust/handler".to_string(),
-            branch:      None,
-            launched_by: None,
-            children:    Vec::new(),
+            agent:        Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
+            name:         "enh/handler".to_string(),
+            status:       Some("busy".to_string()),
+            started:      90,
+            pid:          428_044,
+            desktop:      None,
+            directory:    "~/rust/handler".to_string(),
+            branch:       None,
+            launched_by:  None,
+            children:     Vec::new(),
         };
         sender
             .send(CensusUpdate::Local(vec![row.clone()]))

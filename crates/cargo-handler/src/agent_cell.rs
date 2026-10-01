@@ -420,7 +420,7 @@ fn header_line(row: &AgentRow, machine: &str, now: u64) -> Line<'static> {
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(format!("{PID_LABEL} {}", row.pid), text),
         separator(),
-        Span::styled(row.agent.label(), summary::agent_role(row.agent).style()),
+        Span::styled(row.agent_label(), summary::agent_role(row.agent).style()),
         separator(),
         Span::styled(
             summary::status_text(row).to_string(),
@@ -445,7 +445,7 @@ fn header_block(row: &AgentRow, machine: &str, now: u64) -> Vec<Line<'static>> {
     let facts = [
         (
             HEADER_AGENT_LABEL,
-            Span::styled(row.agent.label(), summary::agent_role(row.agent).style()),
+            Span::styled(row.agent_label(), summary::agent_role(row.agent).style()),
         ),
         (PID_LABEL, Span::styled(row.pid.to_string(), text)),
         (
@@ -768,7 +768,7 @@ fn child_row(child: &ChildRow, name_style: Style, now: u64) -> Row<'static> {
     Row::new([
         pid,
         Span::styled(via_text(child), text),
-        Span::styled(child.kind.runs(), runs_role(child.kind).style()),
+        Span::styled(child.runs_label(), runs_role(child.kind).style()),
         Span::styled(child.name.clone(), name_style),
         Span::styled(age::age_label(now.saturating_sub(child.started)), text),
     ])
@@ -799,7 +799,7 @@ fn stacked_head(child: &ChildRow, width: u16, now: u64) -> Vec<Line<'static>> {
     let text = Style::default().fg(text_default());
     let mut facts = vec![
         Span::styled(child.kind.via(), text),
-        Span::styled(child.kind.runs(), runs_role(child.kind).style()),
+        Span::styled(child.runs_label(), runs_role(child.kind).style()),
         Span::styled(age::age_label(now.saturating_sub(child.started)), text),
     ];
     if let Some(pid) = child.pid {
@@ -891,7 +891,7 @@ fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constra
         );
         widths.observe_cell_usize(CHILD_PID_COLUMN, pid);
         widths.observe_cell_usize(CHILD_VIA_COLUMN, via_text(child).chars().count());
-        widths.observe_cell_usize(CHILD_RUNS_COLUMN, child.kind.runs().chars().count());
+        widths.observe_cell_usize(CHILD_RUNS_COLUMN, child.runs_label().chars().count());
         widths.observe_cell_usize(CHILD_NAME_COLUMN, child.name.chars().count());
         let age = age::age_label(now.saturating_sub(child.started));
         widths.observe_cell_usize(CHILD_AGE_COLUMN, age.chars().count());
@@ -923,6 +923,7 @@ mod tests {
     use super::*;
     use crate::census::Agent;
     use crate::census::MachineState;
+    use crate::census::ServiceTier;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_790_372_800;
@@ -952,6 +953,7 @@ mod tests {
     fn agent(pid: u32, name: &str, age: u64, launched_by: Option<u32>) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
             status: Some("busy".to_string()),
             started: NOW - age,
@@ -970,6 +972,7 @@ mod tests {
         ChildRow {
             depth,
             kind,
+            service_tier: ServiceTier::Unrecorded,
             pid,
             name: name.to_string(),
             started: NOW - age,
@@ -1214,6 +1217,50 @@ mod tests {
                 " nothing running",
             ]
         );
+    }
+
+    /// A Codex agent's tier follows its program in the header, and a
+    /// Codex thread's in its `runs`, in the Codex color; a row no tier
+    /// was found for shows its program alone.
+    #[test]
+    fn a_codex_tier_follows_its_program() {
+        let codex = AgentRow {
+            agent: Agent::Codex,
+            service_tier: ServiceTier::Fast,
+            status: None,
+            children: vec![
+                child(
+                    0,
+                    ChildKind::Detached(Agent::Codex),
+                    Some(468_060),
+                    "app-server",
+                    11 * MINUTE,
+                ),
+                ChildRow {
+                    service_tier: ServiceTier::Standard,
+                    ..child(1, ChildKind::Thread, None, "trunk mesh", 10 * MINUTE)
+                },
+            ],
+            ..agent(4_039_085, "handler", 12 * MINUTE, None)
+        };
+
+        let buffer = drawn(&codex, None, WIDE);
+
+        assert_eq!(
+            lines(&buffer),
+            [
+                " pid 4039085 · codex fast · — · 12m · natedev · —",
+                " ~/rust/handler",
+                "",
+                " pid     via       runs            name        age",
+                " 468060  detached  codex           app-server  11m",
+                " —         thread  codex standard  trunk mesh  10m",
+            ]
+        );
+        let role = |x, y| Some(buffer[(x, y)].fg);
+        for (x, y) in [(15, 0), (24, 0), (19, 5), (32, 5)] {
+            assert_eq!(role(x, y), Role::Codex.style().fg, "column {x} of row {y}");
+        }
     }
 
     /// The header keeps its one line at the width that holds it whole,

@@ -243,6 +243,7 @@ mod tests {
     use crate::census::ChildKind;
     use crate::census::ChildRow;
     use crate::census::MachineState;
+    use crate::census::ServiceTier;
 
     /// Width of every frame the goldens draw.
     const WIDTH: u16 = 80;
@@ -650,21 +651,23 @@ fraying = "leading"
         let child = |depth, kind, pid, name: &str, age: u64| ChildRow {
             depth,
             kind,
+            service_tier: ServiceTier::Unrecorded,
             pid,
             name: name.to_string(),
             started: NOW - age,
         };
         AgentRow {
-            agent:       Agent::Claude,
-            name:        "boss of bosses".to_string(),
-            status:      Some("idle".to_string()),
-            started:     NOW - age,
-            pid:         1_579_022,
-            desktop:     None,
-            directory:   "~/rust/hana_catalyst/docs/hana".to_string(),
-            branch:      None,
-            launched_by: None,
-            children:    vec![
+            agent:        Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
+            name:         "boss of bosses".to_string(),
+            status:       Some("idle".to_string()),
+            started:      NOW - age,
+            pid:          1_579_022,
+            desktop:      None,
+            directory:    "~/rust/hana_catalyst/docs/hana".to_string(),
+            branch:       None,
+            launched_by:  None,
+            children:     vec![
                 child(
                     0,
                     ChildKind::Shell,

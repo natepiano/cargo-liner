@@ -221,6 +221,7 @@ fn desktop_label(window: &WindowEntry) -> Option<String> {
 mod tests {
     use super::*;
     use crate::census::Agent;
+    use crate::census::ServiceTier;
 
     /// The single-instance terminal that owns several windows.
     const GHOSTTY: u32 = 44_122;
@@ -257,6 +258,7 @@ mod tests {
     fn row(pid: u32, name: &str) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
             name: name.to_string(),
             status: None,
             started: 0,

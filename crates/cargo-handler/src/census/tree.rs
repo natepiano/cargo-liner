@@ -21,6 +21,7 @@ use super::Agent;
 use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
+use super::ServiceTier;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
@@ -53,9 +54,11 @@ pub(super) struct ShellCall {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ThreadEntry {
     /// The thread's label, else its id.
-    pub(super) name:    String,
+    pub(super) name:         String,
     /// When it was created, in unix seconds.
-    pub(super) started: u64,
+    pub(super) started:      u64,
+    /// The tier it asked for.
+    pub(super) service_tier: ServiceTier,
 }
 
 /// What the scan read from disk for the tree.
@@ -63,13 +66,16 @@ pub(super) struct ThreadEntry {
 pub(super) struct TreeSources<'a> {
     /// Every session record, for naming a Claude Code process found
     /// under a shell.
-    pub(super) sessions:    &'a [SessionRecord],
+    pub(super) sessions:      &'a [SessionRecord],
     /// The running subagents of each Claude Code process, by pid.
-    pub(super) subagents:   HashMap<u32, Vec<Subagent>>,
+    pub(super) subagents:     HashMap<u32, Vec<Subagent>>,
     /// The call that started each shell wrapper, by the wrapper's pid.
-    pub(super) shell_calls: HashMap<u32, ShellCall>,
+    pub(super) shell_calls:   HashMap<u32, ShellCall>,
     /// The threads each Codex app server holds open, by its pid.
-    pub(super) threads:     HashMap<u32, Vec<ThreadEntry>>,
+    pub(super) threads:       HashMap<u32, Vec<ThreadEntry>>,
+    /// The tier each Codex process that is not an app server asked for,
+    /// by its pid.
+    pub(super) service_tiers: HashMap<u32, ServiceTier>,
 }
 
 /// The command a Claude Code shell wrapper runs, when `process` is one:
@@ -151,15 +157,17 @@ pub(super) fn thread_id(path: &Path) -> Option<String> {
 #[derive(Debug)]
 struct Node {
     /// What the row is.
-    kind:     ChildKind,
+    kind:         ChildKind,
+    /// The tier a Codex thread or process asked for.
+    service_tier: ServiceTier,
     /// Its process, where it has one.
-    pid:      Option<u32>,
+    pid:          Option<u32>,
     /// What the row says.
-    name:     String,
+    name:         String,
     /// When it started, in unix seconds.
-    started:  u64,
+    started:      u64,
     /// The rows it started.
-    children: Vec<Self>,
+    children:     Vec<Self>,
 }
 
 /// Fill in each of `rows`' children from `processes` and `sources`.
@@ -191,11 +199,12 @@ pub(super) fn attach_children(
                 rows.iter()
                     .filter(|other| other.launched_by == Some(row.pid))
                     .map(|session| Node {
-                        kind:     ChildKind::Session(session.agent),
-                        pid:      Some(session.pid),
-                        name:     session.name.clone(),
-                        started:  session.started,
-                        children: Vec::new(),
+                        kind:         ChildKind::Session(session.agent),
+                        service_tier: session.service_tier,
+                        pid:          Some(session.pid),
+                        name:         session.name.clone(),
+                        started:      session.started,
+                        children:     Vec::new(),
                     }),
             );
             // An app server a mesh moved out from under the agent names it
@@ -257,11 +266,12 @@ impl Walker<'_> {
                 .into_iter()
                 .flatten()
                 .map(|thread| Node {
-                    kind:     ChildKind::Thread,
-                    pid:      None,
-                    name:     thread.name.clone(),
-                    started:  thread.started,
-                    children: Vec::new(),
+                    kind:         ChildKind::Thread,
+                    service_tier: thread.service_tier,
+                    pid:          None,
+                    name:         thread.name.clone(),
+                    started:      thread.started,
+                    children:     Vec::new(),
                 })
                 .collect();
         }
@@ -280,6 +290,7 @@ impl Walker<'_> {
                     .unwrap_or_else(|| command.split_whitespace().collect::<Vec<_>>().join(" "));
                 let shell = Node {
                     kind: ChildKind::Shell,
+                    service_tier: ServiceTier::Unrecorded,
                     pid: Some(child.pid),
                     name,
                     started: child.started,
@@ -390,6 +401,12 @@ impl Walker<'_> {
         };
         Node {
             kind: kind(agent),
+            service_tier: self
+                .sources
+                .service_tiers
+                .get(&process.pid)
+                .copied()
+                .unwrap_or_default(),
             pid: Some(process.pid),
             name,
             started: process.started,
@@ -417,6 +434,7 @@ fn subagent_node(
     }
     Node {
         kind: ChildKind::Subagent,
+        service_tier: ServiceTier::Unrecorded,
         pid: None,
         name: agent.description.clone(),
         started: agent.started,
@@ -434,6 +452,7 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
         rows.push(ChildRow {
             depth,
             kind: node.kind,
+            service_tier: node.service_tier,
             pid: node.pid,
             name: node.name,
             started: node.started,
@@ -574,6 +593,7 @@ mod tests {
         ThreadEntry {
             name: name.to_string(),
             started,
+            service_tier: ServiceTier::Unrecorded,
         }
     }
 
@@ -685,6 +705,7 @@ mod tests {
                 (3_769_600, vec![thread("trunk mesh", 660)]),
                 (3_700_000, vec![thread("stale", 601)]),
             ]),
+            service_tiers: HashMap::new(),
         }
     }
 
@@ -692,6 +713,7 @@ mod tests {
     fn agent_row(pid: u32, started: u64) -> AgentRow {
         AgentRow {
             agent: Agent::Claude,
+            service_tier: ServiceTier::Unrecorded,
             name: format!("pid {pid}"),
             status: None,
             started,
@@ -909,6 +931,51 @@ mod tests {
         );
         assert_eq!(cell(&rows, ARRANGE), []);
         assert_eq!(cell(&rows, TERMINAL_CODEX), []);
+    }
+
+    /// A Codex process takes the tier the scan found for its pid, a thread
+    /// its own, and a session the tier of its row; no other row has one.
+    #[test]
+    fn each_tier_reaches_its_row() {
+        let (processes, sessions) = natedev();
+        let mut rows = classify::agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+        for row in &mut rows {
+            if row.pid == TERMINAL_CODEX {
+                row.launched_by = Some(TRUNK);
+                row.service_tier = ServiceTier::Fast;
+            }
+        }
+        let mut sources = natedev_sources(&sessions);
+        sources.service_tiers = HashMap::from([(3_331_960, ServiceTier::Standard)]);
+        for thread in sources.threads.values_mut().flatten() {
+            if thread.name == "phase 1 review" {
+                thread.service_tier = ServiceTier::Fast;
+            }
+        }
+
+        attach_children(&mut rows, &processes, &sources);
+
+        let marked = |pid: u32| -> Vec<(ChildKind, ServiceTier)> {
+            rows.iter()
+                .find(|row| row.pid == pid)
+                .expect("the agent should be listed")
+                .children
+                .iter()
+                .filter(|child| child.service_tier != ServiceTier::Unrecorded)
+                .map(|child| (child.kind, child.service_tier))
+                .collect()
+        };
+        assert_eq!(
+            marked(GEOMETRY),
+            [
+                (ChildKind::Direct(Agent::Codex), ServiceTier::Standard),
+                (ChildKind::Thread, ServiceTier::Fast),
+            ]
+        );
+        assert_eq!(
+            marked(TRUNK),
+            [(ChildKind::Session(Agent::Codex), ServiceTier::Fast)]
+        );
     }
 
     /// A parent link that loops back to the agent ends the walk at the

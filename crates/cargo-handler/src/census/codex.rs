@@ -41,6 +41,8 @@ pub(super) struct CodexThread {
     pub(super) name:         Option<String>,
     /// The first prompt typed into the thread; empty before the first.
     pub(super) first_prompt: String,
+    /// The file the thread's conversation is written to.
+    pub(super) rollout:      PathBuf,
 }
 
 impl CodexThread {
@@ -118,6 +120,7 @@ fn query_threads_by_id(
                 created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
                 name:         row.get(2)?,
                 first_prompt: row.get(3)?,
+                rollout:      PathBuf::from(row.get::<_, String>(4)?),
             })
         });
         match found {
@@ -178,6 +181,7 @@ fn query_threads(path: &Path, created: &RangeInclusive<u64>) -> rusqlite::Result
                 created_ms:   u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
                 name:         row.get(2)?,
                 first_prompt: row.get(3)?,
+                rollout:      PathBuf::from(row.get::<_, String>(4)?),
             })
         })?
         .collect()
@@ -202,7 +206,8 @@ mod tests {
         originator TEXT,
         created_at_ms INTEGER,
         name TEXT,
-        first_user_message TEXT NOT NULL DEFAULT ''
+        first_user_message TEXT NOT NULL DEFAULT '',
+        rollout_path TEXT NOT NULL
     )";
 
     /// One row of the fixture `threads` table: `thread` with the id and
@@ -227,7 +232,7 @@ mod tests {
             let thread = &stored.thread;
             connection
                 .execute(
-                    "INSERT INTO threads VALUES (?1, ?2, '', ?3, ?4, ?5, ?6)",
+                    "INSERT INTO threads VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7)",
                     params![
                         stored.id,
                         thread
@@ -238,6 +243,10 @@ mod tests {
                         i64::try_from(thread.created_ms).expect("the fixture time should fit"),
                         thread.name,
                         thread.first_prompt,
+                        thread
+                            .rollout
+                            .to_str()
+                            .expect("the fixture rollout should be text"),
                     ],
                 )
                 .expect("the fixture thread should insert");
@@ -251,6 +260,7 @@ mod tests {
             created_ms,
             name: name.map(str::to_string),
             first_prompt: first_prompt.to_string(),
+            rollout: PathBuf::from(format!("/rollouts/{created_ms}.jsonl")),
         }
     }
 

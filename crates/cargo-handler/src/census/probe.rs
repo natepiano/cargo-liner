@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
+//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -84,12 +84,14 @@ mod tests {
     use crate::census::Agent;
     use crate::census::ChildKind;
     use crate::census::ChildRow;
+    use crate::census::ServiceTier;
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
         ChildRow {
             depth,
             kind,
+            service_tier: ServiceTier::Unrecorded,
             pid,
             name: name.to_string(),
             started,
@@ -104,28 +106,30 @@ mod tests {
             machine: "mac".to_string(),
             rows:    vec![
                 AgentRow {
-                    agent:       Agent::Codex,
-                    name:        "ChatGPT".to_string(),
-                    status:      None,
-                    started:     1_790_000_000,
-                    pid:         76_130,
-                    desktop:     None,
-                    directory:   "/".to_string(),
-                    branch:      None,
-                    launched_by: None,
-                    children:    Vec::new(),
+                    agent:        Agent::Codex,
+                    service_tier: ServiceTier::Unrecorded,
+                    name:         "ChatGPT".to_string(),
+                    status:       None,
+                    started:      1_790_000_000,
+                    pid:          76_130,
+                    desktop:      None,
+                    directory:    "/".to_string(),
+                    branch:       None,
+                    launched_by:  None,
+                    children:     Vec::new(),
                 },
                 AgentRow {
-                    agent:       Agent::Claude,
-                    name:        "natemccoy-30".to_string(),
-                    status:      Some("idle".to_string()),
-                    started:     1_790_000_100,
-                    pid:         80_020,
-                    desktop:     None,
-                    directory:   "~".to_string(),
-                    branch:      Some("main".to_string()),
-                    launched_by: None,
-                    children:    vec![
+                    agent:        Agent::Claude,
+                    service_tier: ServiceTier::Unrecorded,
+                    name:         "natemccoy-30".to_string(),
+                    status:       Some("idle".to_string()),
+                    started:      1_790_000_100,
+                    pid:          80_020,
+                    desktop:      None,
+                    directory:    "~".to_string(),
+                    branch:       Some("main".to_string()),
+                    launched_by:  None,
+                    children:     vec![
                         child(
                             0,
                             ChildKind::Shell,
@@ -140,7 +144,10 @@ mod tests {
                             "app-server",
                             1_790_000_111,
                         ),
-                        child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112),
+                        ChildRow {
+                            service_tier: ServiceTier::Fast,
+                            ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
+                        },
                         child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
                         child(
                             0,
@@ -152,16 +159,17 @@ mod tests {
                     ],
                 },
                 AgentRow {
-                    agent:       Agent::Claude,
-                    name:        "worker".to_string(),
-                    status:      Some("busy".to_string()),
-                    started:     1_790_000_130,
-                    pid:         81_020,
-                    desktop:     None,
-                    directory:   "~".to_string(),
-                    branch:      None,
-                    launched_by: Some(80_020),
-                    children:    Vec::new(),
+                    agent:        Agent::Claude,
+                    service_tier: ServiceTier::Unrecorded,
+                    name:         "worker".to_string(),
+                    status:       Some("busy".to_string()),
+                    started:      1_790_000_130,
+                    pid:          81_020,
+                    desktop:      None,
+                    directory:    "~".to_string(),
+                    branch:       None,
+                    launched_by:  Some(80_020),
+                    children:     Vec::new(),
                 },
             ],
         }
@@ -177,14 +185,14 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
-                r#"{"depth":0,"kind":"shell","pid":80100,"name":"Run the mesh","started":1790000110},"#,
-                r#"{"depth":1,"kind":{"under_shell":"codex"},"pid":80200,"name":"app-server","started":1790000111},"#,
-                r#"{"depth":2,"kind":"thread","pid":null,"name":"phase 1","started":1790000112},"#,
-                r#"{"depth":0,"kind":"subagent","pid":null,"name":"Review","started":1790000120},"#,
-                r#"{"depth":0,"kind":{"session":"claude"},"pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
+                r#"{"agent":"codex","service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
+                r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
+                r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
+                r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
+                r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
+                r#"{"agent":"claude","service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
             )
         );
         assert_eq!(

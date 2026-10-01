@@ -257,6 +257,33 @@ pub(crate) const CLAUDE_AGENT: &str = "claude";
 /// The `agent` value of a Codex row, and the process name a Codex
 /// process runs under.
 pub(crate) const CODEX_AGENT: &str = "codex";
+/// The tier names that mean the fast tier: `fast` as `-c service_tier=`
+/// and the pacer write it, `priority` as a rollout records it.
+pub(crate) const CODEX_FAST_TIERS: [&str; 2] = ["fast", "priority"];
+/// Marks a Codex agent or thread that asked for the fast tier, after
+/// its program.
+pub(crate) const FAST_TIER_LABEL: &str = "fast";
+/// Marks a Codex agent or thread that asked for any other tier, after
+/// its program.
+pub(crate) const STANDARD_TIER_LABEL: &str = "standard";
+/// The flags that pass `codex` one `key=value` setting in the next
+/// argument.
+pub(crate) const CODEX_CONFIG_FLAGS: [&str; 2] = ["-c", "--config"];
+/// Leads a `codex` argument carrying its `key=value` setting itself.
+pub(crate) const CODEX_CONFIG_PREFIX: &str = "--config=";
+/// The setting naming the tier a `codex` asks for.
+pub(crate) const CODEX_SERVICE_TIER_KEY: &str = "service_tier";
+/// The `type` of a rollout's first line, whose `payload.timestamp` is
+/// when its thread began.
+pub(crate) const CODEX_SESSION_META_LINE: &str = "session_meta";
+/// The `type` of a rollout line carrying an event.
+pub(crate) const CODEX_EVENT_LINE: &str = "event_msg";
+/// The `payload.type` of the event recording a thread's settings, its
+/// requested tier among them. Lines without it are not parsed.
+pub(crate) const CODEX_THREAD_SETTINGS_EVENT: &str = "thread_settings_applied";
+/// The codex-pacer's state under the home directory, whose `history`
+/// lists each change of the tier it launches threads at.
+pub(crate) const CODEX_PACER_STATE: &str = ".local/state/codex-pacer/state.json";
 /// The argument that marks a `codex` process as an app server: a
 /// backend for a client, never an agent someone is typing into.
 pub(crate) const CODEX_APP_SERVER_ARGUMENT: &str = "app-server";
@@ -376,8 +403,8 @@ pub(crate) const CODEX_STATE_BUSY_TIMEOUT: Duration = Duration::from_millis(200)
 /// The threads an interactive Codex created within a span of creation
 /// times: `?1` is [`CODEX_TUI_ORIGINATOR`], `?2` and `?3` the span's
 /// ends in unix milliseconds.
-pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message \
-     FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
+pub(crate) const CODEX_THREADS_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, \
+     rollout_path FROM threads WHERE originator = ?1 AND created_at_ms BETWEEN ?2 AND ?3";
 /// The `originator` Codex records on a thread the interactive `codex`
 /// started, as against `codex exec`, an app server's client, or the
 /// desktop app.
@@ -394,8 +421,8 @@ pub(crate) const CODEX_THREAD_START_SLACK: Duration = Duration::from_secs(1);
 /// thread has no name. The summary cuts it again to fit its column.
 pub(crate) const CODEX_PROMPT_LABEL_MAX: usize = 80;
 /// Any thread, whoever started it, by its id: `?1` is the id.
-pub(crate) const CODEX_THREAD_BY_ID_QUERY: &str =
-    "SELECT cwd, created_at_ms, name, first_user_message FROM threads WHERE id = ?1";
+pub(crate) const CODEX_THREAD_BY_ID_QUERY: &str = "SELECT cwd, created_at_ms, name, first_user_message, rollout_path FROM threads \
+     WHERE id = ?1";
 /// The directory under [`CODEX_DIRNAME`] holding the files Codex writes
 /// each thread's conversation to, one directory per day.
 pub(crate) const CODEX_SESSIONS_DIRNAME: &str = "sessions";
