@@ -140,7 +140,7 @@ mod tests {
 
         report(&mut app, Ok(Startup::default()));
 
-        assert!(titles(&app).is_empty());
+        assert_eq!(titles(&app), [] as [String; 0]);
         assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
     }
 
@@ -281,7 +281,7 @@ mod tests {
 
         stand_up(&mut app);
 
-        assert!(titles(&app).is_empty());
+        assert_eq!(titles(&app), [] as [String; 0]);
         assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
     }
 }

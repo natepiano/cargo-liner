@@ -996,7 +996,10 @@ mod tests {
             publish: PublishStatus::NotPublishable,
             service: ServiceStatus::Unreachable,
         };
-        assert!(build_crates_io_rows(&fields, &status).is_empty());
+        assert_eq!(
+            build_crates_io_rows(&fields, &status),
+            [] as [(&str, String); 0]
+        );
     }
 
     #[test]

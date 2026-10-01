@@ -1272,7 +1272,7 @@ mod tests {
         cargo_port_config: &CargoPortConfig,
         expected_ci_run_count: u32,
     ) {
-        assert!(cargo_port_config.cache.root.is_empty());
+        assert_eq!(cargo_port_config.cache.root, "");
         assert_eq!(cargo_port_config.cpu.poll_ms, DEFAULT_CPU_POLL_MS);
         assert_eq!(
             cargo_port_config.cpu.low_utilization_max_percent,
@@ -1287,15 +1287,18 @@ mod tests {
             vec![DEFAULT_INLINE_DIR.to_string()]
         );
         assert_eq!(cargo_port_config.tui.ci_run_count, expected_ci_run_count);
-        assert!(cargo_port_config.tui.include_dirs.is_empty());
+        assert_eq!(cargo_port_config.tui.include_dirs, [] as [String; 0]);
         assert_eq!(
             cargo_port_config.tui.include_non_rust,
             NonRustInclusion::Exclude
         );
         assert_eq!(cargo_port_config.tui.editor, DEFAULT_EDITOR);
-        assert!(cargo_port_config.tui.terminal_command.is_empty());
+        assert_eq!(cargo_port_config.tui.terminal_command, "");
         assert_eq!(cargo_port_config.tui.main_branch, DEFAULT_MAIN_BRANCH);
-        assert!(cargo_port_config.tui.other_primary_branches.is_empty());
+        assert_eq!(
+            cargo_port_config.tui.other_primary_branches,
+            [] as [String; 0]
+        );
         assert!(
             (cargo_port_config.tui.discovery_shimmer_secs - DEFAULT_DISCOVERY_SHIMMER_SECS).abs()
                 < f64::EPSILON
@@ -1310,9 +1313,12 @@ mod tests {
             ScrollDirection::Inverted
         );
         assert_eq!(cargo_port_config.lint.enabled, LintIndicator::Disabled);
-        assert!(cargo_port_config.lint.include.is_empty());
-        assert!(cargo_port_config.lint.exclude.is_empty());
-        assert!(cargo_port_config.lint.commands.is_empty());
+        assert_eq!(cargo_port_config.lint.include, [] as [String; 0]);
+        assert_eq!(cargo_port_config.lint.exclude, [] as [String; 0]);
+        assert_eq!(
+            cargo_port_config.lint.commands,
+            [] as [LintCommandConfig; 0]
+        );
         assert_eq!(cargo_port_config.lint.cache_size, DEFAULT_CACHE_SIZE);
     }
 
@@ -1482,11 +1488,11 @@ mod tests {
         assert_eq!(reloaded.tui.navigation_keys, NavigationKeys::ArrowsAndVim);
         assert!((reloaded.tui.discovery_shimmer_secs - 4.5).abs() < f64::EPSILON);
         assert_eq!(reloaded.mouse.invert_scroll, ScrollDirection::Normal);
-        assert!(reloaded.tui.include_dirs.is_empty());
+        assert_eq!(reloaded.tui.include_dirs, [] as [String; 0]);
         assert_eq!(reloaded.tui.include_non_rust, NonRustInclusion::Exclude);
-        assert!(reloaded.lint.commands.is_empty());
-        assert!(reloaded.lint.include.is_empty());
-        assert!(reloaded.lint.exclude.is_empty());
+        assert_eq!(reloaded.lint.commands, [] as [LintCommandConfig; 0]);
+        assert_eq!(reloaded.lint.include, [] as [String; 0]);
+        assert_eq!(reloaded.lint.exclude, [] as [String; 0]);
         assert_eq!(reloaded.lint.enabled, LintIndicator::Disabled);
         assert_eq!(reloaded.lint.cache_size, DEFAULT_CACHE_SIZE);
     }
@@ -1524,7 +1530,7 @@ mod tests {
             .file(&path)
             .load()
             .expect("bool enums should parse");
-        assert!(cargo_port_config.cache.root.is_empty());
+        assert_eq!(cargo_port_config.cache.root, "");
         assert_eq!(
             cargo_port_config.mouse.invert_scroll,
             ScrollDirection::Normal

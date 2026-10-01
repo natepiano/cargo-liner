@@ -950,7 +950,10 @@ mod tests {
                 &upper.reference.to_string(),
             ],
         )?;
-        assert!(git_output(root, &["reflog", "show", &upper.reference.to_string()])?.is_empty());
+        assert_eq!(
+            git_output(root, &["reflog", "show", &upper.reference.to_string()])?,
+            ""
+        );
         assert!(super::branch_reflog_tip(root, &upper.reference, 1).is_err());
         let events = capture_zero_previous_update(&fixture, 1)?;
         assert_eq!(events.len(), 1);

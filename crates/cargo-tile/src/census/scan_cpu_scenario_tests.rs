@@ -60,7 +60,7 @@ fn cpu_cache_identity_recovery_preserves_detached_credit_and_retained_target() {
             &[],
         );
         assert_eq!(groups.len(), 1, "sample {index}");
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         assert_eq!(groups[0].lead.pid, 100);
         let identity = groups[0].id();
         assert_eq!(matches!(identity, InvocationId::Captured(_)), index >= 8);
@@ -166,7 +166,7 @@ fn cpu_turnover_preserves_every_sample_as_busy_and_idle_children_change() {
     }
     for (index, groups) in samples.iter().enumerate() {
         assert_eq!(groups.len(), 1, "sample {index}");
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         assert_eq!(groups[0].lead.pid, 100);
         assert_eq!(groups[0].id(), samples[0][0].id());
         let expected = if index == 0 {
@@ -350,7 +350,7 @@ fn assert_shared_target_refusal(command: &str, excluded: &[String]) {
         };
         assert_eq!(lead_pids, expected_pids, "sample {index}");
         for group in &groups {
-            assert!(group.rest.is_empty());
+            assert_eq!(group.rest, [] as [CargoProcess; 0]);
             assert!(group.lead.pid == 100 || (excluded.is_empty() && group.lead.pid == 300));
             let expected = if index == 0 {
                 Measurement::Unavailable(MeasurementAbsence::FirstObservation)

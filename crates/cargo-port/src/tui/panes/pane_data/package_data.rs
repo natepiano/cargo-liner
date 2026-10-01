@@ -503,7 +503,10 @@ mod test_row_tests {
 
     #[test]
     fn all_zero_counts_hide_the_section() {
-        assert!(test_rows_from_counts(counts(0, 0, 0, 0)).is_empty());
+        assert_eq!(
+            test_rows_from_counts(counts(0, 0, 0, 0)),
+            [] as [(&str, usize); 0]
+        );
     }
 }
 

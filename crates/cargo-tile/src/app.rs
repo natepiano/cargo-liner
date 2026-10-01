@@ -368,10 +368,11 @@ impl FavoritesHost for App {
 )]
 mod tests {
     use super::App;
+    use crate::progress::capture_roots::AccountCaptureDirectory;
 
     #[test]
     fn roots_wait_for_worker_observations() {
         let app = App::new_for_test().expect("test app");
-        assert!(app.root_status.is_empty());
+        assert_eq!(app.root_status, [] as [AccountCaptureDirectory; 0]);
     }
 }

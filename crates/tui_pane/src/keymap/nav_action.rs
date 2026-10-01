@@ -188,8 +188,8 @@ mod tests {
 
     #[test]
     fn half_page_is_vim_only() {
-        assert!(default_keys(NavAction::HalfPageUp).is_empty());
-        assert!(default_keys(NavAction::HalfPageDown).is_empty());
+        assert_eq!(default_keys(NavAction::HalfPageUp), [] as [KeyBind; 0]);
+        assert_eq!(default_keys(NavAction::HalfPageDown), [] as [KeyBind; 0]);
 
         let extras = vim_letter_extras();
         let half_up = extras.contains(&(KeySequence::from(ctrl('u')), NavAction::HalfPageUp));

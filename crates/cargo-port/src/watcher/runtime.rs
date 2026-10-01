@@ -1222,7 +1222,7 @@ mod tests {
             .lock()
             .expect("recording watcher lock")
             .clone();
-        assert!(recorded.is_empty());
+        assert_eq!(recorded, [] as [(PathBuf, RecursiveMode); 0]);
         assert!(registered_roots.covers(&project_dir));
         assert!(
             state

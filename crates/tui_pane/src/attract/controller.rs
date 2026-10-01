@@ -1280,7 +1280,7 @@ mod tests {
         let mut records = Vec::new();
 
         attract.note_completed_backdrop_attempts(|record| records.push(record.to_owned()));
-        assert!(records.is_empty());
+        assert_eq!(records, [] as [String; 0]);
         assert_eq!(
             capture_test_driver.send_capture_attempt(
                 &mut attract.monitor,

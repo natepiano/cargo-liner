@@ -268,7 +268,7 @@ mod tests {
     fn no_notices_push_nothing() {
         let mut rows = SettingsRows::<TestSetting>::new();
         rows.notices(&[]);
-        assert!(rows.rows().is_empty());
+        assert_eq!(rows.rows(), []);
         assert_eq!(rows.widest_row(), super::RowWidths::default().widest_row());
     }
 

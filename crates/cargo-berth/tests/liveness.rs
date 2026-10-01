@@ -2291,7 +2291,7 @@ fn assert_coordination_identity_rejection(
     let actions = envelope["payload"]["data"]["recovery_actions"]
         .as_array()
         .expect("identity rejection should carry recovery actions");
-    assert!(!actions.is_empty());
+    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
     assert_eq!(
         actions
             .iter()

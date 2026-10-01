@@ -589,9 +589,9 @@ fn assert_nonempty_rendered_blocks(envelope: &Value, expected_payload_kind: &str
     for block in blocks {
         let summary = required_string(block, "/summary")?;
         let detail = required_string(block, "/detail")?;
-        assert!(!summary.is_empty());
+        assert_ne!(summary, "");
         assert!(!summary.contains('\n'));
-        assert!(!detail.is_empty());
+        assert_ne!(detail, "");
     }
     Ok(())
 }

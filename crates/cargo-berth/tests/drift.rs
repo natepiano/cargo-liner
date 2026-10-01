@@ -1065,7 +1065,7 @@ fn post_commit_uses_same_run_and_worktree_reservations_as_coverage() {
     );
 
     assert!(committed.status.success());
-    assert!(committed.stderr.is_empty());
+    assert_eq!(committed.stderr, [] as [u8; 0]);
     let journal = journal_text(repository.path());
     assert!(!journal.contains(&format!(
         "\"op\":\"widen\",\"reservation_id\":\"{second_id}\""
@@ -1512,7 +1512,10 @@ fn mixed_anchor_batch_preserves_two_valid_and_one_independent_history() {
             .is_some_and(|effects| effects.iter().any(|effect| effect["kind"] == "incursion")),
         "stale reservation did not report an incursion: {stale_result:#}"
     );
-    assert!(result_incursion_commits(results, &stale_id).is_empty());
+    assert_eq!(
+        result_incursion_commits(results, &stale_id),
+        [] as [serde_json::Value; 0]
+    );
     let missing_result = results
         .iter()
         .find(|result| result["reservation_id"] == unreadable.reservation_id)
@@ -2726,7 +2729,7 @@ fn json_post_commit_reports_every_active_reservation_without_warning_rendering()
     assert!(widened.status.success());
     assert_eq!(envelope["status"], "widened");
     assert_eq!(envelope["exit_code"], 0);
-    assert!(widened.stderr.is_empty());
+    assert_eq!(widened.stderr, [] as [u8; 0]);
     let results = envelope["payload"]["data"]["results"]
         .as_array()
         .expect("drift results should be an array");
@@ -3486,7 +3489,7 @@ fn post_commit_is_silent_for_covered_work_and_uses_the_invoking_linked_worktree(
     git(repository.path(), &["add", "covered.txt"]);
     let covered_commit = git_output(repository.path(), &["commit", "-m", "covered work"]);
     assert!(covered_commit.status.success());
-    assert!(covered_commit.stderr.is_empty());
+    assert_eq!(covered_commit.stderr, [] as [u8; 0]);
     assert!(!journal_text(repository.path()).contains(&format!(
         "\"op\":\"widen\",\"reservation_id\":\"{covered_id}\""
     )));
@@ -3502,7 +3505,10 @@ fn post_commit_is_silent_for_covered_work_and_uses_the_invoking_linked_worktree(
     let warning = String::from_utf8_lossy(&linked_commit.stderr);
     assert!(warning.contains(&linked_id));
     assert!(warning.contains("linked-outside.txt"));
-    assert!(git_stdout(repository.path(), &["status", "--porcelain"]).is_empty());
+    assert_eq!(
+        git_stdout(repository.path(), &["status", "--porcelain"]),
+        ""
+    );
 }
 
 #[test]
@@ -4825,7 +4831,7 @@ fn assert_coordination_identity_rejection(
     let actions = envelope["payload"]["data"]["recovery_actions"]
         .as_array()
         .expect("identity rejection should carry recovery actions");
-    assert!(!actions.is_empty());
+    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
     assert_eq!(
         actions
             .iter()

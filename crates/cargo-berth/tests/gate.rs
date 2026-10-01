@@ -473,7 +473,7 @@ fn reinitialization_clears_gate_targets() {
         repository.root(),
         &["init", "--reinitialize-after-review", "--json"],
     ));
-    assert!(gate_targets(repository.root()).is_empty());
+    assert_eq!(gate_targets(repository.root()), [] as [String; 0]);
 }
 
 #[test]
@@ -537,7 +537,7 @@ fn committed_hook_skips_unlisted_fast_forward_before_journal_replay() {
 #[test]
 fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
     let default = initialized_repository();
-    assert!(gate_targets(default.path()).is_empty());
+    assert_eq!(gate_targets(default.path()), [] as [String; 0]);
     let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
     let lane = repository.lane("target-list-lane", "integration");
     write_file(&lane, "listed.txt", "listed\n");
@@ -556,7 +556,7 @@ fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
     assert_success(&repository.run(&lane, &["release", &id, "--json"]));
     repository.merge_fast_forward("target-list-lane");
     assert_success(&repository.run(repository.root(), &["board", "--json"]));
-    assert!(gate_targets(repository.root()).is_empty());
+    assert_eq!(gate_targets(repository.root()), [] as [String; 0]);
 }
 
 #[test]
@@ -3345,7 +3345,7 @@ fn one_trunk_transaction_among_merge_hook_invocations_records_one_audit_fact() {
     assert!(non_trunk.status.success());
     assert_eq!(environment_bypass_record_count(repository.path()), 1);
     assert_eq!(pending_bypass_count(repository.path()), 0);
-    assert!(non_trunk.stderr.is_empty());
+    assert_eq!(non_trunk.stderr, [] as [u8; 0]);
 }
 
 #[test]
@@ -3372,7 +3372,7 @@ fn an_unconfigured_worktree_bypasses_without_writing_shared_audit_state() {
         "an unenrolled worktree must not append a bypass record"
     );
     assert_eq!(pending_bypass_count(repository.path()), 0);
-    assert!(bypassed.stderr.is_empty());
+    assert_eq!(bypassed.stderr, [] as [u8; 0]);
 }
 
 #[test]
@@ -3559,7 +3559,7 @@ fn non_trunk_updates_and_an_unconfigured_trunk_gate_are_silent() {
     let main = git_stdout(repository.path(), &["rev-parse", "main"]);
     let possible_trunk = propose_trunk(repository.path(), &main, &branch_head);
     assert!(possible_trunk.status.success());
-    assert!(possible_trunk.stderr.is_empty());
+    assert_eq!(possible_trunk.stderr, [] as [u8; 0]);
 }
 
 #[test]
@@ -4247,7 +4247,10 @@ fn forced_checkpoint_consumes_its_permit_before_ordinary_reconciliation_settles_
         git_stdout(&fixture.blocked_root, &["rev-parse", "HEAD"]),
         checkpoint
     );
-    assert!(git_stdout(&fixture.blocked_root, &["status", "--porcelain"]).is_empty());
+    assert_eq!(
+        git_stdout(&fixture.blocked_root, &["status", "--porcelain"]),
+        ""
+    );
     set_gate_mode(root, "enforce");
 
     let blocked = propose_trunk(root, &base, &checkpoint);
@@ -6917,7 +6920,7 @@ fn assert_integration_identity_rejection(
     let actions = envelope["payload"]["data"]["reason"]["recovery_actions"]
         .as_array()
         .expect("identity rejection should carry recovery actions");
-    assert!(!actions.is_empty());
+    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
     assert_eq!(
         actions
             .iter()

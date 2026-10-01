@@ -323,7 +323,7 @@ fn shortcuts_trait_works_from_outside_crate() {
     let query: fn(&CrossCrateApp) -> Mode<CrossCrateApp> =
         <CrossCratePane as Pane<CrossCrateApp>>::mode();
     assert!(matches!(query(&app), Mode::Navigable));
-    assert!(CrossCratePane::vim_extras().is_empty());
+    assert_eq!(CrossCratePane::vim_extras(), []);
 
     let map = CrossCratePane::defaults().into_scope_map();
     assert_eq!(

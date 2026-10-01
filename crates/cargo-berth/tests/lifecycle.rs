@@ -191,7 +191,7 @@ mod integration_cover {
         let lane = repo.lane("gate-cover-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
-        assert!(repo.cover_claims().is_empty());
+        assert_eq!(repo.cover_claims(), [] as [serde_json::Value; 0]);
 
         repo.git(
             repo.root(),
@@ -228,7 +228,7 @@ mod integration_cover {
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
         let _ = repo.board();
-        assert!(repo.cover_claims().is_empty());
+        assert_eq!(repo.cover_claims(), [] as [serde_json::Value; 0]);
 
         repo.commit_file(&repo.integration, "new.txt", "new\n", "integration work");
         let _ = repo.board();
@@ -1439,7 +1439,7 @@ fn the_occupancy_refusals_recovery_action_admits_the_run_it_refused() {
         .as_array()
         .expect("the refusal should carry recovery actions")
         .clone();
-    assert!(!actions.is_empty());
+    assert_ne!(actions, [] as [serde_json::Value; 0]);
 
     for action in &actions {
         let performed = run_recovery_action(action);
@@ -2310,7 +2310,7 @@ mod merge_extent {
                 GIT.stdout(&fixture.holder, ["status", "--porcelain"]),
                 status_before
             );
-            assert!(status_before.is_empty());
+            assert_eq!(status_before, "");
             let integrated = board(fixture.trunk());
             assert_eq!(
                 merge_extent_at_release(snapshot(&integrated, &id))["status"],
@@ -2677,11 +2677,11 @@ mod merge_extent {
             scope_paths(&unavailable["retained_evidence"]["scopes"]),
             BTreeSet::from(["branch.rs".to_owned()])
         );
-        assert!(
-            !unavailable["failure"]
+        assert_ne!(
+            unavailable["failure"]
                 .as_str()
-                .expect("unavailable extent should explain its failure")
-                .is_empty()
+                .expect("unavailable extent should explain its failure"),
+            ""
         );
         assert_refused(&fixture.outsider, "file:branch.rs", THIRD_RUN, &id);
     }
@@ -3064,10 +3064,7 @@ mod merge_extent {
         );
         board(fixture.trunk());
         commit(&fixture.holder, "contested.rs", "incursion\n");
-        assert!(
-            GIT.stdout(&fixture.holder, ["status", "--porcelain"])
-                .is_empty()
-        );
+        assert_eq!(GIT.stdout(&fixture.holder, ["status", "--porcelain"]), "");
 
         for arguments in [
             vec!["drift", "--full", "--reservation", &subject, "--json"],

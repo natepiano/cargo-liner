@@ -1767,7 +1767,10 @@ travel_left = "界"
         let mut reopened = open_at_width(loaded_state_at(&path, RECOGNIZED_ROWS), &keymap, 100);
         reopened.handle_action(FavoritesOverlayAction::Delete);
         let close_commit = reopened.begin_close();
-        assert!(close_commit.removal_targets.is_empty());
+        assert_eq!(
+            close_commit.removal_targets,
+            [] as [FavoriteRemovalTarget; 0]
+        );
         reopened.finish_close();
         reopened.open_file_state(
             loaded_state_at(&path, RECOGNIZED_ROWS),

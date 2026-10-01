@@ -2000,7 +2000,7 @@ mod tests {
         let outcome = app.framework.copy_selection(&app, &mut clipboard);
 
         assert_eq!(outcome, CopyOutcome::NothingToCopy);
-        assert!(clipboard.writes.is_empty());
+        assert_eq!(clipboard.writes, [] as [String; 0]);
     }
 
     #[test]
@@ -2021,7 +2021,7 @@ mod tests {
         let outcome = app.framework.copy_selection(&app, &mut clipboard);
 
         assert_eq!(outcome, CopyOutcome::NothingToCopy);
-        assert!(clipboard.writes.is_empty());
+        assert_eq!(clipboard.writes, [] as [String; 0]);
     }
 
     #[test]
@@ -2071,6 +2071,6 @@ mod tests {
         let outcome = app.framework.copy_selection(&app, &mut clipboard);
 
         assert_eq!(outcome, CopyOutcome::NothingToCopy);
-        assert!(clipboard.writes.is_empty());
+        assert_eq!(clipboard.writes, [] as [String; 0]);
     }
 }

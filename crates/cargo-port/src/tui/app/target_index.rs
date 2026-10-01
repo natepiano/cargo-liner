@@ -170,6 +170,9 @@ mod tests {
     #[test]
     fn siblings_returns_empty_for_unknown_target_dir() {
         let index = TargetDirIndex::new();
-        assert!(index.siblings(&dir("/nowhere"), &[]).is_empty());
+        assert_eq!(
+            index.siblings(&dir("/nowhere"), &[]),
+            [] as [&AbsolutePath; 0]
+        );
     }
 }

@@ -1936,7 +1936,7 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
     let four_cold = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
     assert!(four_cold.output.status.success());
     let four_argv = git_trace(&four_cold);
-    assert!(!one_argv.is_empty());
+    assert_ne!(one_argv, [] as [String; 0]);
     assert_merge_observation_budget(&one_argv, 2);
     assert_merge_observation_budget(&four_argv, 5);
     assert_eq!(
@@ -2024,7 +2024,7 @@ fn predecessor_graph_has_fixed_cold_cost() {
     let four_cold = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
     assert!(four_cold.output.status.success());
     let four_argv = git_trace(&four_cold);
-    assert!(!two_argv.is_empty());
+    assert_ne!(two_argv, [] as [String; 0]);
     assert_merge_observation_budget(&two_argv, 3);
     assert_merge_observation_budget(&four_argv, 5);
     assert_eq!(
@@ -3185,7 +3185,7 @@ fn assert_coordination_identity_rejection(
     let actions = envelope["payload"]["data"]["recovery_actions"]
         .as_array()
         .expect("identity rejection should carry recovery actions");
-    assert!(!actions.is_empty());
+    assert_ne!(actions.as_slice(), [] as [serde_json::Value; 0]);
     assert_eq!(
         actions
             .iter()

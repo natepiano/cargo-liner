@@ -233,14 +233,14 @@ mod tests {
     #[test]
     fn descriptions_are_non_empty_for_every_variant() {
         for variant in GlobalAction::ALL {
-            assert!(!variant.description().is_empty());
+            assert_ne!(variant.description(), "");
         }
     }
 
     #[test]
     fn bar_labels_are_non_empty_for_every_variant() {
         for variant in GlobalAction::ALL {
-            assert!(!variant.bar_label().is_empty());
+            assert_ne!(variant.bar_label(), "");
         }
     }
 

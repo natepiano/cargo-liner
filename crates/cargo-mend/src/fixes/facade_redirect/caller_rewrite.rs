@@ -996,7 +996,7 @@ mod tests {
             rewritten(source, "app", &[scoped_redirect()]),
             "use crate::tool::other;\nfn f() { crate::tool::stage(); other::g(); }\n"
         );
-        assert!(named_owner_modules(source).is_empty());
+        assert_eq!(named_owner_modules(source), [] as [Vec<String>; 0]);
     }
 
     #[test]

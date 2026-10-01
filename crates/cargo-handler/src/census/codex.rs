@@ -335,7 +335,10 @@ mod tests {
     #[test]
     fn a_missing_or_changed_database_gives_no_threads() {
         let directory = TempDir::new().expect("a temporary directory should open");
-        assert!(read_threads(directory.path(), &(0..=u64::MAX)).is_empty());
+        assert_eq!(
+            read_threads(directory.path(), &(0..=u64::MAX)),
+            [] as [CodexThread; 0]
+        );
 
         let connection = Connection::open(directory.path().join("state_6.sqlite"))
             .expect("the fixture database should open");
@@ -346,7 +349,10 @@ mod tests {
             )
             .expect("the fixture table should create");
 
-        assert!(read_threads(directory.path(), &(0..=u64::MAX)).is_empty());
+        assert_eq!(
+            read_threads(directory.path(), &(0..=u64::MAX)),
+            [] as [CodexThread; 0]
+        );
     }
 
     /// Threads are read by id from the newest database whoever started

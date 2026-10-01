@@ -1259,7 +1259,7 @@ mod tests {
             ignored.cells[COL_NAME].style.fg,
             Some(theme_roles::git_ignored_color())
         );
-        assert!(ignored.cells[COL_GIT_PATH].text.is_empty());
+        assert_eq!(ignored.cells[COL_GIT_PATH].text, "");
     }
 
     #[test]

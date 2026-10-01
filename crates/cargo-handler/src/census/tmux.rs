@@ -234,6 +234,6 @@ mod tests {
             opened_sessions(script),
             [None, Some("keepalive".to_string())]
         );
-        assert!(opened_sessions("tmux ls").is_empty());
+        assert_eq!(opened_sessions("tmux ls"), [] as [Option<String>; 0]);
     }
 }

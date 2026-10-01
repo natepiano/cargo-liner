@@ -1181,7 +1181,7 @@ mod running_metrics_system {
                 &RunningMetricsIdentityBindings::default(),
             );
 
-            assert!(running_metrics_cycle_refresh_set.pids().is_empty());
+            assert_eq!(running_metrics_cycle_refresh_set.pids(), []);
         }
 
         #[test]

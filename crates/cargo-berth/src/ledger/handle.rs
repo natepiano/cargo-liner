@@ -1212,7 +1212,7 @@ mod tests {
 
         let rejected = ledger
             .transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
-                assert!(state.coordination_events().is_empty());
+                assert_eq!(state.coordination_events(), []);
                 assert_eq!(u64::from(state.generation()), 0);
                 assert_eq!(u64::from(state.journal_end_offset()), 0);
                 TransactionValidation::Reject("overlap")
@@ -1369,10 +1369,9 @@ mod tests {
                 CorrectableTransactionInput::RecordTooLarge { .. }
             ))
         ));
-        assert!(
-            fs::read_to_string(&ledger.paths.journal)
-                .expect("journal should read")
-                .is_empty()
+        assert_eq!(
+            fs::read_to_string(&ledger.paths.journal).expect("journal should read"),
+            ""
         );
     }
 
@@ -1593,7 +1592,7 @@ mod tests {
             ledger: &Ledger,
         ) -> Result<LedgerTransactionOutcome<()>, LedgerTransactionError> {
             ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |state| {
-                assert!(state.coordination_events().is_empty());
+                assert_eq!(state.coordination_events(), []);
                 assert_eq!(u64::from(state.generation()), 0);
                 assert_eq!(u64::from(state.journal_end_offset()), 0);
                 TransactionValidation::Append(Box::new(JournalOperation::Bypass {

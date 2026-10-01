@@ -598,7 +598,7 @@ mod tests {
         };
 
         let (results, total) = search_finder(&[item], "android", 50);
-        assert!(results.is_empty());
+        assert_eq!(results, [] as [usize; 0]);
         assert_eq!(total, 0);
     }
 

@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn rate_limit_bucket_empty_without_quota() {
-        assert!(formatting::format_rate_limit_bucket(None).is_empty());
+        assert_eq!(formatting::format_rate_limit_bucket(None), "");
     }
 
     #[test]

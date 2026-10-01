@@ -1495,7 +1495,7 @@ mod tests {
                         .to_owned()
                 )
             );
-            assert!(reports[0].toolchains.is_empty());
+            assert_eq!(reports[0].toolchains, [] as [ToolchainHookReport; 0]);
             assert!(!accounts[0].home.join("child-started").exists());
             assert_eq!(reports[1].outcome, AccountHookOutcome::Completed);
             assert_eq!(reports[1].toolchains.len(), 1);
@@ -2162,7 +2162,7 @@ mod tests {
             output.stdout,
             format!("{HOOK_TEST_VERSION_ARGUMENT}\n").as_bytes()
         );
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
     }
 
     /// Installation repairs the missing command without using the
@@ -2332,7 +2332,7 @@ mod tests {
             output.stdout,
             format!("{HOOK_TEST_VERSION_ARGUMENT}\n").as_bytes()
         );
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
         assert!(!hook.staging.exists());
         assert!(!hook.cargo.with_file_name(SHIM_LOCK_NAME).exists());
     }
@@ -2511,14 +2511,14 @@ mod tests {
                     assert_eq!(name, "z-broken");
                 }
             } else {
-                assert!(startup.kept_newer.is_empty());
+                assert_eq!(startup.kept_newer, [] as [NewerShim; 0]);
                 assert_eq!(
                     startup.failed,
                     vec![("a-newer".into(), "incomplete shim version line".into())]
                 );
             }
-            assert!(startup.installed.is_empty());
-            assert!(startup.refreshed.is_empty());
+            assert_eq!(startup.installed, [] as [String; 0]);
+            assert_eq!(startup.refreshed, [] as [String; 0]);
             assert_eq!(snapshot(), before);
             assert!(!hooks[0].cargo.with_file_name(SHIM_LOCK_NAME).exists());
             assert!(!hooks[0].staging.exists());

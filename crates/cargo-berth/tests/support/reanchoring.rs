@@ -511,13 +511,13 @@ fn create_side_branch_during_stopped_apply(
             expected
         );
     }
-    assert!(
-        !fs::read_to_string(apply_directory.join("rewritten"))
+    assert_ne!(
+        fs::read_to_string(apply_directory.join("rewritten"))
             .expect("the first replay must write the real apply map")
-            .trim()
-            .is_empty()
+            .trim(),
+        ""
     );
-    assert!(pending_markers(fixture.root()).is_empty());
+    assert_eq!(pending_markers(fixture.root()), [] as [PathBuf; 0]);
     fs::write(observation.join("hooks"), "").expect("branch observation should start empty");
     let created = observed_apply_command(fixture, observation)
         .args(["branch", "side"])
@@ -604,7 +604,7 @@ fn apply_rebase_reanchors_checkpoint(progress: ApplyRebaseProgress) {
     );
     let trunk = GIT.stdout(fixture.root(), ["rev-parse", "main"]);
     assert_ne!(trunk, old_start);
-    assert!(pending_markers(fixture.root()).is_empty());
+    assert_eq!(pending_markers(fixture.root()), [] as [PathBuf; 0]);
 
     let observation = tempdir().expect("apply hook observation directory should exist");
     complete_observed_apply_rebase(&fixture, observation.path(), progress, &trunk);
@@ -691,7 +691,7 @@ fn complete_observed_apply_rebase(
                     .trim(),
                 trunk
             );
-            assert!(pending_markers(fixture.root()).is_empty());
+            assert_eq!(pending_markers(fixture.root()), [] as [PathBuf; 0]);
             fs::write(fixture.holder.join("unreserved.txt"), "trunk addition\n")
                 .expect("resolution should preserve the unrelated trunk change");
             GIT.run(&fixture.holder, ["add", "unreserved.txt"]);
@@ -758,10 +758,10 @@ pub(super) fn aborted_rebase_does_not_leave_a_rewrite_marker() {
     let old_head = fixture.head();
     fixture.upstream_conflict();
     fixture.stop_rebase();
-    assert!(pending_markers(fixture.root()).is_empty());
+    assert_eq!(pending_markers(fixture.root()), [] as [PathBuf; 0]);
     GIT.run(&fixture.holder, ["rebase", "--abort"]);
     assert_eq!(fixture.head(), old_head);
-    assert!(pending_markers(fixture.root()).is_empty());
+    assert_eq!(pending_markers(fixture.root()), [] as [PathBuf; 0]);
     assert!(
         !journal_events(fixture.root())
             .iter()

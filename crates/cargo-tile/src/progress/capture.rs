@@ -552,6 +552,7 @@ mod tests {
     use super::*;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::Observation;
+    use crate::census::CargoProcess;
     use crate::census::DirectAssociation;
     use crate::census::command_text::CommandText;
     use crate::census::scan::CensusSequence;
@@ -1029,7 +1030,10 @@ mod tests {
         fs::write(&log, CAPTURED_REDRAW).unwrap();
         let second = Capture::take_with_observations(root.path(), |_| present("100"));
         assert_eq!(second.root_status[0].confirmed, 1);
-        assert!(second.root_status[0].diagnostics.is_empty());
+        assert_eq!(
+            second.root_status[0].diagnostics,
+            [] as [CaptureDiagnostic; 0]
+        );
     }
 
     #[test]
@@ -1189,7 +1193,7 @@ mod tests {
             );
             assert_eq!(capture.lookup(0, 10), reading);
             assert_eq!(status.confirmed, 0);
-            assert!(capture.confirmed().is_empty());
+            assert_eq!(capture.confirmed(), []);
             assert!(registration.exists() && log.exists() && unverifiable.exists());
         }
     }
@@ -1454,7 +1458,7 @@ mod tests {
         fs::write(&orphan, CAPTURED_REDRAW).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("101"));
         assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
-        assert!(capture.confirmed().is_empty());
+        assert_eq!(capture.confirmed(), []);
         assert!(!registration.exists());
         assert!(!log.exists());
         assert!(orphan.exists());
@@ -1649,7 +1653,7 @@ mod tests {
         assert_eq!(capture.row_source(10), DirectAssociation::None);
         let groups = sequence.sample_capture(&records, &capture);
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         assert_eq!(groups[0].lead.pid, 10);
         assert_eq!(groups[0].lead.command, CommandText::of("cargo", &["build"]));
         assert_eq!(groups[0].lead.path, "/work");
@@ -1662,7 +1666,7 @@ mod tests {
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
         let groups = sequence.sample_capture(&records, &capture);
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         assert_eq!(groups[0].lead.pid, 10);
         assert_eq!(groups[0].lead.command, CommandText::of("cargo", &["build"]));
         assert_eq!(
@@ -1681,7 +1685,7 @@ mod tests {
             .replace("\0boot\0", "\0{ sec = 10, usec = 20 }\0");
         fs::write(&registration, &bytes).unwrap();
         let capture = Capture::take_with_observations(root.path(), |_| present("100"));
-        assert!(capture.confirmed().is_empty());
+        assert_eq!(capture.confirmed(), []);
         assert!(
             capture.root_status[0]
                 .diagnostics
@@ -1709,7 +1713,7 @@ mod tests {
             let capture = Capture::take_with_observations(root.path(), |_| observation.clone());
             assert!(registration.exists());
             assert!(log.exists());
-            assert!(capture.confirmed().is_empty());
+            assert_eq!(capture.confirmed(), []);
         }
     }
 
@@ -1725,7 +1729,7 @@ mod tests {
             capture.lookup(0, 10),
             CaptureLookup::Registered(CaptureRead::Progress(compiling(149, 403)))
         );
-        assert!(capture.confirmed().is_empty());
+        assert_eq!(capture.confirmed(), []);
         assert!(registration.exists());
         assert!(log.exists());
     }
@@ -1971,7 +1975,7 @@ mod tests {
             });
             assert_eq!(calls.get(), 4);
             assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
-            assert!(capture.confirmed().is_empty());
+            assert_eq!(capture.confirmed(), []);
             assert!(!staging.exists());
             assert!(!log.exists());
             assert!(unrelated_log.exists());
@@ -2014,7 +2018,7 @@ mod tests {
             assert!(staging.exists());
             assert!(log.exists());
             assert_eq!(capture.lookup(0, 10), CaptureLookup::Unregistered);
-            assert!(capture.confirmed().is_empty());
+            assert_eq!(capture.confirmed(), []);
             assert_eq!(budget.remaining(), CAPTURE_SWEEP_LIMIT);
         }
     }

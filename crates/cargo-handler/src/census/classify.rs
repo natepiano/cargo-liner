@@ -702,7 +702,10 @@ mod tests {
         ];
         let sessions = [session(500, "gone", "idle", HOME)];
 
-        assert!(agent_rows(&processes, &sessions, &[], Some(Path::new(HOME))).is_empty());
+        assert_eq!(
+            agent_rows(&processes, &sessions, &[], Some(Path::new(HOME))),
+            [] as [AgentRow; 0]
+        );
     }
 
     /// A session with no name shows the start of its id.

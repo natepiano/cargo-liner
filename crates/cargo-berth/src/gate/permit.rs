@@ -704,6 +704,7 @@ mod tests {
     use super::write_pending_marker;
     use crate::gate::install;
     use crate::ledger::BypassCause;
+    use crate::ledger::BypassOccurrenceTime;
     use crate::ledger::BypassedAction;
     use crate::ledger::BypassedMergeIdentity;
 
@@ -783,7 +784,10 @@ mod tests {
         let mut bypass = super::prepare_pending_bypass_recovery(directory.path(), &[])
             .expect("recovery should prepare");
         assert_eq!(bypass.take_imports().len(), 1);
-        assert!(bypass.take_unrecorded_occurrences().is_empty());
+        assert_eq!(
+            bypass.take_unrecorded_occurrences(),
+            [] as [BypassOccurrenceTime; 0]
+        );
         let rewrites = super::pending_branch_rewrite_markers(directory.path())
             .expect("rewrite markers should decode");
         assert_eq!(rewrites.len(), 1);
@@ -843,7 +847,10 @@ mod tests {
         let mut recovery = super::prepare_pending_bypass_recovery(directory.path(), &[])
             .expect("undecodable rewrite should remain separate from bypass reporting");
         assert!(recovery.take_imports().is_empty());
-        assert!(recovery.take_unrecorded_occurrences().is_empty());
+        assert_eq!(
+            recovery.take_unrecorded_occurrences(),
+            [] as [BypassOccurrenceTime; 0]
+        );
         assert!(markers[0].path.is_file());
     }
 

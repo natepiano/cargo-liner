@@ -1847,13 +1847,13 @@ mod tests {
         let exe = exe_path("/home/me/.cargo/bin/ripgrep");
         let cargo_install_bin_directory =
             CargoInstallBinDirectory::Resolved(AbsolutePath::from(bin_dir));
-        assert!(
+        assert_eq!(
             installed_bin_keys(
                 &exe,
                 std::slice::from_ref(&attribution),
                 &cargo_install_bin_directory,
-            )
-            .is_empty()
+            ),
+            [] as [(RunningKey, AbsolutePath); 0]
         );
     }
 
@@ -1870,13 +1870,13 @@ mod tests {
         let exe = exe_path("/usr/local/bin/cargo-port");
         let cargo_install_bin_directory =
             CargoInstallBinDirectory::Resolved(AbsolutePath::from(bin_dir));
-        assert!(
+        assert_eq!(
             installed_bin_keys(
                 &exe,
                 std::slice::from_ref(&attribution),
                 &cargo_install_bin_directory,
-            )
-            .is_empty()
+            ),
+            [] as [(RunningKey, AbsolutePath); 0]
         );
     }
 }

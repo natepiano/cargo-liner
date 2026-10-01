@@ -970,9 +970,9 @@ mod tests {
         .expect("missing post-commit identity should be accepted");
 
         fixture.assert_worktree_identity_absent();
-        assert!(fixture.fingerprint_cache_paths().is_empty());
+        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
         assert_unchanged_empty_report(prepared);
-        assert!(fixture.fingerprint_cache_paths().is_empty());
+        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
     }
 
     #[test]
@@ -997,9 +997,9 @@ mod tests {
         )
         .expect("pending rewrite should defer comparison");
 
-        assert!(fixture.fingerprint_cache_paths().is_empty());
+        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
         assert_unchanged_empty_report(prepared);
-        assert!(fixture.fingerprint_cache_paths().is_empty());
+        assert_eq!(fixture.fingerprint_cache_paths(), [] as [PathBuf; 0]);
     }
 
     fn post_commit_request() -> DriftRequest {

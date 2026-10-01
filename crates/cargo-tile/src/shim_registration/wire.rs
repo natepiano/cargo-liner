@@ -1125,8 +1125,8 @@ fn term_after_publication_cleans_artifacts_without_starting_cargo() {
             Some(143),
             "TERM delivered to {target}"
         );
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
+        assert_eq!(output.stderr, [] as [u8; 0]);
         assert!(fixture.path("observations/staged-registration").exists());
         assert!(
             !fixture.path("observations/arguments").exists(),

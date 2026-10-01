@@ -1086,6 +1086,7 @@ mod tests {
     use crate::git::fixture::SECONDARY_PATH;
     use crate::git::fixture::UNAVAILABLE_OBJECT_ID;
     use crate::ids::GitObjectId;
+    use crate::ids::ReservationScopePath;
 
     /// The lane branch whose history criss-crosses with `main`.
     const CRISS_CROSS_LANE: &str = "lane";
@@ -1254,11 +1255,17 @@ mod tests {
     fn integrated_head_has_no_merge_paths_when_trunk_moves_ahead() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
         let head = fixture.phase_start_head.clone();
-        assert!(unmerged_branch_paths(fixture.root(), &head, &head)?.is_empty());
+        assert_eq!(
+            unmerged_branch_paths(fixture.root(), &head, &head)?,
+            [] as [ReservationScopePath; 0]
+        );
 
         fixture.write(SECONDARY_PATH, "trunk-only change\n")?;
         let trunk = fixture.commit("advance trunk")?;
-        assert!(unmerged_branch_paths(fixture.root(), &trunk, &head)?.is_empty());
+        assert_eq!(
+            unmerged_branch_paths(fixture.root(), &trunk, &head)?,
+            [] as [ReservationScopePath; 0]
+        );
         Ok(())
     }
 

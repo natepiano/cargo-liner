@@ -565,7 +565,7 @@ mod tests {
         );
 
         assert_eq!(progress.stops, 1);
-        assert!(progress.notices.is_empty());
+        assert_eq!(progress.notices, [] as [String; 0]);
         assert_eq!(progress.progress_status, ProgressStatus::Inactive);
     }
 
@@ -634,7 +634,7 @@ mod tests {
 
         assert_eq!(compiler_warning_count, 2);
         assert_eq!(compiler_fixable_count, 1);
-        assert!(progress.notices.is_empty());
+        assert_eq!(progress.notices, [] as [String; 0]);
     }
 
     #[test]

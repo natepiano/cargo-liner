@@ -669,11 +669,11 @@ fn waiting_reservation_report_retains_merge_evidence_when_its_holder_is_unavaila
         unavailable["merge_extent"]["retained_evidence"],
         observed["merge_extent"]
     );
-    assert!(
-        !unavailable["merge_extent"]["failure"]
+    assert_ne!(
+        unavailable["merge_extent"]["failure"]
             .as_str()
-            .expect("unavailable merge extent should explain its failure")
-            .is_empty()
+            .expect("unavailable merge extent should explain its failure"),
+        ""
     );
     let complete_board = board_data(fixture.repository.path());
     assert!(has_reservation_snapshot(
@@ -1406,7 +1406,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
                 let instruction = answer["consequence"]["action"]["instruction"]
                     .as_str()
                     .expect("a held sequence consequence should carry an instruction");
-                assert!(!instruction.is_empty());
+                assert_ne!(instruction, "");
             },
             ExpectedOverlapAnswerConsequence::Deferral(expected)
             | ExpectedOverlapAnswerConsequence::Override(expected) => {
@@ -2093,12 +2093,12 @@ fn rendered_board_report(envelope: &serde_json::Value, report_kind: &str) -> ser
     let summary = block["summary"]
         .as_str()
         .expect("rendered board summary should be text");
-    assert!(!summary.is_empty());
+    assert_ne!(summary, "");
     assert!(!summary.contains('\n'));
     let detail = block["detail"]
         .as_str()
         .expect("rendered board detail should be text");
-    assert!(!detail.is_empty());
+    assert_ne!(detail, "");
     serde_json::from_str(detail).expect("rendered board detail should be valid JSON")
 }
 
@@ -3196,7 +3196,10 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@""#,
         snapshot["integration_evidence"]["status"]["status"],
         "integrated"
     );
-    assert!(reservation_verdicts(root, &reservation.reservation_id).is_empty());
+    assert_eq!(
+        reservation_verdicts(root, &reservation.reservation_id),
+        [] as [serde_json::Value; 0]
+    );
 
     invalidate_projection(root);
     let restarted = run_board_with_git_trace(root);
@@ -4927,7 +4930,7 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             };
             assert_eq!(historical_candidate_queries(&one_trace), 1);
             assert_eq!(historical_candidate_queries(&two_trace), 1);
-            assert!(!one_argv.is_empty());
+            assert_ne!(one_argv, [] as [String; 0]);
             assert_eq!(one_argv.len(), expected_argv_total, "{one_argv:#?}");
             assert_eq!(two_argv.len(), expected_argv_total, "{two_argv:#?}");
             assert_eq!(two_argv.len(), one_argv.len());
@@ -4987,7 +4990,7 @@ fn assert_mapped_acceptance_defers_historical_subjects() {
     );
     assert_eq!(historical_candidate_queries(&first), 0);
     for id in [&reservation.reservation_id, &duplicates[0]] {
-        assert!(reservation_verdicts(root, id).is_empty());
+        assert_eq!(reservation_verdicts(root, id), [] as [serde_json::Value; 0]);
     }
     let first_board = json_output(&first.output);
     let snapshot =
@@ -5145,7 +5148,10 @@ fn assert_historical_candidate_subject_budget() {
                     snapshot["integration_evidence"]["status"]["status"],
                     "integrated"
                 );
-                assert!(reservation_verdicts(reservation.repository.path(), &extra[0]).is_empty());
+                assert_eq!(
+                    reservation_verdicts(reservation.repository.path(), &extra[0]),
+                    [] as [serde_json::Value; 0]
+                );
             },
         }
     }

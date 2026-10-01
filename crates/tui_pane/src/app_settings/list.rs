@@ -53,7 +53,7 @@ mod tests {
     fn typed_lists_split_on_commas_and_spaces_and_keep_each_entry_once() {
         assert_eq!(parse_list("port, handler"), ["port", "handler"]);
         assert_eq!(parse_list(" port  handler,,port "), ["port", "handler"]);
-        assert!(parse_list(" , ").is_empty());
+        assert_eq!(parse_list(" , "), [] as [String; 0]);
     }
 
     #[test]

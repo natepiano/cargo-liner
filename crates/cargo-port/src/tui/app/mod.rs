@@ -3843,7 +3843,7 @@ mod tests {
             let event = Event::Key(KeyEvent::new(key, KeyModifiers::NONE));
             input::handle_event(&mut app, &event);
 
-            assert!(app.inflight.example_output().is_empty());
+            assert_eq!(app.inflight.example_output(), [] as [String; 0]);
             assert_eq!(
                 app.focused_pane_id(),
                 expected_focus.unwrap_or(focus_before),
@@ -4494,7 +4494,7 @@ mod tests {
             press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE);
 
             assert!(!app.overlays.is_finder_open());
-            assert!(app.project_list.finder.query.is_empty());
+            assert_eq!(app.project_list.finder.query, "");
         }
 
         #[test]
@@ -11041,7 +11041,7 @@ mod tests {
             });
 
             assert!(app.lint.running_toast_is_empty());
-            assert!(lint_toast_running_items(&app).is_empty());
+            assert_eq!(lint_toast_running_items(&app), [] as [String; 0]);
         }
 
         #[test]
@@ -11531,14 +11531,14 @@ mod tests {
                 info.0.status = GitStatus::Untracked;
                 info
             });
-            assert!(app.project_list.git_sync(project.path()).is_empty());
+            assert_eq!(app.project_list.git_sync(project.path()), "");
 
             apply_git_info(&mut app, project.path(), {
                 let mut info = base_info();
                 info.0.status = GitStatus::Ignored;
                 info
             });
-            assert!(app.project_list.git_sync(project.path()).is_empty());
+            assert_eq!(app.project_list.git_sync(project.path()), "");
         }
 
         #[test]
@@ -12437,21 +12437,21 @@ mod tests {
 
             // Both checkouts' histories are gone — not just the primary's — so the
             // rebuilt aggregate is empty instead of re-showing the linked runs.
-            assert!(
+            assert_eq!(
                 app.project_list
                     .lint_at_path_mut(&primary_path)
                     .unwrap()
-                    .runs()
-                    .is_empty()
+                    .runs(),
+                []
             );
-            assert!(
+            assert_eq!(
                 app.project_list
                     .lint_at_path_mut(&linked_path)
                     .unwrap()
-                    .runs()
-                    .is_empty()
+                    .runs(),
+                []
             );
-            assert!(panes::build_lints_data(&app).runs.is_empty());
+            assert_eq!(panes::build_lints_data(&app).runs, [] as [LintRun; 0]);
         }
 
         #[test]

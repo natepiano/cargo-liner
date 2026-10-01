@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn default_vim_extras_is_empty() {
-        assert!(FooPane::vim_extras().is_empty());
+        assert_eq!(FooPane::vim_extras(), []);
     }
 
     #[test]

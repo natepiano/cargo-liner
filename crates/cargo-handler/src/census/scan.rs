@@ -790,7 +790,10 @@ mod tests {
     fn a_missing_directory_holds_no_records() {
         let directory = tempfile::tempdir().expect("a temporary directory should open");
 
-        assert!(read_sessions(&directory.path().join("sessions")).is_empty());
+        assert_eq!(
+            read_sessions(&directory.path().join("sessions")),
+            [] as [SessionRecord; 0]
+        );
     }
 
     /// `CLAUDE_PID` is read from among the other variables; a variable

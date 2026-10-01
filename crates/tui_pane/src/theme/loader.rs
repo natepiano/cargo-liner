@@ -260,7 +260,10 @@ mod tests {
         assert_eq!(registry.len(), 2);
         assert!(registry.find(&ThemeId::new(SAMPLE_VARIANT_NAME)).is_some());
         assert!(registry.find(&ThemeId::new("Sample Light")).is_some());
-        assert!(registry.status().failed_files.is_empty());
+        assert_eq!(
+            registry.status().failed_files,
+            [] as [(PathBuf, ThemeLoadError); 0]
+        );
     }
 
     #[test]

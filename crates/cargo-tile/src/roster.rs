@@ -1130,7 +1130,10 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(vec![hidden_group(10, &[])], start());
 
-        assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            [] as [InvocationId; 0]
+        );
         // The summary is not what the list holds back: the command is
         // running, and one line saying so is the whole of what it has.
         assert_eq!(roster.groups().len(), 1);
@@ -1167,7 +1170,10 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         roster.advance(now + Duration::from_secs(1), Duration::ZERO);
-        assert!(roster.tiled_ids(&hidden_when_idle()).is_empty());
+        assert_eq!(
+            roster.tiled_ids(&hidden_when_idle()),
+            [] as [InvocationId; 0]
+        );
     }
 
     /// A driver's cell is ordered by the work inside it rather than by

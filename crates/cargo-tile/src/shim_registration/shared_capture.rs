@@ -26,6 +26,7 @@ use crate::hook::HookOperation;
 use crate::hook::HookOperationOutcome;
 use crate::hook::HookState;
 use crate::hook::ToolchainHookOutcome;
+use crate::hook::ToolchainHookReport;
 use crate::progress::capture::Capture;
 use crate::progress::capture_diagnostic::CaptureDiagnostic;
 use crate::progress::capture_roots::AccountName;
@@ -273,7 +274,7 @@ fn account_owned_cargo_in_permitted_groups_keeps_its_saved_group() {
         .expect("current process groups");
     assert!(groups.status.success(), "{groups:?}");
     let groups = String::from_utf8(groups.stdout).expect("numeric groups");
-    assert!(!groups.trim().is_empty());
+    assert_ne!(groups.trim(), "");
     for group in groups.split_whitespace() {
         let gid = group.parse::<u32>().expect("numeric gid");
         let account = account_at(&directory.path().join(group), "runner");
@@ -1027,10 +1028,9 @@ fn assert_account_child_environment(account: &HookAccount) {
             account.home.join(".rustup").display()
         )
     );
-    assert!(
-        fs::read(account.home.join("child-error"))
-            .expect("child stderr")
-            .is_empty()
+    assert_eq!(
+        fs::read(account.home.join("child-error")).expect("child stderr"),
+        [] as [u8; 0]
     );
 }
 
@@ -1186,7 +1186,7 @@ fn account_status_distinguishes_no_toolchains_from_failed_discovery_and_continue
     assert_eq!(reports.len(), 3);
     assert_eq!(reports[0].account, "empty");
     assert_eq!(reports[0].outcome, AccountHookOutcome::NoToolchains);
-    assert!(reports[0].toolchains.is_empty());
+    assert_eq!(reports[0].toolchains, [] as [ToolchainHookReport; 0]);
     assert_eq!(reports[0].to_string(), "empty: status: no toolchains");
     let failed = &reports[1];
     assert_eq!(failed.account, "unreadable");
@@ -1742,7 +1742,7 @@ fn credential_failure_is_incomplete_preserves_reason_and_continues_accounts() {
         if error.contains(reason) && error.contains("unresolved")),
         "{first_report:?}"
     );
-    assert!(first_report.toolchains.is_empty());
+    assert_eq!(first_report.toolchains, [] as [ToolchainHookReport; 0]);
     let rendered = first_report.to_string();
     assert!(
         rendered.contains("unresolved: uninstall: incomplete:"),
@@ -1965,7 +1965,7 @@ fn reader_reports_foreign_owned_uid_directories_as_ignored() {
         )
     );
     assert_eq!(other_status.confirmed, 0);
-    assert!(capture.confirmed().is_empty());
+    assert_eq!(capture.confirmed(), []);
     let parent_line = settings::shared_directory_status(&capture.shared_directory);
     assert!(
         parent_line.contains(parent.to_str().expect("parent text"))
@@ -2126,7 +2126,7 @@ sys.stdout.buffer.write(b'\0'.join(os.fsencode(field) for field in fields))
     let legacy = fields.join(&0);
     fs::write(&registration, &legacy).expect("publish legacy Darwin boot identity");
     let capture = Capture::take(&roots);
-    assert!(capture.confirmed().is_empty());
+    assert_eq!(capture.confirmed(), []);
     assert!(capture.root_status[0].diagnostics.iter().any(|diagnostic| {
         matches!(diagnostic, CaptureDiagnostic::IdentityUnknown(path) if path == &registration)
     }));

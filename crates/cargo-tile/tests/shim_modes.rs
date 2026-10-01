@@ -897,7 +897,10 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
             fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
             UNCAPTURED_ENVIRONMENT
         );
-        assert!(entries(&toolchain.root.join("state/pids")).is_empty());
+        assert_eq!(
+            entries(&toolchain.root.join("state/pids")),
+            [] as [PathBuf; 0]
+        );
     }
 
     /// With only one of descriptors 3 through 9 closed the shim has no pair to borrow,

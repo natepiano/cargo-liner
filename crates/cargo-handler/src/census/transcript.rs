@@ -567,11 +567,11 @@ mod tests {
     fn no_calls_outside_the_transcript_or_its_times() {
         let directory = TempDir::new().expect("a temporary directory should open");
         let path = directory.path().join("session.jsonl");
-        assert!(bash_calls(&path, &(0..=u64::MAX)).is_empty());
+        assert_eq!(bash_calls(&path, &(0..=u64::MAX)), [] as [BashCall; 0]);
 
         write_lines(&path, &[bash_line(5_000, "ls", "list")]);
-        assert!(bash_calls(&path, &(0..=4_999)).is_empty());
-        assert!(bash_calls(&path, &(5_001..=9_000)).is_empty());
+        assert_eq!(bash_calls(&path, &(0..=4_999)), [] as [BashCall; 0]);
+        assert_eq!(bash_calls(&path, &(5_001..=9_000)), [] as [BashCall; 0]);
         assert_eq!(bash_calls(&path, &(5_000..=5_000)).len(), 1);
     }
 
@@ -690,7 +690,7 @@ mod tests {
         assert!(described.contains(&("a2", "Explore", Some("a1"))));
 
         let later = SystemTime::now() + SUBAGENT_QUIET_LIMIT + Duration::from_secs(60);
-        assert!(running_subagents(&session, later).is_empty());
+        assert_eq!(running_subagents(&session, later), [] as [Subagent; 0]);
     }
 
     /// The end of a transcript is read far enough back to find a whole

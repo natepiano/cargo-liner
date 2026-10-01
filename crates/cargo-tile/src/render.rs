@@ -2206,7 +2206,7 @@ mod tests {
             assert_eq!(CounterState::from(&lookup), counter);
             assert!(capture_gauge_text(lookup, 60).is_empty(), "{counter:?}");
         }
-        assert!(!gauge_text(compiling(1, 2), 60).is_empty());
+        assert_ne!(gauge_text(compiling(1, 2), 60), "");
     }
 
     /// The working directory the gauge tests head their group with.
@@ -2397,7 +2397,7 @@ mod tests {
 
         assert!(text.ends_with("cargo build"), "{text:?}");
         assert_eq!(compiler_width(&row.process), 0);
-        assert!(managed_text(&row.process).is_empty());
+        assert_eq!(managed_text(&row.process), "");
     }
 
     #[test]
@@ -3894,7 +3894,7 @@ mod tests {
                 .map(|span| cell_width(&span.content))
                 .sum::<u16>();
         assert!(width <= 60);
-        assert!(heading_gauge(&groups[0], 40, &layout).is_empty());
+        assert_eq!(heading_gauge(&groups[0], 40, &layout), [] as [Span<'_>; 0]);
     }
 
     #[test]

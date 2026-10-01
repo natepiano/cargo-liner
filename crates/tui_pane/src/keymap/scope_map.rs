@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(map.action_for(&KeyBind::from(KeyCode::Up)), None);
         assert_eq!(map.key_for(TestAction::Up), None);
         assert_eq!(map.display_key_for(TestAction::Up), "");
-        assert!(map.display_keys_for(TestAction::Up).is_empty());
+        assert_eq!(map.display_keys_for(TestAction::Up), [] as [KeySequence; 0]);
     }
 
     #[test]

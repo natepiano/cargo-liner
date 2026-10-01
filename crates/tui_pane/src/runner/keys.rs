@@ -433,7 +433,7 @@ mod tests {
         dispatch_key(&mut app, key(KeyCode::Enter));
         dispatch_key(&mut app, key(KeyCode::Char('x')));
         dispatch_key(&mut app, key(KeyCode::Esc));
-        assert!(app.committed.is_empty());
+        assert_eq!(app.committed, [] as [String; 0]);
         assert!(!app.framework.settings_pane.is_editing());
         assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
         dispatch_key(&mut app, key(KeyCode::Esc));

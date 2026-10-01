@@ -216,7 +216,7 @@ fn allow_with_notice_emits_the_engine_presentation_object() -> TestResult {
     )?;
 
     assert_eq!(output.status.code(), Some(0));
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     let notice: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(
         notice["systemMessage"],
@@ -254,7 +254,7 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
     )?;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr)?;
     let refusal_detail = refusal
         .strip_prefix(
@@ -439,7 +439,7 @@ fn a_payload_without_session_identity_ignores_the_ambient_variable() -> TestResu
     )?;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr)?;
     assert!(
         refusal.contains("could not select one active reservation for this edit"),
@@ -820,7 +820,7 @@ fn replay_failure_emits_a_fail_open_object() -> TestResult {
     )?;
 
     assert_eq!(output.status.code(), Some(0));
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     let notice: Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(
         notice["systemMessage"],
@@ -889,7 +889,7 @@ fn session_identity_recoveries_preserve_the_frozen_corpus_text(repository: &Temp
     )?;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr.clone())?;
     assert!(refusal.contains(STALE_SESSION_REJECTION_KIND));
     assert!(refusal.contains("identity"));
@@ -979,7 +979,7 @@ fn init_from_a_linked_worktree_writes_the_main_root_configuration() -> TestResul
     )?;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr)?;
     assert!(
         refusal.starts_with(
@@ -1072,7 +1072,7 @@ fn a_worktree_added_after_init_coordinates_without_its_own_configuration() -> Te
     )?;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr)?;
     assert!(
         refusal.starts_with(
@@ -1145,7 +1145,7 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
     )?;
 
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr)?;
     // One holder blocks this edit, so every command names it. A refusal that asks for an answer
     // "for one named holder" and then prints `<holder-reservation-id>` four times has named
@@ -1173,7 +1173,7 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
 fn ambiguity_and_replay_preserve_the_frozen_corpus_text() -> TestResult {
     let ambiguity = ambiguous_first_touch_hook()?;
     assert_eq!(ambiguity.output.status.code(), Some(2));
-    assert!(ambiguity.output.stdout.is_empty());
+    assert_eq!(ambiguity.output.stdout, [] as [u8; 0]);
     let mut ambiguity_stderr = String::from_utf8(ambiguity.output.stderr)?;
     for (actual, expected) in ambiguity
         .actual_reservation_ids
@@ -1472,7 +1472,7 @@ fn assert_pre_edit_corpus_recovery(
     fixture_roots: &[(&str, &Path)],
 ) -> TestResult {
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let actual = String::from_utf8(output.stderr.clone())?;
     let frozen = corpus_expected_stderr(corpus_entry_name)?;
     let rejection_kind = frozen_rejection_kind(&frozen, corpus_entry_name)?;
@@ -1606,7 +1606,7 @@ fn assert_engine_authored_refusal(
     context: &str,
 ) -> TestResult {
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr.clone())?;
     if refusal.contains(RETIRED_MISSING_PRESENTATION_DIAGNOSTIC) {
         return Err(failure(format!(
@@ -1628,7 +1628,7 @@ fn assert_engine_authored_refusal(
 
 fn assert_fail_open_sentence_stated_once(output: &Output, context: &str) -> TestResult {
     assert_eq!(output.status.code(), Some(0));
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, [] as [u8; 0]);
     let notice: Value = serde_json::from_slice(&output.stdout)?;
     let system_message = required_string(&notice, "/systemMessage", context)?;
     let reason = required_string(
@@ -1647,7 +1647,7 @@ fn assert_fail_open_sentence_stated_once(output: &Output, context: &str) -> Test
 }
 
 fn assert_refused_for_scope(output: &Output, scope: &str, context: &str) -> TestResult {
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let refusal = String::from_utf8(output.stderr.clone())?;
     if output.status.code() != Some(2) {
         return Err(failure(format!(
@@ -3529,7 +3529,7 @@ fn session_start_publishes_the_engine_board_notices() -> TestResult {
             "raw session-start payload",
         )?;
         assert_eq!(output.status.code(), Some(0));
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, [] as [u8; 0]);
         assert_eq!(
             feedback.system_message,
             "cargo-berth found 4 actionable coordination notice(s)."

@@ -57,9 +57,9 @@ mod tests {
     fn empty_round_trips() {
         let bar = StatusBar::empty();
         assert!(bar.is_empty());
-        assert!(bar.nav.is_empty());
-        assert!(bar.pane_action.is_empty());
-        assert!(bar.global.is_empty());
+        assert_eq!(bar.nav, [] as [Span<'_>; 0]);
+        assert_eq!(bar.pane_action, [] as [Span<'_>; 0]);
+        assert_eq!(bar.global, [] as [Span<'_>; 0]);
     }
 
     #[test]

@@ -3283,9 +3283,9 @@ mod tests {
         assert_eq!(roster.groups().len(), 1);
         for mut census in [census_of(&[]), census_of(&[(pid.as_u32(), 10)])] {
             census.cargo.push(pid);
-            assert!(
-                CensusSequence::assemble(&mut census, &system, &capture, &["build".into()])
-                    .is_empty()
+            assert_eq!(
+                CensusSequence::assemble(&mut census, &system, &capture, &["build".into()]),
+                [] as [CargoGroup; 0]
             );
         }
     }
@@ -3446,7 +3446,7 @@ mod tests {
             crate::progress::capture_roots::RootReadStatus::ForeignOwned { .. }
         ));
         assert_eq!(rejected.confirmed, 0);
-        assert!(rejected.associations.is_empty());
+        assert_eq!(rejected.associations, [] as [CaptureAssociation; 0]);
         let mut census = Census::take(records.records.values());
         let groups = CensusSequence::assemble(&mut census, records, &capture, &[]);
         assert_eq!(
@@ -3458,11 +3458,11 @@ mod tests {
             expected_pids
         );
         if birth.is_empty() {
-            assert!(groups.is_empty());
-            assert!(capture.confirmed().is_empty());
+            assert_eq!(groups, [] as [CargoGroup; 0]);
+            assert_eq!(capture.confirmed(), []);
         } else {
             assert_eq!(groups.len(), 1);
-            assert!(groups[0].rest.is_empty());
+            assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
             let row = &groups[0].lead;
             assert_eq!(row.command, CommandText::of("cargo", &["build"]));
             assert_eq!(row.path, "~/project");
@@ -3649,14 +3649,14 @@ mod tests {
     }
 
     fn assert_no_registration_rows(capture: &Capture) {
-        assert!(
+        assert_eq!(
             CensusSequence::assemble(
                 &mut census_of(&[]),
                 &ProcessObservations::default(),
                 capture,
                 &[],
-            )
-            .is_empty()
+            ),
+            [] as [CargoGroup; 0]
         );
     }
 
@@ -3673,7 +3673,7 @@ mod tests {
     /// A scanned registration renders one qualified row with unavailable process measurements.
     fn assert_registration_display(groups: &[CargoGroup], capture: &Capture) -> String {
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         let row = &groups[0].lead;
         assert_eq!(row.pid, 10);
         assert_eq!(row.command, CommandText::of("cargo", &["build"]));
@@ -3728,7 +3728,7 @@ mod tests {
         capture: &Capture,
     ) -> Vec<String> {
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         let lines = render_group_lines(&groups[0]);
         let text = lines.join("\n");
         let account = match &capture.root_status[0].account {
@@ -3850,7 +3850,7 @@ mod tests {
         let identity = scans[0][0].id();
         for (index, (scan, &pid)) in scans.iter().zip(pids).enumerate() {
             assert_eq!(scan.len(), 1);
-            assert!(scan[0].rest.is_empty());
+            assert_eq!(scan[0].rest, [] as [CargoProcess; 0]);
             assert_eq!(scan[0].id(), identity);
             assert_eq!(scan[0].lead.pid, pid);
             assert_eq!(
@@ -4002,7 +4002,7 @@ mod tests {
         );
         let capture = verified_capture(root.path());
         let mut census = census_of(&[(pid.as_u32(), 1)]);
-        assert!(census.cargo.is_empty());
+        assert_eq!(census.cargo, [] as [Pid; 0]);
         census.include_registered_processes(&system, &capture);
         assert_eq!(census.cargo, [pid]);
         let groups = CensusSequence::assemble(&mut census, &system, &capture, &[]);
@@ -5059,7 +5059,7 @@ mod tests {
         let mut census = Census::take(records.records.values());
         let groups = CensusSequence::assemble(&mut census, &records, &capture, &[]);
         assert_eq!(groups.len(), 1);
-        assert!(groups[0].rest.is_empty());
+        assert_eq!(groups[0].rest, [] as [CargoProcess; 0]);
         let row = &groups[0].lead;
         assert_eq!(row.pid, 11);
         assert_eq!(row.command, CommandText::of("cargo", registered));
@@ -5295,7 +5295,7 @@ mod tests {
             &capture,
             &["build".to_owned()],
         );
-        assert!(census.cargo.is_empty());
+        assert_eq!(census.cargo, [] as [Pid; 0]);
         assert_eq!(
             census.eligibility[&Pid::from_u32(11)],
             Err(RowAbsence::PolicyExcluded)
@@ -6583,13 +6583,12 @@ mod tests {
             samples[2][0].lead.cpu,
             Measurement::Unavailable(MeasurementAbsence::FirstObservation)
         );
-        assert!(
-            sequence
-                .sample_counters(
-                    &mut ProcessObservations::default(),
-                    now + Duration::from_secs(3)
-                )
-                .is_empty()
+        assert_eq!(
+            sequence.sample_counters(
+                &mut ProcessObservations::default(),
+                now + Duration::from_secs(3)
+            ),
+            [] as [CargoGroup; 0]
         );
     }
 

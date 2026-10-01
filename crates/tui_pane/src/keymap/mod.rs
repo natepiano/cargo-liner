@@ -678,6 +678,7 @@ mod tests {
     use super::KeymapBuilder;
     use super::NavAction;
     use super::Navigation;
+    use super::RenderedSlot;
     use super::Shortcuts;
     use crate::AppContext;
     use crate::FocusedPane;
@@ -786,10 +787,9 @@ mod tests {
             keymap.dispatch_app_pane(TestPaneId::Foo, &KeyCode::Enter.into(), &mut app),
             KeyOutcome::Unhandled,
         );
-        assert!(
-            keymap
-                .render_app_pane_bar_slots(TestPaneId::Foo, &fresh_app())
-                .is_empty(),
+        assert_eq!(
+            keymap.render_app_pane_bar_slots(TestPaneId::Foo, &fresh_app()),
+            [] as [RenderedSlot; 0],
         );
         assert!(
             keymap
@@ -840,10 +840,9 @@ mod tests {
             .register::<FooPane>(FooPane)
             .build()
             .expect("build keymap with one scope");
-        assert!(
-            keymap
-                .render_app_pane_bar_slots(TestPaneId::Bar, &fresh_app())
-                .is_empty(),
+        assert_eq!(
+            keymap.render_app_pane_bar_slots(TestPaneId::Bar, &fresh_app()),
+            [] as [RenderedSlot; 0],
         );
     }
 

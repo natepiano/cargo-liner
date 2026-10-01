@@ -459,7 +459,10 @@ fn clean_init_ignores_its_untracked_configuration_and_keeps_the_legacy_line() {
     for section in ["enrolled", "overlaps", "failures"] {
         assert_eq!(enrollment[section], serde_json::json!([]));
     }
-    assert!(enrollment_claims(repository.path()).is_empty());
+    assert_eq!(
+        enrollment_claims(repository.path()),
+        [] as [serde_json::Value; 0]
+    );
 }
 
 #[test]

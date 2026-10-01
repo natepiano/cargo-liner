@@ -286,7 +286,7 @@ mod tests {
             EmptyDescriptionBehavior::RenderEmpty,
         );
 
-        assert!(block.rows().is_empty());
+        assert_eq!(block.rows(), [] as [String; 0]);
         assert_eq!(block.natural_sync_height(), 0);
     }
 

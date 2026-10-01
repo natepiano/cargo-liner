@@ -1852,6 +1852,7 @@ mod tests {
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::IntegrationWitness;
+    use super::ReservationConflict;
     use super::RetainedReservationSet;
     use super::WorktreeOccupancy;
     use crate::coordination_identity::CoordinationIdentityProvenance;
@@ -2817,15 +2818,14 @@ mod tests {
             ),
             DriftBlockingCoverage::Unclaimed
         ));
-        assert!(
-            reservations
-                .conflicts_for_first_touch(
-                    &candidate,
-                    second_run_id,
-                    worktree_id,
-                    PathCase::Sensitive,
-                )
-                .is_empty()
+        assert_eq!(
+            reservations.conflicts_for_first_touch(
+                &candidate,
+                second_run_id,
+                worktree_id,
+                PathCase::Sensitive,
+            ),
+            [] as [ReservationConflict; 0]
         );
         Ok(())
     }
@@ -2966,10 +2966,9 @@ mod tests {
             return Err(std::io::Error::other("another worktree should be foreign").into());
         };
         assert_eq!(conflicts[0].reservation_id.to_string(), RESERVATION_ID);
-        assert!(
-            !reservations
-                .conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive)
-                .is_empty()
+        assert_ne!(
+            reservations.conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive),
+            [] as [ReservationConflict; 0]
         );
         Ok(())
     }
@@ -2993,20 +2992,18 @@ mod tests {
             EditBlockingStatus::Clear
         );
 
-        assert!(
-            reservations
-                .conflicts_for_first_touch(
-                    &candidate,
-                    second_run_id,
-                    worktree_id,
-                    PathCase::Sensitive,
-                )
-                .is_empty()
+        assert_eq!(
+            reservations.conflicts_for_first_touch(
+                &candidate,
+                second_run_id,
+                worktree_id,
+                PathCase::Sensitive,
+            ),
+            [] as [ReservationConflict; 0]
         );
-        assert!(
-            reservations
-                .conflicts_for_claim(&candidate, worktree_id, PathCase::Sensitive)
-                .is_empty()
+        assert_eq!(
+            reservations.conflicts_for_claim(&candidate, worktree_id, PathCase::Sensitive),
+            [] as [ReservationConflict; 0]
         );
         let foreign_first_touch = reservations.conflicts_for_first_touch(
             &candidate,
@@ -3014,10 +3011,10 @@ mod tests {
             second_worktree_id,
             PathCase::Sensitive,
         );
-        assert!(foreign_first_touch.is_empty());
+        assert_eq!(foreign_first_touch, [] as [ReservationConflict; 0]);
         let foreign_claim =
             reservations.conflicts_for_claim(&candidate, second_worktree_id, PathCase::Sensitive);
-        assert!(foreign_claim.is_empty());
+        assert_eq!(foreign_claim, [] as [ReservationConflict; 0]);
         Ok(())
     }
 
@@ -3074,10 +3071,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             [reservation_id]
         );
-        assert!(
-            reservations
-                .conflicts_for_claim(&candidate, worktree_id, PathCase::Sensitive)
-                .is_empty()
+        assert_eq!(
+            reservations.conflicts_for_claim(&candidate, worktree_id, PathCase::Sensitive),
+            [] as [ReservationConflict; 0]
         );
         let foreign_first_touch = reservations.conflicts_for_first_touch(
             &candidate,

@@ -379,7 +379,7 @@ mod tests {
         let subjects = post_commit
             .resolve(&vacant, acting)
             .expect("post-commit selection should resolve against a vacant worktree");
-        assert!(subjects.reporting.as_slice().is_empty());
+        assert_eq!(subjects.reporting.as_slice(), []);
         assert!(matches!(
             subjects.post_write_first_touch,
             PostWriteFirstTouchRequirement::Required

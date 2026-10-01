@@ -273,6 +273,7 @@ mod tests {
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
     use crate::progress::capture::Capture;
     use crate::progress::capture::CaptureRootIndex;
+    use crate::progress::capture_diagnostic::CaptureDiagnostic;
     use crate::progress::capture_read::CaptureLookup;
     use crate::progress::capture_read::CaptureRead;
     use crate::progress::capture_read::RunState;
@@ -504,7 +505,7 @@ fraying = "leading"
             Capture::take_from(root.path(), observe)
         ));
         assert_eq!(app.root_status[0].confirmed, 1);
-        assert!(app.root_status[0].diagnostics.is_empty());
+        assert_eq!(app.root_status[0].diagnostics, [] as [CaptureDiagnostic; 0]);
         assert!(app.roster.groups().is_empty());
         assert!(!deliver_capture(
             &mut app,

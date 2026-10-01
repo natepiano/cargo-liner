@@ -1054,6 +1054,7 @@ mod tests {
     use super::BoardIntegrationEvidence;
     use super::BoardModel;
     use super::DeferralConsequence;
+    use super::UnresolvedOverlap;
     use super::WaitingAction;
     use super::WaitingEntry;
     use super::WaitingHold;
@@ -1198,8 +1199,11 @@ mod tests {
         pair.abandon(pair.deferred)?;
         pair.abandon(pair.blocker)?;
         let model = pair.model()?;
-        assert!(model.unresolved_overlaps.entries.is_empty());
-        assert!(model.waiting.entries.is_empty());
+        assert_eq!(
+            model.unresolved_overlaps.entries,
+            [] as [UnresolvedOverlap; 0]
+        );
+        assert_eq!(model.waiting.entries, [] as [WaitingEntry; 0]);
         Ok(())
     }
 

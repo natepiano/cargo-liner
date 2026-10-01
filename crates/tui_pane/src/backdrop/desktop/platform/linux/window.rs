@@ -790,7 +790,7 @@ mod tests {
                         .is_empty()
                 );
             }
-            assert!(source.queries.is_empty());
+            assert_eq!(source.queries, [] as [String; 0]);
             assert_eq!(source.searches, 1);
             source.queries.clear();
             assert!(
@@ -802,7 +802,7 @@ mod tests {
                     )
                     .is_empty()
             );
-            assert!(source.queries.is_empty());
+            assert_eq!(source.queries, [] as [String; 0]);
             assert_eq!(source.searches, 2);
         }
     }

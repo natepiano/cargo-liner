@@ -852,11 +852,11 @@ mod tests {
         let model = fixture.model()?;
         let fresh_row =
             test_support::board_reservation_snapshot(&model, reservation.reservation_id)?.clone();
-        assert!(
+        assert_eq!(
             board_alerts(&[], std::slice::from_ref(&fresh_row), &[], |_| {
                 JudgedTargetTip::ObjectUnknown
-            })?
-            .is_empty()
+            })?,
+            [] as [BoardAlert; 0]
         );
 
         let mut stale_row = fresh_row;

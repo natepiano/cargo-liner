@@ -208,7 +208,7 @@ mod tests {
                 .expect("the census should keep answering")
             {
                 CensusUpdate::Local(rows) => {
-                    assert!(rows.is_empty());
+                    assert_eq!(rows, [] as [AgentRow; 0]);
                     local += 1;
                 },
                 CensusUpdate::Remote { host, state } => {

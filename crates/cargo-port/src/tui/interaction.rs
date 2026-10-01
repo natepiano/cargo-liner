@@ -56,21 +56,17 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
                     panes::toggle_targets_tree_row(app);
                 }
             }
-            true
         },
         HoverTarget::GlobalShortcutRow { row } => {
             app.framework
                 .global_shortcuts_pane
                 .viewport_mut()
                 .set_pos(row);
-            true
         },
         HoverTarget::Dismiss(target) => {
-            if matches!(mode, ClickMode::FocusOnly) {
-                return true;
+            if matches!(mode, ClickMode::Dispatch) {
+                app.dismiss(target);
             }
-            app.dismiss(target);
-            true
         },
         HoverTarget::ToastCard(id) => {
             let active = app.framework.toasts.active_now();
@@ -78,9 +74,9 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
                 app.framework.toasts.viewport.set_pos(index);
                 app.set_focus_to_pane(PaneId::Toasts);
             }
-            true
         },
     }
+    true
 }
 
 pub(super) fn hovered_pane_row_at(app: &App, pos: Position) -> Option<HoveredPaneRow> {

@@ -541,7 +541,7 @@ mod tests {
         let (_, pane_action, global) = flatten_bar(&bar);
         assert!(pane_action.contains("edit"));
         assert!(pane_action.contains("cancel"));
-        assert!(!global.is_empty());
+        assert_ne!(global, "");
     }
 
     #[test]

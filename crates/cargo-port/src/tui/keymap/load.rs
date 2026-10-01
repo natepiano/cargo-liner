@@ -1108,7 +1108,7 @@ collapse_all = "x"
         let defaults = ResolvedKeymap::defaults();
         let conflicts = vim_mode_conflicts(&defaults);
         // Default keymap doesn't use bare hjkl.
-        assert!(conflicts.is_empty());
+        assert_eq!(conflicts, [] as [String; 0]);
 
         // Build a keymap with 'h' bound.
         let toml = r#"
@@ -1244,7 +1244,7 @@ clear_cache = "d"
                 "Ignored secondary binding project_list.collapse_row: \"h\" — reserved for vim navigation. Remove it from keymap.toml or disable vim navigation.",
             ],
         );
-        assert!(result.missing_actions.is_empty());
+        assert_eq!(result.missing_actions, [] as [String; 0]);
         assert_eq!(
             result
                 .keymap

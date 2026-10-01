@@ -1024,7 +1024,7 @@ mod tests {
 
         assert_eq!(target.name(), "member");
         assert_eq!(target.kinds(), &[TargetKind::Bin]);
-        assert!(target.required_features().is_empty());
+        assert_eq!(target.required_features(), [] as [String; 0]);
         assert_eq!(
             target.declared_source_path().as_path(),
             linked_workspace_root.join("src/main.rs")

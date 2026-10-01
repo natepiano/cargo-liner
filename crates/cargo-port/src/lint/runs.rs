@@ -145,7 +145,7 @@ mod tests {
 
         lr.clear_runs();
         assert!(!lr.has_archive_entry("a"));
-        assert!(lr.runs().is_empty());
+        assert_eq!(lr.runs(), []);
     }
 
     #[test]
