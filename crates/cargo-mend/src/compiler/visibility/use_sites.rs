@@ -43,6 +43,8 @@ use rustc_hir::def_id::CRATE_DEF_ID;
 use rustc_hir::def_id::CrateNum;
 use rustc_hir::def_id::DefId;
 use rustc_hir::def_id::LocalDefId;
+use rustc_hir::def_id::LocalModId;
+use rustc_hir::def_id::ModId;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::intravisit::walk_expr;
 use rustc_hir::intravisit::walk_impl_item;
@@ -642,7 +644,7 @@ impl ReexportIndex {
                 });
                 (resolves_subject && resolves_occurrence).then_some(
                     ExactGlobSubjectResolution::Resolved {
-                        visibility: child.vis,
+                        visibility: child.vis.map_id(ModId::to_def_id),
                     },
                 )
             })
@@ -1105,9 +1107,10 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     /// `Public` on both sides reaches the whole crate (and beyond), so the
     /// crate root stands in as the caller module.
     fn interface_reach(&self, trait_def_id: DefId, self_adt: Option<DefId>) -> InterfaceReach {
-        let trait_visibility = self.tcx.visibility(trait_def_id);
-        let self_visibility =
-            self_adt.map_or(Visibility::Public, |adt_did| self.tcx.visibility(adt_did));
+        let trait_visibility = self.tcx.visibility(trait_def_id).map_id(ModId::to_def_id);
+        let self_visibility = self_adt.map_or(Visibility::Public, |adt_did| {
+            self.tcx.visibility(adt_did).map_id(ModId::to_def_id)
+        });
         match (trait_visibility, self_visibility) {
             (Visibility::Restricted(trait_scope), Visibility::Restricted(self_scope)) => {
                 let module = if self.tcx.is_descendant_of(trait_scope, self_scope) {
@@ -1229,7 +1232,10 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     /// reachable from nowhere outside its own module and constrains nothing.
     fn declaration_reach(&self, def_id: LocalDefId) -> Option<InterfaceReach> {
         let effective_visibility = self.effective_visibilities.effective_vis(def_id)?;
-        match effective_visibility.at_level(Level::Reachable).to_def_id() {
+        match effective_visibility
+            .at_level(Level::Reachable)
+            .map_id(LocalModId::to_def_id)
+        {
             Visibility::Public => Some(InterfaceReach {
                 module:     CRATE_DEF_ID.to_def_id(),
                 visibility: InterfaceVisibility::Public,
@@ -1285,7 +1291,7 @@ impl<'tcx> UseSiteCollector<'_, 'tcx> {
     fn field_escapes_module(&self, field: DefId, owning_module: DefId) -> bool {
         match self.tcx.visibility(field) {
             Visibility::Public => true,
-            Visibility::Restricted(scope) => scope != owning_module,
+            Visibility::Restricted(scope) => scope.to_def_id() != owning_module,
         }
     }
 
@@ -1608,7 +1614,7 @@ pub(super) fn reexport_index(tcx: TyCtxt<'_>) -> ReexportIndex {
         let item = tcx.hir_item(item_id);
         let visibility = tcx
             .local_visibility(item.owner_id.def_id)
-            .map_id(LocalDefId::to_def_id);
+            .map_id(LocalModId::to_def_id);
         let owner_module: LocalDefId = tcx.parent_module_from_def_id(item.owner_id.def_id).into();
         let visibility_syntax = visibility_syntax(tcx, item);
         let parent_module: LocalDefId = tcx.parent_module_from_def_id(owner_module).into();

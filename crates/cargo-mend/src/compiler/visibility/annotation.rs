@@ -5,6 +5,7 @@ use rustc_middle::ty::Visibility;
 use rustc_span::def_id::CRATE_DEF_ID;
 use rustc_span::def_id::DefId;
 use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::ModId;
 use syn::VisRestricted;
 use syn::Visibility as SyntaxVisibility;
 
@@ -169,6 +170,10 @@ impl<'source> VisibilityAnnotation<'source> {
 
 impl From<Visibility<DefId>> for VisibilityReach {
     fn from(visibility: Visibility<DefId>) -> Self { Self(visibility) }
+}
+
+impl From<Visibility<ModId>> for VisibilityReach {
+    fn from(visibility: Visibility<ModId>) -> Self { Self(visibility.map_id(ModId::to_def_id)) }
 }
 
 impl From<ScopeReach<DefId>> for VisibilityReach {
@@ -347,6 +352,7 @@ mod tests {
     use std::cmp::Ordering;
 
     use rustc_middle::ty::Visibility;
+    use rustc_span::def_id::DefId;
 
     use super::PathSpelling;
     use super::ScopeReach;
@@ -394,7 +400,7 @@ mod tests {
 
     #[test]
     fn classifies_visibility_annotation_variants() {
-        let reach = VisibilityReach::from(Visibility::Public);
+        let reach = VisibilityReach::from(Visibility::<DefId>::Public);
 
         assert!(matches!(
             VisibilityAnnotation::from_source_and_reach("", reach),
@@ -438,7 +444,7 @@ mod tests {
 
     #[test]
     fn reports_written_syntax_without_reclassifying_path_annotations() {
-        let reach = VisibilityReach::from(Visibility::Public);
+        let reach = VisibilityReach::from(Visibility::<DefId>::Public);
         let annotation = VisibilityAnnotation::from_source_and_reach("pub(in crate::a)", reach);
 
         assert!(annotation.is_some_and(|annotation| {

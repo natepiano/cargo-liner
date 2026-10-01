@@ -24,9 +24,11 @@ use rustc_span::Pos;
 use rustc_span::Span;
 use rustc_span::Symbol;
 use rustc_span::def_id::CRATE_DEF_ID;
+use rustc_span::def_id::CRATE_MOD_ID;
 use rustc_span::def_id::DefId;
 use rustc_span::def_id::LocalDefId;
-use rustc_span::def_id::LocalModDefId;
+use rustc_span::def_id::LocalModId;
+use rustc_span::def_id::ModId;
 use rustc_span::source_map::SourceMap;
 
 use super::pub_use_outside_subtree;
@@ -296,18 +298,20 @@ fn target_scope(
     source_module: LocalDefId,
     bindings: &[&ModChild],
 ) -> Result<LocalDefId, NoFixReason> {
-    let scopes: Vec<Visibility<DefId>> = iter::successors(Some(source_module), |&module| {
+    let scopes: Vec<Visibility<ModId>> = iter::successors(Some(source_module), |&module| {
         (module != CRATE_DEF_ID).then(|| tcx.parent_module_from_def_id(module).into())
     })
     .take_while(|&module| module != CRATE_DEF_ID)
-    .map(|module| tcx.local_visibility(module).to_def_id())
+    .map(|module| tcx.local_visibility(module).to_mod_id())
     .chain(bindings.iter().map(|binding| binding.vis))
     .collect();
     let deepest =
         scopes.iter().fold(
             CRATE_DEF_ID.to_def_id(),
             |deepest, visibility| match visibility {
-                Visibility::Restricted(scope) if tcx.is_descendant_of(*scope, deepest) => *scope,
+                Visibility::Restricted(scope) if tcx.is_descendant_of(*scope, deepest) => {
+                    scope.to_def_id()
+                },
                 Visibility::Public | Visibility::Restricted(_) => deepest,
             },
         );
@@ -378,7 +382,7 @@ fn ancestor_reexport(
 /// only when the item itself is crate-visible.
 fn reexport_visibility(
     tcx: TyCtxt<'_>,
-    use_visibility: Visibility<LocalDefId>,
+    use_visibility: Visibility<LocalModId>,
     common_ancestor: LocalDefId,
     bindings: &[&ModChild],
 ) -> Result<ReexportVisibility, NoFixReason> {
@@ -388,14 +392,14 @@ fn reexport_visibility(
     if tcx.is_descendant_of(scope.to_def_id(), common_ancestor.to_def_id()) {
         return Ok(ReexportVisibility::Private);
     }
-    if scope == CRATE_DEF_ID {
+    if scope == CRATE_MOD_ID {
         return Ok(ReexportVisibility::Crate);
     }
-    if scope == LocalDefId::from(tcx.parent_module_from_def_id(common_ancestor)) {
+    if scope == tcx.parent_module_from_def_id(common_ancestor) {
         return Ok(ReexportVisibility::Parent);
     }
     let crate_visible = bindings.iter().all(|binding| {
-        binding.vis.is_public() || binding.vis == Visibility::Restricted(CRATE_DEF_ID.to_def_id())
+        binding.vis.is_public() || binding.vis == Visibility::Restricted(CRATE_MOD_ID.to_mod_id())
     });
     if crate_visible {
         Ok(ReexportVisibility::Crate)
@@ -510,7 +514,7 @@ fn insertion_anchor(
     module: LocalDefId,
     crate_root_file: &Path,
 ) -> Result<InsertionAnchor, NoFixReason> {
-    let (hir_module, _, _) = tcx.hir_get_module(LocalModDefId::new_unchecked(module));
+    let (hir_module, _, _) = tcx.hir_get_module(LocalModId::new_unchecked(module));
     let file = if module == CRATE_DEF_ID {
         crate_root_file.to_path_buf()
     } else {
@@ -593,7 +597,7 @@ fn module_form(tcx: TyCtxt<'_>, module: LocalDefId) -> ModuleForm {
     if module == CRATE_DEF_ID {
         return ModuleForm::File;
     }
-    let (hir_module, item_span, _) = tcx.hir_get_module(LocalModDefId::new_unchecked(module));
+    let (hir_module, item_span, _) = tcx.hir_get_module(LocalModId::new_unchecked(module));
     if item_span.contains(hir_module.spans.inner_span) {
         ModuleForm::Inline
     } else {

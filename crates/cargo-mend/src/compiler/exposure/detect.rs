@@ -17,7 +17,7 @@ use rustc_middle::ty::Visibility;
 use rustc_span::Span;
 use rustc_span::def_id::DefId;
 use rustc_span::def_id::LocalDefId;
-use rustc_span::def_id::LocalModDefId;
+use rustc_span::def_id::LocalModId;
 use syn::Field;
 use syn::ImplItem;
 use syn::Item;
@@ -1239,7 +1239,7 @@ fn resolve_active_declaration(
     };
     let source_byte_position = source_byte_position(source, source_declaration.identifier_span)?;
     let canonical_source_file = ctx.module_sources.canonical_source_file(source_file);
-    let (active_module, _, _) = ctx.tcx.hir_get_module(LocalModDefId::new_unchecked(module));
+    let (active_module, _, _) = ctx.tcx.hir_get_module(LocalModId::new_unchecked(module));
     for item_id in active_module.item_ids {
         let declaration_item = ctx.tcx.hir_item(*item_id);
         let local_def_id = declaration_item.owner_id.def_id;

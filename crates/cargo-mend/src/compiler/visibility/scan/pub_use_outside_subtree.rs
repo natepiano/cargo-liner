@@ -143,7 +143,7 @@ pub(super) fn record(
 fn is_reexport(tcx: TyCtxt<'_>, use_def_id: LocalDefId, owner_module: LocalDefId) -> bool {
     match tcx.local_visibility(use_def_id) {
         Visibility::Public => true,
-        Visibility::Restricted(scope) => scope != owner_module,
+        Visibility::Restricted(scope) => scope.to_local_def_id() != owner_module,
     }
 }
 

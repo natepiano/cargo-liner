@@ -11,7 +11,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::FileName;
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
-use rustc_span::def_id::LocalModDefId;
+use rustc_span::def_id::LocalModId;
 
 use super::boundary;
 use super::boundary::ModuleContext;
@@ -446,7 +446,7 @@ fn literal_module_contexts(
 
 fn module_byte_range_in_file(
     tcx: TyCtxt<'_>,
-    module: LocalModDefId,
+    module: LocalModId,
     source_file: &Path,
 ) -> Option<Range<usize>> {
     let (_, span, _) = tcx.hir_get_module(module);

@@ -168,7 +168,7 @@ fn effective_type_visibility(
     type_def_id: LocalDefId,
 ) -> VisibilityReach {
     if let Some(eff) = ctx.effective_visibilities.effective_vis(type_def_id) {
-        return eff.at_level(Level::Reachable).to_def_id().into();
+        return eff.at_level(Level::Reachable).to_mod_id().into();
     }
     ctx.tcx.visibility(type_def_id.to_def_id()).into()
 }
