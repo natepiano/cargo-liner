@@ -175,7 +175,7 @@ pub(crate) struct AgentRow {
 impl AgentRow {
     /// Whether a person started this agent outside the Claude desktop
     /// app rather than another agent opening it.
-    const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
+    pub(crate) const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
 
     /// The `agent` cell: the program, marked with its tier.
     pub(crate) fn agent_label(&self) -> Cow<'static, str> {

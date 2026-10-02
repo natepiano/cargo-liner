@@ -14,6 +14,12 @@
 //! and where the table would cut a child's name, each child stands as an
 //! entry of its own with its name in full below it. Every agent's name
 //! is drawn in its own hue wherever it shows.
+//!
+//! Where the grid gives a cell fewer rows than [`height`] asks for, the
+//! cell draws its compressed view instead: one line to each session in
+//! the tree and to each child in the table, cut where it would not fit,
+//! and for a top-level agent, which the summary lists, no header and no
+//! branch and directory.
 
 use std::collections::HashSet;
 use std::iter;
@@ -260,11 +266,36 @@ impl Placing<'_, '_> {
     }
 }
 
+/// How [`draw`] lays a cell out in the rows the grid gives it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CellView {
+    /// Every row [`height`] counts: the header, the branch and
+    /// directory, the tree and the table as the width lays them out.
+    Full,
+    /// For rows too few for the full view: one line to each session and
+    /// to each child, cut where it would not fit, and no header or
+    /// branch and directory for an agent the summary lists.
+    Compressed,
+}
+
+impl CellView {
+    /// The view `entry`'s cell takes in `area`, with ages measured to
+    /// `now`: full while its [`height`] at the area's width fits the
+    /// area's rows, else compressed.
+    fn fitted(entry: &AgentEntry<'_>, area: Rect, now: u64) -> Self {
+        if height(entry, area.width, now) > usize::from(area.height) {
+            Self::Compressed
+        } else {
+            Self::Full
+        }
+    }
+}
+
 /// Rows `entry`'s cell draws at `width` cells across, with ages
-/// measured to `now`: exactly the rows [`draw`] fills at that width.
-/// Its header, its branch and directory, a stacked session and a
-/// stacked child's name each take as many rows as the width leaves
-/// them.
+/// measured to `now`: exactly the rows [`draw`]'s full view fills at
+/// that width, and the rows the cell asks the grid for. Its header, its
+/// branch and directory, a stacked session and a stacked child's name
+/// each take as many rows as the width leaves them.
 pub(crate) fn height(entry: &AgentEntry<'_>, width: u16, now: u64) -> usize {
     let row = entry.row;
     let launcher = if row.launched_by.is_some() {
@@ -274,9 +305,10 @@ pub(crate) fn height(entry: &AgentEntry<'_>, width: u16, now: u64) -> usize {
     };
     let children = group_children(entry);
     let children_width = children_width(width);
-    let children_height = match Children::fitted(&children, children_width, now) {
+    let children_height = match Children::fitted(&children, children_width, now, CellView::Full) {
         Children::Nothing => usize::from(NOTHING_RUNNING_HEIGHT),
         Children::Table(_) => usize::from(TABLE_HEADER_HEIGHT) + children.len(),
+        Children::Compressed => children.len(),
         Children::Stacked => children
             .iter()
             .map(|child| {
@@ -288,7 +320,7 @@ pub(crate) fn height(entry: &AgentEntry<'_>, width: u16, now: u64) -> usize {
     header(row, entry.machine, width, now).len()
         + place(row, width).len()
         + launcher
-        + tree_height(&entry.sessions, header_width(width), now)
+        + tree_height(&entry.sessions, header_width(width), now, CellView::Full)
         + usize::from(AGENT_HEADER_GAP_HEIGHT)
         + children_height
 }
@@ -308,11 +340,13 @@ pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> S
         )
 }
 
-/// Draw `entry`'s cell into `area`: its header, its branch and
-/// directory, the agent that opened it when one did, the tree of its
-/// sessions, then what they all run, with ages measured to `now` in
-/// unix seconds. A listed agent's name among `cells` -- the launcher's,
-/// a session's -- is drawn in that agent's hue.
+/// Draw `entry`'s cell into `area`, with ages measured to `now` in unix
+/// seconds: where the area has the rows [`height`] asks for, its full
+/// view -- its header, its branch and directory, the agent that opened
+/// it when one did, the tree of its sessions, then what they all run --
+/// else its compressed view, cut at the bottom where even that does not
+/// fit. A listed agent's name among `cells` -- the launcher's, a
+/// session's -- is drawn in that agent's hue.
 pub(crate) fn draw(
     buffer: &mut Buffer,
     area: Rect,
@@ -320,20 +354,9 @@ pub(crate) fn draw(
     cells: &[AgentEntry<'_>],
     now: u64,
 ) {
-    let row = entry.row;
+    let view = CellView::fitted(entry, area, now);
     let label = Style::default().fg(label_color());
-    let mut above = header(row, entry.machine, area.width, now);
-    above.extend(place(row, area.width));
-    if let Some(launcher) = row.launched_by {
-        let name = entry
-            .launcher
-            .map_or_else(|| format!("{PID_LABEL} {launcher}"), str::to_string);
-        above.push(Line::from(vec![
-            Span::raw(SECTION_HEADER_INDENT),
-            Span::styled(format!("{LAUNCHED_BY_LABEL} "), label),
-            Span::styled(name, name_style(cells, entry.machine, launcher)),
-        ]));
-    }
+    let above = above_tree(entry, cells, area.width, now, view);
     let above_height = u16::try_from(above.len()).unwrap_or(u16::MAX);
     Paragraph::new(above).render(
         Rect {
@@ -348,12 +371,18 @@ pub(crate) fn draw(
         height: area.height.saturating_sub(above_height),
         ..area
     });
-    draw_tree(buffer, tree, &entry.sessions, now);
+    draw_tree(buffer, tree, &entry.sessions, now, view);
 
-    let tree_height = tree_height(&entry.sessions, tree.width, now);
-    let skipped = above_height
-        .saturating_add(u16::try_from(tree_height).unwrap_or(u16::MAX))
-        .saturating_add(AGENT_HEADER_GAP_HEIGHT);
+    let tree_height = tree_height(&entry.sessions, tree.width, now, view);
+    let drawn = above_height.saturating_add(u16::try_from(tree_height).unwrap_or(u16::MAX));
+    // A compressed top-level agent with no sessions draws nothing above
+    // its table, so no blank row leads the cell.
+    let gap = if drawn == 0 {
+        0
+    } else {
+        AGENT_HEADER_GAP_HEIGHT
+    };
+    let skipped = drawn.saturating_add(gap);
     let area = Rect {
         y: area.y.saturating_add(skipped),
         height: area.height.saturating_sub(skipped),
@@ -369,13 +398,20 @@ pub(crate) fn draw(
             |pid| name_style(cells, entry.machine, pid),
         )
     };
-    match Children::fitted(&children, area.width, now) {
+    match Children::fitted(&children, area.width, now, view) {
         Children::Nothing => {
             Paragraph::new(Line::from(Span::styled(
                 NOTHING_RUNNING_NOTE,
                 Style::default().fg(text_default()),
             )))
             .render(area, buffer);
+        },
+        Children::Compressed => {
+            let lines: Vec<Line<'static>> = children
+                .iter()
+                .map(|child| compressed_child(child, area.width, child_name_style(child)))
+                .collect();
+            Paragraph::new(lines).render(area, buffer);
         },
         Children::Table(constraints) => Table::new(
             children
@@ -396,6 +432,39 @@ pub(crate) fn draw(
             Paragraph::new(lines).render(area, buffer);
         },
     }
+}
+
+/// The lines `entry`'s cell draws above its tree in `view`, `width`
+/// cells across: its header, its branch and directory, and the agent
+/// that opened it when one did. The compressed view of a top-level
+/// agent draws none of them, as the summary lists that agent.
+fn above_tree(
+    entry: &AgentEntry<'_>,
+    cells: &[AgentEntry<'_>],
+    width: u16,
+    now: u64,
+    view: CellView,
+) -> Vec<Line<'static>> {
+    let row = entry.row;
+    if view == CellView::Compressed && row.is_top_level() {
+        return Vec::new();
+    }
+    let mut lines = header(row, entry.machine, width, now);
+    lines.extend(place(row, width));
+    if let Some(launcher) = row.launched_by {
+        let name = entry
+            .launcher
+            .map_or_else(|| format!("{PID_LABEL} {launcher}"), str::to_string);
+        lines.push(Line::from(vec![
+            Span::raw(SECTION_HEADER_INDENT),
+            Span::styled(
+                format!("{LAUNCHED_BY_LABEL} "),
+                Style::default().fg(label_color()),
+            ),
+            Span::styled(name, name_style(cells, entry.machine, launcher)),
+        ]));
+    }
+    lines
 }
 
 /// The header at `width` cells across: [`header_line`] while it fits
@@ -537,27 +606,37 @@ enum Tree {
     /// Each session as an entry of lines of its own, for a width where
     /// a line would be cut.
     Stacked,
+    /// One line to a session in the compressed view: its name after its
+    /// glyphs, then its status and age, cut where it would not fit.
+    Compressed,
 }
 
 impl Tree {
-    /// The way `sessions` are drawn `width` cells across, with ages
-    /// measured to `now`: a line to each while every line fits whole,
-    /// else stacked entries.
-    fn fitted(sessions: &[SessionEntry<'_>], width: u16, now: u64) -> Self {
-        let mut widths = [0; TREE_COLUMNS];
-        for session in sessions {
-            for (widest, cell) in widths.iter_mut().zip(tree_cells(session, now)) {
-                *widest = (*widest).max(cell.chars().count());
-            }
+    /// The way `sessions` are drawn `width` cells across in `view`, with
+    /// ages measured to `now`: in the full view a line to each while
+    /// every line fits whole, else stacked entries.
+    fn fitted(sessions: &[SessionEntry<'_>], width: u16, now: u64, view: CellView) -> Self {
+        match view {
+            CellView::Full => {
+                let mut widths = [0; TREE_COLUMNS];
+                for session in sessions {
+                    for (widest, cell) in widths.iter_mut().zip(tree_cells(session, now)) {
+                        *widest = (*widest).max(cell.chars().count());
+                    }
+                }
+                let spacing = usize::from(TABLE_COLUMN_SPACING) * (TREE_COLUMNS - 1);
+                let needed = widths.iter().sum::<usize>() + spacing;
+                if needed > usize::from(width) {
+                    return Self::Stacked;
+                }
+                Self::Table(
+                    widths.map(|widest| {
+                        Constraint::Length(u16::try_from(widest).unwrap_or(u16::MAX))
+                    }),
+                )
+            },
+            CellView::Compressed => Self::Compressed,
         }
-        let spacing = usize::from(TABLE_COLUMN_SPACING) * (TREE_COLUMNS - 1);
-        let needed = widths.iter().sum::<usize>() + spacing;
-        if needed > usize::from(width) {
-            return Self::Stacked;
-        }
-        Self::Table(
-            widths.map(|widest| Constraint::Length(u16::try_from(widest).unwrap_or(u16::MAX))),
-        )
     }
 }
 
@@ -576,11 +655,11 @@ fn tree_cells(session: &SessionEntry<'_>, now: u64) -> [String; TREE_COLUMNS] {
     ]
 }
 
-/// Rows the tree of `sessions` takes `width` cells across, with ages
-/// measured to `now`.
-fn tree_height(sessions: &[SessionEntry<'_>], width: u16, now: u64) -> usize {
-    match Tree::fitted(sessions, width, now) {
-        Tree::Table(_) => sessions.len(),
+/// Rows the tree of `sessions` takes `width` cells across in `view`,
+/// with ages measured to `now`.
+fn tree_height(sessions: &[SessionEntry<'_>], width: u16, now: u64, view: CellView) -> usize {
+    match Tree::fitted(sessions, width, now, view) {
+        Tree::Table(_) | Tree::Compressed => sessions.len(),
         Tree::Stacked => sessions
             .iter()
             .map(|session| stacked_session(session, width, now).len())
@@ -588,16 +667,23 @@ fn tree_height(sessions: &[SessionEntry<'_>], width: u16, now: u64) -> usize {
     }
 }
 
-/// Draw the tree of `sessions` into `area`, with ages measured to
-/// `now`: a line to each session where every line fits, else each as a
-/// stacked entry. The glyphs are plain text and each name takes its
-/// session's hue.
-fn draw_tree(buffer: &mut Buffer, area: Rect, sessions: &[SessionEntry<'_>], now: u64) {
+/// Draw the tree of `sessions` into `area` in `view`, with ages
+/// measured to `now`: in the full view a line to each session where
+/// every line fits, else each as a stacked entry, and in the compressed
+/// view a line to each cut where it would not fit. The glyphs are plain
+/// text and each name takes its session's hue.
+fn draw_tree(
+    buffer: &mut Buffer,
+    area: Rect,
+    sessions: &[SessionEntry<'_>],
+    now: u64,
+    view: CellView,
+) {
     if sessions.is_empty() || area.is_empty() {
         return;
     }
     let text = Style::default().fg(text_default());
-    match Tree::fitted(sessions, area.width, now) {
+    match Tree::fitted(sessions, area.width, now, view) {
         Tree::Table(constraints) => Table::new(
             sessions.iter().map(|session| {
                 let row = session.row;
@@ -634,7 +720,37 @@ fn draw_tree(buffer: &mut Buffer, area: Rect, sessions: &[SessionEntry<'_>], now
                 .collect();
             Paragraph::new(lines).render(area, buffer);
         },
+        Tree::Compressed => {
+            let lines: Vec<Line<'static>> = sessions
+                .iter()
+                .map(|session| compressed_session(session, area.width, now))
+                .collect();
+            Paragraph::new(lines).render(area, buffer);
+        },
     }
+}
+
+/// One session's line in the compressed view, `width` cells across: its
+/// name after its glyphs, drawn in its hue, then its status and age,
+/// each [`gap`] after the one before as the tree's table spaces its
+/// columns, cut by [`cut_line`] where it would not fit.
+fn compressed_session(session: &SessionEntry<'_>, width: u16, now: u64) -> Line<'static> {
+    let text = Style::default().fg(text_default());
+    let row = session.row;
+    cut_line(
+        vec![
+            Span::styled(session.lead(), text),
+            Span::styled(row.name.clone(), Role::Rainbow(session.hue).style()),
+            gap(),
+            Span::styled(
+                summary::status_text(row).to_string(),
+                summary::status_role(row).style(),
+            ),
+            gap(),
+            Span::styled(age::age_label(now.saturating_sub(row.started)), text),
+        ],
+        width,
+    )
 }
 
 /// One session as a stacked entry `width` cells across: its name after
@@ -744,18 +860,71 @@ enum Children {
     /// One entry after another, for a width where the table would cut a
     /// name.
     Stacked,
+    /// One line to a child in the compressed view: what it runs, then
+    /// its name, indented by level and cut where it would not fit.
+    Compressed,
 }
 
 impl Children {
-    /// The way `children` are drawn `width` cells across, with ages
-    /// measured to `now`: a table while every name fits its column
-    /// whole, else stacked entries.
-    fn fitted(children: &[ChildRow], width: u16, now: u64) -> Self {
+    /// The way `children` are drawn `width` cells across in `view`, with
+    /// ages measured to `now`: in the full view a table while every name
+    /// fits its column whole, else stacked entries.
+    fn fitted(children: &[ChildRow], width: u16, now: u64, view: CellView) -> Self {
         if children.is_empty() {
             return Self::Nothing;
         }
-        table_columns(children, width, now).map_or(Self::Stacked, Self::Table)
+        match view {
+            CellView::Full => {
+                table_columns(children, width, now).map_or(Self::Stacked, Self::Table)
+            },
+            CellView::Compressed => Self::Compressed,
+        }
     }
+}
+
+/// One child's line in the compressed view, `width` cells across:
+/// indented as the table indents its `via`, what it `runs` in the role
+/// the table draws it in, then [`gap`] and its name in `name_style`, cut
+/// by [`cut_line`] where it would not fit.
+fn compressed_child(child: &ChildRow, width: u16, name_style: Style) -> Line<'static> {
+    let text = Style::default().fg(text_default());
+    cut_line(
+        vec![
+            Span::styled(depth_indent(child), text),
+            Span::styled(child.runs_label(), runs_role(child.kind).style()),
+            gap(),
+            Span::styled(child.name.clone(), name_style),
+        ],
+        width,
+    )
+}
+
+/// The blank cells between the facts of a line in the compressed view:
+/// as many as [`TABLE_COLUMN_SPACING`] sets between the columns of the
+/// full view's tables.
+fn gap() -> Span<'static> {
+    Span::styled(
+        format!("{:width$}", "", width = usize::from(TABLE_COLUMN_SPACING)),
+        Style::default().fg(text_default()),
+    )
+}
+
+/// `spans` as one line cut to `width` cells as [`summary::truncated`]
+/// cuts a name: whole while they fit, else ending in its mark, each
+/// character kept in the style of the span it came from.
+fn cut_line(spans: Vec<Span<'static>>, width: u16) -> Line<'static> {
+    let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+    let cut = summary::truncated(&text, usize::from(width));
+    let mut kept = cut.chars();
+    Line::from(
+        spans
+            .into_iter()
+            .filter_map(|span| {
+                let content: String = kept.by_ref().take(span.content.chars().count()).collect();
+                (!content.is_empty()).then(|| Span::styled(content, span.style))
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// One row of the table, its name drawn in `name_style`.
@@ -805,12 +974,7 @@ fn stacked_head(child: &ChildRow, width: u16, now: u64) -> Vec<Line<'static>> {
     if let Some(pid) = child.pid {
         facts.push(Span::styled(format!("{PID_LABEL} {pid}"), text));
     }
-    let indent = format!(
-        "{:width$}",
-        "",
-        width = usize::from(child.depth) * CHILD_VIA_INDENT
-    );
-    fact_lines(&indent, facts, width)
+    fact_lines(&depth_indent(child), facts, width)
 }
 
 /// `facts` one after another with ` · ` between them, on as many lines
@@ -851,12 +1015,18 @@ fn name_lines(child: &ChildRow, width: u16) -> Vec<String> {
     )
 }
 
-/// The `via` cell: how the agent holds the row, indented
-/// [`CHILD_VIA_INDENT`] cells for each level the row sits below the
-/// agent.
-fn via_text(child: &ChildRow) -> String {
-    let indent = usize::from(child.depth) * CHILD_VIA_INDENT;
-    format!("{:indent$}{}", "", child.kind.via())
+/// The `via` cell: how the agent holds the row, after its
+/// [`depth_indent`].
+fn via_text(child: &ChildRow) -> String { format!("{}{}", depth_indent(child), child.kind.via()) }
+
+/// The blank cells a row is indented by: [`CHILD_VIA_INDENT`] for each
+/// level it sits below the agent.
+fn depth_indent(child: &ChildRow) -> String {
+    format!(
+        "{:width$}",
+        "",
+        width = usize::from(child.depth) * CHILD_VIA_INDENT
+    )
 }
 
 /// The role a row's `runs` is drawn in: a command as a shell status,
@@ -924,6 +1094,7 @@ mod tests {
     use crate::census::Agent;
     use crate::census::MachineState;
     use crate::census::ServiceTier;
+    use crate::constants::TRUNCATION_MARK;
 
     /// The unix second every age in these tests is measured to.
     const NOW: u64 = 1_790_372_800;
@@ -947,6 +1118,9 @@ mod tests {
     const NARROW: u16 = 38;
     /// The directory of the narrow cells: longer than [`NARROW`] leaves.
     const LONG_DIRECTORY: &str = "~/rust/tool-based-ui-geometry-material-impl";
+    /// A cell's width that cuts lines of a compressed cell's tree and
+    /// of its table.
+    const CUTTING: u16 = 30;
 
     /// A Claude Code row with process `pid`, named `name`, started `age`
     /// seconds before [`NOW`] and opened by `launched_by`.
@@ -1059,14 +1233,25 @@ mod tests {
         }
     }
 
-    /// `entry`'s cell among `cells`, drawn `width` cells across and
-    /// exactly its own height at that width.
-    fn drawn_among(entry: &AgentEntry<'_>, cells: &[AgentEntry<'_>], width: u16) -> Buffer {
-        let height = u16::try_from(height(entry, width, NOW)).expect("the height should fit a u16");
-        let area = Rect::new(0, 0, width, height);
+    /// `entry`'s cell among `cells`, drawn `width` cells across into
+    /// `rows` rows.
+    fn drawn_into(
+        entry: &AgentEntry<'_>,
+        cells: &[AgentEntry<'_>],
+        width: u16,
+        rows: usize,
+    ) -> Buffer {
+        let rows = u16::try_from(rows).expect("the rows should fit a u16");
+        let area = Rect::new(0, 0, width, rows);
         let mut buffer = Buffer::empty(area);
         draw(&mut buffer, area, entry, cells, NOW);
         buffer
+    }
+
+    /// `entry`'s cell among `cells`, drawn `width` cells across and
+    /// exactly its own height at that width.
+    fn drawn_among(entry: &AgentEntry<'_>, cells: &[AgentEntry<'_>], width: u16) -> Buffer {
+        drawn_into(entry, cells, width, height(entry, width, NOW))
     }
 
     /// `row`'s cell, opened by the agent named `launcher`, drawn `width`
@@ -1727,6 +1912,178 @@ mod tests {
         let (x, y) = find(&buffer, "launched by right").expect("the launcher is drawn");
         let right = (x + summary::cell_width("launched by "), y);
         assert_eq!(Some(buffer[right].fg), hue_of(&cells, 3_700_000));
+    }
+
+    /// The blank cells between the facts of a compressed line.
+    fn gap_text() -> String { " ".repeat(usize::from(TABLE_COLUMN_SPACING)) }
+
+    /// In fewer rows than its full view takes, a top-level agent's cell
+    /// draws no header and no branch and directory, as the summary lists
+    /// the agent: a line to each session -- its glyphs, name, status and
+    /// age -- then a line to each child -- what it runs and its name,
+    /// indented by level -- each cut where it would not fit, every name
+    /// and status in the color the full view gives it.
+    #[test]
+    fn a_top_level_cell_short_of_rows_compresses() {
+        let natedev = boss_group();
+        let cells = natedev_cells(&natedev);
+        let boss = &cells[0];
+        let rows =
+            boss.sessions.len() + usize::from(AGENT_HEADER_GAP_HEIGHT) + group_children(boss).len();
+        assert!(
+            rows < height(boss, CUTTING, NOW),
+            "the full view takes more"
+        );
+
+        let buffer = drawn_into(boss, &cells, CUTTING, rows);
+
+        let gap = gap_text();
+        let mark = TRUNCATION_MARK;
+        assert_eq!(
+            lines(&buffer),
+            [
+                format!(" {TREE_BRANCH}tool-based-ui-trunk{gap}busy{mark}"),
+                format!(" {TREE_RAIL}{TREE_LAST_BRANCH}trunk-impl{gap}idle{gap}2h"),
+                format!(" {TREE_LAST_BRANCH}tool-based-ui-arrange{gap}id{mark}"),
+                String::new(),
+                format!(" command{gap}Run the tests"),
+                format!(" claude{gap}tool-based-ui-trunk"),
+                format!("   claude{gap}Review the permiss{mark}"),
+                format!("     command{gap}cargo nextest r{mark}"),
+                format!("   claude{gap}trunk-impl"),
+                format!(" claude{gap}tool-based-ui-arrange"),
+                format!("   codex{gap}app-server"),
+            ]
+        );
+        for (name, pid) in [
+            ("tool-based-ui-trunk", TRUNK),
+            ("trunk-impl", TRUNK_IMPL),
+            ("tool-based-ui-arrange", ARRANGE),
+        ] {
+            let found = find_all(&buffer, name);
+            assert_eq!(found.len(), 2, "{name} in the tree and the table");
+            for at in found {
+                assert_eq!(
+                    buffer[at].fg,
+                    name_style(&cells, "natedev", pid).fg.expect("a hue"),
+                    "{name} at {at:?}"
+                );
+            }
+        }
+        let fg = |text| buffer[find(&buffer, text).expect("the text is drawn")].fg;
+        assert_eq!(Some(fg("busy")), Role::Busy.style().fg);
+        assert_eq!(Some(fg("idle")), Role::Idle.style().fg);
+        assert_eq!(Some(fg("command")), Role::Shell.style().fg);
+        assert_eq!(Some(fg("claude")), Role::Claude.style().fg);
+        assert_eq!(Some(fg("codex")), Role::Codex.style().fg);
+        assert_eq!(fg("Run the tests"), text_default());
+    }
+
+    /// A cell draws its full view in the rows [`height`] asks for, its
+    /// header and its branch and directory among them, and its
+    /// compressed view one row short of them.
+    #[test]
+    fn a_cell_given_its_height_draws_its_full_view() {
+        let natedev = boss_group();
+        let cells = natedev_cells(&natedev);
+        let boss = &cells[0];
+        let rows = height(boss, CUTTING, NOW);
+        let header = format!("{SECTION_HEADER_INDENT}{HEADER_AGENT_LABEL}");
+        let workplace = workplace(boss.row);
+
+        let full = lines(&drawn_into(boss, &cells, CUTTING, rows));
+        let short = lines(&drawn_into(boss, &cells, CUTTING, rows - 1));
+
+        assert!(full[0].starts_with(&header), "{full:#?}");
+        assert!(
+            full.iter().any(|line| line.contains(&workplace)),
+            "{full:#?}"
+        );
+        assert!(!short[0].starts_with(&header), "{short:#?}");
+        assert!(
+            !short.iter().any(|line| line.contains(&workplace)),
+            "{short:#?}"
+        );
+    }
+
+    /// A launched session whose launcher is not listed is left out of the
+    /// summary, so its compressed view keeps the lines its full view
+    /// opens with -- its header, its directory and the agent that
+    /// opened it -- above a line to each child.
+    #[test]
+    fn a_launched_cell_keeps_its_header_when_compressed() {
+        let trunk = trunk();
+        let trunk_entry = entry(&trunk, None);
+        let full = lines(&drawn_among(&trunk_entry, &[], WIDE));
+
+        let compressed = lines(&drawn_into(
+            &trunk_entry,
+            &[],
+            WIDE,
+            height(&trunk_entry, WIDE, NOW) - 1,
+        ));
+
+        assert!(full[2].contains(LAUNCHED_BY_LABEL), "{full:#?}");
+        assert_eq!(compressed[..3], full[..3]);
+        let gap = gap_text();
+        assert_eq!(
+            compressed[3..],
+            [
+                String::new(),
+                format!(" codex{gap}app-server"),
+                format!(" command{gap}Launch the Phase 1 implementation seat"),
+                format!("   codex{gap}app-server"),
+                format!("     codex{gap}tool-based-ui-trunk-impl"),
+                format!(" claude{gap}Review the permission queue"),
+                format!(
+                    "   command{gap}cargo nextest run -p hana_video --no-fail-fast -- permission_queue"
+                ),
+                format!(" claude{gap}tool-based-ui-arrange"),
+            ]
+        );
+    }
+
+    /// A compressed top-level agent with no sessions has nothing above
+    /// its children, so its first row holds the first child, not a
+    /// blank.
+    #[test]
+    fn a_compressed_cell_with_nothing_above_its_children_starts_with_them() {
+        let arrange = AgentRow {
+            children: vec![
+                child(
+                    0,
+                    ChildKind::Shell,
+                    Some(2_424_763),
+                    "cargo nextest run -p hana_video",
+                    45,
+                ),
+                child(
+                    0,
+                    ChildKind::Subagent,
+                    None,
+                    "Review the permission queue",
+                    5 * MINUTE + 3,
+                ),
+            ],
+            ..agent(ARRANGE, "arrange", 2 * HOUR, None)
+        };
+        let arrange_entry = entry(&arrange, None);
+
+        let compressed = lines(&drawn_into(
+            &arrange_entry,
+            &[],
+            WIDE,
+            arrange.children.len(),
+        ));
+
+        let gap = gap_text();
+        assert_eq!(
+            compressed,
+            [
+                format!(" command{gap}cargo nextest run -p hana_video"),
+                format!(" claude{gap}Review the permission queue"),
+            ]
+        );
     }
 
     /// natedev's answer and the mac's: two top-level agents, the older

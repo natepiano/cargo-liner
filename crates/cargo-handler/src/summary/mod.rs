@@ -270,7 +270,7 @@ pub(crate) fn desktop_text(row: &AgentRow) -> &str {
 
 /// `name` cut to `max` cells, ending in [`TRUNCATION_MARK`] when it was
 /// longer.
-fn truncated(name: &str, max: usize) -> String {
+pub(crate) fn truncated(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         return name.to_string();
     }
