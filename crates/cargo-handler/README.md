@@ -127,53 +127,38 @@ summary marks an agent, `codex fast` or `codex --`, and an app server
 with none. A row that has no process of its own shows `—` for its
 pid. An agent running nothing says `nothing running`.
 
-A cell is laid out for its width, spending rows where a narrow cell would
-otherwise cut its header, its branch and directory, a session's line or a name
-short. The same cell 38 columns wide, cut here after its first rows:
+A cell draws this full view only where it lies flat at the cell's width: the
+header on its one line, the branch and directory unbroken, a line to each
+session, and a table that cuts no name. Anywhere else, or given fewer rows than
+the full view takes, it draws its compressed view: one line to each session,
+its glyphs, name and status, and one line to each row of the table, indented by
+level, what it `runs` and its name, each line cut with `…` where it would not
+fit. A cell asks the grid for the rows of the view it draws at its own width.
+The same cell 38 columns wide:
 
 ```text
- agent    claude
- pid      1579022
- status   busy
- age      23h
- machine  natedev
- desktop  —
- main · ~/rust/cargo-liner
- ├─ tool-based-ui-trunk
- │  busy · 21h
- │  enh/trunk · ~/rust/ui-trunk
- │  └─ trunk-impl
- │     idle · 2h
- │     ~/scratch/impl
- └─ tool-based-ui-arrange
-    idle · 3h
-    enh/arrange · ~/rust/ui-arrange
+ ├─ tool-based-ui-trunk  busy
+ │  └─ trunk-impl  idle
+ └─ tool-based-ui-arrange  idle
 
- shell · command · 2m · pid 4000001
-   Run the tests
- session · claude · 21h · pid 3266367
-   tool-based-ui-trunk
-   subagent · claude · 5m 3s
-     Review the permission queue
-     shell · command · 45s
-     pid 2424763
-       cargo nextest run -p hana_video
+ command  Run the tests
+ claude  tool-based-ui-trunk
+   claude  Review the permission queue
+     command  cargo nextest run -p ha…
+   claude  trunk-impl
+ claude  tool-based-ui-arrange
+   codex  app-server
 ```
 
-Where the header's one line would be cut, it stands as a block, one fact to a
-line after a label column: the agent, its pid, status, age, machine and
-desktop, each value in the color the line gives it. A directory
-too long for its line breaks after a `/`, onto as many lines as it takes. Where
-the table would cut a name, each row stands as an entry of its own: its `via`,
-indented as the table indents it, then its `runs`, its age and its pid when it
-has one, and below that its name in full, indented under the `via` and broken
-before a space or after a `/` when it is still too long.
+A top-level agent's compressed cell leaves out its header and its branch and
+directory, as the summary lists the agent. A launched session's cell, which the
+summary leaves out, keeps its header, its branch and directory and its
+`launched by` line, each cut to one line.
 
-The label color is kept for labels: the block's label column, the table's
-column headers and `launched by`. Values, the `pid` before a number, the ` · `
-between facts and notes such as `nothing running` are drawn in plain text or
-their own colors, never in it, and every built-in theme gives labels a color
-nothing else uses.
+The label color is kept for labels: the table's column headers and `launched
+by`. Values, the `pid` before a number, the ` · ` between facts and notes such
+as `nothing running` are drawn in plain text or their own colors, never in it,
+and every built-in theme gives labels a color nothing else uses.
 
 Each kind of row comes from its own place:
 

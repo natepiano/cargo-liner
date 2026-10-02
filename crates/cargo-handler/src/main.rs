@@ -16,7 +16,6 @@ mod summary;
 mod terminal;
 mod theme;
 mod tiles;
-mod wrap;
 
 use std::process::ExitCode;
 

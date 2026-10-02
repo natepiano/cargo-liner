@@ -806,8 +806,8 @@ fraying = "leading"
             ]
         );
         assert!(
-            rows[0] > agent_cell::height(boss, WIDTH - 2, NOW),
-            "boss takes more rows narrow than wide"
+            rows[0] < agent_cell::height(boss, WIDTH - 2, NOW),
+            "boss compresses narrow and asks for fewer rows than wide"
         );
     }
 

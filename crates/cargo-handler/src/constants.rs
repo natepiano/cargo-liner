@@ -99,17 +99,6 @@ pub(crate) const CHILD_AGE_COLUMN: usize = 4;
 /// Cells the `via` column is indented by for each level a row sits
 /// below the agent.
 pub(crate) const CHILD_VIA_INDENT: usize = 2;
-/// Labels the agent's age in an agent cell's header block.
-pub(crate) const HEADER_AGE_LABEL: &str = "age";
-/// Labels an agent cell's header block with the agent's program, one
-/// of the facts it gives when its one-line header would be cut.
-pub(crate) const HEADER_AGENT_LABEL: &str = "agent";
-/// Labels the agent's desktop in an agent cell's header block.
-pub(crate) const HEADER_DESKTOP_LABEL: &str = "desktop";
-/// Labels the machine the agent runs on in an agent cell's header block.
-pub(crate) const HEADER_MACHINE_LABEL: &str = "machine";
-/// Labels the agent's status in an agent cell's header block.
-pub(crate) const HEADER_STATUS_LABEL: &str = "status";
 /// Columns of a line in an agent cell's tree of sessions: the
 /// session's name after its glyphs, status, branch, directory and age.
 pub(crate) const TREE_COLUMNS: usize = 5;
@@ -123,8 +112,6 @@ pub(crate) const TREE_LAST_BRANCH: &str = "└─ ";
 pub(crate) const TREE_RAIL: &str = "│  ";
 /// Stands for a level of an agent cell's tree whose line has ended.
 pub(crate) const TREE_SPACE: &str = "   ";
-/// Rows the line naming the agent that launched a session takes.
-pub(crate) const LAUNCHER_LINE_HEIGHT: u16 = 1;
 /// Blank rows between an agent cell's header and what it runs.
 pub(crate) const AGENT_HEADER_GAP_HEIGHT: u16 = 1;
 /// Rows the note standing in for an empty table takes.
@@ -132,8 +119,8 @@ pub(crate) const NOTHING_RUNNING_HEIGHT: u16 = 1;
 /// What an agent cell says in place of its table when the agent is
 /// running nothing.
 pub(crate) const NOTHING_RUNNING_NOTE: &str = "nothing running";
-/// Leads the agent's pid in an agent cell's header, labels it in the
-/// header block, and names a launcher known by its pid alone.
+/// Leads the agent's pid in an agent cell's header, and names a launcher
+/// known by its pid alone.
 pub(crate) const PID_LABEL: &str = "pid";
 /// Leads the name of the agent that opened a session in its cell.
 pub(crate) const LAUNCHED_BY_LABEL: &str = "launched by";
