@@ -115,7 +115,8 @@ pub fn spawn(
     cargo_port_config: &CargoPortConfig,
     background_tx: Sender<BackgroundMsg>,
 ) -> SpawnResult {
-    spawn_with_timing(cargo_port_config, background_tx, LintTiming::PRODUCTION)
+    let timing = LintTiming::from(&cargo_port_config.lint);
+    spawn_with_timing(cargo_port_config, background_tx, timing)
 }
 
 fn spawn_with_timing(
@@ -393,32 +394,49 @@ pub(super) fn desired_projects(
         .collect()
 }
 
-/// Debounce and poll intervals for lint workers. [`spawn`] runs on
-/// [`LintTiming::PRODUCTION`]; tests spawn with shorter intervals so a trigger
-/// lints in milliseconds.
+/// Debounce, quiet-time and poll intervals for lint workers. [`spawn`] builds
+/// it from `LintConfig`; tests spawn with shorter intervals so a trigger lints
+/// in milliseconds.
 #[derive(Clone, Copy)]
 pub(super) struct LintTiming {
     /// Wait after a create or modify trigger before its run starts.
     debounce:        Duration,
     /// Wait after a removal trigger before its run starts.
     delete_debounce: Duration,
+    /// Quiet time a watcher trigger waits out before its run starts, from
+    /// `LintConfig::idle_before_lint_secs`. Zero leaves only the debounces.
+    idle:            Duration,
     /// Longest a worker blocks before rechecking its `stop` flag, and its wait
     /// between attempts to take a run lock another instance holds.
     stop_poll:       Duration,
 }
 
 impl LintTiming {
-    const PRODUCTION: Self = Self {
-        debounce:        LINT_DEBOUNCE,
-        delete_debounce: DELETE_LINT_DEBOUNCE,
-        stop_poll:       STOP_POLL,
-    };
-
-    const fn debounce_for(self, event: &LintTriggerEvent) -> Duration {
-        if event.is_removal() {
+    /// The wait before a run for `event`. A watcher trigger waits for the
+    /// longer of its debounce and the idle time; a `Startup` trigger keeps its
+    /// debounce, so a startup catch-up lint is not held back.
+    fn debounce_for(self, event: &LintTriggerEvent) -> Duration {
+        let debounce = if event.is_removal() {
             self.delete_debounce
         } else {
             self.debounce
+        };
+        match event.trigger {
+            LintTriggerKind::Startup => debounce,
+            LintTriggerKind::Manifest | LintTriggerKind::Lockfile | LintTriggerKind::RustSource => {
+                debounce.max(self.idle)
+            },
+        }
+    }
+}
+
+impl From<&LintConfig> for LintTiming {
+    fn from(lint: &LintConfig) -> Self {
+        Self {
+            debounce:        LINT_DEBOUNCE,
+            delete_debounce: DELETE_LINT_DEBOUNCE,
+            idle:            Duration::from_secs(lint.idle_before_lint_secs),
+            stop_poll:       STOP_POLL,
         }
     }
 }
@@ -522,13 +540,16 @@ impl ScheduledLintRun {
     }
 }
 
+/// Schedule a run for `trigger`, received at `now`. Coalescing keeps the later
+/// deadline, so every trigger restarts the wait from its own arrival.
 pub(super) fn schedule_lint_run(
     scheduled: Option<ScheduledLintRun>,
     trigger: &DispatchedTrigger,
     timing: LintTiming,
+    now: Instant,
 ) -> ScheduledLintRun {
     let next = ScheduledLintRun {
-        deadline:     Instant::now() + timing.debounce_for(&trigger.event),
+        deadline:     now + timing.debounce_for(&trigger.event),
         origin:       lint_run_origin_for_trigger(&trigger.event),
         requested_at: trigger.requested_at,
     };
@@ -743,13 +764,23 @@ impl WorkerContext {
 
             if let Ok(trigger) = self.trigger_rx.try_recv() {
                 self.log_trigger(&trigger.event);
-                scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger, self.timing));
+                scheduled_run = Some(schedule_lint_run(
+                    scheduled_run,
+                    &trigger,
+                    self.timing,
+                    Instant::now(),
+                ));
             }
 
             match self.trigger_rx.recv_timeout(timeout) {
                 Ok(trigger) => {
                     self.log_trigger(&trigger.event);
-                    scheduled_run = Some(schedule_lint_run(scheduled_run, &trigger, self.timing));
+                    scheduled_run = Some(schedule_lint_run(
+                        scheduled_run,
+                        &trigger,
+                        self.timing,
+                        Instant::now(),
+                    ));
                 },
                 Err(RecvTimeoutError::Timeout) => {},
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -1035,15 +1066,18 @@ mod tests {
     use crate::channel::Receiver;
     use crate::config::CargoPortConfig;
     use crate::config::LintIndicator;
+    use crate::constants::DEFAULT_IDLE_BEFORE_LINT_SECS;
     use crate::lint::LintRun;
     use crate::lint::history;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
+    use crate::lint::trigger::LintEventKind::Remove;
     use crate::lint::trigger::LintTriggerKind::RustSource;
     use crate::lint::trigger::LintTriggerKind::Startup;
 
     const TEST_TIMING: LintTiming = LintTiming {
         debounce:        Duration::from_millis(20),
         delete_debounce: Duration::from_millis(40),
+        idle:            Duration::ZERO,
         stop_poll:       Duration::from_millis(10),
     };
 
@@ -1111,9 +1145,11 @@ mod tests {
 
         let startup = DispatchedTrigger::now(startup);
         let source = DispatchedTrigger::now(source);
-        let scheduled = schedule_lint_run(None, &startup, LintTiming::PRODUCTION);
+        let timing = production_timing(0);
+        let now = Instant::now();
+        let scheduled = schedule_lint_run(None, &startup, timing, now);
         assert_eq!(scheduled.origin, LintRunOrigin::CatchUp);
-        let scheduled = schedule_lint_run(Some(scheduled), &source, LintTiming::PRODUCTION);
+        let scheduled = schedule_lint_run(Some(scheduled), &source, timing, now);
         assert_eq!(scheduled.origin, LintRunOrigin::Normal);
         assert_eq!(
             scheduled.requested_at, source.requested_at,
@@ -1121,14 +1157,30 @@ mod tests {
         );
     }
 
+    /// Production timing with `idle_before_lint_secs` set.
+    fn production_timing(idle_before_lint_secs: u64) -> LintTiming {
+        LintTiming::from(&LintConfig {
+            idle_before_lint_secs,
+            ..LintConfig::default()
+        })
+    }
+
+    fn rust_source_trigger(event_kind: LintEventKind) -> DispatchedTrigger {
+        DispatchedTrigger::now(LintTriggerEvent {
+            project_root: AbsolutePath::from(Path::new("/tmp/demo")),
+            trigger: RustSource,
+            event_kind,
+        })
+    }
+
     #[test]
-    fn remove_events_use_longer_debounce() {
+    fn zero_idle_keeps_the_debounces() {
         let project_dir = tempfile::tempdir().expect("tempdir");
         let source_path = project_dir.path().join("src/lib.rs");
         let debounce_for = |event_kind| {
             let trigger = lint::classify_event_path(project_dir.path(), event_kind, &source_path)
                 .expect("source trigger");
-            LintTiming::PRODUCTION.debounce_for(&trigger)
+            production_timing(0).debounce_for(&trigger)
         };
 
         assert_eq!(
@@ -1139,6 +1191,73 @@ mod tests {
             debounce_for(EventKind::Modify(ModifyKind::Data(DataChange::Any))),
             LINT_DEBOUNCE
         );
+    }
+
+    #[test]
+    fn edit_waits_out_the_idle_time() {
+        let timing = LintTiming::from(&LintConfig::default());
+        let now = Instant::now();
+
+        let scheduled = schedule_lint_run(None, &rust_source_trigger(CreateOrModify), timing, now);
+
+        assert_eq!(
+            scheduled.deadline,
+            now + Duration::from_secs(DEFAULT_IDLE_BEFORE_LINT_SECS)
+        );
+    }
+
+    #[test]
+    fn edit_inside_the_wait_restarts_it() {
+        let timing = LintTiming::from(&LintConfig::default());
+        let idle = Duration::from_secs(DEFAULT_IDLE_BEFORE_LINT_SECS);
+        let first_edit = Instant::now();
+        let second_edit = first_edit + idle / 2;
+
+        let scheduled = schedule_lint_run(
+            None,
+            &rust_source_trigger(CreateOrModify),
+            timing,
+            first_edit,
+        );
+        let scheduled = schedule_lint_run(
+            Some(scheduled),
+            &rust_source_trigger(CreateOrModify),
+            timing,
+            second_edit,
+        );
+
+        assert_eq!(scheduled.deadline, second_edit + idle);
+    }
+
+    #[test]
+    fn removal_waits_for_the_longer_of_idle_and_delete_debounce() {
+        let shorter_idle = production_timing(1);
+        let longer_idle = LintTiming::from(&LintConfig::default());
+        let removal = rust_source_trigger(Remove);
+
+        assert_eq!(
+            shorter_idle.debounce_for(&removal.event),
+            DELETE_LINT_DEBOUNCE
+        );
+        assert_eq!(
+            longer_idle.debounce_for(&removal.event),
+            Duration::from_secs(DEFAULT_IDLE_BEFORE_LINT_SECS)
+        );
+    }
+
+    #[test]
+    fn startup_trigger_ignores_the_idle_time() {
+        let timing = LintTiming::from(&LintConfig::default());
+        let startup = DispatchedTrigger::now(LintTriggerEvent {
+            project_root: AbsolutePath::from(Path::new("/tmp/demo")),
+            trigger:      Startup,
+            event_kind:   CreateOrModify,
+        });
+        let now = Instant::now();
+
+        let scheduled = schedule_lint_run(None, &startup, timing, now);
+
+        assert_eq!(scheduled.deadline, now + LINT_DEBOUNCE);
     }
 
     /// A project, a temp cache root, and a config that lints the project with

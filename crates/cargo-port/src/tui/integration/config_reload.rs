@@ -24,6 +24,7 @@ pub(super) enum ConfigKey {
     LintCommands,
     LintCacheSize,
     LintOnDiscovery,
+    LintIdleBeforeLintSecs,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -220,6 +221,9 @@ fn changed_keys(old: &CargoPortConfig, new: &CargoPortConfig) -> Vec<ConfigKey> 
     if old.lint.on_discovery != new.lint.on_discovery {
         keys.push(ConfigKey::LintOnDiscovery);
     }
+    if old.lint.idle_before_lint_secs != new.lint.idle_before_lint_secs {
+        keys.push(ConfigKey::LintIdleBeforeLintSecs);
+    }
 
     keys
 }
@@ -346,6 +350,21 @@ mod tests {
         new.lint.enabled = LintIndicator::Enabled;
         new.lint.include = vec!["hana".to_string()];
         new.lint.commands = vec![crate::config::default_clippy_lint_command()];
+
+        assert_eq!(
+            collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),
+            ReloadActions {
+                tree:                 TreeReaction::None,
+                refresh_cpu:          ReloadDecision::Skip,
+                refresh_lint_runtime: ReloadDecision::Apply,
+            }
+        );
+    }
+
+    #[test]
+    fn idle_before_lint_marks_lint_runtime_refresh() {
+        let mut new = CargoPortConfig::default();
+        new.lint.idle_before_lint_secs = 0;
 
         assert_eq!(
             collect_reload_actions(&CargoPortConfig::default(), &new, ReloadContext::default()),

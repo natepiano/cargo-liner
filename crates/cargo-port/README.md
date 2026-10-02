@@ -142,7 +142,7 @@ High utilization is anything above the medium threshold.
 
 #### 4 - Lints
 
-A list of commands can be configured in the Lints section. These commands will run after every file edit of a rust file or the Cargo.toml within the project.
+A list of commands can be configured in the Lints section. These commands run after a rust file or the Cargo.toml within the project changes, once the project's files have gone unchanged for the **Idle before lint** time.
 
 When a lint is running a "spinner" will show up in the Lint column in the project tree, the lint row on the details pane and also a toast will pop up in the bottom right. If more than one lint is running, the toast in the bottom right will accumulate a row for each concurrently executing lint run.
 
@@ -157,6 +157,8 @@ When a lint is running a "spinner" will show up in the Lint column in the projec
 - **Lint command(s)** - a comma-delimited list of lint runs. I'm thinking about putting mine into a bash file as it makes this example hard to read...
 
 - **Cache size** - lints don't take up much space. And in practice you rarely need to look at old runs. You can make this as big as you want but a few megabytes will probably be fine. If your workflow would benefit from more or less lint cache space, you're in charge.
+
+- **Idle before lint** - how many seconds a project's files must go unchanged before a lint runs (`idle_before_lint_secs`, default 120). Every change restarts the wait, so while you or an agent keep editing, no lint starts underneath; it runs once the edits stop. Set it to 0 to lint 750 ms after each change. Lints that catch up at startup don't wait.
 
 #### 5 - Appearance
 
@@ -271,7 +273,7 @@ The targets pane will show you this project's targets - bins, examples, benches.
 
 ### Lint runs
 
-You may optionally configure a comma delimited list of commands to run as a lint on rust projects (only).  The included directories have a watcher on them and if any rust file or Cargo.toml changes, then the lint commands will be asynchronously executed and tracked to completion.
+You may optionally configure a comma delimited list of commands to run as a lint on rust projects (only).  The included directories have a watcher on them and if any rust file or Cargo.toml changes, then once the project has gone quiet for the **Idle before lint** time (120 seconds by default; each change restarts it), the lint commands will be asynchronously executed and tracked to completion.
 
 When finished results from historical runs will show in the Lint Runs pane.
 

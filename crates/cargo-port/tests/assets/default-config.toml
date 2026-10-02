@@ -161,6 +161,14 @@
 # Default value: false
 #on_discovery = false
 
+# Seconds a project's files must go unchanged before a file change
+# starts a lint run. Each new change restarts the wait, so a lint runs
+# once editing stops. `0` lints after the short built-in debounce
+# instead.
+#
+# Default value: 120
+#idle_before_lint_secs = 120
+
 [debug]
 # When true, all GitHub HTTP requests short-circuit to a synthetic
 # rate-limited response without hitting the network. Lets the

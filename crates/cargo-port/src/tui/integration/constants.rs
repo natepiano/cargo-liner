@@ -77,6 +77,10 @@ pub(super) const CONFIG_HANDLERS: &[ConfigHandler] = &[
         key:  ConfigKey::LintOnDiscovery,
         mark: config_reload::mark_refresh_lint_runtime,
     },
+    ConfigHandler {
+        key:  ConfigKey::LintIdleBeforeLintSecs,
+        mark: config_reload::mark_refresh_lint_runtime,
+    },
 ];
 
 // src tui integration framework_keymap

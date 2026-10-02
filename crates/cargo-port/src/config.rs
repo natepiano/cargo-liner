@@ -30,6 +30,7 @@ use crate::constants::DEFAULT_CPU_POLL_MS;
 use crate::constants::DEFAULT_DARK_THEME;
 use crate::constants::DEFAULT_DISCOVERY_SHIMMER_SECS;
 use crate::constants::DEFAULT_EDITOR;
+use crate::constants::DEFAULT_IDLE_BEFORE_LINT_SECS;
 use crate::constants::DEFAULT_INLINE_DIR;
 use crate::constants::DEFAULT_LIGHT_THEME;
 use crate::constants::DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT;
@@ -466,17 +467,25 @@ pub struct LintConfig {
     /// run only after you edit code.
     #[config(default = false)]
     pub on_discovery: DiscoveryLint,
+
+    /// Seconds a project's files must go unchanged before a file change
+    /// starts a lint run. Each new change restarts the wait, so a lint runs
+    /// once editing stops. `0` lints after the short built-in debounce
+    /// instead.
+    #[config(default = 120)]
+    pub idle_before_lint_secs: u64,
 }
 
 impl Default for LintConfig {
     fn default() -> Self {
         Self {
-            enabled:      LintIndicator::Disabled,
-            include:      Vec::new(),
-            exclude:      Vec::new(),
-            commands:     Vec::new(),
-            cache_size:   DEFAULT_CACHE_SIZE.to_string(),
-            on_discovery: DiscoveryLint::Deferred,
+            enabled:               LintIndicator::Disabled,
+            include:               Vec::new(),
+            exclude:               Vec::new(),
+            commands:              Vec::new(),
+            cache_size:            DEFAULT_CACHE_SIZE.to_string(),
+            on_discovery:          DiscoveryLint::Deferred,
+            idle_before_lint_secs: DEFAULT_IDLE_BEFORE_LINT_SECS,
         }
     }
 }
@@ -1320,6 +1329,10 @@ mod tests {
             [] as [LintCommandConfig; 0]
         );
         assert_eq!(cargo_port_config.lint.cache_size, DEFAULT_CACHE_SIZE);
+        assert_eq!(
+            cargo_port_config.lint.idle_before_lint_secs,
+            DEFAULT_IDLE_BEFORE_LINT_SECS
+        );
     }
 
     /// `Config::default()` returns correct values for every field.
@@ -1360,6 +1373,33 @@ mod tests {
             .load()
             .expect("partial config should load");
         assert_default_config_subset(&cargo_port_config, 10);
+    }
+
+    /// A `[lint]` table written before `idle_before_lint_secs` existed loads
+    /// with the default wait, and a set value survives a save and reload.
+    #[test]
+    fn lint_idle_before_lint_secs_defaults_when_missing_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[lint]\nenabled = true\ncache_size = \"1 GiB\"\n").expect("write");
+
+        let mut cargo_port_config = CargoPortConfig::builder()
+            .file(&path)
+            .load()
+            .expect("lint config without the idle key should load");
+        assert_eq!(
+            cargo_port_config.lint.idle_before_lint_secs,
+            DEFAULT_IDLE_BEFORE_LINT_SECS
+        );
+
+        cargo_port_config.lint.idle_before_lint_secs = 45;
+        let contents = toml::to_string_pretty(&cargo_port_config).expect("serialize");
+        std::fs::write(&path, &contents).expect("write");
+        let reloaded = CargoPortConfig::builder()
+            .file(&path)
+            .load()
+            .expect("reloaded config");
+        assert_eq!(reloaded.lint.idle_before_lint_secs, 45);
     }
 
     #[test]

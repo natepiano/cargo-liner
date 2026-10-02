@@ -82,6 +82,7 @@ pub(super) enum SettingOption {
     LintProjects,
     LintCommands,
     LintCacheSize,
+    LintIdleBeforeLintSecs,
     AppearanceMode,
     LightTheme,
     DarkTheme,
@@ -133,7 +134,8 @@ impl SettingOption {
             | Self::CpuMediumUtilizationMaxPercent
             | Self::LintProjects
             | Self::LintCommands
-            | Self::LintCacheSize => SettingKind::Value,
+            | Self::LintCacheSize
+            | Self::LintIdleBeforeLintSecs => SettingKind::Value,
         }
     }
 }
@@ -366,6 +368,10 @@ fn format_lint_commands(cargo_port_config: &CargoPortConfig) -> String {
 
 fn format_lint_cache_size(cargo_port_config: &CargoPortConfig) -> String {
     cargo_port_config.lint.cache_size.clone()
+}
+
+fn format_lint_idle_before_lint_secs(cargo_port_config: &CargoPortConfig) -> String {
+    format!("{}s", cargo_port_config.lint.idle_before_lint_secs)
 }
 
 fn format_cache_root(cargo_port_config: &CargoPortConfig) -> String {
@@ -637,6 +643,12 @@ fn register_lint_settings(registry: SettingsRegistry) -> SettingsRegistry {
             format_lint_cache_size_table,
             set_lint_cache_size,
         )
+        .add_int_in(
+            SettingsSection::App("lint"),
+            "idle_before_lint_secs",
+            get_lint_idle_before_lint_secs,
+            set_lint_idle_before_lint_secs,
+        )
 }
 
 pub(super) struct StartupSettings {
@@ -763,6 +775,10 @@ pub(super) fn settings_table_from_config(
         lint_commands_value(cargo_port_config.lint.commands.clone()),
     )?;
     set_lint_cache_size(&mut table, &cargo_port_config.lint.cache_size)?;
+    set_lint_idle_before_lint_secs(
+        &mut table,
+        i64::try_from(cargo_port_config.lint.idle_before_lint_secs).unwrap_or(i64::MAX),
+    )?;
     set_appearance_mode(&mut table, &cargo_port_config.appearance.mode)?;
     set_appearance_light_theme(&mut table, &cargo_port_config.appearance.light_theme)?;
     set_appearance_dark_theme(&mut table, &cargo_port_config.appearance.dark_theme)?;
@@ -1133,6 +1149,23 @@ fn set_lint_cache_size(table: &mut Table, value: &str) -> Result<(), SettingsErr
     write_value(table, "lint", "cache_size", cache_size.into())
 }
 
+fn get_lint_idle_before_lint_secs(table: &Table) -> i64 {
+    read_int(table, "lint", "idle_before_lint_secs").unwrap_or_else(|| {
+        i64::try_from(default_config().lint.idle_before_lint_secs).unwrap_or(i64::MAX)
+    })
+}
+
+fn set_lint_idle_before_lint_secs(table: &mut Table, value: i64) -> Result<(), SettingsError> {
+    if value < 0 {
+        return Err(settings_invalid(
+            "lint",
+            "idle_before_lint_secs",
+            "expected a whole number of seconds, 0 or more",
+        ));
+    }
+    write_value(table, "lint", "idle_before_lint_secs", value.into())
+}
+
 fn get_appearance_mode(table: &Table) -> String {
     read_string(table, "appearance", "mode")
         .map_or_else(|| default_config().appearance.mode, str::to_string)
@@ -1411,6 +1444,11 @@ fn lint_settings_rows(app: &App, cargo_port_config: &CargoPortConfig) -> Vec<Set
             Some(SettingOption::LintCacheSize),
             "Cache size".to_string(),
             format_lint_cache_size(cargo_port_config),
+        ),
+        (
+            Some(SettingOption::LintIdleBeforeLintSecs),
+            "Idle before lint".to_string(),
+            format_lint_idle_before_lint_secs(cargo_port_config),
         ),
     ]
 }
@@ -1723,6 +1761,7 @@ fn flip_toggle(app: &mut App, setting: SettingOption) {
         | SettingOption::LintProjects
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize
+        | SettingOption::LintIdleBeforeLintSecs
         | SettingOption::AppearanceMode
         | SettingOption::LightTheme
         | SettingOption::DarkTheme => {},
@@ -1772,6 +1811,7 @@ fn step_setting(app: &mut App, setting: SettingOption, step: i32) {
         | SettingOption::LintProjects
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize
+        | SettingOption::LintIdleBeforeLintSecs
         | SettingOption::FocusedPaneTint
         | SettingOption::Transparent => {},
     }
@@ -1823,6 +1863,9 @@ fn settings_edit_seed(app: &App, setting: SettingOption) -> Option<String> {
         SettingOption::LintProjects => Some(cargo_port_config.lint.include.join(", ")),
         SettingOption::LintCommands => Some(format_lint_commands(cargo_port_config)),
         SettingOption::LintCacheSize => Some(cargo_port_config.lint.cache_size.clone()),
+        SettingOption::LintIdleBeforeLintSecs => {
+            Some(cargo_port_config.lint.idle_before_lint_secs.to_string())
+        },
         SettingOption::StatusToastVisibleSecs => Some(format_status_toast_visible_secs(app)),
         SettingOption::FinishedTaskVisibleSecs => Some(format_finished_task_visible_secs(app)),
         SettingOption::DiscoveryShimmerSecs => {
@@ -1936,6 +1979,7 @@ fn apply_general_settings_edit(
         | SettingOption::LintProjects
         | SettingOption::LintCommands
         | SettingOption::LintCacheSize
+        | SettingOption::LintIdleBeforeLintSecs
         | SettingOption::AppearanceMode
         | SettingOption::LightTheme
         | SettingOption::DarkTheme
@@ -2036,6 +2080,16 @@ fn apply_lint_settings_edit(app: &mut App, setting: SettingOption, value: &str) 
         SettingOption::LintCacheSize => {
             if save_app_setting(app, |table| set_lint_cache_size(table, value)) {
                 app.show_timed_toast("Settings", "Lint cache size updated");
+            }
+        },
+        SettingOption::LintIdleBeforeLintSecs => {
+            let Ok(secs) = value.trim().parse::<u64>() else {
+                finish_settings_edit_with_error(app, format!("Invalid number: {value}"));
+                return true;
+            };
+            let secs = i64::try_from(secs).unwrap_or(i64::MAX);
+            if save_app_setting(app, |table| set_lint_idle_before_lint_secs(table, secs)) {
+                app.show_timed_toast("Settings", "Lint idle time updated");
             }
         },
         _ => return false,
