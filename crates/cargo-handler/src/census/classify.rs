@@ -17,11 +17,17 @@
 //! later, and before the next one started there. The one app server
 //! that counts is the macOS desktop app's, which stands for the app.
 //!
+//! A session the Claude desktop app started runs under a process of the
+//! app's: on a machine the app reaches over ssh, the app's server there.
+//! A row named [`CLAUDE_DESKTOP_APP`] stands for that process, and is
+//! the launcher of every such session under it.
+//!
 //! Everything here is a pure function over a process table, the
 //! session records, the Codex threads and the shell calls read from
 //! transcripts, so the tests drive it from fixtures.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
@@ -37,6 +43,9 @@ use super::transcript::BashCall;
 use crate::constants::CALL_LOOKAHEAD;
 use crate::constants::CALL_LOOKBACK;
 use crate::constants::CLAUDE_AGENT;
+use crate::constants::CLAUDE_DESKTOP_APP;
+use crate::constants::CLAUDE_DESKTOP_CLI_DIRNAME;
+use crate::constants::CLAUDE_DESKTOP_ENTRYPOINT;
 use crate::constants::CODEX_AGENT;
 use crate::constants::CODEX_APP_SERVER_ARGUMENT;
 use crate::constants::CODEX_DESKTOP_APP;
@@ -74,14 +83,20 @@ impl ProcessEntry {
     /// Whether this is Claude Code. The name alone is not enough on
     /// macOS, where the name comes from the executable's path and the
     /// installed executable is named for its version, so the program
-    /// named on the command line counts as well.
+    /// named on the command line counts as well. Nor is it where the
+    /// Claude desktop app runs Claude Code from an executable named for
+    /// its version in a [`CLAUDE_DESKTOP_CLI_DIRNAME`] directory, so a
+    /// program there counts too.
     pub(super) fn is_claude(&self) -> bool {
+        let program = self.arguments.first().map(Path::new);
         self.name == CLAUDE_AGENT
-            || self
-                .arguments
-                .first()
-                .and_then(|program| Path::new(program).file_name())
-                .is_some_and(|program| program == CLAUDE_AGENT)
+            || program
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == CLAUDE_AGENT)
+            || program
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .is_some_and(|directory| directory == CLAUDE_DESKTOP_CLI_DIRNAME)
     }
 
     /// Whether this is any `codex` process, app server or not.
@@ -129,6 +144,10 @@ pub(super) struct SessionRecord {
     /// `idle`, `busy` or `shell`, where the record says.
     #[serde(default)]
     pub(super) status:     Option<String>,
+    /// What started the session, where the record says:
+    /// [`CLAUDE_DESKTOP_ENTRYPOINT`] for the Claude desktop app.
+    #[serde(default)]
+    pub(super) entrypoint: Option<String>,
 }
 
 impl SessionRecord {
@@ -144,13 +163,19 @@ impl SessionRecord {
                     .collect()
             })
     }
+
+    /// Whether the Claude desktop app started the session.
+    fn is_from_desktop_app(&self) -> bool {
+        self.entrypoint.as_deref() == Some(CLAUDE_DESKTOP_ENTRYPOINT)
+    }
 }
 
 /// The agents among `processes` that no other agent started, oldest
 /// first, with pid breaking a tie. An interactive Codex is named for its
 /// thread among `codex_threads`, and directories are written against
-/// `home`. Every row is top level and runs nothing until the scan says
-/// otherwise.
+/// `home`. A session the Claude desktop app started is launched by the
+/// row standing for the app; every other row is top level, and every
+/// row runs nothing, until the scan says otherwise.
 pub(super) fn agent_rows(
     processes: &[ProcessEntry],
     sessions: &[SessionRecord],
@@ -166,6 +191,14 @@ pub(super) fn agent_rows(
             codex_row(&table, process, threads.get(&process.pid).copied(), home)
         }))
         .collect();
+    // Only a session the desktop app started has a launcher yet: the
+    // process holding it, which takes the row standing for the app.
+    let apps: HashSet<u32> = rows.iter().filter_map(|row| row.launched_by).collect();
+    rows.extend(
+        apps.iter()
+            .filter_map(|pid| table.get(pid))
+            .map(|process| desktop_app_row(process, home)),
+    );
     rows.sort_by_key(|row| (row.started, row.pid));
     rows
 }
@@ -258,7 +291,8 @@ fn startup_threads<'a>(
 }
 
 /// The row for `session`, when its process is alive, is Claude Code,
-/// and is under no other agent.
+/// and is under no other agent. A session the Claude desktop app started
+/// is launched by the process above it, which holds it for the app.
 fn claude_row(
     table: &HashMap<u32, &ProcessEntry>,
     session: &SessionRecord,
@@ -279,9 +313,29 @@ fn claude_row(
         desktop:      None,
         directory:    directory_label(directory, home),
         branch:       None,
-        launched_by:  None,
+        launched_by:  process
+            .parent
+            .filter(|parent| session.is_from_desktop_app() && table.contains_key(parent)),
         children:     Vec::new(),
     })
+}
+
+/// The row standing for the Claude desktop app, at `process`: the
+/// process holding the sessions the app started on this machine.
+fn desktop_app_row(process: &ProcessEntry, home: Option<&Path>) -> AgentRow {
+    AgentRow {
+        agent:        Agent::Claude,
+        service_tier: ServiceTier::Unrecorded,
+        name:         CLAUDE_DESKTOP_APP.to_string(),
+        status:       None,
+        started:      process.started,
+        pid:          process.pid,
+        desktop:      None,
+        directory:    directory_label(process.directory.as_deref(), home),
+        branch:       None,
+        launched_by:  None,
+        children:     Vec::new(),
+    }
 }
 
 /// The row for `process`, when it is an interactive Codex under no other
@@ -518,6 +572,7 @@ mod tests {
             cwd: Some(PathBuf::from(cwd)),
             name: Some(name.to_string()),
             status: Some(status.to_string()),
+            entrypoint: None,
         }
     }
 
@@ -845,6 +900,61 @@ mod tests {
         assert_eq!(desktop.started, 1_005);
         assert_eq!(desktop.directory, "/");
         assert_eq!(rows[1].directory, "~");
+    }
+
+    /// The Claude desktop app reaching natedev over ssh: the app's server
+    /// there holds two sessions, each run from the app's own Claude Code,
+    /// named for its version, and one of them runs a Codex. A row named
+    /// for the app stands for the server and launches both sessions, the
+    /// Codex is that session's delegate, and a session opened in a
+    /// terminal stays top level.
+    #[test]
+    fn the_desktop_app_launches_the_sessions_it_started() {
+        let program = "/home/natepiano/.claude/remote/ccd-cli/2.1.284";
+        let mut processes = vec![
+            process(1, 0, "systemd", 0),
+            detailed(
+                500,
+                1,
+                "server",
+                100,
+                &["/home/natepiano/.claude/remote/srv/89cb/server", "--serve"],
+                HOME,
+            ),
+            detailed(510, 500, "2.1.284", 110, &[program], "/etc/nixos"),
+            detailed(520, 500, "2.1.284", 120, &[program], "/etc/nixos"),
+            detailed(530, 520, "codex", 130, &["codex", "exec"], "/etc/nixos"),
+        ];
+        processes.extend(terminal(600, 610, 140));
+        processes.push(detailed(620, 610, "claude", 150, &["claude"], HOME));
+        let from_desktop_app = |pid, name| SessionRecord {
+            entrypoint: Some(CLAUDE_DESKTOP_ENTRYPOINT.to_string()),
+            ..session(pid, name, "idle", "/etc/nixos")
+        };
+        let sessions = [
+            from_desktop_app(510, "ups"),
+            from_desktop_app(520, "codex usage management"),
+            session(620, "natedev", "busy", HOME),
+        ];
+
+        let rows = agent_rows(&processes, &sessions, &[], Some(Path::new(HOME)));
+
+        assert_eq!(
+            names(&rows),
+            [
+                CLAUDE_DESKTOP_APP,
+                "ups",
+                "codex usage management",
+                "natedev"
+            ]
+        );
+        let launchers: Vec<Option<u32>> = rows.iter().map(|row| row.launched_by).collect();
+        assert_eq!(launchers, [None, Some(500), Some(500), None]);
+        let app = &rows[0];
+        assert_eq!(app.pid, 500);
+        assert_eq!(app.agent, Agent::Claude);
+        assert_eq!(app.status, None);
+        assert_eq!(app.directory, HOME_ABBREVIATION);
     }
 
     /// A shell call written `offset_ms` milliseconds from [`LAUNCH`],

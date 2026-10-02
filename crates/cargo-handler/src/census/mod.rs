@@ -162,8 +162,10 @@ pub(crate) struct AgentRow {
     /// Missing from a probe printed before it existed.
     #[serde(default)]
     pub(crate) branch:       Option<String>,
-    /// The pid of the agent that opened this one in a tmux session; none
-    /// for an agent a person started, which is what makes it top level.
+    /// The pid of the row that opened this one: the agent that opened it
+    /// in a tmux session, or the row standing for the Claude desktop app
+    /// that holds it. None for an agent a person started outside the
+    /// app, which is what makes it top level.
     pub(crate) launched_by:  Option<u32>,
     /// What the agent is running, in the order its cell draws it: each
     /// row is followed by the rows it started, one level deeper.
@@ -171,7 +173,8 @@ pub(crate) struct AgentRow {
 }
 
 impl AgentRow {
-    /// Whether a person started this agent rather than another agent.
+    /// Whether a person started this agent outside the Claude desktop
+    /// app rather than another agent opening it.
     const fn is_top_level(&self) -> bool { self.launched_by.is_none() }
 
     /// The `agent` cell: the program, marked with its tier.
@@ -189,8 +192,8 @@ pub(crate) enum ChildKind {
     Shell,
     /// A subagent running inside the agent's own process.
     Subagent,
-    /// An agent this one opened in a tmux session, which has a cell of
-    /// its own.
+    /// An agent this one opened, in a tmux session or as a session of
+    /// the Claude desktop app, which has a row of its own.
     Session(Agent),
     /// A Claude Code or Codex process one of the agent's shells started.
     UnderShell(Agent),

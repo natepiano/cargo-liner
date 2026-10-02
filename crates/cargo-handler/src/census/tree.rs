@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::iter;
 use std::path::Path;
 
 use super::Agent;
@@ -190,23 +191,28 @@ pub(super) fn attach_children(
     let trees: Vec<Vec<ChildRow>> = rows
         .iter()
         .map(|row| {
-            let mut visited = HashSet::from([row.pid]);
+            let sessions: Vec<&AgentRow> = rows
+                .iter()
+                .filter(|other| other.launched_by == Some(row.pid))
+                .collect();
+            // A session the Claude desktop app holds is also a process
+            // under the app's row; the walk skips it, so it shows once,
+            // as a session.
+            let mut visited: HashSet<u32> = iter::once(row.pid)
+                .chain(sessions.iter().map(|session| session.pid))
+                .collect();
             let mut nodes = table
                 .get(&row.pid)
                 .map(|process| walker.agent_nodes(process, 0, &mut visited))
                 .unwrap_or_default();
-            nodes.extend(
-                rows.iter()
-                    .filter(|other| other.launched_by == Some(row.pid))
-                    .map(|session| Node {
-                        kind:         ChildKind::Session(session.agent),
-                        service_tier: session.service_tier,
-                        pid:          Some(session.pid),
-                        name:         session.name.clone(),
-                        started:      session.started,
-                        children:     Vec::new(),
-                    }),
-            );
+            nodes.extend(sessions.iter().map(|session| Node {
+                kind:         ChildKind::Session(session.agent),
+                service_tier: session.service_tier,
+                pid:          Some(session.pid),
+                name:         session.name.clone(),
+                started:      session.started,
+                children:     Vec::new(),
+            }));
             // An app server a mesh moved out from under the agent names it
             // in `CLAUDE_PID`, and started after the agent's process did.
             // A Claude Code process is never attached this way: a terminal
@@ -565,6 +571,7 @@ mod tests {
             cwd: Some(PathBuf::from(HOME)),
             name: Some(name.to_string()),
             status: Some("busy".to_string()),
+            entrypoint: None,
         }
     }
 
@@ -1010,5 +1017,43 @@ mod tests {
 
         let depths: Vec<u8> = rows[0].children.iter().map(|child| child.depth).collect();
         assert_eq!(depths, (0..TREE_DEPTH_LIMIT).collect::<Vec<_>>());
+    }
+
+    /// The Claude desktop app's server holds each session the app started
+    /// as a process under it. The row standing for the app lists each
+    /// such session once, as a session, and what the session runs stays
+    /// in the session's own row.
+    #[test]
+    fn a_desktop_app_session_shows_once_under_the_app() {
+        let program = "/home/natepiano/.claude/remote/ccd-cli/2.1.284";
+        let processes = [
+            detailed(500, 1, "server", 100, &["server", "--serve"]),
+            detailed(510, 500, "2.1.284", 110, &[program]),
+            detailed(520, 510, "codex", 120, &["codex", "exec"]),
+        ];
+        let mut rows = [
+            agent_row(500, 100),
+            AgentRow {
+                launched_by: Some(500),
+                ..agent_row(510, 110)
+            },
+        ];
+
+        attach_children(&mut rows, &processes, &TreeSources::default());
+
+        assert_eq!(
+            cell(&rows, 500),
+            [(
+                0,
+                ChildKind::Session(Agent::Claude),
+                Some(510),
+                "pid 510",
+                110
+            )]
+        );
+        assert_eq!(
+            cell(&rows, 510),
+            [(0, ChildKind::Direct(Agent::Codex), Some(520), "exec", 120)]
+        );
     }
 }

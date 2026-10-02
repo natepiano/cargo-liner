@@ -254,6 +254,16 @@ pub(crate) const RAINBOW_VIOLET_ROLE: &str = "rainbow_violet";
 /// The `agent` value of a Claude Code row, and the process name a
 /// Claude Code process runs under.
 pub(crate) const CLAUDE_AGENT: &str = "claude";
+/// Name of the row that stands for the Claude desktop app, at the
+/// process holding the sessions the app started on its machine.
+pub(crate) const CLAUDE_DESKTOP_APP: &str = "Claude.app";
+/// The directory the Claude desktop app installs Claude Code into on a
+/// machine it reaches over ssh, one executable to a version, named for
+/// the version: `~/.claude/remote/ccd-cli/2.1.284`.
+pub(crate) const CLAUDE_DESKTOP_CLI_DIRNAME: &str = "ccd-cli";
+/// The `entrypoint` of the record of a session the Claude desktop app
+/// started.
+pub(crate) const CLAUDE_DESKTOP_ENTRYPOINT: &str = "claude-desktop";
 /// The `agent` value of a Codex row, and the process name a Codex
 /// process runs under.
 pub(crate) const CODEX_AGENT: &str = "codex";

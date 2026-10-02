@@ -773,6 +773,7 @@ mod tests {
                     cwd:        None,
                     name:       None,
                     status:     None,
+                    entrypoint: None,
                 },
                 SessionRecord {
                     pid:        428_044,
@@ -780,6 +781,7 @@ mod tests {
                     cwd:        Some(PathBuf::from("/home/natepiano/rust/handler")),
                     name:       Some("enh/handler".to_string()),
                     status:     Some("busy".to_string()),
+                    entrypoint: None,
                 },
             ]
         );
