@@ -89,7 +89,7 @@ bypass:
 
 ```json
 {
-  "output_contract_version": 5,
+  "output_contract_version": 6,
   "verb": "board",
   "status": "board_ready",
   "exit_code": 0,
@@ -204,7 +204,7 @@ bypass:
           "direction": "holder_before_requester",
           "exact_approved_scopes": [{
             "reservation_id": "01a036fa-b70a-7e72-89ae-0facf1976ed1",
-            "scope_revision": [{ "path": "crates/shared", "kind": "tree" }],
+            "scope_revision": "1e1d0180d28bceced2e244a3796fb8d9d6b20ac4c139c53e4beeb015d5066e60",
             "scopes": [{ "path": "crates/shared", "kind": "tree" }]
           }],
           "authorization_reason": "the holder API must land first",
@@ -262,12 +262,17 @@ bypass:
 }
 ```
 
-The binary reports top-level `output_contract_version = 5`. It identifies the
+The binary reports top-level `output_contract_version = 6`. It identifies the
 contract generation that produced the response and has the same value as the
 generated contract's top-level `version`; both values come from one binary
 constant. This is reported information and gates nothing: no consumer refuses
 an envelope because its reported version differs from the one it was written
 against.
+
+Version 6 changed `scope_revision` in `exact_approved_scopes` entries and
+`overlap_scope_revision` in conflicts from an array of scopes to a scope
+revision digest, so the size of a revision no longer grows with the holder's
+scopes.
 
 Version 5 removed the `needs_user_authorization` status, its exit code `3`, and
 the claim payload that carried a proposal and its token: an overlap answer now
@@ -830,8 +835,12 @@ Reservation, event, incident, edge, permit, repository, worktree, and
 coordination-run ids are UUID-v7 strings. Pending-marker ids and bypassed-merge
 identities are opaque strings. Git object ids are full lowercase SHA-1 or
 SHA-256 hex strings. A `scope` is `{ "path": <repository-relative string>,
-"kind": "file" | "tree" }`; fields named `scopes`, `added_scopes`,
-`scope_revision`, and overlap `scopes` are arrays of that object.
+"kind": "file" | "tree" }`; fields named `scopes`, `added_scopes`, and overlap
+`scopes` are arrays of that object. A scope revision (`scope_revision`, and a
+conflict's `overlap_scope_revision`) is 64 lowercase hexadecimal digits, the
+SHA-256 digest of a reservation's scopes in path-then-kind order: two revisions
+are equal exactly when the scope sets are. Records written before the digest
+carry the scope array instead and decode unchanged.
 
 `identity_inputs` has this form on every new journal mutation:
 
@@ -929,8 +938,8 @@ These operation fields use the following tagged values:
   `defer` or `override` with `overlaps`, `blocker`, and `reason`; or
   `existing_answers_cover_every_overlap` with `overlaps`. `direction` is
   `requester_before_holder` or `holder_before_requester`. Each `overlaps` entry
-  is `{ "reservation_id": <uuid-v7>, "scope_revision": [scope...], "scopes":
-  [scope...] }`. `enrollment` binds every counterpart observed when `init`
+  is `{ "reservation_id": <uuid-v7>, "scope_revision": <scope revision>,
+  "scopes": [scope...] }`. `enrollment` binds every counterpart observed when `init`
   enrolled the claim and holds integration for each pair until `sequence`
   orders it. `scope_revision` is required on every entry, but only
   `existing_answers_cover_every_overlap` compares it when deciding edit

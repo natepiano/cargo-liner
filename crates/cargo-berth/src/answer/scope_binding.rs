@@ -4,21 +4,41 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::Write as _;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
+use sha2::Digest as _;
+use sha2::Sha256;
 
 use crate::ids::ReservationId;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
+use crate::ledger::ScopeKind;
 use crate::reservation::ReservationConflict;
 use crate::scope::PathCase;
 
+/// The length of a revision digest in lowercase hexadecimal digits.
+const REVISION_DIGEST_HEX_LENGTH: usize = 64;
+
 /// A deterministic revision that changes only when a reservation's scopes change.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+///
+/// The revision is the SHA-256 digest of the canonically ordered scopes, so a record naming a
+/// holder's revision stays the same size however many scopes that holder protects.
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(transparent)]
-pub(crate) struct OverlapScopeRevision(#[schemars(length(min = 1))] Vec<ReservationScope>);
+pub(crate) struct OverlapScopeRevision(#[schemars(pattern(r"^[0-9a-f]{64}$"))] String);
+
+/// The recorded forms of an overlap scope revision.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RecordedOverlapScopeRevision {
+    /// The digest written by current binaries.
+    Digest(String),
+    /// The canonical scope list written before the revision became a digest.
+    Scopes(Vec<ReservationScope>),
+}
 
 /// The non-empty normalized scopes covered for one holder.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -42,15 +62,60 @@ pub(crate) struct AuthorizedOverlap {
 pub(crate) struct AuthorizedOverlapSet(#[schemars(length(min = 1))] Vec<AuthorizedOverlap>);
 
 impl From<&ReservationScopeSet> for OverlapScopeRevision {
-    fn from(scopes: &ReservationScopeSet) -> Self {
-        let mut canonical_scopes = scopes.as_slice().to_vec();
-        canonical_scopes.sort_by(|left, right| {
-            left.path
-                .to_string()
-                .cmp(&right.path.to_string())
-                .then_with(|| left.kind.cmp(&right.kind))
-        });
-        Self(canonical_scopes)
+    fn from(scopes: &ReservationScopeSet) -> Self { Self::of_scopes(scopes.as_slice()) }
+}
+
+impl OverlapScopeRevision {
+    /// Digest scopes in path-then-kind order, so the revision ignores their listed order.
+    fn of_scopes(scopes: &[ReservationScope]) -> Self {
+        let mut canonical_scopes = scopes
+            .iter()
+            .map(|scope| (scope.path.to_string(), scope.kind))
+            .collect::<Vec<_>>();
+        canonical_scopes.sort();
+        let mut hasher = Sha256::new();
+        for (path, kind) in &canonical_scopes {
+            hasher.update(match kind {
+                ScopeKind::File => b"file\0",
+                ScopeKind::Tree => b"tree\0",
+            });
+            hasher.update(path.as_bytes());
+            hasher.update(b"\0");
+        }
+        let mut digest = String::with_capacity(REVISION_DIGEST_HEX_LENGTH);
+        for byte in hasher.finalize() {
+            let _ = write!(digest, "{byte:02x}");
+        }
+        Self(digest)
+    }
+}
+
+impl<'de> Deserialize<'de> for OverlapScopeRevision {
+    fn deserialize<DeserializerType>(
+        deserializer: DeserializerType,
+    ) -> Result<Self, DeserializerType::Error>
+    where
+        DeserializerType: serde::Deserializer<'de>,
+    {
+        match RecordedOverlapScopeRevision::deserialize(deserializer)? {
+            RecordedOverlapScopeRevision::Digest(digest) => {
+                if digest.len() == REVISION_DIGEST_HEX_LENGTH
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    Ok(Self(digest))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "an overlap scope revision must be 64 lowercase hexadecimal digits",
+                    ))
+                }
+            },
+            RecordedOverlapScopeRevision::Scopes(scopes) if scopes.is_empty() => Err(
+                serde::de::Error::custom("an overlap scope revision cannot be empty"),
+            ),
+            RecordedOverlapScopeRevision::Scopes(scopes) => Ok(Self::of_scopes(&scopes)),
+        }
     }
 }
 
@@ -147,3 +212,45 @@ impl Display for EmptyAuthorizedOverlapSet {
 }
 
 impl Error for EmptyAuthorizedOverlapSet {}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use serde_json::json;
+
+    use super::OverlapScopeRevision;
+    use crate::ledger::ReservationScope;
+    use crate::ledger::ReservationScopeSet;
+    use crate::ledger::ScopeKind;
+
+    #[test]
+    fn recorded_scope_lists_decode_to_the_digest_of_their_scopes() -> Result<(), Box<dyn Error>> {
+        let revision = OverlapScopeRevision::from(&ReservationScopeSet::try_from(vec![
+            ReservationScope {
+                path: "src".parse()?,
+                kind: ScopeKind::Tree,
+            },
+            ReservationScope {
+                path: "Cargo.toml".parse()?,
+                kind: ScopeKind::File,
+            },
+        ])?);
+        let digest = serde_json::to_value(&revision)?;
+        assert_eq!(digest.as_str().map(str::len), Some(64));
+        assert_eq!(
+            serde_json::from_value::<OverlapScopeRevision>(digest)?,
+            revision
+        );
+
+        let recorded = serde_json::from_value::<OverlapScopeRevision>(json!([
+            {"path": "src", "kind": "tree"},
+            {"path": "Cargo.toml", "kind": "file"},
+        ]))?;
+        assert_eq!(recorded, revision);
+
+        assert!(serde_json::from_value::<OverlapScopeRevision>(json!([])).is_err());
+        assert!(serde_json::from_value::<OverlapScopeRevision>(json!("ABC")).is_err());
+        Ok(())
+    }
+}

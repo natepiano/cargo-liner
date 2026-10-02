@@ -164,7 +164,7 @@ const SCOPE_ACQUISITION_REFUSED_SUMMARY: &str =
 const UNIMPLEMENTED_MESSAGE: &str = "The reservation engine is not implemented.";
 
 /// The generated-output contract version reported by every response envelope.
-pub(crate) const OUTPUT_CONTRACT_VERSION: u32 = 5;
+pub(crate) const OUTPUT_CONTRACT_VERSION: u32 = 6;
 
 /// The JSON Schema extension that records a failed closed-value selector transform.
 pub(crate) const CLOSED_VALUE_SELECTOR_TRANSFORM_FAILURE_KEY: &str =

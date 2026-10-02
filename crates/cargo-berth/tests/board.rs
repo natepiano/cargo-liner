@@ -1979,7 +1979,7 @@ fn assert_preserved_board_envelope_fields(
             "verb",
         ]
     );
-    assert_eq!(envelope["output_contract_version"], 5);
+    assert_eq!(envelope["output_contract_version"], 6);
     assert_eq!(envelope["verb"], "board");
     assert_eq!(envelope["status"], "board_ready");
     assert_eq!(envelope["exit_code"], 0);

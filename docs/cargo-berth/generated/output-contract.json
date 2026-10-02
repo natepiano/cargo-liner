@@ -4874,12 +4874,9 @@
           "type": "string"
         },
         "OverlapScopeRevision": {
-          "description": "A deterministic revision that changes only when a reservation's scopes change.",
-          "items": {
-            "$ref": "#/$defs/ReservationScope"
-          },
-          "minItems": 1,
-          "type": "array"
+          "description": "A deterministic revision that changes only when a reservation's scopes change.\n\nThe revision is the SHA-256 digest of the canonically ordered scopes, so a record naming a\nholder's revision stays the same size however many scopes that holder protects.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
         },
         "OverlapWaitingAction": {
           "description": "What releases a hold that an unresolved overlap places.",
@@ -5306,12 +5303,8 @@
               "description": "The worktree identity that acquired the reservation."
             },
             "overlap_scope_revision": {
-              "description": "The holder revision that changes only when its scopes change.",
-              "items": {
-                "$ref": "#/$defs/ReservationScope"
-              },
-              "minItems": 1,
-              "type": "array"
+              "$ref": "#/$defs/OverlapScopeRevision",
+              "description": "The holder revision that changes only when its scopes change."
             },
             "overlapping_scopes": {
               "$ref": "#/$defs/ReservationScopeSet",
@@ -12575,12 +12568,9 @@
           "type": "string"
         },
         "OverlapScopeRevision": {
-          "description": "A deterministic revision that changes only when a reservation's scopes change.",
-          "items": {
-            "$ref": "#/$defs/ReservationScope"
-          },
-          "minItems": 1,
-          "type": "array"
+          "description": "A deterministic revision that changes only when a reservation's scopes change.\n\nThe revision is the SHA-256 digest of the canonically ordered scopes, so a record naming a\nholder's revision stays the same size however many scopes that holder protects.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
         },
         "OverlapWaitingAction": {
           "description": "What releases a hold that an unresolved overlap places.",
@@ -13007,12 +12997,8 @@
               "description": "The worktree identity that acquired the reservation."
             },
             "overlap_scope_revision": {
-              "description": "The holder revision that changes only when its scopes change.",
-              "items": {
-                "$ref": "#/$defs/ReservationScope"
-              },
-              "minItems": 1,
-              "type": "array"
+              "$ref": "#/$defs/OverlapScopeRevision",
+              "description": "The holder revision that changes only when its scopes change."
             },
             "overlapping_scopes": {
               "$ref": "#/$defs/ReservationScopeSet",
@@ -18206,5 +18192,5 @@
       "title": "scoped_patch_evaluator_version"
     }
   },
-  "version": 5
+  "version": 6
 }

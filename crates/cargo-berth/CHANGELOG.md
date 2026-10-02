@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An overlap answer to a holder protecting many paths no longer exceeds the 16 KiB record limit. Answer, enrollment, and widen records named the holder's scope revision by copying every holder scope, so `claim --after <holder>` against a holder with a few hundred files failed with `invalid_input` however few paths the caller named. A scope revision is now a fixed-size SHA-256 digest of the scopes, in records, in board `exact_approved_scopes`, and in a conflict's `overlap_scope_revision`; `output_contract_version` is 6. Records written before the change carry the scope array and replay unchanged.
+
 - `git pack-refs --prune`, which `git gc --auto` and `git maintenance run --auto` run after ordinary commits, no longer reports that the trunk was deleted with no proven rename. Git reports each loose ref it prunes as a deletion after writing it to `packed-refs`; a trunk that still resolves leaves the managed hook unchanged and prints nothing.
 - Hook notices carry only the invoking worktree's alerts. A `PostToolUse` drift states only alerts whose reservation the worktree holds, and `SessionStart` also states alerts no live worktree holds; hand-run verbs and the git gate still report every alert.
 - A recorded `--before`, `--after`, `--defer`, or `--override` answer keeps

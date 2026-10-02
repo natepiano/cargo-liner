@@ -3552,9 +3552,10 @@ mod merge_extent {
             .expect("refused claim should list its conflicts");
         assert_eq!(conflicts.len(), 1, "{refused}");
         assert_eq!(conflicts[0]["reservation_id"], oldest);
+        // The digest of `file:a.rs` and `file:b.rs`: the revision spans both holders.
         assert_eq!(
-            scope_paths(&conflicts[0]["overlap_scope_revision"]),
-            BTreeSet::from(["a.rs".to_owned(), "b.rs".to_owned()])
+            conflicts[0]["overlap_scope_revision"],
+            "a3e94d2809d7a7b4f44929e3300a880dd6340ad628edec2087503ab4903bd718"
         );
         assert_eq!(
             scope_paths(&conflicts[0]["overlapping_scopes"]),

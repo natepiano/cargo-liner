@@ -544,6 +544,82 @@ fn an_answer_survives_holder_lifecycle_race_and_unrelated_merge_changes() {
     );
 }
 
+/// An answer to a holder protecting more scopes than one record may declare still records:
+/// the answer names the holder's scope revision by digest, not by copying every holder scope.
+#[test]
+fn an_answer_to_a_holder_with_many_scopes_records() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    for batch in 0..3 {
+        let paths = (0..100)
+            .map(|index| {
+                format!("src/generated/module_with_a_descriptive_name_{batch}_{index:03}.rs")
+            })
+            .collect::<Vec<_>>();
+        for path in &paths {
+            dirty_source(repository.path(), path);
+        }
+        let scopes = paths
+            .iter()
+            .map(|path| format!("file:{path}"))
+            .collect::<Vec<_>>();
+        let mut arguments = vec![
+            "claim",
+            "--run",
+            FIRST_RUN,
+            "--plan",
+            "docs/holder.md",
+            "--phase",
+            "phase-a",
+            "--why",
+            "protect generated modules",
+            "--json",
+        ];
+        arguments.extend(scopes.iter().map(String::as_str));
+        let output = run_berth(repository.path(), arguments);
+        assert!(
+            output.status.success(),
+            "holder claim failed: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    let shared_scope = "file:src/generated/module_with_a_descriptive_name_0_000.rs";
+    let refused = run_berth(
+        &second_root,
+        ["claim", shared_scope, "--run", SECOND_RUN, "--json"],
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    let holder_id = json_output(&refused)["blocked_by"][0]
+        .as_str()
+        .expect("the refusal should name the holder")
+        .to_owned();
+
+    let applied = answer_claim(
+        &second_root,
+        shared_scope,
+        SECOND_RUN,
+        "--after",
+        &holder_id,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the holder must integrate first",
+        ),
+    );
+    assert!(
+        applied.status.success(),
+        "answer failed: {}",
+        String::from_utf8_lossy(&applied.stdout)
+    );
+    let scope_revision =
+        &last_journal_event(repository.path())["authorization"]["overlaps"][0]["scope_revision"];
+    assert_eq!(
+        scope_revision.as_str().map(str::len),
+        Some(64),
+        "the answer should record the holder revision as a digest: {scope_revision}"
+    );
+}
+
 /// An ordering answer records in the claim that carries it: exit 0, the ordinary claim envelope,
 /// and the ordering edge in the journal and on the board.
 #[test]

@@ -19,7 +19,6 @@ use crate::ids::WorktreeId;
 use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::ReservationPurpose;
-use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 
 /// One foreign holder whose retained reservation intersects requested scopes.
@@ -30,7 +29,6 @@ pub(crate) struct ReservationConflict {
     /// The holder revision against which the overlap was evaluated.
     pub(super) reservation_revision:   ReservationRevision,
     /// The holder revision that changes only when its scopes change.
-    #[schemars(with = "Vec<ReservationScope>", length(min = 1))]
     pub(crate) overlap_scope_revision: OverlapScopeRevision,
     /// The worktree identity that acquired the reservation.
     pub(super) holder_worktree_id:     WorktreeId,

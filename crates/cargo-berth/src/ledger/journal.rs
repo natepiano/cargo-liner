@@ -2805,9 +2805,7 @@ mod tests {
                     "kind": "sequence",
                     "overlaps": [{
                         "reservation_id": "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20",
-                        "scope_revision": [
-                            {"path": "crates/cargo-berth", "kind": "tree"},
-                        ],
+                        "scope_revision": "df873a5bad02eda3220df7b570e5ee5fb0952a9126edd8510298a36a39899861",
                         "scopes": [
                             {"path": "crates/cargo-berth/src", "kind": "tree"},
                             {"path": "docs/berth-plan.md", "kind": "file"},
