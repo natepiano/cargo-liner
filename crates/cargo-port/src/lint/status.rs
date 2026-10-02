@@ -38,6 +38,7 @@ pub enum LintStatusKind {
     Failed,
     EnvUnavailable,
     Stale,
+    Waiting,
     NoLog,
 }
 
@@ -52,6 +53,10 @@ pub enum LintStatus {
     /// reads as a finding about the code.
     EnvUnavailable(DateTime<FixedOffset>),
     Stale,
+    /// A lint command deferred the last run and its retry is pending. The
+    /// prior result stays in `latest.json`. Published by the worker only and
+    /// never held in [`CachedLintStatus`].
+    Waiting,
     #[default]
     NoLog,
 }
@@ -65,6 +70,7 @@ impl LintStatus {
             Self::Failed(_) => LintStatusKind::Failed,
             Self::EnvUnavailable(_) => LintStatusKind::EnvUnavailable,
             Self::Stale => LintStatusKind::Stale,
+            Self::Waiting => LintStatusKind::Waiting,
             Self::NoLog => LintStatusKind::NoLog,
         }
     }
@@ -72,15 +78,17 @@ impl LintStatus {
     /// `EnvUnavailable` outranks `Running` so a group rollup surfaces a
     /// project whose environment is broken instead of hiding it behind a
     /// sibling's spinner, and sits below `Failed` because a finding about the
-    /// code is the more specific result of the two.
+    /// code is the more specific result of the two. `Waiting` sits below
+    /// `Running`, so a sibling's live run shows over a pending retry.
     const fn severity_rank(&self) -> u8 {
         match self {
             Self::NoLog => 0,
             Self::Passed(_) => 1,
             Self::Stale => 2,
-            Self::Running(..) => 3,
-            Self::EnvUnavailable(_) => 4,
-            Self::Failed(_) => 5,
+            Self::Waiting => 3,
+            Self::Running(..) => 4,
+            Self::EnvUnavailable(_) => 5,
+            Self::Failed(_) => 6,
         }
     }
 
@@ -98,6 +106,7 @@ impl LintStatus {
                     Self::EnvUnavailable(lhs.max(rhs))
                 },
                 (Self::Stale, Self::Stale) => Self::Stale,
+                (Self::Waiting, Self::Waiting) => Self::Waiting,
                 (Self::NoLog, Self::NoLog) => Self::NoLog,
                 (lhs, _) => lhs,
             },
@@ -136,7 +145,7 @@ impl CachedLintStatus {
             LintStatus::Failed(timestamp) => Some(Self::Failed(*timestamp)),
             LintStatus::EnvUnavailable(timestamp) => Some(Self::EnvUnavailable(*timestamp)),
             LintStatus::NoLog => Some(Self::NoLog),
-            LintStatus::Running(..) | LintStatus::Stale => None,
+            LintStatus::Running(..) | LintStatus::Stale | LintStatus::Waiting => None,
         }
     }
 

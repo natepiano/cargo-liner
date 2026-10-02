@@ -15,8 +15,10 @@ use super::CARGO_TOML;
 use super::CachedLintStatus;
 use super::ChildSlot;
 use super::Command;
+use super::DEFER_EXIT_CODE;
 use super::DateTime;
 use super::ENVRC;
+use super::ExitStatus;
 use super::FILE_LOCK_WAIT_MARKER;
 use super::FixedOffset;
 use super::HashMap;
@@ -55,18 +57,41 @@ pub(super) struct RunCommandsConfig<'a> {
     /// mid-flight and leaves no terminal record.
     pub(super) pause_state:      &'a PauseState,
 }
+
+/// How [`run_commands_for_project`] left the project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RunAttempt {
+    /// The run finished, or was dropped because the project went away or a
+    /// pause killed it.
+    Ended,
+    /// A command exited with `DEFER_EXIT_CODE`. The prior `latest.json` is
+    /// back in place, no history entry was written, and the caller schedules a
+    /// retry.
+    Deferred,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandOutcome {
     Passed,
     Failed,
+    /// The command exited with `DEFER_EXIT_CODE`: "not now", not a finding.
+    Deferred,
 }
 
 impl CommandOutcome {
     const fn succeeded(self) -> bool { matches!(self, Self::Passed) }
 }
 
-impl From<bool> for CommandOutcome {
-    fn from(success: bool) -> Self { if success { Self::Passed } else { Self::Failed } }
+impl From<ExitStatus> for CommandOutcome {
+    fn from(status: ExitStatus) -> Self {
+        if status.success() {
+            Self::Passed
+        } else if status.code() == Some(DEFER_EXIT_CODE) {
+            Self::Deferred
+        } else {
+            Self::Failed
+        }
+    }
 }
 
 struct CommandExecution {
@@ -187,6 +212,19 @@ struct RunFinalizeGuard<'a> {
     origin:        LintRunOrigin,
 }
 
+impl RunFinalizeGuard<'_> {
+    /// Publish `status` for the run's project under the run's origin.
+    fn publish(&self, status: LintStatus) {
+        publish_status(
+            self.status_cache,
+            self.project_root,
+            status,
+            self.background_tx,
+            self.origin,
+        );
+    }
+}
+
 impl Drop for RunFinalizeGuard<'_> {
     fn drop(&mut self) {
         let Ok(cleared) =
@@ -195,12 +233,8 @@ impl Drop for RunFinalizeGuard<'_> {
             return;
         };
         if cleared {
-            publish_status(
-                self.status_cache,
-                self.project_root,
+            self.publish(
                 read_status_from_disk(self.cache_root, self.project_root).into_lint_status(),
-                self.background_tx,
-                self.origin,
             );
         }
     }
@@ -248,9 +282,9 @@ pub(super) fn run_commands_for_project(
     background_tx: &Sender<BackgroundMsg>,
     child_slot: &ChildSlot,
     origin: LintRunOrigin,
-) -> io::Result<()> {
+) -> io::Result<RunAttempt> {
     if !project_still_runnable(project_root) {
-        return Ok(());
+        return Ok(RunAttempt::Ended);
     }
 
     let cache_root = config.cache_root;
@@ -261,8 +295,11 @@ pub(super) fn run_commands_for_project(
     let run_started = Instant::now();
     let started_at = Local::now().fixed_offset();
     let mut run = build_pending_run(commands, started_at.to_rfc3339());
+    // Read before the `Running` marker replaces it, so a deferred run can put
+    // the prior result back byte for byte.
+    let prior_latest = read_write::read_latest_bytes_under(cache_root, project_root)?;
     read_write::write_latest_under(cache_root, project_root, &run)?;
-    let _finalize = RunFinalizeGuard {
+    let finalize = RunFinalizeGuard {
         cache_root,
         project_root,
         status_cache,
@@ -276,13 +313,7 @@ pub(super) fn run_commands_for_project(
         origin = ?origin,
         "lint_run_started"
     );
-    publish_status(
-        status_cache,
-        project_root,
-        status::read_status_under(cache_root, project_root),
-        background_tx,
-        origin,
-    );
+    finalize.publish(status::read_status_under(cache_root, project_root));
 
     let result = execute_commands(
         &CommandContext {
@@ -303,44 +334,38 @@ pub(super) fn run_commands_for_project(
         &mut run,
         config.pause_state,
     )?;
-    if matches!(result, CommandsResult::ProjectRemoved) {
-        let _ = read_write::clear_latest_under(cache_root, project_root);
-        publish_status(
-            status_cache,
-            project_root,
-            LintStatus::NoLog,
-            background_tx,
-            origin,
-        );
-        return Ok(());
-    }
-    if matches!(result, CommandsResult::Interrupted) {
-        // A pause killed this run mid-flight. The run was triggered by a source
-        // change and never finished, so its outcome is unknown — do not fall
-        // back to the prior (now-stale) terminal status. Clear the on-disk
-        // `Running` marker ourselves so the `RunFinalizeGuard` drop is a no-op,
-        // then publish `Stale`. Resume re-lints the project (the supervisor
-        // remembers it in its catch-up set).
-        let _ = read_write::clear_latest_under(cache_root, project_root);
-        publish_status(
-            status_cache,
-            project_root,
-            LintStatus::Stale,
-            background_tx,
-            origin,
-        );
-        return Ok(());
-    }
-
-    run.finished_at = Some(Local::now().to_rfc3339());
-    run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
     run.status = match result {
         CommandsResult::AllPassed => LintRunStatus::Passed,
+        CommandsResult::SomeFailed => LintRunStatus::Failed,
         CommandsResult::EnvUnavailable => LintRunStatus::EnvUnavailable,
-        CommandsResult::SomeFailed
-        | CommandsResult::ProjectRemoved
-        | CommandsResult::Interrupted => LintRunStatus::Failed,
+        CommandsResult::ProjectRemoved => {
+            let _ = read_write::clear_latest_under(cache_root, project_root);
+            finalize.publish(LintStatus::NoLog);
+            return Ok(RunAttempt::Ended);
+        },
+        CommandsResult::Interrupted => {
+            // A pause killed this run mid-flight. The run was triggered by a
+            // source change and never finished, so its outcome is unknown — do
+            // not fall back to the prior (now-stale) terminal status. Clear the
+            // on-disk `Running` marker ourselves so the `RunFinalizeGuard` drop
+            // is a no-op, then publish `Stale`. Resume re-lints the project (the
+            // supervisor remembers it in its catch-up set).
+            let _ = read_write::clear_latest_under(cache_root, project_root);
+            finalize.publish(LintStatus::Stale);
+            return Ok(RunAttempt::Ended);
+        },
+        CommandsResult::Deferred => {
+            // The restored record is terminal, so the `RunFinalizeGuard` drop
+            // is a no-op. Its `started_at` predates this run, so another
+            // instance waiting on the run lock never adopts the deferral as a
+            // result.
+            read_write::restore_latest_under(cache_root, project_root, prior_latest.as_deref())?;
+            finalize.publish(LintStatus::Waiting);
+            return Ok(RunAttempt::Deferred);
+        },
     };
+    run.finished_at = Some(Local::now().to_rfc3339());
+    run.duration_ms = Some(u64::try_from(run_started.elapsed().as_millis()).unwrap_or(u64::MAX));
 
     write_terminal_run(
         cache_root,
@@ -349,14 +374,8 @@ pub(super) fn run_commands_for_project(
         cache_size_bytes,
         background_tx,
     )?;
-    publish_status(
-        status_cache,
-        project_root,
-        status::read_status_under(cache_root, project_root),
-        background_tx,
-        origin,
-    );
-    Ok(())
+    finalize.publish(status::read_status_under(cache_root, project_root));
+    Ok(RunAttempt::Ended)
 }
 
 /// Persist a finished run: archive its logs to the per-run directory, write
@@ -408,6 +427,9 @@ enum CommandsResult {
     /// Lint was paused mid-run; the child was killed. The caller leaves no
     /// terminal record so the project reverts to its prior status.
     Interrupted,
+    /// A command exited with `DEFER_EXIT_CODE`; the commands after it did not
+    /// run.
+    Deferred,
 }
 
 /// The values every command in one lint run shares — everything
@@ -459,12 +481,20 @@ fn execute_commands(
             path = %project_root.display(),
             "lint_command_finished"
         );
+        let command_status = match execution.outcome {
+            CommandOutcome::Passed => LintCommandStatus::Passed,
+            CommandOutcome::Failed => LintCommandStatus::Failed,
+            CommandOutcome::Deferred => {
+                tracing::debug!(
+                    command = %command.name,
+                    path = %project_root.display(),
+                    "lint_command_deferred"
+                );
+                return Ok(CommandsResult::Deferred);
+            },
+        };
         if let Some(command_run) = run.commands.get_mut(index) {
-            command_run.status = if execution.outcome.succeeded() {
-                LintCommandStatus::Passed
-            } else {
-                LintCommandStatus::Failed
-            };
+            command_run.status = command_status;
             command_run.duration_ms = Some(execution.duration_ms);
             command_run.exit_code = execution.exit_code;
         }
@@ -720,7 +750,7 @@ fn run_command(
     isolate_lint_process(&mut shell);
     let spawn_result = shell.spawn();
 
-    let (success, exit_code, bytes) = match spawn_result {
+    let (outcome, exit_code, bytes) = match spawn_result {
         Ok(mut child) => {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -741,9 +771,9 @@ fn run_command(
             let taken = child_slot.lock().ok().and_then(|mut slot| slot.take());
             match taken {
                 Some(mut child) => match child.wait() {
-                    Ok(status) => (status.success(), status.code(), bytes),
+                    Ok(status) => (CommandOutcome::from(status), status.code(), bytes),
                     Err(err) => (
-                        false,
+                        CommandOutcome::Failed,
                         None,
                         format!(
                             "failed to await lint command '{}': {err}\n",
@@ -752,11 +782,11 @@ fn run_command(
                         .into_bytes(),
                     ),
                 },
-                None => (false, None, bytes),
+                None => (CommandOutcome::Failed, None, bytes),
             }
         },
         Err(err) => (
-            false,
+            CommandOutcome::Failed,
             None,
             format!(
                 "failed to spawn lint command '{}': {err}\n",
@@ -772,7 +802,7 @@ fn run_command(
     let new_size = cache_size_index::file_size_or_zero(&log_path);
     cache_size_index::apply_write_delta(context.cache_root, old_size, new_size);
     Ok(CommandExecution {
-        outcome: CommandOutcome::from(success),
+        outcome,
         exit_code,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
@@ -815,6 +845,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
+
+    use tempfile::TempDir;
 
     use super::*;
     use crate::cache_paths;
@@ -871,6 +903,123 @@ mod tests {
         assert_eq!(report.replace("\r\n", "\n"), "lint ok\n");
         assert!(latest.contains("\"status\": \"passed\""));
         assert!(history.contains("\"status\":\"passed\""));
+    }
+
+    /// A project with a manifest, plus a temp cache root to lint it under.
+    fn deferral_fixture() -> (TempDir, TempDir, AbsolutePath) {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .expect("write manifest");
+        let mut cargo_port_config = CargoPortConfig::default();
+        cargo_port_config.cache.root = cache_dir.path().to_string_lossy().to_string();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        (cache_dir, project_dir, cache_root)
+    }
+
+    /// Run `commands` once and return the attempt with the last status it
+    /// published.
+    fn run_once(
+        project_root: &Path,
+        cache_root: &Path,
+        commands: &[LintCommandConfig],
+    ) -> (RunAttempt, Option<LintStatus>) {
+        let (tx, rx) = channel::unbounded();
+        let pause_state = PauseState::default();
+        let run_attempt = run_commands_for_project(
+            project_root,
+            "~/rust/demo",
+            &RunCommandsConfig {
+                cache_root,
+                commands,
+                cache_size_bytes: None,
+                pause_state: &pause_state,
+            },
+            &Arc::new(Mutex::new(HashMap::new())),
+            &tx,
+            &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
+        )
+        .expect("run commands");
+        let last_status = rx
+            .try_iter()
+            .filter_map(|msg| match msg {
+                BackgroundMsg::LintStatus { status, .. } => Some(status),
+                _ => None,
+            })
+            .last();
+        (run_attempt, last_status)
+    }
+
+    fn deferring_command(name: &str) -> LintCommandConfig {
+        LintCommandConfig {
+            name:    name.to_string(),
+            command: format!("exit {DEFER_EXIT_CODE}"),
+        }
+    }
+
+    #[test]
+    fn exit_75_keeps_the_prior_latest_and_writes_no_history() {
+        let (_cache_dir, project_dir, cache_root) = deferral_fixture();
+        let echo = LintCommandConfig {
+            name:    "echo".to_string(),
+            command: "echo lint ok".to_string(),
+        };
+        let (first_attempt, _) = run_once(project_dir.path(), &cache_root, &[echo]);
+        assert_eq!(first_attempt, RunAttempt::Ended);
+        let latest_path = paths::latest_path_under(&cache_root, project_dir.path());
+        let history_path = paths::history_path_under(&cache_root, project_dir.path());
+        let prior_latest = std::fs::read(&latest_path).expect("read prior latest");
+        let prior_history = std::fs::read(&history_path).expect("read prior history");
+
+        let (run_attempt, last_status) = run_once(
+            project_dir.path(),
+            &cache_root,
+            &[deferring_command("policy")],
+        );
+
+        assert_eq!(run_attempt, RunAttempt::Deferred);
+        assert_eq!(last_status, Some(LintStatus::Waiting));
+        assert_eq!(
+            std::fs::read(&latest_path).expect("read latest"),
+            prior_latest,
+            "a deferral puts the prior latest.json back byte for byte"
+        );
+        assert_eq!(
+            std::fs::read(&history_path).expect("read history"),
+            prior_history,
+            "a deferral writes no history entry"
+        );
+    }
+
+    #[test]
+    fn commands_after_a_deferral_do_not_run() {
+        let (_cache_dir, project_dir, cache_root) = deferral_fixture();
+        let after = LintCommandConfig {
+            name:    "after".to_string(),
+            command: "echo after".to_string(),
+        };
+
+        let (run_attempt, _) = run_once(
+            project_dir.path(),
+            &cache_root,
+            &[deferring_command("policy"), after],
+        );
+
+        assert_eq!(run_attempt, RunAttempt::Deferred);
+        let output_dir = paths::output_dir_under(&cache_root, project_dir.path());
+        assert!(output_dir.join("policy-latest.log").exists());
+        assert!(
+            !output_dir.join("after-latest.log").exists(),
+            "the command after a deferral must not run"
+        );
+        assert!(
+            !paths::latest_path_under(&cache_root, project_dir.path()).exists(),
+            "a deferral with no prior latest.json leaves none"
+        );
     }
 
     fn phase_reporter(background_tx: &Sender<BackgroundMsg>) -> PhaseReporter {

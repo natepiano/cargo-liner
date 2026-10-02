@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A lint command can defer a run by exiting with status 75 (`EX_TEMPFAIL`), for example while an agent is busy in the worktree. The commands after it do not run, the project keeps its last result and writes no history entry, and the project tree shows 🔵 until the retry, which runs after the longer of **Idle before lint** and 30 seconds.
 - `[lint] idle_before_lint_secs`, 120 by default and edited as **Idle before lint** under Lints in the settings: a lint started by a file change waits until the project's files have gone that many seconds without a change, and each new change restarts the wait. An agent editing a worktree no longer gets a lint launched under it 750 ms after every save; the lint runs once the edits stop. `0` lints 750 ms after a change, as before. Startup catch-up lints are not held back.
 - `[appearance] transparent`, on by default and toggled as **Transparent** under Appearance in the settings: nothing paints a background under the panes, the focused pane's tint included, so a transparent terminal window shows the desktop behind every pane. Off, the whole screen is painted solid in the theme's background. **Focused pane tint** applies only while it is off. A theme whose appearance disagrees with the terminal's background still paints that background, as before, so its text stays readable.
 

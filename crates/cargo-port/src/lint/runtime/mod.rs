@@ -7,6 +7,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::Child;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -26,6 +27,8 @@ use chrono::FixedOffset;
 use chrono::Local;
 
 use super::cache_size_index;
+use super::constants::DEFER_EXIT_CODE;
+use super::constants::DEFER_RETRY;
 use super::constants::DELETE_LINT_DEBOUNCE;
 use super::constants::FILE_LOCK_WAIT_MARKER;
 use super::constants::LINT_DEBOUNCE;
@@ -65,6 +68,7 @@ mod request;
 mod run_lock;
 mod supervisor;
 
+use command::RunAttempt;
 use command::RunCommandsConfig;
 use command::publish_status;
 use command::run_commands_for_project;

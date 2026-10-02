@@ -288,6 +288,8 @@ You can select and hit enter on a run to open the stdout from each command in yo
 
 A project with an `.envrc` runs its lints through `direnv exec`, so the lint sees the same environment a terminal opened in that project would. Before the lints, one no-op command checks that direnv can actually build that environment. If it can't — the `.envrc` is blocked, a flake fails to evaluate, an input is missing, direnv isn't installed — the run stops there and reports `no env` (🟡 in the project tree), the configured commands are recorded as skipped, and direnv's own error is in the run's `direnv` log. This is deliberately not a failure: nothing examined your code, so nothing can be wrong with it.
 
+A lint command that exits with status 75 (`EX_TEMPFAIL`) defers the run: it means "not now", not a failure. The commands after it don't run, the project keeps its last result (🔵 in the project tree while it waits) and no history entry is written. The run is retried after the longer of **Idle before lint** and 30 seconds; a change during the wait can move the retry later, never earlier.
+
 ### CI runs
 
 GitHub Actions runs are cached to disk so the dashboard stays useful offline.

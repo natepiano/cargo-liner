@@ -118,6 +118,7 @@ const fn phase_of(status: Option<&LintStatus>) -> LintRunPhase {
             | LintStatus::Failed(_)
             | LintStatus::EnvUnavailable(_)
             | LintStatus::Stale
+            | LintStatus::Waiting
             | LintStatus::NoLog,
         )
         | None => LintRunPhase::Executing,

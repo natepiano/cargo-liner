@@ -14,6 +14,7 @@ use super::CachedLintStatus;
 use super::CargoPortConfig;
 use super::Child;
 use super::ChildSlot;
+use super::DEFER_RETRY;
 use super::DELETE_LINT_DEBOUNCE;
 use super::DateTime;
 use super::DiscoveryLint;
@@ -39,6 +40,7 @@ use super::Ordering;
 use super::Path;
 use super::RecvTimeoutError;
 use super::RegisterProjectRequest;
+use super::RunAttempt;
 use super::RunCommandsConfig;
 use super::RuntimeHandle;
 use super::STOP_POLL;
@@ -406,6 +408,9 @@ pub(super) struct LintTiming {
     /// Quiet time a watcher trigger waits out before its run starts, from
     /// `LintConfig::idle_before_lint_secs`. Zero leaves only the debounces.
     idle:            Duration,
+    /// Shortest wait before retrying a run a lint command deferred,
+    /// `DEFER_RETRY` in production.
+    defer_retry:     Duration,
     /// Longest a worker blocks before rechecking its `stop` flag, and its wait
     /// between attempts to take a run lock another instance holds.
     stop_poll:       Duration,
@@ -436,6 +441,7 @@ impl From<&LintConfig> for LintTiming {
             debounce:        LINT_DEBOUNCE,
             delete_debounce: DELETE_LINT_DEBOUNCE,
             idle:            Duration::from_secs(lint.idle_before_lint_secs),
+            defer_retry:     DEFER_RETRY,
             stop_poll:       STOP_POLL,
         }
     }
@@ -536,6 +542,17 @@ impl ScheduledLintRun {
             deadline:     self.deadline.max(next.deadline),
             origin:       self.origin.merged_with(next.origin),
             requested_at: self.requested_at.max(next.requested_at),
+        }
+    }
+
+    /// The retry of this run after a lint command deferred it at `now`. It
+    /// waits for the longer of the idle time and `defer_retry`, so a busy agent
+    /// with idle 0 is not called every debounce. It keeps `requested_at`, so a
+    /// run another instance starts during the wait still covers it.
+    fn retry_after_deferral(self, timing: LintTiming, now: Instant) -> Self {
+        Self {
+            deadline: now + timing.idle.max(timing.defer_retry),
+            ..self
         }
     }
 }
@@ -789,8 +806,9 @@ impl WorkerContext {
             if let Some(scheduled) = scheduled_run
                 && Instant::now() >= scheduled.deadline
             {
-                self.run_due(scheduled);
-                scheduled_run = None;
+                // A deferred run comes back as its retry; triggers that arrive
+                // during the wait coalesce into it like any other schedule.
+                scheduled_run = self.run_due(scheduled);
             }
         }
     }
@@ -891,18 +909,19 @@ impl WorkerContext {
         }
     }
 
-    fn run_due(&self, scheduled: ScheduledLintRun) {
+    /// Run `scheduled` now. Returns the retry when a lint command deferred
+    /// the run; the run lock is released on return, so another instance can
+    /// lint the project during the wait.
+    fn run_due(&self, scheduled: ScheduledLintRun) -> Option<ScheduledLintRun> {
         let origin = scheduled.origin;
         if self.pause_state.is_project_paused(&self.project_root) {
             self.hold_for_pause(origin);
-            return;
+            return None;
         }
         if self.stop.load(Ordering::Relaxed) || !project_still_runnable(&self.project_root) {
-            return;
+            return None;
         }
-        let Some(_run_lock) = self.claim_run(scheduled) else {
-            return;
-        };
+        let _run_lock = self.claim_run(scheduled)?;
         tracing::trace!(
             target: PERF_LOG_TARGET,
             path = %self.project_root.display(),
@@ -910,7 +929,7 @@ impl WorkerContext {
             "lint_worker_run_start"
         );
         let run_started = Instant::now();
-        let _ = run_commands_for_project(
+        let run_attempt = run_commands_for_project(
             &self.project_root,
             &self.project_label,
             &RunCommandsConfig {
@@ -936,6 +955,8 @@ impl WorkerContext {
             duration_ms = tui_pane::perf_log_ms(run_started.elapsed().as_millis()),
             "lint_worker_run_complete"
         );
+        matches!(run_attempt, Ok(RunAttempt::Deferred))
+            .then(|| scheduled.retry_after_deferral(self.timing, Instant::now()))
     }
 }
 
@@ -1068,6 +1089,7 @@ mod tests {
     use crate::config::LintIndicator;
     use crate::constants::DEFAULT_IDLE_BEFORE_LINT_SECS;
     use crate::lint::LintRun;
+    use crate::lint::constants::DEFER_EXIT_CODE;
     use crate::lint::history;
     use crate::lint::trigger::LintEventKind::CreateOrModify;
     use crate::lint::trigger::LintEventKind::Remove;
@@ -1078,6 +1100,7 @@ mod tests {
         debounce:        Duration::from_millis(20),
         delete_debounce: Duration::from_millis(40),
         idle:            Duration::ZERO,
+        defer_retry:     Duration::from_millis(30),
         stop_poll:       Duration::from_millis(10),
     };
 
@@ -1260,6 +1283,49 @@ mod tests {
         assert_eq!(scheduled.deadline, now + LINT_DEBOUNCE);
     }
 
+    #[test]
+    fn deferral_retries_after_the_longer_of_idle_and_defer_retry() {
+        let deferred_at = Instant::now();
+        let without_idle = production_timing(0);
+        let scheduled = schedule_lint_run(
+            None,
+            &rust_source_trigger(CreateOrModify),
+            without_idle,
+            deferred_at,
+        );
+
+        let retry = scheduled.retry_after_deferral(without_idle, deferred_at);
+        assert_eq!(
+            retry.deadline,
+            deferred_at + DEFER_RETRY,
+            "idle 0 still waits DEFER_RETRY"
+        );
+        assert_eq!(retry.origin, scheduled.origin);
+        assert_eq!(
+            retry.requested_at, scheduled.requested_at,
+            "the retry is still requested as of the original change"
+        );
+
+        let longer_idle = production_timing(DEFER_RETRY.as_secs() * 2);
+        assert_eq!(
+            scheduled
+                .retry_after_deferral(longer_idle, deferred_at)
+                .deadline,
+            deferred_at + DEFER_RETRY * 2
+        );
+
+        let coalesced = schedule_lint_run(
+            Some(retry),
+            &rust_source_trigger(CreateOrModify),
+            without_idle,
+            deferred_at + LINT_DEBOUNCE,
+        );
+        assert_eq!(
+            coalesced.deadline, retry.deadline,
+            "an edit during the wait coalesces and keeps the later deadline"
+        );
+    }
+
     /// A project, a temp cache root, and a config that lints the project with
     /// one `echo` command.
     fn single_project_fixture() -> (TempDir, TempDir, CargoPortConfig) {
@@ -1313,6 +1379,27 @@ mod tests {
             }
         }
         false
+    }
+
+    /// The next status published for `project_root`, or `None` when none
+    /// arrives.
+    fn next_status(
+        background_rx: &Receiver<BackgroundMsg>,
+        project_root: &Path,
+    ) -> Option<LintStatus> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match background_rx.recv_timeout(remaining) {
+                Ok(BackgroundMsg::LintStatus { path, status, .. })
+                    if path.as_path() == project_root =>
+                {
+                    return Some(status);
+                },
+                Ok(_) => {},
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
+            }
+        }
     }
 
     fn spawn_registered(
@@ -1478,6 +1565,93 @@ mod tests {
             history.iter().all(|run| run.run_id == "foreign-run"),
             "a foreign run that started after the source change covers the startup lint: \
              {history:?}"
+        );
+    }
+
+    #[test]
+    fn another_instance_does_not_adopt_a_deferral() {
+        let (project_dir, _cache_dir, cargo_port_config) = single_project_fixture();
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let prior_started_at = Local::now().fixed_offset() - chrono::Duration::seconds(5);
+        read_write::write_latest_under(
+            cache_root.as_path(),
+            project_dir.path(),
+            &foreign_run(LintRunStatus::Passed, prior_started_at),
+        )
+        .expect("write prior run");
+        // The waiting instance's change landed after the prior run started.
+        let requested_at = prior_started_at + chrono::Duration::seconds(1);
+        let (background_tx, _background_rx) = channel::unbounded();
+        let pause_state = PauseState::default();
+
+        let run_attempt = run_commands_for_project(
+            project_dir.path(),
+            "~/rust/demo",
+            &RunCommandsConfig {
+                cache_root:       cache_root.as_path(),
+                commands:         &[LintCommandConfig {
+                    name:    "policy".to_string(),
+                    command: format!("exit {DEFER_EXIT_CODE}"),
+                }],
+                cache_size_bytes: None,
+                pause_state:      &pause_state,
+            },
+            &Arc::new(Mutex::new(HashMap::new())),
+            &background_tx,
+            &Arc::new(Mutex::new(None)),
+            LintRunOrigin::Normal,
+        )
+        .expect("run commands");
+
+        assert_eq!(run_attempt, RunAttempt::Deferred);
+        assert_eq!(
+            covering_status(cache_root.as_path(), project_dir.path(), requested_at),
+            None,
+            "the restored latest.json predates the request, so it covers nothing"
+        );
+    }
+
+    /// The retry reaching `Running` also shows the run lock was released when
+    /// the deferred `run_due` returned: a held lock keeps `claim_run` waiting.
+    #[test]
+    fn status_reads_waiting_until_the_retry_runs() {
+        let (project_dir, _cache_dir, mut cargo_port_config) = single_project_fixture();
+        // Defers the first call and passes every call after it.
+        cargo_port_config.lint.commands = vec![LintCommandConfig {
+            name:    "defer-once".to_string(),
+            command: format!(
+                "test -f \"$LINT_OUTPUT_DIR/deferred\" || \
+                 {{ touch \"$LINT_OUTPUT_DIR/deferred\"; exit {DEFER_EXIT_CODE}; }}"
+            ),
+        }];
+        let cache_root = cache_paths::lint_runs_root_for(&cargo_port_config);
+        let (runtime, background_rx) = spawn_registered(&cargo_port_config, project_dir.path());
+        source_trigger(&runtime, project_dir.path());
+
+        assert!(
+            wait_for_status(&background_rx, project_dir.path(), |status| matches!(
+                status,
+                LintStatus::Waiting
+            )),
+            "a deferred run should show Waiting"
+        );
+        let next = next_status(&background_rx, project_dir.path());
+        assert!(
+            matches!(next, Some(LintStatus::Running(..))),
+            "Waiting should hold until the retry starts: {next:?}"
+        );
+        assert!(
+            wait_for_status(&background_rx, project_dir.path(), |status| matches!(
+                status,
+                LintStatus::Passed(_)
+            )),
+            "the retry should pass"
+        );
+        let history = history::read_history_under(cache_root.as_path(), project_dir.path());
+        assert_eq!(
+            history.len(),
+            1,
+            "only the retry leaves a history entry: {history:?}"
         );
     }
 

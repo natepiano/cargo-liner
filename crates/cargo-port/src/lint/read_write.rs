@@ -11,6 +11,42 @@ use super::run::LintRun;
 use super::run::LintRunStatus;
 
 pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(run)
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+    write_latest_bytes_under(cache_root, project_root, &json)
+}
+
+/// The bytes of `latest.json` as they are on disk, or `None` when the project
+/// has none. Paired with [`restore_latest_under`] to put a record back exactly.
+pub fn read_latest_bytes_under(
+    cache_root: &Path,
+    project_root: &Path,
+) -> io::Result<Option<Vec<u8>>> {
+    match std::fs::read(paths::latest_path_under(cache_root, project_root)) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+/// Put back the `latest.json` [`read_latest_bytes_under`] returned: rewrite
+/// those bytes, or remove the file when there were none.
+pub fn restore_latest_under(
+    cache_root: &Path,
+    project_root: &Path,
+    prior_latest: Option<&[u8]>,
+) -> io::Result<()> {
+    prior_latest.map_or_else(
+        || clear_latest_under(cache_root, project_root),
+        |bytes| write_latest_bytes_under(cache_root, project_root, bytes),
+    )
+}
+
+fn write_latest_bytes_under(
+    cache_root: &Path,
+    project_root: &Path,
+    bytes: &[u8],
+) -> io::Result<()> {
     #[cfg(test)]
     paths::assert_not_default_user_cache_root(cache_root);
 
@@ -18,11 +54,9 @@ pub fn write_latest_under(cache_root: &Path, project_root: &Path, run: &LintRun)
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_vec_pretty(run)
-        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
     let tmp_path = path.with_extension("json.tmp");
     let old_size = cache_size_index::file_size_or_zero(&path);
-    std::fs::write(&tmp_path, json)?;
+    std::fs::write(&tmp_path, bytes)?;
     std::fs::rename(tmp_path, &path)?;
     let new_size = cache_size_index::file_size_or_zero(&path);
     cache_size_index::apply_write_delta(cache_root, old_size, new_size);

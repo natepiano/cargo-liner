@@ -193,6 +193,7 @@ impl Lint {
             | LintStatusKind::Failed
             | LintStatusKind::EnvUnavailable
             | LintStatusKind::Stale
+            | LintStatusKind::Waiting
             | LintStatusKind::NoLog => self.clear_running_path(path.as_path()),
         }
     }
@@ -368,12 +369,12 @@ impl Lint {
                 Self::run_count_at(projects, path),
             )
         };
-        // A first, in-progress run has no completed history yet
-        // (count == 0). Still surface it as `Runs` so the detail pane
-        // shows the spinner — matching the project-list column and
-        // toast, which key off `status` directly. The renderer omits
-        // the `0` count while it's zero.
-        if count == 0 && !matches!(status, LintStatus::Running(..)) {
+        // A first, in-progress or deferred run has no completed history
+        // yet (count == 0). Still surface it as `Runs` so the detail
+        // pane shows the spinner or the waiting icon — matching the
+        // project-list column and toast, which key off `status`
+        // directly. The renderer omits the `0` count while it's zero.
+        if count == 0 && !matches!(status, LintStatus::Running(..) | LintStatus::Waiting) {
             LintDisplay::NoRuns
         } else {
             LintDisplay::Runs { count, status }
@@ -419,9 +420,11 @@ pub(in crate::tui) fn lint_cell_for(
         LintStatus::EnvUnavailable(_) => {
             ratatui::style::Style::default().fg(tui_pane::warning_color())
         },
-        LintStatus::Passed(_) | LintStatus::Failed(_) | LintStatus::Stale | LintStatus::NoLog => {
-            ratatui::style::Style::default()
-        },
+        LintStatus::Passed(_)
+        | LintStatus::Failed(_)
+        | LintStatus::Stale
+        | LintStatus::Waiting
+        | LintStatus::NoLog => ratatui::style::Style::default(),
     };
     LintCell::from_parts(icon, style)
 }

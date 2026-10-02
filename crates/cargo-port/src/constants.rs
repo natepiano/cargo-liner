@@ -20,6 +20,9 @@ pub(crate) const LINT_STALE: &str = "⚫";
 /// not the red of a finding — nothing examined the code.
 pub(crate) const LINT_ENV_UNAVAILABLE: &str = "🟡";
 pub(crate) const LINT_NO_LOG: &str = " ";
+/// A lint command deferred the last run and its retry is pending. Neither a
+/// pass nor a finding — the prior result still stands.
+pub(crate) const LINT_WAITING: &str = "🔵";
 
 // ── Git UI constants ─────────────────────────────────────────────────
 

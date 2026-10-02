@@ -6,6 +6,7 @@ use crate::constants::LINT_FAILED;
 use crate::constants::LINT_NO_LOG;
 use crate::constants::LINT_PASSED;
 use crate::constants::LINT_STALE;
+use crate::constants::LINT_WAITING;
 use crate::lint::LintStatusKind;
 
 /// Map a display-agnostic [`LintStatusKind`] to the concrete
@@ -21,6 +22,7 @@ pub(in crate::tui) const fn icon_for(kind: LintStatusKind) -> Icon {
         LintStatusKind::Failed => Icon::Static(LINT_FAILED),
         LintStatusKind::EnvUnavailable => Icon::Static(LINT_ENV_UNAVAILABLE),
         LintStatusKind::Stale => Icon::Static(LINT_STALE),
+        LintStatusKind::Waiting => Icon::Static(LINT_WAITING),
         LintStatusKind::NoLog => Icon::Static(LINT_NO_LOG),
     }
 }

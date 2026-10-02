@@ -70,12 +70,15 @@ impl App {
             return;
         };
         let owner_abs = owner_path;
+        // `Waiting` reloads too: the deferred run's in-flight row gives way to
+        // the restored prior result.
         let status_is_terminal = matches!(
             status,
             LintStatus::Passed(_)
                 | LintStatus::Failed(_)
                 | LintStatus::EnvUnavailable(_)
                 | LintStatus::Stale
+                | LintStatus::Waiting
                 | LintStatus::NoLog
         );
         let eligible = lint::project_is_eligible(
