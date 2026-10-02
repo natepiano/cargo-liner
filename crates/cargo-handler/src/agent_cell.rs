@@ -7,19 +7,21 @@
 //! [`cell_order`] lays the cells out across the machines, and
 //! [`height`] and [`draw`] fill one in.
 //!
-//! A cell is laid out for its width. Where the header's one line would
-//! be cut, it stands as a labelled block, one fact to a line; the
-//! branch and directory break onto further lines; where the tree's lines
-//! would be cut, each session stands as an entry of lines of its own;
-//! and where the table would cut a child's name, each child stands as an
-//! entry of its own with its name in full below it. Every agent's name
-//! is drawn in its own hue wherever it shows.
+//! A cell's full view is laid out for its width. Where the header's one
+//! line would be cut, it stands as a labelled block, one fact to a line;
+//! the branch and directory break onto further lines; where the tree's
+//! lines would be cut, each session stands as an entry of lines of its
+//! own; and where the table would cut a child's name, each child stands
+//! as an entry of its own with its name in full below it. Every agent's
+//! name is drawn in its own hue wherever it shows.
 //!
-//! Where the grid gives a cell fewer rows than [`height`] asks for, the
-//! cell draws its compressed view instead: one line to each session in
-//! the tree and to each child in the table, cut where it would not fit,
-//! and for a top-level agent, which the summary lists, no header and no
-//! branch and directory.
+//! A cell draws its full view only where every part of it stands
+//! [`Form::Flat`] at the cell's width and the grid gives the cell the
+//! rows [`height`] asks for. Otherwise the cell draws its compressed
+//! view: one line to each session in the tree -- its name and status --
+//! and to each child in the table -- what it runs and its name -- cut
+//! where it would not fit, and for a top-level agent, which the summary
+//! lists, no header and no branch and directory.
 
 use std::collections::HashSet;
 use std::iter;
@@ -272,23 +274,49 @@ enum CellView {
     /// Every row [`height`] counts: the header, the branch and
     /// directory, the tree and the table as the width lays them out.
     Full,
-    /// For rows too few for the full view: one line to each session and
-    /// to each child, cut where it would not fit, and no header or
-    /// branch and directory for an agent the summary lists.
+    /// For a width where a part of the full view would stack, or rows
+    /// too few for it: one line to each session and to each child, cut
+    /// where it would not fit, and no header or branch and directory for
+    /// an agent the summary lists.
     Compressed,
 }
 
 impl CellView {
     /// The view `entry`'s cell takes in `area`, with ages measured to
-    /// `now`: full while its [`height`] at the area's width fits the
-    /// area's rows, else compressed.
+    /// `now`: full where the [`Header`], the [`place`], the [`Tree`] and
+    /// the [`Children`] each stand [`Form::Flat`] at the area's width
+    /// and its [`height`] there fits the area's rows, else compressed.
     fn fitted(entry: &AgentEntry<'_>, area: Rect, now: u64) -> Self {
-        if height(entry, area.width, now) > usize::from(area.height) {
+        let width = area.width;
+        let forms = [
+            Header::fitted(entry.row, entry.machine, width, now).form(),
+            place_form(entry.row, width),
+            Tree::fitted(&entry.sessions, header_width(width), now, Self::Full).form(),
+            Children::fitted(
+                &group_children(entry),
+                children_width(width),
+                now,
+                Self::Full,
+            )
+            .form(),
+        ];
+        if forms.contains(&Form::Stacked) || height(entry, width, now) > usize::from(area.height) {
             Self::Compressed
         } else {
             Self::Full
         }
     }
+}
+
+/// How a part of a cell's full view stands at one width.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Form {
+    /// One line to each thing the part shows: the header on its one
+    /// line, the branch and directory unbroken, a line to each session
+    /// and a row of the table to each child.
+    Flat,
+    /// Something in the part broken or stacked onto lines of its own.
+    Stacked,
 }
 
 /// Rows `entry`'s cell draws at `width` cells across, with ages
@@ -341,12 +369,9 @@ pub(crate) fn name_style(cells: &[AgentEntry<'_>], machine: &str, pid: u32) -> S
 }
 
 /// Draw `entry`'s cell into `area`, with ages measured to `now` in unix
-/// seconds: where the area has the rows [`height`] asks for, its full
-/// view -- its header, its branch and directory, the agent that opened
-/// it when one did, the tree of its sessions, then what they all run --
-/// else its compressed view, cut at the bottom where even that does not
-/// fit. A listed agent's name among `cells` -- the launcher's, a
-/// session's -- is drawn in that agent's hue.
+/// seconds, in the view [`CellView::fitted`] gives it there. A listed
+/// agent's name among `cells` -- the launcher's, a session's -- is drawn
+/// in that agent's hue.
 pub(crate) fn draw(
     buffer: &mut Buffer,
     area: Rect,
@@ -354,7 +379,28 @@ pub(crate) fn draw(
     cells: &[AgentEntry<'_>],
     now: u64,
 ) {
-    let view = CellView::fitted(entry, area, now);
+    draw_view(
+        buffer,
+        area,
+        entry,
+        cells,
+        now,
+        CellView::fitted(entry, area, now),
+    );
+}
+
+/// Draw `entry`'s cell into `area` in `view`, with ages measured to
+/// `now`: the lines [`above_tree`] gives it, the tree of its sessions,
+/// then what they all run, each as `view` lays it out, cut at the bottom
+/// where `area` is too short.
+fn draw_view(
+    buffer: &mut Buffer,
+    area: Rect,
+    entry: &AgentEntry<'_>,
+    cells: &[AgentEntry<'_>],
+    now: u64,
+    view: CellView,
+) {
     let label = Style::default().fg(label_color());
     let above = above_tree(entry, cells, area.width, now, view);
     let above_height = u16::try_from(above.len()).unwrap_or(u16::MAX);
@@ -467,14 +513,42 @@ fn above_tree(
     lines
 }
 
-/// The header at `width` cells across: [`header_line`] while it fits
-/// uncut, else [`header_block`].
+/// How a cell's header stands at one width.
+enum Header {
+    /// [`header_line`], for a width that holds it uncut.
+    Line(Line<'static>),
+    /// [`header_block`], for a width that would cut the line.
+    Block,
+}
+
+impl Header {
+    /// The way `row`'s header on `machine` stands `width` cells across,
+    /// with its age measured to `now`: its one line while that fits
+    /// uncut, else the block.
+    fn fitted(row: &AgentRow, machine: &str, width: u16, now: u64) -> Self {
+        let line = header_line(row, machine, now);
+        if line.width() <= usize::from(width) {
+            Self::Line(line)
+        } else {
+            Self::Block
+        }
+    }
+
+    /// The header's [`Form`]: flat on its one line.
+    const fn form(&self) -> Form {
+        match self {
+            Self::Line(_) => Form::Flat,
+            Self::Block => Form::Stacked,
+        }
+    }
+}
+
+/// The header's lines at `width` cells across, as [`Header::fitted`]
+/// stands it.
 fn header(row: &AgentRow, machine: &str, width: u16, now: u64) -> Vec<Line<'static>> {
-    let line = header_line(row, machine, now);
-    if line.width() <= usize::from(width) {
-        vec![line]
-    } else {
-        header_block(row, machine, now)
+    match Header::fitted(row, machine, width, now) {
+        Header::Line(line) => vec![line],
+        Header::Block => header_block(row, machine, now),
     }
 }
 
@@ -580,6 +654,16 @@ fn place(row: &AgentRow, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The [`Form`] of the agent's branch and directory at `width` cells
+/// across: flat where [`place`] leaves them on one line.
+fn place_form(row: &AgentRow, width: u16) -> Form {
+    if place(row, width).len() > 1 {
+        Form::Stacked
+    } else {
+        Form::Flat
+    }
+}
+
 /// Cells across the header's lines and the tree leave within a cell
 /// `width` cells across: what the header's indent leaves.
 fn header_width(width: u16) -> u16 {
@@ -607,7 +691,7 @@ enum Tree {
     /// a line would be cut.
     Stacked,
     /// One line to a session in the compressed view: its name after its
-    /// glyphs, then its status and age, cut where it would not fit.
+    /// glyphs, then its status, cut where it would not fit.
     Compressed,
 }
 
@@ -636,6 +720,14 @@ impl Tree {
                 )
             },
             CellView::Compressed => Self::Compressed,
+        }
+    }
+
+    /// The tree's [`Form`]: flat with a line to each session.
+    const fn form(&self) -> Form {
+        match self {
+            Self::Table(_) | Self::Compressed => Form::Flat,
+            Self::Stacked => Form::Stacked,
         }
     }
 }
@@ -723,7 +815,7 @@ fn draw_tree(
         Tree::Compressed => {
             let lines: Vec<Line<'static>> = sessions
                 .iter()
-                .map(|session| compressed_session(session, area.width, now))
+                .map(|session| compressed_session(session, area.width))
                 .collect();
             Paragraph::new(lines).render(area, buffer);
         },
@@ -731,23 +823,20 @@ fn draw_tree(
 }
 
 /// One session's line in the compressed view, `width` cells across: its
-/// name after its glyphs, drawn in its hue, then its status and age,
-/// each [`gap`] after the one before as the tree's table spaces its
-/// columns, cut by [`cut_line`] where it would not fit.
-fn compressed_session(session: &SessionEntry<'_>, width: u16, now: u64) -> Line<'static> {
-    let text = Style::default().fg(text_default());
+/// name after its glyphs, drawn in its hue, then [`gap`] and its status
+/// in its role, as the tree's table spaces its columns, cut by
+/// [`cut_line`] where it would not fit.
+fn compressed_session(session: &SessionEntry<'_>, width: u16) -> Line<'static> {
     let row = session.row;
     cut_line(
         vec![
-            Span::styled(session.lead(), text),
+            Span::styled(session.lead(), Style::default().fg(text_default())),
             Span::styled(row.name.clone(), Role::Rainbow(session.hue).style()),
             gap(),
             Span::styled(
                 summary::status_text(row).to_string(),
                 summary::status_role(row).style(),
             ),
-            gap(),
-            Span::styled(age::age_label(now.saturating_sub(row.started)), text),
         ],
         width,
     )
@@ -878,6 +967,15 @@ impl Children {
                 table_columns(children, width, now).map_or(Self::Stacked, Self::Table)
             },
             CellView::Compressed => Self::Compressed,
+        }
+    }
+
+    /// The children's [`Form`]: flat with a line to each child, or the
+    /// one note when there are none.
+    const fn form(&self) -> Form {
+        match self {
+            Self::Nothing | Self::Table(_) | Self::Compressed => Form::Flat,
+            Self::Stacked => Form::Stacked,
         }
     }
 }
@@ -1233,29 +1331,53 @@ mod tests {
         }
     }
 
+    /// An area `width` cells across and `rows` rows down.
+    fn area(width: u16, rows: usize) -> Rect {
+        Rect::new(
+            0,
+            0,
+            width,
+            u16::try_from(rows).expect("the rows should fit a u16"),
+        )
+    }
+
     /// `entry`'s cell among `cells`, drawn `width` cells across into
-    /// `rows` rows.
+    /// `rows` rows in the view [`CellView::fitted`] gives it there.
     fn drawn_into(
         entry: &AgentEntry<'_>,
         cells: &[AgentEntry<'_>],
         width: u16,
         rows: usize,
     ) -> Buffer {
-        let rows = u16::try_from(rows).expect("the rows should fit a u16");
-        let area = Rect::new(0, 0, width, rows);
+        let area = area(width, rows);
         let mut buffer = Buffer::empty(area);
         draw(&mut buffer, area, entry, cells, NOW);
         buffer
     }
 
-    /// `entry`'s cell among `cells`, drawn `width` cells across and
-    /// exactly its own height at that width.
-    fn drawn_among(entry: &AgentEntry<'_>, cells: &[AgentEntry<'_>], width: u16) -> Buffer {
-        drawn_into(entry, cells, width, height(entry, width, NOW))
+    /// `entry`'s full view among `cells`, drawn `width` cells across
+    /// into `rows` rows whatever view [`CellView::fitted`] would give
+    /// it there.
+    fn full_view_into(
+        entry: &AgentEntry<'_>,
+        cells: &[AgentEntry<'_>],
+        width: u16,
+        rows: usize,
+    ) -> Buffer {
+        let area = area(width, rows);
+        let mut buffer = Buffer::empty(area);
+        draw_view(&mut buffer, area, entry, cells, NOW, CellView::Full);
+        buffer
     }
 
-    /// `row`'s cell, opened by the agent named `launcher`, drawn `width`
-    /// cells across with no other cell on screen.
+    /// `entry`'s full view among `cells`, drawn `width` cells across and
+    /// exactly its own height at that width.
+    fn drawn_among(entry: &AgentEntry<'_>, cells: &[AgentEntry<'_>], width: u16) -> Buffer {
+        full_view_into(entry, cells, width, height(entry, width, NOW))
+    }
+
+    /// `row`'s full view, opened by the agent named `launcher`, drawn
+    /// `width` cells across with no other cell on screen.
     fn drawn(row: &AgentRow, launcher: Option<&str>, width: u16) -> Buffer {
         drawn_among(&entry(row, launcher), &[], width)
     }
@@ -1340,9 +1462,10 @@ mod tests {
         assert_eq!(role(22, 9), Role::Claude.style().fg);
     }
 
-    /// In a cell too narrow for them, the header stands as a labelled
-    /// block, the directory breaks after a `/`, and each child stands
-    /// as its `via`, `runs`, age and pid over its name in full.
+    /// In the full view of a cell too narrow for them, the header stands
+    /// as a labelled block, the directory breaks after a `/`, and each
+    /// child stands as its `via`, `runs`, age and pid over its name in
+    /// full.
     #[test]
     fn a_narrow_cell_stacks_its_header_and_children() {
         let trunk = AgentRow {
@@ -1448,9 +1571,10 @@ mod tests {
         }
     }
 
-    /// The header keeps its one line at the width that holds it whole,
-    /// and one cell narrower stands as a block: a label column, then
-    /// one fact to a line, each value in the color the line gives it.
+    /// In the full view, the header keeps its one line at the width
+    /// that holds it whole, and one cell narrower stands as a block: a
+    /// label column, then one fact to a line, each value in the color
+    /// the line gives it.
     #[test]
     fn the_header_stands_as_a_block_where_its_line_would_be_cut() {
         let boss = agent(BOSS, "boss of bosses", 2 * 24 * HOUR, None);
@@ -1490,8 +1614,9 @@ mod tests {
         assert_eq!(block[(10, 5)].fg, text_default(), "the desktop");
     }
 
-    /// A directory too long for its line breaks after the last `/` that
-    /// fits, as many times as it takes, each line indented as the first.
+    /// In the full view, a directory too long for its line breaks after
+    /// the last `/` that fits, as many times as it takes, each line
+    /// indented as the first.
     #[test]
     fn a_long_directory_breaks_after_a_slash() {
         let arrange = AgentRow {
@@ -1514,9 +1639,9 @@ mod tests {
         );
     }
 
-    /// Children stand as a table at the width that holds every name
-    /// whole, and one cell narrower, where the table would cut a name,
-    /// as stacked entries with each name in full.
+    /// In the full view, children stand as a table at the width that
+    /// holds every name whole, and one cell narrower, where the table
+    /// would cut a name, as stacked entries with each name in full.
     #[test]
     fn a_name_the_table_would_cut_stacks_the_children() {
         let arrange = AgentRow {
@@ -1602,9 +1727,9 @@ mod tests {
     }
 
     /// The label color marks labels and nothing else, so a label never
-    /// reads as part of the values beside it: at any width, every run
-    /// of it is a label, and no value, `pid` marker, note, separator or
-    /// line of a cell's tree takes it.
+    /// reads as part of the values beside it: in the full view at any
+    /// width, every run of it is a label, and no value, `pid` marker,
+    /// note, separator or line of a cell's tree takes it.
     #[test]
     fn only_labels_take_the_label_color() {
         let trunk = AgentRow {
@@ -1649,8 +1774,8 @@ mod tests {
     }
 
     /// Whatever the width, the rows [`height`] counts are exactly the
-    /// rows [`draw`] fills: the last of them holds text, and none past
-    /// it do.
+    /// rows the full view fills: the last of them holds text, and none
+    /// past it do.
     #[test]
     fn the_height_is_the_rows_drawn_at_every_width() {
         let trunk = AgentRow {
@@ -1668,11 +1793,8 @@ mod tests {
         for entry in &entries {
             for width in [12, 20, 30, NARROW, 57, 72, WIDE, 120] {
                 let rows = height(entry, width, NOW);
-                let area = Rect::new(0, 0, width, u16::try_from(rows + 3).expect("fits"));
-                let mut buffer = Buffer::empty(area);
-                draw(&mut buffer, area, entry, &group, NOW);
 
-                let drawn = lines(&buffer);
+                let drawn = lines(&full_view_into(entry, &group, width, rows + 3));
                 let last = drawn.iter().rposition(|line| !line.is_empty());
                 assert_eq!(
                     last.map(|last| last + 1),
@@ -1798,11 +1920,11 @@ mod tests {
         assert_eq!(buffer[(1, 4)].fg, text, "the last branch");
     }
 
-    /// In a cell too narrow for its tree's lines, each session stands as
-    /// an entry: its name after its glyphs, `<status> · <age>`, then its
-    /// branch and directory, the tree's lines carried down past it. A
-    /// stacked child nested too deep for its facts' one line breaks it
-    /// before the fact that would be cut.
+    /// In the full view of a cell too narrow for its tree's lines, each
+    /// session stands as an entry: its name after its glyphs, `<status>
+    /// · <age>`, then its branch and directory, the tree's lines carried
+    /// down past it. A stacked child nested too deep for its facts' one
+    /// line breaks it before the fact that would be cut.
     #[test]
     fn a_narrow_cell_stacks_its_tree() {
         let natedev = boss_group();
@@ -1919,8 +2041,8 @@ mod tests {
 
     /// In fewer rows than its full view takes, a top-level agent's cell
     /// draws no header and no branch and directory, as the summary lists
-    /// the agent: a line to each session -- its glyphs, name, status and
-    /// age -- then a line to each child -- what it runs and its name,
+    /// the agent: a line to each session -- its glyphs, name and status
+    /// -- then a line to each child -- what it runs and its name,
     /// indented by level -- each cut where it would not fit, every name
     /// and status in the color the full view gives it.
     #[test]
@@ -1942,8 +2064,8 @@ mod tests {
         assert_eq!(
             lines(&buffer),
             [
-                format!(" {TREE_BRANCH}tool-based-ui-trunk{gap}busy{mark}"),
-                format!(" {TREE_RAIL}{TREE_LAST_BRANCH}trunk-impl{gap}idle{gap}2h"),
+                format!(" {TREE_BRANCH}tool-based-ui-trunk{gap}busy"),
+                format!(" {TREE_RAIL}{TREE_LAST_BRANCH}trunk-impl{gap}idle"),
                 format!(" {TREE_LAST_BRANCH}tool-based-ui-arrange{gap}id{mark}"),
                 String::new(),
                 format!(" command{gap}Run the tests"),
@@ -1979,21 +2101,23 @@ mod tests {
         assert_eq!(fg("Run the tests"), text_default());
     }
 
-    /// A cell draws its full view in the rows [`height`] asks for, its
-    /// header and its branch and directory among them, and its
-    /// compressed view one row short of them.
+    /// A wide cell, where every part of its full view stands flat, draws
+    /// that view in the rows [`height`] asks for, its one-line header
+    /// and its branch and directory among them, and its compressed view
+    /// one row short of them.
     #[test]
-    fn a_cell_given_its_height_draws_its_full_view() {
+    fn a_wide_cell_given_its_height_draws_its_full_view() {
         let natedev = boss_group();
         let cells = natedev_cells(&natedev);
         let boss = &cells[0];
-        let rows = height(boss, CUTTING, NOW);
-        let header = format!("{SECTION_HEADER_INDENT}{HEADER_AGENT_LABEL}");
+        let rows = height(boss, WIDE, NOW);
+        let header = format!("{SECTION_HEADER_INDENT}{PID_LABEL} {BOSS}");
         let workplace = workplace(boss.row);
 
-        let full = lines(&drawn_into(boss, &cells, CUTTING, rows));
-        let short = lines(&drawn_into(boss, &cells, CUTTING, rows - 1));
+        let full = lines(&drawn_into(boss, &cells, WIDE, rows));
+        let short = lines(&drawn_into(boss, &cells, WIDE, rows - 1));
 
+        assert_eq!(full, lines(&drawn_among(boss, &cells, WIDE)));
         assert!(full[0].starts_with(&header), "{full:#?}");
         assert!(
             full.iter().any(|line| line.contains(&workplace)),
@@ -2004,6 +2128,55 @@ mod tests {
             !short.iter().any(|line| line.contains(&workplace)),
             "{short:#?}"
         );
+    }
+
+    /// A narrow cell, where its full view would stand the header as a
+    /// block and stack its tree and children, draws its compressed view
+    /// even given every row that full view takes: a line to each session
+    /// -- its glyphs, name and status, and no age -- then a line to each
+    /// child -- what it runs and its name, and no pid, `via` or age.
+    #[test]
+    fn a_narrow_cell_compresses_however_many_rows_it_has() {
+        let natedev = boss_group();
+        let cells = natedev_cells(&natedev);
+        let boss = &cells[0];
+        assert_eq!(
+            Header::fitted(boss.row, boss.machine, NARROW, NOW).form(),
+            Form::Stacked,
+            "the full view stands the header as a block"
+        );
+
+        let drawn = lines(&drawn_into(boss, &cells, NARROW, height(boss, NARROW, NOW)));
+
+        let gap = gap_text();
+        let mark = TRUNCATION_MARK;
+        let compressed = [
+            format!(" {TREE_BRANCH}tool-based-ui-trunk{gap}busy"),
+            format!(" {TREE_RAIL}{TREE_LAST_BRANCH}trunk-impl{gap}idle"),
+            format!(" {TREE_LAST_BRANCH}tool-based-ui-arrange{gap}idle"),
+            String::new(),
+            format!(" command{gap}Run the tests"),
+            format!(" claude{gap}tool-based-ui-trunk"),
+            format!("   claude{gap}Review the permission queue"),
+            format!("     command{gap}cargo nextest run -p ha{mark}"),
+            format!("   claude{gap}trunk-impl"),
+            format!(" claude{gap}tool-based-ui-arrange"),
+            format!("   codex{gap}app-server"),
+        ];
+        assert_eq!(drawn[..compressed.len()], compressed);
+        assert!(
+            drawn[compressed.len()..].iter().all(String::is_empty),
+            "{drawn:#?}"
+        );
+        let tree = &drawn[..boss.sessions.len()];
+        for session in &boss.sessions {
+            let age = age::age_label(NOW - session.row.started);
+            assert!(
+                !tree.iter().any(|line| line.contains(&age)),
+                "{} shows its age {age}: {tree:#?}",
+                session.row.name
+            );
+        }
     }
 
     /// A launched session whose launcher is not listed is left out of the
