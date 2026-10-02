@@ -85,6 +85,7 @@ mod tests {
     use crate::census::ChildKind;
     use crate::census::ChildRow;
     use crate::census::ServiceTier;
+    use crate::census::Timer;
 
     /// One row of an agent's cell.
     fn child(depth: u8, kind: ChildKind, pid: Option<u32>, name: &str, started: u64) -> ChildRow {
@@ -95,11 +96,13 @@ mod tests {
             pid,
             name: name.to_string(),
             started,
+            timer: None,
         }
     }
 
     /// A report of one Codex row, one Claude Code row running one of
-    /// each kind of child, and a session that Claude Code row opened.
+    /// each kind of child and a timer, and a session that Claude Code row
+    /// opened.
     fn report() -> ProbeReport {
         ProbeReport {
             schema:  PROBE_SCHEMA,
@@ -149,6 +152,19 @@ mod tests {
                             ..child(2, ChildKind::Thread, None, "phase 1", 1_790_000_112)
                         },
                         child(0, ChildKind::Subagent, None, "Review", 1_790_000_120),
+                        ChildRow {
+                            timer: Some(Timer {
+                                started:  1_790_000_125,
+                                deadline: 1_790_000_425,
+                            }),
+                            ..child(
+                                0,
+                                ChildKind::Shell,
+                                Some(80_300),
+                                "Re-arm the progress timer",
+                                1_790_000_125,
+                            )
+                        },
                         child(
                             0,
                             ChildKind::Session(Agent::Claude),
@@ -191,6 +207,7 @@ mod tests {
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
+                r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
                 r#"{"agent":"claude","service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
             )

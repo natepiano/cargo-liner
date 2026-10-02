@@ -52,6 +52,7 @@ use crate::constants::SHELL_VIA;
 use crate::constants::STANDARD_TIER_LABEL;
 use crate::constants::SUBAGENT_VIA;
 use crate::constants::THREAD_VIA;
+use crate::constants::TIMER_RUNS;
 
 /// Which program an agent row is.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -243,6 +244,17 @@ impl ChildKind {
     }
 }
 
+/// The span of the `sleep` a shell row's command is waiting out, in unix
+/// seconds.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct Timer {
+    /// When the `sleep` started.
+    pub(crate) started:  u64,
+    /// When the `sleep` ends: [`Self::started`] plus the whole seconds
+    /// its arguments add up to.
+    pub(crate) deadline: u64,
+}
+
 /// One row of an agent's cell: something the agent started that is
 /// still running.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -266,12 +278,20 @@ pub(crate) struct ChildRow {
     pub(crate) name:         String,
     /// When it started, in unix seconds.
     pub(crate) started:      u64,
+    /// The `sleep` a shell row's command is waiting out, where that
+    /// `sleep` is the one process at the bottom of the shell's subtree;
+    /// none for any other row. Missing from a probe printed before it
+    /// existed, and left out of one for a row that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timer:        Option<Timer>,
 }
 
 impl ChildRow {
-    /// The `runs` cell: what the row runs, marked with its tier.
+    /// The `runs` cell: what the row runs, marked with its tier;
+    /// [`TIMER_RUNS`] for a shell row with a [`Timer`].
     pub(crate) fn runs_label(&self) -> Cow<'static, str> {
-        self.service_tier.mark(self.kind.runs())
+        let runs = self.timer.map_or_else(|| self.kind.runs(), |_| TIMER_RUNS);
+        self.service_tier.mark(runs)
     }
 }
 

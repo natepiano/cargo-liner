@@ -61,6 +61,7 @@ use crate::constants::PROC_DIRNAME;
 use crate::constants::PROC_FD_DIRNAME;
 use crate::constants::PROJECTS_DIRNAME;
 use crate::constants::SESSION_RECORD_EXTENSION;
+use crate::constants::SLEEP_PROGRAM;
 use crate::constants::TMUX_LIST_CLIENTS;
 use crate::constants::TMUX_LIST_PANES;
 #[cfg(target_os = "linux")]
@@ -676,14 +677,16 @@ fn tmux_output(program: &str, arguments: &[&str]) -> Option<String> {
 }
 
 /// The processes whose command line and directory the second pass
-/// reads, and every process above one of them.
+/// reads, and every process above one of them, then every `sleep`.
 ///
 /// A row can come from each session record's process and every
 /// `codex`. The tree reads the command line of each child of a Claude
 /// Code process, which says whether the child is its shell wrapper, so
 /// every process named `claude` and each such child are read too. On
 /// macOS a Claude Code process is named for its version, so an ancestor
-/// is only recognised as Claude Code by its command line.
+/// is only recognised as Claude Code by its command line. The tree
+/// reads a `sleep`'s arguments for the span of a shell timer, and
+/// nothing above it for that, so each [`SLEEP_PROGRAM`] is read alone.
 fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
     let processes = system.processes();
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
@@ -730,6 +733,12 @@ fn detailed_pids(system: &System, sessions: &[SessionRecord]) -> Vec<Pid> {
             next = processes.get(&pid).and_then(Process::parent);
         }
     }
+    detailed.extend(
+        processes
+            .values()
+            .filter(|process| process.name() == SLEEP_PROGRAM)
+            .map(Process::pid),
+    );
     detailed.into_iter().collect()
 }
 

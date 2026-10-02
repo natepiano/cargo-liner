@@ -655,6 +655,7 @@ fraying = "leading"
             pid,
             name: name.to_string(),
             started: NOW - age,
+            timer: None,
         };
         AgentRow {
             agent:        Agent::Claude,

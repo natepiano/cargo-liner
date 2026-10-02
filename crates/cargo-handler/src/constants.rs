@@ -141,6 +141,15 @@ pub(crate) const DIRECT_VIA: &str = "direct";
 pub(crate) const DETACHED_VIA: &str = "detached";
 /// The `runs` of a command, where the row is not an agent.
 pub(crate) const COMMAND_RUNS: &str = "command";
+/// The `runs` of a command that is only a timer, in place of
+/// [`COMMAND_RUNS`].
+pub(crate) const TIMER_RUNS: &str = "timer";
+/// The pie a timer row's name leads with while the timer runs, by the
+/// share of it gone: each glyph while the share is under its bound,
+/// from empty to three quarters filled.
+pub(crate) const TIMER_PIE: [(f64, char); 4] = [(0.25, '○'), (0.5, '◔'), (0.75, '◑'), (1.0, '◕')];
+/// The pie of a timer at or past its deadline.
+pub(crate) const TIMER_PIE_FULL: char = '●';
 
 // summary table
 /// The summary's column labels, in column order.
@@ -382,6 +391,14 @@ pub(crate) const TMUX_OPTIONS_END: &str = "--";
 /// launcher for it stops looking. A younger one may not have had its
 /// transcript line written yet.
 pub(crate) const CALL_SEARCH_SETTLE: Duration = Duration::from_secs(30);
+/// The process name of `sleep`, which a shell row counts as a timer when
+/// it is the one process at the bottom of the shell's subtree.
+pub(crate) const SLEEP_PROGRAM: &str = "sleep";
+/// The suffixes a `sleep` argument may end in, as GNU `sleep` reads
+/// them, each with the seconds in its unit. An argument with none counts
+/// seconds.
+pub(crate) const SLEEP_UNITS: [(char, f64); 4] =
+    [('s', 1.0), ('m', 60.0), ('h', 3_600.0), ('d', 86_400.0)];
 /// Levels of agents under agents an agent cell's tree follows at most,
 /// so a process table that loops cannot hold the scan.
 pub(crate) const TREE_DEPTH_LIMIT: u8 = 16;

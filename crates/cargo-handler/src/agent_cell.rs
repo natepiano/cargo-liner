@@ -21,6 +21,7 @@
 
 use std::collections::HashSet;
 use std::iter;
+use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -44,6 +45,7 @@ use crate::census::AgentRow;
 use crate::census::ChildKind;
 use crate::census::ChildRow;
 use crate::census::Machine;
+use crate::census::Timer;
 use crate::constants::AGENT_HEADER_GAP_HEIGHT;
 use crate::constants::CHILD_AGE_COLUMN;
 use crate::constants::CHILD_HEADERS;
@@ -60,6 +62,8 @@ use crate::constants::NOTHING_RUNNING_NOTE;
 use crate::constants::PID_LABEL;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
+use crate::constants::TIMER_PIE;
+use crate::constants::TIMER_PIE_FULL;
 use crate::constants::TREE_BRANCH;
 use crate::constants::TREE_COLUMNS;
 use crate::constants::TREE_LAST_BRANCH;
@@ -437,7 +441,7 @@ fn draw_view(
         Children::Compressed => {
             let lines: Vec<Line<'static>> = children
                 .iter()
-                .map(|child| compressed_child(child, area.width, child_name_style(child)))
+                .map(|child| compressed_child(child, area.width, child_name_style(child), now))
                 .collect();
             Paragraph::new(lines).render(area, buffer);
         },
@@ -752,16 +756,16 @@ impl Children {
 
 /// One child's line in the compressed view, `width` cells across:
 /// indented as the table indents its `via`, what it `runs` in the role
-/// the table draws it in, then [`gap`] and its name in `name_style`, cut
-/// by [`cut_line`] where it would not fit.
-fn compressed_child(child: &ChildRow, width: u16, name_style: Style) -> Line<'static> {
+/// the table draws it in, then [`gap`] and its [`child_name`] at `now`
+/// in `name_style`, cut by [`cut_line`] where it would not fit.
+fn compressed_child(child: &ChildRow, width: u16, name_style: Style, now: u64) -> Line<'static> {
     let text = Style::default().fg(text_default());
     cut_line(
         vec![
             Span::styled(depth_indent(child), text),
             Span::styled(child.runs_label(), runs_role(child.kind).style()),
             gap(),
-            Span::styled(child.name.clone(), name_style),
+            Span::styled(child_name(child, now), name_style),
         ],
         width,
     )
@@ -795,7 +799,8 @@ fn cut_line(spans: Vec<Span<'static>>, width: u16) -> Line<'static> {
     )
 }
 
-/// One row of the table, its name drawn in `name_style`.
+/// One row of the table at `now`, its [`child_name`] drawn in
+/// `name_style`.
 fn child_row(child: &ChildRow, name_style: Style, now: u64) -> Row<'static> {
     let text = Style::default().fg(text_default());
     let pid = child.pid.map_or_else(
@@ -806,9 +811,53 @@ fn child_row(child: &ChildRow, name_style: Style, now: u64) -> Row<'static> {
         pid,
         Span::styled(via_text(child), text),
         Span::styled(child.runs_label(), runs_role(child.kind).style()),
-        Span::styled(child.name.clone(), name_style),
+        Span::styled(child_name(child, now), name_style),
         Span::styled(age::age_label(now.saturating_sub(child.started)), text),
     ])
+}
+
+/// What a row's `name` cell says at `now`: a timer's [`timer_label`],
+/// else the row's name.
+fn child_name(child: &ChildRow, now: u64) -> String {
+    child
+        .timer
+        .map_or_else(|| child.name.clone(), |timer| timer_label(timer, now))
+}
+
+/// A timer row's name at `now`: its [`timer_pie`], then the time left
+/// as [`time_left_label`] writes it.
+fn timer_label(timer: Timer, now: u64) -> String {
+    format!(
+        "{} {}",
+        timer_pie(timer, now),
+        time_left_label(timer.deadline.saturating_sub(now))
+    )
+}
+
+/// The glyph of [`TIMER_PIE`] for the share of `timer` gone at `now`,
+/// and [`TIMER_PIE_FULL`] at or past its deadline.
+fn timer_pie(timer: Timer, now: u64) -> char {
+    let gone = Duration::from_secs(now.saturating_sub(timer.started));
+    let span = Duration::from_secs(timer.deadline.saturating_sub(timer.started));
+    // A timer of no length divides to NaN or infinity, under no bound.
+    let share = gone.div_duration_f64(span);
+    TIMER_PIE
+        .iter()
+        .find(|&&(bound, _)| share < bound)
+        .map_or(TIMER_PIE_FULL, |&(_, pie)| pie)
+}
+
+/// `left` seconds on a timer, as `m:ss` under an hour and `h:mm:ss`
+/// from an hour up.
+fn time_left_label(left: u64) -> String {
+    let hours = left / 3_600;
+    let minutes = left / 60 % 60;
+    let seconds = left % 60;
+    if hours == 0 {
+        format!("{minutes}:{seconds:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    }
 }
 
 /// The `via` cell: how the agent holds the row, after its
@@ -858,7 +907,7 @@ fn table_columns(children: &[ChildRow], width: u16, now: u64) -> Option<[Constra
         widths.observe_cell_usize(CHILD_PID_COLUMN, pid);
         widths.observe_cell_usize(CHILD_VIA_COLUMN, via_text(child).chars().count());
         widths.observe_cell_usize(CHILD_RUNS_COLUMN, child.runs_label().chars().count());
-        widths.observe_cell_usize(CHILD_NAME_COLUMN, child.name.chars().count());
+        widths.observe_cell_usize(CHILD_NAME_COLUMN, child_name(child, now).chars().count());
         let age = age::age_label(now.saturating_sub(child.started));
         widths.observe_cell_usize(CHILD_AGE_COLUMN, age.chars().count());
     }
@@ -946,6 +995,7 @@ mod tests {
             pid,
             name: name.to_string(),
             started: NOW - age,
+            timer: None,
         }
     }
 
@@ -2032,6 +2082,103 @@ mod tests {
                 ("right", RainbowHue::Red),
                 ("natemccoy-30", RainbowHue::Orange),
             ]
+        );
+    }
+
+    /// A timer's pie takes the next glyph at each quarter of it gone,
+    /// and the full one at its deadline and past it.
+    #[test]
+    fn a_timers_pie_fills_by_the_quarter() {
+        let timer = Timer {
+            started:  NOW,
+            deadline: NOW + 400,
+        };
+        let pie_at = |gone: u64| timer_pie(timer, NOW + gone);
+
+        assert_eq!(pie_at(0), TIMER_PIE[0].1);
+        assert_eq!(pie_at(99), TIMER_PIE[0].1);
+        assert_eq!(pie_at(100), TIMER_PIE[1].1);
+        assert_eq!(pie_at(199), TIMER_PIE[1].1);
+        assert_eq!(pie_at(200), TIMER_PIE[2].1);
+        assert_eq!(pie_at(299), TIMER_PIE[2].1);
+        assert_eq!(pie_at(300), TIMER_PIE[3].1);
+        assert_eq!(pie_at(399), TIMER_PIE[3].1);
+        assert_eq!(pie_at(400), TIMER_PIE_FULL);
+        assert_eq!(pie_at(500), TIMER_PIE_FULL);
+    }
+
+    /// The time left reads `m:ss` under an hour and `h:mm:ss` from an
+    /// hour up, and a timer past its deadline reads `0:00`.
+    #[test]
+    fn time_left_reads_as_minutes_under_an_hour() {
+        assert_eq!(time_left_label(0), "0:00");
+        assert_eq!(time_left_label(9), "0:09");
+        assert_eq!(time_left_label(228), "3:48");
+        assert_eq!(time_left_label(HOUR - 1), "59:59");
+        assert_eq!(time_left_label(HOUR), "1:00:00");
+        assert_eq!(time_left_label(HOUR + MINUTE + 1), "1:01:01");
+        assert_eq!(time_left_label(10 * HOUR), "10:00:00");
+        let past = Timer {
+            started:  NOW - 2 * MINUTE,
+            deadline: NOW - MINUTE,
+        };
+        assert_eq!(timer_label(past, NOW), format!("{TIMER_PIE_FULL} 0:00"));
+    }
+
+    /// A shell row that is only a timer reads `timer` in its `runs`, in
+    /// the color a command's takes, and its pie and the time left in
+    /// place of its description, in the table and in the compressed
+    /// view.
+    #[test]
+    fn a_timer_row_shows_its_pie_and_time_left() {
+        let seat = AgentRow {
+            children: vec![
+                child(
+                    0,
+                    ChildKind::Shell,
+                    Some(2_500_000),
+                    "Run lint then the full suite",
+                    4 * MINUTE,
+                ),
+                ChildRow {
+                    timer: Some(Timer {
+                        started:  NOW - 92,
+                        deadline: NOW + 228,
+                    }),
+                    ..child(
+                        0,
+                        ChildKind::Shell,
+                        Some(2_500_100),
+                        "Re-arm the progress timer",
+                        92,
+                    )
+                },
+            ],
+            ..agent(3_500_000, "timer-seat", HOUR, Some(BOSS))
+        };
+
+        let full = drawn(&seat, Some("boss of bosses"), WIDE);
+        let compressed = drawn(&seat, Some("boss of bosses"), NARROW);
+
+        assert_eq!(
+            lines(&full)[4..],
+            [
+                " pid      via    runs     name                          age",
+                " 2500000  shell  command  Run lint then the full suite  4m",
+                " 2500100  shell  timer    ◔ 3:48                        1m 32s",
+            ]
+        );
+        assert_eq!(
+            runs_in(
+                &full,
+                Role::Shell.style().fg.expect("the shell role has a color")
+            ),
+            ["command", "timer"]
+        );
+        let compressed_lines = lines(&compressed);
+        assert_eq!(
+            compressed_lines[compressed_lines.len() - 2..],
+            [" command  Run lint then the full suite", " timer  ◔ 3:48"]
         );
     }
 }

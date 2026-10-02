@@ -170,6 +170,13 @@ Each kind of row comes from its own place:
   started; a call written without a description, or none found, leaves the
   command itself on one line. A call found in a subagent's transcript puts the
   shell under that subagent.
+- **shell** running **timer**: a shell whose subtree ends in one `sleep` and
+  nothing else, such as a script waiting out `sleep 300`. In place of its
+  description it shows a pie that fills by the quarter as the `sleep` runs
+  (`○`, `◔`, `◑`, `◕`, then `●` at its end) and the time left, `m:ss` or
+  `h:mm:ss`. The `sleep`'s arguments add up as GNU `sleep` reads them
+  (`1m 30s` is 90 seconds); one that does not read, such as `infinity`, leaves
+  the shell a command.
 - **shell** running **claude** / **codex**: a Claude Code or Codex process
   found below a shell, one level under it. A `codex app-server` is named
   `app-server`, another Codex by its arguments, and a Claude Code process by

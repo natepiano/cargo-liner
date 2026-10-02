@@ -8,7 +8,8 @@
 //! same way in turn. Its subagents come from its transcript's
 //! directory, and a Codex app server's threads from the conversation
 //! files it holds open. The sessions it opened in tmux are the agents
-//! that name it as their launcher.
+//! that name it as their launcher. A shell whose subtree ends in one
+//! `sleep` carries that `sleep`'s span as its timer.
 //!
 //! Everything here is a pure function over the process table and what
 //! the scan read from disk, so the tests drive it from fixtures.
@@ -17,12 +18,14 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter;
 use std::path::Path;
+use std::time::Duration;
 
 use super::Agent;
 use super::AgentRow;
 use super::ChildKind;
 use super::ChildRow;
 use super::ServiceTier;
+use super::Timer;
 use super::classify;
 use super::classify::ProcessEntry;
 use super::classify::SessionRecord;
@@ -39,6 +42,8 @@ use crate::constants::SHELL_EVAL_OPEN;
 use crate::constants::SHELL_QUOTED_QUOTE;
 use crate::constants::SHELL_SCRIPT_FLAG;
 use crate::constants::SHELL_SNAPSHOT_MARKER;
+use crate::constants::SLEEP_PROGRAM;
+use crate::constants::SLEEP_UNITS;
 use crate::constants::TREE_DEPTH_LIMIT;
 
 /// The shell call that started one shell wrapper.
@@ -167,6 +172,8 @@ struct Node {
     name:         String,
     /// When it started, in unix seconds.
     started:      u64,
+    /// The `sleep` a shell is waiting out, where that is all it runs.
+    timer:        Option<Timer>,
     /// The rows it started.
     children:     Vec<Self>,
 }
@@ -211,6 +218,7 @@ pub(super) fn attach_children(
                 pid:          Some(session.pid),
                 name:         session.name.clone(),
                 started:      session.started,
+                timer:        None,
                 children:     Vec::new(),
             }));
             // An app server a mesh moved out from under the agent names it
@@ -277,6 +285,7 @@ impl Walker<'_> {
                     pid:          None,
                     name:         thread.name.clone(),
                     started:      thread.started,
+                    timer:        None,
                     children:     Vec::new(),
                 })
                 .collect();
@@ -300,6 +309,7 @@ impl Walker<'_> {
                     pid: Some(child.pid),
                     name,
                     started: child.started,
+                    timer: self.timer(child),
                     children: self.agents_below(child, level, visited),
                 };
                 match call.and_then(|call| call.subagent.clone()) {
@@ -373,6 +383,30 @@ impl Walker<'_> {
         found
     }
 
+    /// The timer the shell wrapper `shell` runs: the [`sleep_timer`] of
+    /// the one leaf of its subtree, a leaf being a process with no
+    /// children of its own. None when the subtree has no leaf, or more
+    /// than one.
+    fn timer(&self, shell: &ProcessEntry) -> Option<Timer> {
+        let mut seen = HashSet::from([shell.pid]);
+        let mut leaves = Vec::new();
+        let mut pending: Vec<&ProcessEntry> =
+            self.children.get(&shell.pid).cloned().unwrap_or_default();
+        while let Some(process) = pending.pop() {
+            if !seen.insert(process.pid) {
+                continue;
+            }
+            match self.children.get(&process.pid) {
+                Some(below) => pending.extend(below.iter().copied()),
+                None => leaves.push(process),
+            }
+        }
+        match leaves.as_slice() {
+            [leaf] => sleep_timer(leaf),
+            _ => None,
+        }
+    }
+
     /// The row for the agent process `process`, held as `kind` gives it,
     /// `level` agents below the cell's own, with the rows under it.
     fn process_node(
@@ -416,6 +450,7 @@ impl Walker<'_> {
             pid: Some(process.pid),
             name,
             started: process.started,
+            timer: None,
             children: self.agent_nodes(process, level, visited),
         }
     }
@@ -444,8 +479,55 @@ fn subagent_node(
         pid: None,
         name: agent.description.clone(),
         started: agent.started,
+        timer: None,
         children,
     }
+}
+
+/// The span of `process` when it is a `sleep` given one or more
+/// arguments that each read as [`sleep_duration`] reads them; none for
+/// any other process, or a `sleep` with an argument that does not read,
+/// such as `infinity`.
+fn sleep_timer(process: &ProcessEntry) -> Option<Timer> {
+    if process.name != SLEEP_PROGRAM {
+        return None;
+    }
+    let arguments = process
+        .arguments
+        .get(1..)
+        .filter(|arguments| !arguments.is_empty())?;
+    let total = arguments
+        .iter()
+        .try_fold(Duration::ZERO, |total, argument| {
+            total.checked_add(sleep_duration(argument)?)
+        })?;
+    Some(Timer {
+        started:  process.started,
+        deadline: process.started.saturating_add(total.as_secs()),
+    })
+}
+
+/// How long one `sleep` argument waits, read as GNU `sleep` reads it: a
+/// number, which may have a fractional part, then one of the suffixes
+/// in [`SLEEP_UNITS`] or none for seconds.
+fn sleep_duration(argument: &str) -> Option<Duration> {
+    let (number, seconds) = SLEEP_UNITS
+        .iter()
+        .find_map(|&(suffix, seconds)| {
+            argument
+                .strip_suffix(suffix)
+                .map(|number| (number, seconds))
+        })
+        .unwrap_or((argument, 1.0));
+    if number.is_empty()
+        || !number
+            .chars()
+            .all(|character| character.is_ascii_digit() || character == '.')
+    {
+        return None;
+    }
+    let value: f64 = number.parse().ok()?;
+    Duration::try_from_secs_f64(value * seconds).ok()
 }
 
 /// Lay `nodes` out at `depth` into `rows`, each followed by the rows
@@ -462,6 +544,7 @@ fn flatten(mut nodes: Vec<Node>, depth: u8, rows: &mut Vec<ChildRow>) {
             pid: node.pid,
             name: node.name,
             started: node.started,
+            timer: node.timer,
         });
         flatten(node.children, depth.saturating_add(1), rows);
     }
@@ -1055,5 +1138,101 @@ mod tests {
             cell(&rows, 510),
             [(0, ChildKind::Direct(Agent::Codex), Some(520), "exec", 120)]
         );
+    }
+
+    /// The agent every timer test's shell runs under.
+    const TIMER_AGENT: u32 = 600;
+    /// The shell wrapper the timer tests' agent runs.
+    const TIMER_SHELL: u32 = 610;
+    /// The script under [`TIMER_SHELL`] that waits on a `sleep`.
+    const TIMER_SCRIPT: u32 = 620;
+    /// When the timer tests' `sleep` started, in unix seconds.
+    const SLEEP_STARTED: u64 = 1_790_958_660;
+
+    /// The timer of the one shell the agent [`TIMER_AGENT`] runs, with
+    /// `below` the processes under its [`TIMER_SCRIPT`].
+    fn shell_timer(below: &[ProcessEntry]) -> Option<Timer> {
+        let mut processes = vec![
+            detailed(TIMER_AGENT, 1, "claude", SLEEP_STARTED - 600, &["claude"]),
+            wrapper(
+                TIMER_SHELL,
+                TIMER_AGENT,
+                SLEEP_STARTED,
+                "bash ~/.claude/scripts/delegate/progress_timer.sh /tmp/claude/delegate/5ea59d53 300",
+            ),
+            detailed(
+                TIMER_SCRIPT,
+                TIMER_SHELL,
+                "bash",
+                SLEEP_STARTED,
+                &[
+                    "bash",
+                    "progress_timer.sh",
+                    "/tmp/claude/delegate/5ea59d53",
+                    "300",
+                ],
+            ),
+        ];
+        processes.extend_from_slice(below);
+        let mut rows = [agent_row(TIMER_AGENT, SLEEP_STARTED - 600)];
+
+        attach_children(&mut rows, &processes, &TreeSources::default());
+
+        let [shell] = <&[ChildRow; 1]>::try_from(rows[0].children.as_slice())
+            .expect("the agent should run one shell");
+        shell.timer
+    }
+
+    /// A `sleep` started under the timer tests' script with `arguments`.
+    fn sleep(pid: u32, arguments: &[&str]) -> ProcessEntry {
+        let command: Vec<&str> = iter::once("sleep")
+            .chain(arguments.iter().copied())
+            .collect();
+        detailed(pid, TIMER_SCRIPT, "sleep", SLEEP_STARTED, &command)
+    }
+
+    /// A shell whose subtree ends in one `sleep 300` is a timer running
+    /// from the `sleep`'s start to 300 seconds after it.
+    #[test]
+    fn a_shell_waiting_on_one_sleep_is_a_timer() {
+        assert_eq!(
+            shell_timer(&[sleep(630, &["300"])]),
+            Some(Timer {
+                started:  SLEEP_STARTED,
+                deadline: SLEEP_STARTED + 300,
+            })
+        );
+    }
+
+    /// A `sleep`'s arguments add up as GNU `sleep` adds them, each a
+    /// number with a fractional part or none and a unit suffix or none.
+    #[test]
+    fn sleep_arguments_add_up() {
+        let deadline = |arguments: &[&str]| {
+            shell_timer(&[sleep(630, arguments)]).map(|timer| timer.deadline - timer.started)
+        };
+
+        assert_eq!(deadline(&["1m", "30s"]), Some(90));
+        assert_eq!(deadline(&["0.5m", "60"]), Some(90));
+        assert_eq!(deadline(&["1h", "1d"]), Some(90_000));
+    }
+
+    /// A shell whose subtree ends in a `sleep` and something else is no
+    /// timer, nor is one waiting on a `sleep` whose argument is not a
+    /// number of seconds, or that has none.
+    #[test]
+    fn a_shell_with_another_leaf_or_an_endless_sleep_is_no_timer() {
+        let tail = detailed(
+            640,
+            TIMER_SCRIPT,
+            "tail",
+            SLEEP_STARTED,
+            &["tail", "-f", "log"],
+        );
+
+        assert_eq!(shell_timer(&[sleep(630, &["300"]), tail]), None);
+        assert_eq!(shell_timer(&[sleep(630, &["infinity"])]), None);
+        assert_eq!(shell_timer(&[sleep(630, &["5", "-1"])]), None);
+        assert_eq!(shell_timer(&[sleep(630, &[])]), None);
     }
 }
