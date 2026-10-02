@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.22.3] - 2026-10-01
 
 ### Changed
 - The `mend:` part of a run, the time after `cargo check` finishes, is faster. Each check now reads and parses every source file once and shares the result across all of mend's scans and fixers, where before each scan read and parsed the whole tree again, and `--fix` scanned the tree a second time to find the edits for findings it had already reported. Findings and `--fix` edits are unchanged.
