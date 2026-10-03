@@ -2981,9 +2981,10 @@ fn managed_hook_sends_non_ascii_and_control_bytes_to_the_binary() {
 }
 
 /// Every step before the dispatch is a shell builtin. With `PATH` holding only a recording
-/// `git`, a transaction the binary has no use for starts nothing but the trunk probe a prepared
-/// run makes, and trunk and listed gate-target updates still reach the binary byte for byte. A
-/// command the hook looked up anywhere else would fail as not found on stderr.
+/// `git`, a transaction the binary has no use for starts nothing while the trunk is a loose ref,
+/// and only the `show-ref` trunk probe of a prepared run once the trunk is packed. Trunk and
+/// listed gate-target updates still reach the binary byte for byte. A command the hook looked up
+/// anywhere else would fail as not found on stderr.
 #[test]
 fn managed_hook_decides_without_starting_helper_processes() {
     let repository = initialized_repository();
@@ -3029,6 +3030,16 @@ fn managed_hook_decides_without_starting_helper_processes() {
         "committed",
         &format!("{base} {base} refs/remotes/origin/main\n{base} {base} HEAD\n"),
     );
+    hook_run("prepared", &format!("{base} {base} refs/heads/feature\n"));
+
+    assert!(!spy.phase_log.exists());
+    assert!(!git_log.exists(), "a loose trunk ref answers the probe");
+
+    git(
+        repository.path(),
+        &["-c", "core.hooksPath=/dev/null", "pack-refs", "--all"],
+    );
+    assert!(!repository.path().join(".git/refs/heads/main").exists());
     hook_run("prepared", &format!("{base} {base} refs/heads/feature\n"));
 
     assert!(!spy.phase_log.exists());

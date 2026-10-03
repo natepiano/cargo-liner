@@ -364,6 +364,8 @@ fn repository_reference_transaction_script(
     );
     let pending_marker_suffix = shell_single_quoted(PENDING_BYPASS_FILE_SUFFIX);
     let policy_worktree = shell_single_quoted(&policy_worktree.to_string_lossy());
+    let trunk_loose_reference =
+        shell_single_quoted(&common_git_directory.join(trunk_reference).to_string_lossy());
     let trunk_reference = shell_single_quoted(trunk_reference);
     let gate_targets = shell_single_quoted(
         &common_git_directory
@@ -376,6 +378,7 @@ fn repository_reference_transaction_script(
         &pending_marker_suffix,
         &policy_worktree,
         &trunk_reference,
+        &trunk_loose_reference,
         &gate_targets,
         template_fingerprint,
     )
@@ -384,8 +387,10 @@ fn repository_reference_transaction_script(
 /// The managed `reference-transaction` hook.
 ///
 /// It decides with shell builtins alone, so a transaction the binary has no use for starts no
-/// process beyond the shell, except the trunk probe a `prepared` run makes; the records it reads
-/// are replayed unchanged into the binary. The byte scan runs under `LC_ALL=C`, restored before
+/// process beyond the shell; the records it reads are replayed unchanged into the binary. A
+/// `prepared` run that names no gated ref still asks whether the trunk ref exists: it reads the
+/// loose trunk ref file, and starts `git show-ref` only when that file holds no object name,
+/// as for a packed or reftable trunk. The byte scan runs under `LC_ALL=C`, restored before
 /// anything else starts, because bash 3.2 matches bracket ranges by collation in other locales.
 /// A shell drops NUL bytes as it reads, which costs nothing here: git writes ref names as C
 /// strings, so its hook input holds none. Records are buffered in batches, because appending
@@ -403,6 +408,7 @@ if [ -d __POLICY_WORKTREE__ ]; then
 fi
 cargo_berth_trunk_reference=__TRUNK_REFERENCE__
 cargo_berth_gate_targets=__GATE_TARGETS__
+cargo_berth_trunk_loose_reference=__TRUNK_LOOSE_REFERENCE__
 case "${1:-}" in
     preparing|aborted) exit 0 ;;
     prepared|committed) ;;
@@ -459,6 +465,20 @@ cargo_berth_classify_record() {
     esac
 }
 
+cargo_berth_trunk_exists() {
+    if [ -f "$cargo_berth_trunk_loose_reference" ] && IFS= read -r cargo_berth_trunk_tip < "$cargo_berth_trunk_loose_reference"; then
+        case $cargo_berth_trunk_tip in
+            *[!0123456789abcdef]*) ;;
+            *)
+                if [ "${#cargo_berth_trunk_tip}" -eq 40 ] || [ "${#cargo_berth_trunk_tip}" -eq 64 ]; then
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+    git show-ref --verify --quiet "$cargo_berth_trunk_reference" >/dev/null 2>&1
+}
+
 cargo_berth_phase=$1
 cargo_berth_transaction=''
 cargo_berth_batch=''
@@ -497,7 +517,7 @@ else
     unset LC_ALL
 fi
 if [ "$cargo_berth_dispatch" -eq 0 ]; then
-    if [ "$1" != "prepared" ] || git show-ref --verify --quiet "$cargo_berth_trunk_reference" >/dev/null 2>&1; then
+    if [ "$1" != "prepared" ] || cargo_berth_trunk_exists; then
         exit 0
     fi
 fi
@@ -557,6 +577,7 @@ fn reference_transaction_script(
     pending_marker_suffix: &str,
     policy_worktree: &str,
     trunk_reference: &str,
+    trunk_loose_reference: &str,
     gate_targets: &str,
     template_fingerprint: &str,
 ) -> String {
@@ -573,6 +594,7 @@ fn reference_transaction_script(
         ("__TEMPLATE_FINGERPRINT__", template_fingerprint),
         ("__POLICY_WORKTREE__", policy_worktree),
         ("__TRUNK_REFERENCE__", trunk_reference),
+        ("__TRUNK_LOOSE_REFERENCE__", trunk_loose_reference),
         ("__GATE_TARGETS__", gate_targets),
         ("__EXECUTABLE_RESOLUTION__", EXECUTABLE_RESOLUTION),
         ("__PENDING_MARKER_PREFIX__", pending_marker_prefix),
@@ -672,10 +694,11 @@ mod tests {
             "'/git/__PENDING_MARKER_SUFFIX__'",
             "'.json.__POLICY_WORKTREE__'",
             "'refs/heads/__PENDING_MARKER_PREFIX__'",
+            "'/git/refs/heads/__GATE_TARGETS__'",
         ];
 
         let script = reference_transaction_script(
-            values[0], values[1], values[2], values[3], values[0], values[1],
+            values[0], values[1], values[2], values[3], values[4], values[0], values[1],
         );
 
         for value in values {
