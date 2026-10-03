@@ -622,6 +622,28 @@ fn deleted_projection_rebuilds_byte_for_byte_from_the_journal() {
 }
 
 #[test]
+fn a_torn_projection_rebuilds_from_the_journal_on_the_next_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repository = initialized_repository();
+    let projection_path = repository.path().join(PROJECTION_PATH);
+    let journal_path = repository.path().join(JOURNAL_PATH);
+    let projection_before = fs::read(&projection_path)?;
+    let journal_before = fs::read(&journal_path)?;
+    fs::write(&projection_path, b"{\"schema_version\": 1, \"reserv")?;
+
+    let board = run_berth(repository.path(), ["board", "--json"]);
+
+    assert!(
+        board.status.success(),
+        "board should rebuild a torn projection: {}",
+        String::from_utf8_lossy(&board.stderr)
+    );
+    assert_eq!(fs::read(projection_path)?, projection_before);
+    assert_eq!(fs::read(journal_path)?, journal_before);
+    Ok(())
+}
+
+#[test]
 fn projection_size_does_not_grow_with_journal_event_count() -> Result<(), Box<dyn std::error::Error>>
 {
     let repository = initialized_repository();

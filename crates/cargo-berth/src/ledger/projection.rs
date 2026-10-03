@@ -54,14 +54,13 @@ impl Projection {
         }
     }
 
-    /// Publish this projection through a synced temporary file and atomic rename.
+    /// Publish this projection through a temporary file and atomic rename.
     ///
-    /// The temporary file is synced because `read_validated` rejects malformed projection bytes
-    /// instead of rebuilding them. The ledger directory is not synced: a rename lost in a crash
-    /// leaves the previous complete projection, which is behind the synced journal, so the next
-    /// `read_validated` returns `RebuildRequired`. A caller that shrinks the journal after this
-    /// publish syncs the directory itself, because a lost rename would then leave a projection
-    /// ahead of the journal.
+    /// Neither the temporary file nor the ledger directory is synced. A crash can leave torn
+    /// projection bytes or the previous complete projection, which is behind the synced journal;
+    /// `read_validated` returns `RebuildRequired` for both. A caller that shrinks the journal after
+    /// this publish syncs the directory itself, because a lost rename would then leave a
+    /// projection ahead of the journal.
     pub(super) fn publish(
         &self,
         ledger_directory: &Path,
@@ -77,7 +76,6 @@ impl Projection {
             .open(&temporary_path)?;
         temporary_file.write_all(&serialized_projection)?;
         temporary_file.write_all(b"\n")?;
-        temporary_file.sync_all()?;
         fs::rename(temporary_path, projection_path)?;
         Ok(())
     }
@@ -145,8 +143,9 @@ pub(super) enum ProjectionSynchronization {
 /// Read the projection once and validate it against the locked journal replay.
 ///
 /// An unsupported projection schema requires a rebuild because the journal replay is independent
-/// of this disposable cache. Malformed projection bytes and repository identity mismatches remain
-/// errors because they do not establish that the file is a projection for this repository.
+/// of this disposable cache. Malformed projection bytes, such as a write torn by a crash, also
+/// require a rebuild. A repository identity mismatch remains an error because it does not
+/// establish that the file is a projection for this repository.
 pub(super) fn read_validated(
     projection_path: &Path,
     repo_instance_id: RepoInstanceId,
@@ -161,7 +160,8 @@ pub(super) fn read_validated(
                 Ok(ProjectionSynchronization::RebuildRequired)
             }
         },
-        Ok(ProjectionRead::Missing) | Err(ProjectionError::UnsupportedSchemaVersion(_)) => {
+        Ok(ProjectionRead::Missing)
+        | Err(ProjectionError::UnsupportedSchemaVersion(_) | ProjectionError::Deserialization(_)) => {
             Ok(ProjectionSynchronization::RebuildRequired)
         },
         Err(error) => Err(error),
