@@ -17,6 +17,7 @@ use crate::reporting::OutputFormat;
 pub(crate) enum BuildInfoMode {
     Run,
     Show,
+    ClippyStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

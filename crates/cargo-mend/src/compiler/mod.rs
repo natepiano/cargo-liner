@@ -1,6 +1,7 @@
 mod analyzing;
 mod build;
 mod cfg_excluded_references;
+mod clippy;
 mod constants;
 mod driver;
 mod exposure;
@@ -15,6 +16,8 @@ pub(crate) use build::BuildOutputMode;
 pub(crate) use build::SelectionResult;
 pub(crate) use build::run_cargo_fix;
 pub(crate) use build::run_selection;
+pub use clippy::ClippyLints;
+pub(crate) use clippy::ClippyStatus;
 pub(crate) use constants::CARGO_FLAG_ALL_TARGETS;
 pub(crate) use constants::CARGO_FLAG_EXCLUDE;
 pub(crate) use constants::CARGO_FLAG_MANIFEST_PATH;

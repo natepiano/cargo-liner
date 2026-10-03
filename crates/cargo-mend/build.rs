@@ -30,6 +30,9 @@ fn main() {
     if let Some(build_id) = build_id() {
         println!("cargo:rustc-env=MEND_BUILD_ID={build_id}");
     }
+    if let Some(rustc_version) = rustc_version() {
+        println!("cargo:rustc-env=MEND_BUILD_RUSTC_VERSION={rustc_version}");
+    }
     if let Ok(sysroot) = build_sysroot() {
         println!("cargo:rustc-env=MEND_BUILD_SYSROOT={}", sysroot.display());
     }
@@ -44,6 +47,19 @@ fn main() {
 fn build_id() -> Option<String> {
     let duration = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     Some(duration.as_nanos().to_string())
+}
+
+/// The `rustc -V` line of the compiler cargo builds with, which `--clippy-status`
+/// compares with the host rustc at run time.
+fn rustc_version() -> Option<String> {
+    let rustc = std::env::var_os("RUSTC")?;
+    let output = Command::new(rustc).arg("-V").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|stdout| stdout.trim().to_string())
 }
 
 fn git_commit_hash() -> Option<String> {

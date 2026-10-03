@@ -24,6 +24,30 @@ struct RawManifestCli {
     config: Option<PathBuf>,
 }
 
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+struct RawInfoCli {
+    /// Show detailed build metadata and exit
+    #[arg(long)]
+    build_info: bool,
+
+    /// Print whether this build runs clippy's lints for the host rustc, as
+    /// JSON, and exit 0 only when it does
+    #[arg(long, conflicts_with = "build_info")]
+    clippy_status: bool,
+}
+
+impl From<RawInfoCli> for BuildInfoMode {
+    fn from(raw: RawInfoCli) -> Self {
+        if raw.build_info {
+            Self::Show
+        } else if raw.clippy_status {
+            Self::ClippyStatus
+        } else {
+            Self::Run
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "mend")]
 #[command(about = "Audit Rust visibility patterns against a stricter house style")]
@@ -38,9 +62,8 @@ Phases:
 Use --fix, --fix-pub-use, or --fix-compiler to auto-fix findings.
 Use --fix-all to apply all fixes at once.")]
 struct RawCli {
-    /// Show detailed build metadata and exit
-    #[arg(long)]
-    build_info: bool,
+    #[command(flatten)]
+    info: RawInfoCli,
 
     /// JSON output
     #[arg(long)]
@@ -63,11 +86,7 @@ struct RawCli {
 impl From<RawCli> for Cli {
     fn from(raw: RawCli) -> Self {
         Self {
-            build_info:     if raw.build_info {
-                BuildInfoMode::Show
-            } else {
-                BuildInfoMode::Run
-            },
+            build_info:     raw.info.into(),
             output_format:  if raw.json {
                 OutputFormat::Json
             } else {

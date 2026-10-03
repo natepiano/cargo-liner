@@ -57,6 +57,10 @@ pub(super) const CARGO_TERM_PROGRESS_WHEN_NEVER: &str = "never";
 pub(super) const CARGO_TERM_PROGRESS_WIDTH: &str = "80";
 pub(super) const CARGO_TERM_PROGRESS_WIDTH_ENV: &str = "CARGO_TERM_PROGRESS_WIDTH";
 
+// clippy status
+/// Stands in for a rustc version `build.rs` or `rustc -V` could not report.
+pub(super) const CLIPPY_STATUS_UNKNOWN_RUSTC: &str = "unknown";
+
 // diagnostic severity prefixes
 pub(crate) const DIAGNOSTIC_SEVERITY_ERROR_PREFIX: &str = "error:";
 pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
@@ -64,6 +68,9 @@ pub(crate) const DIAGNOSTIC_SEVERITY_WARNING_PREFIX: &str = "warning:";
 // driver-ipc environment variables
 pub(super) const ANALYZING_DIR_ENV: &str = "MEND_ANALYZING_DIR";
 pub(super) const CARGO_PRIMARY_PACKAGE_ENV: &str = "CARGO_PRIMARY_PACKAGE";
+/// Set on the `cargo check` that a run with active clippy lints starts, so the
+/// driver registers them.
+pub(super) const CLIPPY_ENV: &str = "MEND_CLIPPY";
 pub(super) const CONFIG_FINGERPRINT_ENV: &str = "MEND_CONFIG_FINGERPRINT";
 pub(super) const CONFIG_JSON_ENV: &str = "MEND_CONFIG_JSON";
 pub(super) const CONFIG_ROOT_ENV: &str = "MEND_CONFIG_ROOT";
@@ -89,6 +96,10 @@ pub(super) const PROGRESS_BAR_HEAD: &str = ">";
 pub(super) const PROGRESS_BAR_WIDTH: usize = 25;
 pub(super) const PROGRESS_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 pub(super) const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
+
+// rustc invocation
+pub(super) const RUSTC_ENV: &str = "RUSTC";
+pub(super) const RUSTC_FLAG_VERSION: &str = "-V";
 
 // source-tree directories
 pub(super) const SOURCE_DIR_BENCHES: &str = "benches";
