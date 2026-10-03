@@ -642,6 +642,10 @@ fn history_relationship(
     left: &GitObjectId,
     right: &GitObjectId,
 ) -> Result<HistoryRelationship, ScopedPatchComparisonError> {
+    // A commit is its own merge base.
+    if left == right {
+        return Ok(HistoryRelationship::Shared);
+    }
     let left = left.to_string();
     let right = right.to_string();
     let output = scoped_patch_command_output(

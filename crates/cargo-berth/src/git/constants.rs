@@ -121,6 +121,11 @@ pub(super) const GIT_WRITE_TREE_ARG: &str = "--write-tree";
 /// List registered worktrees.
 pub(super) const GIT_WORKTREE_LIST_ARG: &str = "list";
 
+// invocation counts
+/// Git invocations one `unmerged_branch_paths` read of two different commits makes:
+/// `merge-tree`, then the diff from trunk to its result tree.
+pub(super) const UNMERGED_BRANCH_PATH_GIT_QUERIES: u64 = 2;
+
 // output
 /// Suffix reported by `cat-file --batch-check` for an ambiguous object expression.
 pub(super) const GIT_AMBIGUOUS_OBJECT_SUFFIX: &str = " ambiguous";

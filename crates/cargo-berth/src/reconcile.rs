@@ -22,7 +22,6 @@ use crate::config::ConfigError;
 use crate::config::Enrollment;
 use crate::constants::MERGE_EXTENT_TRUNK_UNAVAILABLE;
 use crate::constants::MERGE_EXTENT_WORKTREE_UNAVAILABLE;
-use crate::constants::UNMERGED_BRANCH_PATH_GIT_QUERIES;
 use crate::drift;
 use crate::edge::CrossTargetPredecessorEvidence;
 use crate::edge::CrossTargetPredecessorReachability;
@@ -2438,7 +2437,7 @@ fn observe_merge_extent(
             committed_paths: CommittedMergeEvidence::Unavailable,
         });
     }
-    git_cost.path_queries += UNMERGED_BRANCH_PATH_GIT_QUERIES;
+    git_cost.path_queries += git::unmerged_branch_path_queries(trunk, head);
     let committed_paths = git::unmerged_branch_paths(root.as_ref(), trunk, head)
         .map_err(|error| error.to_string())?;
     let mut paths = committed_paths.clone();

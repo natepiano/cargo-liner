@@ -3380,6 +3380,8 @@ mod merge_extent {
         for path in ["first.rs", "second.rs", "third.rs"] {
             claim(&fixture.holder, &format!("file:{path}"), FIRST_RUN);
         }
+        // A commit moves the holder's HEAD off trunk, so its derivation needs the merge query.
+        commit(&fixture.holder, "first.rs", "committed branch work\n");
         write(&fixture.holder, "tracked.rs", "dirty branch work\n");
         let wrapper = tempdir().expect("git tracing directory should exist");
         let trace = wrapper.path().join("git-trace");

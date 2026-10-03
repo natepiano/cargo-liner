@@ -62,6 +62,7 @@ pub(crate) use reachability::reachability;
 pub(crate) use reachability::reachability_to_target;
 pub(crate) use reachability::reachable_commits;
 pub(crate) use reachability::reservation_checkpoint_commits;
+pub(crate) use reachability::unmerged_branch_path_queries;
 pub(crate) use reachability::unmerged_branch_paths;
 pub(crate) use refs::HeadAttachment;
 pub(crate) use refs::LocalBranchRenameTargetResolution;

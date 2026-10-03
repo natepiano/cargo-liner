@@ -534,6 +534,10 @@ fn observe_merge_base(
     trunk: &GitObjectId,
     head: &GitObjectId,
 ) -> Result<GitObjectId, WorktreeEnrollmentFailure> {
+    // A commit is its own merge base.
+    if trunk == head {
+        return Ok(trunk.clone());
+    }
     let command = format!("git merge-base {trunk} {head}");
     match git::execute_read_only_git(root, &["merge-base", &trunk.to_string(), &head.to_string()]) {
         GitCommandOutputAvailability::Available(output) if output.status.success() => {

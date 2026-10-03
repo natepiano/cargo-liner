@@ -38,6 +38,7 @@ use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_REV_LIST_COMMAND;
 use super::constants::GIT_STDIN_ARG;
 use super::constants::GIT_WRITE_TREE_ARG;
+use super::constants::UNMERGED_BRANCH_PATH_GIT_QUERIES;
 use super::error;
 use super::error::GitError;
 use super::object;
@@ -358,11 +359,17 @@ pub(crate) fn branch_commit_reachability(
 /// rename detection in the diff retains both the removed and added paths. Missing objects,
 /// unrelated histories, and unreadable output remain failures rather than evidence of an empty
 /// merge extent.
+///
+/// Merging a commit into itself is clean and changes nothing, so the same commit on both sides
+/// returns an empty set without starting git.
 pub(crate) fn unmerged_branch_paths(
     repository_root: &Path,
     trunk: &GitObjectId,
     head: &GitObjectId,
 ) -> Result<Vec<ReservationScopePath>, GitError> {
+    if trunk == head {
+        return Ok(Vec::new());
+    }
     let merge_arguments = [
         GIT_MERGE_TREE_COMMAND.to_owned(),
         GIT_WRITE_TREE_ARG.to_owned(),
@@ -425,6 +432,15 @@ pub(crate) fn unmerged_branch_paths(
     paths.sort_by_cached_key(ToString::to_string);
     paths.dedup();
     Ok(paths)
+}
+
+/// Return how many git invocations `unmerged_branch_paths` makes for these two commits.
+pub(crate) fn unmerged_branch_path_queries(trunk: &GitObjectId, head: &GitObjectId) -> u64 {
+    if trunk == head {
+        0
+    } else {
+        UNMERGED_BRANCH_PATH_GIT_QUERIES
+    }
 }
 
 /// Return every commit that would become reachable from `proposed` but not `previous`.
@@ -536,11 +552,17 @@ pub(crate) fn ahead_behind_for_heads(
 }
 
 /// Determine whether one commit is an ancestor of another.
+///
+/// Git counts a commit as its own ancestor, so the same commit on both sides answers
+/// `Reachability::Ancestor` without starting git.
 pub(crate) fn reachability(
     repository_root: &Path,
     ancestor: &GitObjectId,
     descendant: &GitObjectId,
 ) -> Result<Reachability, GitError> {
+    if ancestor == descendant {
+        return Ok(Reachability::Ancestor);
+    }
     let ancestor = ancestor.to_string();
     let descendant = descendant.to_string();
     let output = command::git_output(
@@ -1076,8 +1098,11 @@ mod tests {
     use super::CandidateHeadReachability;
     use super::ProtectedTipSuccessorHeadClassification;
     use super::ProtectedTipSuccessorHeads;
+    use super::Reachability;
     use super::ahead_behind_for_heads;
     use super::descendant_commits;
+    use super::reachability;
+    use super::unmerged_branch_path_queries;
     use super::unmerged_branch_paths;
     use crate::git::GitError;
     use crate::git::fixture::FixtureResult;
@@ -1247,6 +1272,24 @@ mod tests {
                 &matches,
             ),
             super::HistoricalIntegrationCandidateDiscovery::Unavailable
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_commit_on_both_sides_answers_without_starting_git() -> FixtureResult {
+        let fixture = PatchEquivalenceFixture::new()?;
+        let head = fixture.phase_start_head.clone();
+        // Git cannot start in a directory that does not exist, so an answer proves none ran.
+        let missing_root = fixture.root().join("missing");
+        assert_eq!(
+            unmerged_branch_paths(&missing_root, &head, &head)?,
+            [] as [ReservationScopePath; 0]
+        );
+        assert_eq!(unmerged_branch_path_queries(&head, &head), 0);
+        assert_eq!(
+            reachability(&missing_root, &head, &head)?,
+            Reachability::Ancestor
         );
         Ok(())
     }

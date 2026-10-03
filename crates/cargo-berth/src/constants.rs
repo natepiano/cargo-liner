@@ -12,9 +12,6 @@ pub(crate) const MERGE_EXTENT_TRUNK_UNAVAILABLE: &str =
 /// Failed holder validation preserves the prior surface instead of observing a recycled path.
 pub(crate) const MERGE_EXTENT_WORKTREE_UNAVAILABLE: &str =
     "cannot derive merge extent: holder worktree is unavailable";
-/// Git invocations one `git::unmerged_branch_paths` read makes: `merge-tree`, then the diff from
-/// trunk to its result tree.
-pub(crate) const UNMERGED_BRANCH_PATH_GIT_QUERIES: u64 = 2;
 
 // orphan retirement
 /// The explanation `OrphanRetirementReason::derived` records when reconciliation, rather than the

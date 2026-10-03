@@ -3286,8 +3286,8 @@ fn cheap_and_full_fingerprints_use_their_exact_command_budgets() {
     assert!(full.output.status.success());
     assert_eq!(
         full.fingerprint_commands(),
-        vec!["diff", "diff-tree", "status", "status"],
-        "one branch merge query and status observation accompany the batched phase history and drift status"
+        vec!["diff-tree", "status", "status"],
+        "a status observation accompanies the batched phase history and drift status; HEAD is trunk, so no branch merge query starts"
     );
     assert_batched_full_attribution_commands(&full.commands());
 

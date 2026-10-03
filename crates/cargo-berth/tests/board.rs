@@ -5265,12 +5265,13 @@ fn assert_orphan_git_trace(traced: &TracedBoard, protected_tip: &str, reservatio
     );
     assert_batched_evidence_and_retention_queries(&trace);
     assert_eq!(trace.lines().filter(|line| *line == retention).count(), 1);
+    // The branch still points at the protected tip, and a commit is its own ancestor.
     assert_eq!(
         trace
             .lines()
             .filter(|line| *line == branch_ancestry)
             .count(),
-        1
+        0
     );
 }
 

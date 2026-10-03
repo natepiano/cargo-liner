@@ -230,29 +230,21 @@ impl ActingHeadContainment {
             if holder_heads.iter().any(|observed| observed.head == *head) {
                 continue;
             }
-            let committed_paths = if head == acting_head {
-                HashSet::new()
-            } else {
+            let committed_paths =
                 match git::unmerged_branch_paths(context.repository_root(), acting_head, head) {
                     Ok(paths) => paths.into_iter().collect(),
                     Err(_) => continue,
-                }
-            };
+                };
             let outside_target = match effective_target.as_ref() {
                 Some((target, tip))
                     if keys.iter().any(|(candidate_head, holder_target)| {
                         *candidate_head == head && *holder_target != target
                     }) =>
                 {
-                    if tip == head {
-                        CrossTargetRemainder::Paths(HashSet::new())
-                    } else {
-                        git::unmerged_branch_paths(context.repository_root(), tip, head)
-                            .map_or_else(
-                                |_| CrossTargetRemainder::Unavailable,
-                                |paths| CrossTargetRemainder::Paths(paths.into_iter().collect()),
-                            )
-                    }
+                    git::unmerged_branch_paths(context.repository_root(), tip, head).map_or_else(
+                        |_| CrossTargetRemainder::Unavailable,
+                        |paths| CrossTargetRemainder::Paths(paths.into_iter().collect()),
+                    )
                 },
                 Some(_) | None => CrossTargetRemainder::NotApplicable,
             };

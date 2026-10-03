@@ -1388,6 +1388,8 @@ fn assert_check_session_rejections(repository: &TempDir) {
 #[test]
 fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
     let repository = initialized_repository();
+    let earlier_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    advance_trunk_past(repository.path());
     let claim = run_berth(
         repository.path(),
         &[
@@ -1399,14 +1401,13 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
         ],
     );
     let reservation_id = reservation_id(&claim);
-    let trunk_oid = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let mut resolution = PausedBerthProcess::spawn(
         repository.path(),
         &[
             "resolve",
             &reservation_id,
             "--integrated-as",
-            &trunk_oid,
+            &earlier_trunk,
             "--json",
         ],
         PAUSE_MODE_MERGE_BASE,
@@ -1424,19 +1425,23 @@ fn rewritten_integration_reachability_runs_under_the_mutation_lock() {
     assert_eq!(contender.status.code(), Some(6));
     assert_eq!(json_output(&contender)["status"], "contention");
     let resolution = resolution.continue_and_wait();
-    assert_eq!(resolution.status.code(), Some(5));
+    let resolution_envelope = json_output(&resolution);
+    assert_eq!(resolution.status.code(), Some(5), "{resolution_envelope}");
     assert!(
-        json_output(&resolution)["message"]
+        resolution_envelope["message"]
             .as_str()
             .is_some_and(|message| {
                 message.contains("protected checkpoint") && message.contains("cargo-berth release")
-            })
+            }),
+        "{resolution_envelope}"
     );
 }
 
 #[test]
 fn identity_clear_session_reports_mutation_lock_contention() {
     let repository = initialized_repository();
+    let earlier_trunk = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    advance_trunk_past(repository.path());
     let session_id = "contended-clear-session";
     let claim = run_berth_with_session(
         repository.path(),
@@ -1450,14 +1455,13 @@ fn identity_clear_session_reports_mutation_lock_contention() {
         session_id,
     );
     let reservation_id = reservation_id(&claim);
-    let trunk_oid = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
     let mut resolution = PausedBerthProcess::spawn(
         repository.path(),
         &[
             "resolve",
             &reservation_id,
             "--integrated-as",
-            &trunk_oid,
+            &earlier_trunk,
             "--json",
         ],
         PAUSE_MODE_MERGE_BASE,
@@ -2328,6 +2332,24 @@ fn assert_coordination_identity_rejection(
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) { GIT.run(repository_root, arguments); }
+
+/// Commit on trunk without hooks before the claim, so `--integrated-as` the previous trunk commit
+/// names a strict ancestor of trunk and its `merge-base --is-ancestor` query starts git; the same
+/// commit on both sides answers without git.
+fn advance_trunk_past(repository_root: &Path) {
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "advance trunk",
+        ],
+    );
+}
 
 fn git_stdout(repository_root: &Path, arguments: &[&str]) -> String {
     GIT.stdout(repository_root, arguments)
