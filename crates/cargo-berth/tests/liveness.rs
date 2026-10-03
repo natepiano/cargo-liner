@@ -11,6 +11,7 @@ mod timing;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::json;
@@ -24,6 +25,15 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
+};
+
+/// The repository most tests here start from: a README committed on `main`, then
+/// `cargo-berth init` and its configuration committed.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
 };
 
 use std::fs;
@@ -2164,29 +2174,29 @@ fn create_active_orphan(
     reservation_id
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_initialized_repository(repository_root: &Path) {
     git(
-        repository.path(),
+        repository_root,
         &["init", "--quiet", "--initial-branch=main"],
     );
-    git(repository.path(), &["config", "user.name", "Berth Test"]);
+    git(repository_root, &["config", "user.name", "Berth Test"]);
     git(
-        repository.path(),
+        repository_root,
         &["config", "user.email", "berth@example.invalid"],
     );
-    fs::write(repository.path().join("README.md"), "scratch repository\n")
+    fs::write(repository_root.join("README.md"), "scratch repository\n")
         .expect("scratch file should write");
-    git(repository.path(), &["add", "README.md"]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
-    assert!(run_berth(repository.path(), &["init"]).status.success());
-    git(repository.path(), &["add", ".claude/config/berth.toml"]);
+    git(repository_root, &["add", "README.md"]);
+    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
+    assert!(run_berth(repository_root, &["init"]).status.success());
+    git(repository_root, &["add", ".claude/config/berth.toml"]);
     // Nothing is claimed yet, so the commit skips the hooks; see `GitDriver::run_without_hooks`.
     GIT.run_without_hooks(
-        repository.path(),
+        repository_root,
         ["commit", "--quiet", "-m", "track berth config"],
     );
-    repository
 }
 
 fn reservation_id(claim: &Output) -> String {

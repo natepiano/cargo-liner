@@ -4,7 +4,8 @@
 //! setup in every case when each builds its own repository. `DirectorySnapshot`
 //! captures what that setup left under one root and writes it back before each
 //! case, with no processes. Git records a linked worktree and its repository by
-//! absolute path, so a snapshot is restored at the root it was captured from.
+//! absolute path, so a snapshot is restored at the root it was captured from,
+//! unless `DirectorySnapshot::replace_text` first rewrites each recorded path.
 
 use std::fs;
 use std::fs::Permissions;
@@ -64,6 +65,34 @@ impl DirectorySnapshot {
                 });
             }
         }
+    }
+
+    /// Replace `from` with `to` in every captured file that contains it.
+    ///
+    /// Returns the path of each file it changed, relative to the captured root.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a file that contains `from` is not UTF-8 text.
+    #[must_use]
+    pub fn replace_text(&mut self, from: &str, to: &str) -> Vec<PathBuf> {
+        self.entries
+            .iter_mut()
+            .filter_map(|entry| match entry {
+                SnapshotEntry::File { path, contents, .. }
+                    if contents
+                        .windows(from.len())
+                        .any(|window| window == from.as_bytes()) =>
+                {
+                    let replaced = str::from_utf8(contents)
+                        .expect("a file that holds replaced text should be UTF-8")
+                        .replace(from, to);
+                    *contents = replaced.into_bytes();
+                    Some(path.clone())
+                },
+                SnapshotEntry::File { .. } | SnapshotEntry::Directory(_) => None,
+            })
+            .collect()
     }
 
     /// Replace everything under `root` with the captured entries.

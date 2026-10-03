@@ -17,6 +17,7 @@ use cargo_berth_test_support::EXECUTABLE_ENVIRONMENT;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::claim_id;
 use cargo_berth_test_support::deferring_run_scope;
@@ -32,6 +33,28 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Refused,
     cleared_environment: &[BYPASS_ENVIRONMENT],
+};
+
+/// The repository most tests here start from; see `build_initialized_repository`.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
+};
+
+/// A repository after `cargo-berth init`; see `build_staged_configuration_repository`.
+const STAGED_CONFIGURATION_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "staged-configuration",
+    build: build_staged_configuration_repository,
+    ..INITIALIZED_REPOSITORY
+};
+
+/// A repository before `cargo-berth init`; see `build_scratch_repository`.
+const SCRATCH_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "scratch",
+    build: build_scratch_repository,
+    ..INITIALIZED_REPOSITORY
 };
 
 use std::collections::BTreeMap;
@@ -89,6 +112,7 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
     "CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY";
 const REFERENCE_TRANSACTION_MARKER: &str = "# cargo-berth managed hook: reference-transaction";
+const REPOSITORY_IDENTITY_PATH: &str = ".git/cargo-berth/repo-instance-id";
 const RETENTION_TRACE_BRANCH: &str = "retention-trace";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
@@ -105,6 +129,7 @@ const TRACE_ENVIRONMENT: &str = "CARGO_BERTH_TEST_GIT_TRACE";
 /// path for itself before running it. Resolving `rm` under `/bin` instead only works where
 /// `/bin` holds more than `sh`.
 const UTILITY_PATH_ENVIRONMENT: &str = "CARGO_BERTH_TEST_UTILITY_PATH";
+const WORKTREE_IDENTITY_PATH: &str = ".git/cargo-berth-worktree-id";
 /// A `git` that records its arguments under the `TRACE_ENVIRONMENT` directory, then runs the
 /// real git or the failure `RAW_GIT_BEHAVIOR_ENVIRONMENT` names.
 ///
@@ -1108,6 +1133,66 @@ fn hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchang
         .filter(|path| !commit_record(path) && before.get(*path) != after.get(*path))
         .collect();
     assert!(changed.is_empty(), "the hooked commit changed {changed:?}");
+}
+
+/// A copy of `INITIALIZED_REPOSITORY` holds what `build_initialized_repository` writes in place.
+/// Apart from objects, git's index and the records that carry a commit time, the copy has the same
+/// files, and each reads the same once the in-place root and identities are read as the copy's:
+/// every absolute path names the copy, so its hooks never act on the template. Two copies carry
+/// different repository and worktree identities.
+#[test]
+fn repository_template_copy_matches_its_recipe_built_in_place() {
+    let copy = initialized_repository();
+    let other_copy = initialized_repository();
+    let in_place = tempdir().expect("temporary repository should exist");
+    build_initialized_repository(in_place.path());
+    let copy_root = fs::canonicalize(copy.path()).expect("copy should canonicalize");
+    let in_place_root =
+        fs::canonicalize(in_place.path()).expect("in-place build should canonicalize");
+
+    let identity = |root: &Path, path: &str| {
+        fs::read_to_string(root.join(path))
+            .expect("identity should read")
+            .trim()
+            .to_owned()
+    };
+    let mut in_place_names = vec![(
+        in_place_root.to_string_lossy().into_owned(),
+        copy_root.to_string_lossy().into_owned(),
+    )];
+    for path in [REPOSITORY_IDENTITY_PATH, WORKTREE_IDENTITY_PATH] {
+        assert_ne!(
+            identity(&copy_root, path),
+            identity(other_copy.path(), path)
+        );
+        in_place_names.push((identity(&in_place_root, path), identity(&copy_root, path)));
+    }
+    let timed = |path: &Path| {
+        path.starts_with(".git/objects")
+            || path.starts_with(".git/logs")
+            || path == Path::new(".git/index")
+            || path == Path::new(".git/refs/heads/main")
+    };
+    let comparable = |root: &Path| -> BTreeMap<PathBuf, String> {
+        files_under(root)
+            .into_iter()
+            .filter(|(path, _)| !timed(path))
+            .map(|(path, contents)| (path, String::from_utf8_lossy(&contents).into_owned()))
+            .collect()
+    };
+    let built: BTreeMap<PathBuf, String> = comparable(&in_place_root)
+        .into_iter()
+        .map(|(path, contents)| {
+            let renamed =
+                in_place_names
+                    .iter()
+                    .fold(contents, |contents, (in_place_name, copy_name)| {
+                        contents.replace(in_place_name.as_str(), copy_name)
+                    });
+            (path, renamed)
+        })
+        .collect();
+    assert_eq!(comparable(&copy_root), built);
 }
 
 /// `GitDriver::run_without_hooks` skips the hooks this test runs for the branch switches of the
@@ -5516,14 +5601,16 @@ fn dirty_source(root: &Path, path: &str) {
     fs::write(target, "uncommitted holder work\n").expect("held work should write");
 }
 
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
 /// A scratch repository with berth initialized and its configuration committed on `main`.
 ///
 /// The configuration commit skips the hooks: with no reservation yet they write nothing, which
 /// `hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged` proves.
-fn initialized_repository() -> TempDir {
-    let repository = staged_configuration_repository();
+fn build_initialized_repository(repository_root: &Path) {
+    build_staged_configuration_repository(repository_root);
     git(
-        repository.path(),
+        repository_root,
         &[
             "-c",
             "core.hooksPath=/dev/null",
@@ -5533,25 +5620,27 @@ fn initialized_repository() -> TempDir {
             "configure berth",
         ],
     );
-    repository
 }
 
+fn staged_configuration_repository() -> TempDir { STAGED_CONFIGURATION_REPOSITORY.instantiate() }
+
 /// A scratch repository after `cargo-berth init`, with the configuration staged to commit.
-fn staged_configuration_repository() -> TempDir {
-    let repository = scratch_repository();
+fn build_staged_configuration_repository(repository_root: &Path) {
+    build_scratch_repository(repository_root);
     assert!(
-        run_berth(repository.path(), &["init", "--json"])
+        run_berth(repository_root, &["init", "--json"])
             .status
             .success()
     );
-    git(repository.path(), &["add", CONFIGURATION_PATH]);
-    repository
+    git(repository_root, &["add", CONFIGURATION_PATH]);
 }
 
-fn scratch_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
+fn scratch_repository() -> TempDir { SCRATCH_REPOSITORY.instantiate() }
+
+/// A source and a test file committed on `main`, with git maintenance off.
+fn build_scratch_repository(repository_root: &Path) {
     git(
-        repository.path(),
+        repository_root,
         &["init", "--quiet", "--initial-branch", "main"],
     );
     // Git runs `maintenance run --auto --detach` after a commit, and this machine leaves that
@@ -5559,25 +5648,20 @@ fn scratch_repository() -> TempDir {
     // repack deletes a pack a commit still in flight is reading, which surfaces as
     // `invalid object <oid> for '<path>'` from a commit that did nothing wrong. A fixture
     // repository is short-lived and never needs maintenance, so it opts out of both schedulers.
-    git(repository.path(), &["config", "maintenance.auto", "false"]);
-    git(repository.path(), &["config", "gc.auto", "0"]);
+    git(repository_root, &["config", "maintenance.auto", "false"]);
+    git(repository_root, &["config", "gc.auto", "0"]);
     git(
-        repository.path(),
+        repository_root,
         &["config", "user.email", FIXTURE_USER_EMAIL],
     );
-    git(
-        repository.path(),
-        &["config", "user.name", FIXTURE_USER_NAME],
-    );
-    fs::create_dir_all(repository.path().join("src")).expect("source directory should exist");
-    fs::create_dir_all(repository.path().join("tests")).expect("test directory should exist");
-    fs::write(repository.path().join("src/lib.rs"), "pub fn base() {}\n")
+    git(repository_root, &["config", "user.name", FIXTURE_USER_NAME]);
+    fs::create_dir_all(repository_root.join("src")).expect("source directory should exist");
+    fs::create_dir_all(repository_root.join("tests")).expect("test directory should exist");
+    fs::write(repository_root.join("src/lib.rs"), "pub fn base() {}\n")
         .expect("base source should write");
-    fs::write(repository.path().join("tests/base.rs"), "// base\n")
-        .expect("base test should write");
-    git(repository.path(), &["add", "."]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
-    repository
+    fs::write(repository_root.join("tests/base.rs"), "// base\n").expect("base test should write");
+    git(repository_root, &["add", "."]);
+    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
 }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> PathBuf {

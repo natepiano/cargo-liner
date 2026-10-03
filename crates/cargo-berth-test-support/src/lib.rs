@@ -10,8 +10,10 @@
 //! Code session, `GitDriver` runs git under one test file's policy,
 //! `IntegrationRepository` builds a repository whose lanes target an
 //! `integration` branch, `DirectorySnapshot` restores a fixture built once
-//! before each case that starts from it, and `observes_merge_extent_of` reads
-//! a merge extent observation in either record form. Only a test crate of the
+//! before each case that starts from it, `RepositoryTemplate` copies a
+//! repository built once per test binary into each test, and
+//! `observes_merge_extent_of` reads a merge extent observation in either
+//! record form. Only a test crate of the
 //! `cargo-berth` package can expand `env!("CARGO_BIN_EXE_cargo-berth")`, so
 //! each entry point here that runs `cargo-berth`, directly or through a git
 //! hook, takes that path as its `executable`.
@@ -21,6 +23,7 @@ mod directory_snapshot;
 mod git_driver;
 mod integration_repository;
 mod journal_records;
+mod repository_template;
 
 pub use berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub use berth_command::berth_command;
@@ -42,3 +45,4 @@ pub use journal_records::HOLDER_MERGE_EXTENT_OBSERVED;
 pub use journal_records::MERGE_EXTENT_OBSERVED;
 pub use journal_records::is_merge_extent_observation;
 pub use journal_records::observes_merge_extent_of;
+pub use repository_template::RepositoryTemplate;

@@ -8,6 +8,7 @@
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::deferring_run_scope;
@@ -24,6 +25,15 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Refused,
     cleared_environment: &[],
+};
+
+/// The repository most tests here start from: a source file committed on `main`, then
+/// `cargo-berth init`.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            build_initialized_repository,
 };
 
 use std::fs;
@@ -6875,28 +6885,28 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     (directory, root)
 }
 
-fn initialized_repository() -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_initialized_repository(repository_root: &Path) {
     git(
-        repository.path(),
+        repository_root,
         &["init", "--quiet", "--initial-branch", "main"],
     );
     git(
-        repository.path(),
+        repository_root,
         &["config", "user.email", "test@example.com"],
     );
-    git(repository.path(), &["config", "user.name", "Test User"]);
-    fs::create_dir_all(repository.path().join("src")).expect("source directory should exist");
-    fs::write(repository.path().join("src/lib.rs"), "pub fn value() {}\n")
+    git(repository_root, &["config", "user.name", "Test User"]);
+    fs::create_dir_all(repository_root.join("src")).expect("source directory should exist");
+    fs::write(repository_root.join("src/lib.rs"), "pub fn value() {}\n")
         .expect("source should write");
-    git(repository.path(), &["add", "."]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
+    git(repository_root, &["add", "."]);
+    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
     assert!(
-        run_berth(repository.path(), &["init", "--json"])
+        run_berth(repository_root, &["init", "--json"])
             .status
             .success()
     );
-    repository
 }
 
 fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::path::PathBuf {

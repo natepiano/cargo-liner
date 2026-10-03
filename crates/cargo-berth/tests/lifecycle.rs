@@ -17,6 +17,7 @@ mod split_rebase;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
+use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::git_command;
@@ -30,6 +31,26 @@ const GIT: GitDriver = GitDriver {
     executable:          BERTH_EXECUTABLE,
     optional_locks:      OptionalLocks::Taken,
     cleared_environment: &[],
+};
+
+/// The repository most tests here start from: one commit tagged `INITIAL_COMMIT_TAG`, then
+/// `cargo-berth init`.
+const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "initialized",
+    build:            |repository_root| {
+        build_initialized_repository(repository_root, GitReferenceStorage::Loose);
+    },
+};
+
+/// `INITIALIZED_REPOSITORY` with its references kept in a reftable.
+const INITIALIZED_REFTABLE_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
+    name: "initialized-reftable",
+    build: |repository_root| {
+        build_initialized_repository(repository_root, GitReferenceStorage::Reftable);
+    },
+    ..INITIALIZED_REPOSITORY
 };
 
 use std::fs;
@@ -1583,21 +1604,28 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
     (directory, root)
 }
 
-fn initialized_repository() -> TempDir {
-    initialized_repository_with_reference_storage(GitReferenceStorage::Loose)
-}
+fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
 
 fn initialized_repository_with_reference_storage(
     git_reference_storage: GitReferenceStorage,
 ) -> TempDir {
-    let repository = tempdir().expect("temporary repository should exist");
+    match git_reference_storage {
+        GitReferenceStorage::Loose => INITIALIZED_REPOSITORY.instantiate(),
+        GitReferenceStorage::Reftable => INITIALIZED_REFTABLE_REPOSITORY.instantiate(),
+    }
+}
+
+fn build_initialized_repository(
+    repository_root: &Path,
+    git_reference_storage: GitReferenceStorage,
+) {
     match git_reference_storage {
         GitReferenceStorage::Loose => git(
-            repository.path(),
+            repository_root,
             &["init", "--quiet", "--initial-branch=main"],
         ),
         GitReferenceStorage::Reftable => git(
-            repository.path(),
+            repository_root,
             &[
                 "init",
                 "--quiet",
@@ -1606,18 +1634,17 @@ fn initialized_repository_with_reference_storage(
             ],
         ),
     }
-    git(repository.path(), &["config", "user.name", "Berth Test"]);
+    git(repository_root, &["config", "user.name", "Berth Test"]);
     git(
-        repository.path(),
+        repository_root,
         &["config", "user.email", "berth@example.invalid"],
     );
-    fs::write(repository.path().join("README.md"), "scratch repository\n")
+    fs::write(repository_root.join("README.md"), "scratch repository\n")
         .expect("scratch file should write");
-    git(repository.path(), &["add", "README.md"]);
-    git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
-    git(repository.path(), &["tag", INITIAL_COMMIT_TAG]);
-    assert!(run_berth(repository.path(), &["init"]).status.success());
-    repository
+    git(repository_root, &["add", "README.md"]);
+    git(repository_root, &["commit", "--quiet", "-m", "initial"]);
+    git(repository_root, &["tag", INITIAL_COMMIT_TAG]);
+    assert!(run_berth(repository_root, &["init"]).status.success());
 }
 
 fn configure_trunk(repository_root: &Path, trunk: &str) {
