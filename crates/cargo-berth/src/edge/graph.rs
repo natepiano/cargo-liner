@@ -1,4 +1,5 @@
-//! The replayed ordering graph, its deferrals, and edge-declaration validation.
+//! The replayed ordering graph, its deferrals and override answers, and edge-declaration
+//! validation.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -32,6 +33,7 @@ use crate::ids::ReservationId;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
 use crate::ledger::OrderingDirection;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -60,16 +62,26 @@ struct DeferredOverlapEndpoints {
     blocker:  ReservationId,
 }
 
-/// Adjacency and unresolved deferrals rebuilt from append-only facts.
+/// The shared scopes one `Override` answer recorded between its requester and the holder it
+/// answered; a later `sequence` between the pair covers them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OverriddenOverlap {
+    requester: ReservationId,
+    blocker:   ReservationId,
+    scopes:    OrderingOverlapScopeSet,
+}
+
+/// Adjacency, unresolved deferrals, and override answers rebuilt from append-only facts.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OrderingGraph {
-    vertices:         HashSet<ReservationId>,
-    edges:            Vec<OrderingEdge>,
-    edge_ids:         HashSet<EdgeId>,
-    endpoint_pairs:   HashSet<(ReservationId, ReservationId)>,
-    adjacency:        HashMap<ReservationId, Vec<ReservationId>>,
-    deferrals:        Vec<DeferredOverlap>,
-    deferral_indices: HashMap<(ReservationId, ReservationId), Vec<usize>>,
+    vertices:            HashSet<ReservationId>,
+    edges:               Vec<OrderingEdge>,
+    edge_ids:            HashSet<EdgeId>,
+    endpoint_pairs:      HashSet<(ReservationId, ReservationId)>,
+    adjacency:           HashMap<ReservationId, Vec<ReservationId>>,
+    deferrals:           Vec<DeferredOverlap>,
+    deferral_indices:    HashMap<(ReservationId, ReservationId), Vec<usize>>,
+    overridden_overlaps: Vec<OverriddenOverlap>,
 }
 
 impl OrderingGraph {
@@ -120,6 +132,21 @@ impl OrderingGraph {
                     reason.clone(),
                     event.event_id(),
                 )?,
+                JournalOperation::Sequence {
+                    predecessor,
+                    successor,
+                    edge_id,
+                    scopes,
+                    reason,
+                } => graph.add_edge(OrderingEdge {
+                    edge_id:              *edge_id,
+                    before:               *predecessor,
+                    after:                *successor,
+                    scopes:               OrderingOverlapScopeSet(scopes.clone()),
+                    reason:               reason.clone(),
+                    declaration_event_id: event.event_id(),
+                    declaration:          EdgeDeclaration::Sequence,
+                })?,
                 JournalOperation::Checkpoint { .. }
                 | JournalOperation::Resnapshot { .. }
                 | JournalOperation::Retarget { .. }
@@ -280,12 +307,18 @@ impl OrderingGraph {
         })
     }
 
-    /// Validate and prepare one edge that resolves an existing deferral.
-    pub(crate) fn prepare_deferred_edge(
+    /// Validate and prepare one edge between two reservations.
+    ///
+    /// A pending deferral between the pair is resolved whatever either endpoint's lifecycle, so a
+    /// deferral whose counterpart has ended can still be ordered. Without one, both endpoints must
+    /// be live, and the edge covers the scopes of every `Override` answer between the pair, or
+    /// the predecessor's reserved scopes when no answer joins them.
+    pub(crate) fn prepare_edge(
         &self,
         before: ReservationId,
         after: ReservationId,
         reason: OrderingReason,
+        reservations: &RetainedReservationSet,
     ) -> Result<PreparedOrderingEdge, EdgeDeclarationRejection> {
         if before == after {
             return Err(EdgeDeclarationRejection::SameEndpoint);
@@ -302,14 +335,27 @@ impl OrderingGraph {
         if cycle::would_create_cycle(&self.adjacency, before, after) {
             return Err(EdgeDeclarationRejection::Cycle);
         }
-        let resolution = self.deferred_overlap_between(before, after)?;
+        let (scopes, declaration) =
+            if let Some(resolution) = self.deferred_overlap_between(before, after)? {
+                (
+                    resolution.scopes,
+                    PreparedEdgeDeclaration::DeferredResolution(resolution.endpoints),
+                )
+            } else {
+                let predecessor = live_reservation(reservations, before)?;
+                live_reservation(reservations, after)?;
+                let scopes = self
+                    .overridden_scopes_between(before, after)
+                    .unwrap_or_else(|| OrderingOverlapScopeSet(predecessor.scopes().clone()));
+                (scopes, PreparedEdgeDeclaration::Sequence)
+            };
         Ok(PreparedOrderingEdge {
             edge_id: EdgeId::new(),
             before,
             after,
-            scopes: resolution.scopes,
+            scopes,
             reason,
-            deferral: resolution.endpoints,
+            declaration,
         })
     }
 
@@ -381,8 +427,18 @@ impl OrderingGraph {
     ) -> Result<(), EdgeReplayError> {
         match authorization {
             ConflictAuthorization::NoConflict
-            | ConflictAuthorization::Override { .. }
             | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => Ok(()),
+            ConflictAuthorization::Override {
+                overlaps, blocker, ..
+            } => {
+                let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(*blocker, overlaps)?;
+                self.overridden_overlaps.push(OverriddenOverlap {
+                    requester,
+                    blocker: *blocker,
+                    scopes,
+                });
+                Ok(())
+            },
             ConflictAuthorization::Enrollment { overlaps } => {
                 let reason = OverlapAuthorizationReason::enrollment();
                 let mut counterparts = HashSet::new();
@@ -523,11 +579,12 @@ impl OrderingGraph {
         Ok(())
     }
 
+    /// Return the pending deferral between the pair, or `None` when no pending deferral joins it.
     fn deferred_overlap_between(
         &self,
         first: ReservationId,
         second: ReservationId,
-    ) -> Result<DeferredOverlapResolution, EdgeDeclarationRejection> {
+    ) -> Result<Option<DeferredOverlapResolution>, EdgeDeclarationRejection> {
         let first_orientation = self
             .deferrals
             .iter()
@@ -547,7 +604,7 @@ impl OrderingGraph {
             })
             .collect::<Vec<_>>();
         let matching = match (first_orientation.is_empty(), second_orientation.is_empty()) {
-            (true, true) => return Err(EdgeDeclarationRejection::MissingDeferral),
+            (true, true) => return Ok(None),
             (false, false) => return Err(EdgeDeclarationRejection::AmbiguousDeferral),
             (false, true) => first_orientation,
             (true, false) => second_orientation,
@@ -556,10 +613,29 @@ impl OrderingGraph {
             deferred: matching[0].deferred,
             blocker:  matching[0].blocker,
         };
-        let scopes =
+        Ok(
             OrderingOverlapScopeSet::combine(matching.into_iter().map(|deferral| &deferral.scopes))
-                .map_err(|()| EdgeDeclarationRejection::MissingDeferral)?;
-        Ok(DeferredOverlapResolution { endpoints, scopes })
+                .ok()
+                .map(|scopes| DeferredOverlapResolution { endpoints, scopes }),
+        )
+    }
+
+    /// Combine the scopes of every `Override` answer between the pair, in either direction.
+    fn overridden_scopes_between(
+        &self,
+        first: ReservationId,
+        second: ReservationId,
+    ) -> Option<OrderingOverlapScopeSet> {
+        OrderingOverlapScopeSet::combine(
+            self.overridden_overlaps
+                .iter()
+                .filter(|overlap| {
+                    (overlap.requester == first && overlap.blocker == second)
+                        || (overlap.requester == second && overlap.blocker == first)
+                })
+                .map(|overlap| &overlap.scopes),
+        )
+        .ok()
     }
 }
 
@@ -571,30 +647,50 @@ pub(crate) struct GraphPredecessor<'graph> {
     pub(crate) successors:     &'graph [ReservationId],
 }
 
-/// An edge validated for one locked `ResolveDefer` append.
+/// Which journal operation records a prepared edge.
+#[derive(Clone, Copy)]
+enum PreparedEdgeDeclaration {
+    /// The edge resolves the pending deferral between these endpoints.
+    DeferredResolution(DeferredOverlapEndpoints),
+    /// The edge orders two live reservations that no pending deferral joins.
+    Sequence,
+}
+
+/// An edge validated for one locked `ResolveDefer` or `Sequence` append.
 pub(crate) struct PreparedOrderingEdge {
-    edge_id:  EdgeId,
-    before:   ReservationId,
-    after:    ReservationId,
-    scopes:   OrderingOverlapScopeSet,
-    reason:   OrderingReason,
-    deferral: DeferredOverlapEndpoints,
+    edge_id:     EdgeId,
+    before:      ReservationId,
+    after:       ReservationId,
+    scopes:      OrderingOverlapScopeSet,
+    reason:      OrderingReason,
+    declaration: PreparedEdgeDeclaration,
 }
 
 impl PreparedOrderingEdge {
-    /// Build the sole journal operation that turns this deferral into an edge.
+    /// Build the sole journal operation that records this edge.
     pub(crate) fn operation(&self) -> JournalOperation {
-        let direction = if self.before == self.deferral.deferred {
-            OrderingDirection::RequesterBeforeHolder
-        } else {
-            OrderingDirection::HolderBeforeRequester
-        };
-        JournalOperation::ResolveDefer {
-            deferred_reservation_id: self.deferral.deferred,
-            blocker_reservation_id: self.deferral.blocker,
-            edge_id: self.edge_id,
-            direction,
-            reason: self.reason.clone(),
+        match self.declaration {
+            PreparedEdgeDeclaration::DeferredResolution(deferral) => {
+                let direction = if self.before == deferral.deferred {
+                    OrderingDirection::RequesterBeforeHolder
+                } else {
+                    OrderingDirection::HolderBeforeRequester
+                };
+                JournalOperation::ResolveDefer {
+                    deferred_reservation_id: deferral.deferred,
+                    blocker_reservation_id: deferral.blocker,
+                    edge_id: self.edge_id,
+                    direction,
+                    reason: self.reason.clone(),
+                }
+            },
+            PreparedEdgeDeclaration::Sequence => JournalOperation::Sequence {
+                predecessor: self.before,
+                successor:   self.after,
+                edge_id:     self.edge_id,
+                scopes:      self.scopes.0.clone(),
+                reason:      self.reason.clone(),
+            },
         }
     }
 
@@ -607,7 +703,12 @@ impl PreparedOrderingEdge {
             scopes: self.scopes,
             reason: self.reason,
             declaration_event_id,
-            declaration: EdgeDeclaration::DeferredResolution,
+            declaration: match self.declaration {
+                PreparedEdgeDeclaration::DeferredResolution(_) => {
+                    EdgeDeclaration::DeferredResolution
+                },
+                PreparedEdgeDeclaration::Sequence => EdgeDeclaration::Sequence,
+            },
         }
     }
 }
@@ -628,8 +729,8 @@ pub(crate) enum EdgeDeclarationRejection {
     Duplicate,
     /// Adding the relationship would make the graph cyclic.
     Cycle,
-    /// No unresolved deferral joins the two endpoints.
-    MissingDeferral,
+    /// An endpoint has ended and no pending deferral joins the two endpoints.
+    TerminalEndpoint(ReservationId),
     /// Deferrals in both requester directions make the journal operation ambiguous.
     AmbiguousDeferral,
 }
@@ -643,8 +744,10 @@ impl Display for EdgeDeclarationRejection {
             Self::SameEndpoint => formatter.write_str("an ordering edge requires two reservations"),
             Self::Duplicate => formatter.write_str("that ordering edge already exists"),
             Self::Cycle => formatter.write_str("that ordering edge would create a cycle"),
-            Self::MissingDeferral => formatter.write_str(
-                "sequence can only resolve an existing defer answer between these reservations",
+            Self::TerminalEndpoint(reservation_id) => write!(
+                formatter,
+                "reservation {reservation_id} has ended, and no pending deferral joins it to the \
+                 other reservation"
             ),
             Self::AmbiguousDeferral => formatter.write_str(
                 "both reservations recorded defer answers; the ordering resolution is ambiguous",
@@ -716,6 +819,19 @@ impl Display for EdgeReplayError {
 
 impl Error for EdgeReplayError {}
 
+/// Borrow a nonterminal endpoint. A vertex the retained set no longer holds was pruned after it
+/// ended, so it is terminal too.
+fn live_reservation(
+    reservations: &RetainedReservationSet,
+    reservation_id: ReservationId,
+) -> Result<&Reservation, EdgeDeclarationRejection> {
+    reservations
+        .reservation(reservation_id)
+        .ok()
+        .filter(|reservation| !reservation.is_terminal())
+        .ok_or(EdgeDeclarationRejection::TerminalEndpoint(reservation_id))
+}
+
 const fn directed_endpoints(
     requester: ReservationId,
     blocker: ReservationId,
@@ -751,6 +867,7 @@ mod tests {
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
+    use crate::reservation::RetainedReservationSet;
 
     #[test]
     fn enrolled_claim_replay_defers_each_counterpart_once() -> Result<(), Box<dyn Error>> {
@@ -799,10 +916,11 @@ mod tests {
             enrolled_claim(other_counterpart, &ConflictAuthorization::NoConflict)?,
             enrolled_claim(enrolled, &enrollment(&[counterpart, other_counterpart])?)?,
         ];
+        let reservations = RetainedReservationSet::replay(&events)?;
         for (before, after) in [(enrolled, counterpart), (counterpart, enrolled)] {
             let mut graph = OrderingGraph::replay(&events)?;
             let prepared = graph
-                .prepare_deferred_edge(before, after, "land in this order".parse()?)
+                .prepare_edge(before, after, "land in this order".parse()?, &reservations)
                 .map_err(|error| io::Error::other(error.to_string()))?;
             let JournalOperation::ResolveDefer {
                 deferred_reservation_id,
@@ -833,24 +951,88 @@ mod tests {
             assert_eq!(edge.declaration_event_id, resolution_event_id);
             assert_eq!(graph.deferrals[0].resolved, DeferralResolution::Resolved);
             assert_eq!(graph.deferrals[1].resolved, DeferralResolution::Pending);
-            assert!(graph.deferred_overlap_between(before, after).is_err());
-            assert!(
-                graph
-                    .deferred_overlap_between(enrolled, other_counterpart)
-                    .is_ok()
+            assert!(matches!(
+                graph.deferred_overlap_between(before, after),
+                Ok(None)
+            ));
+            assert!(matches!(
+                graph.deferred_overlap_between(enrolled, other_counterpart),
+                Ok(Some(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sequence_without_deferral_covers_override_or_predecessor_scopes()
+    -> Result<(), Box<dyn Error>> {
+        let holder = ReservationId::new();
+        let requester = ReservationId::new();
+        let unanswered = ReservationId::new();
+        let events = [
+            enrolled_claim(holder, &ConflictAuthorization::NoConflict)?,
+            enrolled_claim_at(
+                requester,
+                "requester.rs",
+                &ConflictAuthorization::Override {
+                    overlaps: overlaps_with(&[holder])?,
+                    blocker:  holder,
+                    reason:   "whichever lands first".parse()?,
+                },
+            )?,
+            enrolled_claim_at(
+                unanswered,
+                "unanswered.rs",
+                &ConflictAuthorization::NoConflict,
+            )?,
+        ];
+        let graph = OrderingGraph::replay(&events)?;
+        let reservations = RetainedReservationSet::replay(&events)?;
+
+        for (before, after, expected_scopes) in [
+            (holder, requester, shared_scopes()?),
+            (unanswered, holder, scopes_at("unanswered.rs")?),
+        ] {
+            let prepared = graph
+                .prepare_edge(before, after, "hold the lane".parse()?, &reservations)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            let JournalOperation::Sequence {
+                predecessor,
+                successor,
+                scopes,
+                ..
+            } = prepared.operation()
+            else {
+                return Err(io::Error::other("expected a sequence operation").into());
+            };
+            assert_eq!((predecessor, successor), (before, after));
+            assert_eq!(scopes, expected_scopes);
+            assert_eq!(
+                prepared.into_edge(EventId::new()).declaration,
+                EdgeDeclaration::Sequence
             );
         }
         Ok(())
     }
 
-    fn shared_scopes() -> Result<ReservationScopeSet, Box<dyn Error>> {
+    fn shared_scopes() -> Result<ReservationScopeSet, Box<dyn Error>> { scopes_at("shared.rs") }
+
+    fn scopes_at(path: &str) -> Result<ReservationScopeSet, Box<dyn Error>> {
         Ok(ReservationScopeSet::try_from(vec![ReservationScope {
-            path: "shared.rs".parse()?,
+            path: path.parse()?,
             kind: ScopeKind::File,
         }])?)
     }
 
     fn enrollment(counterparts: &[ReservationId]) -> Result<ConflictAuthorization, Box<dyn Error>> {
+        Ok(ConflictAuthorization::Enrollment {
+            overlaps: overlaps_with(counterparts)?,
+        })
+    }
+
+    fn overlaps_with(
+        counterparts: &[ReservationId],
+    ) -> Result<AuthorizedOverlapSet, Box<dyn Error>> {
         let scopes = shared_scopes()?;
         let overlaps = counterparts
             .iter()
@@ -860,13 +1042,19 @@ mod tests {
                 scopes:         scopes.clone().into(),
             })
             .collect::<Vec<_>>();
-        Ok(ConflictAuthorization::Enrollment {
-            overlaps: AuthorizedOverlapSet::try_from(overlaps)?,
-        })
+        Ok(AuthorizedOverlapSet::try_from(overlaps)?)
     }
 
     fn enrolled_claim(
         reservation_id: ReservationId,
+        authorization: &ConflictAuthorization,
+    ) -> Result<JournalEvent, Box<dyn Error>> {
+        enrolled_claim_at(reservation_id, "shared.rs", authorization)
+    }
+
+    fn enrolled_claim_at(
+        reservation_id: ReservationId,
+        path: &str,
         authorization: &ConflictAuthorization,
     ) -> Result<JournalEvent, Box<dyn Error>> {
         Ok(serde_json::from_value(serde_json::json!({
@@ -881,7 +1069,7 @@ mod tests {
             "projection_generation": 1,
             "op": "claim",
             "reservation_id": reservation_id,
-            "scopes": shared_scopes()?,
+            "scopes": scopes_at(path)?,
             "source": ClaimSource::Enrolled,
             "purpose": { "kind": "not_provided_by_caller" },
             "trunk_at_claim": "1111111111111111111111111111111111111111",

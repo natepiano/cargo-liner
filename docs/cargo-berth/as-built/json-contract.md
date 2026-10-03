@@ -907,6 +907,7 @@ The operation union is:
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
 | `answer` | optional `reservation_id`, `scopes`, `authorizations` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
+| `sequence` | `predecessor`, `successor`, `edge_id`, `scopes`, `reason` |
 | `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
 | `resolve_incursion` | `incident_id` |
 | `forced_integration_permit` | `permit_id`, `reservation_id`, `reason`, `skipped_holds` |

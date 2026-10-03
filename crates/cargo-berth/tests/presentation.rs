@@ -306,10 +306,9 @@ fn sequence_presentation_is_engine_considered() -> TestResult {
     let second_envelope = json_output(&second)?;
     let second_id = required_string(&second_envelope, "/payload/data/reservation_id")?;
 
-    let sequence = run_berth(
-        repository.path(),
-        &["sequence", first_id, second_id, "--why", first_id, "--json"],
-    )?;
+    let arguments = ["sequence", first_id, second_id, "--why", first_id, "--json"];
+    require_success(&run_berth(repository.path(), &arguments)?, "first sequence")?;
+    let sequence = run_berth(repository.path(), &arguments)?;
     assert_eq!(sequence.status.code(), Some(2));
     let envelope = json_output(&sequence)?;
     assert_eq!(envelope["payload"]["kind"], "sequence");

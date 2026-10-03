@@ -1,4 +1,7 @@
-//! Locked conversion of a recorded deferral into one ordering edge.
+//! Locked declaration of one ordering edge between two reservations.
+//!
+//! A pending deferral between the pair is resolved into the edge. Without one, any two live
+//! reservations can be ordered, whether an `Override` answer joins them or no answer does.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -33,7 +36,7 @@ use crate::output::SequenceRejectionKind;
 use crate::reconcile;
 use crate::reservation::ReservationReplayError;
 
-/// A parsed request to order two reservations that already share a deferral.
+/// A parsed request to order two reservations.
 pub(crate) struct SequenceRequest {
     /// The reservation whose protected work must be incorporated first.
     pub(crate) first:  ReservationId,
@@ -43,7 +46,7 @@ pub(crate) struct SequenceRequest {
     pub(crate) reason: OrderingReason,
 }
 
-/// Execute one stateful deferral resolution and attach preceding reconciliation alerts.
+/// Execute one stateful edge declaration and attach preceding reconciliation alerts.
 pub(crate) fn execute(
     sequence_request: &SequenceRequest,
     recovery_command_line: &RecoveryCommandLine,
@@ -184,10 +187,11 @@ fn execute_sequence(
                     return TransactionValidation::Reject(SequenceRejection::EdgeReplay(error));
                 },
             };
-            let edge = match ordering_graph.prepare_deferred_edge(
+            let edge = match ordering_graph.prepare_edge(
                 sequence_request.first,
                 sequence_request.then,
                 sequence_request.reason.clone(),
+                reservations,
             ) {
                 Ok(edge) => edge,
                 Err(error) => {

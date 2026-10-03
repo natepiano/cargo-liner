@@ -3719,7 +3719,7 @@
           "type": "object"
         },
         "EdgeDeclaration": {
-          "description": "Whether an edge was born with an acquisition or resolved a prior deferral.",
+          "description": "Whether an edge was born with an acquisition, resolved a prior deferral, or ordered a pair.",
           "oneOf": [
             {
               "const": "acquisition",
@@ -3729,6 +3729,11 @@
             {
               "const": "deferred_resolution",
               "description": "A later `sequence` operation converted a deferral into an order.",
+              "type": "string"
+            },
+            {
+              "const": "sequence",
+              "description": "A later `sequence` operation ordered two live reservations that no pending deferral\njoined.",
               "type": "string"
             }
           ]
@@ -8812,7 +8817,7 @@
             },
             {
               "const": "sequenced",
-              "description": "A deferral was converted into one durable ordering edge.",
+              "description": "A `sequence` recorded one durable ordering edge.",
               "type": "string"
             },
             {
@@ -8823,11 +8828,6 @@
             {
               "const": "ordering_cycle",
               "description": "The requested directed edge would make the graph cyclic.",
-              "type": "string"
-            },
-            {
-              "const": "missing_deferral",
-              "description": "The named reservations have no unresolved deferral to order.",
               "type": "string"
             },
             {
@@ -9783,15 +9783,20 @@
               "type": "object"
             },
             {
-              "description": "No unresolved defer answer joins the endpoints.",
+              "description": "An endpoint has ended and no unresolved defer answer joins the endpoints.",
               "properties": {
                 "kind": {
-                  "const": "missing_deferral",
+                  "const": "terminal_endpoint",
                   "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The ended reservation."
                 }
               },
               "required": [
-                "kind"
+                "kind",
+                "reservation_id"
               ],
               "type": "object"
             },
@@ -11556,7 +11561,7 @@
           "type": "object"
         },
         "EdgeDeclaration": {
-          "description": "Whether an edge was born with an acquisition or resolved a prior deferral.",
+          "description": "Whether an edge was born with an acquisition, resolved a prior deferral, or ordered a pair.",
           "oneOf": [
             {
               "const": "acquisition",
@@ -11566,6 +11571,11 @@
             {
               "const": "deferred_resolution",
               "description": "A later `sequence` operation converted a deferral into an order.",
+              "type": "string"
+            },
+            {
+              "const": "sequence",
+              "description": "A later `sequence` operation ordered two live reservations that no pending deferral\njoined.",
               "type": "string"
             }
           ]
@@ -16637,15 +16647,20 @@
               "type": "object"
             },
             {
-              "description": "No unresolved defer answer joins the endpoints.",
+              "description": "An endpoint has ended and no unresolved defer answer joins the endpoints.",
               "properties": {
                 "kind": {
-                  "const": "missing_deferral",
+                  "const": "terminal_endpoint",
                   "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The ended reservation."
                 }
               },
               "required": [
-                "kind"
+                "kind",
+                "reservation_id"
               ],
               "type": "object"
             },

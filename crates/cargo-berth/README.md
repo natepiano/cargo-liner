@@ -111,7 +111,8 @@ The full verb set is:
   response.
 - `drift`: compare changed paths with reservation scopes.
 - `board`: inspect current constraints, answers, incidents, and audit history.
-- `sequence`: turn a deferred overlap into a directed ordering edge.
+- `sequence`: record a directed ordering edge between two live reservations,
+  resolving the deferred overlap between them when one exists.
 - `integrate`: update configured trunk to the current worktree `HEAD`;
   `--force --why <text>` records an explicit permit when ordering or deferral
   holds remain.
@@ -275,6 +276,7 @@ The four answers are:
   an `answer` against the acting run's oldest active reservation, when one
   exists. `--defer` may repeat, so one claim answers every holder of a path.
 - `--override <holder>`: editing is authorized without an integration order.
+  A later `sequence` command can still order the pair.
 
 Each answer requires `--overlap-why <text>` and records in that one
 invocation. An answer that leaves a conflicting holder unnamed is refused at

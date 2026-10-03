@@ -126,7 +126,7 @@ impl OrderingOverlapScopeSet {
     }
 }
 
-/// Whether an edge was born with an acquisition or resolved a prior deferral.
+/// Whether an edge was born with an acquisition, resolved a prior deferral, or ordered a pair.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EdgeDeclaration {
@@ -134,6 +134,9 @@ pub(crate) enum EdgeDeclaration {
     Acquisition,
     /// A later `sequence` operation converted a deferral into an order.
     DeferredResolution,
+    /// A later `sequence` operation ordered two live reservations that no pending deferral
+    /// joined.
+    Sequence,
 }
 
 /// One persistent ordering relationship reconstructed from journal truth.
@@ -188,7 +191,7 @@ pub(crate) struct IntegrationOrderingConstraint {
     pub(crate) reason:               OrderingReason,
     /// The settled-or-unsettled state derived once for this snapshot.
     pub(crate) readiness:            EdgeReadiness,
-    /// Whether acquisition declared the edge or a sequence resolved a deferral.
+    /// Whether acquisition declared the edge or a sequence resolved a deferral or ordered a pair.
     pub(crate) declaration:          EdgeDeclaration,
     /// The event that declared the edge.
     pub(crate) declaration_event_id: EventId,

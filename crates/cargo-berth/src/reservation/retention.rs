@@ -952,6 +952,7 @@ impl RetainedReservationSet {
                 Ok(())
             },
             JournalOperation::ResolveDefer { .. }
+            | JournalOperation::Sequence { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
             | JournalOperation::Bypass { .. } => Ok(()),

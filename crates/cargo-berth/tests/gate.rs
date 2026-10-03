@@ -672,6 +672,156 @@ fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
     );
 }
 
+/// `sequence` orders a pair that `default_answer = "first_ready"` answered with an override: the
+/// requester's update is refused until the holder lands, then admitted.
+#[test]
+fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
+    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let holder = repository.lane("target-a", "integration");
+    let requester = repository.lane("target-b", "integration");
+    let integration_before =
+        repository.git_stdout(repository.root(), &["rev-parse", "integration"]);
+    write_file(&holder, "shared.txt", "A\n");
+    let holder_claim = repository.claim(&holder, "file:shared.txt", FIRST_RUN, Some("integration"));
+    assert_success(&holder_claim);
+    let holder_id = claim_id(&holder_claim);
+    let mut configuration = OpenOptions::new()
+        .append(true)
+        .open(repository.root().join(CONFIGURATION_PATH))
+        .expect("configuration should open");
+    writeln!(configuration, "default_answer = \"first_ready\"")
+        .expect("default answer should write");
+    let requester_claim = repository.claim(
+        &requester,
+        &deferring_run_scope(SECOND_RUN),
+        SECOND_RUN,
+        Some("integration"),
+    );
+    assert_success(&requester_claim);
+    let requester_id = claim_id(&requester_claim);
+    let answered = repository.claim(
+        &requester,
+        "file:shared.txt",
+        SECOND_RUN,
+        Some("integration"),
+    );
+    assert_success(&answered);
+    assert_eq!(json(&answered)["status"], "answered");
+
+    let sequenced = repository.run(
+        repository.root(),
+        &[
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the rename lands first",
+            "--json",
+        ],
+    );
+    assert_success(&sequenced);
+    let edge = &json(&sequenced)["payload"]["data"]["edge"];
+    assert_eq!(edge["declaration"], "sequence");
+    assert_eq!(edge["scopes"][0]["path"], "shared.txt");
+    repository.commit_file(&holder, "shared.txt", "A\n", "A work");
+    repository.commit_file(&requester, "shared.txt", "B\n", "B work");
+    repository.git(
+        &requester,
+        &["merge", "-s", "ours", "--no-edit", "target-a"],
+    );
+    let holder_tip = repository.git_stdout(&holder, &["rev-parse", "HEAD"]);
+    let requester_tip = repository.git_stdout(&requester, &["rev-parse", "HEAD"]);
+    set_gate_mode(repository.root(), "enforce");
+
+    let denied = propose_branch(
+        repository.root(),
+        "integration",
+        &integration_before,
+        &requester_tip,
+    );
+    assert!(
+        !denied.status.success(),
+        "requester entered integration before the holder"
+    );
+    let text = String::from_utf8_lossy(&denied.stderr);
+    assert!(text.contains(&holder_id), "{text}");
+    assert_success(&repository.run(&holder, &["release", &holder_id, "--json"]));
+    repository.merge_fast_forward("target-a");
+    let allowed = propose_branch(
+        repository.root(),
+        "integration",
+        &holder_tip,
+        &requester_tip,
+    );
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+}
+
+/// `sequence` orders two live reservations that no answer joins, and the edge covers the
+/// predecessor's reserved scopes.
+#[test]
+fn target_gate_holds_the_successor_of_an_unanswered_sequenced_pair() {
+    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let predecessor = repository.lane("target-a", "integration");
+    let successor = repository.lane("target-b", "integration");
+    let integration_before =
+        repository.git_stdout(repository.root(), &["rev-parse", "integration"]);
+    write_file(&predecessor, "rename.txt", "A\n");
+    let predecessor_claim = repository.claim(
+        &predecessor,
+        "file:rename.txt",
+        FIRST_RUN,
+        Some("integration"),
+    );
+    assert_success(&predecessor_claim);
+    let predecessor_id = claim_id(&predecessor_claim);
+    write_file(&successor, "ready.txt", "B\n");
+    let successor_claim = repository.claim(
+        &successor,
+        "file:ready.txt",
+        SECOND_RUN,
+        Some("integration"),
+    );
+    assert_success(&successor_claim);
+    let successor_id = claim_id(&successor_claim);
+
+    let sequenced = repository.run(
+        repository.root(),
+        &[
+            "sequence",
+            &predecessor_id,
+            &successor_id,
+            "--why",
+            "hold the ready lane behind the rename",
+            "--json",
+        ],
+    );
+    assert_success(&sequenced);
+    let edge = &json(&sequenced)["payload"]["data"]["edge"];
+    assert_eq!(edge["declaration"], "sequence");
+    assert_eq!(edge["scopes"][0]["path"], "rename.txt");
+    repository.commit_file(&successor, "ready.txt", "B\n", "B work");
+    let successor_tip = repository.git_stdout(&successor, &["rev-parse", "HEAD"]);
+    set_gate_mode(repository.root(), "enforce");
+
+    let denied = propose_branch(
+        repository.root(),
+        "integration",
+        &integration_before,
+        &successor_tip,
+    );
+    assert!(
+        !denied.status.success(),
+        "successor entered integration before the predecessor"
+    );
+    let text = String::from_utf8_lossy(&denied.stderr);
+    assert!(text.contains(&predecessor_id), "{text}");
+    assert!(text.contains(&successor_id), "{text}");
+}
+
 #[test]
 fn listed_target_recreation_is_gated_at_its_proposed_tip() {
     let pair = target_pair(false);

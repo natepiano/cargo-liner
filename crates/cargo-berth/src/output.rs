@@ -649,14 +649,12 @@ declare_output_contract_metadata! {
         InvalidInput => ("invalid_input", UsageError);
         /// Another mutation retained the ledger lock through the retry window.
         Contention => ("contention", BlockedByContention);
-        /// A deferral was converted into one durable ordering edge.
+        /// A `sequence` recorded one durable ordering edge.
         Sequenced => ("sequenced", Clear);
         /// The requested directed edge already exists.
         DuplicateOrderingEdge => ("duplicate_ordering_edge", BlockedByOrdering);
         /// The requested directed edge would make the graph cyclic.
         OrderingCycle => ("ordering_cycle", BlockedByOrdering);
-        /// The named reservations have no unresolved deferral to order.
-        MissingDeferral => ("missing_deferral", BlockedByOrdering);
         /// The reservation now has a protected checkpoint awaiting integration.
         Outstanding => ("outstanding", Clear);
         /// The reservation's integration target contains its integration evidence.
@@ -1344,8 +1342,11 @@ pub(crate) enum SequenceRejectionKind {
     Duplicate,
     /// The proposed edge would create a directed cycle.
     Cycle,
-    /// No unresolved defer answer joins the endpoints.
-    MissingDeferral,
+    /// An endpoint has ended and no unresolved defer answer joins the endpoints.
+    TerminalEndpoint {
+        /// The ended reservation.
+        reservation_id: ReservationId,
+    },
     /// Both endpoint directions contain defer answers.
     AmbiguousDeferral,
     /// Repository policy permits no additional ordering edge.
@@ -1364,7 +1365,9 @@ impl From<EdgeDeclarationRejection> for SequenceRejectionKind {
             EdgeDeclarationRejection::SameEndpoint => Self::SameEndpoint,
             EdgeDeclarationRejection::Duplicate => Self::Duplicate,
             EdgeDeclarationRejection::Cycle => Self::Cycle,
-            EdgeDeclarationRejection::MissingDeferral => Self::MissingDeferral,
+            EdgeDeclarationRejection::TerminalEndpoint(reservation_id) => {
+                Self::TerminalEndpoint { reservation_id }
+            },
             EdgeDeclarationRejection::AmbiguousDeferral => Self::AmbiguousDeferral,
         }
     }
@@ -1377,7 +1380,7 @@ impl SequenceRejectionKind {
             Self::Cycle => vec![then],
             Self::UnknownEndpoint { .. }
             | Self::SameEndpoint
-            | Self::MissingDeferral
+            | Self::TerminalEndpoint { .. }
             | Self::AmbiguousDeferral
             | Self::OrderingEdgeLimitReached { .. } => Vec::new(),
         }
@@ -1399,13 +1402,6 @@ impl SequenceRejectionKind {
                 BerthExit::BlockedByOrdering,
                 format!("Ordering edge {first} before {then} would create a cycle."),
             ),
-            Self::MissingDeferral => (
-                OutputStatus::MissingDeferral,
-                BerthExit::BlockedByOrdering,
-                format!(
-                    "Reservations {first} and {then} have no unresolved defer answer to sequence."
-                ),
-            ),
             Self::OrderingEdgeLimitReached { maximum } => (
                 OutputStatus::OrderingEdgeLimitReached,
                 BerthExit::BlockedByOrdering,
@@ -1420,6 +1416,13 @@ impl SequenceRejectionKind {
                 OutputStatus::InvalidInput,
                 BerthExit::UsageError,
                 "An ordering edge requires two different reservations.".to_owned(),
+            ),
+            Self::TerminalEndpoint { reservation_id } => (
+                OutputStatus::InvalidInput,
+                BerthExit::UsageError,
+                format!(
+                    "Reservation {reservation_id} has ended; sequence orders an ended reservation only to resolve an unresolved defer answer."
+                ),
             ),
             Self::AmbiguousDeferral => (
                 OutputStatus::InvalidInput,
@@ -2340,7 +2343,7 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build the successful response for a deferral converted into an ordering edge.
+    /// Build the successful response for a recorded ordering edge.
     pub(crate) fn sequenced(edge: OrderingEdge, readiness: EdgeReadiness) -> Self {
         let edge_id = edge.edge_id;
         let before = edge.before;
@@ -2368,7 +2371,7 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build a locked semantic rejection for a requested deferral resolution.
+    /// Build a locked semantic rejection for a requested ordering edge.
     pub(crate) fn sequence_rejected(
         first: ReservationId,
         then: ReservationId,
@@ -2696,7 +2699,6 @@ impl OutputEnvelope {
             | OutputStatus::Sequenced
             | OutputStatus::DuplicateOrderingEdge
             | OutputStatus::OrderingCycle
-            | OutputStatus::MissingDeferral
             | OutputStatus::Outstanding
             | OutputStatus::Integrated
             | OutputStatus::TrunkRewritten

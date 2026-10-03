@@ -56,7 +56,7 @@
        - `coordination_identity_provenance: NotPresented`
    - `LedgerTransactionError::CorrectableInput` (the 16 KiB record limit) → `record_too_large`; other transaction errors → `git_failure`.
    - After the append, `WorktreeContext::publish_coordination_run_marker(run)`. A session in that worktree then joins the run through the marker and reuses the reservation without appending anything.
-6. **Report.** `report.overlaps = unresolved_enrollment_overlaps(re-read events)`. This walks the journal in order: every `Claim` or `Widen` with an `Enrollment` authorization adds one `EnrollmentOverlap` per bound counterpart, and a `ResolveDefer` whose `(deferred, blocker)` equals `(first, second)` removes it. `sequence` writes the stored deferral's orientation into `ResolveDefer` (`prepare_deferred_edge` uses `deferred_overlap_between(..).endpoints`), so either command order clears the pair.
+6. **Report.** `report.overlaps = unresolved_enrollment_overlaps(re-read events)`. This walks the journal in order: every `Claim` or `Widen` with an `Enrollment` authorization adds one `EnrollmentOverlap` per bound counterpart, and a `ResolveDefer` whose `(deferred, blocker)` equals `(first, second)` removes it. `sequence` writes the stored deferral's orientation into `ResolveDefer` (`prepare_edge` uses the endpoints `deferred_overlap_between` returns), so either command order clears the pair.
 
 ### Types
 

@@ -596,6 +596,20 @@ pub(crate) enum JournalOperation {
         /// The reason for choosing this ordering now.
         reason:                  OrderingReason,
     },
+    /// Order two live reservations that no pending deferral joins.
+    Sequence {
+        /// The reservation whose protected work must be incorporated first.
+        predecessor: ReservationId,
+        /// The reservation held until it incorporates `predecessor`.
+        successor:   ReservationId,
+        /// The durable edge this operation creates.
+        edge_id:     EdgeId,
+        /// The paths the edge covers: an override answer's shared scopes between the pair, or
+        /// the predecessor's reserved scopes when no answer joins them.
+        scopes:      ReservationScopeSet,
+        /// The reason for choosing this ordering.
+        reason:      OrderingReason,
+    },
     /// Record a write that entered scopes reserved by another worktree.
     Incursion {
         /// The durable identity used to answer this incident.
@@ -731,6 +745,7 @@ impl JournalOperation {
             | Self::SuccessorScopedPatchComparisonAttempted { .. }
             | Self::Answer { .. }
             | Self::ResolveDefer { .. }
+            | Self::Sequence { .. }
             | Self::ResolveIncursion { .. }
             | Self::ForcedIntegrationPermit { .. }
             | Self::ConsumeForcedIntegrationPermit { .. }
@@ -746,8 +761,9 @@ impl JournalOperation {
     /// alerts, worktree enrollment's reservation history and overlaps, forced-integration permits,
     /// the gate decision, the bypass audit, and pending-bypass recovery. Together they read every
     /// claim and answer, a widen authorized by enrollment, sequence, defer or override, deferral
-    /// resolutions, forced-integration permits and their consumption, and bypasses. Every other
-    /// record is read only by [`RetainedReservationSet`] replay, which reads every record.
+    /// resolutions, `sequence` edges, forced-integration permits and their consumption, and
+    /// bypasses. Every other record is read only by [`RetainedReservationSet`] replay, which reads
+    /// every record.
     ///
     /// The match has no wildcard arm, so a new operation must be placed on one side.
     pub(crate) const fn is_coordination_record(&self) -> bool {
@@ -755,6 +771,7 @@ impl JournalOperation {
             Self::Claim { .. }
             | Self::Answer { .. }
             | Self::ResolveDefer { .. }
+            | Self::Sequence { .. }
             | Self::ForcedIntegrationPermit { .. }
             | Self::ConsumeForcedIntegrationPermit { .. }
             | Self::Bypass { .. } => true,

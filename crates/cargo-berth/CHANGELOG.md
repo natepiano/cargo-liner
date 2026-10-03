@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `sequence <first> <then> --why <text>` orders any two live reservations. A pending deferral between them is resolved as before; without one, an `Override` answer, including one that `default_answer = "first_ready"` recorded, or no answer at all, still yields an ordering edge, recorded as a new `sequence` journal record with `declaration: "sequence"`. The edge covers the override answer's shared scopes, or the predecessor's reserved scopes when no answer joins the pair, and holds `<then>`'s trunk update until `<first>` integrates or is released. An ended endpoint that no pending deferral joins is refused as `invalid_input` with reason `terminal_endpoint`; the `missing_deferral` status no longer occurs.
 - A `--defer` answer reserves nothing and adds no holder: `claim --defer` appends an `answer` record against the acting run's oldest active reservation, when one exists, and the ordering graph holds that reservation against each blocker. `--defer` may repeat, so one claim answers every holder of a path.
 - `release` on integrated work releases it instead of moving its checkpoint; unintegrated work still moves to the holder's HEAD. Release journal entries record an optional `source` (`command` or `reconciliation`).
 
