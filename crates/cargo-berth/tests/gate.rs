@@ -1622,103 +1622,117 @@ fn enforce_gate_rejects_cross_target_successor_before_integration_lands_on_main(
 }
 
 #[test]
-fn enrollment_authorizes_both_edits_but_holds_integration_under_each_gate_policy() {
-    for (mode, acting_index) in [
-        ("observe", 0),
-        ("observe", 1),
-        ("enforce", 0),
-        ("enforce", 1),
-    ] {
-        let repository = scratch_repository();
-        let root = repository.path();
-        let base = git_stdout(root, &["rev-parse", "main"]);
-        let worktrees = tempdir().expect("worktree parent should exist");
-        let first = add_worktree(root, worktrees.path(), "enrolled-first");
-        let second = add_worktree(root, worktrees.path(), "enrolled-second");
-        for (checkout, contents) in [
-            (&first, "pub fn first_committed() {}\n"),
-            (&second, "pub fn second_committed() {}\n"),
-        ] {
-            commit_work_without_hooks(checkout, "src/lib.rs", contents, "work before enrollment");
-            fs::write(
-                checkout.join("src/lib.rs"),
-                format!("{contents}// dirty before init\n"),
-            )
-            .expect("dirty shared work should write");
-        }
-        let initialized = run_berth(root, &["init", "--json"]);
-        let initialized_envelope = json_output(&initialized);
-        assert!(initialized.status.success(), "{initialized_envelope}");
-        let enrollment = &initialized_envelope["payload"]["data"]["enrollment"];
-        assert_eq!(
-            enrollment["enrolled"]
-                .as_array()
-                .expect("enrolled rows")
-                .len(),
-            2
-        );
-        assert_eq!(
-            enrollment["overlaps"]
-                .as_array()
-                .expect("overlap rows")
-                .len(),
-            1
-        );
-        set_gate_mode(root, mode);
-        let mut reservation_ids = Vec::new();
-        for (checkout, session) in [
-            (&first, "enrolled-first-session"),
-            (&second, "enrolled-second-session"),
-        ] {
-            let checked =
-                run_berth_with_session(checkout, &["check", "file:src/lib.rs", "--json"], session);
-            let envelope = json_output(&checked);
-            assert!(checked.status.success(), "{envelope}");
-            assert_eq!(envelope["status"], "clear");
-            assert_eq!(
-                envelope["payload"]["data"]["acquisition"]["kind"],
-                "already_held"
-            );
-            reservation_ids.push(
-                envelope["payload"]["data"]["acquisition"]["reservation_id"]
-                    .as_str()
-                    .expect("reused enrolled reservation")
-                    .to_owned(),
-            );
-            commit_work(
-                checkout,
-                "src/lib.rs",
-                &format!("// edited by {session}\n"),
-                "authorized shared edit",
-            );
-            let drift = run_berth_with_session(checkout, &["drift", "--full", "--json"], session);
-            assert!(drift.status.success(), "{}", json_output(&drift));
-        }
-        let board = run_berth(root, &["board", "--json"]);
-        let board_envelope = json_output(&board);
-        assert!(board.status.success(), "{board_envelope}");
-        assert_eq!(
-            board_envelope["payload"]["data"]["outstanding_incursions"]["entries"],
-            serde_json::json!([])
-        );
-        assert_eq!(
-            board_envelope["payload"]["data"]["unresolved_overlaps"]["entries"][0]["origin"],
-            "enrollment"
-        );
+fn enrollment_authorizes_both_edits_but_holds_first_integration_under_observe() {
+    enrollment_authorizes_both_edits_but_holds_integration("observe", 0);
+}
 
-        let acting_root = [&first, &second][acting_index];
-        let integrated = run_berth(
-            acting_root,
-            &["integrate", &reservation_ids[acting_index], "--json"],
-        );
-        assert_enrollment_gate_decision(
-            root,
-            mode,
-            &base,
-            &integrated,
-            &reservation_ids[1 - acting_index],
-        );
+#[test]
+fn enrollment_authorizes_both_edits_but_holds_second_integration_under_observe() {
+    enrollment_authorizes_both_edits_but_holds_integration("observe", 1);
+}
+
+#[test]
+fn enrollment_authorizes_both_edits_but_holds_first_integration_under_enforce() {
+    enrollment_authorizes_both_edits_but_holds_integration("enforce", 0);
+}
+
+#[test]
+fn enrollment_authorizes_both_edits_but_holds_second_integration_under_enforce() {
+    enrollment_authorizes_both_edits_but_holds_integration("enforce", 1);
+}
+
+/// Two checkouts enrolled with overlapping work both edit, and integrating either one holds
+/// under the gate `mode`; `acting_index` picks the checkout that integrates.
+fn enrollment_authorizes_both_edits_but_holds_integration(mode: &str, acting_index: usize) {
+    let repository = scratch_repository();
+    let root = repository.path();
+    let base = git_stdout(root, &["rev-parse", "main"]);
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let first = add_worktree(root, worktrees.path(), "enrolled-first");
+    let second = add_worktree(root, worktrees.path(), "enrolled-second");
+    for (checkout, contents) in [
+        (&first, "pub fn first_committed() {}\n"),
+        (&second, "pub fn second_committed() {}\n"),
+    ] {
+        commit_work_without_hooks(checkout, "src/lib.rs", contents, "work before enrollment");
+        fs::write(
+            checkout.join("src/lib.rs"),
+            format!("{contents}// dirty before init\n"),
+        )
+        .expect("dirty shared work should write");
     }
+    let initialized = run_berth(root, &["init", "--json"]);
+    let initialized_envelope = json_output(&initialized);
+    assert!(initialized.status.success(), "{initialized_envelope}");
+    let enrollment = &initialized_envelope["payload"]["data"]["enrollment"];
+    assert_eq!(
+        enrollment["enrolled"]
+            .as_array()
+            .expect("enrolled rows")
+            .len(),
+        2
+    );
+    assert_eq!(
+        enrollment["overlaps"]
+            .as_array()
+            .expect("overlap rows")
+            .len(),
+        1
+    );
+    set_gate_mode(root, mode);
+    let mut reservation_ids = Vec::new();
+    for (checkout, session) in [
+        (&first, "enrolled-first-session"),
+        (&second, "enrolled-second-session"),
+    ] {
+        let checked =
+            run_berth_with_session(checkout, &["check", "file:src/lib.rs", "--json"], session);
+        let envelope = json_output(&checked);
+        assert!(checked.status.success(), "{envelope}");
+        assert_eq!(envelope["status"], "clear");
+        assert_eq!(
+            envelope["payload"]["data"]["acquisition"]["kind"],
+            "already_held"
+        );
+        reservation_ids.push(
+            envelope["payload"]["data"]["acquisition"]["reservation_id"]
+                .as_str()
+                .expect("reused enrolled reservation")
+                .to_owned(),
+        );
+        commit_work(
+            checkout,
+            "src/lib.rs",
+            &format!("// edited by {session}\n"),
+            "authorized shared edit",
+        );
+        let drift = run_berth_with_session(checkout, &["drift", "--full", "--json"], session);
+        assert!(drift.status.success(), "{}", json_output(&drift));
+    }
+    let board = run_berth(root, &["board", "--json"]);
+    let board_envelope = json_output(&board);
+    assert!(board.status.success(), "{board_envelope}");
+    assert_eq!(
+        board_envelope["payload"]["data"]["outstanding_incursions"]["entries"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        board_envelope["payload"]["data"]["unresolved_overlaps"]["entries"][0]["origin"],
+        "enrollment"
+    );
+
+    let acting_root = [&first, &second][acting_index];
+    let integrated = run_berth(
+        acting_root,
+        &["integrate", &reservation_ids[acting_index], "--json"],
+    );
+    assert_enrollment_gate_decision(
+        root,
+        mode,
+        &base,
+        &integrated,
+        &reservation_ids[1 - acting_index],
+    );
 }
 
 #[test]
@@ -5094,11 +5108,13 @@ fn hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock() {
     assert!(diagnostic.contains("CARGO_BERTH_BYPASS=1"));
 }
 
+// These invoke berth's installed git post-commit hook. The external Claude PostToolUse shim is
+// outside this repository and is not exercised here. Each test builds its own fixture, and a test
+// with several cells restores it before each one, so the cells differ only in what they claim,
+// write and commit.
+
 #[test]
-fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
-    // This invokes berth's installed git post-commit hook. The external Claude
-    // PostToolUse shim is outside this repository and is not exercised here. Every cell restores
-    // one shared fixture, so the cells differ only in what they claim, write and commit.
+fn git_hook_post_commit_reservation_cardinality_is_fixed() {
     let fixture = PostCommitCellFixture::new();
     let one_reservation = post_commit_reservation_cardinality_trace(&fixture, 1);
     let three_reservations = post_commit_reservation_cardinality_trace(&fixture, 3);
@@ -5123,38 +5139,51 @@ fn git_hook_post_commit_path_and_commit_cardinality_matrix_is_fixed() {
             .count(),
         1
     );
+}
 
+#[test]
+fn git_hook_post_commit_attributed_path_and_commit_cardinality_is_fixed() {
+    let fixture = PostCommitCellFixture::new();
     let attributed_baseline = post_commit_path_commit_cardinality_trace(&fixture, 1, 1);
     assert_eq!(
         attributed_baseline.len(),
         POST_COMMIT_ENGINE_GIT_PROCESS_CEILING
     );
     assert_eq!(git_command_count(&attributed_baseline, "log"), 1);
-    // A cell already traced is reused instead of traced again: the baseline is the (1, 1)
-    // cell, and the wide cells skip the small grid.
-    for path_count in [0, 1, 2] {
-        for commit_count in [0, 1, 2] {
-            let observed = if (path_count, commit_count) == (1, 1) {
-                attributed_baseline.clone()
-            } else {
-                post_commit_path_commit_cardinality_trace(&fixture, path_count, commit_count)
-            };
-            assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
-            if path_count > 0 && commit_count > 0 {
-                assert_same_git_process_multiset(&attributed_baseline, &observed);
-                assert_eq!(git_command_count(&observed, "log"), 1);
-            } else {
-                assert_eq!(git_command_count(&observed, "log"), 0);
-            }
-        }
-    }
-
-    for (path_count, commit_count) in [(0, 14), (0, 100), (4, 0), (33, 0)] {
+    for (path_count, commit_count) in [(1, 2), (2, 1), (2, 2)] {
         let observed =
             post_commit_path_commit_cardinality_trace(&fixture, path_count, commit_count);
         assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
-        assert_eq!(git_command_count(&observed, "log"), 0);
+        assert_same_git_process_multiset(&attributed_baseline, &observed);
+        assert_eq!(git_command_count(&observed, "log"), 1);
     }
+}
+
+/// One test per post-commit cell with no changed path or no commit: the hook stays under the git
+/// process ceiling and never runs `git log`.
+macro_rules! unattributed_post_commit_cells {
+    ($($name:ident: $path_count:literal paths, $commit_count:literal commits;)+) => {$(
+        #[test]
+        fn $name() {
+            let fixture = PostCommitCellFixture::new();
+            let observed =
+                post_commit_path_commit_cardinality_trace(&fixture, $path_count, $commit_count);
+            assert!(observed.len() <= POST_COMMIT_ENGINE_GIT_PROCESS_CEILING);
+            assert_eq!(git_command_count(&observed, "log"), 0);
+        }
+    )+};
+}
+
+unattributed_post_commit_cells! {
+    git_hook_post_commit_with_0_paths_and_0_commits_runs_no_log: 0 paths, 0 commits;
+    git_hook_post_commit_with_0_paths_and_1_commit_runs_no_log: 0 paths, 1 commits;
+    git_hook_post_commit_with_0_paths_and_2_commits_runs_no_log: 0 paths, 2 commits;
+    git_hook_post_commit_with_0_paths_and_14_commits_runs_no_log: 0 paths, 14 commits;
+    git_hook_post_commit_with_0_paths_and_100_commits_runs_no_log: 0 paths, 100 commits;
+    git_hook_post_commit_with_1_path_and_0_commits_runs_no_log: 1 paths, 0 commits;
+    git_hook_post_commit_with_2_paths_and_0_commits_runs_no_log: 2 paths, 0 commits;
+    git_hook_post_commit_with_4_paths_and_0_commits_runs_no_log: 4 paths, 0 commits;
+    git_hook_post_commit_with_33_paths_and_0_commits_runs_no_log: 33 paths, 0 commits;
 }
 
 #[test]

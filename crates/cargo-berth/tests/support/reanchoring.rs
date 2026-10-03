@@ -6,7 +6,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -209,19 +208,12 @@ enum ReconciliationTiming {
 
 /// Two phases whose checkpoints went through a conflicted rebase and an amend, then one more
 /// rebase onto `main`: the history both `ReconciliationTiming` cases continue from.
-///
-/// Building it costs two rebases and an amend through the real hooks. `new` builds it once and
-/// captures the repository and its linked checkouts, and `restore` writes them back before each
-/// case at the paths they were built at, because git records a linked worktree and its
-/// repository by absolute path.
 struct TwoRebaseHistory {
-    fixture:             RewriteFixture,
-    first:               String,
-    second:              String,
-    earlier_tip:         String,
-    final_tip:           String,
-    repository_snapshot: DirectorySnapshot,
-    worktrees_snapshot:  DirectorySnapshot,
+    fixture:     RewriteFixture,
+    first:       String,
+    second:      String,
+    earlier_tip: String,
+    final_tip:   String,
 }
 
 impl TwoRebaseHistory {
@@ -280,40 +272,27 @@ impl TwoRebaseHistory {
         let earlier_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD^"]);
         assert_ne!(earlier_tip, final_tip);
         assert_ne!(first_rebased_tip, earlier_tip);
-        let repository_snapshot = DirectorySnapshot::capture(fixture.root());
-        let worktrees_snapshot = DirectorySnapshot::capture(fixture.worktrees.path());
         Self {
             fixture,
             first,
             second,
             earlier_tip,
             final_tip,
-            repository_snapshot,
-            worktrees_snapshot,
         }
     }
-
-    /// Discard what the previous case wrote and return the rebased fixture.
-    fn restore(&self) -> &RewriteFixture {
-        self.repository_snapshot.restore(self.fixture.root());
-        self.worktrees_snapshot
-            .restore(self.fixture.worktrees.path());
-        &self.fixture
-    }
 }
 
-pub(super) fn checkpoint_ranges_survive_two_rebases() {
+pub(super) fn checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward() {
+    checkpoint_ranges_with_reconciliation(ReconciliationTiming::BeforeFastForward);
+}
+
+pub(super) fn checkpoint_ranges_survive_two_rebases_reconciled_during_integration() {
+    checkpoint_ranges_with_reconciliation(ReconciliationTiming::DuringIntegration);
+}
+
+fn checkpoint_ranges_with_reconciliation(timing: ReconciliationTiming) {
     let history = TwoRebaseHistory::new();
-    for timing in [
-        ReconciliationTiming::BeforeFastForward,
-        ReconciliationTiming::DuringIntegration,
-    ] {
-        checkpoint_ranges_with_reconciliation(&history, timing);
-    }
-}
-
-fn checkpoint_ranges_with_reconciliation(history: &TwoRebaseHistory, timing: ReconciliationTiming) {
-    let fixture = history.restore();
+    let fixture = &history.fixture;
     let (first, second) = (history.first.as_str(), history.second.as_str());
     let (earlier_tip, final_tip) = (history.earlier_tip.as_str(), history.final_tip.as_str());
     if matches!(timing, ReconciliationTiming::BeforeFastForward) {

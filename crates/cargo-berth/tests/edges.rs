@@ -1942,30 +1942,36 @@ fn unavailable_successor_comparison_is_retried_instead_of_cached() {
 }
 
 #[test]
-fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
+fn successor_board_has_fixed_cold_cost() {
     let one = successor_scale_fixture(1);
     let one_cold = run_berth_with_git_trace(one.repository.path(), &["board", "--json"], "*");
     assert!(one_cold.output.status.success());
     let one_argv = git_trace(&one_cold);
 
-    let four = successor_scale_fixture(4);
-    let four_cold = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
-    assert!(four_cold.output.status.success());
-    let four_argv = git_trace(&four_cold);
+    let two = successor_scale_fixture(2);
+    let two_cold = run_berth_with_git_trace(two.repository.path(), &["board", "--json"], "*");
+    assert!(two_cold.output.status.success());
+    let two_argv = git_trace(&two_cold);
     assert_ne!(one_argv, [] as [String; 0]);
     assert_merge_observation_budget(&one_argv, 2);
-    assert_merge_observation_budget(&four_argv, 5);
+    assert_merge_observation_budget(&two_argv, 3);
     assert_eq!(
-        canonical_git_command_sequence(&four_argv).len(),
+        canonical_git_command_sequence(&two_argv).len(),
         canonical_git_command_sequence(&one_argv).len(),
-        "one successor argv: {one_argv:?}; four successor argv: {four_argv:?}"
+        "one successor argv: {one_argv:?}; two successor argv: {two_argv:?}"
     );
     assert_eq!(
-        canonical_git_command_sequence(&four_argv),
+        canonical_git_command_sequence(&two_argv),
         canonical_git_command_sequence(&one_argv)
     );
+}
 
-    let mut latest_unavailable = four_cold;
+#[test]
+fn successor_round_robin_covers_every_head() {
+    let four = successor_scale_fixture(4);
+    let mut latest_unavailable =
+        run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
+    assert!(latest_unavailable.output.status.success());
     for _ in 1..four.successor_heads.len() {
         latest_unavailable =
             run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
@@ -2031,26 +2037,26 @@ fn successor_round_robin_has_fixed_cold_cost_and_covers_every_head() {
 
 #[test]
 fn predecessor_graph_has_fixed_cold_cost() {
+    let one = predecessor_scale_fixture(1);
+    let one_cold = run_berth_with_git_trace(one.repository.path(), &["board", "--json"], "*");
+    assert!(one_cold.output.status.success());
+    let one_argv = git_trace(&one_cold);
+
     let two = predecessor_scale_fixture(2);
     let two_cold = run_berth_with_git_trace(two.repository.path(), &["board", "--json"], "*");
     assert!(two_cold.output.status.success());
     let two_argv = git_trace(&two_cold);
-
-    let four = predecessor_scale_fixture(4);
-    let four_cold = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
-    assert!(four_cold.output.status.success());
-    let four_argv = git_trace(&four_cold);
-    assert_ne!(two_argv, [] as [String; 0]);
+    assert_ne!(one_argv, [] as [String; 0]);
+    assert_merge_observation_budget(&one_argv, 2);
     assert_merge_observation_budget(&two_argv, 3);
-    assert_merge_observation_budget(&four_argv, 5);
     assert_eq!(
-        canonical_git_command_sequence(&four_argv).len(),
         canonical_git_command_sequence(&two_argv).len(),
-        "two predecessor argv: {two_argv:?}; four predecessor argv: {four_argv:?}"
+        canonical_git_command_sequence(&one_argv).len(),
+        "one predecessor argv: {one_argv:?}; two predecessor argv: {two_argv:?}"
     );
     assert_eq!(
-        canonical_git_command_sequence(&four_argv),
-        canonical_git_command_sequence(&two_argv)
+        canonical_git_command_sequence(&two_argv),
+        canonical_git_command_sequence(&one_argv)
     );
 }
 

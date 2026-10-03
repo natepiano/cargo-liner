@@ -937,7 +937,14 @@ fn failed_journal_append_does_not_move_the_retention_ref() {
 }
 
 #[test]
-fn checkpoint_ranges_survive_two_rebases() { reanchoring::checkpoint_ranges_survive_two_rebases(); }
+fn checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward() {
+    reanchoring::checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward();
+}
+
+#[test]
+fn checkpoint_ranges_survive_two_rebases_reconciled_during_integration() {
+    reanchoring::checkpoint_ranges_survive_two_rebases_reconciled_during_integration();
+}
 
 #[test]
 fn uninterrupted_apply_rebase_reanchors_only_the_checkpoint_commit() {
