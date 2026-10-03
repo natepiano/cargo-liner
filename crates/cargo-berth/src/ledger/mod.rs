@@ -74,6 +74,7 @@ pub(crate) use journal::ObservedReservationSet;
 pub(crate) use journal::OrderingDirection;
 pub(crate) use journal::PendingBypassMarkerId;
 pub(crate) use journal::ProtectedPhaseStartHead;
+pub(crate) use journal::ReleaseSource;
 pub(crate) use journal::ReservationPurpose;
 pub(crate) use journal::ReservationScope;
 pub(crate) use journal::ReservationScopeAdditionSet;

@@ -31,6 +31,7 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ProtectedPhaseStartHead;
+use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
@@ -549,21 +550,9 @@ fn outstanding_operation(
         )
         .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
     };
-    // Integrated checkpoint evidence says nothing about commits or dirty paths added later.
-    // Keep the branch outstanding and move its checkpoint to the holder's current HEAD.
+    // The command names this reservation, so integrated checkpoint work ends it whatever the
+    // holder committed or left dirty afterwards.
     if matches!(
-        release_repository_context.merge_extent,
-        MergeExtent::Protected { .. }
-    ) && release_repository_context.holder_worktree == HolderWorktree::Invoking
-        && reservation::current_head(release_repository_context.repository_root)
-            .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
-    {
-        return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
-    }
-    if matches!(
-        release_repository_context.merge_extent,
-        MergeExtent::Empty { .. }
-    ) && matches!(
         materialized_status,
         IntegrationEvidenceStatus::Integrated { .. }
     ) && let IntegrationEvidenceStatus::Integrated { witness, .. } = &evidence
@@ -573,6 +562,17 @@ fn outstanding_operation(
             protected_tip,
             witness,
         ));
+    }
+    // Work that has not reached trunk stays outstanding, and its checkpoint moves to the
+    // holder's current HEAD so commits and dirty paths added later stay protected until merged.
+    if matches!(
+        release_repository_context.merge_extent,
+        MergeExtent::Protected { .. }
+    ) && release_repository_context.holder_worktree == HolderWorktree::Invoking
+        && reservation::current_head(release_repository_context.repository_root)
+            .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
+    {
+        return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
     }
     if !matches!(
         materialized_status,
@@ -594,7 +594,7 @@ fn outstanding_operation(
     ))
 }
 
-/// Settle an empty merge extent while retaining the commit that witnesses integration.
+/// Settle integrated checkpoint work while retaining the commit that witnesses integration.
 fn integrated_release_operation(
     reservation_id: ReservationId,
     protected_tip: &ProtectedReservationTip,
@@ -620,6 +620,7 @@ fn integrated_release_operation(
         operation: JournalOperation::Release {
             reservation_id,
             disposition: disposition.clone(),
+            source: Some(ReleaseSource::Command),
         },
         payload_seed: ReleasePayloadSeed::Released {
             reservation_id,
@@ -1196,6 +1197,7 @@ mod tests {
     use crate::ids::GitObjectId;
     use crate::ids::ReservationId;
     use crate::ledger::JournalOperation;
+    use crate::ledger::ReleaseSource;
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
@@ -1226,8 +1228,10 @@ mod tests {
             let release = integrated_release_operation(reservation_id, &protected_tip, &witness);
             assert!(matches!(
                 release.operation,
-                JournalOperation::Release { reservation_id: id, disposition }
-                    if id == reservation_id && disposition == expected_disposition
+                JournalOperation::Release { reservation_id: id, disposition, source }
+                    if id == reservation_id
+                        && disposition == expected_disposition
+                        && source == Some(ReleaseSource::Command)
             ));
             assert!(matches!(
                 release.payload_seed,

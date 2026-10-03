@@ -86,6 +86,7 @@ const REAL_GIT_ENVIRONMENT: &str = "CARGO_BERTH_TEST_REAL_GIT";
 const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
     "CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY";
 const REFERENCE_TRANSACTION_MARKER: &str = "# cargo-berth managed hook: reference-transaction";
+const RETENTION_TRACE_BRANCH: &str = "retention-trace";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
@@ -6614,10 +6615,17 @@ fn trace_retention_ref_reconciliation(
             apply_test_ref_transaction(repository.path(), &transaction);
         },
         RetentionRefPass::DeletionOnly => {
-            for index in 0..reservation_count {
-                fs::remove_file(repository.path().join(format!("retention-trace-{index}")))
-                    .expect("discard setup dirt before automatic settlement");
-            }
+            git(
+                repository.path(),
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "branch",
+                    "--force",
+                    "main",
+                    RETENTION_TRACE_BRANCH,
+                ],
+            );
             let observed = run_berth(repository.path(), &["board", "--json"]);
             assert!(observed.status.success());
             let transaction =
@@ -6655,6 +6663,30 @@ fn trace_retention_ref_reconciliation(
 }
 
 fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String> {
+    // Keep every checkpoint outstanding until the repair/deletion case chooses its lifecycle.
+    // The reserved work is committed off trunk: reconciliation ends an integrated checkpoint
+    // while a later active reservation of the same checkout still protects its work.
+    git(
+        repository_root,
+        &["checkout", "--quiet", "-b", RETENTION_TRACE_BRANCH],
+    );
+    for index in 0..count {
+        let path = format!("retention-trace-{index}");
+        fs::write(repository_root.join(&path), "unmerged work\n")
+            .expect("reserved branch work should write");
+        git(repository_root, &["add", &path]);
+    }
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "retention trace branch work",
+        ],
+    );
     let reservation_ids = (0..count)
         .map(|index| {
             let claimed = claim(
@@ -6668,14 +6700,6 @@ fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String
             reservation_id(&claimed)
         })
         .collect::<Vec<_>>();
-    // Keep every checkpoint outstanding until the repair/deletion case chooses its lifecycle.
-    for index in 0..count {
-        fs::write(
-            repository_root.join(format!("retention-trace-{index}")),
-            "unmerged work\n",
-        )
-        .expect("reserved dirty work should write");
-    }
     for reservation_id in &reservation_ids {
         let checkpointed = run_berth(repository_root, &["release", reservation_id, "--json"]);
         assert!(checkpointed.status.success());
@@ -6684,6 +6708,12 @@ fn checkpointed_reservations(repository_root: &Path, count: usize) -> Vec<String
             "checkpointed"
         );
     }
+    // Record each checkpoint's unintegrated evidence before the traced pass.
+    assert!(
+        run_berth(repository_root, &["board", "--json"])
+            .status
+            .success()
+    );
     reservation_ids
 }
 

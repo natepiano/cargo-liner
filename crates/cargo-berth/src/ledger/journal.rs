@@ -490,6 +490,9 @@ pub(crate) enum JournalOperation {
         reservation_id: ReservationId,
         /// The verified or user-confirmed outcome of this release.
         disposition:    ReleaseDisposition,
+        /// What ended the reservation; absent on journals written before sources were recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source:         Option<ReleaseSource>,
     },
     /// Replace a released reservation's disposition after its git evidence was invalidated.
     ///
@@ -836,6 +839,16 @@ pub(crate) enum ClaimSource {
     Enrolled,
     /// A reservation for the complete work on an integration branch.
     Cover { covered_branch: IntegrationTarget },
+}
+
+/// What ended a reservation recorded by `JournalOperation::Release`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReleaseSource {
+    /// A `release` or `resolve` command named the reservation.
+    Command,
+    /// Reconciliation ended it from git evidence, with no command naming it.
+    Reconciliation,
 }
 
 macro_rules! git_commit_role {
@@ -2454,6 +2467,7 @@ mod tests {
     use super::OrderingDirection;
     use super::ProjectionGeneration;
     use super::ProtectedPhaseStartHead;
+    use super::ReleaseSource;
     use super::ReservationPurpose;
     use super::ReservationReplayError;
     use super::ReservationScope;
@@ -2487,6 +2501,7 @@ mod tests {
     use crate::reservation::IntegrationEvidenceStatus;
     use crate::reservation::IntegrationProof;
     use crate::reservation::IntegrationWitness;
+    use crate::reservation::ReleaseDisposition;
 
     const HOLDER_RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a20";
 
@@ -2532,6 +2547,39 @@ mod tests {
                 }
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn release_without_a_source_loads_and_writes_back_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let legacy = serde_json::json!({
+            "op": "release",
+            "reservation_id": HOLDER_RESERVATION_ID,
+            "disposition": {"kind": "integrated"},
+        });
+        let operation: JournalOperation = serde_json::from_value(legacy.clone())?;
+        assert!(matches!(
+            &operation,
+            JournalOperation::Release {
+                disposition: ReleaseDisposition::Integrated,
+                source: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&operation)?, legacy);
+
+        let mut recorded = legacy;
+        recorded["source"] = serde_json::json!("reconciliation");
+        let operation: JournalOperation = serde_json::from_value(recorded.clone())?;
+        assert!(matches!(
+            &operation,
+            JournalOperation::Release {
+                source: Some(ReleaseSource::Reconciliation),
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(&operation)?, recorded);
         Ok(())
     }
 

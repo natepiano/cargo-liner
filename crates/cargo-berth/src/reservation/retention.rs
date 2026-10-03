@@ -327,6 +327,7 @@ impl RetainedReservationSet {
                 JournalOperation::Release {
                     reservation_id,
                     disposition,
+                    ..
                 } => settled.apply_release(*reservation_id, disposition)?,
                 _ => {},
             }
@@ -1001,6 +1002,7 @@ impl RetainedReservationSet {
             JournalOperation::Release {
                 reservation_id,
                 disposition,
+                ..
             } => self.apply_release(*reservation_id, disposition),
             JournalOperation::ReplaceReleaseDisposition {
                 reservation_id,

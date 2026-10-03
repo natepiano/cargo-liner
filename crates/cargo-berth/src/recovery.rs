@@ -34,6 +34,7 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::ReleaseSource;
 use crate::ledger::ReservationJudgingBranch;
 use crate::ledger::TransactionValidation;
 use crate::ledger::WorktreeAdministrativeLocator;
@@ -667,6 +668,7 @@ fn recovery_operation(
                     JournalOperation::Release {
                         reservation_id,
                         disposition: disposition.clone(),
+                        source: Some(ReleaseSource::Command),
                     },
                     protected_tip,
                 ),
@@ -835,6 +837,7 @@ fn disposition_operation(
             JournalOperation::Release {
                 reservation_id,
                 disposition: disposition.clone(),
+                source: Some(ReleaseSource::Command),
             },
             ResolvePayloadSeed::Released {
                 reservation_id,

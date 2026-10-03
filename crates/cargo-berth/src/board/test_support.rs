@@ -39,6 +39,7 @@ use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::NonEmptyReservationPurpose;
 use crate::ledger::OrderingDirection;
 use crate::ledger::ProtectedPhaseStartHead;
+use crate::ledger::ReleaseSource;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
@@ -287,6 +288,7 @@ impl BoardFixture {
             JournalOperation::Release {
                 reservation_id,
                 disposition,
+                source: Some(ReleaseSource::Command),
             },
         )
     }

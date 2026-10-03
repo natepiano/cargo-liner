@@ -2967,7 +2967,7 @@ fn discovered_historical_witness_survives_reserved_dirt_and_restart() {
 }
 
 #[test]
-fn explicit_release_preserves_discovered_historical_witness_while_reserved_dirt_remains() {
+fn explicit_release_settles_with_the_discovered_historical_witness_while_reserved_dirt_remains() {
     let fixture = historical_integration_fixture();
     let reservation = &fixture.reservation;
     let root = reservation.repository.path();
@@ -2994,44 +2994,17 @@ fn explicit_release_preserves_discovered_historical_witness_while_reserved_dirt_
         "proof": "rewritten_witness_ancestor",
         "witness": {"kind": "historical", "commit": fixture.witness},
     });
-    {
-        let release = run_berth_with_run(
-            &fixture.holder_root,
-            &["release", &reservation.reservation_id, "--json"],
-            FIRST_RUN,
-        );
-        assert!(release.status.success(), "{}", json_output(&release));
-        // Inspect the release write before ordinary reconciliation can repair evidence.
-        let evidence = fs::read_to_string(root.join(JOURNAL_PATH))
-            .expect("release journal should read")
-            .lines()
-            .map(|line| {
-                serde_json::from_str::<serde_json::Value>(line).expect("event should decode")
-            })
-            .filter(|event| {
-                event["op"] == "evidence_revalidated"
-                    && event["reservation_id"] == reservation.reservation_id
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            evidence
-                .iter()
-                .all(|event| event["status"]["status"] != "trunk_rewritten")
-        );
-        assert_eq!(
-            evidence.last().expect("release should retain evidence")["status"],
-            expected_evidence
-        );
-        assert_eq!(journal_operation_count(root, "release"), 0);
-        assert_eq!(
-            git_stdout(&fixture.holder_root, &["diff", "--name-only"]),
-            "src/lib.rs"
-        );
-    }
-
-    git(
+    let release = run_berth_with_run(
         &fixture.holder_root,
-        &["restore", "--worktree", "--", "src/lib.rs"],
+        &["release", &reservation.reservation_id, "--json"],
+        FIRST_RUN,
+    );
+    assert!(release.status.success(), "{}", json_output(&release));
+    // The command ends integrated work although reserved dirt remains, and its disposition
+    // names the witness the board discovered.
+    assert_eq!(
+        git_stdout(&fixture.holder_root, &["diff", "--name-only"]),
+        "src/lib.rs"
     );
     invalidate_projection(root);
     let restarted = run_board_with_git_trace(root);
@@ -3048,18 +3021,23 @@ fn explicit_release_preserves_discovered_historical_witness_while_reserved_dirt_
         snapshot["lifecycle"]["disposition"],
         serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
     );
-    // The release wrote `rewritten_witness_ancestor` against this same trunk, and reconciliation
-    // carries that record forward rather than deriving a second name for it. Both proofs state one
-    // fact -- the witness this disposition names is in trunk's history -- and both settle to the
-    // same `rewritten_integration` disposition, so re-deriving could only relabel what is already
-    // on file.
     assert_eq!(
         snapshot["integration_evidence"]["status"],
         expected_evidence
     );
     assert_eq!(historical_candidate_queries(&restarted), 0);
     assert_eq!(journal_operation_count(root, "release"), 1);
-    assert_historical_witness_settlement_journal(reservation, &expected_evidence, &fixture.witness);
+    let release = fs::read_to_string(root.join(JOURNAL_PATH))
+        .expect("released journal should read")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should decode"))
+        .find(|event| event["op"] == "release")
+        .expect("the release command should write the release");
+    assert_eq!(
+        release["disposition"],
+        serde_json::json!({"kind": "rewritten_integration", "evidence": fixture.witness})
+    );
+    assert_eq!(release["source"], "command");
 }
 
 #[test]

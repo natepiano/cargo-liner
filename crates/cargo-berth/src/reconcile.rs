@@ -92,6 +92,7 @@ use crate::ledger::ObservedReservationSet;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
+use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
@@ -2614,6 +2615,7 @@ fn complete_reconciliation_plan(
             if let JournalOperation::Release {
                 reservation_id,
                 disposition,
+                ..
             } = operation
                 && *reservation_id == snapshot.reservation_id
                 && let RepositoryReservationEvidence::Outstanding {
@@ -4173,6 +4175,16 @@ enum SettlementSelection {
     Release(ReleaseDisposition),
 }
 
+/// Whether branch work past an integrated checkpoint stays protected once that checkpoint ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaterWorkCover {
+    /// Another reservation of the same holder and target keeps the shared merge extent past
+    /// this pass, so ending the integrated reservation removes only a duplicate holder.
+    LiveReservation,
+    /// No other reservation holds the merge extent; the integrated reservation still protects it.
+    Unprotected,
+}
+
 /// Select from state so a previously appended proof can finish settlement after a restart.
 fn settlement_selection(
     reservation: &Reservation,
@@ -4180,6 +4192,7 @@ fn settlement_selection(
     actual_trunk: &JudgedTargetTip,
     merge_extent: &MergeExtent,
     committed_paths: &CommittedMergeEvidence,
+    later_work_cover: LaterWorkCover,
 ) -> SettlementSelection {
     if !matches!(
         reservation.lifecycle(),
@@ -4195,7 +4208,7 @@ fn settlement_selection(
             reservation.has_unproven_retained_merge_work(merge_extent)
         },
     };
-    if has_unproven_work {
+    if has_unproven_work && later_work_cover == LaterWorkCover::Unprotected {
         return SettlementSelection::Unchanged;
     }
     let (
@@ -4238,14 +4251,14 @@ fn append_settlement_operations(
         else {
             continue;
         };
-        let evidence = reconciliation
-            .action
-            .evidence
-            .iter()
-            .find(|evidence| evidence.reservation_id == reservation.id())
-            .map_or(&integration_status, |evidence| &evidence.status);
+        let evidence = planned_integration_status(
+            reservation.id(),
+            &integration_status,
+            &reconciliation.action.evidence,
+        );
         let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
+        let later_work_cover = later_work_cover(reservations, reservation, extent, reconciliation)?;
         let SettlementSelection::Release(disposition) = settlement_selection(
             reservation,
             evidence,
@@ -4264,6 +4277,7 @@ fn append_settlement_operations(
                         .clone(),
                 ))
                 .unwrap_or(&CommittedMergeEvidence::Unavailable),
+            later_work_cover,
         ) else {
             continue;
         };
@@ -4283,6 +4297,7 @@ fn append_settlement_operations(
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
             disposition:    disposition.clone(),
+            source:         Some(ReleaseSource::Reconciliation),
         });
         reconciliation
             .action
@@ -4294,6 +4309,72 @@ fn append_settlement_operations(
         settled.insert(reservation.id(), disposition);
     }
     rebuild_settlement_retention(reservations, ordering_graph, &settled, reconciliation)
+}
+
+/// The evidence this plan records for an outstanding reservation, or its materialized status.
+fn planned_integration_status<'status>(
+    reservation_id: ReservationId,
+    materialized: &'status IntegrationEvidenceStatus,
+    planned: &'status [ReconciledEvidence],
+) -> &'status IntegrationEvidenceStatus {
+    planned
+        .iter()
+        .find(|evidence| evidence.reservation_id == reservation_id)
+        .map_or(materialized, |evidence| &evidence.status)
+}
+
+/// Find a live reservation that holds the same merge extent as one about to settle.
+///
+/// Every unreleased reservation of one holder checkout and target records the holder's merge
+/// extent, and foreign checkouts read their protection from it. An active run, or an outstanding
+/// reservation whose own work is not integrated on the actual trunk, does not settle in this pass,
+/// so it keeps protecting work past the settling reservation's checkpoint.
+fn later_work_cover(
+    reservations: &RetainedReservationSet,
+    settling: &Reservation,
+    extent: &MergeExtent,
+    reconciliation: &ReconciliationPlan,
+) -> Result<LaterWorkCover, ReservationReplayError> {
+    let snapshot = &reconciliation.action.repository_snapshot;
+    let target = snapshot.recorded_target(settling.id());
+    for holder in reservations.iter() {
+        if holder.id() == settling.id()
+            || holder.actor().worktree != settling.actor().worktree
+            || snapshot.recorded_target(holder.id()) != target
+            || planned_merge_extent(holder.id(), &reconciliation.operations)
+                .unwrap_or_else(|| holder.merge_extent())
+                != extent
+        {
+            continue;
+        }
+        let later_work_cover = match holder.evidence_state()? {
+            ReservationEvidenceState::Active { .. } => LaterWorkCover::LiveReservation,
+            ReservationEvidenceState::Outstanding {
+                integration_status, ..
+            } => match (
+                planned_integration_status(
+                    holder.id(),
+                    &integration_status,
+                    &reconciliation.action.evidence,
+                ),
+                snapshot.target_for(holder.id()),
+            ) {
+                (
+                    IntegrationEvidenceStatus::Integrated { trunk_oid, .. },
+                    JudgedTargetTip::Resolved(actual),
+                ) if trunk_oid == actual => LaterWorkCover::Unprotected,
+                _ => LaterWorkCover::LiveReservation,
+            },
+            ReservationEvidenceState::Released { .. }
+            | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. } => {
+                LaterWorkCover::Unprotected
+            },
+        };
+        if later_work_cover == LaterWorkCover::LiveReservation {
+            return Ok(later_work_cover);
+        }
+    }
+    Ok(LaterWorkCover::Unprotected)
 }
 
 /// An active run this pass ended because trunk already contains all of its work.
@@ -4373,6 +4454,7 @@ fn append_merged_run_endings(
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
             disposition:    ReleaseDisposition::Integrated,
+            source:         Some(ReleaseSource::Reconciliation),
         });
         reconciliation
             .action
@@ -4450,6 +4532,7 @@ fn append_orphan_retirements(
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id,
             disposition: ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived()),
+            source: Some(ReleaseSource::Reconciliation),
         });
     }
 }
@@ -4474,6 +4557,7 @@ fn planned_release(
         JournalOperation::Release {
             reservation_id: released,
             disposition,
+            ..
         } if *released == reservation_id => Some(disposition),
         _ => None,
     })
@@ -5392,6 +5476,7 @@ mod tests {
     use crate::reservation::IntegrationWitness;
     use crate::reservation::MergeExtent;
     use crate::reservation::ReleaseDisposition;
+    use crate::reservation::Reservation;
     use crate::reservation::ReservationEvidenceState;
     use crate::reservation::RetainedReservationSet;
     use crate::reservation::RewrittenIntegrationTrunkCommit;
@@ -5678,12 +5763,11 @@ mod tests {
                 },
             };
             assert_eq!(
-                super::settlement_selection(
+                select_without_cover(
                     reservation,
                     &integration_status,
                     &actual_trunk,
-                    reservation.merge_extent(),
-                    &super::CommittedMergeEvidence::Unavailable,
+                    reservation.merge_extent()
                 ),
                 SettlementSelection::Release(disposition.clone())
             );
@@ -5703,13 +5787,7 @@ mod tests {
                 ),
             ] {
                 assert_eq!(
-                    super::settlement_selection(
-                        reservation,
-                        status,
-                        trunk,
-                        extent,
-                        &super::CommittedMergeEvidence::Unavailable,
-                    ),
+                    select_without_cover(reservation, status, trunk, extent),
                     SettlementSelection::Unchanged
                 );
             }
@@ -5727,12 +5805,11 @@ mod tests {
             ])?;
             let reservation = released.reservation(reservation_id)?;
             assert_eq!(
-                super::settlement_selection(
+                select_without_cover(
                     reservation,
                     &integration_status,
                     &actual_trunk,
-                    reservation.merge_extent(),
-                    &super::CommittedMergeEvidence::Unavailable,
+                    reservation.merge_extent()
                 ),
                 SettlementSelection::Unchanged
             );
@@ -5766,12 +5843,11 @@ mod tests {
             (TIP, SettlementSelection::Unchanged),
         ] {
             assert_eq!(
-                super::settlement_selection(
+                select_without_cover(
                     reservation,
                     &evidence,
                     &JudgedTargetTip::Resolved(trunk.parse()?),
-                    reservation.merge_extent(),
-                    &super::CommittedMergeEvidence::Unavailable,
+                    reservation.merge_extent()
                 ),
                 expected,
             );
@@ -5997,6 +6073,24 @@ mod tests {
             matches!(preflight.project(&released), Err(super::RewriteProjectionError::RewriteSubjectChanged(changed)) if changed == id)
         );
         Ok(())
+    }
+
+    /// Select settlement for a holder whose committed paths are unknown and whose later work no
+    /// other reservation protects.
+    fn select_without_cover(
+        reservation: &Reservation,
+        evidence: &IntegrationEvidenceStatus,
+        actual_trunk: &JudgedTargetTip,
+        merge_extent: &MergeExtent,
+    ) -> SettlementSelection {
+        super::settlement_selection(
+            reservation,
+            evidence,
+            actual_trunk,
+            merge_extent,
+            &super::CommittedMergeEvidence::Unavailable,
+            super::LaterWorkCover::Unprotected,
+        )
     }
 
     /// A durable proof that can settle without another evidence change.

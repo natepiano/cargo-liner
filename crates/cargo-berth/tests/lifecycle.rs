@@ -3700,8 +3700,120 @@ mod merge_extent {
     }
 
     #[test]
-    fn releasing_an_integrated_checkpoint_again_preserves_later_branch_work() {
+    fn integrated_checkpoint_settles_while_a_live_reservation_protects_later_work() {
         let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint C\n");
+        let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        let live = claim(&fixture.holder, "file:later.rs", SECOND_RUN);
+        commit(&fixture.holder, "later.rs", "commit D\n");
+        GIT.run(
+            fixture.trunk(),
+            ["merge", "--quiet", "--ff-only", &checkpoint],
+        );
+
+        let settled = board(fixture.trunk());
+        let reservation = snapshot(&settled, &id);
+        assert_eq!(reservation["lifecycle"]["stage"], "released");
+        assert_eq!(
+            reservation["lifecycle"]["disposition"]["kind"],
+            "integrated"
+        );
+        let release = events(fixture.trunk())
+            .into_iter()
+            .find(|event| event["reservation_id"] == id && event["op"] == "release")
+            .expect("reconciliation should release the integrated checkpoint");
+        assert_eq!(release["source"], "reconciliation");
+        assert_eq!(snapshot(&settled, &live)["lifecycle"]["stage"], "active");
+        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &live);
+    }
+
+    #[test]
+    fn integrated_checkpoint_with_unprotected_later_work_stays_outstanding() {
+        let fixture = Repository::new();
+        let id = integrated_checkpoint_with_later_commit(&fixture);
+
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(
+            reservation["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+        assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+        assert_eq!(
+            scope_paths(&reservation["merge_extent"]["scopes"]),
+            BTreeSet::from(["later.rs".to_owned()])
+        );
+        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
+    }
+
+    #[test]
+    fn release_ends_an_integrated_checkpoint_despite_later_branch_work() {
+        let fixture = Repository::new();
+        let id = integrated_checkpoint_with_later_commit(&fixture);
+        let observed = board(fixture.trunk());
+        assert_eq!(
+            snapshot(&observed, &id)["integration_evidence"]["status"]["status"],
+            "integrated"
+        );
+
+        let released = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&released);
+        assert_eq!(json(&released)["payload"]["data"]["status"], "released");
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["lifecycle"]["stage"], "released");
+        assert_eq!(
+            reservation["lifecycle"]["disposition"]["kind"],
+            "integrated"
+        );
+        let release_events = events(fixture.trunk())
+            .into_iter()
+            .filter(|event| event["reservation_id"] == id && event["op"] == "release")
+            .collect::<Vec<_>>();
+        assert_eq!(release_events.len(), 1);
+        assert_eq!(release_events[0]["source"], "command");
+    }
+
+    #[test]
+    fn release_moves_an_unintegrated_checkpoint_to_the_holder_head() {
+        let fixture = Repository::new();
+        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
+        commit(&fixture.holder, "checkpoint.rs", "checkpoint C\n");
+        succeed(&berth(
+            &fixture.holder,
+            &["release", &id, "--json"],
+            FIRST_RUN,
+        ));
+        commit(&fixture.holder, "later.rs", "commit D\n");
+        let later_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+
+        let resnapshot = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&resnapshot);
+        assert_eq!(
+            json(&resnapshot)["payload"]["data"]["status"],
+            "resnapshotted"
+        );
+        let observed = board(fixture.trunk());
+        let reservation = snapshot(&observed, &id);
+        assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+        assert_eq!(
+            GIT.stdout(
+                fixture.trunk(),
+                ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
+            ),
+            later_tip
+        );
+        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
+    }
+
+    /// A checkpoint trunk already contains, followed by a holder commit trunk lacks.
+    fn integrated_checkpoint_with_later_commit(fixture: &Repository) -> String {
         let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
         commit(&fixture.holder, "checkpoint.rs", "checkpoint C\n");
         let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
@@ -3715,69 +3827,7 @@ mod merge_extent {
             ["merge", "--quiet", "--ff-only", &checkpoint],
         );
         commit(&fixture.holder, "later.rs", "commit D\n");
-        let later_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
-        let integrated = board(fixture.trunk());
-        assert_eq!(
-            snapshot(&integrated, &id)["integration_evidence"]["status"]["status"],
-            "integrated"
-        );
-
-        for root in [&fixture.outsider, &fixture.holder] {
-            let released = berth(root, &["release", &id, "--json"], FIRST_RUN);
-            succeed(&released);
-            if root == &fixture.outsider {
-                assert_eq!(
-                    json(&released)["payload"]["data"]["status"],
-                    "evidence_revalidated"
-                );
-                assert_evidence_matches_snapshot(fixture.trunk(), &id, snapshot(&integrated, &id));
-            }
-            let observed = board(fixture.trunk());
-            let reservation = snapshot(&observed, &id);
-            assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
-            assert_eq!(reservation["merge_extent"]["status"], "protected");
-            assert_eq!(
-                scope_paths(&reservation["merge_extent"]["scopes"]),
-                BTreeSet::from(["later.rs".to_owned()])
-            );
-            assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
-        }
-        assert_eq!(
-            GIT.stdout(
-                fixture.trunk(),
-                ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
-            ),
-            later_tip
-        );
-        assert!(
-            events(fixture.trunk())
-                .iter()
-                .all(|event| { event["reservation_id"] != id || event["op"] != "release" })
-        );
-
-        GIT.run(
-            fixture.trunk(),
-            ["merge", "--quiet", "--ff-only", &later_tip],
-        );
-        let settled = board(fixture.trunk());
-        let reservation = snapshot(&settled, &id);
-        assert_eq!(reservation["lifecycle"]["stage"], "released");
-        assert_eq!(
-            reservation["lifecycle"]["disposition"]["kind"],
-            "integrated"
-        );
-        assert_eq!(
-            reservation["integration_evidence"]["status"]["status"],
-            "integrated"
-        );
-        assert_eq!(
-            events(fixture.trunk())
-                .iter()
-                .filter(|event| event["reservation_id"] == id && event["op"] == "release")
-                .count(),
-            1
-        );
-        assert_allowed(&fixture.outsider, "file:later.rs", THIRD_RUN);
+        id
     }
 
     #[test]
