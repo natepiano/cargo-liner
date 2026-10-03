@@ -10,6 +10,7 @@ use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
 use crate::answer::OverlapApprover;
+use crate::config::DefaultAnswer;
 use crate::config::Enrollment;
 use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
@@ -48,6 +49,8 @@ struct CheckDecision {
     conflicts:         Vec<ReservationConflict>,
     merge_observation: MergeObservationRequirement,
     approver:          Option<OverlapApprover>,
+    /// The answer that lets an overlapping edit proceed instead of stopping, when configured.
+    default_answer:    Option<DefaultAnswer>,
 }
 
 /// Whether a cached overlap answer can grant an edit without observing other branches.
@@ -211,7 +214,8 @@ fn reconcile_and_retry(
                 .with_alerts(reconciliation_report.alerts);
         },
     };
-    if retried_decision.conflicts.is_empty() {
+    // A configured default answer records itself under the lock before the edit is protected.
+    if retried_decision.conflicts.is_empty() || retried_decision.default_answer.is_some() {
         render_acquisition(
             acquire_first_touch(
                 declared_scopes,
@@ -255,7 +259,12 @@ fn render_acquisition(
             acquisition,
             scopes,
             conflicts: FirstTouchConflictOutcome::None,
-        })) => OutputEnvelope::clear_check(scopes, acquisition),
+        })) => OutputEnvelope::clear_check(scopes, acquisition, None),
+        Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
+            acquisition,
+            scopes,
+            conflicts: FirstTouchConflictOutcome::DeferredByDefault { blockers },
+        })) => OutputEnvelope::clear_check(scopes, acquisition, Some(blockers)),
         Ok(Enrollment::Enrolled(
             FirstTouchClaimExecution::Acquired {
                 scopes,
@@ -282,7 +291,7 @@ fn decide(
     declared_scopes: DeclaredReservationScopeSet,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<CheckDecision>, CheckDecisionError> {
-    let (reservations, worktree_context, approver) =
+    let (reservations, worktree_context, approver, default_answer) =
         match Ledger::read_for_edit_check(invocation_directory)
             .map_err(CheckDecisionError::Ledger)?
         {
@@ -340,6 +349,7 @@ fn decide(
         conflicts,
         merge_observation,
         approver,
+        default_answer,
     }))
 }
 

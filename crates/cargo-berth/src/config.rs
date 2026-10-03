@@ -17,6 +17,7 @@ const APPROVER_KEY: &str = "approver";
 const CLAUDE_DIRECTORY: &str = ".claude";
 const CONFIGURATION_DIRECTORY: &str = "config";
 const CONFIGURATION_FILE: &str = "berth.toml";
+const DEFAULT_ANSWER_KEY: &str = "default_answer";
 const DEFAULT_MAXIMUM_ORDERING_EDGES: u32 = 512;
 const DEFAULT_MAXIMUM_RESERVATIONS: u32 = 128;
 const DEFAULT_TRUNK: &str = "main";
@@ -40,9 +41,9 @@ pub(crate) enum Enrollment<T> {
 /// The files one worktree consults for its configuration.
 ///
 /// The configuration file is untracked and per-worktree. A linked worktree reads
-/// its own limits and gate mode first, but only the main worktree's `trunk` and
-/// `approver` keys define the repository trunk and approver when the main
-/// configuration exists.
+/// its own limits and gate mode first, but only the main worktree's `trunk`,
+/// `approver`, and `default_answer` keys define the repository trunk and overlap policy
+/// when the main configuration exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigurationLookup<'a> {
     /// Only the worktree's own file counts: a main worktree, or a linked worktree of a
@@ -73,6 +74,9 @@ pub(crate) struct BerthConfig {
     pub(crate) gate_mode:              GateMode,
     /// The worktree whose session chooses overlap answers, when the repository names one.
     approver:                          Option<ApproverWorktree>,
+    /// The answer an unanswered overlap records instead of stopping, when the repository names
+    /// one.
+    pub(crate) default_answer:         Option<DefaultAnswer>,
 }
 
 /// The absolute worktree path whose session chooses overlap answers.
@@ -81,6 +85,16 @@ pub(crate) struct BerthConfig {
 /// answer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ApproverWorktree(PathBuf);
+
+/// The overlap answer a repository records for a claim or first-touch edit that names none.
+///
+/// An explicit answer on the claim still wins; this applies only where the overlap would
+/// otherwise stop the caller.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DefaultAnswer {
+    /// Defer the integration order with every current holder of the overlapping paths.
+    HolderFirst,
+}
 
 /// Whether a configuration file exists and contains validated repository policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,6 +131,7 @@ impl Default for BerthConfig {
             maximum_ordering_edges: DEFAULT_MAXIMUM_ORDERING_EDGES,
             gate_mode:              GateMode::Observe,
             approver:               None,
+            default_answer:         None,
         }
     }
 }
@@ -182,9 +197,9 @@ impl BerthConfig {
     /// Read and validate this worktree's configuration.
     ///
     /// A linked worktree's own file supplies its limits, but whenever the main worktree's
-    /// file exists it alone supplies `trunk`, `gate_mode`, and `approver`: the gate hook is
-    /// installed once for the repository, so every worktree must judge against the same trunk
-    /// under the same policy the hook enforces, and route overlaps to the same approver.
+    /// file exists it alone supplies `trunk`, `gate_mode`, `approver`, and `default_answer`:
+    /// the gate hook is installed once for the repository, so every worktree must judge against
+    /// the same trunk under the same policy the hook enforces, and answer overlaps the same way.
     ///
     /// When no file answers, the reported path is the one `cargo-berth init` should
     /// create: a linked worktree names the main worktree's file, because a file written
@@ -209,6 +224,7 @@ impl BerthConfig {
                 configuration.trunk = main.trunk;
                 configuration.gate_mode = main.gate_mode;
                 configuration.approver = main.approver;
+                configuration.default_answer = main.default_answer;
             }
             return Ok(Enrollment::Enrolled(configuration));
         }
@@ -256,8 +272,16 @@ impl BerthConfig {
         let approver = self.approver.as_ref().map_or_else(String::new, |approver| {
             format!("{APPROVER_KEY} = \"{}\"\n", approver.0.display())
         });
+        let default_answer = self
+            .default_answer
+            .map_or_else(String::new, |default_answer| {
+                let value = match default_answer {
+                    DefaultAnswer::HolderFirst => "holder_first",
+                };
+                format!("{DEFAULT_ANSWER_KEY} = \"{value}\"\n")
+            });
         format!(
-            "{TRUNK_KEY} = \"{}\"\n{MAXIMUM_RESERVATIONS_KEY} = {}\n{MAXIMUM_ORDERING_EDGES_KEY} = {}\n{GATE_MODE_KEY} = \"{gate_mode}\"\n{approver}",
+            "{TRUNK_KEY} = \"{}\"\n{MAXIMUM_RESERVATIONS_KEY} = {}\n{MAXIMUM_ORDERING_EDGES_KEY} = {}\n{GATE_MODE_KEY} = \"{gate_mode}\"\n{approver}{default_answer}",
             self.trunk, self.maximum_reservations, self.maximum_ordering_edges
         )
     }
@@ -285,6 +309,7 @@ struct ParsedConfigValues {
     maximum_ordering_edges: ConfigValue<u32>,
     gate_mode:              ConfigValue<GateMode>,
     approver:               ConfigValue<Option<ApproverWorktree>>,
+    default_answer:         ConfigValue<Option<DefaultAnswer>>,
 }
 
 impl ParsedConfigValues {
@@ -301,6 +326,9 @@ impl ParsedConfigValues {
             APPROVER_KEY => self
                 .approver
                 .set(key, Some(ApproverWorktree::parse(value)?)),
+            DEFAULT_ANSWER_KEY => self
+                .default_answer
+                .set(key, Some(DefaultAnswer::parse(value)?)),
             _ => Err(ConfigError::UnknownKey(key.to_owned())),
         }
     }
@@ -312,6 +340,7 @@ impl ParsedConfigValues {
             maximum_ordering_edges,
             gate_mode,
             approver,
+            default_answer,
         } = BerthConfig::default();
         BerthConfig {
             trunk:                  self.trunk.into_or(trunk),
@@ -319,6 +348,7 @@ impl ParsedConfigValues {
             maximum_ordering_edges: self.maximum_ordering_edges.into_or(maximum_ordering_edges),
             gate_mode:              self.gate_mode.into_or(gate_mode),
             approver:               self.approver.into_or(approver),
+            default_answer:         self.default_answer.into_or(default_answer),
         }
     }
 }
@@ -359,6 +389,18 @@ impl GateMode {
             "enforce" => Ok(Self::Enforce),
             _ => Err(ConfigError::InvalidValue {
                 key:   GATE_MODE_KEY.to_owned(),
+                value: value.to_owned(),
+            }),
+        }
+    }
+}
+
+impl DefaultAnswer {
+    fn parse(value: &str) -> Result<Self, ConfigError> {
+        match parse_toml_string(value)?.as_str() {
+            "holder_first" => Ok(Self::HolderFirst),
+            _ => Err(ConfigError::InvalidValue {
+                key:   DEFAULT_ANSWER_KEY.to_owned(),
                 value: value.to_owned(),
             }),
         }
@@ -491,6 +533,7 @@ mod tests {
     use super::ConfigError;
     use super::ConfigurationFilePresence;
     use super::ConfigurationLookup;
+    use super::DefaultAnswer;
     use super::Enrollment;
     use super::GateMode;
     use super::InitializationState;
@@ -542,6 +585,28 @@ mod tests {
             BerthConfig::from_toml(&configuration.to_toml())
                 .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
         );
+    }
+
+    #[test]
+    fn a_default_answer_round_trips_and_rejects_unknown_answers() {
+        let configuration = BerthConfig {
+            default_answer: Some(DefaultAnswer::HolderFirst),
+            ..BerthConfig::default()
+        };
+
+        assert!(
+            BerthConfig::from_toml("default_answer = \"holder_first\"")
+                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+        );
+        assert!(
+            BerthConfig::from_toml(&configuration.to_toml())
+                .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
+        );
+        assert!(!BerthConfig::default().to_toml().contains("default_answer"));
+        assert!(matches!(
+            BerthConfig::from_toml("default_answer = \"requester_first\""),
+            Err(ConfigError::InvalidValue { ref key, .. }) if key == "default_answer"
+        ));
     }
 
     #[test]
@@ -720,6 +785,7 @@ mod tests {
             maximum_ordering_edges: 29,
             gate_mode:              GateMode::Enforce,
             approver:               Some(ApproverWorktree(PathBuf::from("/work/approver"))),
+            default_answer:         Some(DefaultAnswer::HolderFirst),
         };
         write_configuration(linked.path(), &policy.trunk)?;
         let linked_contents = format!("# Linked policy\n{}", policy.to_toml());

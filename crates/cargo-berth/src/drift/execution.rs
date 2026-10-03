@@ -577,7 +577,8 @@ fn claim_post_write_paths(
         Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
             acquisition,
             scopes,
-            conflicts: FirstTouchConflictOutcome::None,
+            conflicts:
+                FirstTouchConflictOutcome::None | FirstTouchConflictOutcome::DeferredByDefault { .. },
         }) => {
             let reservation_id = acquisition.reservation_id;
             Ok(PostWritePathAttribution {

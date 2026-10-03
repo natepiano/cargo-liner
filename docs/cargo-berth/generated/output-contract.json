@@ -6767,6 +6767,16 @@
                   "$ref": "#/$defs/FirstTouchReservationAcquisition",
                   "description": "The complete first-touch result that permits the edit."
                 },
+                "deferred_to": {
+                  "description": "Every holder the repository's default answer deferred the integration order with\nbefore the edit was permitted; absent when no foreign holder overlapped.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
                 "scopes": {
                   "$ref": "#/$defs/ReservationScopeSet",
                   "description": "The minimal exact-file antichain evaluated by the hook."
@@ -6869,7 +6879,7 @@
               "type": "object"
             },
             {
-              "description": "A `--defer` claim answered every holder of the requested paths and reserved nothing.",
+              "description": "A `--defer` claim, or an unanswered one under the repository's default answer, answered\nevery holder of the requested paths and reserved nothing.",
               "properties": {
                 "blockers": {
                   "description": "Every holder the answer deferred the integration order with, in ascending order.",
@@ -14313,6 +14323,16 @@
                   "$ref": "#/$defs/FirstTouchReservationAcquisition",
                   "description": "The complete first-touch result that permits the edit."
                 },
+                "deferred_to": {
+                  "description": "Every holder the repository's default answer deferred the integration order with\nbefore the edit was permitted; absent when no foreign holder overlapped.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
                 "scopes": {
                   "$ref": "#/$defs/ReservationScopeSet",
                   "description": "The minimal exact-file antichain evaluated by the hook."
@@ -14415,7 +14435,7 @@
               "type": "object"
             },
             {
-              "description": "A `--defer` claim answered every holder of the requested paths and reserved nothing.",
+              "description": "A `--defer` claim, or an unanswered one under the repository's default answer, answered\nevery holder of the requested paths and reserved nothing.",
               "properties": {
                 "blockers": {
                   "description": "Every holder the answer deferred the integration order with, in ascending order.",

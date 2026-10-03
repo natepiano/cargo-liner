@@ -22,6 +22,7 @@ use crate::answer::PermissiveOverlapAnswer;
 use crate::answer::PermissiveOverlapAuthorizationRequest;
 use crate::config::BerthConfig;
 use crate::config::ConfigError;
+use crate::config::DefaultAnswer;
 use crate::config::Enrollment;
 use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityProvenance;
@@ -184,6 +185,7 @@ enum FilesystemReferenceResolution {
     },
 }
 
+#[derive(Clone)]
 struct PreparedClaim {
     reservation_id:                   ReservationId,
     scopes:                           ReservationScopeSet,
@@ -205,6 +207,7 @@ struct ClaimValidationContext {
     worktree_id:            WorktreeId,
     path_case:              PathCase,
     overlap_authorization:  OverlapAuthorizationRequest,
+    default_answer:         Option<DefaultAnswer>,
     maximum_reservations:   u32,
     maximum_ordering_edges: u32,
     repository_trunk:       IntegrationTarget,
@@ -259,7 +262,8 @@ pub(crate) fn execute(
             reservation_id,
             blockers,
             scopes,
-        })) => OutputEnvelope::answered(reservation_id, blockers, scopes),
+            default_answer,
+        })) => OutputEnvelope::answered(reservation_id, blockers, scopes, default_answer),
         Ok(Enrollment::Enrolled(ClaimExecution::Blocked {
             conflicts,
             approver,
@@ -306,11 +310,14 @@ enum ClaimExecution {
         marker_publication:          CoordinationRunMarkerPublication,
         session_mapping_publication: SessionIdentityMappingPublication,
     },
-    /// A `--defer` claim recorded its answers without acquiring a reservation.
+    /// A `--defer` claim, or an unanswered one under the repository's default answer, recorded
+    /// its answers without acquiring a reservation.
     Answered {
         reservation_id: Option<ReservationId>,
         blockers:       WireOrderedReservationIds,
         scopes:         ReservationScopeSet,
+        /// The repository default that recorded the answers; absent for an explicit `--defer`.
+        default_answer: Option<DefaultAnswer>,
     },
     Blocked {
         conflicts: Vec<ReservationConflict>,
@@ -391,6 +398,12 @@ pub(crate) enum FirstTouchConflictOutcome {
         scopes:    ReservationScopeSet,
         /// Only the foreign holders covering those scopes.
         conflicts: Vec<ReservationConflict>,
+    },
+    /// The repository's default answer deferred to these foreign holders before every requested
+    /// path was protected.
+    DeferredByDefault {
+        /// Every holder the recorded answer deferred the integration order with.
+        blockers: WireOrderedReservationIds,
     },
 }
 
@@ -525,6 +538,7 @@ struct CommittedFirstTouchAcquisition {
     conflicts:        FirstTouchConflictOutcome,
 }
 
+#[derive(Clone)]
 struct FirstTouchValidationContext {
     run_validation:        ClaimRunValidation,
     worktree_context:      WorktreeContext,
@@ -625,6 +639,11 @@ fn acquire(
         coordination_identity_provenance: claim_run_validation.coordination_identity_provenance(),
     };
     let approver = berth_config.overlap_approver(worktree_context.repository_root());
+    // Only a claim that names no answer can record the repository's default one.
+    let default_answer = match overlap_authorization {
+        OverlapAuthorizationRequest::Absent => berth_config.default_answer,
+        OverlapAuthorizationRequest::Permissive(_) | OverlapAuthorizationRequest::Defer(_) => None,
+    };
     let target_view =
         TargetView::from_claim(&prepared_claim.target, &prepared_claim.trunk_at_claim);
     let repository_trunk = berth_config
@@ -644,6 +663,7 @@ fn acquire(
                     worktree_id: journal_mutation_actor.worktree_id,
                     path_case,
                     overlap_authorization,
+                    default_answer,
                     maximum_reservations: berth_config.maximum_reservations,
                     maximum_ordering_edges: berth_config.maximum_ordering_edges,
                     repository_trunk,
@@ -658,6 +678,7 @@ fn acquire(
         scopes,
         &worktree_context,
         approver,
+        default_answer,
     )
     .map(Enrollment::Enrolled)
 }
@@ -758,28 +779,55 @@ fn acquire_first_touch_with_reservation_selection(
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(ClaimError::InvalidRepositoryTrunk)?;
+    let validation_context = FirstTouchValidationContext {
+        run_validation,
+        worktree_context,
+        recovery_command_line: recovery_command_line.clone(),
+        coordination_run_id,
+        worktree_id: journal_mutation_actor.worktree_id,
+        path_case,
+        edit_scopes,
+        conflict_handling,
+        reservation_selection,
+        maximum_reservations: berth_config.maximum_reservations,
+        repository_trunk,
+    };
+    let execution =
+        transact_first_touch(&ledger, prepared_claim.clone(), validation_context.clone())?;
+    // Only a refusal of the whole request stops the caller, so only it records the default.
+    let (
+        FirstTouchClaimExecution::Blocked { .. },
+        FirstTouchConflictHandling::RefuseRequest,
+        Some(default_answer),
+    ) = (&execution, conflict_handling, berth_config.default_answer)
+    else {
+        return Ok(Enrollment::Enrolled(execution));
+    };
+    let blockers = record_first_touch_default_answer(
+        &ledger,
+        default_answer,
+        &prepared_claim.target.target,
+        &validation_context,
+    )?;
+    let execution = transact_first_touch(&ledger, prepared_claim, validation_context)?;
+    Ok(Enrollment::Enrolled(
+        execution.deferred_by_default(blockers),
+    ))
+}
+
+/// Run one locked first-touch transaction and publish what it committed.
+fn transact_first_touch(
+    ledger: &Ledger,
+    prepared_claim: PreparedClaim,
+    validation_context: FirstTouchValidationContext,
+) -> Result<FirstTouchClaimExecution, ClaimError> {
+    let coordination_run_id = validation_context.coordination_run_id;
+    let reservation_selection = validation_context.reservation_selection;
+    let worktree_context = validation_context.worktree_context.clone();
     let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
-        journal_mutation_actor.worktree_id,
-        journal_mutation_actor.coordination_run_id,
-        |state| {
-            validate_first_touch_transaction(
-                &state,
-                prepared_claim,
-                FirstTouchValidationContext {
-                    run_validation,
-                    worktree_context: worktree_context.clone(),
-                    recovery_command_line: recovery_command_line.clone(),
-                    coordination_run_id,
-                    worktree_id: journal_mutation_actor.worktree_id,
-                    path_case,
-                    edit_scopes,
-                    conflict_handling,
-                    reservation_selection,
-                    maximum_reservations: berth_config.maximum_reservations,
-                    repository_trunk,
-                },
-            )
-        },
+        validation_context.worktree_id,
+        coordination_run_id,
+        |state| validate_first_touch_transaction(&state, prepared_claim, validation_context),
         Ok::<_, Infallible>,
         |outcome| {
             first_touch_execution_from_outcome(
@@ -790,14 +838,66 @@ fn acquire_first_touch_with_reservation_selection(
             )
         },
     );
-    let execution = match execution {
+    match execution {
         Ok(execution) => execution,
-        Err(LedgerCommittedActionError::Transaction(error)) => {
-            return Err(ClaimError::Transaction(error));
-        },
+        Err(LedgerCommittedActionError::Transaction(error)) => Err(ClaimError::Transaction(error)),
         Err(LedgerCommittedActionError::Action(error)) => match error {},
-    };
-    execution.map(Enrollment::Enrolled)
+    }
+}
+
+/// Record the repository's default answer to every foreign holder of a refused first touch.
+///
+/// The conflicts are recomputed under the ledger lock. Any refusal here appends nothing and
+/// answers no holder; the first touch retried after it reports whatever still stops the edit.
+fn record_first_touch_default_answer(
+    ledger: &Ledger,
+    default_answer: DefaultAnswer,
+    target: &IntegrationTarget,
+    validation_context: &FirstTouchValidationContext,
+) -> Result<WireOrderedReservationIds, ClaimError> {
+    let outcome = ledger.transact(
+        validation_context.worktree_id,
+        validation_context.coordination_run_id,
+        |state| {
+            let reservations = match locked_claim_reservations(
+                &state,
+                validation_context.run_validation,
+                &validation_context.worktree_context,
+                validation_context.worktree_id,
+                &validation_context.recovery_command_line,
+                target,
+                &validation_context.repository_trunk,
+            ) {
+                Ok(reservations) => reservations,
+                Err(rejection) => return TransactionValidation::Reject(rejection),
+            };
+            let conflicts = reservations.conflicts_for_first_touch(
+                &validation_context.edit_scopes,
+                validation_context.coordination_run_id,
+                validation_context.worktree_id,
+                validation_context.path_case,
+            );
+            validate_defer(
+                default_deferral(default_answer, &conflicts),
+                conflicts,
+                &reservations,
+                DeferringWorktree {
+                    coordination_run_id: validation_context.coordination_run_id,
+                    worktree_id:         validation_context.worktree_id,
+                },
+                validation_context.edit_scopes.clone(),
+            )
+        },
+    )?;
+    Ok(match outcome {
+        LedgerTransactionOutcome::Appended { event, .. } => match &event.operation {
+            JournalOperation::Answer { authorizations, .. } => answered_blockers(authorizations),
+            _ => WireOrderedReservationIds::sorted_and_deduplicated(Vec::new()),
+        },
+        LedgerTransactionOutcome::Rejected(_) => {
+            WireOrderedReservationIds::sorted_and_deduplicated(Vec::new())
+        },
+    })
 }
 
 fn first_touch_execution_from_outcome(
@@ -856,6 +956,25 @@ fn first_touch_execution_from_outcome(
         LedgerCommittedActionOutcome::Rejected(
             FirstTouchClaimRejection::ReservationLimitReached(maximum),
         ) => Ok(FirstTouchClaimExecution::ReservationLimitReached(maximum)),
+    }
+}
+
+impl FirstTouchClaimExecution {
+    /// Report the holders the repository's default answer deferred to on a first touch that
+    /// protected every requested path after it.
+    fn deferred_by_default(self, blockers: WireOrderedReservationIds) -> Self {
+        match self {
+            Self::Acquired {
+                acquisition,
+                scopes,
+                conflicts: FirstTouchConflictOutcome::None,
+            } if !blockers.is_empty() => Self::Acquired {
+                acquisition,
+                scopes,
+                conflicts: FirstTouchConflictOutcome::DeferredByDefault { blockers },
+            },
+            execution => execution,
+        }
     }
 }
 
@@ -921,6 +1040,7 @@ fn claim_execution_from_outcome(
     scopes: ReservationScopeSet,
     worktree_context: &WorktreeContext,
     approver: Option<OverlapApprover>,
+    default_answer: Option<DefaultAnswer>,
 ) -> Result<ClaimExecution, ClaimError> {
     match outcome {
         LedgerTransactionOutcome::Appended {
@@ -936,8 +1056,9 @@ fn claim_execution_from_outcome(
             {
                 return Ok(ClaimExecution::Answered {
                     reservation_id: *reservation_id,
-                    blockers:       answered_blockers(authorizations),
-                    scopes:         scopes.clone(),
+                    blockers: answered_blockers(authorizations),
+                    scopes: scopes.clone(),
+                    default_answer,
                 });
             }
             let coordination_run_id = event.actor.run;
@@ -994,48 +1115,51 @@ fn validate_claim_transaction(
         worktree_id,
         path_case,
         overlap_authorization,
+        default_answer,
         maximum_reservations,
         maximum_ordering_edges,
         repository_trunk,
     } = context;
-    let reservations = match state.reservations() {
-        Ok(reservations) => reservations.clone(),
-        Err(error) => return TransactionValidation::Reject(ClaimRejection::Replay(error)),
-    };
-    let acting_head_containment = ActingHeadContainment::observe(
-        &reservations,
-        &worktree_context,
-        worktree_id,
-        &prepared_claim.target.target,
-        &repository_trunk,
-    );
-    let reservations = reservations.with_acting_head_containment(acting_head_containment);
-    if let Err(error) = run_validation.validate(
-        &reservations,
+    let reservations = match locked_claim_reservations(
+        state,
+        run_validation,
         &worktree_context,
         worktree_id,
         &recovery_command_line,
+        &prepared_claim.target.target,
+        &repository_trunk,
     ) {
-        return TransactionValidation::Reject(ClaimRejection::from(error));
-    }
+        Ok(reservations) => reservations,
+        Err(rejection) => return TransactionValidation::Reject(rejection),
+    };
     let conflicts =
         reservations.conflicts_for_claim(&prepared_claim.scopes, worktree_id, path_case);
-    let permissive_request = match overlap_authorization {
-        // A deferral reserves nothing, so the reservation limit does not apply to it.
-        OverlapAuthorizationRequest::Defer(request) => {
+    let deferring_worktree = DeferringWorktree {
+        coordination_run_id: run_validation.actor_run_id(),
+        worktree_id,
+    };
+    // A deferral reserves nothing, so the reservation limit does not apply to it.
+    let permissive_request = match (overlap_authorization, default_answer) {
+        (OverlapAuthorizationRequest::Defer(request), _) => {
             return validate_defer(
                 *request,
                 conflicts,
                 &reservations,
-                DeferringWorktree {
-                    coordination_run_id: run_validation.actor_run_id(),
-                    worktree_id,
-                },
+                deferring_worktree,
                 prepared_claim.scopes,
             );
         },
-        OverlapAuthorizationRequest::Absent => None,
-        OverlapAuthorizationRequest::Permissive(request) => Some(*request),
+        (OverlapAuthorizationRequest::Absent, Some(default_answer)) if !conflicts.is_empty() => {
+            return validate_defer(
+                default_deferral(default_answer, &conflicts),
+                conflicts,
+                &reservations,
+                deferring_worktree,
+                prepared_claim.scopes,
+            );
+        },
+        (OverlapAuthorizationRequest::Absent, _) => None,
+        (OverlapAuthorizationRequest::Permissive(request), _) => Some(*request),
     };
     if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
         return TransactionValidation::Reject(ClaimRejection::ReservationLimitReached(
@@ -1060,6 +1184,54 @@ fn validate_claim_transaction(
             &ordering_graph,
             maximum_ordering_edges,
         ),
+    }
+}
+
+/// Replay the locked reservations, observe the acting head, and validate the acting run.
+fn locked_claim_reservations(
+    state: &ReplayedLedgerState<'_>,
+    run_validation: ClaimRunValidation,
+    worktree_context: &WorktreeContext,
+    worktree_id: WorktreeId,
+    recovery_command_line: &RecoveryCommandLine,
+    target: &IntegrationTarget,
+    repository_trunk: &IntegrationTarget,
+) -> Result<RetainedReservationSet, ClaimRejection> {
+    let reservations = state
+        .reservations()
+        .map_err(ClaimRejection::Replay)?
+        .clone();
+    let acting_head_containment = ActingHeadContainment::observe(
+        &reservations,
+        worktree_context,
+        worktree_id,
+        target,
+        repository_trunk,
+    );
+    let reservations = reservations.with_acting_head_containment(acting_head_containment);
+    run_validation
+        .validate(
+            &reservations,
+            worktree_context,
+            worktree_id,
+            recovery_command_line,
+        )
+        .map_err(ClaimRejection::from)?;
+    Ok(reservations)
+}
+
+/// The deferral the repository's default answer records: one answer to every holder in
+/// `conflicts`, with the engine's reason naming the default.
+fn default_deferral(
+    default_answer: DefaultAnswer,
+    conflicts: &[ReservationConflict],
+) -> DeferAnswerRequest {
+    DeferAnswerRequest {
+        blockers: conflicts
+            .iter()
+            .map(|conflict| conflict.reservation_id)
+            .collect(),
+        reason:   default_answer.into(),
     }
 }
 

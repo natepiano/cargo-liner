@@ -46,6 +46,7 @@ use super::worktree_context::WorktreeContext;
 use crate::answer::OverlapApprover;
 use crate::config::BerthConfig;
 use crate::config::ConfigurationLookup;
+use crate::config::DefaultAnswer;
 use crate::config::Enrollment;
 use crate::config::InitializationState;
 use crate::git;
@@ -75,6 +76,7 @@ pub(crate) struct EditCheckLedgerSnapshot {
     reservations:     Result<RetainedReservationSet, ReservationReplayError>,
     worktree_context: WorktreeContext,
     approver:         Option<OverlapApprover>,
+    default_answer:   Option<DefaultAnswer>,
 }
 
 /// Validated journal truth read without holding the mutation lock.
@@ -117,15 +119,21 @@ pub(crate) struct LedgerReinitialization {
 
 impl EditCheckLedgerSnapshot {
     /// Split this read into its folded reservation set, the filesystem-discovered worktree
-    /// context, and the configured approver a refusal names.
+    /// context, the configured approver a refusal names, and the configured default answer.
     pub(crate) fn into_parts(
         self,
     ) -> (
         Result<RetainedReservationSet, ReservationReplayError>,
         WorktreeContext,
         Option<OverlapApprover>,
+        Option<DefaultAnswer>,
     ) {
-        (self.reservations, self.worktree_context, self.approver)
+        (
+            self.reservations,
+            self.worktree_context,
+            self.approver,
+            self.default_answer,
+        )
     }
 }
 
@@ -301,18 +309,20 @@ impl Ledger {
         invocation_directory: &Path,
     ) -> Result<Enrollment<EditCheckLedgerSnapshot>, LedgerError> {
         let worktree_context = WorktreeContext::discover(invocation_directory)?;
-        let approver = match BerthConfig::read(&worktree_context.configuration_lookup())? {
-            Enrollment::Enrolled(berth_config) => {
-                berth_config.overlap_approver(worktree_context.repository_root())
-            },
-            Enrollment::Unconfigured {
-                expected_configuration_path,
-            } => {
-                return Ok(Enrollment::Unconfigured {
+        let (approver, default_answer) =
+            match BerthConfig::read(&worktree_context.configuration_lookup())? {
+                Enrollment::Enrolled(berth_config) => (
+                    berth_config.overlap_approver(worktree_context.repository_root()),
+                    berth_config.default_answer,
+                ),
+                Enrollment::Unconfigured {
                     expected_configuration_path,
-                });
-            },
-        };
+                } => {
+                    return Ok(Enrollment::Unconfigured {
+                        expected_configuration_path,
+                    });
+                },
+            };
         let ledger = Self::at_common_git_directory(
             worktree_context.common_git_directory(),
             worktree_context.repository_root(),
@@ -322,6 +332,7 @@ impl Ledger {
             reservations,
             worktree_context,
             approver,
+            default_answer,
         }))
     }
 

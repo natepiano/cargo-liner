@@ -10,7 +10,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::constants::DEFAULT_ANSWER_HOLDER_FIRST_REASON;
 use super::constants::ENROLLMENT_AUTHORIZATION_REASON;
+use crate::config::DefaultAnswer;
 use crate::ids::ReservationId;
 use crate::ledger::OrderingDirection;
 
@@ -68,6 +70,15 @@ pub(crate) struct OverlapAuthorizationReason(#[schemars(length(min = 1))] String
 impl OverlapAuthorizationReason {
     /// The engine's explanation for a deferral recorded by enrollment.
     pub(crate) fn enrollment() -> Self { Self(ENROLLMENT_AUTHORIZATION_REASON.to_owned()) }
+}
+
+impl From<DefaultAnswer> for OverlapAuthorizationReason {
+    /// The engine's explanation for a deferral the repository's default answer recorded.
+    fn from(default_answer: DefaultAnswer) -> Self {
+        match default_answer {
+            DefaultAnswer::HolderFirst => Self(DEFAULT_ANSWER_HOLDER_FIRST_REASON.to_owned()),
+        }
+    }
 }
 
 impl Display for OverlapAuthorizationReason {

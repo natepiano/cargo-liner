@@ -141,6 +141,12 @@ deliberate silence, while an unreadable configured ledger carries a rendered
 fail-open notice. A missing blocking presentation fails closed with a hook
 diagnostic instead.
 
+The edit check covers only Claude Code's `Edit`, `Write`, and `NotebookEdit`
+tools; the hook answers every other tool name with no check. A write made by a
+script, a Bash command, or a Codex seat is never checked, so for those writers
+berth is advisory: reservations and answers record intent, and nothing stops the
+write. Git merges remain the real conflict check.
+
 Two further harness events are answered by the engine, one process each.
 `cargo berth hook post-tool-use` reads a `PostToolUse` payload for a Bash call
 that has already finished, performs the drift comparison, and reads the live
@@ -176,8 +182,8 @@ drift` for the same check on demand. `CARGO_BERTH_BYPASS=1` skips the post-commi
 check.
 
 Permissive overlap answers also have a stated limit. An answer records in the
-one `claim` invocation that carries it, and only when the holder it names is the
-only conflict the engine finds under the ledger lock; any other conflicting
+one `claim` invocation that carries it, and only when the holders it names are
+every conflict the engine finds under the ledger lock; any other conflicting
 holder refuses the claim. The resulting fact records the submitting repository,
 worktree, and coordination run, the reason, and the exact overlap. It guarantees
 that the answer was reasoned, limited to the named holder's current overlap,
@@ -265,13 +271,15 @@ The four answers are:
 - `--before <holder>`: the requester integrates before the holder.
 - `--after <holder>`: the requester integrates after the holder.
 - `--defer <holder>`: neither may integrate until a later `sequence` command
-  supplies an order.
+  supplies an order. A deferral reserves nothing and adds no holder: it records
+  an `answer` against the acting run's oldest active reservation, when one
+  exists. `--defer` may repeat, so one claim answers every holder of a path.
 - `--override <holder>`: editing is authorized without an integration order.
 
 Each answer requires `--overlap-why <text>` and records in that one
-invocation. An answer naming a holder while another holder also conflicts is
-refused at exit 1 and records nothing; narrow the requested scopes until one
-holder remains.
+invocation. An answer that leaves a conflicting holder unnamed is refused at
+exit 1 and records nothing; repeat `--defer` for every holder, or narrow the
+requested scopes until one holder remains.
 
 ## Drift and the post-commit warning
 
@@ -402,11 +410,20 @@ gate_mode = "observe"
 - `maximum_ordering_edges`: the maximum number of live ordering constraints.
 - `gate_mode`: `observe` reports and permits; `enforce` reports and rejects.
 
-One optional field is not written by default:
+Two optional fields are not written by default. The main worktree's file
+supplies both whenever that file exists:
 
 - `approver`: the absolute worktree path whose session chooses overlap answers,
   for example `approver = "/home/me/rust/project_catalyst"`. Unset, the refused
   session chooses.
+- `default_answer`: the answer recorded when an overlap arrives without one. The
+  only value is `"holder_first"`. A `claim` that overlaps holders and names no
+  answer then records a `--defer` answer to every holder of the requested
+  paths, reserves nothing, and reports status `answered`. A first-touch edit
+  that overlaps holders records the same answer and proceeds; its clear `check`
+  payload names those holders in `deferred_to`. The recorded reason names
+  `default_answer` and `berth.toml`. Unset, an overlap without an answer is
+  refused as before.
 
 Missing fields take these defaults. Unknown fields, duplicates, invalid values,
 and an unreadable file are configuration errors.

@@ -23,6 +23,7 @@ use crate::board;
 use crate::board::BoardModel;
 use crate::board::BoardReportRendering;
 use crate::board::LiveIncursionMembership;
+use crate::config::DefaultAnswer;
 use crate::config::InitializationState;
 use crate::coordination_identity;
 use crate::coordination_identity::CoordinationIdentityRejection;
@@ -1270,7 +1271,8 @@ enum ClaimPayload {
         /// Whether the harness session mapping reflects this claim.
         session_mapping_publication: SessionIdentityMappingPublication,
     },
-    /// A `--defer` claim answered every holder of the requested paths and reserved nothing.
+    /// A `--defer` claim, or an unanswered one under the repository's default answer, answered
+    /// every holder of the requested paths and reserved nothing.
     Answered {
         /// The acting run's active reservation held against each blocker at integration;
         /// absent when the run held none, so nothing is held.
@@ -1453,6 +1455,11 @@ enum CheckPayload {
         scopes:      ReservationScopeSet,
         /// The complete first-touch result that permits the edit.
         acquisition: FirstTouchReservationAcquisition,
+        /// Every holder the repository's default answer deferred the integration order with
+        /// before the edit was permitted; absent when no foreign holder overlapped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "Option<Vec<String>>")]
+        deferred_to: Option<WireOrderedReservationIds>,
     },
     /// Foreign holders block one or more requested paths.
     Blocked {
@@ -2152,11 +2159,12 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build the successful result for a `--defer` claim that recorded answers only.
+    /// Build the successful result for a claim that recorded answers only.
     pub(crate) fn answered(
         reservation_id: Option<ReservationId>,
         blockers: WireOrderedReservationIds,
         scopes: ReservationScopeSet,
+        default_answer: Option<DefaultAnswer>,
     ) -> Self {
         let scope_count = scopes.as_slice().len();
         let blocker_list = blockers
@@ -2165,12 +2173,15 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
+        let preface = default_answer.map_or_else(String::new, |default_answer| {
+            format!("{} ", default_answer_preface(default_answer))
+        });
         let message = reservation_id.map_or_else(
             || format!(
-                "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
+                "{preface}Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
             ),
             |reservation_id| format!(
-                "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and reservation {reservation_id} is held against each holder at integration until the order is sequenced."
+                "{preface}Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and reservation {reservation_id} is held against each holder at integration until the order is sequenced."
             ),
         );
         let summary = "cargo-berth recorded a deferred overlap answer.";
@@ -2479,10 +2490,12 @@ impl OutputEnvelope {
         }
     }
 
-    /// Build a successful edit check whose locked transaction established protection.
+    /// Build a successful edit check whose locked transaction established protection, after the
+    /// repository's default answer deferred to `deferred_to` when it names any holder.
     pub(crate) fn clear_check(
         scopes: ReservationScopeSet,
         acquisition: FirstTouchReservationAcquisition,
+        deferred_to: Option<WireOrderedReservationIds>,
     ) -> Self {
         let message = match acquisition.kind {
             FirstTouchReservationAcquisitionKind::Appended => {
@@ -2499,10 +2512,29 @@ impl OutputEnvelope {
             message.to_owned(),
             &acquisition.session_mapping_publication,
         );
-        let presentation = session_mapping_publication_presentation(
-            &message,
-            &acquisition.session_mapping_publication,
-        );
+        let (message, presentation) = if let Some(blockers) = &deferred_to {
+            let blocker_list = blockers
+                .as_slice()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let message = format!(
+                "The repository's default overlap answer deferred the integration order with {blocker_list} before this edit. {message}"
+            );
+            let presentation = presentation::engine_message_block(
+                "cargo-berth recorded the repository's default overlap answer.",
+                &message,
+            )
+            .into();
+            (message, presentation)
+        } else {
+            let presentation = session_mapping_publication_presentation(
+                &message,
+                &acquisition.session_mapping_publication,
+            );
+            (message, presentation)
+        };
         let reservation_id = acquisition.reservation_id;
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -2516,6 +2548,7 @@ impl OutputEnvelope {
             payload: OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Clear {
                 scopes,
                 acquisition,
+                deferred_to,
             })),
         }
     }
@@ -3491,6 +3524,15 @@ impl OutputPayload {
             | CommandVerb::Integrate => OutputFacts::NoFacts,
         };
         Self::from_facts(facts)
+    }
+}
+
+/// Name the configured default answer that recorded a claim's answers.
+const fn default_answer_preface(default_answer: DefaultAnswer) -> &'static str {
+    match default_answer {
+        DefaultAnswer::HolderFirst => {
+            "The repository's default answer (default_answer = \"holder_first\" in .claude/config/berth.toml) answered this claim."
+        },
     }
 }
 

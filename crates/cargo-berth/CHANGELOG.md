@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- An optional `default_answer = "holder_first"` key in `.claude/config/berth.toml`, supplied by the main worktree's file, records an answer when an overlap arrives without one. A `claim` that overlaps holders and names no answer records a `--defer` answer to every holder of the requested paths, reserves nothing, and reports `answered`; a first-touch edit that overlaps holders records the same answer and proceeds, and its clear `check` payload lists those holders in `deferred_to`. The recorded reason names `default_answer` and `berth.toml`. Unset, an unanswered overlap is refused as before.
+- The README states what the edit check covers: only Claude Code's `Edit`, `Write`, and `NotebookEdit` tools. Writes from scripts, Bash commands, and Codex seats are not checked, so berth is advisory for them, and git merges remain the real conflict check.
+
 - An optional `approver` key in `.claude/config/berth.toml` names the absolute worktree path whose session chooses overlap answers; the main worktree's file supplies it whenever that file exists. An overlap refusal tells the approver's own session to choose, and tells every other session to send the overlap to the session in that worktree and record the order it chooses with the claim command. Blocked `claim` and `check` payloads carry `approver: {worktree, caller_is_approver}` when it is set. The engine does not check who records an answer. An empty or relative path is an invalid configuration value.
 
 - A disposable replay checkpoint, `replay-checkpoint.json` in the ledger directory, so a command replays only the journal records appended since it was written. The first command after upgrading replays the whole journal once and writes it; a checkpoint from another build, repository, or journal file, or one whose last record no longer matches the journal, is rebuilt the same way. `init --repair-projection` and `init --reinitialize-after-review` delete it.
@@ -31,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Record each reservation's local integration target from `claim --target`, the claimant branch's `branch.<name>.cargoBerthTarget` setting, or the repository trunk; `init` pins older claims and `retarget` replaces a live target.
 
 ### Changed
+
+- A `--defer` answer reserves nothing and adds no holder: `claim --defer` appends an `answer` record against the acting run's oldest active reservation, when one exists, and the ordering graph holds that reservation against each blocker. `--defer` may repeat, so one claim answers every holder of a path.
+- `release` on integrated work releases it instead of moving its checkpoint; unintegrated work still moves to the holder's HEAD. Release journal entries record an optional `source` (`command` or `reconciliation`).
 
 - **Breaking:** an overlap answer records in one invocation. `claim <paths> --before|--after|--defer|--override <holder> --overlap-why "<reason>"` appends at exit 0 with the ordinary `claimed` envelope when the named holder is the only conflict under the ledger lock, and is refused as `blocked_by_overlap` at exit 1 when any other holder also conflicts. The `--proposal` flag, the `needs_user_authorization` status, exit code `3`, and the proposal payload are removed; `output_contract_version` is 5. The blocked-edit guidance no longer asks for a separate approval step: it says who chooses the answer.
 
@@ -63,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A released reservation's `merge_extent` in `board --json` and `board --reservation <id> --json` is `{"status": "released", "at_release": <extent>}`, so the extent last observed before release no longer reads as live protection. The single-reservation text labels it `Merge extent at release (not blocking)`. Active and outstanding rows are unchanged.
 
 ### Fixed
+
+- Integrated work releases itself. Reconciliation settles an integrated outstanding reservation with later branch work when another reservation of the same holder and target carries the same merge extent; without one it stays outstanding.
 
 - An overlap answer to a holder protecting many paths no longer exceeds the 16 KiB record limit. Answer, enrollment, and widen records named the holder's scope revision by copying every holder scope, so `claim --after <holder>` against a holder with a few hundred files failed with `invalid_input` however few paths the caller named. A scope revision is now a fixed-size SHA-256 digest of the scopes, in records, in board `exact_approved_scopes`, and in a conflict's `overlap_scope_revision`; `output_contract_version` is 6. Records written before the change carry the scope array and replay unchanged.
 

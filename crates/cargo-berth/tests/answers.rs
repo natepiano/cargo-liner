@@ -2027,3 +2027,134 @@ fn wait_for_path(path: &Path, child: &mut Child) {
 fn json_output(output: &Output) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("command should render a JSON envelope")
 }
+
+fn set_default_answer(repository: &Path) {
+    let mut configuration = fs::OpenOptions::new()
+        .append(true)
+        .open(repository.join(CONFIGURATION_PATH))
+        .expect("configuration should open");
+    writeln!(configuration, "default_answer = \"holder_first\"")
+        .expect("default answer should write");
+}
+
+/// Two holders of `src/lib.rs`: the main worktree's plain claim and a third lane's override.
+fn two_holders_of_the_library(repository: &Path, third_root: &Path) -> Vec<String> {
+    dirty_source(repository, "src/lib.rs");
+    let first_holder = reservation_id(&claim_explicit(
+        repository,
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the holder file",
+    ));
+    dirty_source(third_root, "src/lib.rs");
+    let second_holder = reservation_id(&run_berth(
+        third_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            THIRD_RUN,
+            "--override",
+            &first_holder,
+            "--overlap-why",
+            "both lanes edit the library",
+            "--why",
+            "protect the second holder file",
+            "--json",
+        ],
+    ));
+    let mut holders = vec![first_holder, second_holder];
+    holders.sort();
+    holders
+}
+
+#[test]
+fn a_default_answer_defers_an_overlapping_claim_to_every_holder() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let holders = two_holders_of_the_library(repository.path(), &third_root);
+    set_default_answer(repository.path());
+
+    let answered = run_berth(
+        &second_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            "--why",
+            "protect the requester file",
+            "--json",
+        ],
+    );
+    let answered_json = json_output(&answered);
+    assert!(answered.status.success(), "{answered_json}");
+    assert_eq!(answered_json["status"], "answered");
+    assert_eq!(
+        answered_json["payload"]["data"]["blockers"],
+        serde_json::json!(holders)
+    );
+    let answers = journal_events(repository.path())
+        .into_iter()
+        .filter(|event| event["op"] == "answer")
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(
+            answers.as_slice(),
+            [answer] if answer.to_string().contains("default_answer")
+        ),
+        "one answer op whose recorded reason names the default should be recorded: {answers:?}"
+    );
+}
+
+#[test]
+fn a_default_answer_lets_an_overlapping_first_touch_edit_proceed() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let holders = two_holders_of_the_library(repository.path(), &third_root);
+    set_default_answer(repository.path());
+    claim_explicit(
+        &second_root,
+        "file:src/own.rs",
+        SECOND_RUN,
+        "give the lane a run",
+    );
+
+    let checked = run_berth(&second_root, ["check", "file:src/lib.rs", "--json"]);
+    let checked_json = json_output(&checked);
+    assert!(checked.status.success(), "{checked_json}");
+    assert_eq!(checked_json["status"], "clear");
+    assert_eq!(
+        checked_json["payload"]["data"]["deferred_to"],
+        serde_json::json!(holders)
+    );
+}
+
+#[test]
+fn without_a_default_answer_an_overlapping_claim_still_stops() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    two_holders_of_the_library(repository.path(), &third_root);
+
+    let refused = run_berth(
+        &second_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            "--why",
+            "protect the requester file",
+            "--json",
+        ],
+    );
+    assert_eq!(json_output(&refused)["status"], "blocked_by_overlap");
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .all(|event| event["op"] != "answer")
+    );
+}
