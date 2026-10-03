@@ -1857,7 +1857,9 @@ fn retire_orphan_replaces_lost_integration_evidence_and_survives_replay() {
 }
 
 fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) {
-    git(repository, &["switch", "--quiet", "-c", "abandoned"]);
+    // Each branch switch skips the hooks; see `GitDriver::run_without_hooks`. Each commit keeps
+    // them: its post-commit drift check records the commit.
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "abandoned"]);
     commit_file(repository, "abandoned", "work\n", "abandoned work");
     let abandoned_claim = run_berth(
         repository,
@@ -1885,8 +1887,8 @@ fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) 
         "abandoned"
     );
 
-    git(repository, &["switch", "--quiet", "main"]);
-    git(repository, &["switch", "--quiet", "-c", "retired"]);
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "main"]);
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "retired"]);
     commit_file(repository, "retired", "work\n", "retired work");
     let retired_claim = run_berth(
         repository,
@@ -1917,8 +1919,9 @@ fn record_terminal_recovery_dispositions(repository: &Path) -> (String, String) 
 }
 
 fn validate_rewritten_integration_replacement(repository: &Path) {
-    git(repository, &["switch", "--quiet", "main"]);
-    git(repository, &["switch", "--quiet", "-c", "rewritten"]);
+    // The branch switches skip the hooks; see `GitDriver::run_without_hooks`.
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "main"]);
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "-c", "rewritten"]);
     commit_file(repository, "rewritten", "work\n", "rewritten source");
     let unreachable_tip = git_stdout(repository, &["rev-parse", "HEAD"]);
     let rewritten_claim = run_berth(
@@ -2178,9 +2181,10 @@ fn initialized_repository() -> TempDir {
     git(repository.path(), &["commit", "--quiet", "-m", "initial"]);
     assert!(run_berth(repository.path(), &["init"]).status.success());
     git(repository.path(), &["add", ".claude/config/berth.toml"]);
-    git(
+    // Nothing is claimed yet, so the commit skips the hooks; see `GitDriver::run_without_hooks`.
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "track berth config"],
+        ["commit", "--quiet", "-m", "track berth config"],
     );
     repository
 }

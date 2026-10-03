@@ -17,7 +17,7 @@ use crate::berth_command::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 
 /// Points git's hook lookup at a path that holds no hook on any platform.
-pub(crate) const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
+const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
 
 /// Start a git command whose managed hooks run the `cargo-berth` under test.
 ///
@@ -146,6 +146,40 @@ impl GitDriver {
         command.status().expect("git should run").success()
     }
 
+    /// Run git without running any hook, and assert it succeeded.
+    ///
+    /// Only for a fixture step whose hooked form changes no `cargo-berth` state, as
+    /// a gate test proves for each kind: a configuration commit on a trunk with no
+    /// reservation
+    /// (`hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchanged`), and
+    /// a switch to a new or existing branch
+    /// (`hooked_branch_switches_of_the_recovery_fixture_leave_berth_state_unchanged`).
+    /// Any other commit keeps its hooks: the post-commit drift check records it,
+    /// even with no reservation in the ledger.
+    ///
+    /// # Panics
+    ///
+    /// Panics when git cannot be started or reports failure.
+    pub fn run_without_hooks<Arguments, Argument>(
+        self,
+        repository_root: &Path,
+        arguments: Arguments,
+    ) where
+        Arguments: IntoIterator<Item = Argument>,
+        Argument: AsRef<OsStr>,
+    {
+        let hooks_disabled =
+            [OsStr::new("-c"), OsStr::new(HOOKS_DISABLED_CONFIGURATION)].map(OsStr::to_owned);
+        self.run(
+            repository_root,
+            hooks_disabled.into_iter().chain(
+                arguments
+                    .into_iter()
+                    .map(|argument| argument.as_ref().to_owned()),
+            ),
+        );
+    }
+
     /// Add a linked worktree at `worktree_root` on a new `branch` started from
     /// `start_point`, without running any hook.
     ///
@@ -167,11 +201,9 @@ impl GitDriver {
         branch: &str,
         start_point: &str,
     ) {
-        self.run(
+        self.run_without_hooks(
             repository_root,
             [
-                OsStr::new("-c"),
-                OsStr::new(HOOKS_DISABLED_CONFIGURATION),
                 OsStr::new("worktree"),
                 OsStr::new("add"),
                 OsStr::new("--quiet"),

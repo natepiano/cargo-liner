@@ -35,6 +35,7 @@ const GIT: GitDriver = GitDriver {
 };
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
@@ -1081,45 +1082,16 @@ fn hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchang
     let repository = staged_configuration_repository();
     let git_directory = repository.path().join(".git");
     let before = files_under(&git_directory);
-    let wrapper_directory = tempdir().expect("wrapper directory");
-    let invocations = wrapper_directory.path().join("invocations");
-    let wrapper = wrapper_directory.path().join("cargo-berth");
-    fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> {}\nexec {} \"$@\"\n",
-            shell_single_quoted(&invocations),
-            shell_single_quoted(Path::new(BERTH_EXECUTABLE))
-        ),
-    )
-    .expect("invocation-recording wrapper writes");
-    let mut permissions = fs::metadata(&wrapper)
-        .expect("wrapper metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper, permissions).expect("wrapper executes");
-    let committed = GIT.output_with_environment(
+    let hooked_git = HookedGit::new();
+    hooked_git.run(
         repository.path(),
         &["commit", "--quiet", "-m", "configure berth"],
-        EXECUTABLE_ENVIRONMENT,
-        wrapper.to_str().expect("wrapper path should be UTF-8"),
     );
-    assert!(
-        committed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&committed.stderr)
-    );
-    let invocations = fs::read_to_string(&invocations).expect("the hooks should start cargo-berth");
-    for expected in [
+    hooked_git.assert_started(&[
         "__reference-transaction prepared",
         "__reference-transaction committed",
         "drift --full",
-    ] {
-        assert!(
-            invocations.lines().any(|invocation| invocation == expected),
-            "invocations: {invocations}"
-        );
-    }
+    ]);
 
     let after = files_under(&git_directory);
     let commit_records = [
@@ -1136,6 +1108,51 @@ fn hooked_configuration_commit_on_an_unreserved_trunk_leaves_berth_state_unchang
         .filter(|path| !commit_record(path) && before.get(*path) != after.get(*path))
         .collect();
     assert!(changed.is_empty(), "the hooked commit changed {changed:?}");
+}
+
+/// `GitDriver::run_without_hooks` skips the hooks this test runs for the branch switches of the
+/// liveness test `recovery_dispositions_validate_evidence_and_remain_distinct_after_replay`. This
+/// test builds that history with every hook: each branch is created, committed to and its work
+/// claimed, released and resolved, then the trunk is checked out again. A new branch starts
+/// `cargo-berth` at the committed phase, a switch to an existing branch starts none, and every
+/// file under the git directory apart from git's own records of commits, refs and `HEAD` reads
+/// the same after each switch. The commits keep their hooks: the post-commit drift check records
+/// them, so the state may change there.
+#[test]
+fn hooked_branch_switches_of_the_recovery_fixture_leave_berth_state_unchanged() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let git_directory = root.join(".git");
+    let hooked_git = HookedGit::new();
+    for (branch, disposition) in [
+        ("abandoned", Some("--abandon")),
+        ("retired", Some("--retire-orphan")),
+        ("rewritten", None),
+    ] {
+        let before = berth_state(&git_directory);
+        hooked_git.run(root, &["switch", "--quiet", "-c", branch]);
+        let changed = changed_paths(&before, &berth_state(&git_directory));
+        assert!(
+            changed.is_empty(),
+            "switching to new {branch} changed {changed:?}"
+        );
+        hooked_git.assert_started(&["__reference-transaction committed"]);
+
+        hooked_git.commit_file(root, branch, "work\n", &format!("{branch} work"));
+        if let Some(disposition) = disposition {
+            resolve_branch_work(root, branch, disposition);
+        }
+        hooked_git.clear_invocations();
+
+        let before = berth_state(&git_directory);
+        hooked_git.run(root, &["switch", "--quiet", "main"]);
+        let changed = changed_paths(&before, &berth_state(&git_directory));
+        assert!(
+            changed.is_empty(),
+            "switching back from {branch} changed {changed:?}"
+        );
+        hooked_git.assert_started(&[]);
+    }
 }
 
 #[test]
@@ -7262,6 +7279,130 @@ fn git_binary() -> PathBuf {
         .map(|directory| directory.join(GIT_BINARY))
         .find(|candidate| candidate.is_file())
         .expect("git should exist on PATH")
+}
+
+/// Runs git with an invocation-recording wrapper in place of the hooks' `cargo-berth`.
+///
+/// The wrapper appends each invocation's subcommand and phase to a file, then runs the
+/// `cargo-berth` under test.
+struct HookedGit {
+    directory: TempDir,
+}
+
+impl HookedGit {
+    fn new() -> Self {
+        let directory = tempdir().expect("wrapper directory");
+        let hooked_git = Self { directory };
+        let wrapper = hooked_git.wrapper();
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s %s\\n' \"$1\" \"$2\" >> {}\nexec {} \"$@\"\n",
+                shell_single_quoted(&hooked_git.invocations()),
+                shell_single_quoted(Path::new(BERTH_EXECUTABLE))
+            ),
+        )
+        .expect("invocation-recording wrapper writes");
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("wrapper executes");
+        hooked_git
+    }
+
+    fn wrapper(&self) -> PathBuf { self.directory.path().join("cargo-berth") }
+
+    fn invocations(&self) -> PathBuf { self.directory.path().join("invocations") }
+
+    /// Run git with the wrapper as the hooks' `cargo-berth`, and assert it succeeded.
+    fn run(&self, repository_root: &Path, arguments: &[&str]) {
+        let wrapper = self.wrapper();
+        let output = GIT.output_with_environment(
+            repository_root,
+            arguments,
+            EXECUTABLE_ENVIRONMENT,
+            wrapper.to_str().expect("wrapper path should be UTF-8"),
+        );
+        assert!(
+            output.status.success(),
+            "git {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn commit_file(&self, repository_root: &Path, path: &str, contents: &str, message: &str) {
+        write_file(repository_root, path, contents);
+        git(repository_root, &["add", path]);
+        self.run(repository_root, &["commit", "--quiet", "-m", message]);
+    }
+
+    /// Assert that the hooks started `cargo-berth` exactly for the `expected` invocations since
+    /// the last call, each at least once, then clear the record.
+    fn assert_started(&self, expected: &[&str]) {
+        let invocations_path = self.invocations();
+        let invocations = fs::read_to_string(&invocations_path).unwrap_or_default();
+        self.clear_invocations();
+        let started: BTreeSet<&str> = invocations.lines().collect();
+        let expected: BTreeSet<&str> = expected.iter().copied().collect();
+        assert_eq!(started, expected, "invocations: {invocations}");
+    }
+
+    fn clear_invocations(&self) {
+        let invocations_path = self.invocations();
+        if invocations_path.exists() {
+            fs::remove_file(&invocations_path).expect("the invocation record should clear");
+        }
+    }
+}
+
+/// Claim the file named `branch` on the checked-out `branch`, release it, and resolve it with
+/// `disposition`.
+fn resolve_branch_work(repository_root: &Path, branch: &str, disposition: &str) {
+    let scope = format!("file:{branch}");
+    let claimed = run_berth(
+        repository_root,
+        &["claim", &scope, "--run", FIRST_RUN, "--json"],
+    );
+    assert_success(&claimed);
+    let reservation_id = reservation_id(&claimed);
+    assert_success(&run_berth(repository_root, &["release", &reservation_id]));
+    assert_success(&run_berth(
+        repository_root,
+        &[
+            "resolve",
+            &reservation_id,
+            disposition,
+            "--why",
+            "the fixture discards this work",
+        ],
+    ));
+}
+
+/// Every file under `git_directory` apart from git's own records of commits, refs and `HEAD`,
+/// and its `rerere` record `MERGE_RR`.
+fn berth_state(git_directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let git_record = |path: &Path| {
+        ["COMMIT_EDITMSG", "HEAD", "MERGE_RR", "ORIG_HEAD", "index"]
+            .iter()
+            .any(|record| path == Path::new(record))
+            || ["logs", "objects", "refs"]
+                .iter()
+                .any(|records| path.starts_with(records))
+    };
+    files_under(git_directory)
+        .into_iter()
+        .filter(|(path, _)| !git_record(path))
+        .collect()
+}
+
+/// The paths whose contents differ between `before` and `after`, or that only one holds.
+fn changed_paths(
+    before: &BTreeMap<PathBuf, Vec<u8>>,
+    after: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Vec<PathBuf> {
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| before.get(*path) != after.get(*path))
+        .cloned()
+        .collect()
 }
 
 fn shell_single_quoted(path: &Path) -> String {
