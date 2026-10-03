@@ -20,8 +20,8 @@ const BUILD_RUSTC_VERSION: Option<&str> = option_env!("MEND_BUILD_RUSTC_VERSION"
 /// Clippy's lints, linked into a build of cargo-mend by the `cargo-mend-clippy`
 /// package.
 ///
-/// cargo-mend cannot depend on rust-clippy itself: rust-clippy is published
-/// only as git tags, and crates.io refuses a package with a git dependency.
+/// cargo-mend cannot depend on clippy's lint crates itself: they are not on
+/// crates.io, and crates.io refuses a package with a git or path dependency.
 /// The compiler driver calls these two functions for every workspace member it
 /// analyzes, which mirrors what `clippy-driver` does for the same member.
 #[derive(Clone, Copy, Debug)]

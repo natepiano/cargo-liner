@@ -12,8 +12,9 @@ name = "cargo-mend"
 path = "src/main.rs"
 
 # `clippy` is a symlink to `src/tools/clippy` of rust-lang/rust at the stable
-# rustc's commit: `fetch-clippy.sh` fetches it, and must be rerun on every
-# toolchain bump. `cargo mend --clippy-status` reports a mismatch at run time.
+# rustc's commit: `fetch-clippy.sh` fetches it, and `install.sh` runs that
+# before every build. `cargo mend --clippy-status` reports a mismatch at run
+# time.
 [dependencies]
 cargo-mend          = { path = "../cargo-mend" }
 clippy_config       = { path = "clippy/clippy_config" }

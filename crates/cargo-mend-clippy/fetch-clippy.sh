@@ -3,9 +3,7 @@
 # ~/.cache/mend-clippy-src/<commit> and points this crate's `clippy` symlink at
 # it. Clippy's own release tags build against the nightly they pin, not the
 # stable rustc-dev, so the source must come from the commit stable was cut at.
-# Run it on every toolchain bump, before building this crate:
-#
-#   ./fetch-clippy.sh "$(rustc +stable -vV | sed -n 's/^commit-hash: //p')"
+# `install.sh` runs it with the stable rustc's commit before building.
 set -euo pipefail
 
 if [[ $# -ne 1 || ! $1 =~ ^[0-9a-f]{40}$ ]]; then

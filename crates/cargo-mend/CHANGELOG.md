@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `cargo mend --clippy-status` prints, as JSON, whether this build runs clippy's lints for the host rustc (`active`, `absent` or `rustc_mismatch`), and exits 0 only for `active`. The published crate always reports `absent`.
+- `crates/cargo-mend-clippy` in the cargo-liner repository builds a local, unpublished `cargo-mend` with clippy's lints registered in its compiler driver, so one `cargo mend` compile reports both mend's findings and clippy's diagnostics, and a separate `cargo clippy` no longer compiles every workspace member again. `crates/cargo-mend-clippy/install.sh` builds and installs it; rerun it after every `rustup update stable`. See "Clippy's lints in the same compile" in the README.
+- `cargo-mend` has a library target, which exists only for `cargo-mend-clippy` and is not a stable API.
+
 ## [0.22.3] - 2026-10-01
 
 ### Changed

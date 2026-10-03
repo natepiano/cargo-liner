@@ -155,6 +155,40 @@ RUSTC_BOOTSTRAP=1 cargo +stable install --path .
 RUSTC_BOOTSTRAP=1 cargo +stable install cargo-mend --version <VERSION>
 ```
 
+### Clippy's lints in the same compile (local build)
+
+Running `cargo clippy` after `cargo mend` compiles every workspace member a second time. The
+cargo-liner repository has an unpublished crate, `crates/cargo-mend-clippy`, that builds a
+`cargo-mend` binary with clippy's lints registered in mend's compiler driver, so one `cargo mend`
+compile reports mend's findings and the diagnostics `cargo clippy --all-targets` would print. Lint
+levels come from `[lints]`, lint attributes, `clippy.toml` and `CLIPPY_ARGS`, as for `cargo clippy`.
+
+Install it from a cargo-liner checkout, and run the same command again after every
+`rustup update stable`:
+
+```bash
+crates/cargo-mend-clippy/install.sh
+```
+
+It fetches clippy's source for the stable rustc's commit into `~/.cache/mend-clippy-src` when that
+commit is not cached yet, builds the crate, and replaces `cargo-mend` in `~/.cargo/bin`. Arguments
+pass through to `cargo install`, e.g. `--root <dir>`.
+
+`cargo mend --clippy-status` prints which build is installed, as JSON, and exits 0 only for
+`active`:
+
+| Output | Meaning |
+|---|---|
+| `{"clippy":"active","rustc":"…"}` | clippy's lints are linked and built for the host rustc; runs report them |
+| `{"clippy":"absent"}` | a build without clippy's lints, such as the published crate |
+| `{"clippy":"rustc_mismatch","built_for":"…","host":"…"}` | built for another rustc; runs skip clippy's lints and say so on stderr. Rerun `install.sh` |
+
+Whenever the status is not `active`, run `cargo clippy` separately as before. After `rustup update`
+replaces the compiler a build links, that `cargo-mend` fails to start at all, so treat a failed
+`--clippy-status` the same way. If `install.sh` cannot build the crate, the installed `cargo-mend`
+is unchanged; `RUSTC_BOOTSTRAP=1 cargo +stable install --path crates/cargo-mend --force` installs
+the build without clippy's lints.
+
 ## Usage
 
 ```bash

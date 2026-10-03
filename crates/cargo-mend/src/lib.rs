@@ -3,6 +3,11 @@
 //! Drives the compiler through `rustc_private` to resolve every path a crate
 //! exposes, then reports items whose visibility is wider than their use
 //! requires, along with the narrowing each one allows.
+//!
+//! This library is not a stable API. It exists only so `cargo-mend-clippy`, an
+//! unpublished build of the `cargo-mend` binary in the cargo-liner repository,
+//! can call `main` with clippy's lints linked. Its items are hidden from the
+//! docs and may change in any release.
 
 #![feature(rustc_private)]
 
@@ -29,6 +34,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use anyhow::Result;
+#[doc(hidden)]
 pub use compiler::ClippyLints;
 use compiler::ClippyStatus;
 use compiler::DRIVER_ENV;
@@ -62,8 +68,9 @@ use selection::Selection;
 /// Runs `cargo mend`, or its compiler driver when cargo invokes the binary as
 /// the workspace rustc wrapper.
 ///
-/// `clippy_lints` is `Some` only in a build that links rust-clippy; the driver
-/// then registers clippy's lints beside mend's own analysis.
+/// `clippy_lints` is `Some` only in a build that links clippy's lints; the
+/// driver then registers them beside mend's own analysis.
+#[doc(hidden)]
 #[must_use]
 pub fn main(clippy_lints: Option<ClippyLints>) -> ExitCode {
     if env::var_os(DRIVER_ENV).is_some() {
