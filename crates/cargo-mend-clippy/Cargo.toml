@@ -1,0 +1,27 @@
+[package]
+build       = "../cargo-mend/build.rs"
+description = "cargo-mend with clippy's lints registered in its compiler driver"
+edition     = "2024"
+license     = "MIT OR Apache-2.0"
+name        = "cargo-mend-clippy"
+publish     = false
+version     = "0.0.0"
+
+[[bin]]
+name = "cargo-mend"
+path = "src/main.rs"
+
+# `clippy` is a symlink to `src/tools/clippy` of rust-lang/rust at the stable
+# rustc's commit: `fetch-clippy.sh` fetches it, and must be rerun on every
+# toolchain bump. `cargo mend --clippy-status` reports a mismatch at run time.
+[dependencies]
+cargo-mend          = { path = "../cargo-mend" }
+clippy_config       = { path = "clippy/clippy_config" }
+clippy_lints        = { path = "clippy/clippy_lints" }
+clippy_utils        = { path = "clippy/clippy_utils" }
+declare_clippy_lint = { path = "clippy/declare_clippy_lint" }
+
+# Path dependencies under the workspace root join it as members unless
+# excluded; clippy's crates are dependencies, not members.
+[workspace]
+exclude = ["clippy"]

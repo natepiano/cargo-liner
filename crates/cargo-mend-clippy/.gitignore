@@ -1,0 +1,3 @@
+# Symlink to the clippy source `fetch-clippy.sh` fetched for this toolchain.
+/clippy
+/target

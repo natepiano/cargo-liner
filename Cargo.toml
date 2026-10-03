@@ -1,4 +1,8 @@
 [workspace]
+# cargo-mend-clippy pins rust-clippy to the toolchain's release tag, so it
+# builds only on that exact rustc; it is its own workspace to keep the floating
+# `stable` CI jobs and the workspace lint runs from compiling it.
+exclude  = ["crates/cargo-mend-clippy"]
 members  = ["crates/*"]
 resolver = "3"
 
