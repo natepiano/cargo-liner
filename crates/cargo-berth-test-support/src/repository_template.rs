@@ -26,7 +26,7 @@ use tempfile::tempdir;
 use uuid::Uuid;
 
 use crate::DirectorySnapshot;
-use crate::git_driver::git_command;
+use crate::git_driver;
 
 /// Beside a template's builds, the file whose lock one builder at a time holds.
 const BUILD_LOCK_FILE_NAME: &str = "build.lock";
@@ -100,7 +100,7 @@ impl RepositoryTemplate {
             );
         }
         snapshot.restore(&repository_root);
-        let refreshed = git_command(self.executable)
+        let refreshed = git_driver::git_command(self.executable)
             .args(["update-index", "-q", "--refresh"])
             .current_dir(&repository_root)
             .status()
