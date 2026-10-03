@@ -55,6 +55,13 @@ impl Projection {
     }
 
     /// Publish this projection through a synced temporary file and atomic rename.
+    ///
+    /// The temporary file is synced because `read_validated` rejects malformed projection bytes
+    /// instead of rebuilding them. The ledger directory is not synced: a rename lost in a crash
+    /// leaves the previous complete projection, which is behind the synced journal, so the next
+    /// `read_validated` returns `RebuildRequired`. A caller that shrinks the journal after this
+    /// publish syncs the directory itself, because a lost rename would then leave a projection
+    /// ahead of the journal.
     pub(super) fn publish(
         &self,
         ledger_directory: &Path,
@@ -72,7 +79,6 @@ impl Projection {
         temporary_file.write_all(b"\n")?;
         temporary_file.sync_all()?;
         fs::rename(temporary_path, projection_path)?;
-        sync_directory(ledger_directory)?;
         Ok(())
     }
 
@@ -184,11 +190,6 @@ fn validate_projection_schema_version(
     if schema_version != SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION) {
         return Err(ProjectionError::UnsupportedSchemaVersion(schema_version));
     }
-    Ok(())
-}
-
-fn sync_directory(directory: &Path) -> Result<(), ProjectionError> {
-    fs::File::open(directory)?.sync_all()?;
     Ok(())
 }
 

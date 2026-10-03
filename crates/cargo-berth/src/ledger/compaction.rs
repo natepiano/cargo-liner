@@ -363,6 +363,9 @@ impl Ledger {
         at_boundary(PublicationBoundary::BeforeProjection);
         Projection::from_replay(repo_instance_id, &compacted)
             .publish(&self.paths.directory, &self.paths.projection)?;
+        // The projection's rename must be durable before the shorter journal replaces the old
+        // one; otherwise a crash could leave the old projection ahead of the compacted journal.
+        fs::File::open(&self.paths.directory)?.sync_all()?;
         at_boundary(PublicationBoundary::BeforeRename);
         fs::rename(temporary_path, &self.paths.journal)?;
         fs::File::open(&self.paths.directory)?.sync_all()?;
