@@ -578,7 +578,7 @@ fn claim_post_write_paths(
             acquisition,
             scopes,
             conflicts:
-                FirstTouchConflictOutcome::None | FirstTouchConflictOutcome::DeferredByDefault { .. },
+                FirstTouchConflictOutcome::None | FirstTouchConflictOutcome::AnsweredByDefault { .. },
         }) => {
             let reservation_id = acquisition.reservation_id;
             Ok(PostWritePathAttribution {

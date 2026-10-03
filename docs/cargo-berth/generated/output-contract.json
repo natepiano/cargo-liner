@@ -6767,8 +6767,8 @@
                   "$ref": "#/$defs/FirstTouchReservationAcquisition",
                   "description": "The complete first-touch result that permits the edit."
                 },
-                "deferred_to": {
-                  "description": "Every holder the repository's default answer deferred the integration order with\nbefore the edit was permitted; absent when no foreign holder overlapped.",
+                "answered": {
+                  "description": "Every holder the repository's default answer authorized this edit against, with no\nintegration order recorded; absent when no foreign holder overlapped.",
                   "items": {
                     "type": "string"
                   },
@@ -6882,7 +6882,7 @@
               "description": "A `--defer` claim, or an unanswered one under the repository's default answer, answered\nevery holder of the requested paths and reserved nothing.",
               "properties": {
                 "blockers": {
-                  "description": "Every holder the answer deferred the integration order with, in ascending order.",
+                  "description": "Every holder the answer named, in ascending order.",
                   "items": {
                     "type": "string"
                   },
@@ -6897,7 +6897,7 @@
                       "type": "null"
                     }
                   ],
-                  "description": "The acting run's active reservation held against each blocker at integration;\nabsent when the run held none, so nothing is held."
+                  "description": "The acting run's oldest active reservation in this worktree, which a `--defer` answer\nholds against each blocker at integration and the default answer holds against none;\nabsent when the run held none, so nothing is held."
                 },
                 "scopes": {
                   "$ref": "#/$defs/ReservationScopeSet",
@@ -14323,8 +14323,8 @@
                   "$ref": "#/$defs/FirstTouchReservationAcquisition",
                   "description": "The complete first-touch result that permits the edit."
                 },
-                "deferred_to": {
-                  "description": "Every holder the repository's default answer deferred the integration order with\nbefore the edit was permitted; absent when no foreign holder overlapped.",
+                "answered": {
+                  "description": "Every holder the repository's default answer authorized this edit against, with no\nintegration order recorded; absent when no foreign holder overlapped.",
                   "items": {
                     "type": "string"
                   },
@@ -14438,7 +14438,7 @@
               "description": "A `--defer` claim, or an unanswered one under the repository's default answer, answered\nevery holder of the requested paths and reserved nothing.",
               "properties": {
                 "blockers": {
-                  "description": "Every holder the answer deferred the integration order with, in ascending order.",
+                  "description": "Every holder the answer named, in ascending order.",
                   "items": {
                     "type": "string"
                   },
@@ -14453,7 +14453,7 @@
                       "type": "null"
                     }
                   ],
-                  "description": "The acting run's active reservation held against each blocker at integration;\nabsent when the run held none, so nothing is held."
+                  "description": "The acting run's oldest active reservation in this worktree, which a `--defer` answer\nholds against each blocker at integration and the default answer holds against none;\nabsent when the run held none, so nothing is held."
                 },
                 "scopes": {
                   "$ref": "#/$defs/ReservationScopeSet",

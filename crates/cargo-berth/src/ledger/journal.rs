@@ -568,11 +568,14 @@ pub(crate) enum JournalOperation {
     },
     /// Record overlap answers a claim gave without acquiring a reservation.
     ///
-    /// A `--defer` claim answers holders this way, so the answer protects no path from any
-    /// lane: it only authorizes the answering worktree's edits on the answered scopes.
+    /// A `--defer` claim records one `Defer` per holder this way, and the repository's
+    /// `default_answer = "first_ready"` records one `Override` per holder. Either answer protects
+    /// no path from any lane: it only authorizes the answering worktree's edits on the answered
+    /// scopes.
     Answer {
         /// The acting run's oldest active reservation in the answering worktree, which the
-        /// ordering graph holds against each answered blocker; absent when it held none.
+        /// ordering graph holds against each deferred blocker and against no overridden one;
+        /// absent when it held none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reservation_id: Option<ReservationId>,
         /// The paths the claim named.

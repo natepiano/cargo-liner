@@ -1274,11 +1274,12 @@ enum ClaimPayload {
     /// A `--defer` claim, or an unanswered one under the repository's default answer, answered
     /// every holder of the requested paths and reserved nothing.
     Answered {
-        /// The acting run's active reservation held against each blocker at integration;
+        /// The acting run's oldest active reservation in this worktree, which a `--defer` answer
+        /// holds against each blocker at integration and the default answer holds against none;
         /// absent when the run held none, so nothing is held.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reservation_id: Option<ReservationId>,
-        /// Every holder the answer deferred the integration order with, in ascending order.
+        /// Every holder the answer named, in ascending order.
         #[schemars(with = "Vec<String>")]
         blockers:       WireOrderedReservationIds,
         /// The paths the answers authorize this worktree to edit.
@@ -1455,11 +1456,11 @@ enum CheckPayload {
         scopes:      ReservationScopeSet,
         /// The complete first-touch result that permits the edit.
         acquisition: FirstTouchReservationAcquisition,
-        /// Every holder the repository's default answer deferred the integration order with
-        /// before the edit was permitted; absent when no foreign holder overlapped.
+        /// Every holder the repository's default answer authorized this edit against, with no
+        /// integration order recorded; absent when no foreign holder overlapped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "Option<Vec<String>>")]
-        deferred_to: Option<WireOrderedReservationIds>,
+        answered:    Option<WireOrderedReservationIds>,
     },
     /// Foreign holders block one or more requested paths.
     Blocked {
@@ -2173,18 +2174,29 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        let preface = default_answer.map_or_else(String::new, |default_answer| {
-            format!("{} ", default_answer_preface(default_answer))
-        });
-        let message = reservation_id.map_or_else(
-            || format!(
-                "{preface}Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
-            ),
-            |reservation_id| format!(
-                "{preface}Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and reservation {reservation_id} is held against each holder at integration until the order is sequenced."
-            ),
+        let (message, summary) = default_answer.map_or_else(
+            || {
+                let message = reservation_id.map_or_else(
+                    || format!(
+                        "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
+                    ),
+                    |reservation_id| format!(
+                        "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and reservation {reservation_id} is held against each holder at integration until the order is sequenced."
+                    ),
+                );
+                (message, "cargo-berth recorded a deferred overlap answer.")
+            },
+            |default_answer| {
+                let message = format!(
+                    "{} Authorized editing against {blocker_list} on {scope_count} reservation scope(s) with no integration order. No reservation was acquired: this worktree may edit those paths, nothing is held at integration, and whichever checkpoint is ready first merges first; the other lane merges that work in.",
+                    default_answer_preface(default_answer)
+                );
+                (
+                    message,
+                    "cargo-berth recorded the repository's default overlap answer.",
+                )
+            },
         );
-        let summary = "cargo-berth recorded a deferred overlap answer.";
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
             verb: CommandVerb::Claim,
@@ -2491,11 +2503,12 @@ impl OutputEnvelope {
     }
 
     /// Build a successful edit check whose locked transaction established protection, after the
-    /// repository's default answer deferred to `deferred_to` when it names any holder.
+    /// repository's default answer authorized the edit against `answered` when it names any
+    /// holder.
     pub(crate) fn clear_check(
         scopes: ReservationScopeSet,
         acquisition: FirstTouchReservationAcquisition,
-        deferred_to: Option<WireOrderedReservationIds>,
+        answered: Option<WireOrderedReservationIds>,
     ) -> Self {
         let message = match acquisition.kind {
             FirstTouchReservationAcquisitionKind::Appended => {
@@ -2512,15 +2525,15 @@ impl OutputEnvelope {
             message.to_owned(),
             &acquisition.session_mapping_publication,
         );
-        let (message, presentation) = if let Some(blockers) = &deferred_to {
-            let blocker_list = blockers
+        let (message, presentation) = if let Some(answered) = &answered {
+            let answered_list = answered
                 .as_slice()
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
             let message = format!(
-                "The repository's default overlap answer deferred the integration order with {blocker_list} before this edit. {message}"
+                "The repository's default overlap answer authorized this edit against {answered_list} with no integration order: nothing is held at integration, and whichever checkpoint is ready first merges first. {message}"
             );
             let presentation = presentation::engine_message_block(
                 "cargo-berth recorded the repository's default overlap answer.",
@@ -2548,7 +2561,7 @@ impl OutputEnvelope {
             payload: OutputPayload::from_facts(OutputFacts::Check(CheckPayload::Clear {
                 scopes,
                 acquisition,
-                deferred_to,
+                answered,
             })),
         }
     }
@@ -3530,8 +3543,8 @@ impl OutputPayload {
 /// Name the configured default answer that recorded a claim's answers.
 const fn default_answer_preface(default_answer: DefaultAnswer) -> &'static str {
     match default_answer {
-        DefaultAnswer::HolderFirst => {
-            "The repository's default answer (default_answer = \"holder_first\" in .claude/config/berth.toml) answered this claim."
+        DefaultAnswer::FirstReady => {
+            "The repository's default answer (default_answer = \"first_ready\" in .claude/config/berth.toml) answered this claim."
         },
     }
 }

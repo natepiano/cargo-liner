@@ -263,8 +263,8 @@ fn render_acquisition(
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
             acquisition,
             scopes,
-            conflicts: FirstTouchConflictOutcome::DeferredByDefault { blockers },
-        })) => OutputEnvelope::clear_check(scopes, acquisition, Some(blockers)),
+            conflicts: FirstTouchConflictOutcome::AnsweredByDefault { answered },
+        })) => OutputEnvelope::clear_check(scopes, acquisition, Some(answered)),
         Ok(Enrollment::Enrolled(
             FirstTouchClaimExecution::Acquired {
                 scopes,

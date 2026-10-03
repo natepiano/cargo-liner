@@ -399,11 +399,11 @@ pub(crate) enum FirstTouchConflictOutcome {
         /// Only the foreign holders covering those scopes.
         conflicts: Vec<ReservationConflict>,
     },
-    /// The repository's default answer deferred to these foreign holders before every requested
-    /// path was protected.
-    DeferredByDefault {
-        /// Every holder the recorded answer deferred the integration order with.
-        blockers: WireOrderedReservationIds,
+    /// The repository's default answer authorized the edit against these foreign holders before
+    /// every requested path was protected.
+    AnsweredByDefault {
+        /// Every holder the recorded answer named.
+        answered: WireOrderedReservationIds,
     },
 }
 
@@ -803,7 +803,7 @@ fn acquire_first_touch_with_reservation_selection(
     else {
         return Ok(Enrollment::Enrolled(execution));
     };
-    let blockers = record_first_touch_default_answer(
+    let answered = record_first_touch_default_answer(
         &ledger,
         default_answer,
         &prepared_claim.target.target,
@@ -811,7 +811,7 @@ fn acquire_first_touch_with_reservation_selection(
     )?;
     let execution = transact_first_touch(&ledger, prepared_claim, validation_context)?;
     Ok(Enrollment::Enrolled(
-        execution.deferred_by_default(blockers),
+        execution.answered_by_default(answered),
     ))
 }
 
@@ -877,11 +877,12 @@ fn record_first_touch_default_answer(
                 validation_context.worktree_id,
                 validation_context.path_case,
             );
-            validate_defer(
-                default_deferral(default_answer, &conflicts),
+            validate_answer(
+                AnswerKind::Override,
+                default_answer_request(default_answer, &conflicts),
                 conflicts,
                 &reservations,
-                DeferringWorktree {
+                AnsweringWorktree {
                     coordination_run_id: validation_context.coordination_run_id,
                     worktree_id:         validation_context.worktree_id,
                 },
@@ -960,18 +961,18 @@ fn first_touch_execution_from_outcome(
 }
 
 impl FirstTouchClaimExecution {
-    /// Report the holders the repository's default answer deferred to on a first touch that
-    /// protected every requested path after it.
-    fn deferred_by_default(self, blockers: WireOrderedReservationIds) -> Self {
+    /// Report the holders the repository's default answer named on a first touch that protected
+    /// every requested path after it.
+    fn answered_by_default(self, answered: WireOrderedReservationIds) -> Self {
         match self {
             Self::Acquired {
                 acquisition,
                 scopes,
                 conflicts: FirstTouchConflictOutcome::None,
-            } if !blockers.is_empty() => Self::Acquired {
+            } if !answered.is_empty() => Self::Acquired {
                 acquisition,
                 scopes,
-                conflicts: FirstTouchConflictOutcome::DeferredByDefault { blockers },
+                conflicts: FirstTouchConflictOutcome::AnsweredByDefault { answered },
             },
             execution => execution,
         }
@@ -1134,27 +1135,29 @@ fn validate_claim_transaction(
     };
     let conflicts =
         reservations.conflicts_for_claim(&prepared_claim.scopes, worktree_id, path_case);
-    let deferring_worktree = DeferringWorktree {
+    let answering_worktree = AnsweringWorktree {
         coordination_run_id: run_validation.actor_run_id(),
         worktree_id,
     };
-    // A deferral reserves nothing, so the reservation limit does not apply to it.
+    // An answer reserves nothing, so the reservation limit does not apply to it.
     let permissive_request = match (overlap_authorization, default_answer) {
         (OverlapAuthorizationRequest::Defer(request), _) => {
-            return validate_defer(
+            return validate_answer(
+                AnswerKind::Defer,
                 *request,
                 conflicts,
                 &reservations,
-                deferring_worktree,
+                answering_worktree,
                 prepared_claim.scopes,
             );
         },
         (OverlapAuthorizationRequest::Absent, Some(default_answer)) if !conflicts.is_empty() => {
-            return validate_defer(
-                default_deferral(default_answer, &conflicts),
+            return validate_answer(
+                AnswerKind::Override,
+                default_answer_request(default_answer, &conflicts),
                 conflicts,
                 &reservations,
-                deferring_worktree,
+                answering_worktree,
                 prepared_claim.scopes,
             );
         },
@@ -1220,9 +1223,9 @@ fn locked_claim_reservations(
     Ok(reservations)
 }
 
-/// The deferral the repository's default answer records: one answer to every holder in
+/// The answer the repository's default answer records: one answer to every holder in
 /// `conflicts`, with the engine's reason naming the default.
-fn default_deferral(
+fn default_answer_request(
     default_answer: DefaultAnswer,
     conflicts: &[ReservationConflict],
 ) -> DeferAnswerRequest {
@@ -1235,25 +1238,39 @@ fn default_deferral(
     }
 }
 
-/// The acting run and worktree a `--defer` claim answers for.
+/// The acting run and worktree a `--defer` claim or the default answer answers for.
 #[derive(Clone, Copy)]
-struct DeferringWorktree {
+struct AnsweringWorktree {
     coordination_run_id: CoordinationRunId,
     worktree_id:         WorktreeId,
 }
 
-/// Record a `--defer` answer to every current holder as one [`JournalOperation::Answer`].
+/// The [`ConflictAuthorization`] [`validate_answer`] records against every holder.
+#[derive(Clone, Copy)]
+enum AnswerKind {
+    /// [`ConflictAuthorization::Defer`]: a `--defer` claim; integration waits for an order.
+    Defer,
+    /// [`ConflictAuthorization::Override`]: the repository's default answer; no order is
+    /// recorded, so whichever checkpoint is ready first merges first.
+    Override,
+}
+
+/// Record one answer to every current holder as one [`JournalOperation::Answer`].
 ///
 /// The named blockers must be exactly the holders `conflicts_for_claim` reports, one per foreign
 /// worktree, so one call answers every holder of the requested paths. The answer acquires no
 /// reservation, so it protects nothing from any lane. When the acting run holds an active
-/// reservation in this worktree, the oldest one is named so the ordering graph holds it against
-/// each blocker at integration.
-fn validate_defer(
+/// reservation in this worktree, the oldest one is named: the ordering graph holds it against
+/// each blocker of a [`AnswerKind::Defer`] at integration, and adds nothing for an
+/// [`AnswerKind::Override`]. With no active reservation the answer is recorded with
+/// `reservation_id: None`; the ordering graph and the board ignore it, and an override has
+/// nothing to hold anyway.
+fn validate_answer(
+    answer_kind: AnswerKind,
     request: DeferAnswerRequest,
     conflicts: Vec<ReservationConflict>,
     reservations: &RetainedReservationSet,
-    deferring_worktree: DeferringWorktree,
+    answering_worktree: AnsweringWorktree,
     scopes: ReservationScopeSet,
 ) -> TransactionValidation<ClaimRejection> {
     let DeferAnswerRequest { blockers, reason } = request;
@@ -1268,10 +1285,10 @@ fn validate_defer(
     if named_blockers != holders {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
     }
-    let DeferringWorktree {
+    let AnsweringWorktree {
         coordination_run_id,
         worktree_id,
-    } = deferring_worktree;
+    } = answering_worktree;
     let reservation_id = reservations
         .iter()
         .find(|reservation| {
@@ -1281,10 +1298,22 @@ fn validate_defer(
         .map(Reservation::id);
     let authorizations = conflicts
         .iter()
-        .map(|conflict| ConflictAuthorization::Defer {
-            overlaps: AuthorizedOverlap::from(conflict).into(),
-            blocker:  conflict.reservation_id,
-            reason:   reason.clone(),
+        .map(|conflict| {
+            let overlaps = AuthorizedOverlap::from(conflict).into();
+            let blocker = conflict.reservation_id;
+            let reason = reason.clone();
+            match answer_kind {
+                AnswerKind::Defer => ConflictAuthorization::Defer {
+                    overlaps,
+                    blocker,
+                    reason,
+                },
+                AnswerKind::Override => ConflictAuthorization::Override {
+                    overlaps,
+                    blocker,
+                    reason,
+                },
+            }
         })
         .collect();
     TransactionValidation::Append(Box::new(JournalOperation::Answer {
@@ -1294,17 +1323,17 @@ fn validate_defer(
     }))
 }
 
-/// The holders a recorded [`JournalOperation::Answer`] deferred the integration order with.
+/// The holders a recorded [`JournalOperation::Answer`] named, by deferral or override.
 fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedReservationIds {
     WireOrderedReservationIds::sorted_and_deduplicated(
         authorizations
             .iter()
             .filter_map(|authorization| match authorization {
-                ConflictAuthorization::Defer { blocker, .. } => Some(*blocker),
+                ConflictAuthorization::Defer { blocker, .. }
+                | ConflictAuthorization::Override { blocker, .. } => Some(*blocker),
                 ConflictAuthorization::NoConflict
                 | ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
-                | ConflictAuthorization::Override { .. }
                 | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => None,
             })
             .collect(),

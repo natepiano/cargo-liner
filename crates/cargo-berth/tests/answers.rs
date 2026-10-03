@@ -2033,7 +2033,7 @@ fn set_default_answer(repository: &Path) {
         .append(true)
         .open(repository.join(CONFIGURATION_PATH))
         .expect("configuration should open");
-    writeln!(configuration, "default_answer = \"holder_first\"")
+    writeln!(configuration, "default_answer = \"first_ready\"")
         .expect("default answer should write");
 }
 
@@ -2069,7 +2069,7 @@ fn two_holders_of_the_library(repository: &Path, third_root: &Path) -> Vec<Strin
 }
 
 #[test]
-fn a_default_answer_defers_an_overlapping_claim_to_every_holder() {
+fn a_default_answer_overrides_an_overlapping_claim_for_every_holder() {
     let repository = initialized_repository();
     let (_second_directory, second_root) = foreign_worktree(&repository, "second");
     let (_third_directory, third_root) = foreign_worktree(&repository, "third");
@@ -2099,12 +2099,32 @@ fn a_default_answer_defers_an_overlapping_claim_to_every_holder() {
         .into_iter()
         .filter(|event| event["op"] == "answer")
         .collect::<Vec<_>>();
-    assert!(
-        matches!(
-            answers.as_slice(),
-            [answer] if answer.to_string().contains("default_answer")
-        ),
-        "one answer op whose recorded reason names the default should be recorded: {answers:?}"
+    assert_eq!(
+        answers.len(),
+        1,
+        "one answer op should be recorded: {answers:?}"
+    );
+    let authorizations = answers
+        .first()
+        .and_then(|answer| answer["authorizations"].as_array())
+        .expect("the answer should record authorizations");
+    let mut answered_holders = authorizations
+        .iter()
+        .map(|authorization| {
+            assert_eq!(authorization["kind"], "override", "{authorization}");
+            assert!(
+                authorization["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.contains("default_answer = \"first_ready\"")),
+                "the recorded reason should name the default: {authorization}"
+            );
+            authorization["blocker"].clone()
+        })
+        .collect::<Vec<_>>();
+    answered_holders.sort_by_key(ToString::to_string);
+    assert_eq!(
+        serde_json::json!(answered_holders),
+        serde_json::json!(holders)
     );
 }
 
@@ -2127,7 +2147,7 @@ fn a_default_answer_lets_an_overlapping_first_touch_edit_proceed() {
     assert!(checked.status.success(), "{checked_json}");
     assert_eq!(checked_json["status"], "clear");
     assert_eq!(
-        checked_json["payload"]["data"]["deferred_to"],
+        checked_json["payload"]["data"]["answered"],
         serde_json::json!(holders)
     );
 }

@@ -610,6 +610,68 @@ fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
     );
 }
 
+/// `default_answer = "first_ready"` records an override, so the target gate holds neither lane:
+/// the requester lands first, then the holder lands after merging that work in.
+#[test]
+fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
+    let repository = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let holder = repository.lane("target-a", "integration");
+    let requester = repository.lane("target-b", "integration");
+    let integration_before =
+        repository.git_stdout(repository.root(), &["rev-parse", "integration"]);
+    write_file(&holder, "shared.txt", "A\n");
+    assert_success(&repository.claim(&holder, "file:shared.txt", FIRST_RUN, Some("integration")));
+    let mut configuration = OpenOptions::new()
+        .append(true)
+        .open(repository.root().join(CONFIGURATION_PATH))
+        .expect("configuration should open");
+    writeln!(configuration, "default_answer = \"first_ready\"")
+        .expect("default answer should write");
+    assert_success(&repository.claim(
+        &requester,
+        &deferring_run_scope(SECOND_RUN),
+        SECOND_RUN,
+        Some("integration"),
+    ));
+    let answered = repository.claim(
+        &requester,
+        "file:shared.txt",
+        SECOND_RUN,
+        Some("integration"),
+    );
+    assert_success(&answered);
+    assert_eq!(json(&answered)["status"], "answered");
+    repository.commit_file(&holder, "shared.txt", "A\n", "A work");
+    repository.commit_file(&requester, "shared.txt", "B\n", "B work");
+    let requester_tip = repository.git_stdout(&requester, &["rev-parse", "HEAD"]);
+    set_gate_mode(repository.root(), "enforce");
+
+    let requester_first = propose_branch(
+        repository.root(),
+        "integration",
+        &integration_before,
+        &requester_tip,
+    );
+    assert!(
+        requester_first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&requester_first.stderr)
+    );
+    repository.git(&holder, &["merge", "-s", "ours", "--no-edit", "target-b"]);
+    let holder_tip = repository.git_stdout(&holder, &["rev-parse", "HEAD"]);
+    let holder_second = propose_branch(
+        repository.root(),
+        "integration",
+        &requester_tip,
+        &holder_tip,
+    );
+    assert!(
+        holder_second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&holder_second.stderr)
+    );
+}
+
 #[test]
 fn listed_target_recreation_is_gated_at_its_proposed_tip() {
     let pair = target_pair(false);

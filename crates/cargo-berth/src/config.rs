@@ -92,8 +92,9 @@ struct ApproverWorktree(PathBuf);
 /// otherwise stop the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DefaultAnswer {
-    /// Defer the integration order with every current holder of the overlapping paths.
-    HolderFirst,
+    /// Authorize the edit against every current holder of the overlapping paths and record no
+    /// integration order, so whichever checkpoint is ready first merges first.
+    FirstReady,
 }
 
 /// Whether a configuration file exists and contains validated repository policy.
@@ -276,7 +277,7 @@ impl BerthConfig {
             .default_answer
             .map_or_else(String::new, |default_answer| {
                 let value = match default_answer {
-                    DefaultAnswer::HolderFirst => "holder_first",
+                    DefaultAnswer::FirstReady => "first_ready",
                 };
                 format!("{DEFAULT_ANSWER_KEY} = \"{value}\"\n")
             });
@@ -398,7 +399,7 @@ impl GateMode {
 impl DefaultAnswer {
     fn parse(value: &str) -> Result<Self, ConfigError> {
         match parse_toml_string(value)?.as_str() {
-            "holder_first" => Ok(Self::HolderFirst),
+            "first_ready" => Ok(Self::FirstReady),
             _ => Err(ConfigError::InvalidValue {
                 key:   DEFAULT_ANSWER_KEY.to_owned(),
                 value: value.to_owned(),
@@ -590,12 +591,12 @@ mod tests {
     #[test]
     fn a_default_answer_round_trips_and_rejects_unknown_answers() {
         let configuration = BerthConfig {
-            default_answer: Some(DefaultAnswer::HolderFirst),
+            default_answer: Some(DefaultAnswer::FirstReady),
             ..BerthConfig::default()
         };
 
         assert!(
-            BerthConfig::from_toml("default_answer = \"holder_first\"")
+            BerthConfig::from_toml("default_answer = \"first_ready\"")
                 .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
         );
         assert!(
@@ -603,10 +604,12 @@ mod tests {
                 .is_ok_and(|parsed_configuration| parsed_configuration == configuration)
         );
         assert!(!BerthConfig::default().to_toml().contains("default_answer"));
-        assert!(matches!(
-            BerthConfig::from_toml("default_answer = \"requester_first\""),
-            Err(ConfigError::InvalidValue { ref key, .. }) if key == "default_answer"
-        ));
+        for unknown_answer in ["holder_first", "requester_first"] {
+            assert!(matches!(
+                BerthConfig::from_toml(&format!("default_answer = \"{unknown_answer}\"")),
+                Err(ConfigError::InvalidValue { ref key, .. }) if key == "default_answer"
+            ));
+        }
     }
 
     #[test]
@@ -785,7 +788,7 @@ mod tests {
             maximum_ordering_edges: 29,
             gate_mode:              GateMode::Enforce,
             approver:               Some(ApproverWorktree(PathBuf::from("/work/approver"))),
-            default_answer:         Some(DefaultAnswer::HolderFirst),
+            default_answer:         Some(DefaultAnswer::FirstReady),
         };
         write_configuration(linked.path(), &policy.trunk)?;
         let linked_contents = format!("# Linked policy\n{}", policy.to_toml());
