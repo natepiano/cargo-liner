@@ -599,7 +599,7 @@ A successful `claim` has `payload.data.target`; a first-touch `check` has `paylo
 
 Journal `claim.target` is absent only on records written before claims recorded a target, which replay as `unrecorded`; every claim the engine appends carries it. The `retarget` operation records `reservation_id`, `target`, `source`, and `target_commit`; `unrecorded_targets_pinned` records one `target` for every unrecorded reservation then present.
 
-A clear first-touch `check` that the repository's `default_answer = "holder_first"` permitted carries `payload.data.deferred_to`: the reservation ids of every holder the recorded answer deferred the integration order with. The field is absent when no foreign holder overlapped. A `claim` that the default answered reports status `answered` with the same payload as an explicit `--defer` claim.
+A clear first-touch `check` that the repository's `default_answer = "first_ready"` permitted carries `payload.data.answered`: the reservation ids of every holder the recorded answer authorized the edit against, with no integration order recorded. The field is absent when no foreign holder overlapped. A `claim` that the default answered reports status `answered` with the same payload shape as an explicit answer claim.
 
 ## Initialization enrollment report
 

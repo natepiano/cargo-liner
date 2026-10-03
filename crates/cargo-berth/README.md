@@ -417,11 +417,14 @@ supplies both whenever that file exists:
   for example `approver = "/home/me/rust/project_catalyst"`. Unset, the refused
   session chooses.
 - `default_answer`: the answer recorded when an overlap arrives without one. The
-  only value is `"holder_first"`. A `claim` that overlaps holders and names no
-  answer then records a `--defer` answer to every holder of the requested
-  paths, reserves nothing, and reports status `answered`. A first-touch edit
-  that overlaps holders records the same answer and proceeds; its clear `check`
-  payload names those holders in `deferred_to`. The recorded reason names
+  only value is `"first_ready"`. A `claim` that overlaps holders and names no
+  answer then records an `--override` answer to every holder of the requested
+  paths, reserves nothing, adds no holder, and reports status `answered`. A
+  first-touch edit that overlaps holders records the same answer and proceeds;
+  its clear `check` payload names those holders in `answered`. No integration
+  order is recorded and neither lane is held: whichever checkpoint is ready
+  first merges first, and the other lane brings that work in through its own
+  git merge. The overlap stays on the board. The recorded reason names
   `default_answer` and `berth.toml`. Unset, an overlap without an answer is
   refused as before.
 
