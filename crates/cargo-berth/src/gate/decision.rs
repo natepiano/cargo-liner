@@ -196,7 +196,7 @@ pub(super) fn evaluate_locked(
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(|reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason)))?;
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let ledger_repository = ledger.repository_identity()?;
     let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
     let journal_mutation_actor = resolved_edit_authorization

@@ -21,7 +21,6 @@ use crate::reconcile;
 use crate::reconcile::GateReconciliationPurpose;
 
 pub(super) fn commit_forced_permit_audits(
-    invocation_directory: &Path,
     worktree_context: &WorktreeContext,
     berth_config: &BerthConfig,
     update: &ProposedTargetMove,
@@ -32,7 +31,7 @@ pub(super) fn commit_forced_permit_audits(
         issuing_directory: issuing_directory.to_path_buf(),
     };
     purpose.identity_validation()?;
-    let ledger = Ledger::open(invocation_directory)?;
+    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(|reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason)))?;

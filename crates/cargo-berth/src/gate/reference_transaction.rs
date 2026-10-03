@@ -354,7 +354,6 @@ pub(crate) fn evaluate_reference_transaction(
                         }
                     },
                     ReferenceTransactionPhase::Committed => audit::commit_forced_permit_audits(
-                        invocation_directory,
                         &worktree_context,
                         &berth_config,
                         &update,
@@ -372,11 +371,7 @@ pub(crate) fn evaluate_reference_transaction(
         }
     }
     if !rewrite_events.is_empty() {
-        rewrite::reanchor_rewritten_phases(
-            invocation_directory,
-            &worktree_context,
-            &rewrite_events,
-        )?;
+        rewrite::reanchor_rewritten_phases(&worktree_context, &rewrite_events)?;
     }
     Ok(results)
 }
@@ -411,7 +406,7 @@ fn gated_updates<'transaction>(
     worktree_context: &WorktreeContext,
     trunk_reference: &FullRefName,
 ) -> Result<Vec<&'transaction ReferenceUpdate>, GateError> {
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let reservations = ledger
         .read_validated_journal()?
         .into_reservations()

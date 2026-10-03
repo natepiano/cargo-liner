@@ -153,7 +153,7 @@ fn execute_sequence(
             });
         },
     };
-    let ledger = Ledger::open(worktree_context.repository_root())?;
+    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
     let prepared_edge = RefCell::<PreparedEdgeState>::new(PreparedEdgeState::NotPrepared);
     let outcome = ledger.transact(
         journal_mutation_actor.worktree_id,

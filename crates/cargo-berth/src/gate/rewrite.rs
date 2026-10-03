@@ -464,11 +464,10 @@ fn decode_rewrite_map(contents: &str) -> io::Result<Vec<RewriteMapPair>> {
 /// to check one branch out in two worktrees at once, so a branch name identifies the
 /// acting worktree even though the hook has already changed directory away from it.
 pub(super) fn reanchor_rewritten_phases(
-    invocation_directory: &Path,
     worktree_context: &WorktreeContext,
     events: &[BranchRewriteEvent],
 ) -> Result<(), GateError> {
-    let ledger = Ledger::open(invocation_directory)?;
+    let ledger = Ledger::open_from_discovered_worktree(worktree_context)?;
     let journal_mutation_actor = ledger::resolve_identity(worktree_context)?
         .journal_mutation_actor_for(CoordinationRunId::new());
     let repository_root = worktree_context.repository_root();
