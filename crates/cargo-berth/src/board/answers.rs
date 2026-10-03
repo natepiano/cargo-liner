@@ -2,6 +2,7 @@
 //! board's split of them by whether the reservation that answered is still live.
 
 use std::collections::HashSet;
+use std::slice;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -98,6 +99,8 @@ pub(super) struct BoardOverlapAnswers {
 #[serde(tag = "origin", rename_all = "snake_case")]
 pub(super) enum AnswerAcquisition {
     Claim,
+    /// A `--defer` claim answered while the run held this reservation, without widening it.
+    Answer,
     Enrollment,
     Widen {
         added_scopes:         Vec<ReservationScope>,
@@ -217,6 +220,23 @@ pub(super) fn board_overlap_answers(
                 &resolved_pairs,
                 constraints,
             )?,
+            // An answer recorded without a reservation has no answering row to list.
+            JournalOperation::Answer {
+                reservation_id: Some(reservation_id),
+                authorizations,
+                ..
+            } => authorizations.iter().try_for_each(|authorization| {
+                append_authorization_answer(
+                    &mut answers,
+                    RecordedAuthorizationRow {
+                        reservation_id: *reservation_id,
+                        authorization,
+                        acquisition: AnswerAcquisition::Answer,
+                    },
+                    &resolved_pairs,
+                    constraints,
+                )
+            })?,
             JournalOperation::ResolveDefer {
                 deferred_reservation_id,
                 blocker_reservation_id,
@@ -303,23 +323,16 @@ fn accumulated_deferral_approvals(
                 && is_pair(deferral.deferred, deferral.blocker)
         })
         .map(|deferral| &deferral.reason);
-    for prior in events
+    let prior_answers = events
         .iter()
         .take_while(|prior| prior.event_id() != resolution_event_id)
-    {
-        let (requester, authorization) = match &prior.operation {
-            JournalOperation::Claim {
-                reservation_id,
-                authorization,
-                ..
-            }
-            | JournalOperation::Widen {
-                reservation_id,
-                authorization,
-                ..
-            } => (*reservation_id, authorization),
-            _ => continue,
-        };
+        .filter_map(|prior| reservation_answers(&prior.operation))
+        .flat_map(|(requester, authorizations)| {
+            authorizations
+                .iter()
+                .map(move |authorization| (requester, authorization))
+        });
+    for (requester, authorization) in prior_answers {
         if requester == deferred_reservation_id
             && let ConflictAuthorization::Defer {
                 overlaps,
@@ -347,6 +360,30 @@ fn accumulated_deferral_approvals(
     AccumulatedDeferralApprovals {
         exact_approved_scopes,
         deferral_reasons,
+    }
+}
+
+/// The answers one operation recorded, with the reservation that answered them.
+fn reservation_answers(
+    operation: &JournalOperation,
+) -> Option<(ReservationId, &[ConflictAuthorization])> {
+    match operation {
+        JournalOperation::Claim {
+            reservation_id,
+            authorization,
+            ..
+        }
+        | JournalOperation::Widen {
+            reservation_id,
+            authorization,
+            ..
+        } => Some((*reservation_id, slice::from_ref(authorization))),
+        JournalOperation::Answer {
+            reservation_id,
+            authorizations,
+            ..
+        } => reservation_id.map(|reservation_id| (reservation_id, authorizations.as_slice())),
+        _ => None,
     }
 }
 

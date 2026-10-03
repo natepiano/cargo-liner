@@ -123,7 +123,10 @@ impl AuthorizedEditingIdentity {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        reservations
+        // A `--defer` answer binds its worktree and acquires no reservation to identify the
+        // caller by, so every caller in that worktree inherits it, an unidentified one included.
+        reservations.answer_records_authorize(self.worktree(), holder, overlap_scope, path_case)
+            || reservations
             .iter()
             .filter(|requester| {
                 self.identifies_requester(requester)
@@ -175,7 +178,13 @@ pub(super) fn reservations_authorize_scope(
             overlap_scope,
             path_case,
         )
-    }) || match reservations.protection_for_conflict(requester, holder.actor.worktree, path_case) {
+    }) || reservations.answer_records_cover(
+        requester.actor.worktree,
+        holder_representative.id,
+        &holder_scope_revision,
+        overlap_scope,
+        path_case,
+    ) || match reservations.protection_for_conflict(requester, holder.actor.worktree, path_case) {
         ConflictProtection::Clear => false,
         ConflictProtection::Protected {
             representative: requester_representative,
@@ -194,6 +203,13 @@ pub(super) fn reservations_authorize_scope(
                         path_case,
                     )
                 })
+                || reservations.answer_records_cover(
+                    holder.actor.worktree,
+                    requester_representative.id,
+                    &requester_scope_revision,
+                    overlap_scope,
+                    path_case,
+                )
         },
     }
 }

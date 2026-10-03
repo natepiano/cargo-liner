@@ -32,6 +32,8 @@ pub use git_driver::git_command;
 pub use integration_repository::IntegrationRepository;
 pub use integration_repository::assert_success;
 pub use integration_repository::claim_id;
+pub use integration_repository::deferring_run_path;
+pub use integration_repository::deferring_run_scope;
 pub use integration_repository::json;
 pub use integration_repository::reservation_row;
 pub use integration_repository::worktree_identity_and_marker_run;

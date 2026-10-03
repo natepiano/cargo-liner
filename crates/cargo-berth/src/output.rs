@@ -622,6 +622,8 @@ declare_output_contract_metadata! {
         Clear => ("clear", Clear);
         /// A new reservation was appended and published.
         Claimed => ("claimed", Clear);
+        /// A `--defer` claim recorded its answers without acquiring a reservation.
+        Answered => ("answered", Clear);
         /// Unreserved changed paths were added to a reservation.
         Widened => ("widened", Clear);
         /// A write entered a foreign edit-blocking reservation.
@@ -1267,6 +1269,18 @@ enum ClaimPayload {
         marker_publication:          CoordinationRunMarkerPublication,
         /// Whether the harness session mapping reflects this claim.
         session_mapping_publication: SessionIdentityMappingPublication,
+    },
+    /// A `--defer` claim answered every holder of the requested paths and reserved nothing.
+    Answered {
+        /// The acting run's active reservation held against each blocker at integration;
+        /// absent when the run held none, so nothing is held.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reservation_id: Option<ReservationId>,
+        /// Every holder the answer deferred the integration order with, in ascending order.
+        #[schemars(with = "Vec<String>")]
+        blockers:       WireOrderedReservationIds,
+        /// The paths the answers authorize this worktree to edit.
+        scopes:         ReservationScopeSet,
     },
     /// Foreign holders prevented the append.
     Blocked {
@@ -2138,6 +2152,45 @@ impl OutputEnvelope {
         }
     }
 
+    /// Build the successful result for a `--defer` claim that recorded answers only.
+    pub(crate) fn answered(
+        reservation_id: Option<ReservationId>,
+        blockers: WireOrderedReservationIds,
+        scopes: ReservationScopeSet,
+    ) -> Self {
+        let scope_count = scopes.as_slice().len();
+        let blocker_list = blockers
+            .as_slice()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = reservation_id.map_or_else(
+            || format!(
+                "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and nothing is held at integration."
+            ),
+            |reservation_id| format!(
+                "Deferred the integration order with {blocker_list} on {scope_count} reservation scope(s). No reservation was acquired: this worktree may edit those paths, and reservation {reservation_id} is held against each holder at integration until the order is sequenced."
+            ),
+        );
+        let summary = "cargo-berth recorded a deferred overlap answer.";
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Claim,
+            status: OutputStatus::Answered,
+            exit_code: BerthExit::Clear,
+            reservations: reservation_id.into_iter().collect(),
+            blocked_by: Vec::new(),
+            presentation: presentation::engine_message_block(summary, &message).into(),
+            message,
+            payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Answered {
+                reservation_id,
+                blockers,
+                scopes,
+            })),
+        }
+    }
+
     /// Build a complete drift result with status and process outcome in agreement.
     pub(crate) fn drift(report: DriftReport) -> Self {
         let has_incursion = report.results.iter().any(|result| {
@@ -2586,6 +2639,7 @@ impl OutputEnvelope {
             | OutputStatus::Reinitialized
             | OutputStatus::TerminalViewFailed
             | OutputStatus::Claimed
+            | OutputStatus::Answered
             | OutputStatus::DriftAttributionRequired
             | OutputStatus::AmbiguousActiveRunReservations
             | OutputStatus::ReservationLimitReached
@@ -3817,11 +3871,11 @@ fn blocked_edit_answer_guidance(
 }
 
 pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
-    r#"One answer settles one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
+    r#"Answers 1, 2 and 4 each settle one named holder; answer 3 names every holder at once. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
 
 1. Land before the holder: `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates first; the holder stays held until the requester is on trunk. For a holder that will build on the requester's change.
 2. Land after the holder: `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates second, held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. For a requester that will build on the holder.
-3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the unresolved overlap stays on the board until someone later sequences it.
+3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`, with one `--defer` per holder of the paths. No ordering edge and no new reservation, so the paths stay open to every other lane; the unresolved overlap stays on the board until someone later sequences it.
 4. Override: `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the override and its reason stay on the board.
 5. Leave it alone: run no engine command, append nothing, and work elsewhere."#
 }

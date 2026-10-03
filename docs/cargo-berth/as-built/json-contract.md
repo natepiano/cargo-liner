@@ -896,13 +896,14 @@ The operation union is:
 | `retarget` | `reservation_id`, `target`, `source`, `target_commit` |
 | `unrecorded_targets_pinned` | `target` |
 | `renew` | `reservation_id` |
-| `release` | `reservation_id`, `disposition` |
+| `release` | `reservation_id`, `disposition`, optional `source` |
 | `replace_release_disposition` | `reservation_id`, `superseded`, `replacement` |
 | `evidence_revalidated` | `reservation_id`, `status`, `edit_blocking_status` |
 | `scoped_patch_equivalence_checked` | `reservation_id`, `subject`, `target`, `verdict`, optional `witness`, optional `evaluator_version` |
 | `scoped_patch_comparison_attempted` | `reservation_id`, `subject`, `target` |
 | `successor_scoped_patch_equivalence_checked` | `predecessor_reservation_id`, `subject`, `successor_head`, `verdict`, optional `evaluator_version` |
 | `successor_scoped_patch_comparison_attempted` | `predecessor_reservation_id`, `subject`, `successor_head` |
+| `answer` | optional `reservation_id`, `scopes`, `authorizations` |
 | `resolve_defer` | `deferred_reservation_id`, `blocker_reservation_id`, `edge_id`, `direction`, `reason` |
 | `incursion` | `incident_id`, `reservation_id`, `blocked_paths` |
 | `resolve_incursion` | `incident_id` |

@@ -10,6 +10,7 @@ use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::is_merge_extent_observation;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::observes_merge_extent_of;
@@ -1317,17 +1318,39 @@ fn board_sections_share_one_locked_generation_when_a_claim_arrives_mid_read() {
     );
 }
 
+/// The `consequence` cell a board answer row must render for one answer kind.
+enum ExpectedOverlapAnswerConsequence {
+    SequenceHolding {
+        state:         &'static str,
+        action_reason: &'static str,
+    },
+    Deferral(&'static str),
+    Override(&'static str),
+}
+
+impl ExpectedOverlapAnswerConsequence {
+    fn assert_rendered(&self, consequence: &serde_json::Value) {
+        match self {
+            Self::SequenceHolding {
+                state,
+                action_reason,
+            } => {
+                assert_eq!(consequence["state"], *state);
+                assert_eq!(consequence["action"]["reason"], *action_reason);
+                let instruction = consequence["action"]["instruction"]
+                    .as_str()
+                    .expect("a held sequence consequence should carry an instruction");
+                assert_ne!(instruction, "");
+            },
+            Self::Deferral(expected) | Self::Override(expected) => {
+                assert_eq!(consequence, expected);
+            },
+        }
+    }
+}
+
 #[test]
 fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
-    enum ExpectedOverlapAnswerConsequence {
-        SequenceHolding {
-            state:         &'static str,
-            action_reason: &'static str,
-        },
-        Deferral(&'static str),
-        Override(&'static str),
-    }
-
     for (answer_flag, expected_answer, expected_direction, expected_consequence) in [
         (
             "--after",
@@ -1358,6 +1381,14 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
         dirty_source(repository.path(), "src/lib.rs");
         let blocker = claim(repository.path(), "file:src/lib.rs", FIRST_RUN);
         let blocker_id = reservation_id(&blocker);
+        // A deferral acquires no reservation: it attaches to the run's active one.
+        if let ExpectedOverlapAnswerConsequence::Deferral(_) = expected_consequence {
+            assert!(
+                claim(&second_root, &deferring_run_scope(SECOND_RUN), SECOND_RUN)
+                    .status
+                    .success()
+            );
+        }
         let answered = answered_claim(
             &second_root,
             "file:src/lib.rs",
@@ -1396,23 +1427,7 @@ fn overlap_answers_keep_exact_scopes_direction_reason_and_consequence() {
                 "an answer that orders nothing must have no direction cell"
             ),
         }
-        match expected_consequence {
-            ExpectedOverlapAnswerConsequence::SequenceHolding {
-                state,
-                action_reason,
-            } => {
-                assert_eq!(answer["consequence"]["state"], state);
-                assert_eq!(answer["consequence"]["action"]["reason"], action_reason);
-                let instruction = answer["consequence"]["action"]["instruction"]
-                    .as_str()
-                    .expect("a held sequence consequence should carry an instruction");
-                assert_ne!(instruction, "");
-            },
-            ExpectedOverlapAnswerConsequence::Deferral(expected)
-            | ExpectedOverlapAnswerConsequence::Override(expected) => {
-                assert_eq!(answer["consequence"], expected);
-            },
-        }
+        expected_consequence.assert_rendered(&answer["consequence"]);
     }
 }
 
@@ -6926,7 +6941,16 @@ fn claim(repository_root: &Path, scope: &str, run: &str) -> Output {
     )
 }
 
+/// Claim [`deferring_run_scope`] for `run`, then answer `blocker` on `scope` with `--defer`.
+///
+/// A deferral acquires no reservation, so the answer attaches to the one claimed first, and the
+/// ordering graph holds that reservation against `blocker`.
 fn defer_claim(repository_root: &Path, scope: &str, run: &str, blocker: &str) -> Output {
+    assert!(
+        claim(repository_root, &deferring_run_scope(run), run)
+            .status
+            .success()
+    );
     answered_claim(
         repository_root,
         scope,

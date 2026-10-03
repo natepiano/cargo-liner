@@ -218,7 +218,7 @@ fn multi_path_first_touch_widens_the_single_answered_reservation() {
         &second_root,
         "file:src/lib.rs",
         SECOND_RUN,
-        "--defer",
+        "--override",
         &holder_id,
         AnswerReasons::new(
             "protect the requester file",
@@ -228,7 +228,7 @@ fn multi_path_first_touch_widens_the_single_answered_reservation() {
     assert!(applied.status.success());
     let answered_reservation_id = reservation_id(&applied);
     let answered_claim = last_journal_event(repository.path());
-    assert_eq!(answered_claim["authorization"]["kind"], "defer");
+    assert_eq!(answered_claim["authorization"]["kind"], "override");
     assert_eq!(
         answered_claim["scopes"],
         serde_json::json!([{"kind": "file", "path": "src/lib.rs"}])
@@ -1347,29 +1347,30 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
         "protect source",
     );
     let holder_id = reservation_id(&holder);
-    assert!(
-        answer_claim(
-            &second_root,
-            "file:src/lib.rs",
-            SECOND_RUN,
-            "--defer",
-            &holder_id,
-            AnswerReasons::new(
-                "protect the requester file",
-                "the integration order is not known yet",
-            ),
-        )
-        .status
-        .success()
+    let requester_id = reservation_id(&claim_explicit(
+        &second_root,
+        "file:docs/requester.md",
+        SECOND_RUN,
+        "protect the requester plan",
+    ));
+    let answered = answer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--defer",
+        &holder_id,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the integration order is not known yet",
+        ),
     );
-    assert_eq!(
-        last_journal_event(defer_repository.path())["authorization"]["kind"],
-        "defer"
-    );
-    assert_eq!(
-        last_journal_event(defer_repository.path())["authorization"]["blocker"],
-        holder_id
-    );
+    assert!(answered.status.success());
+    assert_eq!(json_output(&answered)["status"], "answered");
+    let answer = last_journal_event(defer_repository.path());
+    assert_eq!(answer["op"], "answer");
+    assert_eq!(answer["reservation_id"], requester_id);
+    assert_eq!(answer["authorizations"][0]["kind"], "defer");
+    assert_eq!(answer["authorizations"][0]["blocker"], holder_id);
     assert!(
         check(defer_repository.path(), &["file:src/lib.rs"], FIRST_RUN)
             .status
@@ -1380,6 +1381,182 @@ fn defer_records_both_integration_holds_and_permits_both_editors() {
             .status
             .success()
     );
+}
+
+/// A `--defer` answer appends an `answer` op and no `claim` or `widen`, so the answered paths
+/// gain no holder: a third lane edits the unheld path and meets only the original holder on
+/// the held one.
+#[test]
+fn a_defer_answer_adds_no_blocking_holder() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    dirty_source(repository.path(), "src/lib.rs");
+    let holder_id = reservation_id(&claim_explicit(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the holder file",
+    ));
+    let answered = run_berth(
+        &second_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "file:src/free.rs",
+            "--run",
+            SECOND_RUN,
+            "--defer",
+            &holder_id,
+            "--overlap-why",
+            "the integration order is not known yet",
+            "--why",
+            "protect the requester files",
+            "--json",
+        ],
+    );
+    let answered_json = json_output(&answered);
+    assert!(answered.status.success(), "{answered_json}");
+    assert_eq!(answered_json["status"], "answered");
+    assert!(answered_json["payload"]["data"]["reservation_id"].is_null());
+    assert!(
+        journal_events(repository.path())
+            .iter()
+            .filter(|event| event["actor"]["run"] == SECOND_RUN)
+            .all(|event| event["op"] != "claim" && event["op"] != "widen"),
+        "a deferral must acquire no scope"
+    );
+
+    assert!(
+        check(&third_root, &["file:src/free.rs"], THIRD_RUN)
+            .status
+            .success()
+    );
+    let blocked = check(&third_root, &["file:src/lib.rs"], THIRD_RUN);
+    assert_eq!(blocked.status.code(), Some(1));
+    assert_eq!(
+        json_output(&blocked)["blocked_by"],
+        serde_json::json!([holder_id])
+    );
+}
+
+/// One claim answers every holder of a path with one `--defer` each, and the answers let the
+/// lane edit that path.
+#[test]
+fn one_claim_defers_to_both_holders_of_a_path() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    dirty_source(repository.path(), "src/lib.rs");
+    let first_holder_id = reservation_id(&claim_explicit(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the first holder file",
+    ));
+    dirty_source(&second_root, "src/lib.rs");
+    let second_holder = answer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--override",
+        &first_holder_id,
+        AnswerReasons::new(
+            "protect the second holder file",
+            "both holders reviewed the overlap",
+        ),
+    );
+    assert!(second_holder.status.success());
+    let second_holder_id = reservation_id(&second_holder);
+
+    let answered = run_berth(
+        &third_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            THIRD_RUN,
+            "--defer",
+            &first_holder_id,
+            "--defer",
+            &second_holder_id,
+            "--overlap-why",
+            "the integration order is not known yet",
+            "--why",
+            "protect the requester file",
+            "--json",
+        ],
+    );
+    let answered_json = json_output(&answered);
+    assert!(answered.status.success(), "{answered_json}");
+    let mut blockers = [first_holder_id, second_holder_id];
+    blockers.sort();
+    assert_eq!(
+        answered_json["payload"]["data"]["blockers"],
+        serde_json::json!(blockers)
+    );
+    assert!(
+        check(&third_root, &["file:src/lib.rs"], THIRD_RUN)
+            .status
+            .success()
+    );
+}
+
+/// A `--defer` answer from a lane that holds an active reservation attaches to it, and the
+/// ordering graph holds that reservation against the holder until `sequence` resolves the
+/// deferral.
+#[test]
+fn a_defer_answer_attaches_to_the_lanes_active_reservation() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
+    let holder_id = reservation_id(&claim_explicit(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the holder file",
+    ));
+    let requester_id = reservation_id(&claim_explicit(
+        &second_root,
+        "file:docs/requester.md",
+        SECOND_RUN,
+        "protect the requester plan",
+    ));
+    let answered = answer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--defer",
+        &holder_id,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the integration order is not known yet",
+        ),
+    );
+    assert!(answered.status.success());
+    assert_eq!(reservation_id(&answered), requester_id);
+    let answer = last_journal_event(repository.path());
+    assert_eq!(answer["op"], "answer");
+    assert_eq!(answer["reservation_id"], requester_id);
+
+    let sequenced = run_berth(
+        repository.path(),
+        [
+            "sequence",
+            &holder_id,
+            &requester_id,
+            "--why",
+            "the holder lands first",
+            "--json",
+        ],
+    );
+    let sequenced_json = json_output(&sequenced);
+    assert!(sequenced.status.success(), "{sequenced_json}");
+    assert_eq!(
+        sequenced_json["payload"]["data"]["edge"]["declaration"],
+        "deferred_resolution"
+    );
+    assert_eq!(last_journal_event(repository.path())["op"], "resolve_defer");
 }
 
 /// A foreign holder growing onto a path the run already holds must not freeze the whole run.
@@ -1618,7 +1795,7 @@ fn assert_only_answer_reservation_acquires_scope(
     );
     assert_eq!(
         answered_scope_acquisitions[0]["authorization"]["kind"],
-        "defer"
+        "override"
     );
 }
 

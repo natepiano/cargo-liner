@@ -316,11 +316,15 @@ impl IntegrationRepository {
     }
 
     /// Claim `path` from `checkout` deferred behind reservation `blocker`,
-    /// naming `target` when one is given. The answer records in this one claim.
+    /// naming `target` when one is given.
+    ///
+    /// A `--defer` answer acquires no reservation, so run `run_id` first claims
+    /// [`deferring_run_scope`] under `target`, and the answer attaches to that
+    /// reservation, which the returned answer output names.
     ///
     /// # Panics
     ///
-    /// Panics when `cargo-berth` cannot be started.
+    /// Panics when `cargo-berth` cannot be started or the first claim fails.
     #[must_use]
     pub fn defer_claim_to(
         &self,
@@ -330,23 +334,36 @@ impl IntegrationRepository {
         blocker: &str,
         target: Option<&str>,
     ) -> Output {
-        let mut arguments = vec![
+        let own_scope = deferring_run_scope(run_id);
+        let mut own_claim = vec![
             "claim",
-            path,
+            &own_scope,
             "--run",
             run_id,
-            "--defer",
-            blocker,
-            "--overlap-why",
-            "the order needs a decision",
             "--why",
             "protect deferred work",
         ];
         if let Some(target) = target {
-            arguments.extend(["--target", target]);
+            own_claim.extend(["--target", target]);
         }
-        arguments.push("--json");
-        self.run(checkout, &arguments)
+        own_claim.push("--json");
+        assert_success(&self.run(checkout, &own_claim));
+        self.run(
+            checkout,
+            &[
+                "claim",
+                path,
+                "--run",
+                run_id,
+                "--defer",
+                blocker,
+                "--overlap-why",
+                "the order needs a decision",
+                "--why",
+                "protect deferred work",
+                "--json",
+            ],
+        )
     }
 
     /// Every event in the berth journal, in recorded order.
@@ -438,6 +455,21 @@ pub fn assert_success(output: &Output) {
 pub fn json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("JSON output")
 }
+
+/// The file run `run_id` claims for itself before a `--defer` answer, one per run so two
+/// deferring runs never overlap.
+///
+/// A `--defer` answer acquires no reservation: it attaches to the oldest active reservation
+/// of its run, which the ordering graph then holds against each answered holder. A deferring
+/// run claims this file first so that reservation exists.
+#[must_use]
+pub fn deferring_run_scope(run_id: &str) -> String {
+    format!("file:{}", deferring_run_path(run_id))
+}
+
+/// The repository path [`deferring_run_scope`] names for run `run_id`.
+#[must_use]
+pub fn deferring_run_path(run_id: &str) -> String { format!("deferring/{run_id}.txt") }
 
 /// The reservation ID a `claim --json` response reports.
 ///

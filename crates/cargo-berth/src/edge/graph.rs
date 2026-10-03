@@ -93,6 +93,19 @@ impl OrderingGraph {
                 } => {
                     graph.apply_authorization(*reservation_id, authorization, event.event_id())?;
                 },
+                JournalOperation::Answer {
+                    reservation_id: Some(reservation_id),
+                    authorizations,
+                    ..
+                } => {
+                    for authorization in authorizations {
+                        graph.apply_authorization(
+                            *reservation_id,
+                            authorization,
+                            event.event_id(),
+                        )?;
+                    }
+                },
                 JournalOperation::ResolveDefer {
                     deferred_reservation_id,
                     blocker_reservation_id,
@@ -127,7 +140,13 @@ impl OrderingGraph {
                 | JournalOperation::RebindWorktree { .. }
                 | JournalOperation::MergeExtentObserved { .. }
                 | JournalOperation::HolderMergeExtentObserved { .. }
-                | JournalOperation::RelocateWorktree { .. } => {},
+                | JournalOperation::RelocateWorktree { .. }
+                // An answer recorded without an active reservation has no requester endpoint,
+                // so it holds nothing at integration.
+                | JournalOperation::Answer {
+                    reservation_id: None,
+                    ..
+                } => {},
             }
         }
         for edge in &graph.edges {

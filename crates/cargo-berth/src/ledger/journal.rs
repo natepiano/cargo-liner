@@ -566,6 +566,20 @@ pub(crate) enum JournalOperation {
         /// The successor head supplied to the comparison.
         successor_head:             GitObjectId,
     },
+    /// Record overlap answers a claim gave without acquiring a reservation.
+    ///
+    /// A `--defer` claim answers holders this way, so the answer protects no path from any
+    /// lane: it only authorizes the answering worktree's edits on the answered scopes.
+    Answer {
+        /// The acting run's oldest active reservation in the answering worktree, which the
+        /// ordering graph holds against each answered blocker; absent when it held none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reservation_id: Option<ReservationId>,
+        /// The paths the claim named.
+        scopes:         ReservationScopeSet,
+        /// One answer per holder, each bound to the overlap observed under the ledger lock.
+        authorizations: Vec<ConflictAuthorization>,
+    },
     /// Convert a previously recorded defer answer into an ordering edge.
     ResolveDefer {
         /// The reservation that had deferred the overlap decision.
@@ -712,6 +726,7 @@ impl JournalOperation {
             | Self::ScopedPatchComparisonAttempted { .. }
             | Self::SuccessorScopedPatchEquivalenceChecked { .. }
             | Self::SuccessorScopedPatchComparisonAttempted { .. }
+            | Self::Answer { .. }
             | Self::ResolveDefer { .. }
             | Self::ResolveIncursion { .. }
             | Self::ForcedIntegrationPermit { .. }
@@ -727,14 +742,15 @@ impl JournalOperation {
     /// The readers are [`crate::edge::OrderingGraph`] replay, the board's overlap answers and
     /// alerts, worktree enrollment's reservation history and overlaps, forced-integration permits,
     /// the gate decision, the bypass audit, and pending-bypass recovery. Together they read every
-    /// claim, a widen authorized by enrollment, sequence, defer or override, deferral resolutions,
-    /// forced-integration permits and their consumption, and bypasses. Every other record is read
-    /// only by [`RetainedReservationSet`] replay, which reads every record.
+    /// claim and answer, a widen authorized by enrollment, sequence, defer or override, deferral
+    /// resolutions, forced-integration permits and their consumption, and bypasses. Every other
+    /// record is read only by [`RetainedReservationSet`] replay, which reads every record.
     ///
     /// The match has no wildcard arm, so a new operation must be placed on one side.
     pub(crate) const fn is_coordination_record(&self) -> bool {
         match self {
             Self::Claim { .. }
+            | Self::Answer { .. }
             | Self::ResolveDefer { .. }
             | Self::ForcedIntegrationPermit { .. }
             | Self::ConsumeForcedIntegrationPermit { .. }

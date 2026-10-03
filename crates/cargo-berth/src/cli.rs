@@ -27,6 +27,7 @@ use clap::Parser;
 use clap::Subcommand;
 use clap::error::ErrorKind;
 
+use crate::answer::DeferAnswerRequest;
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapAuthorizationRequest;
 use crate::answer::PermissiveOverlapAnswer;
@@ -537,13 +538,13 @@ struct ClaimArguments {
         requires = OVERLAP_WHY_ARGUMENT_ID
     )]
     after:                Option<ReservationId>,
-    /// Defer an answer about the blocking reservation.
+    /// Defer the integration order with the blocking reservation; repeat once per holder.
     #[arg(
         long = CLAIM_DEFER_ARGUMENT,
         value_name = BLOCKER_VALUE_NAME,
         requires = OVERLAP_WHY_ARGUMENT_ID
     )]
-    defer:                Option<ReservationId>,
+    defer:                Vec<ReservationId>,
     /// Override the blocking reservation.
     #[arg(
         long = CLAIM_OVERRIDE_ARGUMENT,
@@ -1173,7 +1174,7 @@ impl ClaimArguments {
 fn overlap_selection(
     before: Option<ReservationId>,
     after: Option<ReservationId>,
-    defer: Option<ReservationId>,
+    defer: Vec<ReservationId>,
     override_reservation: Option<ReservationId>,
     overlap_why: Option<&str>,
 ) -> Result<OverlapSelection, String> {
@@ -1183,45 +1184,48 @@ fn overlap_selection(
             .parse::<OverlapAuthorizationReason>()
             .map_err(|error| error.to_string())
     };
-    Ok(match (before, after, defer, override_reservation) {
-        (None, None, None, None) => {
-            if overlap_why.is_some() {
-                return Err(
-                    "--overlap-why requires --before, --after, --defer, or --override".to_owned(),
-                );
-            }
-            OverlapSelection::NoOverlapRequested
+    Ok(
+        match (before, after, defer.as_slice(), override_reservation) {
+            (None, None, [], None) => {
+                if overlap_why.is_some() {
+                    return Err(
+                        "--overlap-why requires --before, --after, --defer, or --override"
+                            .to_owned(),
+                    );
+                }
+                OverlapSelection::NoOverlapRequested
+            },
+            (Some(blocker_reservation_id), None, [], None) => {
+                let authorization_reason = authorization_reason()?;
+                OverlapSelection::RequesterBeforeHolder {
+                    blocker_reservation_id,
+                    authorization_reason,
+                }
+            },
+            (None, Some(blocker_reservation_id), [], None) => {
+                let authorization_reason = authorization_reason()?;
+                OverlapSelection::RequesterAfterHolder {
+                    blocker_reservation_id,
+                    authorization_reason,
+                }
+            },
+            (None, None, [_, ..], None) => {
+                let authorization_reason = authorization_reason()?;
+                OverlapSelection::Defer {
+                    blocker_reservation_ids: defer,
+                    authorization_reason,
+                }
+            },
+            (None, None, [], Some(blocker_reservation_id)) => {
+                let authorization_reason = authorization_reason()?;
+                OverlapSelection::Override {
+                    blocker_reservation_id,
+                    authorization_reason,
+                }
+            },
+            _ => return Err("choose only one overlap answer".to_owned()),
         },
-        (Some(blocker_reservation_id), None, None, None) => {
-            let authorization_reason = authorization_reason()?;
-            OverlapSelection::RequesterBeforeHolder {
-                blocker_reservation_id,
-                authorization_reason,
-            }
-        },
-        (None, Some(blocker_reservation_id), None, None) => {
-            let authorization_reason = authorization_reason()?;
-            OverlapSelection::RequesterAfterHolder {
-                blocker_reservation_id,
-                authorization_reason,
-            }
-        },
-        (None, None, Some(blocker_reservation_id), None) => {
-            let authorization_reason = authorization_reason()?;
-            OverlapSelection::Defer {
-                blocker_reservation_id,
-                authorization_reason,
-            }
-        },
-        (None, None, None, Some(blocker_reservation_id)) => {
-            let authorization_reason = authorization_reason()?;
-            OverlapSelection::Override {
-                blocker_reservation_id,
-                authorization_reason,
-            }
-        },
-        _ => return Err("choose only one overlap answer".to_owned()),
-    })
+    )
 }
 
 /// Whether and how the caller permits one reservation overlap.
@@ -1238,10 +1242,10 @@ enum OverlapSelection {
         blocker_reservation_id: ReservationId,
         authorization_reason:   OverlapAuthorizationReason,
     },
-    /// The requester defers its integration until the overlap is resolved.
+    /// The requester defers the integration order with every named holder.
     Defer {
-        blocker_reservation_id: ReservationId,
-        authorization_reason:   OverlapAuthorizationReason,
+        blocker_reservation_ids: Vec<ReservationId>,
+        authorization_reason:    OverlapAuthorizationReason,
     },
     /// The requester proceeds despite the current reservation holder's overlap.
     Override {
@@ -1274,14 +1278,14 @@ fn overlap_authorization_request(selection: OverlapSelection) -> OverlapAuthoriz
             authorization_reason,
         ),
         OverlapSelection::Defer {
-            blocker_reservation_id,
+            blocker_reservation_ids,
             authorization_reason,
-        } => (
-            PermissiveOverlapAnswer::Defer {
-                blocker: blocker_reservation_id,
-            },
-            authorization_reason,
-        ),
+        } => {
+            return OverlapAuthorizationRequest::Defer(Box::new(DeferAnswerRequest {
+                blockers: blocker_reservation_ids,
+                reason:   authorization_reason,
+            }));
+        },
         OverlapSelection::Override {
             blocker_reservation_id,
             authorization_reason,
@@ -2486,7 +2490,7 @@ mod tests {
         fn is_the_only_selected_resolution(self, claim_arguments: &ClaimArguments) -> bool {
             let before_is_selected = claim_arguments.before.is_some();
             let after_is_selected = claim_arguments.after.is_some();
-            let defer_is_selected = claim_arguments.defer.is_some();
+            let defer_is_selected = !claim_arguments.defer.is_empty();
             let override_is_selected = claim_arguments.override_reservation.is_some();
 
             match self {
@@ -2870,7 +2874,7 @@ mod tests {
                 expected_resolution.flag(),
                 claim_arguments.before.is_some(),
                 claim_arguments.after.is_some(),
-                claim_arguments.defer.is_some(),
+                !claim_arguments.defer.is_empty(),
                 claim_arguments.override_reservation.is_some()
             );
         }

@@ -262,7 +262,9 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
         )
         .ok_or_else(|| failure("blocking presentation should separate its summary and detail"))?;
     assert!(refusal_detail.ends_with('\n'));
-    assert!(refusal_detail.contains("One answer settles one named holder."));
+    assert!(refusal_detail.contains(
+        "Answers 1, 2 and 4 each settle one named holder; answer 3 names every holder at once."
+    ));
     assert!(refusal_detail.contains("cargo-berth claim <paths...> --before"));
     assert!(
         refusal_detail.contains("No approver is configured, so this session chooses the answer.")
@@ -548,11 +550,10 @@ fn a_pre_edit_ambiguity_prints_a_plain_command_its_claude_code_session_runs() ->
 ///
 /// The session's pre-edit hook has already first-touched two files into one reservation
 /// when another session's reservation refuses it a third. The session answers with a
-/// `--defer` claim under only `CLAUDE_CODE_SESSION_ID`, and that one claim appends a second
-/// reservation carrying the answer. Unless that
-/// reservation binds to the session, the hook widens the first-touch reservation, which
-/// carries no answer for the holder, and refuses the same edit again. The files the
-/// first-touch reservation holds must stay editable after the claim.
+/// `--defer` claim under only `CLAUDE_CODE_SESSION_ID`, and that one claim appends an
+/// `answer` record that acquires no reservation. The hook then widens the first-touch
+/// reservation under the worktree's recorded answer instead of refusing the same edit
+/// again. The files the first-touch reservation holds must stay editable after the claim.
 #[test]
 fn a_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResult {
     let repository = initialized_repository()?;
@@ -608,6 +609,9 @@ fn a_defer_claim_under_the_claude_code_session_authorizes_its_edit() -> TestResu
 
 /// A `--defer` answer keeps authorizing its file after the holder widens elsewhere.
 ///
+/// The session's first action is the `--defer` claim, which acquires no reservation and
+/// publishes no session mapping, so the hook cannot identify the session's run: the answer
+/// still binds the worktree, so the session's edit of the shared file passes.
 /// The holder dirties a second file after the answer, and the reconcile each edit check runs
 /// records the holder's wider merge extent. The answer names the shared file, not the holder's
 /// whole extent, so the session's edit of that file still passes, while the holder's new file
@@ -3813,9 +3817,10 @@ fn session_start_on_a_settled_board_emits_nothing() -> TestResult {
 /// An opening session reads its integration order as counts and its own worktree's entries.
 ///
 /// A defer claim leaves one unresolved overlap holding both live sides, so the board lists
-/// two waiting entries and one overlap. Each worktree holds one side: it reads the counts of
-/// both sections, its own side's waiting entry with its `sequence` instruction, the overlap,
-/// and the commands that read the rest.
+/// two waiting entries and one overlap. The deferral acquires no reservation, so the
+/// requester claims its own file first and the answer attaches to that reservation. Each
+/// worktree holds one side: it reads the counts of both sections, its own side's waiting
+/// entry with its `sequence` instruction, the overlap, and the commands that read the rest.
 #[test]
 fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult {
     let repository = initialized_repository()?;
@@ -3828,6 +3833,12 @@ fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult 
     let holder_id = claimed_reservation_id(&holder)?;
     dirty_source(repository.path(), "shared.rs")?;
     let (_requester_directory, requester_root) = add_worktree(&repository, "deferring-requester")?;
+    let requester = run_berth_with_claude_code_session(
+        &requester_root,
+        &["claim", "file:requester.rs", "--json"],
+        DEFERRING_SESSION,
+    )?;
+    require_success(&requester, "the requester's own claim")?;
     let deferred = defer_claim_with_claude_code_session(
         &requester_root,
         "shared.rs",
@@ -3836,6 +3847,7 @@ fn session_start_summarizes_the_integration_order_it_may_act_on() -> TestResult 
     )?;
     require_success(&deferred, "the defer claim")?;
     let deferred_id = claimed_reservation_id(&deferred)?;
+    assert_eq!(deferred_id, claimed_reservation_id(&requester)?);
     let instruction = format!(
         "order this pair: cargo berth sequence <first> <then> --why '<reason>', naming {deferred_id} and {holder_id} in the order they must integrate"
     );

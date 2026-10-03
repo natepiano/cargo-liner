@@ -11,6 +11,8 @@ use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::claim_id;
+use cargo_berth_test_support::deferring_run_path;
+use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::reservation_row;
 use cargo_berth_test_support::write_file;
@@ -650,6 +652,10 @@ fn assert_successor_abandonment(
     successor_root: &Path,
 ) {
     dirty_source(predecessor_root, "src/lib.rs");
+    // Work in the successor's own scope: the answer's reconciliation would otherwise observe a
+    // clean successor, and `append_orphan_retirements` retires a provably empty orphan before
+    // the abandonment this test confirms.
+    dirty_source(successor_root, &deferring_run_path(SECOND_RUN));
     let predecessor = claim(predecessor_root, "tree:src", FIRST_RUN);
     let predecessor_id = reservation_id(&predecessor);
     let successor = defer_claim(
@@ -675,7 +681,7 @@ fn assert_successor_abandonment(
             "--json",
         ],
     );
-    assert!(abandoned.status.success());
+    assert!(abandoned.status.success(), "{}", json_output(&abandoned));
 
     let sequence = sequence(
         fixture.repository.path(),
@@ -2209,13 +2215,9 @@ fn orphaned_middle_predecessor_recovers_without_losing_its_outgoing_edge() {
     dirty_source(&first_root, "left/shared.rs");
     let first = claim(&first_root, "tree:left", FIRST_RUN);
     let first_id = reservation_id(&first);
-    let middle = defer_claim_scopes(
-        &middle_root,
-        &["file:left/shared.rs", "tree:right"],
-        SECOND_RUN,
-        &first_id,
-    );
-    let middle_id = reservation_id(&middle);
+    let middle_id = reservation_id(&claim(&middle_root, "tree:right", SECOND_RUN));
+    let middle = defer_answer(&middle_root, "file:left/shared.rs", SECOND_RUN, &first_id);
+    assert_eq!(reservation_id(&middle), middle_id);
     let first_edge = sequence(
         repository.path(),
         &first_id,
@@ -2406,22 +2408,7 @@ fn deferred_pair(holder_root: &Path, requester_root: &Path) -> (String, String) 
     dirty_source(holder_root, "src/lib.rs");
     let holder = claim(holder_root, "tree:src", FIRST_RUN);
     let holder_id = reservation_id(&holder);
-    let requester = run_berth(
-        requester_root,
-        &[
-            "claim",
-            "file:src/lib.rs",
-            "--run",
-            SECOND_RUN,
-            "--defer",
-            &holder_id,
-            "--overlap-why",
-            "the order is not known yet",
-            "--why",
-            "update the requester",
-            "--json",
-        ],
-    );
+    let requester = defer_claim(requester_root, "file:src/lib.rs", SECOND_RUN, &holder_id);
     assert!(requester.status.success());
     (holder_id, reservation_id(&requester))
 }
@@ -2687,30 +2674,7 @@ fn successor_scale_fixture(successor_count: usize) -> SuccessorScaleFixture {
 fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixture {
     let repository = initialized_repository();
     commit_configuration(repository.path());
-    fs::create_dir_all(repository.path().join("predecessors"))
-        .expect("predecessor scope directory should exist");
-    for predecessor_index in 0..predecessor_count {
-        fs::write(
-            repository
-                .path()
-                .join(format!("predecessors/predecessor-{predecessor_index}.rs")),
-            format!("// reserved predecessor scope {predecessor_index}\n"),
-        )
-        .expect("predecessor scope source should write");
-    }
-    git(repository.path(), &["add", "predecessors"]);
-    // No reservation exists yet, so the hooks would write no berth state.
-    git(
-        repository.path(),
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "predecessor reservation scopes",
-        ],
-    );
+    commit_predecessor_scopes(repository.path(), predecessor_count);
     let worktrees = tempdir().expect("worktree parent should exist");
     let successor_root = add_worktree(repository.path(), worktrees.path(), "successor");
     let predecessor_worktrees = (0..predecessor_count)
@@ -2721,6 +2685,16 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
             (predecessor_branch, predecessor_root)
         })
         .collect::<Vec<_>>();
+    // Every answer below attaches to this one reservation of the successor run.
+    assert!(
+        claim(
+            &successor_root,
+            &deferring_run_scope(SECOND_RUN),
+            SECOND_RUN
+        )
+        .status
+        .success()
+    );
 
     for (predecessor_index, (_, predecessor_root)) in predecessor_worktrees.iter().enumerate() {
         let predecessor_path = format!("predecessors/predecessor-{predecessor_index}.rs");
@@ -2732,7 +2706,7 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
             &predecessor_run,
         );
         let predecessor_id = reservation_id(&predecessor);
-        let successor = defer_claim(
+        let successor = defer_answer(
             &successor_root,
             &format!("file:{predecessor_path}"),
             SECOND_RUN,
@@ -2790,6 +2764,32 @@ fn predecessor_scale_fixture(predecessor_count: usize) -> PredecessorScaleFixtur
     }
 }
 
+/// Commit one source file per predecessor, each the scope that predecessor reserves.
+fn commit_predecessor_scopes(repository_root: &Path, predecessor_count: usize) {
+    fs::create_dir_all(repository_root.join("predecessors"))
+        .expect("predecessor scope directory should exist");
+    for predecessor_index in 0..predecessor_count {
+        fs::write(
+            repository_root.join(format!("predecessors/predecessor-{predecessor_index}.rs")),
+            format!("// reserved predecessor scope {predecessor_index}\n"),
+        )
+        .expect("predecessor scope source should write");
+    }
+    git(repository_root, &["add", "predecessors"]);
+    // No reservation exists yet, so the hooks would write no berth state.
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "predecessor reservation scopes",
+        ],
+    );
+}
+
 /// Commit a `left/shared.rs` tree and a `right/` tree of three per-successor files.
 fn commit_left_and_right_trees() -> TempDir {
     let repository = initialized_repository();
@@ -2820,25 +2820,36 @@ fn sequence(repository_root: &Path, before: &str, after: &str, why: &str) -> Out
     )
 }
 
+/// Claim [`deferring_run_scope`] for `run`, then answer `blocker` on `scope` with `--defer`.
+///
+/// A deferral acquires no reservation, so the answer attaches to the one claimed first, and the
+/// ordering graph holds that reservation against `blocker`.
 fn defer_claim(repository_root: &Path, scope: &str, run: &str, blocker: &str) -> Output {
-    defer_claim_scopes(repository_root, &[scope], run, blocker)
+    assert!(
+        claim(repository_root, &deferring_run_scope(run), run)
+            .status
+            .success()
+    );
+    defer_answer(repository_root, scope, run, blocker)
 }
 
-fn defer_claim_scopes(repository_root: &Path, scopes: &[&str], run: &str, blocker: &str) -> Output {
-    let mut arguments = vec!["claim"];
-    arguments.extend_from_slice(scopes);
-    arguments.extend_from_slice(&[
-        "--run",
-        run,
-        "--defer",
-        blocker,
-        "--overlap-why",
-        "the order is not known yet",
-        "--why",
-        "protect deferred work",
-        "--json",
-    ]);
-    run_berth(repository_root, &arguments)
+fn defer_answer(repository_root: &Path, scope: &str, run: &str, blocker: &str) -> Output {
+    run_berth(
+        repository_root,
+        &[
+            "claim",
+            scope,
+            "--run",
+            run,
+            "--defer",
+            blocker,
+            "--overlap-why",
+            "the order is not known yet",
+            "--why",
+            "protect deferred work",
+            "--json",
+        ],
+    )
 }
 
 /// Commit the policy without hooks: before any reservation exists, the trunk gate and the

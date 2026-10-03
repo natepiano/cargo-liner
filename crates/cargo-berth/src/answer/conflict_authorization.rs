@@ -77,11 +77,6 @@ impl ConflictAuthorization {
                 edge_id: EdgeId::new(),
                 reason,
             },
-            PermissiveOverlapAnswer::Defer { blocker } => Self::Defer {
-                overlaps,
-                blocker,
-                reason,
-            },
             PermissiveOverlapAnswer::Override { blocker } => Self::Override {
                 overlaps,
                 blocker,

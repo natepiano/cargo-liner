@@ -21,6 +21,17 @@ pub(crate) enum OverlapAuthorizationRequest {
     Absent,
     /// The claim deliberately supplied a permissive answer and its reason.
     Permissive(Box<PermissiveOverlapAuthorizationRequest>),
+    /// The claim defers the integration order with every named holder and reserves nothing.
+    Defer(Box<DeferAnswerRequest>),
+}
+
+/// A deferral of the integration order with each named holder, recorded without a reservation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeferAnswerRequest {
+    /// The holders named by each `--defer`; the CLI builds this only from one or more flags.
+    pub(crate) blockers: Vec<ReservationId>,
+    /// Why the caller deferred the order.
+    pub(crate) reason:   OverlapAuthorizationReason,
 }
 
 /// A deliberate overlap answer with its inseparable authorization reason.
@@ -32,7 +43,7 @@ pub(crate) struct PermissiveOverlapAuthorizationRequest {
     pub(crate) reason: OverlapAuthorizationReason,
 }
 
-/// One of the three overlap answers that permits concurrent editing.
+/// One of the overlap answers that permits concurrent editing and reserves the claimed paths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PermissiveOverlapAnswer {
     /// Declare an integration order between requester and named blocker.
@@ -41,11 +52,6 @@ pub(crate) enum PermissiveOverlapAnswer {
         blocker:   ReservationId,
         /// Which endpoint must integrate first.
         direction: OrderingDirection,
-    },
-    /// Permit editing while holding both endpoints at integration.
-    Defer {
-        /// The blocker named by the caller.
-        blocker: ReservationId,
     },
     /// Permit editing without adding an integration constraint.
     Override {
@@ -97,9 +103,7 @@ impl PermissiveOverlapAnswer {
     /// Return the blocker identifier named by the answer flag.
     pub(crate) const fn blocker(&self) -> ReservationId {
         match self {
-            Self::Sequence { blocker, .. }
-            | Self::Defer { blocker }
-            | Self::Override { blocker } => *blocker,
+            Self::Sequence { blocker, .. } | Self::Override { blocker } => *blocker,
         }
     }
 }

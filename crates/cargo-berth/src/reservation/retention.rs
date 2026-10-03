@@ -151,11 +151,26 @@ impl Reservation {
     }
 }
 
+/// Overlap answers one [`JournalOperation::Answer`] recorded without acquiring a reservation.
+///
+/// The record protects nothing: it only authorizes edits by `worktree` on the overlaps its
+/// authorizations name, and reciprocally edits by a holder those authorizations name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct AnswerRecord {
+    /// The worktree that recorded the answers.
+    worktree:       WorktreeId,
+    /// One answer per holder, each bound to the overlap observed under the ledger lock.
+    authorizations: Vec<ConflictAuthorization>,
+}
+
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RetainedReservationSet {
     reservations:            Vec<Reservation>,
     incursion_incidents:     Vec<IncursionIncident>,
+    /// Answers recorded by `--defer` claims; absent from checkpoints written before them.
+    #[serde(default)]
+    answer_records:          Vec<AnswerRecord>,
     /// Whether foreign protection excludes work already present in the acting HEAD.
     ///
     /// Never serialized: a replayed set always holds [`ForeignProtectionPolicy::FullProtection`],
@@ -929,6 +944,13 @@ impl RetainedReservationSet {
             JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. } => {
                 self.apply_incursion_journal_event(event)
             },
+            JournalOperation::Answer { authorizations, .. } => {
+                self.answer_records.push(AnswerRecord {
+                    worktree:       event.actor.worktree,
+                    authorizations: authorizations.clone(),
+                });
+                Ok(())
+            },
             JournalOperation::ResolveDefer { .. }
             | JournalOperation::ForcedIntegrationPermit { .. }
             | JournalOperation::ConsumeForcedIntegrationPermit { .. }
@@ -1683,6 +1705,55 @@ impl RetainedReservationSet {
             .into_iter()
             .map(|(_, conflict)| conflict)
             .collect()
+    }
+
+    /// Whether an answer `worktree` recorded without a reservation covers `holder` on
+    /// `overlap_scope`, matched against the representative and protection the conflict reports.
+    pub(super) fn answer_records_authorize(
+        &self,
+        worktree: WorktreeId,
+        holder: &Reservation,
+        overlap_scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> bool {
+        let ConflictProtection::Protected {
+            representative,
+            scopes,
+            ..
+        } = self.protection_for_conflict(holder, worktree, path_case)
+        else {
+            return false;
+        };
+        self.answer_records_cover(
+            worktree,
+            representative.id,
+            &OverlapScopeRevision::from(&scopes),
+            overlap_scope,
+            path_case,
+        )
+    }
+
+    /// Whether an [`AnswerRecord`] of `worktree` covers one counterpart revision and scope.
+    pub(super) fn answer_records_cover(
+        &self,
+        worktree: WorktreeId,
+        counterpart_id: ReservationId,
+        counterpart_scope_revision: &OverlapScopeRevision,
+        overlap_scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> bool {
+        self.answer_records
+            .iter()
+            .filter(|answer_record| answer_record.worktree == worktree)
+            .flat_map(|answer_record| &answer_record.authorizations)
+            .any(|authorization| {
+                authorization.covers(
+                    counterpart_id,
+                    counterpart_scope_revision,
+                    overlap_scope,
+                    path_case,
+                )
+            })
     }
 
     /// Select race protection locally and the complete merge protection of a foreign checkout.
@@ -3543,6 +3614,23 @@ mod tests {
     }
 
     /// Build the shared claim event, recording the provenance of the identity it was made under.
+    /// A journal from before `answer` records, and a set serialized before `answer_records`
+    /// existed, both load with no answer records.
+    #[test]
+    fn a_journal_and_set_from_before_answer_records_load() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let [claim, checkpoint, ..] = lifecycle_events()?;
+        let retained = RetainedReservationSet::replay(&[claim, checkpoint])?;
+        let mut serialized = serde_json::to_value(&retained)?;
+        let removed = serialized
+            .as_object_mut()
+            .and_then(|fields| fields.remove("answer_records"));
+        assert_eq!(removed, Some(json!([])));
+        let loaded = serde_json::from_value::<RetainedReservationSet>(serialized)?;
+        assert_eq!(loaded, retained);
+        Ok(())
+    }
+
     fn claim_event(provenance: &str) -> Result<JournalEvent, Error> {
         claim_event_for(RESERVATION_ID, provenance)
     }

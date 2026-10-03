@@ -1,5 +1,6 @@
 //! Atomic reservation acquisition.
 
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fmt;
 use std::fmt::Display;
@@ -14,6 +15,7 @@ use serde::Serialize;
 
 use crate::answer::AuthorizedOverlap;
 use crate::answer::ConflictAuthorization;
+use crate::answer::DeferAnswerRequest;
 use crate::answer::OverlapApprover;
 use crate::answer::OverlapAuthorizationRequest;
 use crate::answer::PermissiveOverlapAnswer;
@@ -253,15 +255,31 @@ pub(crate) fn execute(
             marker_publication,
             session_mapping_publication,
         ),
+        Ok(Enrollment::Enrolled(ClaimExecution::Answered {
+            reservation_id,
+            blockers,
+            scopes,
+        })) => OutputEnvelope::answered(reservation_id, blockers, scopes),
         Ok(Enrollment::Enrolled(ClaimExecution::Blocked {
             conflicts,
             approver,
         })) => OutputEnvelope::blocked_claim(conflicts, approver),
-        Ok(Enrollment::Enrolled(ClaimExecution::AnsweredWithoutOverlap(blocker))) => {
+        Ok(Enrollment::Enrolled(ClaimExecution::AnsweredWithoutOverlap(blockers))) => {
+            let named_reservations = match blockers.as_slice() {
+                [blocker] => format!("reservation {blocker}"),
+                _ => format!(
+                    "reservations {}",
+                    blockers
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
             OutputEnvelope::invalid_input(
                 CommandVerb::Claim,
                 &format!(
-                    "No foreign reservation overlaps the requested paths, so the overlap answer naming reservation {blocker} has nothing to authorize. Claim the same paths again with no overlap answer."
+                    "No foreign reservation overlaps the requested paths, so the overlap answer naming {named_reservations} has nothing to authorize. Claim the same paths again with no overlap answer."
                 ),
             )
         },
@@ -288,11 +306,17 @@ enum ClaimExecution {
         marker_publication:          CoordinationRunMarkerPublication,
         session_mapping_publication: SessionIdentityMappingPublication,
     },
+    /// A `--defer` claim recorded its answers without acquiring a reservation.
+    Answered {
+        reservation_id: Option<ReservationId>,
+        blockers:       WireOrderedReservationIds,
+        scopes:         ReservationScopeSet,
+    },
     Blocked {
         conflicts: Vec<ReservationConflict>,
         approver:  Option<OverlapApprover>,
     },
-    AnsweredWithoutOverlap(ReservationId),
+    AnsweredWithoutOverlap(Vec<ReservationId>),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
 }
@@ -903,6 +927,19 @@ fn claim_execution_from_outcome(
             event,
             session_mapping_publication,
         } => {
+            // An answer acquired no reservation, so there is no run marker to publish for it.
+            if let JournalOperation::Answer {
+                reservation_id,
+                scopes,
+                authorizations,
+            } = &event.operation
+            {
+                return Ok(ClaimExecution::Answered {
+                    reservation_id: *reservation_id,
+                    blockers:       answered_blockers(authorizations),
+                    scopes:         scopes.clone(),
+                });
+            }
             let coordination_run_id = event.actor.run;
             let marker_publication =
                 publish_coordination_run_marker(worktree_context, coordination_run_id);
@@ -921,8 +958,8 @@ fn claim_execution_from_outcome(
                 approver,
             })
         },
-        LedgerTransactionOutcome::Rejected(ClaimRejection::AnsweredWithoutOverlap(blocker)) => {
-            Ok(ClaimExecution::AnsweredWithoutOverlap(blocker))
+        LedgerTransactionOutcome::Rejected(ClaimRejection::AnsweredWithoutOverlap(blockers)) => {
+            Ok(ClaimExecution::AnsweredWithoutOverlap(blockers))
         },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
@@ -981,6 +1018,25 @@ fn validate_claim_transaction(
     ) {
         return TransactionValidation::Reject(ClaimRejection::from(error));
     }
+    let conflicts =
+        reservations.conflicts_for_claim(&prepared_claim.scopes, worktree_id, path_case);
+    let permissive_request = match overlap_authorization {
+        // A deferral reserves nothing, so the reservation limit does not apply to it.
+        OverlapAuthorizationRequest::Defer(request) => {
+            return validate_defer(
+                *request,
+                conflicts,
+                &reservations,
+                DeferringWorktree {
+                    coordination_run_id: run_validation.actor_run_id(),
+                    worktree_id,
+                },
+                prepared_claim.scopes,
+            );
+        },
+        OverlapAuthorizationRequest::Absent => None,
+        OverlapAuthorizationRequest::Permissive(request) => Some(*request),
+    };
     if count_reaches_limit(reservations.nonterminal_count(), maximum_reservations) {
         return TransactionValidation::Reject(ClaimRejection::ReservationLimitReached(
             maximum_reservations,
@@ -992,25 +1048,95 @@ fn validate_claim_transaction(
             return TransactionValidation::Reject(ClaimRejection::EdgeReplay(error));
         },
     };
-    let conflicts =
-        reservations.conflicts_for_claim(&prepared_claim.scopes, worktree_id, path_case);
-    match overlap_authorization {
-        OverlapAuthorizationRequest::Absent if conflicts.is_empty() => {
-            TransactionValidation::Append(Box::new(
-                prepared_claim.into_operation(ConflictAuthorization::NoConflict),
-            ))
-        },
-        OverlapAuthorizationRequest::Absent => {
-            TransactionValidation::Reject(ClaimRejection::Conflict(conflicts))
-        },
-        OverlapAuthorizationRequest::Permissive(request) => validate_authorization(
-            *request,
+    match permissive_request {
+        None if conflicts.is_empty() => TransactionValidation::Append(Box::new(
+            prepared_claim.into_operation(ConflictAuthorization::NoConflict),
+        )),
+        None => TransactionValidation::Reject(ClaimRejection::Conflict(conflicts)),
+        Some(request) => validate_authorization(
+            request,
             conflicts,
             prepared_claim,
             &ordering_graph,
             maximum_ordering_edges,
         ),
     }
+}
+
+/// The acting run and worktree a `--defer` claim answers for.
+#[derive(Clone, Copy)]
+struct DeferringWorktree {
+    coordination_run_id: CoordinationRunId,
+    worktree_id:         WorktreeId,
+}
+
+/// Record a `--defer` answer to every current holder as one [`JournalOperation::Answer`].
+///
+/// The named blockers must be exactly the holders `conflicts_for_claim` reports, one per foreign
+/// worktree, so one call answers every holder of the requested paths. The answer acquires no
+/// reservation, so it protects nothing from any lane. When the acting run holds an active
+/// reservation in this worktree, the oldest one is named so the ordering graph holds it against
+/// each blocker at integration.
+fn validate_defer(
+    request: DeferAnswerRequest,
+    conflicts: Vec<ReservationConflict>,
+    reservations: &RetainedReservationSet,
+    deferring_worktree: DeferringWorktree,
+    scopes: ReservationScopeSet,
+) -> TransactionValidation<ClaimRejection> {
+    let DeferAnswerRequest { blockers, reason } = request;
+    if conflicts.is_empty() {
+        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(blockers));
+    }
+    let named_blockers = blockers.into_iter().collect::<HashSet<_>>();
+    let holders = conflicts
+        .iter()
+        .map(|conflict| conflict.reservation_id)
+        .collect::<HashSet<_>>();
+    if named_blockers != holders {
+        return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
+    }
+    let DeferringWorktree {
+        coordination_run_id,
+        worktree_id,
+    } = deferring_worktree;
+    let reservation_id = reservations
+        .iter()
+        .find(|reservation| {
+            reservation
+                .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
+        })
+        .map(Reservation::id);
+    let authorizations = conflicts
+        .iter()
+        .map(|conflict| ConflictAuthorization::Defer {
+            overlaps: AuthorizedOverlap::from(conflict).into(),
+            blocker:  conflict.reservation_id,
+            reason:   reason.clone(),
+        })
+        .collect();
+    TransactionValidation::Append(Box::new(JournalOperation::Answer {
+        reservation_id,
+        scopes,
+        authorizations,
+    }))
+}
+
+/// The holders a recorded [`JournalOperation::Answer`] deferred the integration order with.
+fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedReservationIds {
+    WireOrderedReservationIds::sorted_and_deduplicated(
+        authorizations
+            .iter()
+            .filter_map(|authorization| match authorization {
+                ConflictAuthorization::Defer { blocker, .. } => Some(*blocker),
+                ConflictAuthorization::NoConflict
+                | ConflictAuthorization::Enrollment { .. }
+                | ConflictAuthorization::Sequence { .. }
+                | ConflictAuthorization::Override { .. }
+                | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => None,
+            })
+            .collect(),
+    )
 }
 
 fn validate_first_touch_transaction(
@@ -1496,9 +1622,9 @@ fn validate_authorization(
 ) -> TransactionValidation<ClaimRejection> {
     let PermissiveOverlapAuthorizationRequest { answer, reason } = request;
     if conflicts.is_empty() {
-        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(
+        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(vec![
             answer.blocker(),
-        ));
+        ]));
     }
     let [conflict] = conflicts.as_slice() else {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
@@ -1929,8 +2055,8 @@ fn read_packed_reference(
 
 enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
-    /// An overlap answer named this blocker while nothing overlapped the requested scopes.
-    AnsweredWithoutOverlap(ReservationId),
+    /// An overlap answer named these blockers while nothing overlapped the requested scopes.
+    AnsweredWithoutOverlap(Vec<ReservationId>),
     Replay(ReservationReplayError),
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidCanonicalWorktreeRoot,

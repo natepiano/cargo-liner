@@ -19,6 +19,7 @@ use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::assert_success;
 use cargo_berth_test_support::claim_id;
+use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::git_command;
 use cargo_berth_test_support::json;
 use cargo_berth_test_support::write_file;
@@ -41,6 +42,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
+use std::panic;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -2584,10 +2586,23 @@ fn retention_ref_writes_and_deletions_suppress_the_repository_root_hook() {
 
 #[test]
 fn retention_ref_transactions_have_constant_git_invocations_across_cardinalities() {
-    let one_repair = trace_retention_ref_reconciliation(1, RetentionRefPass::RepairOnly);
-    let three_repairs = trace_retention_ref_reconciliation(3, RetentionRefPass::RepairOnly);
-    let one_deletion = trace_retention_ref_reconciliation(1, RetentionRefPass::DeletionOnly);
-    let three_deletions = trace_retention_ref_reconciliation(3, RetentionRefPass::DeletionOnly);
+    // Each trace builds its own repository, so the four run on parallel threads.
+    let [one_repair, three_repairs, one_deletion, three_deletions] = thread::scope(|scope| {
+        [
+            (1, RetentionRefPass::RepairOnly),
+            (3, RetentionRefPass::RepairOnly),
+            (1, RetentionRefPass::DeletionOnly),
+            (3, RetentionRefPass::DeletionOnly),
+        ]
+        .map(|(reservation_count, pass)| {
+            scope.spawn(move || trace_retention_ref_reconciliation(reservation_count, pass))
+        })
+        .map(|trace| {
+            trace
+                .join()
+                .unwrap_or_else(|failure| panic::resume_unwind(failure))
+        })
+    });
 
     assert_same_git_invocation_sequence(&one_repair, &three_repairs);
     assert_same_git_invocation_sequence(&one_deletion, &three_deletions);
@@ -5389,6 +5404,10 @@ fn claim(repository_root: &Path, scope: &str, run: &str, plan: &str, phase: &str
     )
 }
 
+/// Claim [`deferring_run_scope`] for `run`, then answer `blocker` on `scope` with `--defer`.
+///
+/// A deferral acquires no reservation, so the answer attaches to the one claimed first, and the
+/// ordering graph holds that reservation against `blocker`.
 fn defer_claim(
     repository_root: &Path,
     scope: &str,
@@ -5397,6 +5416,11 @@ fn defer_claim(
     phase: &str,
     blocker: &str,
 ) -> Output {
+    assert!(
+        claim(repository_root, &deferring_run_scope(run), run, plan, phase)
+            .status
+            .success()
+    );
     run_berth(
         repository_root,
         &[

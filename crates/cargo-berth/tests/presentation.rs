@@ -3,6 +3,7 @@
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::berth_command;
+use cargo_berth_test_support::deferring_run_scope;
 use cargo_berth_test_support::git_command;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
@@ -780,7 +781,16 @@ fn claim(repository_root: &Path, scope: &str, run: &str) -> TestResult<Output> {
     Ok(output)
 }
 
+/// Claim [`deferring_run_scope`] for `SECOND_RUN`, then answer `holder_id` with `--defer`.
+///
+/// A deferral acquires no reservation, so the answer attaches to the one claimed first, and the
+/// ordering graph holds that reservation against the holder.
 fn deferred_claim(repository_root: &Path, holder_id: &str) -> TestResult<Output> {
+    claim(
+        repository_root,
+        &deferring_run_scope(SECOND_RUN),
+        SECOND_RUN,
+    )?;
     run_berth(
         repository_root,
         &[

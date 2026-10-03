@@ -2122,6 +2122,19 @@
               "type": "object"
             },
             {
+              "description": "A `--defer` claim answered while the run held this reservation, without widening it.",
+              "properties": {
+                "origin": {
+                  "const": "answer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "origin": {
                   "const": "enrollment",
@@ -6856,6 +6869,43 @@
               "type": "object"
             },
             {
+              "description": "A `--defer` claim answered every holder of the requested paths and reserved nothing.",
+              "properties": {
+                "blockers": {
+                  "description": "Every holder the answer deferred the integration order with, in ascending order.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "reservation_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/uuid_v7_identifier"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The acting run's active reservation held against each blocker at integration;\nabsent when the run held none, so nothing is held."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The paths the answers authorize this worktree to edit."
+                },
+                "status": {
+                  "const": "answered",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "blockers",
+                "scopes"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Foreign holders prevented the append.",
               "properties": {
                 "approver": {
@@ -8686,6 +8736,11 @@
               "type": "string"
             },
             {
+              "const": "answered",
+              "description": "A `--defer` claim recorded its answers without acquiring a reservation.",
+              "type": "string"
+            },
+            {
               "const": "widened",
               "description": "Unreserved changed paths were added to a reservation.",
               "type": "string"
@@ -9943,6 +9998,19 @@
               "properties": {
                 "origin": {
                   "const": "claim",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "origin"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A `--defer` claim answered while the run held this reservation, without widening it.",
+              "properties": {
+                "origin": {
+                  "const": "answer",
                   "type": "string"
                 }
               },
@@ -14343,6 +14411,43 @@
                 "scopes",
                 "marker_publication",
                 "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A `--defer` claim answered every holder of the requested paths and reserved nothing.",
+              "properties": {
+                "blockers": {
+                  "description": "Every holder the answer deferred the integration order with, in ascending order.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "reservation_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/uuid_v7_identifier"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The acting run's active reservation held against each blocker at integration;\nabsent when the run held none, so nothing is held."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "The paths the answers authorize this worktree to edit."
+                },
+                "status": {
+                  "const": "answered",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "blockers",
+                "scopes"
               ],
               "type": "object"
             },
