@@ -90,7 +90,6 @@ impl MendRunner<'_> {
             self.selection,
             self.cargo_plan,
             self.loaded_config,
-            self.clippy_status,
             output_mode,
             self.color_mode,
         )?;

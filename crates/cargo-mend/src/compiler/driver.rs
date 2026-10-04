@@ -13,14 +13,11 @@ use anyhow::bail;
 use rustc_driver::Callbacks;
 use rustc_driver::Compilation;
 use rustc_interface::interface::Compiler;
-use rustc_interface::interface::Config;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::LOCAL_CRATE;
 
 use super::analyzing::AnalyzingMarker;
-use super::clippy::ClippyLints;
 use super::constants::CARGO_PRIMARY_PACKAGE_ENV;
-use super::constants::CLIPPY_ENV;
 use super::constants::PASSTHROUGH_RUSTC_WRAPPER_ENV;
 use super::constants::RUSTC_BIN;
 use super::settings::DriverSettings;
@@ -31,27 +28,19 @@ use crate::reporting::EXIT_CODE_ERROR;
 #[derive(Debug)]
 struct AnalysisCallbacks {
     driver_settings: DriverSettings,
-    clippy_lints:    Option<ClippyLints>,
     error:           Option<Error>,
 }
 
 impl AnalysisCallbacks {
-    const fn new(driver_settings: DriverSettings, clippy_lints: Option<ClippyLints>) -> Self {
+    const fn new(driver_settings: DriverSettings) -> Self {
         Self {
             driver_settings,
-            clippy_lints,
             error: None,
         }
     }
 }
 
 impl Callbacks for AnalysisCallbacks {
-    fn config(&mut self, config: &mut Config) {
-        if let Some(clippy_lints) = self.clippy_lints {
-            (clippy_lints.configure)(config);
-        }
-    }
-
     fn after_analysis(&mut self, _: &Compiler, tcx: TyCtxt<'_>) -> Compilation {
         let crate_name = tcx.crate_name(LOCAL_CRATE);
         let _analyzing =
@@ -118,8 +107,8 @@ impl IntoExitCode for ExitCode {
     fn into_exit_code(self) -> ExitCode { self }
 }
 
-pub(crate) fn driver_main(clippy_lints: Option<ClippyLints>) -> ExitCode {
-    match driver_main_impl(clippy_lints) {
+pub(crate) fn driver_main() -> ExitCode {
+    match driver_main_impl() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("mend: {err:#}");
@@ -128,7 +117,7 @@ pub(crate) fn driver_main(clippy_lints: Option<ClippyLints>) -> ExitCode {
     }
 }
 
-fn driver_main_impl(clippy_lints: Option<ClippyLints>) -> Result<ExitCode> {
+fn driver_main_impl() -> Result<ExitCode> {
     let wrapper_args: Vec<OsString> = env::args_os().collect();
     if wrapper_args.len() < 2 {
         bail!("compiler driver expected rustc wrapper arguments");
@@ -146,7 +135,7 @@ fn driver_main_impl(clippy_lints: Option<ClippyLints>) -> Result<ExitCode> {
         return passthrough_to_rustc(&wrapper_args);
     }
 
-    let mut rustc_args: Vec<String> = iter::once(RUSTC_BIN.to_string())
+    let rustc_args: Vec<String> = iter::once(RUSTC_BIN.to_string())
         .chain(
             wrapper_args
                 .into_iter()
@@ -154,14 +143,8 @@ fn driver_main_impl(clippy_lints: Option<ClippyLints>) -> Result<ExitCode> {
                 .map(|arg| arg.to_string_lossy().into_owned()),
         )
         .collect();
-    // The run sets `CLIPPY_ENV` only when `ClippyStatus::detect` found the
-    // linked lints built for the host rustc.
-    let clippy_lints = clippy_lints.filter(|_| env::var_os(CLIPPY_ENV).is_some());
-    if let Some(clippy_lints) = clippy_lints {
-        (clippy_lints.extend_rustc_args)(&mut rustc_args);
-    }
 
-    let mut callbacks = AnalysisCallbacks::new(driver_settings, clippy_lints);
+    let mut callbacks = AnalysisCallbacks::new(driver_settings);
     let compiler_exit_code = rustc_driver::catch_with_exit_code(|| {
         rustc_driver::run_compiler(&rustc_args, &mut callbacks);
     })

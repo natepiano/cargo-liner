@@ -3,7 +3,6 @@ use std::time::Duration;
 use anyhow::Result;
 
 use super::session_snapshot::SessionSnapshot;
-use crate::compiler::ClippyStatus;
 use crate::config::LoadedConfig;
 use crate::config::OperationMode;
 use crate::fixes::field_visibility::FieldVisibilityFixScan;
@@ -28,7 +27,6 @@ pub(crate) struct MendRunner<'a> {
     pub(super) selection:        &'a Selection,
     pub(super) cargo_plan:       &'a CargoCheckPlan,
     pub(super) loaded_config:    &'a LoadedConfig,
-    pub(super) clippy_status:    &'a ClippyStatus,
     pub(super) color_mode:       ColorMode,
     pub(super) output_format:    OutputFormat,
     /// Spans every convergence pass, so a failed pass rolls the invocation back
@@ -42,7 +40,6 @@ impl<'a> MendRunner<'a> {
         selection: &'a Selection,
         cargo_plan: &'a CargoCheckPlan,
         loaded_config: &'a LoadedConfig,
-        clippy_status: &'a ClippyStatus,
         color_mode: ColorMode,
         output_format: OutputFormat,
     ) -> Self {
@@ -50,7 +47,6 @@ impl<'a> MendRunner<'a> {
             selection,
             cargo_plan,
             loaded_config,
-            clippy_status,
             color_mode,
             output_format,
             session_snapshot: SessionSnapshot::new(),

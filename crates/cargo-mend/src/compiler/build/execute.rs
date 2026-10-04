@@ -26,7 +26,6 @@ use super::progress::ProgressDisplay;
 use super::source_transaction::CompilerFixTransaction;
 use super::stderr;
 use super::stdout;
-use crate::compiler::ClippyStatus;
 use crate::compiler::analyzing;
 use crate::compiler::constants::ANALYZING_DIR_ENV;
 use crate::compiler::constants::CARGO_BIN;
@@ -44,7 +43,6 @@ use crate::compiler::constants::CARGO_TERM_PROGRESS_WHEN_ALWAYS;
 use crate::compiler::constants::CARGO_TERM_PROGRESS_WHEN_ENV;
 use crate::compiler::constants::CARGO_TERM_PROGRESS_WIDTH;
 use crate::compiler::constants::CARGO_TERM_PROGRESS_WIDTH_ENV;
-use crate::compiler::constants::CLIPPY_ENV;
 use crate::compiler::constants::CONFIG_FINGERPRINT_ENV;
 use crate::compiler::constants::CONFIG_JSON_ENV;
 use crate::compiler::constants::CONFIG_ROOT_ENV;
@@ -111,7 +109,6 @@ pub(crate) fn run_selection(
     selection: &Selection,
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
-    clippy_status: &ClippyStatus,
     output_mode: BuildOutputMode,
     color_mode: ColorMode,
 ) -> Result<SelectionResult, MendFailure> {
@@ -121,7 +118,6 @@ pub(crate) fn run_selection(
     let command_outcome = run_cargo_check(
         cargo_plan,
         loaded_config,
-        clippy_status,
         &analyzing_dir,
         &scope_fingerprint,
         output_mode,
@@ -179,7 +175,6 @@ pub(crate) fn run_selection(
 fn run_cargo_check(
     cargo_plan: &CargoCheckPlan,
     loaded_config: &LoadedConfig,
-    clippy_status: &ClippyStatus,
     analyzing_dir: &Path,
     scope_fingerprint: &str,
     output_mode: BuildOutputMode,
@@ -207,9 +202,6 @@ fn run_cargo_check(
         .env(ANALYZING_DIR_ENV, analyzing_dir)
         .env(SCOPE_FINGERPRINT_ENV, scope_fingerprint)
         .stdin(Stdio::inherit());
-    if clippy_status.is_active() {
-        command.env(CLIPPY_ENV, DRIVER_ENV_ENABLED);
-    }
 
     run_cargo_command(&mut command, output_mode, color_mode, analyzing_dir)
         .context("failed to run cargo check for mend")
