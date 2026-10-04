@@ -1,4 +1,9 @@
-exclude = [".direnv/**", "target/**"]
+exclude = [
+  ".direnv/**",
+  "crates/cargo-mend-clippy/clippy/**",
+  "crates/cargo-mend-clippy/target/**",
+  "target/**",
+]
 include = ["**/*.toml"]
 
 [formatting]
