@@ -7,6 +7,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ## [Unreleased]
 
+### Changed
+- `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
+
+## [0.8.0] - 2026-10-06
+
 ### Added
 - `[appearance] transparent`, on by default: `AppearanceConfig::transparent`, stepped as `transparent` under Appearance in the settings overlay (`FrameworkSetting::Transparent`), and mirrored into the theme state by `install_theme` and `apply_settings`; `transparent_background` and `set_transparent_background` read and set it. On, nothing paints a background under the app's main screen -- the focused-pane tint included -- so a transparent terminal window shows the desktop behind every cell. Off, `screen_ground` answers the theme's `text.bg_focus` for the app to paint the screen solid, and `draw_tile_grid` paints it under the grid while the contents are shown.
 - `AppIdentity` names an app to the framework: the directory its files live in under the OS config root, its binary name, and its `[appearance]` defaults, with `config_path`, `keymap_path` and `themes_dir` resolved from them. `LoadedConfig<C>` reads the app's own serde config struct from `config.toml`, runs on defaults and keeps the text when the file does not parse, writes back a file that does not spell out every setting, and `save`s edits, keeping the struct's key order. `AppearanceConfig<I>` is the `[appearance]` table, taking the value of any key the file leaves out from `I`. `install_theme` builds the theme registry from the app's built-ins plus `themes/*.toml`, resolves the table against it and installs it.
@@ -35,7 +40,6 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SettingTarget::AppText` and `SettingsRows::text` add a settings row typed in as text: Enter opens an editor on the text `SettingsHost::setting_text` answers, Enter again hands what was typed to `SettingsHost::commit_setting_text`, and Esc, or selecting another row, drops the edit. `parse_list`, `join_list`, `list_display` and `LIST_SEPARATOR` read and write such a row as a list of entries.
 
 ### Changed
-- `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
 - Under `PaneBorders::Shared`, the focused pane's border lights whenever no tint is painted, since nothing else is left to mark focus. With the tint painted, every shared line keeps the inactive shade as before.
 - **Breaking:** `TileGrid::set_layout`, `sync`, `placements` and `apply`, and `draw_tile_grid`, take a `TileGrowth` -- the `initial_rows` and `fill` of the app's `[tiles]` table -- in place of the bare `initial_rows`. `TileGrowth::default` is what an app's defaults give. `AppConfig` gains the required `tile_fill_mut`.
 - **Breaking:** `TileGrowth` gains the `widen_summary` field and `TileDemands` the `summary_width` field, so a struct literal of either names them; `AppConfig` gains the required `widen_summary_mut`, and `FrameworkSetting` the `WidenSummary` variant.
@@ -67,6 +71,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `Attract` has no hidden state: giving the grid back returns the screen to the roster, which brings the attract screen back over an idle grid after the same quiet seconds it waits out when work ends.
 
 ### Fixed
+- A toast with an entrance duration of zero is drawn at its full height from the start. The duration was clamped to one millisecond per line, so a draw just after the push showed the toast cut short.
+- An unfocused pane's cursor row keeps its selection colour while the mouse rests on it. Hover outranked the remembered selection, so pointing at the row hid where the pane's selection was.
 - `tui_pane` builds with default features off: the clipboard imports now sit behind the `clipboard` feature like the code that uses them.
 - KDE backdrop: a window underneath is drawn at its `frameGeometry`, with `include-shadow: false` so the capture covers exactly that. Placed by `bufferGeometry` -- which `KWin` reports as the client area inside the title bar, or the shadowed frame on a window that decorates itself -- every window stood tens of pixels right of and below where it really was, while the wallpaper lined up exactly.
 - KDE backdrop: the window stack is read on every capture and a picture kept only while its arrangement stands, so a window that moved or closed no longer lingers for the whole `COMPOSITE_HOLD`. The read costs five milliseconds against a capture per window.

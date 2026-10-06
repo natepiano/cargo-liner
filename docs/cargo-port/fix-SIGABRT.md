@@ -130,7 +130,7 @@ Use stable shell tooling already available in the repo. Do not depend on nextest
 - `tui_pane/src/toasts/render/mod.rs` — 8
 - `src/tui/panes/ci/render.rs` — 5
 - `src/tui/app/async_tasks/running_toasts.rs` — 1
-- `src/tui/running_targets/app_tick.rs` — 1
+- `src/tui/running_targets/app_tick.rs` — 1; the file and its abort line are gone, deleted with the Targets pane's Running section
 
 The gate separately enforces zero matched abort call lines in `src/test_support.rs` and `src/tui/test_support.rs`. The Phase 2 implementation found no additional abort-bearing Rust files beyond the documented remaining buckets.
 
@@ -519,7 +519,7 @@ Team workstreams:
 1. App-module agent: `src/tui/app/mod.rs`.
 2. Toast agents: `tui_pane/src/toasts/mod.rs` and `tui_pane/src/toasts/render/mod.rs`.
 3. Scan/git agents: `src/scan/tree/mod.rs`, `src/scan/disk_usage.rs`, and `src/project/git/discovery.rs`.
-4. UI-tail agents: `src/tui/panes/ci/render.rs` and `src/tui/running_targets/app_tick.rs`.
+4. UI-tail agent: `src/tui/panes/ci/render.rs`.
 
 The coordinator owns `scripts/check-no-test-abort.sh` updates and final integration. Agents should report the abort lines they removed, any spawned-closure panic observability concerns, and any exact nextest filters they used. The coordinator applies allowlist tightening after each integrated workstream, then runs the shared gates.
 
@@ -551,7 +551,6 @@ For every converted abort inside spawned closures, check whether a panic would b
 - `src/scan/disk_usage.rs` — disk usage tests.
 - `src/project/git/discovery.rs` — git discovery tests.
 - `src/tui/panes/ci/render.rs` — CI render tests.
-- `src/tui/running_targets/app_tick.rs` — running-target tests.
 - `src/tui/test_support.rs` — read-only fixture context for `TestApp`, `make_app_with_lint_runtime(...)`, `into_quiet_app()`, fixture cache roots, and teardown ordering.
 - `src/tui/startup_services.rs` — read-only fixture context for startup effects, disabled services, fixture cache root retention, and lint supervisor joins.
 - `scripts/check-no-test-abort.sh` — tighten temporary allowlist as buckets are converted.

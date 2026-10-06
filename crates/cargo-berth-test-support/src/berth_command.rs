@@ -3,6 +3,8 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+use crate::git_driver;
+
 /// The variable Claude Code sets to its session id in every command a session runs.
 ///
 /// `cargo-berth` reads it as the harness session when `CARGO_BERTH_SESSION_ID` is
@@ -12,11 +14,15 @@ pub const CLAUDE_CODE_SESSION_ENVIRONMENT: &str = "CLAUDE_CODE_SESSION_ID";
 
 /// Start the `cargo-berth` under test without this process's Claude Code session.
 ///
+/// Its git children inherit disabled auto maintenance, so they leave no background process in a
+/// test repository.
+///
 /// `executable` is the test crate's own `env!("CARGO_BIN_EXE_cargo-berth")`, which
 /// only that crate can expand.
 #[must_use]
 pub fn berth_command(executable: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(executable);
     command.env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT);
+    git_driver::disable_git_auto_maintenance(&mut command);
     command
 }

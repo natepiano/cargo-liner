@@ -7,18 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
 ### Added
 - A lint command can defer a run by exiting with status 75 (`EX_TEMPFAIL`), for example while an agent is busy in the worktree. The commands after it do not run, the project keeps its last result and writes no history entry, and the project tree shows 🔵 until the retry, which runs after the longer of **Idle before lint** and 30 seconds.
 - `[lint] idle_before_lint_secs`, 120 by default and edited as **Idle before lint** under Lints in the settings: a lint started by a file change waits until the project's files have gone that many seconds without a change, and each new change restarts the wait. An agent editing a worktree no longer gets a lint launched under it 750 ms after every save; the lint runs once the edits stop. `0` lints 750 ms after a change, as before. Startup catch-up lints are not held back.
 - `[appearance] transparent`, on by default and toggled as **Transparent** under Appearance in the settings: nothing paints a background under the panes, the focused pane's tint included, so a transparent terminal window shows the desktop behind every pane. Off, the whole screen is painted solid in the theme's background. **Focused pane tint** applies only while it is off. A theme whose appearance disagrees with the terminal's background still paints that background, as before, so its text stays readable.
 
 ### Fixed
+- `Esc` with the finder or sccache window open now closes that window and leaves a running target going; it used to stop the target too.
 - **Focused pane tint** and **Transparent** in the settings draw as `< ON >` like every other on/off setting; they were drawn as plain text. Every setting is now one kind -- toggle, stepper or value -- that decides both how its row draws and how it answers the keys.
 - A project whose `direnv` environment cannot be loaded no longer reports every lint command as a failure. direnv exits nonzero before the shell starts -- the same exit Clippy uses for findings -- so the whole project turned red. Such a run is marked `no env` and shown yellow, the commands are recorded as skipped, and direnv's error is in the run's `direnv` log.
 - The settings overlay moves with `j`/`k` when `navigation_keys` enables vim keys; it was handed the untranslated key, so only the arrows reached it.
 - While a framework overlay is open, `h`/`l` always mean left/right rather than being folded into up/down by the pane underneath.
 - A settings key arriving in the same input batch as the key that opened the overlay is no longer dropped.
 - Project and target-directory sizes count a hard-linked file once. Cargo hard-links each binary, example, and test executable from `deps/` into the profile directory, and rustc hard-links incremental artifacts between session directories, so every such file was counted once per link: a `target/` that `du` measures at 96 GiB showed as 150 GiB.
+- Several cargo-port instances watching the same project no longer lint it once each and fight over cargo's build lock. One instance runs the lint; the others wait and show its result.
+- Under Ghostty, moving the mouse no longer walks the project-list selection through the tree. Ghostty answers the focus-reporting request with a focus-in event, and handling that event sent the request again, so the two looped.
+- Project roots sort by the directory name the list shows, not by absolute path, so roots from different include directories interleave alphabetically.
+- On Linux the first frame no longer waits for the file watcher to register every directory: about 1.3 s with 18,000 directories, now about 0.15 s. Registration runs on the watcher's own thread.
 
 ### Removed
 - **Breaking:** Remove the Running section of the Targets pane, its `K` kill binding, and the process scan behind them. To see every running cargo process, install [cargo-tile](https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-tile) from GitHub for now: `cargo install --git https://github.com/natepiano/cargo-liner cargo-tile`.

@@ -31,6 +31,7 @@ pub use directory_snapshot::DirectorySnapshot;
 pub use git_driver::EXECUTABLE_ENVIRONMENT;
 pub use git_driver::GitDriver;
 pub use git_driver::OptionalLocks;
+pub use git_driver::fixture_git_command;
 pub use git_driver::git_command;
 pub use integration_repository::IntegrationRepository;
 pub use integration_repository::assert_success;

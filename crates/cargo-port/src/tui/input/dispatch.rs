@@ -199,8 +199,8 @@ fn classify_output_cancel_preflight(
     bind: &KeyBind,
 ) -> OutputCancelPreflight {
     let app_overlay_open = app.overlays.is_finder_open() || app.overlays.is_sccache_open();
-    let is_output_cancel = !app_overlay_open
-        && !focused_text_input_mode(app)
+    let can_handle_output_cancel = !app_overlay_open && !focused_text_input_mode(app);
+    let is_output_cancel = can_handle_output_cancel
         && app.framework_keymap.is_key_bound_to_toml_key(
             OutputPane::APP_PANE_ID,
             OutputAction::Cancel.toml_key(),
@@ -209,7 +209,8 @@ fn classify_output_cancel_preflight(
     let output_visual = is_output_cancel
         && app.focus_is(PaneId::Output)
         && app.panes.output.selection().is_visual();
-    let running_example = code == KeyCode::Esc && app.inflight.owned_run().is_running();
+    let running_example =
+        can_handle_output_cancel && code == KeyCode::Esc && app.inflight.owned_run().is_running();
     let visible_output = is_output_cancel
         && matches!(
             app.output_copy_availability(),
