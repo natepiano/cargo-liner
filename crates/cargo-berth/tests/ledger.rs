@@ -40,6 +40,7 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
+const GIT_CEILING_ENVIRONMENT: &str = "GIT_CEILING_DIRECTORIES";
 const GIT_COMMON_DIRECTORY_ENVIRONMENT: &str = "GIT_COMMON_DIR";
 const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.\n";
@@ -1456,7 +1457,7 @@ fn bare_repository_retains_repository_not_found_rejection() {
         .env_remove(GIT_DIRECTORY_ENVIRONMENT)
         .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
         .env(
-            "GIT_CEILING_DIRECTORIES",
+            GIT_CEILING_ENVIRONMENT,
             bare_repository
                 .path()
                 .parent()
