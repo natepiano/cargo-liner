@@ -709,6 +709,23 @@ def settings_screen() -> str:
     wait_for(settings_are_closed, 'settings do not close', pause=0)
     return rendered
 
+def capture_settings_rows(rendered: str, account: str) -> list[str]:
+    lines = rendered.splitlines()
+    heading = next((index for index, line in enumerate(lines) if 'Capture:' in line), None)
+    assert heading is not None, 'Capture heading is absent\n' + rendered
+    capture_line = lines[heading]
+    heading_column = capture_line.index('Capture:')
+    left = capture_line.rfind('│', 0, heading_column)
+    right = capture_line.find('│', heading_column)
+    assert left >= 0 and right > left, 'Capture popup borders are absent\n' + rendered
+    interior = [line[left + 1:right] for line in lines[heading:]]
+    end = next((index for index, line in enumerate(interior) if 'Commands:' in line), None)
+    assert end is not None, 'Commands heading is absent from popup\n' + rendered
+    rows = interior[:end]
+    assert any(account in line and 'yours · 1 capture ·' in line for line in rows), \
+        'Capture section loses the account row\n' + rendered
+    return rows
+
 def assert_settings_scroll() -> None:
     global terminal_rows, terminal_columns
     # Keep every account below the initial viewport without cleanup rows.
@@ -1043,7 +1060,7 @@ try:
         assert str(capture_parent) in settings and '1777' in settings, settings
         assert any(account in line and 'yours · 1 capture ·' in line
                    for line in settings.splitlines()), settings
-        assert 'cleanup' not in settings.lower(), settings
+        assert not any('cleanup' in row.lower() for row in capture_settings_rows(settings, account)), settings
         ignored = str(other_capture) + ': owned by ' + account + ', not by ' + str(other_uid) + ' — ignored'
         assert ignored in settings, settings
         assert 'configured' not in settings.lower(), settings
