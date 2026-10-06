@@ -38,13 +38,14 @@ The user, 2026-10-06 14:36 PDT: "you should start a new worktree to fix the carg
   - `crates/cargo-berth-test-support/src/` — `git_driver.rs` (`git_command`, `GitDriver`), `berth_command.rs` (`berth_command`), `repository_template.rs` (`RepositoryTemplate`), `directory_snapshot.rs` (`DirectorySnapshot`), `lib.rs` (re-exports)
   - `crates/cargo-berth/tests/` — the integration test binaries; each defines its own `GIT: GitDriver`, its `git(…)` helper over `GIT.run`, and its `run_berth(…)` over `berth_command`
 - **Key files:**
-  - `crates/cargo-berth-test-support/src/git_driver.rs` — `EXECUTABLE_ENVIRONMENT` (`:17`), `HOOKS_DISABLED_CONFIGURATION` (`:20`), `git_command` (`:36`, the only `Command::new("git")` in the test tree: every `GitDriver` method goes through `prepare` (`:219`), which calls it), no test module yet
+  - `crates/cargo-berth-test-support/src/git_driver.rs` — `EXECUTABLE_ENVIRONMENT` (`:17`), `HOOKS_DISABLED_CONFIGURATION` (`:20`), `fixture_git_command` (the one `Command::new("git")` in the test tree, with auto maintenance off), `git_command` (builds on it; every `GitDriver` method goes through `prepare`, which calls it), and a test module holding `commit_starts_no_background_maintenance`
   - `crates/cargo-berth-test-support/src/berth_command.rs` — `CLAUDE_CODE_SESSION_ENVIRONMENT` (`:11`), `berth_command` (`:18`). Every test-started `cargo-berth` goes through it except `gate.rs:6606` (below)
   - `crates/cargo-berth-test-support/src/repository_template.rs` — module doc (`:1`–`13`), `RepositoryTemplate::build` field and doc (`:57`–`61`), `instantiate` (`:74`), `built_root` (`:114`), `.complete` written at `:143`, `remove_stale_builds` (`:166`)
   - `crates/cargo-berth-test-support/src/directory_snapshot.rs` — `capture_directory`, the panic at `:60`
   - `crates/cargo-berth/tests/ledger.rs:1556`–`1562` — per-repository `maintenance.auto false` / `gc.auto 0` and its comment
   - `crates/cargo-berth/tests/drift.rs:2202`–`2208` and `:4363`–`4369` — the same block twice
   - `crates/cargo-berth/src/git/command.rs:55`–`82` — cargo-berth's own git commands strip only `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_PREFIX` (`git/constants.rs:7`), and append to an inherited `GIT_CONFIG_COUNT` rather than replace it (`:71`), so `GIT_CONFIG_*` set on a test's `cargo-berth` reaches every git it starts
+  - cargo-berth's unit tests start git through their own fixture helpers, each built on `cargo_berth_test_support::fixture_git_command()` since Phase 1: `git/fixture.rs` `run_git` (`:151`), `board/test_support.rs` `git` (`:443`), `gate/rewrite.rs` `git_output` (`:1449`), `worktree/liveness.rs` `run_git` (`:547`), `ledger/test_support.rs` `scratch_repository` (`:9`, which sets `maintenance.auto` / `gc.auto` per repository at `:17`–`31`), and two one-off commands at `reconcile.rs:5535` and `git/reachability.rs:1508`
   - `crates/cargo-berth/tests/gate.rs:6606` — one trace test starts `cargo-berth` with `Command::new(executable)` and a wrapped `PATH`; it runs in its own copy, not a template
 - **Test lanes:** `cargo-berth-test-support` — unit tests in `git_driver.rs`'s `#[cfg(test)] mod tests` (the crate has no `tests/`); `cargo-berth` — `crates/cargo-berth/tests`
 - **Build:**
@@ -58,7 +59,7 @@ The user, 2026-10-06 14:36 PDT: "you should start a new worktree to fix the carg
   - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`
 - **Style:** `run-end /clippy style-only auto-proceed`
 - **Invariants:**
-  - Test-only change. No file under `crates/cargo-berth/src` changes, and `crates/cargo-berth/CHANGELOG.md` gets no entry.
+  - Test-only change. Under `crates/cargo-berth/src` only `#[cfg(test)]` code changes, and `crates/cargo-berth/CHANGELOG.md` gets no entry.
   - Every process a cargo-berth test starts runs git with auto maintenance off. The tests start these processes through two helpers, `git_command` and `berth_command`, and the setting travels through the inherited environment to hooks and to cargo-berth's own git.
   - `RepositoryTemplate` keeps its unlocked readers: a template does not change after `.complete`, because no process the build started is left running in it.
   - Tests run through `verify.sh` (cargo nextest, user rule). Format with `cargo +nightly fmt` only (user rule). No test takes seconds: the new test runs one `git init` and one `git commit` (user rule).
@@ -68,55 +69,75 @@ The user, 2026-10-06 14:36 PDT: "you should start a new worktree to fix the carg
 - **Fix in the shared helpers, not in each template build.** The template builds live in five test files (`board`, `edges`, `gate`, `lifecycle`, `liveness`), and the same detached runs already broke `ledger` and `drift`. One environment setting in `git_command` and `berth_command` covers all of them, and the three per-repository blocks are removed. Risk: a future test that starts git without these helpers runs maintenance again. The new test covers `git_command`, and the invariant in its doc names both helpers.
 - **Environment, not repository config.** `GIT_CONFIG_COUNT` reaches git before `git init` writes any config, reaches hooks and cargo-berth's git without a `git config` call per repository, and leaves no trace in a template that `instantiate` would copy.
 - **Not fixed here: a stale-build removal during a running test pass.** `remove_stale_builds` deletes another key's build. A relink of `target/debug/cargo-berth` in the same target directory partway through a run would change the key and delete a template that readers of the old key are still copying. CI never relinks during the test step, and single-user practice skips rare races (memory `single-user-skip-unlikely-edge-cases`). A shared lock for readers would close it if it is ever seen.
+- **cargo-berth's unit tests are in this phase.** After the first fix, a GIT_TRACE2 over a full cargo-berth test run still held 323 detached maintenance starts, every one from a fixture helper inside cargo-berth's own unit-test binary and none from the integration tests. The Goal covers every git a cargo-berth test starts, so this phase takes them, through one exported constructor in `cargo-berth-test-support`, already a dev-dependency of `cargo-berth`. Risk: a later unit-test helper that builds git by hand starts maintenance again; the constructor's doc names the rule.
 - **`gate.rs:6606` stays as it is.** Its `cargo-berth` runs in a private copy, so a maintenance child there cannot reach a template.
 
 ## Phases
 
-### Phase 1 — Tests start git with auto maintenance off  · status: todo
+### Phase 1 — Tests start git with auto maintenance off  · status: done
+
+#### As-built
+
+- Every git a cargo-berth test starts, directly, through a hook, or through `cargo-berth`, runs with `maintenance.auto=false` and `gc.auto=0`. `disable_git_auto_maintenance` in `git_driver.rs` sets them from a const table as `GIT_CONFIG_COUNT=2` with fixed slots `GIT_CONFIG_KEY_0`/`_1` and `GIT_CONFIG_VALUE_0`/`_1`, so an ambient `GIT_CONFIG_COUNT` does not carry into test processes.
+- `pub fn fixture_git_command() -> Command` (re-exported from `lib.rs`) is `Command::new("git")` with the setting applied. `git_command(executable)` builds on it, and `berth_command` applies the same setting, so managed hooks and cargo-berth's own git (gate merges and rebases) inherit it.
+- cargo-berth's unit-test helpers under `crates/cargo-berth/src` start git only through `cargo_berth_test_support::fixture_git_command()`. No per-repository `maintenance.auto` / `gc.auto` `git config` remains in `tests/ledger.rs`, `tests/drift.rs` or `scratch_repository`.
+- `RepositoryTemplate::build` must return with no process it started still running in the root, because every test copies the root without a lock once `.complete` exists.
+- `commit_starts_no_background_maintenance` (`git_driver.rs`) runs `init` and an empty commit through `fixture_git_command` under `GIT_TRACE2`, with global and system config ignored, and asserts no `child_start` line names `maintenance`. A full cargo-berth run traces 0 maintenance starts across 38,943 git processes; 40 liveness runs under git 2.55 show no NotFound.
+
+**Files:**
+- `crates/cargo-berth-test-support/src/git_driver.rs` — `disable_git_auto_maintenance`, `fixture_git_command`, `git_command` doc on the detached-maintenance races, the regression test
+- `crates/cargo-berth-test-support/src/berth_command.rs` — applies the setting
+- `crates/cargo-berth-test-support/src/repository_template.rs` — the `build` no-running-process requirement
+- `crates/cargo-berth-test-support/src/lib.rs` — re-exports `fixture_git_command`
+- `crates/cargo-berth/src/{git/fixture.rs, board/test_support.rs, gate/rewrite.rs, worktree/liveness.rs, ledger/test_support.rs, reconcile.rs, git/reachability.rs}` — unit-test git through `fixture_git_command`
+- `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/drift.rs` — no per-repository maintenance config
+
+**Binds later work:** any git a new cargo-berth test starts, unit tests included, comes from `cargo_berth_test_support::fixture_git_command()` (or `git_command` / `GitDriver` / `berth_command` / `ledger/test_support::scratch_repository()`, which carry the same setting), never `Command::new("git")` or `Command::new(GIT_BINARY)`. Outside test code, only `git/command.rs` builds git directly.
+
+**Gotchas:** a hand-built git command brings detached maintenance back. Under git 2.55 its child holds `.git/objects/maintenance.lock` after `git commit` returns and deletes it later, so a `RepositoryTemplate` copy lists a file that then disappears (NotFound), and a commit can read a pack that a geometric repack deletes.
+
+**Ruled out:** ambient `GIT_CONFIG_PARAMETERS` overriding the setting (no test path sets `maintenance.auto` through `-c`); per-repository `git config` instead of the environment (misses hooks, `cargo-berth`'s own git and any repository that does not set it).
+
+### Phase 2 — Discovery ignores an empty `.git` and stops at git's ceiling  · status: todo
+
+**Follow-up 1 of 1** (showrunner, 2026-10-06) · then: plan done.
 
 #### Work Order
 
-**Goal:** no git process that a cargo-berth test starts, directly, through a hook, or through `cargo-berth`, leaves a detached `git maintenance` running. A `RepositoryTemplate` is then unchanged from `.complete` on, so `instantiate` can no longer list a file that disappears.
+**Goal:** a `.git` directory that is not a git directory no longer makes cargo-berth treat its parent as a worktree, and the four "outside any repository" tests stop depending on what sits above their temporary directory. On natedev an empty `/tmp/.git` appears while a Codex seat's sandbox runs. In this phase's review it made four tests fail every time: `board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes` (`board.rs:1152`), `bare_repository_retains_repository_not_found_rejection` (`ledger.rs:1439`), `an_unrecorded_binary_bypass_warns_without_blocking_the_ref_update` (`gate.rs:3824`) and `a_tool_call_outside_any_repository_states_nothing_to_the_hook` (`hooks.rs:1113`). Each got `unconfigured` ("no cargo-berth configuration at /tmp/.claude/config/berth.toml") where it expected `ledger_unreadable` or exit 4.
 
 **Spec:**
 
-*The setting.* Set two git configuration entries through git's environment configuration on every command the two helpers build:
+*A git directory's structure.* `WorktreeContext::discover` (`crates/cargo-berth/src/ledger/worktree_context.rs:72`–`105`) walks `invocation_directory.ancestors()` and accepts any `dot_git.is_dir()` (`:76`). It calls one private function that accepts a `.git` directory only when it holds the structure git requires of a git directory: a `HEAD` file, an `objects` directory and a `refs` directory. A `.git` that fails the check is skipped and the walk goes on to the next ancestor, as git does. The check is structural only; it does not validate `HEAD`'s contents as git does, which an empty or partial `.git` never reaches. `from_registered_root` (`:116`–`117`) is unchanged: git itself reported those roots, and rejecting one there would turn a registered checkout into no checkout for liveness and reconciliation. The `.git` file branch (`read_git_directory_file`, `:390`) is unchanged.
 
-```
-GIT_CONFIG_COUNT=2
-GIT_CONFIG_KEY_0=maintenance.auto   GIT_CONFIG_VALUE_0=false
-GIT_CONFIG_KEY_1=gc.auto            GIT_CONFIG_VALUE_1=0
-```
+*Git's ceiling.* `discover` honours `GIT_CEILING_DIRECTORIES` as git's own discovery does: a colon-separated list of absolute paths, empty entries ignored (git uses one only to skip symlink resolution, and this walk compares canonical forms throughout). The invocation directory is always examined, even when it is itself a ceiling; the walk never moves up into a ceiling directory. Compare paths in canonical form, so a test can name its temporary directory's parent. The ceiling list reaches the private discovery function as one named type (for example `DiscoveryCeilings`), parsed once from the environment by `discover`, never as a bare slice or `Option`. `git::repository_root` (`git/discovery.rs:48`) already gets this from git, because `git/command.rs` passes the variable through.
 
-- `maintenance.auto=false` stops `git commit`, `merge`, `rebase`, `am` and the other porcelain commands from starting `git maintenance run --auto --detach` at all (verified on git 2.55: with it set, a commit's GIT_TRACE2 holds no `maintenance`; without it, `child_start … git maintenance run --auto --quiet --detach`).
-- `gc.auto=0` stops the commands that still call `git gc --auto` directly.
-- Fixed slots 0 and 1 with a count of 2: the test owns the environment of the processes it starts, so an ambient `GIT_CONFIG_COUNT` in the developer's shell does not carry into them.
+*Fixtures that relied on an empty `.git`.* The unit tests at `crates/cargo-berth/src/coordination_identity.rs:1001`–`1003` and `crates/cargo-berth/src/drift/execution.rs:919`–`922` build a bare empty `.git` and expect `discover` to accept it. Give them a `.git` that passes the new check (`HEAD`, `objects/`, `refs/`), or `test_support::scratch_repository()` (`ledger/test_support.rs:7`).
 
-*Where.* One private function in `git_driver.rs` adds the three variables (count, keys, values) to a `Command`, from a const table of the two `(key, value)` pairs. `git_command` calls it. `berth_command` (`berth_command.rs:18`) calls it too, so a `cargo-berth` that runs git itself (gate merges and rebases) passes the setting on. Give the function the narrowest visibility that lets `berth_command.rs` call it, and let `cargo mend` settle it.
+*Regression tests,* in `worktree_context.rs`'s `mod tests` (`:436`, modelled on `git_file_without_common_directory_is_a_main_worktree`, `:450`):
+- `an_empty_git_directory_is_not_a_repository`: an empty `.git` under the tempdir, then `discover` from a child directory reports `RepositoryNotFound` when the tempdir's parent is the ceiling.
+- `discovery_stops_at_the_ceiling`: a real repository whose child directory is named as the ceiling, then `discover` from below it reports `RepositoryNotFound`.
+- `the_invocation_directory_is_examined_even_at_the_ceiling`: a real repository's root named as the ceiling, then `discover` from that root finds the repository, as git does.
 
-*Docs.*
-- `git_command`'s doc gains one paragraph. Porcelain git starts a detached `git maintenance` that outlives the command: on git 2.55 its child still holds `.git/objects/maintenance.lock` after `git commit` returns, and deletes it later. A process left running in a fixture repository changes it under whoever reads it next: a `RepositoryTemplate` copy listing a file that then disappears, or a commit reading a pack a geometric repack deletes. So every git a test starts runs with auto maintenance off, and hooks and `cargo-berth` inherit the setting.
-- `berth_command`'s doc gains one sentence saying it carries the same setting and why.
-- `RepositoryTemplate::build`'s field doc (`repository_template.rs:57`–`61`) gains the requirement: the build must return with no process it started still running in the root, because every test copies the root without a lock once `.complete` exists. Build git through `git_command` or a `GitDriver`, and `cargo-berth` through `berth_command`.
+Each test passes its ceiling explicitly (a parameter or an inner function that takes the ceiling list), never by setting the process environment: `cargo test` runs many tests in one process, where environment writes race.
 
-*Remove the per-repository copies.* Delete the `maintenance.auto` / `gc.auto` `git config` calls and their comments at `ledger.rs:1556`–`1562`, `drift.rs:2202`–`2208` and `drift.rs:4363`–`4369`. Those repositories are driven only through `GIT` (`git_command`) and `run_berth` (`berth_command`), so the environment covers them. Their comment's geometric-repack account moves into `git_command`'s doc (above).
+*The four tests.* Each sets `GIT_CEILING_DIRECTORIES` to its temporary directory's parent on every `cargo-berth` it starts, including the hook process in `hooks.rs` (`run_post_tool_use` → `spawn_hook_verb`, `tests/support/reader_compat_hooks.rs:54`). `spawn_hook_verb` keeps its signature, because `reader_compat.rs:278` also calls it; the hook test passes the ceiling through a variant beside it that takes the extra environment. Then a repository at `/tmp`, or above `/tmp/claude`, cannot reach them.
 
-*The test.* In `git_driver.rs`, a `#[cfg(test)] mod tests` with one test, `commit_starts_no_background_maintenance`:
-- in a `tempdir()`, run `git_command(<any executable string>)` with `init --quiet`, then `git_command(…)` with `-c user.name=… -c user.email=… commit --quiet --allow-empty -m …` and `GIT_TRACE2=<file in the tempdir>`
-- assert both succeed and that the trace file holds no line containing both `child_start` and `maintenance`
-- it fails without the fix on every git that starts detached maintenance (2.54 and 2.55 both log the `child_start`), and passes with it. It starts two git processes and runs in milliseconds.
+*CHANGELOG.* One entry in `crates/cargo-berth/CHANGELOG.md` under the unreleased heading: an empty or partial `.git` directory is no longer taken for a repository, and discovery honours `GIT_CEILING_DIRECTORIES`.
 
 **Files:**
-- `crates/cargo-berth-test-support/src/git_driver.rs` — the setting, its use in `git_command`, the doc paragraph, the test module
-- `crates/cargo-berth-test-support/src/berth_command.rs` — call the setting, one doc sentence
-- `crates/cargo-berth-test-support/src/repository_template.rs` — the `build` field doc requirement
-- `crates/cargo-berth/tests/ledger.rs` — remove the block at `:1556`–`1562`
-- `crates/cargo-berth/tests/drift.rs` — remove the blocks at `:2202`–`2208` and `:4363`–`4369`
+- `crates/cargo-berth/src/ledger/worktree_context.rs` — the git-directory check, the ceiling, three regression tests
+- `crates/cargo-berth/src/coordination_identity.rs`, `crates/cargo-berth/src/drift/execution.rs` — their fixtures' `.git`
+- `crates/cargo-berth/CHANGELOG.md` — the entry
+- `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/support/reader_compat_hooks.rs` — the ceiling on the four tests
 
-**Constraints from prior phases:** none.
+**Seats:** 1 writer + 1 tester
+- `impl`: `worktree_context.rs`, `coordination_identity.rs`, `drift/execution.rs`, `CHANGELOG.md`
+- `test`: `tests/board.rs`, `tests/ledger.rs`, `tests/gate.rs`, `tests/hooks.rs`, `tests/support/reader_compat_hooks.rs`
+
+**Constraints from prior phases:** Phase 1 turned off git's auto maintenance in `git_command` and `berth_command`, and in `fixture_git_command` (`cargo-berth-test-support`, re-exported from its `lib.rs`), which cargo-berth's own unit tests use. Leave that intact. Any git a new unit test under `crates/cargo-berth/src` starts comes from `cargo_berth_test_support::fixture_git_command()`, or from `ledger/test_support::scratch_repository()`, which uses it; never `Command::new("git")`. Phase 1's "test-only change" invariant does not hold here: this phase changes `crates/cargo-berth/src` and takes a CHANGELOG entry.
 
 **Acceptance gate:**
-- `verify.sh test cargo-berth-test-support` passes and runs `commit_starts_no_background_maintenance`.
-- `verify.sh test cargo-berth` passes.
-- `verify.sh lint cargo-berth-test-support` and `verify.sh lint cargo-berth` pass.
-- Smoke (unit director, outside `verify.sh`): git 2.55 from nixpkgs-unstable first on `PATH`, the liveness template deleted before each of 40 `cargo nextest run -p cargo-berth --test liveness` runs, 0 runs with `snapshot file should read`. Before the fix the same loop failed 2 of 20 runs, so 40 clean runs would occur by chance about 1.5% of the time if the race remained. A GIT_TRACE2 over one full `cargo-berth` test run holds no `maintenance` `child_start`.
+- `verify.sh test cargo-berth` passes, with the three new unit tests included.
+- `verify.sh lint cargo-berth` passes.
+- Smoke (unit director): with an empty `/tmp/.git` created by hand, the four tests pass (`verify.sh test cargo-berth --no-cache --filter …` for each), and `/tmp/.git` is removed afterwards.

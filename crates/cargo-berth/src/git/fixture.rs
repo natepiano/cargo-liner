@@ -9,7 +9,6 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -149,7 +148,7 @@ fn write_file(repository_root: &Path, path: &str, contents: &str) -> io::Result<
 }
 
 fn run_git(repository_root: &Path, arguments: &[&str]) -> io::Result<()> {
-    let output = Command::new("git")
+    let output = cargo_berth_test_support::fixture_git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)

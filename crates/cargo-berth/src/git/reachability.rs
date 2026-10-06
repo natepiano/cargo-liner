@@ -1092,8 +1092,6 @@ pub(crate) enum ProtectedTipSuccessorHeadClassification {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-
     use super::AheadBehind;
     use super::CandidateHeadReachability;
     use super::ProtectedTipSuccessorHeadClassification;
@@ -1505,7 +1503,7 @@ mod tests {
         trunk: &GitObjectId,
         head: &GitObjectId,
     ) -> FixtureResult<usize> {
-        let output = Command::new("git")
+        let output = cargo_berth_test_support::fixture_git_command()
             .args(["merge-base", "--all", &trunk.to_string(), &head.to_string()])
             .current_dir(fixture.root())
             .output()?;
