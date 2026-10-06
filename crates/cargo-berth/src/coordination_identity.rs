@@ -998,7 +998,12 @@ mod tests {
     #[test]
     fn identity_rejection_kinds_and_precedence_follow_the_resolved_authorization() {
         let directory = tempfile::tempdir().expect("identity context directory should exist");
-        std::fs::create_dir(directory.path().join(".git")).expect("git metadata should exist");
+        let git_directory = directory.path().join(".git");
+        std::fs::create_dir(&git_directory).expect("git metadata should exist");
+        std::fs::write(git_directory.join("HEAD"), "ref: refs/heads/main\n")
+            .expect("git HEAD should exist");
+        std::fs::create_dir(git_directory.join("objects")).expect("git objects should exist");
+        std::fs::create_dir(git_directory.join("refs")).expect("git refs should exist");
         let worktree_context = crate::ledger::WorktreeContext::discover(directory.path())
             .expect("filesystem-only context should resolve");
         let holding_worktree = WorktreeId::new();

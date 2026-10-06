@@ -21,6 +21,7 @@ use reader_compat_hooks::HookResponseEvent;
 use reader_compat_hooks::expected_hook_feedback;
 use reader_compat_hooks::hook_feedback;
 use reader_compat_hooks::spawn_hook_verb;
+use reader_compat_hooks::spawn_hook_verb_with_ceiling;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -1112,14 +1113,29 @@ fn unconfigured_no_facts_allows_silently() -> TestResult {
 #[test]
 fn a_tool_call_outside_any_repository_states_nothing_to_the_hook() -> TestResult {
     let outside = TempDir::new_in(SCRATCH_ROOT)?;
+    let ceiling = outside
+        .path()
+        .parent()
+        .ok_or_else(|| std::io::Error::other("temporary directory should have a parent"))?;
+    let payload = bash_payload(outside.path(), "outside-any-repository-session");
 
-    let hook = run_post_tool_use(
+    let hook = spawn_hook_verb_with_ceiling(
+        Path::new(BERTH_EXECUTABLE),
         outside.path(),
-        &bash_payload(outside.path(), "outside-any-repository-session"),
+        "post-tool-use",
+        &serde_json::to_vec(&payload)?,
+        &AmbientHarnessSession::Absent,
+        ceiling,
     )?;
     assert_hook_output(&hook, 0, b"", b"")?;
 
-    let by_hand = run_berth(outside.path(), &["drift", "--json"])?;
+    let by_hand = berth_command(BERTH_EXECUTABLE)
+        .args(["drift", "--json"])
+        .current_dir(outside.path())
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove("CARGO_BERTH_SESSION_ID")
+        .env("GIT_CEILING_DIRECTORIES", ceiling)
+        .output()?;
     let stated = String::from_utf8(by_hand.stdout)?;
     assert!(
         stated.contains("no containing git worktree could be found"),
