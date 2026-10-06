@@ -66,6 +66,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `Attract` has no hidden state: giving the grid back returns the screen to the roster, which brings the attract screen back over an idle grid after the same quiet seconds it waits out when work ends.
 
 ### Fixed
+- A toast with an entrance duration of zero is drawn at its full height from the start. The duration was clamped to one millisecond per line, so a draw just after the push showed the toast cut short.
+- An unfocused pane's cursor row keeps its selection colour while the mouse rests on it. Hover outranked the remembered selection, so pointing at the row hid where the pane's selection was.
 - `tui_pane` builds with default features off: the clipboard imports now sit behind the `clipboard` feature like the code that uses them.
 - KDE backdrop: a window underneath is drawn at its `frameGeometry`, with `include-shadow: false` so the capture covers exactly that. Placed by `bufferGeometry` -- which `KWin` reports as the client area inside the title bar, or the shadowed frame on a window that decorates itself -- every window stood tens of pixels right of and below where it really was, while the wallpaper lined up exactly.
 - KDE backdrop: the window stack is read on every capture and a picture kept only while its arrangement stands, so a window that moved or closed no longer lingers for the whole `COMPOSITE_HOLD`. The read costs five milliseconds against a capture per window.
