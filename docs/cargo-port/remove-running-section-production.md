@@ -13,7 +13,7 @@
 - **User zone:** America/Los_Angeles. Every time the showrunner reports is in this zone only.
 - **Updates:** every 15 minutes. Each update reports every unit in full.
 - **Merge tests:** a change to `crates/tui_pane` also tests `cargo-tile`, `cargo-handler` and `cargo-port`, which build on it.
-- **Capacity:** 32 cores, 60 GB (17 GB free on 2026-10-06), two units.
+- **Capacity:** 32 cores, 60 GB (17 GB free on 2026-10-06), three units.
 
 ## Units
 
@@ -21,6 +21,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | `/home/natepiano/rust/cargo-port-cleanup` | `cleanup/running` | `cargo-port-cleanup` | — | `crates/cargo-port`, `docs/cargo-port` |
 | cargo-tile | `docs/cargo-tile/summary-super-cell.md` | `/home/natepiano/rust/cargo-tile-enh` | `enh/cargo-tile` | `cargo-tile` | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
+| berth-flake-unit | `docs/cargo-berth/berth-flake.md` | `/home/natepiano/rust/cargo-liner-berth-flake` | `fix/berth-flake` | `berth-flake` | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
 
 ## Hub files
 
