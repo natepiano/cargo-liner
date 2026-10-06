@@ -2,7 +2,7 @@
 
 A reference for the next engineer who modifies cargo-port's Targets pane or the owned-run code it launches.
 
-The Targets pane lists the selected project's runnable targets (binaries, examples and benches) in one table that fills the pane body. `Enter` launches the selected target in debug mode and `r` in release mode. Either becomes cargo-port's single **owned run**: its output goes to the Output pane, which takes over the bottom row, and `Esc` stops it. Before anything may signal the run's process, the process is bound to a `ProcessIdentity` (its PID plus an OS creation token). That identity is checked again right before every signal.
+The Targets pane lists the selected project's runnable targets (binaries, examples and benches) in one table that fills the pane body. `Enter` launches the selected target in debug mode and `r` in release mode. Either becomes cargo-port's single **owned run**: its output goes to the Output pane, which takes over the bottom row, and `Esc` stops it from any pane unless an overlay or a focused text input takes the key first. Before anything may signal the run's process, the process is bound to a `ProcessIdentity` (its PID plus an OS creation token). That identity is checked again right before every signal.
 
 Where the code lives (paths relative to `crates/cargo-port/`):
 - the pane: `src/tui/panes/targets/`
@@ -47,8 +47,8 @@ Watching or stopping targets that cargo-port did not launch is cargo-tile's job;
   - Which packages: selecting the checkout root includes every package; selecting a member includes only that member.
   - What each package contributes: the bin named after the package becomes `Binary`, and every bench becomes `Bench`.
   - Every example becomes `Example`. Its category comes from `examples/<category>/<file>.rs`, except that a directory named after the target itself (`examples/<name>/main.rs`) is not a category.
-  - Source labels: `TargetSource::workspace_root` is used only for the root package of a multi-package workspace. Every other package gets `member(<package>)`.
-  - Sort order: by source (root, then members, then worktrees), then by name. Within examples, root-level examples come before categorized ones.
+  - Source: `TargetSource::workspace_root(<package>)` only for the package whose manifest sits at the checkout root of a multi-package workspace. Every other package, a standalone package included, gets `TargetSource::member(<package>)`. The Source column shows the cargo package name either way; the source kind only orders rows.
+  - Sort order: by source kind (root, then members, then worktrees), then by source label, then by name. Within examples, root-level examples come before categorized ones.
 - **`lookup_targets_data(app, abs_path, worktree_item)`**:
   - For a worktree group that renders as a group, it merges the targets of each visible checkout and relabels them `TargetSource::worktree("<checkout>/<package>")`.
   - For any other path, it reads the metadata store, through `containing_checkout_root` and then `get`.
@@ -85,12 +85,14 @@ Watching or stopping targets that cargo-port did not launch is cargo-tile's job;
    - `activate_owned_run` moves the lifecycle to `Running`, the actor worker starts, and `Started` is sent.
 7. **Event handling.** `App::poll_example_msgs` (`src/tui/app/async_tasks/poll.rs`) applies each event to `Inflight`. Every event carries an `OwnedRunId`, and an event for any other run is ignored. `Finished` calls `finish_owned_run`, which appends `── done ──` (or keeps `── killed ──` as the last line), and then calls `panes.output.on_process_exit()`.
 8. **Output pane.** `OutputPresentation::derive(owned_run.output_state(), owned_run.running_label())` is `Owned` while the run has retained lines. That makes the Output pane visible and switches the layout to `BottomRow::Output`: Output spans the whole bottom row in place of Lints and CI Runs, which drop out of the tab order. `owned_run_output_replaced` moves focus to Output when the buffer goes from empty to nonempty.
-9. **`Esc`.** `classify_output_cancel_preflight` decides what `Esc` does. It runs after the confirmation modal and before the finder and sccache overlays, the globals, and pane dispatch. The first matching case wins:
-   - If an Output visual selection is active, it is exited.
-   - Otherwise, a raw `Esc` while `owned_run().is_running()` calls `terminal::signal_owned_run`.
-   - Otherwise, the key bound to `output.cancel`, with captured output on screen, calls `clear_owned_run_output`. If the Output pane had focus, focus moves to Targets.
+9. **`Esc`.** `classify_output_cancel_preflight` (`src/tui/input/dispatch.rs`) decides what `Esc` does. `handle_app_surface_key` runs it after the confirmation modal and before the finder and sccache overlays, the globals, and pane dispatch.
+   - **The gate.** Every case requires `can_handle_output_cancel = !app_overlay_open && !focused_text_input_mode(app)`, where `app_overlay_open` means the finder or the sccache overlay is open. When it is false, the preflight passes: `Esc` goes on to `dispatch_finder_overlay` or `sccache::dispatch_sccache_overlay`, which closes the overlay, or to the focused text input, and the owned run keeps going.
+   - **The cases.** With the gate open, the first matching case wins:
+     - If an Output visual selection is active, it is exited.
+     - Otherwise, a raw `Esc` while `owned_run().is_running()` calls `terminal::signal_owned_run`, whichever pane has focus.
+     - Otherwise, the key bound to `output.cancel`, with captured output on screen, calls `clear_owned_run_output`. If the Output pane had focus, focus moves to Targets.
 
-   The Output pane's own `OutputAction::Cancel` (`cancel_owned_output`) behaves the same way, and its bar label reads `done`, `stop` or `close` to match.
+   The Output pane's own `OutputAction::Cancel` (`cancel_owned_output`) behaves the same way, and its bar label reads `done`, `stop` or `close` to match. `esc_with_finder_open_closes_finder_and_keeps_run_going` and `esc_with_sccache_open_closes_sccache_and_keeps_run_going`, in the in-file test module of `src/tui/app/mod.rs`, press `Esc` through production input over a running owned run and check that the overlay closes, the run is still there, and no termination request is pending.
 10. **Stopping.** `signal_owned_run` submits the `OwnedRunTerminationToken` from `OwnedRunTermination::Available` and returns `Submitted` or `NotSubmitted`. The lifecycle then enters `TerminationRequestPending`. The actor replies with a `TerminationOutcome`, and `reconcile_owned_run_termination` handles it:
     - `Sent` moves the run to `Stopping` and appends `── killed ──`.
     - `ProcessAlreadyReaped`, `IdentityNoLongerCurrent`, `SignalFailed` and `Refused` return the run to `Running`, so the user can try to stop it again.
@@ -151,6 +153,7 @@ Production callers (one each):
    - `processkit`: `identity.rs`.
    - `sha2`: `src/project/cargo/metadata_store.rs` and `src/lint/paths.rs`.
 7. **No dead code.** There is no `#[allow(dead_code)]`, and no item whose only caller was removed. Any new `#[allow]` goes to the user for review.
+8. **An open overlay owns its keys first.** An owned run is stopped only by a key the user aimed at the run. Framework overlays take every key through `KeyDispatchLayer::FrameworkOverlay` and never reach the app surface. On the app surface, every output-cancel preflight outcome reads `can_handle_output_cancel`, so nothing in the preflight fires while the finder or sccache overlay is open or a focused text input is active.
 
 ---
 
@@ -161,7 +164,9 @@ Production callers (one each):
 - **The screenshot callouts are hand-drawn.** Callouts 1–3 in `assets/pane-targets-numbered.png` were drawn by hand, and no script regenerates them. A visible change to the pane needs a new screenshot with the callouts redrawn by hand.
 - **Some layout helpers exist only in tests.** `TABLE_CHROME` (`1`, the header row) lives only in the `render.rs` test module, next to `target_col_width_from`, which is also test-only.
 - **The loop still wakes every second when idle.** That wake comes from `IDLE_HEARTBEAT` in `animation_timeout()`. Each wake runs `poll_background_frame`, which reloads the config, keymap and themes when their files' modification times change. A longer heartbeat delays those reloads while the app is idle.
-- **`Esc` stops a run from anywhere on the app surface.** The stop check looks for the raw `KeyCode::Esc`, not whatever key is bound to `output.cancel`, and it runs before the finder and sccache overlays see the key. So `Esc` stops a running target from any pane, even while either overlay is open. Closing retained output, by contrast, follows the binding.
+- **`Esc` stops a run from any pane, but an open overlay gets it first.** The stop check looks for the raw `KeyCode::Esc`, not whatever key is bound to `output.cancel`; closing retained output, by contrast, follows the binding. With the finder or sccache overlay open, `Esc` closes that overlay; with a focused text input active, `Esc` goes to the input. Either way the run keeps going.
+- **The preflight runs before the app overlays.** `classify_output_cancel_preflight` runs before `dispatch_finder_overlay` and `sccache::dispatch_sccache_overlay` in `handle_app_surface_key`. Any new preflight outcome must read `can_handle_output_cancel`, or it steals keys from open overlays.
+- **The sccache regression test opens the overlay directly.** It calls `app.overlays.open_sccache()`, not `open_sccache_stats_overlay`, so no background sccache request starts.
 - **Closing Output can focus an empty Targets pane.** Closing the Output pane moves focus to Targets without checking `has_targets`. If the project has no targets, `targets_run_visibility` hides the run actions and `handle_target_action` finds no entry, so nothing runs.
 - **Launching takes one frame.** Input dispatch only queues the run; the process is spawned after the next draw, in `spawn_pending_background_tasks`.
 

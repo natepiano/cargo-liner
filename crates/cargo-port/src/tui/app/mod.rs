@@ -404,7 +404,7 @@ impl App {
     ///
     /// Test-only thin delegator to
     /// [`crate::tui::state::lint_cell_for`]. Production callers
-    /// in `tui/panes/project_list.rs` use the free fn directly
+    /// in `tui/panes/project_list/` use the free fn directly
     /// because `Pane::render` has no `&App` to call methods on.
     #[cfg(test)]
     pub(super) fn lint_cell(&self, status: &LintStatus) -> LintCell {
@@ -3784,6 +3784,47 @@ mod tests {
                     .any(|line| line == "── killed ──"),
                 "submission alone must not claim the actor sent a signal",
             );
+        }
+
+        #[test]
+        fn esc_with_finder_open_closes_finder_and_keeps_run_going() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut app = make_app_with_keymap_toml(&[project], "");
+            app.inflight
+                .set_example_output(vec!["line one".to_string()]);
+            app.inflight.set_example_running(Some("demo".to_string()));
+            input::open_finder(&mut app);
+
+            press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+            assert!(
+                !app.overlays.is_finder_open(),
+                "Esc should close the finder"
+            );
+            assert!(app.inflight.example_running().is_some());
+            assert!(!matches!(
+                app.inflight.owned_run_termination(),
+                crate::tui::state::OwnedRunTermination::RequestPending { .. }
+            ));
+        }
+
+        #[test]
+        fn esc_with_sccache_open_closes_sccache_and_keeps_run_going() {
+            let project = super::make_project(Some("demo"), "~/demo");
+            let mut app = make_app_with_keymap_toml(&[project], "");
+            app.inflight
+                .set_example_output(vec!["line one".to_string()]);
+            app.inflight.set_example_running(Some("demo".to_string()));
+            app.overlays.open_sccache();
+
+            press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+            assert!(!app.overlays.is_sccache_open(), "Esc should close sccache");
+            assert!(app.inflight.example_running().is_some());
+            assert!(!matches!(
+                app.inflight.owned_run_termination(),
+                crate::tui::state::OwnedRunTermination::RequestPending { .. }
+            ));
         }
 
         // ── Keymap UI backed by framework keymap ──────────────────────────

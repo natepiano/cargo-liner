@@ -218,13 +218,13 @@ impl TargetsData {
     /// the package name (cargo's "default-run" convention) as a
     /// `Binary` entry; every `Example` target becomes an entry with
     /// category derived from `examples/<category>/<file>.rs`; every
-    /// `Bench` becomes a flat entry. Each entry's [`TargetSource`]
-    /// is `Workspace` only when the metadata describes a real
-    /// multi-package workspace AND the owning package's manifest
-    /// sits at the workspace root. Standalone packages (cargo's
-    /// implicit single-package workspace) always get
-    /// `Member(<package name>)` so the Source column shows the
-    /// package name, not the misleading word "workspace".
+    /// `Bench` becomes a flat entry. An entry's source is
+    /// [`TargetSource::workspace_root`] only when the metadata describes
+    /// a real multi-package workspace and the owning package's manifest
+    /// sits at the workspace root. Every other package, including a
+    /// standalone package, gets [`TargetSource::member`]. The Source
+    /// column shows the cargo package name either way; the source kind
+    /// only orders the rows.
     pub fn from_workspace_metadata(
         metadata: &WorkspaceMetadata,
         selected_path: &AbsolutePath,

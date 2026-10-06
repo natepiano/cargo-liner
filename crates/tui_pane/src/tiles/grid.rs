@@ -13,7 +13,7 @@
 //! [`shares`] hands room off the cells that are not using theirs and
 //! onto the ones that have run out, from either side. A cell keeps what
 //! it needs and no more, so every row it is not using is one a
-//! neighbour can have; the focus ring is served first out of them. A
+//! neighbour can have; the summary, then the focus ring, is served first out of them. A
 //! column where everything fits is divided evenly, because nothing in
 //! it is asking for the room going spare.
 //!
@@ -43,6 +43,12 @@
 //! Neighbours share a border, so the rects handed out overlap by the one
 //! line between them rather than sitting flush. [`crate::GridLines`]
 //! draws that line once for both.
+
+// The private grid tests live beside this file in grid/tests/.
+#![allow(
+    clippy::self_named_module_files,
+    reason = "private grid tests live in grid/tests beside grid.rs"
+)]
 
 use std::cmp::Ordering;
 use std::cmp::Reverse;
@@ -268,13 +274,15 @@ enum GridMotion<Id> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct HeldCellLayout {
     /// Rows each cell holds, in cell order and the summary's first.
-    rows:         Vec<u16>,
+    rows:          Vec<u16>,
     /// Which cell holds the ring, or whether that slot is outside the layout.
-    focused:      FocusLocation,
+    focused:       FocusLocation,
     /// Columns the summary asks to reach across, its own included; see
     /// [`summary_span`]. Held with the rows so the summary widening or
     /// narrowing is a change the grid travels through like any other.
-    summary_span: usize,
+    summary_span:  usize,
+    /// Positions occupied by the summary, including its first.
+    summary_depth: usize,
 }
 
 /// The arrangement a transition is moving away from.
@@ -297,6 +305,8 @@ struct Transition<Id> {
 struct Step<Id> {
     /// The cells as this step leaves them.
     slots:  Vec<Slot<Id>>,
+    /// Summary depth at the end of this step.
+    depth:  usize,
     /// How long the move into `slots` runs for.
     millis: u64,
 }
@@ -312,6 +322,8 @@ pub struct TileGrid<Id> {
     /// Cells after the summary, in cell order. The summary is cell one
     /// and is not held here, so the grid never falls below one cell.
     slots:     Vec<Slot<Id>>,
+    /// Summary depth of `slots`.
+    depth:     usize,
     /// Arrangements waiting their turn, each one cell's move from the
     /// one before it. Only ever one of them is in flight, which is what
     /// makes a change propagate through the grid instead of happening
@@ -349,11 +361,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     pub fn new() -> Self {
         Self {
             slots:     Vec::new(),
+            depth:     1,
             pending:   VecDeque::new(),
             held:      HeldCellLayout {
-                rows:         Vec::new(),
-                focused:      FocusLocation::Departing,
-                summary_span: 1,
+                rows:          Vec::new(),
+                focused:       FocusLocation::Departing,
+                summary_span:  1,
+                summary_depth: 1,
             },
             demands:   TileDemands::default(),
             motion:    GridMotion::Settled,
@@ -374,9 +388,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return self.held.clone();
         }
         HeldCellLayout {
-            rows:         cell_wants(&self.demands, &self.slots, &self.settings),
-            focused:      self.focused_cell(),
-            summary_span: self.wanted_span(),
+            rows:          cell_wants(&self.demands, &self.slots, &self.settings),
+            focused:       self.focused_cell(),
+            summary_span:  self.wanted_span(),
+            summary_depth: self.depth,
         }
     }
 
@@ -393,6 +408,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let focused = self.focused_cell();
         let summary_span = self.wanted_span();
         if wants.len() != self.held.rows.len()
+            || self.depth != self.held.summary_depth
             || wants
                 .iter()
                 .zip(&self.held.rows)
@@ -402,12 +418,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 rows: wants,
                 focused,
                 summary_span,
+                summary_depth: self.depth,
             };
         }
         HeldCellLayout {
             rows: self.held.rows.clone(),
             focused,
             summary_span,
+            summary_depth: self.depth,
         }
     }
 
@@ -419,7 +437,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         summary_span(
             self.area,
-            columns(self.count(), self.growth).len(),
+            columns(self.count() + self.depth - 1, self.growth).len(),
             self.demands.summary_width,
         )
     }
@@ -429,9 +447,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// The interior width of the cell drawing each thing on screen.
     ///
-    /// How many columns there are is settled by the cell count alone,
-    /// so a cell's width is known before its column has been divided
-    /// vertically. That is what lets the app measure a cell's
+    /// The cell count and resolved summary depth settle the columns
+    /// before any column is divided vertically. That lets the app measure a cell's
     /// contents at the width they will be wrapped to and hand the
     /// result back as the demand this same grid divides by.
     pub(super) fn content_widths(
@@ -439,7 +456,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         growth: TileGrowth,
     ) -> Vec<(TileContent<Id>, u16)> {
-        let held = columns(self.count(), growth);
+        let ColumnLayout {
+            widths: held,
+            summary_depth: depth,
+        } = column_layout(self.count(), self.drawn_held().summary_depth, growth);
         let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(held.len())))
             .split(area)
             .to_vec();
@@ -449,6 +469,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 .get(column)
                 .map_or(0, |&rect| frame_inner(share_borders(rect, area)).width);
             widths.extend(std::iter::repeat_n(inner, cells_here));
+        }
+        if depth > 1 {
+            widths.drain(1..depth);
         }
         // The summary alone can reach past its own column, which only
         // the laid-out grid knows.
@@ -597,13 +620,20 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         // what they are asking for. Re-dividing the column is a step
         // like any other, and queued as one so it travels rather than
         // snapping.
+        let wanted_depth = summary_depth(
+            self.area,
+            &cell_wants(&self.demands, &arrangement, &self.settings),
+            growth,
+            &self.settings,
+        );
         if steps.is_empty()
+            && wanted_depth == self.target_depth()
             && matches!(self.motion, GridMotion::Settled)
             && self.settled_held() != self.held
         {
             steps.push(self.slots.clone());
         }
-        self.queue(steps);
+        self.queue_with_depth(steps, wanted_depth);
     }
 
     /// Which of `live` the grid can actually give a cell to: the ones
@@ -718,6 +748,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .map_or_else(|| self.slots.clone(), |step| step.slots.clone())
     }
 
+    /// Summary depth at the end of the queued arrangement.
+    fn target_depth(&self) -> usize { self.pending.back().map_or(self.depth, |step| step.depth) }
+
     /// Queue `steps`, starting the first one when nothing is in flight.
     ///
     /// One scan's worth of change is spread over
@@ -730,6 +763,34 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// suite finishing at once would take longer to play through than
     /// anyone would watch.
     fn queue(&mut self, steps: Vec<Vec<Slot<Id>>>) {
+        let final_slots = steps.last().cloned().unwrap_or_else(|| self.target());
+        let wants = cell_wants(&self.demands, &final_slots, &self.settings);
+        let wanted = summary_depth(self.area, &wants, self.growth, &self.settings);
+        self.queue_with_depth(steps, wanted);
+    }
+
+    /// Queue arrangements using the summary depth already chosen for their end.
+    fn queue_with_depth(&mut self, steps: Vec<Vec<Slot<Id>>>, wanted: usize) {
+        let final_slots = steps.last().cloned().unwrap_or_else(|| self.target());
+        let headed = self.target_depth();
+        let mut depth = headed;
+        let mut moves = Vec::new();
+        while depth > wanted {
+            depth -= 1;
+            moves.push((self.target(), depth));
+        }
+        for slots in steps {
+            moves.push((slots, depth));
+        }
+        while depth < wanted {
+            depth += 1;
+            moves.push((final_slots.clone(), depth));
+        }
+        self.queue_steps(moves);
+    }
+
+    /// Queue arrangements paired with their summary depth.
+    fn queue_steps(&mut self, steps: Vec<(Vec<Slot<Id>>, usize)>) {
         if steps.is_empty() {
             return;
         }
@@ -739,7 +800,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .unwrap_or(self.settings.animation_millis)
             .max(self.settings.min_step_millis);
         self.pending
-            .extend(steps.into_iter().map(|slots| Step { slots, millis }));
+            .extend(steps.into_iter().map(|(slots, depth)| Step {
+                slots,
+                depth,
+                millis,
+            }));
         if self.pending.len() > self.settings.max_pending_steps
             && let Some(last) = self.pending.pop_back()
         {
@@ -769,6 +834,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return;
         };
         let previous = std::mem::replace(&mut self.slots, step.slots);
+        self.depth = step.depth;
         self.settle_focus(&previous);
         self.held = self.settled_held();
         self.motion = GridMotion::Moving(Transition {
@@ -792,6 +858,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         self.pending.push_back(Step {
             slots:  self.slots.clone(),
+            depth:  self.depth,
             millis: self.settings.focus_animation_millis,
         });
         self.advance();
@@ -878,8 +945,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             Direction::Right => {
                 (column.saturating_add(1)..lanes.len()).find_map(|to| landing(to, row))
             },
-            Direction::Up => row.checked_sub(1).and_then(|above| landing(column, above)),
-            Direction::Down => landing(column, row.saturating_add(1)),
+            Direction::Up => (0..row).rev().find_map(|above| landing(column, above)),
+            Direction::Down => (row.saturating_add(1)..lanes[column].len())
+                .find_map(|below| landing(column, below)),
         };
         let Some(next) = next else {
             return;
@@ -960,16 +1028,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Whether every cell of a `count`-cell grid would be big enough to
     /// draw in the rect the last frame used.
     fn fits(&self, count: usize, growth: TileGrowth) -> bool {
-        let widths = columns(count, growth);
-        let (Ok(opened), Some(&tallest)) = (u16::try_from(widths.len()), widths.iter().max())
-        else {
-            return false;
-        };
-        let Ok(tallest) = u16::try_from(tallest) else {
-            return false;
-        };
-        self.area.width >= shared_run(opened, self.settings.min_tile_width)
-            && self.area.height >= shared_run(tallest, self.settings.min_tile_height)
+        fits(self.area, count, growth, &self.settings)
     }
 
     /// How far through the current transition the grid is, on the
@@ -1062,6 +1121,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// holds, which decides whether a new cell still fits and where a
     /// step of the ring lands.
     pub fn apply(&mut self, action: TileAction, growth: TileGrowth) {
+        self.growth = growth;
         match action {
             TileAction::Add => self.add(growth),
             TileAction::Remove => self.remove(),
@@ -1152,6 +1212,8 @@ struct Grid {
     area:     Rect,
     /// Rows in each column, left to right.
     widths:   Vec<usize>,
+    /// Positions represented by the summary, including its first.
+    depth:    usize,
     /// Where each cell sits, keyed by cell number.
     resolved: ResolvedPaneLayout<usize>,
     /// The rect each column's cells divide: the column's whole height,
@@ -1159,6 +1221,27 @@ struct Grid {
     columns:  Vec<Rect>,
     /// Columns the summary covers, its own included.
     span:     usize,
+}
+
+/// Columns and summary depth that account for exactly the logical cells.
+struct ColumnLayout {
+    widths:        Vec<usize>,
+    summary_depth: usize,
+}
+
+/// Use the deepest held summary that still fits in column zero.
+fn column_layout(count: usize, held_depth: usize, growth: TileGrowth) -> ColumnLayout {
+    let mut depth = held_depth.max(1);
+    loop {
+        let widths = columns(count + depth - 1, growth);
+        if depth == 1 || widths.first().is_some_and(|&height| depth <= height) {
+            return ColumnLayout {
+                widths,
+                summary_depth: depth,
+            };
+        }
+        depth -= 1;
+    }
 }
 
 impl Grid {
@@ -1171,44 +1254,63 @@ impl Grid {
     /// only what is left below it.
     fn new(area: Rect, held: &HeldCellLayout, growth: TileGrowth, settings: &TileSettings) -> Self {
         let count = held.rows.len();
-        let widths = columns(count, growth);
+        let ColumnLayout {
+            widths,
+            summary_depth: depth,
+        } = column_layout(count, held.summary_depth, growth);
         let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(widths.len())))
             .split(area)
             .to_vec();
         let mut bands = opened.clone();
         let mut span = 1;
         let mut panes = Vec::with_capacity(count);
-        let mut index = 1;
-        let mut taken: usize = 0;
+        let mut position = TABLE_CELL;
         for (column, &height) in widths.iter().enumerate() {
-            let opens_at = taken;
+            let opens_at = position;
             let ends_at = opens_at.saturating_add(height);
-            let wants = held.rows.get(opens_at..ends_at).unwrap_or(&[]);
+            let first_cell = if column == 0 {
+                TABLE_CELL
+            } else {
+                opens_at - depth + 1
+            };
+            let pieces = if column == 0 {
+                height - depth + 1
+            } else {
+                height
+            };
+            let first = first_cell - TABLE_CELL;
+            let last = (first + pieces).min(held.rows.len());
+            let wants = held.rows.get(first..last).unwrap_or(&[]);
             // The ring is held against the whole grid; a column divides
             // itself, so it is told only about the one cell of its own
             // that carries it.
             let focused = match held.focused {
                 FocusLocation::Cell(cell) => cell
-                    .checked_sub(TABLE_CELL)
-                    .filter(|at| (opens_at..ends_at).contains(at))
-                    .map_or(ColumnFocus::Outside, |at| {
-                        ColumnFocus::Row(at.saturating_sub(opens_at))
-                    }),
+                    .checked_sub(first_cell)
+                    .filter(|at| *at < pieces)
+                    .map_or(ColumnFocus::Outside, ColumnFocus::Row),
                 FocusLocation::Departing => ColumnFocus::Outside,
             };
-            taken = ends_at;
+            position = ends_at;
             let Some(&band) = bands.get(column) else {
                 continue;
             };
-            for &cell in Layout::vertical(constraints_for_sizes(&shares(
+            for (row, &cell) in Layout::vertical(constraints_for_sizes(&shares(
                 wants,
                 band.height,
+                if column == 0 {
+                    ColumnHead::Summary(depth)
+                } else {
+                    ColumnHead::Cell
+                },
                 focused,
                 settings.min_tile_height,
             )))
             .split(band)
             .iter()
+            .enumerate()
             {
+                let index = first_cell + row;
                 let cell = if index == TABLE_CELL {
                     span = reach(&opened, &widths, cell, held.summary_span, settings);
                     for (band, column) in bands.iter_mut().zip(&opened).take(span).skip(1) {
@@ -1222,12 +1324,12 @@ impl Grid {
                     pane: index,
                     area: share_borders(cell, area),
                 });
-                index += 1;
             }
         }
         Self {
             area,
             widths,
+            depth,
             resolved: ResolvedPaneLayout::new(panes),
             columns: bands
                 .iter()
@@ -1251,7 +1353,13 @@ impl Grid {
                 let under_summary = column > 0 && column < self.span;
                 std::iter::once(TABLE_CELL)
                     .filter(|_| under_summary)
-                    .chain(own)
+                    .chain(own.map(|position| {
+                        if position <= self.depth {
+                            TABLE_CELL
+                        } else {
+                            position - self.depth + 1
+                        }
+                    }))
                     .collect()
             })
             .collect()
@@ -1269,7 +1377,12 @@ impl Grid {
     /// The column cell `index` falls in, or `None` when the grid has no
     /// such cell.
     fn column_of(&self, index: usize) -> Option<usize> {
-        position(&self.widths, index).map(|(column, _)| column)
+        let slot = if index == TABLE_CELL {
+            TABLE_CELL
+        } else {
+            index + self.depth - 1
+        };
+        position(&self.widths, slot).map(|(column, _)| column)
     }
 
     /// The rect column `column` occupies, full height.
@@ -1407,6 +1520,13 @@ const fn ceil_sqrt(value: usize) -> usize {
 /// `count` equal shares of one axis.
 fn fills(count: usize) -> Vec<PaneAxisSize> { vec![PaneAxisSize::Fill(1); count] }
 
+/// What occupies the first piece of a divided column.
+#[derive(Clone, Copy)]
+enum ColumnHead {
+    Summary(usize),
+    Cell,
+}
+
 /// One column's cells as axis lengths: the even division, then room
 /// moved off the cells that are not using theirs and onto the cells
 /// that have run out of it.
@@ -1432,12 +1552,22 @@ fn fills(count: usize) -> Vec<PaneAxisSize> { vec![PaneAxisSize::Fill(1); count]
 /// is enough to go round -- every short cell is filled either way --
 /// and decides it where there is not: the cell being watched gets what
 /// it asked for and the others divide what is left.
-fn shares(wants: &[u16], height: u16, focused: ColumnFocus, floor: u16) -> Vec<PaneAxisSize> {
+fn shares(
+    wants: &[u16],
+    height: u16,
+    head: ColumnHead,
+    focused: ColumnFocus,
+    floor: u16,
+) -> Vec<PaneAxisSize> {
     let count = wants.len();
     if count == 0 {
         return Vec::new();
     }
-    let base = apportion(&vec![1; count], height);
+    let mut weights = vec![1; count];
+    if let ColumnHead::Summary(depth) = head {
+        weights[0] = u16::try_from(depth).unwrap_or(u16::MAX);
+    }
+    let base = apportion(&weights, height);
     let want: Vec<u16> = wants
         .iter()
         .map(|&asked| asked.max(floor).min(height))
@@ -1458,6 +1588,12 @@ fn shares(wants: &[u16], height: u16, focused: ColumnFocus, floor: u16) -> Vec<P
     // whatever it left, each in proportion to how short it is.
     let mut room = spare.iter().copied().fold(0, u16::saturating_add);
     let mut taken = vec![0; count];
+    if matches!(head, ColumnHead::Summary(_)) {
+        let served = short[0].min(room);
+        room = room.saturating_sub(served);
+        short[0] = 0;
+        taken[0] = served;
+    }
     if let ColumnFocus::Row(at) = focused {
         let served = short.get(at).copied().unwrap_or_default().min(room);
         room = room.saturating_sub(served);
@@ -1465,7 +1601,7 @@ fn shares(wants: &[u16], height: u16, focused: ColumnFocus, floor: u16) -> Vec<P
             *cell = 0;
         }
         if let Some(cell) = taken.get_mut(at) {
-            *cell = served;
+            *cell = cell.saturating_add(served);
         }
     }
     let wanted = short.iter().copied().fold(0, u16::saturating_add);
@@ -1487,6 +1623,59 @@ fn shares(wants: &[u16], height: u16, focused: ColumnFocus, floor: u16) -> Vec<P
             PaneAxisSize::Fixed(settled)
         })
         .collect()
+}
+
+/// Whether the positions of a grid retain a readable minimum size.
+fn fits(area: Rect, count: usize, growth: TileGrowth, settings: &TileSettings) -> bool {
+    let widths = columns(count, growth);
+    let (Ok(opened), Some(&tallest)) = (u16::try_from(widths.len()), widths.iter().max()) else {
+        return false;
+    };
+    let Ok(tallest) = u16::try_from(tallest) else {
+        return false;
+    };
+    area.width >= shared_run(opened, settings.min_tile_width)
+        && area.height >= shared_run(tallest, settings.min_tile_height)
+}
+
+/// Rows the first column allocates to a summary of `depth` positions.
+fn summary_share(wants: &[u16], height: u16, depth: usize, growth: TileGrowth, floor: u16) -> u16 {
+    let Some(&positions) = columns(wants.len() + depth - 1, growth).first() else {
+        return 0;
+    };
+    let pieces = positions.saturating_sub(depth).saturating_add(1);
+    match shares(
+        &wants[..pieces.min(wants.len())],
+        height,
+        ColumnHead::Summary(depth),
+        ColumnFocus::Outside,
+        floor,
+    )
+    .first()
+    {
+        Some(PaneAxisSize::Fixed(rows)) => *rows,
+        _ => 0,
+    }
+}
+
+/// Fewest summary positions that hold its current demand within the fit limit.
+fn summary_depth(area: Rect, wants: &[u16], growth: TileGrowth, settings: &TileSettings) -> usize {
+    let Some(&asked) = wants.first() else {
+        return 1;
+    };
+    let mut depth = 1;
+    loop {
+        if summary_share(wants, area.height, depth, growth, settings.min_tile_height) >= asked {
+            return depth;
+        }
+        let next = depth + 1;
+        if next > columns(wants.len() + next - 1, growth)[0]
+            || !fits(area, wants.len() + next - 1, growth, settings)
+        {
+            return depth;
+        }
+        depth = next;
+    }
 }
 
 /// `total` split between `weights` in proportion, the units integer
@@ -1916,6 +2105,8 @@ fn eased(progress: u32) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    mod summary_depth;
+
     use ratatui::layout::Margin;
 
     use super::*;
@@ -1982,9 +2173,10 @@ mod tests {
     /// evenly -- the geometry and motion tests are written against it.
     fn even(count: usize) -> HeldCellLayout {
         HeldCellLayout {
-            rows:         vec![demanded_rows(0); count],
-            focused:      FocusLocation::Departing,
-            summary_span: 1,
+            rows:          vec![demanded_rows(0); count],
+            focused:       FocusLocation::Departing,
+            summary_span:  1,
+            summary_depth: 1,
         }
     }
 
@@ -2424,13 +2616,19 @@ mod tests {
     /// cells share a border line, so the rects overlap by one and no
     /// longer add up to the column.
     fn column_rows(wants: &[u16], focused: ColumnFocus) -> Vec<u16> {
-        shares(wants, TEST_HEIGHT, focused, MIN_TILE_HEIGHT)
-            .into_iter()
-            .map(|size| match size {
-                PaneAxisSize::Fixed(rows) => rows,
-                PaneAxisSize::Fill(weight) => weight,
-            })
-            .collect()
+        shares(
+            wants,
+            TEST_HEIGHT,
+            ColumnHead::Cell,
+            focused,
+            MIN_TILE_HEIGHT,
+        )
+        .into_iter()
+        .map(|size| match size {
+            PaneAxisSize::Fixed(rows) => rows,
+            PaneAxisSize::Fill(weight) => weight,
+        })
+        .collect()
     }
 
     /// The whole point of dividing a column by demand: a cell whose
@@ -2558,8 +2756,20 @@ mod tests {
         let share = TEST_HEIGHT / 4;
         for asked in [vec![demanded_rows(0); 4], vec![0, share + 1, share + 1, 0]] {
             assert_eq!(
-                shares(&asked, TEST_HEIGHT, ColumnFocus::Row(1), MIN_TILE_HEIGHT),
-                shares(&asked, TEST_HEIGHT, ColumnFocus::Outside, MIN_TILE_HEIGHT),
+                shares(
+                    &asked,
+                    TEST_HEIGHT,
+                    ColumnHead::Cell,
+                    ColumnFocus::Row(1),
+                    MIN_TILE_HEIGHT
+                ),
+                shares(
+                    &asked,
+                    TEST_HEIGHT,
+                    ColumnHead::Cell,
+                    ColumnFocus::Outside,
+                    MIN_TILE_HEIGHT
+                ),
                 "nothing is competing, so the ring changes nothing: {asked:?}"
             );
         }
@@ -2571,8 +2781,20 @@ mod tests {
     fn focus_takes_nothing_from_a_column_that_has_no_room_to_spare() {
         let asked = vec![u16::MAX; 3];
         assert_eq!(
-            shares(&asked, TEST_HEIGHT, ColumnFocus::Row(1), MIN_TILE_HEIGHT),
-            shares(&asked, TEST_HEIGHT, ColumnFocus::Outside, MIN_TILE_HEIGHT),
+            shares(
+                &asked,
+                TEST_HEIGHT,
+                ColumnHead::Cell,
+                ColumnFocus::Row(1),
+                MIN_TILE_HEIGHT
+            ),
+            shares(
+                &asked,
+                TEST_HEIGHT,
+                ColumnHead::Cell,
+                ColumnFocus::Outside,
+                MIN_TILE_HEIGHT
+            ),
             "every cell is short, so the ring changes nothing"
         );
     }
@@ -2672,6 +2894,7 @@ mod tests {
             rows,
             focused: FocusLocation::Cell(2 + TABLE_CELL),
             summary_span: 1,
+            summary_depth: 1,
         };
         let grid = Grid::new(
             test_area(),
