@@ -33,14 +33,26 @@ struct DiscoveryCeilings(Vec<PathBuf>);
 
 impl DiscoveryCeilings {
     fn from_environment() -> Self {
-        Self::from_list(&env::var_os("GIT_CEILING_DIRECTORIES").unwrap_or_default())
+        Self::from(
+            env::var_os("GIT_CEILING_DIRECTORIES")
+                .unwrap_or_default()
+                .as_os_str(),
+        )
     }
 
+    fn contains(&self, directory: &Path) -> bool {
+        self.0.iter().any(|ceiling| ceiling == directory)
+    }
+}
+
+impl From<&OsStr> for DiscoveryCeilings {
     /// Parse a path list as git does: an entry that is empty, relative, or missing is ignored,
     /// and the rest still apply.
-    fn from_list(list: &OsStr) -> Self { Self::from_paths(env::split_paths(list)) }
+    fn from(list: &OsStr) -> Self { env::split_paths(list).collect() }
+}
 
-    fn from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+impl FromIterator<PathBuf> for DiscoveryCeilings {
+    fn from_iter<Paths: IntoIterator<Item = PathBuf>>(paths: Paths) -> Self {
         Self(
             paths
                 .into_iter()
@@ -48,10 +60,6 @@ impl DiscoveryCeilings {
                 .filter_map(|path| fs::canonicalize(path).ok())
                 .collect(),
         )
-    }
-
-    fn contains(&self, directory: &Path) -> bool {
-        self.0.iter().any(|ceiling| ceiling == directory)
     }
 }
 
@@ -508,7 +516,7 @@ mod tests {
             .path()
             .parent()
             .expect("temporary directory should have a parent");
-        let ceilings = DiscoveryCeilings::from_paths([parent.to_path_buf()]);
+        let ceilings = DiscoveryCeilings::from_iter([parent.to_path_buf()]);
 
         assert!(matches!(
             WorktreeContext::discover_with_ceilings(&child, &ceilings),
@@ -522,7 +530,7 @@ mod tests {
         let ceiling = repository.path().join("ceiling");
         let child = ceiling.join("child");
         fs::create_dir_all(&child).expect("child directory should exist");
-        let ceilings = DiscoveryCeilings::from_paths([ceiling]);
+        let ceilings = DiscoveryCeilings::from_iter([ceiling]);
 
         assert!(matches!(
             WorktreeContext::discover_with_ceilings(&child, &ceilings),
@@ -533,7 +541,7 @@ mod tests {
     #[test]
     fn the_invocation_directory_is_examined_even_at_the_ceiling() {
         let repository = test_support::scratch_repository();
-        let ceilings = DiscoveryCeilings::from_paths([repository.path().to_path_buf()]);
+        let ceilings = DiscoveryCeilings::from_iter([repository.path().to_path_buf()]);
 
         let context = WorktreeContext::discover_with_ceilings(repository.path(), &ceilings)
             .expect("invocation directory should be discovered");
@@ -546,7 +554,7 @@ mod tests {
         let repository = test_support::scratch_repository();
         let child = repository.path().join("child");
         fs::create_dir(&child).expect("child directory should exist");
-        let ceilings = DiscoveryCeilings::from_paths([child.clone()]);
+        let ceilings = DiscoveryCeilings::from_iter([child.clone()]);
 
         let context = WorktreeContext::discover_with_ceilings(&child, &ceilings)
             .expect("the repository above the invocation directory should be discovered");
@@ -565,7 +573,10 @@ mod tests {
         list.push(OsStr::from_bytes(b"/\xff"));
 
         assert!(matches!(
-            WorktreeContext::discover_with_ceilings(&child, &DiscoveryCeilings::from_list(&list)),
+            WorktreeContext::discover_with_ceilings(
+                &child,
+                &DiscoveryCeilings::from(list.as_os_str())
+            ),
             Err(LedgerError::RepositoryNotFound)
         ));
     }
