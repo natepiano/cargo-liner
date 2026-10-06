@@ -86,51 +86,22 @@ The `root-headings` reader scenario checks for the removed capture-status cleanu
 
 **Ruled out:** Clamping the depth separately in `Grid::new` and `content_widths` — it left phantom positions and widths measured at the wrong positions.
 
-### Phase 3 — Summary depth with `widen_summary`, changelogs and the visual check  · status: todo
+### Phase 3 — Summary depth with `widen_summary`, changelogs and the visual check  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** with `widen_summary` on, a deeper summary widens over the columns its depth lays out and settles without requeuing; the change is in all three changelogs and is seen on screen at two and three cells.
-
-**Spec:**
-- With `widen_summary` on, column 0 is divided first, so `reach` sees the taller summary rect. It stops widening at any column whose cells no longer fit below the summary. The loop runs depth → span → width → wrapped rows → depth. Every link is monotone: more depth means less span and narrower columns, and narrower means more rows. So the loop settles in at most `N` steps and cannot oscillate. A test asserts that a second sync with the same demands queues nothing.
-- `wanted_span` (`grid.rs:434`) already counts columns at the grid's depth, `columns(self.count() + self.depth - 1, self.growth).len()`, but with `self.depth` unclamped. It counts `column_layout(self.count(), self.depth, self.growth).widths.len()` instead (`column_layout`, `grid.rs:1233`), so a step whose depth column 0 no longer holds asks for a span over the same columns `Grid::new` lays out. `settled_held` (`:406`) and `drawn_held` (`:386`) take their `summary_span` from it, so span and depth always describe the same grid.
-- A step that changes both depth and span plays the existing `Turns` (`grid.rs:1753`): `Turns::of` (`:1776`) already compares the spans at either end, and `Grid::column_of` (`:1379`) already maps cells to positions.
-- Tests, in `crates/tui_pane/src/tiles/grid/tests/summary_depth.rs`:
-  - `a_steady_summary_queues_nothing` gains the widen-on case: under `widening(4)`, a summary that settles deeper and wider queues nothing on a second `sync` with the same demands.
-  - `a_deeper_summary_widens_over_the_columns_its_depth_opens`: under `widening(4)` with `summary_width` wider than one column, the summary's settled `summary_span` is worked out over the columns of the deeper grid, and `reach` stops it at a column whose cells no longer fit below the taller summary.
-  - The existing widen tests (`grid.rs:2254`–`2355`) stay green.
-- CHANGELOG entries, one line each, under `## [Unreleased]`:
-  - `crates/tui_pane/CHANGELOG.md`, `### Changed`: `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever the normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
-  - `crates/cargo-tile/CHANGELOG.md`, `### Changed`: a summary too long for its cell takes the next cells of its column, pushing the command cells on, and gives them back once it fits; at the fit limit it is clipped as before.
-  - `crates/cargo-handler/CHANGELOG.md`, `### Added` (its Unreleased section holds only `Added`): the same rule for the agents summary, with `widen_summary` on by default.
-- Visual check before merge (unit director): run this worktree's cargo-tile in a terminal short enough, with enough cargo commands running, that the summary counts as two cells, then three; take a screenshot at each. Record a cell being added and given back with `/screen_record` (1 to 60 s). Judge a screenshot only once the grid has settled (no change for longer than `TILE_ANIMATION_MILLIS`, 720 ms): a column can show a blank bottom row while a cell is mid-move, and that is not a gap.
+- `wanted_span` counts its columns as `column_layout(self.count(), self.depth, self.growth).widths.len()`, so the requested span is worked out over the columns `Grid::new` lays out, even when a step carries a depth its column 0 no longer holds. `column_layout` is the one depth resolver for `Grid::new`, `content_widths` and `wanted_span`; `settled_held` and `drawn_held` take `summary_span` from `wanted_span`, so span and depth describe the same grid.
+- With `widen_summary` on, column 0 is divided first, so `reach` sees the taller summary rect: a deeper summary widens over the columns its depth opens, and `reach` stops it at a column whose cells no longer fit below it. A step that changes both depth and span plays the existing `Turns`.
+- The loop depth → span → width → wrapped rows → depth settles and cannot oscillate, because every link is monotone; a second `sync` with the same demands queues nothing and motion is `Settled`.
+- `## [Unreleased]` entries: `tui_pane` `### Changed` (the summary counts as two cells, then three, up to what its column holds, and gives each back once it fits in fewer; cell numbers stay logical, the summary is served before the focus ring, and it is clipped at the fit limit as before); `cargo-tile` `### Changed` (the same for the command cells, and with `widen_summary` on it widens over the columns its depth opens; cargo-tile's default is off); `cargo-handler` `### Added` (the same for the agents summary, with `widen_summary` on by default).
+- Checked on screen: screenshots at two and three cells and recordings of the summary taking a cell and giving it back, judged on settled frames only; no rendering defects.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `wanted_span` counts its columns through `column_layout`, at the depth `Grid::new` lays out
-- `crates/tui_pane/src/tiles/grid/tests/summary_depth.rs` — the widen-on steady test and the widening test
-- `crates/tui_pane/CHANGELOG.md` — the `Changed` entry
-- `crates/cargo-tile/CHANGELOG.md` — the `Changed` entry
-- `crates/cargo-handler/CHANGELOG.md` — the `Added` entry
+- `crates/tui_pane/src/tiles/grid.rs` — `wanted_span` counts its columns through `column_layout`
+- `crates/tui_pane/src/tiles/grid/tests/summary_depth.rs` — 16 pure tests; `a_steady_summary_queues_nothing` covers widen off and widen on; `a_deeper_summary_widens_over_the_columns_its_depth_opens` covers depth 2 at span 2, depth 3 where `reach` stops at one column, and a capped depth under changed growth where `wanted_span` uses the resolved columns
+- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md` — the Unreleased entries
 
-**Seats:** 1 writer + 1 tester — the code change and the changelogs split from the tests by file; the two sets were independent in the summary-depth phase, and the test module is already mounted, so the tester needs no hub line.
-- `impl` — `crates/tui_pane/src/tiles/grid.rs` and the three `CHANGELOG.md` files; hub: `crates/tui_pane/src/tiles/grid.rs` (the shared test helpers in its `mod tests`)
-- `test` — `crates/tui_pane/src/tiles/grid/tests/summary_depth.rs`: the widen-on case of `a_steady_summary_queues_nothing` and `a_deeper_summary_widens_over_the_columns_its_depth_opens`, from the Spec alone.
-
-**Constraints from prior phases:** Summary depth is built in `crates/tui_pane/src/tiles/grid.rs`; every item below is private to it.
-- State: `HeldCellLayout::summary_depth`, `Step::depth`, `TileGrid::depth` (the depth `slots` is laid out at, starts at 1) and `target_depth()` (`:752`, the last pending step's depth, else `self.depth`). `advance` moves `step.depth` into `self.depth`.
-- Division: the free `fits(area, count, growth, settings)` (`:1629`); `enum ColumnHead { Summary(usize), Cell }` (`:1525`) and `shares(wants, height, head, focused, floor)` (`:1555`), where under `Summary(k)` the summary has weight `k` and its shortfall is served before the focus ring; `summary_share(wants, height, depth, growth, floor)` (`:1642`); `summary_depth(area, wants, growth, settings)` (`:1662`, the depth rule). Both divide column 0 over the full `area.height`, so the span reaches the depth only through the summary's measured rows.
-- One depth resolver: `column_layout(count, held_depth, growth) -> ColumnLayout { widths, summary_depth }` (`:1233`) picks the deepest `d <= held_depth` with `d <= columns(count + d - 1)[0]` and lays out exactly `count + d - 1` positions. A step can carry a depth its column 0 no longer holds (the growth changed between steps), so every reader of the laid-out columns calls it: `Grid::new` (`:1255`) and `content_widths` (`:454`) do, and `wanted_span` is the one reader left on the raw `self.depth`.
-- `Grid` stores its depth; `Grid::column_of` maps cell `n` to position `n + depth - 1` (the summary to position 1); `lanes` (`:1345`) lists the summary at each of its positions; `focus_step` Up/Down skip the summary's own rows.
-- Queuing: `queue(steps)` (`:765`) works out the wanted depth from the final slots with `self.growth` and calls `queue_with_depth(steps, wanted)` (`:773`): give-back steps first, arrangement steps at `min(headed, wanted)`, added-cell steps after. `sync` (`:545`) computes its wanted depth once and calls `queue_with_depth` directly; with no cell moving and the depth where it is headed, it queues a bare re-divide step only when the grid is settled and `settled_held() != self.held`. `HeldCellLayout` equality covers `rows`, `focused`, `summary_span` and `summary_depth`, so the widen-on steady case holds exactly when a second sync's `settled_held()` matches on all four. `settled_held` re-divides from the fresh wants when `self.depth != self.held.summary_depth`.
-- `apply` (`:1123`) records `self.growth = growth` before acting, so an action and the depth it queues use the same growth. Admission and `+` check `fits` on the logical count.
-- grid.rs opens with `#![allow(clippy::self_named_module_files, reason = ...)]` (`:48`), because the private tests live in `grid/tests/` beside it; keep it. The workspace lint rejects `unreachable!`.
-- Tests: `crates/tui_pane/src/tiles/grid/tests/summary_depth.rs` is mounted as `mod summary_depth;` inside `grid.rs`'s `mod tests` (`:2108`) and opens with `use super::*;`, reaching the `mod tests` helpers (`seeded_grid`, `busy`, `redistribute`, `widening` at `:2235`, `wide_summary` at `:2244`, `blank_tally`, `paint`), `TileGrid::settle_for_test` (`:906`) and its own `deep_grid()` (three commands asking 7 rows, summary asking 12, `redistribute(4)`, settled at depth 2) and `held_at_depth(rows, depth)`. It holds 15 tests; `a_steady_summary_queues_nothing` re-syncs `deep_grid()`'s demands and asserts `grid.pending.is_empty()` and `GridMotion::Settled` with `widen_summary` off.
-- Baseline: `test tui_pane` 918/918, `test cargo-tile` 725/725, `test cargo-handler` 148/148, with no cargo-tile or cargo-handler code or expectation changed by depth.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` green
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green, including both tests named in the Spec and the existing widen tests
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` green
-- Screenshots of cargo-tile with the summary at two cells and at three cells, and a recording of a cell being added and given back, checked before merge.
+**Gotchas:**
+- `HeldCellLayout::summary_span` is the span the summary asks for; `reach` in `Grid::new` clamps the drawn span, so the two can differ (depth 3 under `widening(4)`: held 2, drawn 1).
+- On a live machine the summary's depth follows the load, so the window size that gives two or three cells shifts with what is running.
+- A frame counts as settled only after `TILE_ANIMATION_MILLIS` (720 ms) without change; judge gaps on screen only then.

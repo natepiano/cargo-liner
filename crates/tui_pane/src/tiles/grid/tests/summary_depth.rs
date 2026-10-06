@@ -369,12 +369,58 @@ fn deepening_travels_the_way_a_closing_cell_does_in_reverse() {
 
 #[test]
 fn a_steady_summary_queues_nothing() {
-    let mut grid = deep_grid();
-    assert_eq!(grid.depth, 2);
-    assert!(grid.pending.is_empty());
+    for (growth, span) in [(redistribute(4), 1), (widening(4), 2)] {
+        let mut grid = seeded_grid();
+        let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
+        demands.summary = 12;
+        demands.summary_width = u16::MAX;
+        grid.sync(&demands, growth);
+        grid.settle_for_test();
+        assert_eq!(grid.depth, 2);
+        assert_eq!(grid.held.summary_span, span);
+        assert!(grid.pending.is_empty());
+
+        grid.sync(&demands, growth);
+        assert!(grid.pending.is_empty(), "{growth:?}");
+        assert!(matches!(grid.motion, GridMotion::Settled));
+    }
+}
+
+#[test]
+fn a_deeper_summary_widens_over_the_columns_its_depth_opens() {
+    let growth = widening(4);
+    let mut grid = seeded_grid();
     let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
     demands.summary = 12;
-    grid.sync(&demands, redistribute(4));
-    assert!(grid.pending.is_empty());
-    assert!(matches!(grid.motion, GridMotion::Settled));
+    demands.summary_width = u16::MAX;
+    grid.sync(&demands, growth);
+    grid.settle_for_test();
+
+    let layout = Grid::new(test_area(), &grid.held, growth, &grid.settings);
+    assert_eq!(grid.depth, 2);
+    assert_eq!(layout.widths, vec![3, 2]);
+    assert_eq!(grid.held.summary_span, 2);
+    assert_eq!(layout.span, 2);
+
+    demands.summary = 33;
+    grid.sync(&demands, growth);
+    grid.settle_for_test();
+    let layout = Grid::new(test_area(), &grid.held, growth, &grid.settings);
+    assert_eq!(grid.depth, 3);
+    assert_eq!(layout.widths, vec![3, 3]);
+    assert_eq!(grid.held.summary_span, 2);
+    assert_eq!(layout.span, 1, "the next column needs room for its cells");
+
+    let mut capped = seeded_grid();
+    let mut demands = busy(&[(7, 7)]);
+    demands.summary = 200;
+    demands.summary_width = u16::MAX;
+    capped.sync(&demands, widening(8));
+    capped.settle_for_test();
+    assert_eq!(capped.depth, 7);
+    capped.set_layout(test_area(), growth);
+    let resolved = column_layout(capped.count(), capped.depth, growth);
+    assert_eq!(resolved.widths.len(), 1);
+    assert!(resolved.summary_depth < capped.depth);
+    assert_eq!(capped.wanted_span(), resolved.widths.len());
 }

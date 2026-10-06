@@ -437,7 +437,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         summary_span(
             self.area,
-            columns(self.count() + self.depth - 1, self.growth).len(),
+            column_layout(self.count(), self.depth, self.growth)
+                .widths
+                .len(),
             self.demands.summary_width,
         )
     }
