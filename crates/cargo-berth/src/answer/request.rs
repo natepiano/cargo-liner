@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::slice;
 use std::str::FromStr;
 
 use schemars::JsonSchema;
@@ -46,13 +47,14 @@ pub(crate) struct PermissiveOverlapAuthorizationRequest {
 }
 
 /// One of the overlap answers that permits concurrent editing and reserves the claimed paths.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PermissiveOverlapAnswer {
-    /// Declare an integration order between requester and named blocker.
+    /// Declare an integration order between the requester and every named blocker.
     Sequence {
-        /// The blocker named by the caller.
-        blocker:   ReservationId,
-        /// Which endpoint must integrate first.
+        /// The blockers named by each `--before` or `--after`; the CLI builds this only from
+        /// one or more flags.
+        blockers:  Vec<ReservationId>,
+        /// Which endpoint of each ordering edge must integrate first.
         direction: OrderingDirection,
     },
     /// Permit editing without adding an integration constraint.
@@ -111,10 +113,11 @@ impl<'de> Deserialize<'de> for OverlapAuthorizationReason {
 }
 
 impl PermissiveOverlapAnswer {
-    /// Return the blocker identifier named by the answer flag.
-    pub(crate) const fn blocker(&self) -> ReservationId {
+    /// Return every blocker identifier the answer flags named.
+    pub(crate) fn blockers(&self) -> &[ReservationId] {
         match self {
-            Self::Sequence { blocker, .. } | Self::Override { blocker } => *blocker,
+            Self::Sequence { blockers, .. } => blockers,
+            Self::Override { blocker } => slice::from_ref(blocker),
         }
     }
 }

@@ -171,6 +171,20 @@ impl AuthorizedOverlap {
 impl AuthorizedOverlapSet {
     /// Borrow the bindings without weakening the non-empty boundary.
     pub(crate) fn as_slice(&self) -> &[AuthorizedOverlap] { &self.0 }
+
+    /// The bindings of one holder, or [`EmptyAuthorizedOverlapSet`] when none names it.
+    pub(crate) fn of_holder(
+        &self,
+        holder: ReservationId,
+    ) -> Result<Self, EmptyAuthorizedOverlapSet> {
+        Self::try_from(
+            self.0
+                .iter()
+                .filter(|overlap| overlap.reservation_id == holder)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    }
 }
 
 impl From<AuthorizedOverlap> for AuthorizedOverlapSet {

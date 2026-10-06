@@ -2325,8 +2325,9 @@ impl OutputEnvelope {
 
     /// Build a typed claim rejection when no additional ordering edge is permitted.
     pub(crate) fn claim_ordering_edge_limit_reached(maximum: u32) -> Self {
-        let message =
-            format!("The configured maximum of {maximum} ordering edges has been reached.");
+        let message = format!(
+            "The configured maximum of {maximum} ordering edges leaves no room for the edges this answer records."
+        );
         let presentation = engine_result_presentation(&message, &message);
         Self {
             output_contract_version: OUTPUT_CONTRACT_VERSION,
@@ -3829,11 +3830,12 @@ fn blocked_edit_refusal_detail(
     sections.join("\n\n")
 }
 
-/// One answer binds one holder, so a refusal naming several says how to reach one.
+/// Answers 1-3 name every holder by repeating their flag, and an override binds one holder, so a
+/// refusal naming several says how to answer them all.
 fn append_several_holders_guidance(sections: &mut Vec<String>, conflicts: &[ReservationConflict]) {
     if conflicts.len() > 1 {
         sections.push(
-            "More than one holder remains. Narrow the requested scopes until one holder remains, because one answer binds exactly one holder."
+            "More than one holder remains. Answer every holder at once with answer 1, 2 or 3, repeating its flag once per holder; `--override` settles one holder, so it needs the requested scopes narrowed until one holder remains."
                 .to_owned(),
         );
     }
@@ -3907,8 +3909,8 @@ pub(crate) const HOLDER_RESERVATION_ID_PLACEHOLDER: &str = "<holder-reservation-
 /// A refusal that says it wants an answer "for one named holder" and then prints
 /// `<holder-reservation-id>` in every command it offers has named nobody, and the reader cannot
 /// run a single line of it. With one holder there is exactly one id those commands could carry,
-/// so it is substituted and they run as printed. With several, the placeholder stands: one answer
-/// binds one blocker, and only the reader can say which blocker they mean.
+/// so it is substituted and they run as printed. With several, the placeholder stands: answers 1-3
+/// repeat their flag once per holder, and an override names the one holder the reader means.
 fn blocked_edit_answer_guidance(
     conflicts: &[ReservationConflict],
     approver: Option<&OverlapApprover>,
@@ -3928,11 +3930,11 @@ fn blocked_edit_answer_guidance(
 }
 
 pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
-    r#"Answers 1, 2 and 4 each settle one named holder; answer 3 names every holder at once. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
+    r#"Answers 1, 2 and 3 name every holder by repeating their flag once per holder; answer 4 settles one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
 
 1. Land before the holder: `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates first; the holder stays held until the requester is on trunk. For a holder that will build on the requester's change.
 2. Land after the holder: `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates second, held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. For a requester that will build on the holder.
-3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`, with one `--defer` per holder of the paths. No ordering edge and no new reservation, so the paths stay open to every other lane; the unresolved overlap stays on the board until someone later sequences it.
+3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge and no new reservation, so the paths stay open to every other lane; the unresolved overlap stays on the board until someone later sequences it.
 4. Override: `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the override and its reason stay on the board.
 5. Leave it alone: run no engine command, append nothing, and work elsewhere."#
 }

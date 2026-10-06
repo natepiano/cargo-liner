@@ -494,6 +494,25 @@ impl OrderingGraph {
                     declaration: EdgeDeclaration::Acquisition,
                 })
             },
+            ConflictAuthorization::SequenceEveryHolder {
+                overlaps,
+                holders,
+                direction,
+                reason,
+            } => holders.iter().try_for_each(|holder| {
+                let (before, after) = directed_endpoints(requester, holder.blocker, *direction);
+                let scopes =
+                    OrderingOverlapScopeSet::from_authorized_overlaps(holder.blocker, overlaps)?;
+                self.add_edge(OrderingEdge {
+                    edge_id: holder.edge_id,
+                    before,
+                    after,
+                    scopes,
+                    reason: OrderingReason::from(reason),
+                    declaration_event_id: event_id,
+                    declaration: EdgeDeclaration::Acquisition,
+                })
+            }),
         }
     }
 

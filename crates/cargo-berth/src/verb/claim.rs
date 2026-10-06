@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::answer::AuthorizedOverlap;
+use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::answer::DeferAnswerRequest;
 use crate::answer::OverlapApprover;
@@ -1334,6 +1335,7 @@ fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedRes
                 ConflictAuthorization::NoConflict
                 | ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
+                | ConflictAuthorization::SequenceEveryHolder { .. }
                 | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => None,
             })
             .collect(),
@@ -1800,20 +1802,23 @@ fn validate_first_touch_run(
     }
 }
 
-/// Record one overlap answer when its named holder is the only conflict, or say why it cannot.
+/// Record one overlap answer when its named holders are exactly the conflicts, or say why not.
 ///
-/// The answer records in the invocation that carries it. Naming the holder's reservation id is
+/// The answer records in the invocation that carries it. Naming the holders' reservation ids is
 /// what keeps the decision from applying to changed facts: the conflicts are recomputed here,
-/// under the ledger lock, and any holder other than the named one refuses the claim exactly as
-/// an unanswered claim is refused.
+/// under the ledger lock, and a holder the answer leaves unnamed, or a named reservation that no
+/// longer conflicts, refuses the claim exactly as an unanswered claim is refused. `--before` and
+/// `--after` repeat once per holder and record one ordering edge against each, as `--defer`
+/// repeats in [`validate_answer`]; `--override` names one holder, so set equality admits it only
+/// while one holder conflicts.
 ///
-/// An answer reaches here because the caller supplied `--before`, `--after`, `--defer`, or
-/// `--override`, which the pre-edit refusal asks for by name. By the time the caller runs the
-/// answered claim, `conflicts_for_claim` can return nothing at all: the holder may have
-/// released, or a refreshed [`crate::reservation::MergeExtent`] may no longer cover the
-/// requested scopes. `ClaimRejection::AnsweredWithoutOverlap` reports that as its own outcome,
-/// because handing the empty conflict list to [`OutputEnvelope::blocked_claim`] would derive
-/// `blocked_by` from it and refuse an overlap it could not name.
+/// An answer reaches here because the caller supplied `--before`, `--after`, or `--override`,
+/// which the pre-edit refusal asks for by name. By the time the caller runs the answered claim,
+/// `conflicts_for_claim` can return nothing at all: the holder may have released, or a refreshed
+/// [`crate::reservation::MergeExtent`] may no longer cover the requested scopes.
+/// `ClaimRejection::AnsweredWithoutOverlap` reports that as its own outcome, because handing the
+/// empty conflict list to [`OutputEnvelope::blocked_claim`] would derive `blocked_by` from it
+/// and refuse an overlap it could not name.
 fn validate_authorization(
     request: PermissiveOverlapAuthorizationRequest,
     conflicts: Vec<ReservationConflict>,
@@ -1822,27 +1827,42 @@ fn validate_authorization(
     maximum_ordering_edges: u32,
 ) -> TransactionValidation<ClaimRejection> {
     let PermissiveOverlapAuthorizationRequest { answer, reason } = request;
-    if conflicts.is_empty() {
-        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(vec![
-            answer.blocker(),
-        ]));
-    }
-    let [conflict] = conflicts.as_slice() else {
-        return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
+    let Ok(overlaps) = AuthorizedOverlapSet::try_from(
+        conflicts
+            .iter()
+            .map(AuthorizedOverlap::from)
+            .collect::<Vec<_>>(),
+    ) else {
+        return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(
+            answer.blockers().to_vec(),
+        ));
     };
-    if conflict.reservation_id != answer.blocker() {
+    let named_blockers = answer.blockers().iter().copied().collect::<HashSet<_>>();
+    let holders = conflicts
+        .iter()
+        .map(|conflict| conflict.reservation_id)
+        .collect::<HashSet<_>>();
+    if named_blockers != holders {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
     }
     if matches!(answer, PermissiveOverlapAnswer::Sequence { .. })
-        && count_reaches_limit(ordering_graph.edge_count(), maximum_ordering_edges)
+        && additions_exceed_limit(
+            ordering_graph.edge_count(),
+            conflicts.len(),
+            maximum_ordering_edges,
+        )
     {
         return TransactionValidation::Reject(ClaimRejection::OrderingEdgeLimitReached(
             maximum_ordering_edges,
         ));
     }
-    let overlaps = AuthorizedOverlap::from(conflict).into();
-    let authorization = ConflictAuthorization::answered(answer, overlaps, reason);
+    let authorization = ConflictAuthorization::answered(&answer, overlaps, reason);
     TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
+}
+
+/// Whether adding `additions` to `count` would exceed `maximum`.
+fn additions_exceed_limit(count: usize, additions: usize, maximum: u32) -> bool {
+    u64::try_from(count.saturating_add(additions)).map_or(true, |total| total > u64::from(maximum))
 }
 
 fn count_reaches_limit(count: usize, maximum: u32) -> bool {

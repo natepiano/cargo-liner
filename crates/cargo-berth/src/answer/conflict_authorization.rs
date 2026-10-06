@@ -13,6 +13,16 @@ use crate::ledger::OrderingDirection;
 use crate::ledger::ReservationScope;
 use crate::scope::PathCase;
 
+/// One holder a [`ConflictAuthorization::SequenceEveryHolder`] answer named, and the ordering
+/// edge born against it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct SequencedHolder {
+    /// The holder named as the other endpoint of this ordering edge.
+    pub(crate) blocker: ReservationId,
+    /// The edge born with this acquisition against `blocker`.
+    pub(crate) edge_id: EdgeId,
+}
+
 /// The complete overlap decision recorded within a claim or widen transaction.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -25,6 +35,9 @@ pub(crate) enum ConflictAuthorization {
         overlaps: AuthorizedOverlapSet,
     },
     /// An ordering edge authorizes the shared scopes of this observed overlap set.
+    ///
+    /// A sequence answer to one holder records this form; an answer naming several holders
+    /// records [`Self::SequenceEveryHolder`].
     Sequence {
         /// The exact holder bindings observed under the ledger lock.
         overlaps:  AuthorizedOverlapSet,
@@ -34,6 +47,20 @@ pub(crate) enum ConflictAuthorization {
         direction: OrderingDirection,
         /// The edge born with this acquisition.
         edge_id:   EdgeId,
+        /// The caller's reason for selecting an order.
+        reason:    OverlapAuthorizationReason,
+    },
+    /// One ordering edge per holder authorizes the shared scopes of every observed holder.
+    ///
+    /// Recorded only when the answer named several holders, one [`SequencedHolder`] each; an
+    /// answer to one holder keeps the [`Self::Sequence`] form.
+    SequenceEveryHolder {
+        /// The exact holder bindings observed under the ledger lock, one per holder.
+        overlaps:  AuthorizedOverlapSet,
+        /// Each named holder and the edge born against it.
+        holders:   Vec<SequencedHolder>,
+        /// The ordering direction every edge shares.
+        direction: OrderingDirection,
         /// The caller's reason for selecting an order.
         reason:    OverlapAuthorizationReason,
     },
@@ -63,23 +90,46 @@ pub(crate) enum ConflictAuthorization {
 }
 
 impl ConflictAuthorization {
-    /// Record an answer whose named holder is the only conflict observed under the lock.
+    /// Record an answer whose named holders are exactly the conflicts observed under the lock.
+    ///
+    /// `overlaps` carries one binding per holder. A sequence answer gives each holder an
+    /// ordering edge of its own: one holder records [`Self::Sequence`], several record
+    /// [`Self::SequenceEveryHolder`]. An override names one holder, so `overlaps` binds only it.
     pub(crate) fn answered(
-        answer: PermissiveOverlapAnswer,
+        answer: &PermissiveOverlapAnswer,
         overlaps: AuthorizedOverlapSet,
         reason: OverlapAuthorizationReason,
     ) -> Self {
         match answer {
-            PermissiveOverlapAnswer::Sequence { blocker, direction } => Self::Sequence {
-                overlaps,
-                blocker,
-                direction,
-                edge_id: EdgeId::new(),
-                reason,
+            PermissiveOverlapAnswer::Sequence { direction, .. } => {
+                let direction = *direction;
+                let holders = overlaps
+                    .as_slice()
+                    .iter()
+                    .map(|overlap| SequencedHolder {
+                        blocker: overlap.reservation_id,
+                        edge_id: EdgeId::new(),
+                    })
+                    .collect::<Vec<_>>();
+                match holders.as_slice() {
+                    [holder] => Self::Sequence {
+                        overlaps,
+                        blocker: holder.blocker,
+                        direction,
+                        edge_id: holder.edge_id,
+                        reason,
+                    },
+                    _ => Self::SequenceEveryHolder {
+                        overlaps,
+                        holders,
+                        direction,
+                        reason,
+                    },
+                }
             },
             PermissiveOverlapAnswer::Override { blocker } => Self::Override {
                 overlaps,
-                blocker,
+                blocker: *blocker,
                 reason,
             },
         }
@@ -103,6 +153,7 @@ impl ConflictAuthorization {
             Self::NoConflict => false,
             Self::Enrollment { overlaps }
             | Self::Sequence { overlaps, .. }
+            | Self::SequenceEveryHolder { overlaps, .. }
             | Self::Defer { overlaps, .. }
             | Self::Override { overlaps, .. } => {
                 overlaps.as_slice().iter().any(|authorized_overlap| {
@@ -125,12 +176,15 @@ impl ConflictAuthorization {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::error::Error;
 
     use super::ConflictAuthorization;
+    use super::SequencedHolder;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapSet;
     use crate::answer::OverlapScopeRevision;
+    use crate::answer::PermissiveOverlapAnswer;
     use crate::ids::EdgeId;
     use crate::ids::ReservationId;
     use crate::ledger::OrderingDirection;
@@ -204,5 +258,129 @@ mod tests {
         ));
         assert!(!existing.covers(counterpart, &widened_revision, &shared, PathCase::Sensitive));
         Ok(())
+    }
+
+    /// A `SequenceEveryHolder` answer covers each holder's own bound scope, and neither a scope
+    /// bound only for the other holder nor any scope of a reservation it never named.
+    #[test]
+    fn a_sequence_to_every_holder_covers_each_holders_own_scope() -> Result<(), Box<dyn Error>> {
+        let first_holder = ReservationId::new();
+        let second_holder = ReservationId::new();
+        let shared = ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        };
+        let other = ReservationScope {
+            path: "other.rs".parse()?,
+            kind: ScopeKind::File,
+        };
+        let first_overlap = authorized_overlap(first_holder, &shared)?;
+        let second_overlap = authorized_overlap(second_holder, &other)?;
+        let first_revision = first_overlap.scope_revision.clone();
+        let second_revision = second_overlap.scope_revision.clone();
+        let answer = ConflictAuthorization::SequenceEveryHolder {
+            overlaps:  AuthorizedOverlapSet::try_from(vec![first_overlap, second_overlap])?,
+            holders:   vec![
+                SequencedHolder {
+                    blocker: first_holder,
+                    edge_id: EdgeId::new(),
+                },
+                SequencedHolder {
+                    blocker: second_holder,
+                    edge_id: EdgeId::new(),
+                },
+            ],
+            direction: OrderingDirection::HolderBeforeRequester,
+            reason:    "integrate after both holders".parse()?,
+        };
+
+        assert!(answer.covers(first_holder, &first_revision, &shared, PathCase::Sensitive));
+        assert!(answer.covers(second_holder, &second_revision, &other, PathCase::Sensitive));
+        assert!(!answer.covers(first_holder, &first_revision, &other, PathCase::Sensitive));
+        assert!(!answer.covers(
+            second_holder,
+            &second_revision,
+            &shared,
+            PathCase::Sensitive
+        ));
+        assert!(!answer.covers(
+            ReservationId::new(),
+            &first_revision,
+            &shared,
+            PathCase::Sensitive,
+        ));
+        Ok(())
+    }
+
+    /// [`ConflictAuthorization::answered`] keeps the `Sequence` form for one holder binding and
+    /// records `SequenceEveryHolder`, one edge per holder, for two.
+    #[test]
+    fn a_sequence_answer_records_one_edge_per_holder() -> Result<(), Box<dyn Error>> {
+        let first_holder = ReservationId::new();
+        let second_holder = ReservationId::new();
+        let shared = ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        };
+        let first_overlap = authorized_overlap(first_holder, &shared)?;
+        let second_overlap = authorized_overlap(second_holder, &shared)?;
+        let direction = OrderingDirection::RequesterBeforeHolder;
+
+        let one_holder = ConflictAuthorization::answered(
+            &PermissiveOverlapAnswer::Sequence {
+                blockers: vec![first_holder],
+                direction,
+            },
+            AuthorizedOverlapSet::from(first_overlap.clone()),
+            "integrate before the holder".parse()?,
+        );
+        assert!(matches!(
+            one_holder,
+            ConflictAuthorization::Sequence { blocker, direction: recorded_direction, .. }
+                if blocker == first_holder && recorded_direction == direction
+        ));
+
+        let every_holder = ConflictAuthorization::answered(
+            &PermissiveOverlapAnswer::Sequence {
+                blockers: vec![first_holder, second_holder],
+                direction,
+            },
+            AuthorizedOverlapSet::try_from(vec![first_overlap, second_overlap])?,
+            "integrate before both holders".parse()?,
+        );
+        let ConflictAuthorization::SequenceEveryHolder {
+            holders,
+            direction: recorded_direction,
+            ..
+        } = every_holder
+        else {
+            return Err("two holder bindings should record SequenceEveryHolder".into());
+        };
+        assert_eq!(recorded_direction, direction);
+        assert_eq!(
+            holders
+                .iter()
+                .map(|holder| holder.blocker)
+                .collect::<Vec<_>>(),
+            vec![first_holder, second_holder]
+        );
+        let edge_ids = holders
+            .iter()
+            .map(|holder| holder.edge_id)
+            .collect::<HashSet<_>>();
+        assert_eq!(edge_ids.len(), holders.len());
+        Ok(())
+    }
+
+    fn authorized_overlap(
+        reservation_id: ReservationId,
+        scope: &ReservationScope,
+    ) -> Result<AuthorizedOverlap, Box<dyn Error>> {
+        let scopes = ReservationScopeSet::try_from(vec![scope.clone()])?;
+        Ok(AuthorizedOverlap {
+            reservation_id,
+            scope_revision: OverlapScopeRevision::from(&scopes),
+            scopes: scopes.into(),
+        })
     }
 }

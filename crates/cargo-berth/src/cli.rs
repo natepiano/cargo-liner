@@ -524,20 +524,20 @@ struct ClaimArguments {
     /// descendants.
     #[arg(required = true, value_name = PATH_VALUE_NAME)]
     paths:                Vec<PathBuf>,
-    /// Sequence this reservation before the blocking reservation.
+    /// Sequence this reservation before the blocking reservation; repeat once per holder.
     #[arg(
         long = CLAIM_BEFORE_ARGUMENT,
         value_name = BLOCKER_VALUE_NAME,
         requires = OVERLAP_WHY_ARGUMENT_ID
     )]
-    before:               Option<ReservationId>,
-    /// Sequence this reservation after the blocking reservation.
+    before:               Vec<ReservationId>,
+    /// Sequence this reservation after the blocking reservation; repeat once per holder.
     #[arg(
         long = CLAIM_AFTER_ARGUMENT,
         value_name = BLOCKER_VALUE_NAME,
         requires = OVERLAP_WHY_ARGUMENT_ID
     )]
-    after:                Option<ReservationId>,
+    after:                Vec<ReservationId>,
     /// Defer the integration order with the blocking reservation; repeat once per holder.
     #[arg(
         long = CLAIM_DEFER_ARGUMENT,
@@ -1172,8 +1172,8 @@ impl ClaimArguments {
 
 /// Convert the clap-owned overlap arguments into the one answer they encode.
 fn overlap_selection(
-    before: Option<ReservationId>,
-    after: Option<ReservationId>,
+    before: Vec<ReservationId>,
+    after: Vec<ReservationId>,
     defer: Vec<ReservationId>,
     override_reservation: Option<ReservationId>,
     overlap_why: Option<&str>,
@@ -1185,8 +1185,13 @@ fn overlap_selection(
             .map_err(|error| error.to_string())
     };
     Ok(
-        match (before, after, defer.as_slice(), override_reservation) {
-            (None, None, [], None) => {
+        match (
+            before.as_slice(),
+            after.as_slice(),
+            defer.as_slice(),
+            override_reservation,
+        ) {
+            ([], [], [], None) => {
                 if overlap_why.is_some() {
                     return Err(
                         "--overlap-why requires --before, --after, --defer, or --override"
@@ -1195,28 +1200,28 @@ fn overlap_selection(
                 }
                 OverlapSelection::NoOverlapRequested
             },
-            (Some(blocker_reservation_id), None, [], None) => {
+            ([_, ..], [], [], None) => {
                 let authorization_reason = authorization_reason()?;
                 OverlapSelection::RequesterBeforeHolder {
-                    blocker_reservation_id,
+                    blocker_reservation_ids: before,
                     authorization_reason,
                 }
             },
-            (None, Some(blocker_reservation_id), [], None) => {
+            ([], [_, ..], [], None) => {
                 let authorization_reason = authorization_reason()?;
                 OverlapSelection::RequesterAfterHolder {
-                    blocker_reservation_id,
+                    blocker_reservation_ids: after,
                     authorization_reason,
                 }
             },
-            (None, None, [_, ..], None) => {
+            ([], [], [_, ..], None) => {
                 let authorization_reason = authorization_reason()?;
                 OverlapSelection::Defer {
                     blocker_reservation_ids: defer,
                     authorization_reason,
                 }
             },
-            (None, None, [], Some(blocker_reservation_id)) => {
+            ([], [], [], Some(blocker_reservation_id)) => {
                 let authorization_reason = authorization_reason()?;
                 OverlapSelection::Override {
                     blocker_reservation_id,
@@ -1232,15 +1237,15 @@ fn overlap_selection(
 enum OverlapSelection {
     /// The caller did not request a permissive overlap answer.
     NoOverlapRequested,
-    /// The requester must integrate before the current reservation holder.
+    /// The requester must integrate before every named reservation holder.
     RequesterBeforeHolder {
-        blocker_reservation_id: ReservationId,
-        authorization_reason:   OverlapAuthorizationReason,
+        blocker_reservation_ids: Vec<ReservationId>,
+        authorization_reason:    OverlapAuthorizationReason,
     },
-    /// The current reservation holder must integrate before the requester.
+    /// Every named reservation holder must integrate before the requester.
     RequesterAfterHolder {
-        blocker_reservation_id: ReservationId,
-        authorization_reason:   OverlapAuthorizationReason,
+        blocker_reservation_ids: Vec<ReservationId>,
+        authorization_reason:    OverlapAuthorizationReason,
     },
     /// The requester defers the integration order with every named holder.
     Defer {
@@ -1258,21 +1263,21 @@ fn overlap_authorization_request(selection: OverlapSelection) -> OverlapAuthoriz
     let (answer, reason) = match selection {
         OverlapSelection::NoOverlapRequested => return OverlapAuthorizationRequest::Absent,
         OverlapSelection::RequesterBeforeHolder {
-            blocker_reservation_id,
+            blocker_reservation_ids,
             authorization_reason,
         } => (
             PermissiveOverlapAnswer::Sequence {
-                blocker:   blocker_reservation_id,
+                blockers:  blocker_reservation_ids,
                 direction: OrderingDirection::RequesterBeforeHolder,
             },
             authorization_reason,
         ),
         OverlapSelection::RequesterAfterHolder {
-            blocker_reservation_id,
+            blocker_reservation_ids,
             authorization_reason,
         } => (
             PermissiveOverlapAnswer::Sequence {
-                blocker:   blocker_reservation_id,
+                blockers:  blocker_reservation_ids,
                 direction: OrderingDirection::HolderBeforeRequester,
             },
             authorization_reason,
@@ -2335,9 +2340,15 @@ mod tests {
     use super::gate_lock_deadline_diagnostic;
     use super::gate_total_deadline_diagnostic;
     use super::without_subcommand_name;
+    use crate::answer::OverlapAuthorizationReason;
+    use crate::answer::OverlapAuthorizationRequest;
+    use crate::answer::PermissiveOverlapAnswer;
+    use crate::answer::PermissiveOverlapAuthorizationRequest;
     use crate::coordination_identity::RecoveryCommandLine;
     use crate::exit::BerthExit;
+    use crate::ids::ReservationId;
     use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
+    use crate::ledger::OrderingDirection;
     use crate::output;
     use crate::verb::board::BoardOutputSelection;
     use crate::verb::claim::ClaimRequest;
@@ -2488,8 +2499,8 @@ mod tests {
         }
 
         fn is_the_only_selected_resolution(self, claim_arguments: &ClaimArguments) -> bool {
-            let before_is_selected = claim_arguments.before.is_some();
-            let after_is_selected = claim_arguments.after.is_some();
+            let before_is_selected = !claim_arguments.before.is_empty();
+            let after_is_selected = !claim_arguments.after.is_empty();
             let defer_is_selected = !claim_arguments.defer.is_empty();
             let override_is_selected = claim_arguments.override_reservation.is_some();
 
@@ -2838,6 +2849,45 @@ mod tests {
         }
     }
 
+    /// Each `--after` names one holder, and the claim sequences after every one of them.
+    #[test]
+    fn repeated_after_flags_sequence_the_claim_after_every_named_holder() -> Result<(), String> {
+        let overlap_reason = "the requester builds on both holders";
+        let claim_request = claim_request(&[
+            BINARY_NAME,
+            "claim",
+            "src/lib.rs",
+            "--after",
+            RESERVATION_ID,
+            "--after",
+            SECOND_RESERVATION_ID,
+            "--overlap-why",
+            overlap_reason,
+        ])?;
+        let blockers = [RESERVATION_ID, SECOND_RESERVATION_ID]
+            .into_iter()
+            .map(str::parse)
+            .collect::<Result<Vec<ReservationId>, _>>()
+            .map_err(|error| error.to_string())?;
+        let reason = overlap_reason
+            .parse::<OverlapAuthorizationReason>()
+            .map_err(|error| error.to_string())?;
+
+        assert_eq!(
+            claim_request.overlap_authorization,
+            OverlapAuthorizationRequest::Permissive(Box::new(
+                PermissiveOverlapAuthorizationRequest {
+                    answer: PermissiveOverlapAnswer::Sequence {
+                        blockers,
+                        direction: OrderingDirection::HolderBeforeRequester,
+                    },
+                    reason,
+                }
+            ))
+        );
+        Ok(())
+    }
+
     #[test]
     fn rendered_overlap_answer_commands_select_the_documented_resolution() -> Result<(), String> {
         let mut rendered_commands = output::blocked_edit_answer_guidance_template()
@@ -2872,8 +2922,8 @@ mod tests {
                 "rendered overlap answer command `{rendered_command}` must select only `{}`; found \
                  --before={}, --after={}, --defer={}, --override={}",
                 expected_resolution.flag(),
-                claim_arguments.before.is_some(),
-                claim_arguments.after.is_some(),
+                !claim_arguments.before.is_empty(),
+                !claim_arguments.after.is_empty(),
                 !claim_arguments.defer.is_empty(),
                 claim_arguments.override_reservation.is_some()
             );

@@ -778,6 +778,7 @@ impl JournalOperation {
             Self::Widen { authorization, .. } => match authorization {
                 ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
+                | ConflictAuthorization::SequenceEveryHolder { .. }
                 | ConflictAuthorization::Defer { .. }
                 | ConflictAuthorization::Override { .. } => true,
                 ConflictAuthorization::NoConflict

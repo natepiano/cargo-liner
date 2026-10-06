@@ -278,10 +278,15 @@ The four answers are:
 - `--override <holder>`: editing is authorized without an integration order.
   A later `sequence` command can still order the pair.
 
+`--before` and `--after` may also repeat, once per holder, so one claim orders
+the requester against every holder of a path, recording one ordering edge for
+each holder.
+
 Each answer requires `--overlap-why <text>` and records in that one
 invocation. An answer that leaves a conflicting holder unnamed is refused at
-exit 1 and records nothing; repeat `--defer` for every holder, or narrow the
-requested scopes until one holder remains.
+exit 1 and records nothing. Repeat `--before`, `--after` or `--defer` once per
+holder; `--override` names one holder, so narrow the requested scopes until
+one holder remains.
 
 ## Drift and the post-commit warning
 

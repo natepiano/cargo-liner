@@ -21,6 +21,7 @@ const GIT: GitDriver = GitDriver {
     cleared_environment: &[],
 };
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
@@ -50,6 +51,7 @@ const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
+const SEQUENCE_EVERY_HOLDER_REASON: &str = "the requester builds on both holders";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const SHELL_BINARY: &str = "sh";
@@ -736,6 +738,148 @@ fn an_answer_naming_one_holder_is_refused_while_another_holder_conflicts() {
         blocked_envelope["blocked_by"],
         serde_json::json!([first_holder_id, second_holder_id])
     );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+}
+
+/// One claim names both holders of a path with one `--after` each: one `claim` record carries a
+/// `sequence_every_holder` authorization with an ordering edge per holder, and the board holds
+/// the requester behind both holders.
+#[test]
+fn one_claim_sequences_after_both_holders_of_a_path() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let holders = two_holders_of_the_library(repository.path(), &third_root);
+    let named = holders.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let answered = claim_after_every_named(&second_root, &named);
+    let envelope = json_output(&answered);
+
+    assert_eq!(answered.status.code(), Some(0), "{envelope:#}");
+    assert_eq!(envelope["status"], "claimed");
+    let requester_id = envelope["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("the claim should return its reservation id");
+    let recorded = last_journal_event(repository.path());
+    assert_eq!(recorded["op"], "claim");
+    assert_eq!(recorded["reservation_id"], requester_id);
+    let authorization = &recorded["authorization"];
+    assert_eq!(authorization["kind"], "sequence_every_holder");
+    assert_eq!(authorization["direction"], "holder_before_requester");
+    assert_eq!(authorization["reason"], SEQUENCE_EVERY_HOLDER_REASON);
+    let mut recorded_edges = authorization["holders"]
+        .as_array()
+        .expect("a several-holder answer records its holders")
+        .iter()
+        .map(|holder| ordering_pair(&holder["blocker"], &holder["edge_id"]))
+        .collect::<Vec<_>>();
+    recorded_edges.sort();
+    assert_eq!(
+        recorded_edges
+            .iter()
+            .map(|(blocker, _)| blocker.as_str())
+            .collect::<Vec<_>>(),
+        named
+    );
+    let edge_ids = recorded_edges
+        .iter()
+        .map(|(_, edge_id)| edge_id.as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        edge_ids.len(),
+        recorded_edges.len(),
+        "each holder should record its own ordering edge: {authorization:#}"
+    );
+
+    let board = run_berth(repository.path(), ["board", "--json"]);
+    assert!(
+        board.status.success(),
+        "{}",
+        String::from_utf8_lossy(&board.stdout)
+    );
+    let board_json = json_output(&board);
+    let mut waiting_edges = board_json["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("the board should list its waiting entries")
+        .iter()
+        .filter(|entry| entry["successor"] == requester_id)
+        .map(|entry| {
+            assert_eq!(entry["hold"], "ordering_edge", "{entry:#}");
+            ordering_pair(&entry["predecessor"], &entry["edge_id"])
+        })
+        .collect::<Vec<_>>();
+    waiting_edges.sort();
+    assert_eq!(
+        waiting_edges, recorded_edges,
+        "both holders should hold the requester"
+    );
+    assert!(
+        check(&second_root, &["file:src/lib.rs"], SECOND_RUN)
+            .status
+            .success()
+    );
+}
+
+/// An answer naming both holders and also a reservation that shares nothing with the claim is
+/// refused as an unanswered claim is, and nothing records.
+#[test]
+fn a_sequence_answer_naming_a_reservation_that_does_not_conflict_is_refused() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let holders = two_holders_of_the_library(repository.path(), &third_root);
+    let unrelated_id = reservation_id(&claim_explicit(
+        &second_root,
+        "file:src/own.rs",
+        SECOND_RUN,
+        "protect a file no holder shares",
+    ));
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let named = holders
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(unrelated_id.as_str()))
+        .collect::<Vec<_>>();
+
+    let blocked = claim_after_every_named(&second_root, &named);
+    let blocked_envelope = json_output(&blocked);
+
+    assert_eq!(blocked.status.code(), Some(1), "{blocked_envelope:#}");
+    assert_eq!(blocked_envelope["status"], "blocked_by_overlap");
+    assert_eq!(blocked_envelope["blocked_by"], serde_json::json!(holders));
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+}
+
+/// `--override` names one holder, so it is refused while a second holder of the path conflicts.
+#[test]
+fn an_override_naming_one_of_two_holders_is_refused() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let holders = two_holders_of_the_library(repository.path(), &third_root);
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+    let overridden_holder = holders
+        .first()
+        .expect("the library should have a first holder");
+
+    let blocked = answer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--override",
+        overridden_holder,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the overlap with the first holder was reviewed",
+        ),
+    );
+    let blocked_envelope = json_output(&blocked);
+
+    assert_eq!(blocked.status.code(), Some(1), "{blocked_envelope:#}");
+    assert_eq!(blocked_envelope["status"], "blocked_by_overlap");
+    assert_eq!(blocked_envelope["blocked_by"], serde_json::json!(holders));
     assert_eq!(journal_bytes(repository.path()), journal_before);
 }
 
@@ -2066,6 +2210,39 @@ fn two_holders_of_the_library(repository: &Path, third_root: &Path) -> Vec<Strin
     let mut holders = vec![first_holder, second_holder];
     holders.sort();
     holders
+}
+
+/// Claim `src/lib.rs` from `requester_root` as `SECOND_RUN`, with one `--after` per named
+/// reservation.
+fn claim_after_every_named(requester_root: &Path, named: &[&str]) -> Output {
+    let after_flags = named
+        .iter()
+        .flat_map(|reservation_id| ["--after", *reservation_id]);
+    let arguments = ["claim", "file:src/lib.rs", "--run", SECOND_RUN]
+        .into_iter()
+        .chain(after_flags)
+        .chain([
+            "--overlap-why",
+            SEQUENCE_EVERY_HOLDER_REASON,
+            "--why",
+            "protect the requester file",
+            "--json",
+        ]);
+    run_berth(requester_root, arguments)
+}
+
+/// The holder and edge id one recorded holder or one board hold names.
+fn ordering_pair(holder: &serde_json::Value, edge_id: &serde_json::Value) -> (String, String) {
+    (
+        holder
+            .as_str()
+            .expect("an ordering edge should name its holder")
+            .to_owned(),
+        edge_id
+            .as_str()
+            .expect("an ordering edge should name its edge id")
+            .to_owned(),
+    )
 }
 
 #[test]
