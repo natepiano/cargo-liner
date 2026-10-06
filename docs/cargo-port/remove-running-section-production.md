@@ -33,7 +33,9 @@
 
 ## Close-out
 
-- Install the merged cargo-port on natedev and the Mac.
+1. A final CI point: `validate_and_push.sh --to main` and its CI run green.
+2. `/release cargo-port 0.8.0`. The user asked for this on 2026-10-06 because the removal is a breaking change, and the request pre-approves the release. The release config pins the path-only `tui_pane` dependency to its crates.io version and stops when `crates/tui_pane` has drifted from it. If it stops there, bring that to the user.
+3. Install the released cargo-port on the Mac. The release's install check covers natedev.
 
 ## Production rules
 
