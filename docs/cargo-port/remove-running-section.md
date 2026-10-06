@@ -56,7 +56,7 @@
 
 - The Targets pane shows only the targets table, which fills the pane body: `render.rs` places a single `TABLE_BOX`, and `build_targets_title(focus, cursor: usize, data)` takes a plain cursor. There is no Running subpane, no `Kill` action or `K` binding, no `KillTarget` confirmation, and no Running click, wheel, Enter-toggle or Left/Right expand path.
 - `PaneBehavior::DetailTargets` is reachable exactly when `self.panes.targets.content().is_some_and(panes::TargetsData::has_targets)`; `targets_run_visibility` applies the same test. `AppPaneId::Targets` navigates through the shared `navigate_detail` path with Lang, Cpu and Git.
-- No process scan exists. `RunningTargetsState`, the `RunningTargetsPolling` startup gate, the cargo workspace index, `ProjectListRevision`, `AcceptedCargoMetadataRevision` and `WorkspaceMetadata.cargo_workspace_root` (with its producer in `scan/cargo_metadata.rs`) are gone. The event loop waits on `app.animation_timeout()` and no longer wakes every 1 s; `FrameMetrics` exposes `is_slow()`.
+- No process scan exists. `RunningTargetsState`, the `RunningTargetsPolling` startup gate, the cargo workspace index, `ProjectListRevision`, `AcceptedCargoMetadataRevision` and `WorkspaceMetadata.cargo_workspace_root` (with its producer in `scan/cargo_metadata.rs`) are gone. The event loop waits on `app.animation_timeout()` and no longer wakes every 1 s; `FrameMetrics::speed()` returns a `FrameSpeed` (`BelowSlowThreshold` or `Slow`).
 - `src/process_observation/` holds only `identity`: `ProcessIdentity`, `observe_current_process_identity` and `revalidate_strong_process_identity`, called from `tui/state/inflight.rs`, `tui/state/owned_run_process_actor.rs` and `tui/terminal/processes.rs`.
 - A user keymap entry `kill` gets the existing unknown-entry warning (`ignore_unknown_entries`). CHANGELOG `### Removed` carries a **Breaking** bullet; it and the README send users who want to watch or stop running targets to cargo-tile, installed with `cargo install --git https://github.com/natepiano/cargo-liner cargo-tile`.
 
@@ -65,7 +65,7 @@
 - `src/tui/panes/{mod,actions,system}.rs` — Targets actions without kill or tree toggles; `Panes` without running-target state.
 - `src/tui/keymap/{actions,resolved,load}.rs`, `src/tui/integration/framework_keymap/{mod,builder,targets_pane}.rs`, `tests/assets/default-keymap.toml` — keymap without `Kill`.
 - `src/tui/app/{mod,construct,confirm_action,tree_mutation}.rs`, `src/tui/app/async_tasks/{dispatch,disk_handlers,metadata_handlers}.rs`, `src/tui/{render,render_context,app_render_state,interaction,background,startup_services,test_support,mod}.rs`, `src/tui/input/dispatch.rs` — app, render, input and startup wiring without running targets, the index or revision counters.
-- `src/tui/terminal/{event_loop,frame_metrics}.rs` — animation-timed loop; `FrameMetrics::is_slow()`.
+- `src/tui/terminal/{event_loop,frame_metrics}.rs` — animation-timed loop; `FrameMetrics::speed()` → `FrameSpeed`.
 - `src/process_observation/{mod,identity}.rs` — process identity for owned runs.
 - `src/project/{mod,cargo/mod,cargo/metadata_store}.rs`, `src/scan/cargo_metadata.rs`, `src/tui/project_list/list.rs`, `src/tui/project_list_state.rs` — metadata and project list without the workspace index or revisions.
 - `README.md`, `CHANGELOG.md`, `assets/pane-targets-numbered.png` (table plus callouts 1–3); `docs/cargo-port/tooltip.md` without Running references.

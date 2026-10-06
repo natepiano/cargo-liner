@@ -16,6 +16,18 @@ pub(super) struct FrameMetrics {
     pub(super) input_count:    usize,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum FrameSpeed {
+    BelowSlowThreshold,
+    Slow,
+}
+
 impl FrameMetrics {
-    pub(super) const fn is_slow(&self) -> bool { self.frame_elapsed.as_millis() >= SLOW_FRAME_MS }
+    pub(super) const fn speed(&self) -> FrameSpeed {
+        if self.frame_elapsed.as_millis() < SLOW_FRAME_MS {
+            FrameSpeed::BelowSlowThreshold
+        } else {
+            FrameSpeed::Slow
+        }
+    }
 }
