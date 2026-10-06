@@ -50,7 +50,6 @@ activate = "enter"
 
 [targets]
 activate      = "enter"
-kill          = "K"
 release_build = "r"
 
 [lints]

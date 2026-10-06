@@ -281,7 +281,6 @@ impl App {
             !declarations_match
         });
         if submodule_list_changed {
-            self.project_list.mark_visible_ownership_changed();
             self.rebuild_visible_rows_now();
         }
     }
@@ -332,7 +331,6 @@ mod tests {
         });
         app.project_list.set_cursor(1);
         let visible_rows = app.project_list.visible_rows().to_vec();
-        let project_list_revision = app.project_list.revision();
         assert_eq!(
             app.project_list.selected_project_path(),
             Some(Path::new("/tmp/project/first"))
@@ -344,7 +342,6 @@ mod tests {
         });
 
         assert_eq!(app.project_list.visible_rows(), visible_rows);
-        assert!(app.project_list.revision() > project_list_revision);
         assert_eq!(
             app.project_list.selected_project_path(),
             Some(Path::new("/tmp/project/second"))

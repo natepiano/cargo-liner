@@ -4,7 +4,6 @@ use std::time::Duration;
 use super::panes::OutputPresentation;
 use super::panes::SyncedDescriptionHeight;
 use super::project_list_state::ProjectList;
-use super::running_targets::RunningTargets;
 use super::settings::SettingsRenderInputs;
 use super::state::CiStatusLookup;
 use super::state::Config;
@@ -24,7 +23,6 @@ pub(super) struct PaneRenderCtx<'a> {
     pub(super) ci_status_lookup:          &'a CiStatusLookup,
     pub(super) settings_render_inputs:    Option<&'a SettingsRenderInputs>,
     pub(super) synced_description_height: SyncedDescriptionHeight,
-    pub(super) running_targets:           &'a RunningTargets,
     /// The one value the Output pane's layout, visibility, focus, labels,
     /// copy availability, hit testing, and rendering all derive from.
     pub(super) output_presentation:       OutputPresentation<'a>,

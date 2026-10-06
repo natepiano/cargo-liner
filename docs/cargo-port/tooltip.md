@@ -594,10 +594,10 @@ Add tests for the framework `pane` slot, centered pane actions, right-side globa
 Prioritize UI elements that decode compact or non-obvious interface state:
 
 1. Project Tree status headers/legend targets for lint, CI, git/sync, disk, and target indicators.
-2. Targets title count groups: Binary, Examples, Benches, and the Running subpane title.
+2. Targets title count groups: Binary, Examples, and Benches.
 3. Pane titles only where the title adds real context:
    - Project Tree: selected row drives detail panes.
-   - Targets: runnable Cargo targets plus live Running outline.
+   - Targets: runnable Cargo targets.
    - Output: captured output and selection/yank behavior.
 4. Package/Git labels that are not self-evident:
    - Target dir, Manifest, Features, Upstream, Pull request, CI source.
@@ -625,7 +625,6 @@ Examples:
 - CI status header: "Shows GitHub runs for the branch-owning row, when cargo-port can identify a repository."
 - Target dir: "Cargo output directory this project will clean or inspect."
 - Upstream: "Remote branch used to compute ahead/behind and sync status."
-- Running title: "Live cargo-launched processes grouped by target and parent process."
 - Status `pane`: "Move focus between visible panes."
 
 Copy inventory:
@@ -757,7 +756,6 @@ Files:
 - `src/tui/panes/package.rs`
 - `src/tui/panes/git.rs`
 - `src/tui/panes/targets/mod.rs`
-- `src/tui/panes/targets/running_subpane.rs`
 - `src/tui/render.rs`
 - new `src/tui/tooltips.rs`
 - focused tests under `src/tui/app/tests/interaction.rs`
@@ -930,7 +928,7 @@ Recorded refinements:
 - Chose structured `RenderedSlot` records as the status-line tooltip carrier through placement and clipping.
 - Added status-line tests for `pane`, centered pane actions, right-side globals, and clipped slots.
 - Defined `TooltipHeaderColumn` with final screen-space clipped rects.
-- Corrected first-pass cargo-port Targets coverage to current title groups: `Binary`, `Examples`, `Benches`, and `Running`.
+- Corrected first-pass cargo-port Targets coverage to current title groups: `Binary`, `Examples`, and `Benches`.
 - Corrected first-pass status-bar coverage to current visible slots: `pane` and `shortcuts`.
 - Added a centralized cargo-port tooltip copy inventory with completeness, nonempty-body, non-restating, and wrapping tests.
 

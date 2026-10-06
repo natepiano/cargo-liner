@@ -155,9 +155,7 @@ impl BuildMode {
 
 /// Flatten `TargetsData` into a single render order: binaries first,
 /// then examples, then benches. Each kind section is pre-sorted by
-/// [`TargetsData::from_workspace_metadata`]; this fn applies a stable
-/// running-first pre-pass per section, so running rows float to the top
-/// of their kind without disturbing alphabetical order otherwise.
+/// [`TargetsData::from_workspace_metadata`].
 pub fn build_target_list_from_data(data: &TargetsData) -> Vec<TargetEntry> {
     let mut entries =
         Vec::with_capacity(data.binaries.len() + data.examples.len() + data.benches.len());
@@ -182,12 +180,6 @@ pub struct TargetsData {
 impl TargetsData {
     pub const fn has_targets(&self) -> bool {
         !self.binaries.is_empty() || !self.examples.is_empty() || !self.benches.is_empty()
-    }
-
-    /// Total runnable targets across the three kind sections — the
-    /// Targets table's row count.
-    pub const fn target_count(&self) -> usize {
-        self.binaries.len() + self.examples.len() + self.benches.len()
     }
 
     fn append(&mut self, mut other: Self) {
@@ -466,15 +458,6 @@ mod target_list_tests {
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c", "ex1", "bn1"]);
     }
-
-    #[test]
-    fn target_count_matches_the_flat_entry_list() {
-        let data = data();
-        assert_eq!(
-            data.target_count(),
-            build_target_list_from_data(&data).len()
-        );
-    }
 }
 
 #[cfg(test)]
@@ -534,7 +517,6 @@ mod targets_from_metadata {
         }
         WorkspaceMetadata {
             declared_checkout_root:   root.clone(),
-            cargo_workspace_root:     root.clone(),
             target_directory:         AbsolutePath::from(root.as_path().join("target")),
             packages:                 map,
             fingerprint:              ManifestFingerprint {

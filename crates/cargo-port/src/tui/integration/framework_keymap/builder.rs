@@ -15,10 +15,10 @@ use super::LangPane;
 use super::OutputPane;
 use super::OwnerRepo;
 use super::PackagePane;
-use super::TargetsPane;
 use super::TrackedItemKey;
 use super::lints_pane::LintsPane;
 use super::project_list_pane::ProjectListPane;
+use super::targets_pane::TargetsPane;
 
 /// Assemble the framework keymap from a configured builder. Called
 /// once during App construction after the builder has loaded the

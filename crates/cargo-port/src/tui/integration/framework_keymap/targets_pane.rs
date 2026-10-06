@@ -13,7 +13,7 @@ use super::panes;
 use super::targets_is_tabbable;
 
 /// `Pane<App>` + `Shortcuts<App>` host for the Targets pane.
-pub struct TargetsPane;
+pub(super) struct TargetsPane;
 
 impl Pane<App> for TargetsPane {
     const APP_PANE_ID: AppPaneId = AppPaneId::Targets;
@@ -31,13 +31,11 @@ impl Shortcuts<App> for TargetsPane {
         tui_pane::bindings! {
             crossterm::event::KeyCode::Enter => TargetsAction::Activate,
             'r' => TargetsAction::ReleaseBuild,
-            'K' => TargetsAction::Kill,
         }
     }
 
     fn visibility(&self, action: TargetsAction, ctx: &App) -> Visibility {
         match action {
-            TargetsAction::Kill => targets_kill_visibility(ctx),
             TargetsAction::Activate | TargetsAction::ReleaseBuild => targets_run_visibility(ctx),
         }
     }
@@ -54,31 +52,14 @@ impl CopySelection<App> for TargetsPane {
     }
 }
 
-/// `Kill` on the Targets pane is hidden unless the highlight sits on a
-/// Running row: `running_cursor_pid` is `Some` exactly then. Hiding is
-/// presentational — dispatch never consults `visibility()`, and
-/// `handle_target_kill` already no-ops on table rows
-/// (`resolve_kill_request` returns `None`).
-pub(super) const fn targets_kill_visibility(ctx: &App) -> Visibility {
-    if ctx.panes.targets.running_cursor_pid().is_some() {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    }
-}
-
-/// `Activate`/`ReleaseBuild` belong to the targets table: hidden while
-/// the highlight sits in the Running list (any row at or past the
-/// table's length), where only `Kill` applies. Hiding is presentational
-/// — `handle_target_action` already runs nothing on Running rows, and
-/// Enter on the `cargo` header still toggles the group.
+/// Run actions are visible when the table has a selected target.
 pub(super) fn targets_run_visibility(ctx: &App) -> Visibility {
-    let table_len = ctx
+    if ctx
         .panes
         .targets
         .content()
-        .map_or(0, panes::TargetsData::target_count);
-    if ctx.panes.targets.viewport.pos() < table_len {
+        .is_some_and(panes::TargetsData::has_targets)
+    {
         Visibility::Visible
     } else {
         Visibility::Hidden

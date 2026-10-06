@@ -407,7 +407,6 @@ mod tests {
         assert_eq!(effects.lint_cache_scan, StartupEffect::Suppressed);
         assert_eq!(effects.cpu_monitor, StartupEffect::Suppressed);
         assert_eq!(effects.process_globals, StartupEffect::Suppressed);
-        assert_eq!(effects.running_targets_polling, StartupEffect::Suppressed);
         assert_eq!(effects.priority_detail_fetch, StartupEffect::Suppressed);
         assert_eq!(effects.startup_git_first_commit, StartupEffect::Suppressed);
         assert_eq!(effects.startup_project_details, StartupEffect::Suppressed);

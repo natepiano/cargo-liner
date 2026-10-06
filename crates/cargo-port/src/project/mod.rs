@@ -9,21 +9,8 @@ mod root_item;
 
 // ── Cargo parsing ────────────────────────────────────────────────────
 // ── Rust info ────────────────────────────────────────────────────────
-pub(crate) use cargo::AcceptedCargoMetadataRevision;
-pub(crate) use cargo::CanonicalCheckoutRoot;
-pub(crate) use cargo::CanonicalMemberRoot;
-pub(crate) use cargo::CanonicalPathResolution;
-pub(crate) use cargo::CanonicalTargetDirectory;
-pub(crate) use cargo::CanonicalTargetSource;
-pub(crate) use cargo::CanonicalWorkspaceRoot;
 pub(crate) use cargo::Cargo;
-pub(crate) use cargo::CargoPackageIdentity;
 pub(crate) use cargo::CargoParseResult;
-pub(crate) use cargo::CargoTargetIdentity;
-pub(crate) use cargo::CargoWorkspaceIndex;
-pub(crate) use cargo::CargoWorkspaceIndexRevision;
-pub(crate) use cargo::CargoWorkspaceIndexRevisionState;
-pub(crate) use cargo::CargoWorkspaceView;
 pub(crate) use cargo::ExampleGroup;
 // ── Cargo metadata cache ─────────────────────────────────────────────
 pub(crate) use cargo::FileStamp;
@@ -33,7 +20,6 @@ pub(crate) use cargo::MemberGroup;
 // ── Project types ────────────────────────────────────────────────────
 pub(crate) use cargo::Package;
 pub(crate) use cargo::PackageRecord;
-pub(crate) use cargo::ProjectListRevision;
 pub(crate) use cargo::ProjectType;
 pub(crate) use cargo::PublishPolicy;
 #[cfg(test)]
@@ -42,9 +28,7 @@ pub(crate) use cargo::RustInfo;
 pub(crate) use cargo::RustProject;
 pub(crate) use cargo::TargetRecord;
 pub(crate) use cargo::VendoredPackage;
-pub(crate) use cargo::VisibleTargetWorkspaceOwnership;
 pub(crate) use cargo::Workspace;
-pub(crate) use cargo::WorkspaceIndexRebuild;
 pub(crate) use cargo::WorkspaceMetadata;
 pub(crate) use cargo::WorkspaceMetadataStore;
 pub(crate) use cargo::from_cargo_toml;

@@ -20,7 +20,6 @@ use super::TargetsPane;
 use super::data::PaneDataStore;
 use crate::config::CpuConfig;
 use crate::tui::app::HoveredPaneRow;
-use crate::tui::running_targets::RunningTargetsState;
 use crate::tui::startup_services::StartupServices;
 
 /// Owns every pane-related piece of state. App holds a single `panes:
@@ -34,14 +33,12 @@ pub(in crate::tui) struct Panes {
     pub targets:      TargetsPane,
     pub project_list: ProjectListPane,
 
-    pub pane_data:       PaneDataStore,
+    pub pane_data:    PaneDataStore,
     /// Resolved tiled-pane layout computed by the most recent render.
     /// Input dispatch (mouse hit-tests, scroll routing) reads this;
     /// render writes it once per draw.
-    pub tiled_layout:    ResolvedPaneLayout<super::PaneId>,
-    hovered_row:         Option<HoveredPaneRow>,
-    /// View state built from App-owned process observer results.
-    pub running_targets: RunningTargetsState,
+    pub tiled_layout: ResolvedPaneLayout<super::PaneId>,
+    hovered_row:      Option<HoveredPaneRow>,
 
     /// Cached cross-project Details/Git top-row inner height, keyed on the
     /// scan generation and the two top-pane widths. The cross-project scan
@@ -72,7 +69,6 @@ impl Panes {
             pane_data:            PaneDataStore::new(),
             tiled_layout:         ResolvedPaneLayout::default(),
             hovered_row:          None,
-            running_targets:      RunningTargetsState::new(),
             top_row_height_cache: TopRowHeightCache::default(),
         }
     }

@@ -14,12 +14,10 @@ mod keymap_ui;
 mod messages;
 mod overlays;
 mod panes;
-mod process_refresh;
 mod project_list;
 mod project_list_state;
 mod render;
 mod render_context;
-mod running_targets;
 mod sccache;
 mod settings;
 mod startup_services;
@@ -28,7 +26,6 @@ mod terminal;
 #[cfg(test)]
 mod test_support;
 mod theme_roles;
-mod workspace_index;
 
 #[cfg(test)]
 pub(crate) use state::OwnedRunId;

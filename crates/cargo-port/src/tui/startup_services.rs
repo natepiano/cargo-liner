@@ -64,7 +64,6 @@ pub(super) struct StartupEffects {
     pub(super) theme_directory:          StartupEffect,
     pub(super) process_globals:          StartupEffect,
     host_github_auth:                    StartupEffect,
-    pub(super) running_targets_polling:  StartupEffect,
     pub(super) priority_detail_fetch:    StartupEffect,
     pub(super) startup_git_first_commit: StartupEffect,
     pub(super) startup_project_details:  StartupEffect,
@@ -85,7 +84,6 @@ impl StartupEffects {
             theme_directory:          StartupEffect::Suppressed,
             process_globals:          StartupEffect::Suppressed,
             host_github_auth:         StartupEffect::Suppressed,
-            running_targets_polling:  StartupEffect::Suppressed,
             priority_detail_fetch:    StartupEffect::Suppressed,
             startup_git_first_commit: StartupEffect::Suppressed,
             startup_project_details:  StartupEffect::Suppressed,
@@ -104,7 +102,6 @@ impl StartupEffects {
     ///
     /// Enables only `theme_directory`, which reads the temp directory installed
     /// by `FixtureDirs`. `watcher`, `lint_runtime`, `lint_history_hydration`,
-    /// `lint_cache_scan`, `cpu_monitor`, `running_targets_polling`,
     /// `priority_detail_fetch`, `startup_git_first_commit`,
     /// `startup_project_details`, `streaming_scan`, and `process_globals` stay
     /// suppressed because `TestApp` does not own join handles for their worker
@@ -149,9 +146,6 @@ impl StartupServices {
             fixture_cache_root: Rc::new(RefCell::new(None)),
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn production() -> Self { Self::new(StartupProfile::production()) }
 
     #[cfg(test)]
     pub(super) fn quiet_unit_test() -> Self { Self::new(StartupProfile::quiet_unit_test()) }
@@ -373,10 +367,6 @@ impl StartupServices {
         self.effect(StartupEffectKind::CpuMonitor)
     }
 
-    pub(super) const fn running_targets_polling_effect(&self) -> StartupEffect {
-        self.effect(StartupEffectKind::RunningTargetsPolling)
-    }
-
     pub(super) const fn process_globals_effect(&self) -> StartupEffect {
         self.effect(StartupEffectKind::ProcessGlobals)
     }
@@ -411,10 +401,6 @@ impl StartupServices {
 
     pub(super) fn record_cpu_monitor(&self, effect: StartupEffect) {
         self.record_effect(StartupEffectKind::CpuMonitor, effect);
-    }
-
-    pub(super) fn record_running_targets_polling(&self, effect: StartupEffect) {
-        self.record_effect(StartupEffectKind::RunningTargetsPolling, effect);
     }
 
     pub(super) fn record_process_globals(&self, effect: StartupEffect) {
@@ -507,7 +493,6 @@ impl StartupServices {
                 | StartupEffectKind::CpuMonitor
                 | StartupEffectKind::ThemeDirectory
                 | StartupEffectKind::ProcessGlobals
-                | StartupEffectKind::RunningTargetsPolling
                 | StartupEffectKind::PriorityDetailFetch
                 | StartupEffectKind::GitFirstCommit
                 | StartupEffectKind::ProjectDetails
@@ -528,7 +513,6 @@ impl StartupServices {
                 StartupEffectKind::ProcessGlobals => effects.process_globals,
                 #[cfg(test)]
                 StartupEffectKind::HostGithubAuth => effects.host_github_auth,
-                StartupEffectKind::RunningTargetsPolling => effects.running_targets_polling,
                 StartupEffectKind::PriorityDetailFetch => effects.priority_detail_fetch,
                 StartupEffectKind::GitFirstCommit => effects.startup_git_first_commit,
                 StartupEffectKind::ProjectDetails => effects.startup_project_details,
@@ -658,7 +642,6 @@ pub(super) struct StartupEffectCounts {
     theme_directory:          EffectCount,
     process_globals:          EffectCount,
     host_github_auth:         EffectCount,
-    running_targets_polling:  EffectCount,
     priority_detail_fetch:    EffectCount,
     startup_git_first_commit: EffectCount,
     startup_project_details:  EffectCount,
@@ -678,7 +661,6 @@ impl StartupEffectCounts {
             + self.theme_directory.real
             + self.process_globals.real
             + self.host_github_auth.real
-            + self.running_targets_polling.real
             + self.priority_detail_fetch.real
             + self.startup_git_first_commit.real
             + self.startup_project_details.real
@@ -751,7 +733,6 @@ impl StartupEffectCounts {
             StartupEffectKind::ProcessGlobals => &mut self.process_globals,
             #[cfg(test)]
             StartupEffectKind::HostGithubAuth => &mut self.host_github_auth,
-            StartupEffectKind::RunningTargetsPolling => &mut self.running_targets_polling,
             StartupEffectKind::PriorityDetailFetch => &mut self.priority_detail_fetch,
             StartupEffectKind::GitFirstCommit => &mut self.startup_git_first_commit,
             StartupEffectKind::ProjectDetails => &mut self.startup_project_details,
@@ -773,7 +754,6 @@ enum StartupEffectKind {
     ProcessGlobals,
     #[cfg(test)]
     HostGithubAuth,
-    RunningTargetsPolling,
     PriorityDetailFetch,
     GitFirstCommit,
     ProjectDetails,

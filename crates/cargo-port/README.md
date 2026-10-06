@@ -15,7 +15,7 @@ And if you're old school, the information is dense and informative. And fast. Th
 ## Features
 
 - **Inventory everything** - workspaces, members, linked worktrees, submodules, vendored crates, examples, benches, binaries, tests, and non-Rust git repos
-- **Run and inspect targets** - launch examples, benches, and binaries in debug or release mode with live output and running-target markers
+- **Run and inspect targets** - launch examples, benches, and binaries in debug or release mode with live output
 - **Track project health** - see lint status, archived lint runs, GitHub Actions history, open pull requests, PR check polling, and GitHub rate-limit state
 - **Keep context visible** - inspect package metadata, target directories, language stats, worktree summaries, remotes, CI jobs, and pull request rows without leaving the TUI
 - **Navigate quickly** - fuzzy search, vim-style paging, keymaps, tab traversal, global shortcuts, and selection copy
@@ -268,8 +268,7 @@ The targets pane will show you this project's targets - bins, examples, benches.
 1. The title bar of the pane will show you the count of each kind of target that is available in your project
 2. Runnable target names - you can launch it by hitting 'Enter' for a debug run, 'r' for `cargo run --release`.  The Source package is listed as a convenience so you don't have to scan back over to the project window. If it's a workspace, you'll see each target listed with its associated package. If it's a worktree group, you'll see the worktree checkout prefix the package (e.g. `worktree_checkout/package_name`).
 3. This screenshot has both examples and benches available to run. An output overlay window will pop up to show you the stdout when you run one.
-4. Also in the Targets window you will see a second subpane showing currently running projects. If you installed cargo-port it will group it under an expandable `cargo` label where all running cargo sub commands can be found (while they're running).
-5. Every other target you have launched from cargo-port will show below that - in whichever profile you ran them in. You can type 'K' to kill (uppercase to not clash with vim bindings in case you turned them on). If a process launches other processes, they will group into an expandable hierarchy.
+To see every running cargo process on the machine, use cargo-tile, installed from GitHub for now with `cargo install --git https://github.com/natepiano/cargo-liner cargo-tile`.
 
 ### Lint runs
 

@@ -14,8 +14,6 @@
 //!
 //! [`Inflight`]: super::state::Inflight
 
-use std::time::Instant;
-
 use tui_pane::PERF_LOG_TARGET;
 
 use super::messages::CiFetchMsg;
@@ -25,9 +23,6 @@ use super::startup_services::WatcherHandle;
 use crate::channel::Receiver;
 use crate::channel::SendError;
 use crate::channel::Sender;
-use crate::process_observation::ProcessRefreshExecutionBackendSelection;
-use crate::process_observation::ProcessRefreshExecutor;
-use crate::process_observation::RunningTargetsRefreshSchedule;
 use crate::project;
 use crate::project::AbsolutePath;
 use crate::project::RootItem;
@@ -79,19 +74,6 @@ impl Background {
             example_rx,
             watcher,
         }
-    }
-
-    /// Start the observer backend and transfer its worker ownership to App's executor.
-    pub(super) fn start_process_refresh_executor(
-        backend_selection: ProcessRefreshExecutionBackendSelection,
-        running_targets_refresh_schedule: RunningTargetsRefreshSchedule,
-        started_at: Instant,
-    ) -> ProcessRefreshExecutor {
-        ProcessRefreshExecutor::new(
-            backend_selection,
-            running_targets_refresh_schedule,
-            started_at,
-        )
     }
 
     // ── Senders (cloned by spawn paths) ──────────────────────────────
