@@ -28,7 +28,6 @@
 - **Key files:** `src/scan/disk_usage.rs` — disk usage test abort cleanup bucket.
 - **Key files:** `src/project/git/discovery.rs` — git discovery test abort cleanup bucket.
 - **Key files:** `src/tui/panes/ci/render.rs` — CI render test abort cleanup bucket.
-- **Key files:** `src/tui/running_targets/app_tick.rs` — running-target test abort cleanup bucket.
 - **Key files:** `src/tui/app/async_tasks/running_toasts.rs` — remaining production-looking abort in `ReactivateOutcome::Revived` branch.
 - **Key files:** `scripts/check-no-test-abort.sh` — executable abort inventory allowlist gate created by Phase 2.
 - **Build:** `cargo build --release --all-features --workspace --examples`
@@ -213,7 +212,7 @@ Do not gate all of `finish_new()` behind one quiet-mode check. Split determinist
 
 Use quiet startup as the default contract for shared unit-test constructors. `make_app()` and `make_app_with_config()` remain the common helpers and become quiet by default. Full startup coverage must live behind explicit opt-in helpers, not casual use of the default helper. Direct `App::new()` in unit tests should be reserved for constructor/startup tests.
 
-The profile must reach `AppBuilder<Channeled>::run_startup()`, `AppBuilder<Started>::build()`, and subconstructors. Route it through constructors or facades for `Panes`, `CpuPane`, `RunningTargetsPoller`, and `ThemeRuntime` so quiet mode can use inert state where host-observing work would otherwise start.
+The profile must reach `AppBuilder<Channeled>::run_startup()`, `AppBuilder<Started>::build()`, and subconstructors. Route it through constructors or facades for `Panes`, `CpuPane`, and `ThemeRuntime` so quiet mode can use inert state where host-observing work would otherwise start.
 
 Track startup effects in a table during implementation. Each entry should name the exact call site and effect class: thread spawn, tokio task, blocking task, subprocess, filesystem watcher, disk read, process-global mutation, theme directory read, or render-time/refresh polling. Gate the actual effect call sites, not harmless state objects.
 
@@ -233,7 +232,6 @@ Track startup effects in a table during implementation. Each entry should name t
 | `src/tui/state/net.rs::Net::spawn_rate_limit_prime` | thread spawn, network request | `StartupServices::spawn_github_rate_limit_prime`. |
 | `src/tui/app/async_tasks/service_handlers.rs::spawn_service_retry` | thread spawn, network retry probe | `StartupServices::spawn_service_retry_probe`. |
 | `src/tui/panes/cpu/pane.rs::CpuPane::new` / `CpuPane::reset` | CPU monitor thread spawn, host polling | `StartupServices::cpu_monitor_effect`; quiet startup uses `CpuMonitorSlot::Inert`. |
-| `src/tui/running_targets/mod.rs::RunningTargetsPoller::tick` | render-time refresh polling, process table read | `StartupServices::running_targets_polling_effect`. |
 | `src/tui/app/async_tasks/config.rs::maybe_reload_themes_from_disk` | theme directory read, process-global mutation | `StartupServices::theme_directory_effect` plus `replace_theme_registry`. |
 | `src/tui/app/async_tasks/config.rs::apply_config` / `resolve_and_apply_active_theme` | process-global mutation, lint runtime restart, watcher restart | `StartupServices::install_active_config`, `publish_active_theme`, `spawn_lint_runtime`, and `spawn_watcher`. |
 | `src/tui/app/async_tasks/priority_fetch.rs::maybe_priority_fetch` | thread spawn, disk read, network request | `StartupServices::priority_detail_fetch_effect`. |

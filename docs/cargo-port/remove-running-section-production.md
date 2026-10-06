@@ -4,7 +4,7 @@
 
 ## Production Context
 
-- **Source plans:** `docs/cargo-port/remove-running-section.md`. The showrunner wrote it on 2026-10-06 from the user's request, with no producer split.
+- **Source plans:** one plan, which the showrunner wrote on 2026-10-06 from the user's request, with no producer split. It shipped, and the as-built doc `docs/cargo-port/as-built/targets-pane.md` replaced it.
 - **Repository:** `/home/natepiano/rust/cargo-liner`
 - **Merge branch:** `main`. The unit merges here, and only the showrunner pushes it.
 - **Showrunner checkout:** `/home/natepiano/rust/cargo-liner`
@@ -19,7 +19,7 @@
 
 | Unit | Plan | Worktree | Branch | Session | Port | Owns |
 | --- | --- | --- | --- | --- | --- | --- |
-| cleanup-unit | `docs/cargo-port/remove-running-section.md` | `/home/natepiano/rust/cargo-port-cleanup` | `cleanup/running` | `cargo-port-cleanup` | — | `crates/cargo-port`, `docs/cargo-port` |
+| cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | `/home/natepiano/rust/cargo-port-cleanup` | `cleanup/running` | `cargo-port-cleanup` | — | `crates/cargo-port`, `docs/cargo-port` |
 
 ## Hub files
 
