@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-10-06
 
 ### Added
 - A lint command can defer a run by exiting with status 75 (`EX_TEMPFAIL`), for example while an agent is busy in the worktree. The commands after it do not run, the project keeps its last result and writes no history entry, and the project tree shows 🔵 until the retry, which runs after the longer of **Idle before lint** and 30 seconds.
