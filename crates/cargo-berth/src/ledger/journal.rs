@@ -411,7 +411,7 @@ pub(crate) enum JournalOperation {
         /// The locator used to find the worktree's administrative directory again.
         worktree_administrative_locator: WorktreeAdministrativeLocator,
         /// The overlap result that authorized this acquisition.
-        authorization:                   ConflictAuthorization,
+        authorization:                   Box<ConflictAuthorization>,
         /// Whether a caller presented the coordination identity this claim was made under.
         coordination_identity_provenance: CoordinationIdentityProvenance,
     },
@@ -703,6 +703,26 @@ impl RecordCeiling {
 }
 
 impl JournalOperation {
+    /// The reservation a claim or widen acquired scopes for, with the overlap answer that
+    /// authorized the acquisition; `None` for every other operation.
+    pub(crate) fn acquisition_authorization(
+        &self,
+    ) -> Option<(ReservationId, &ConflictAuthorization)> {
+        match self {
+            Self::Claim {
+                reservation_id,
+                authorization,
+                ..
+            } => Some((*reservation_id, authorization)),
+            Self::Widen {
+                reservation_id,
+                authorization,
+                ..
+            } => Some((*reservation_id, authorization)),
+            _ => None,
+        }
+    }
+
     /// Which ceiling bounds this operation's record.
     ///
     /// The distinction is whether anyone can make the record smaller. Three operations carry a set
@@ -3420,7 +3440,7 @@ mod tests {
         };
         let mut sequenced_widen = fold_widen(FOLD_SECOND_RESERVATION_ID)?;
         if let JournalOperation::Widen { authorization, .. } = &mut sequenced_widen {
-            *authorization = sequence_authorization;
+            *authorization = *sequence_authorization;
         }
         let key = serde_json::json!({
             "trunk": FOLD_TRUNK,
@@ -3783,37 +3803,41 @@ mod tests {
                 worktree_administrative_locator:  "worktrees/cargo-berth-init"
                     .parse::<WorktreeAdministrativeLocator>()
                     .expect("worktree administrative locator should parse"),
-                authorization:                    ConflictAuthorization::Sequence {
-                    overlaps:  AuthorizedOverlapSet::try_from(vec![AuthorizedOverlap {
-                        reservation_id: parse_reservation_id(HOLDER_RESERVATION_ID),
-                        scope_revision: OverlapScopeRevision::from(
-                            &ReservationScopeSet::try_from(vec![reservation_scope(
-                                "crates/cargo-berth",
-                                ScopeKind::Tree,
-                            )])
-                            .expect("holder scopes should be non-empty"),
-                        ),
-                        scopes:         AuthorizedOverlapScopeSet::from(
-                            ReservationScopeSet::try_from(vec![
-                                reservation_scope("crates/cargo-berth/src", ScopeKind::Tree),
-                                reservation_scope("docs/berth-plan.md", ScopeKind::File),
-                            ])
-                            .expect("authorized scopes should be non-empty"),
-                        ),
-                    }])
-                    .expect("authorized holders should be non-empty"),
-                    blocker:   parse_reservation_id(HOLDER_RESERVATION_ID),
-                    direction: OrderingDirection::RequesterBeforeHolder,
-                    edge_id:   "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21"
-                        .parse::<EdgeId>()
-                        .expect("edge identifier should parse"),
-                    reason:
-                        "The implementation must precede the dependent documentation update."
-                            .parse::<OverlapAuthorizationReason>()
-                            .expect("overlap authorization reason should parse"),
-                },
+                authorization:                    Box::new(fully_populated_sequence_authorization()),
                 coordination_identity_provenance: CoordinationIdentityProvenance::Presented,
             },
+        }
+    }
+
+    fn fully_populated_sequence_authorization() -> ConflictAuthorization {
+        ConflictAuthorization::Sequence {
+            overlaps:  AuthorizedOverlapSet::try_from(vec![AuthorizedOverlap {
+                reservation_id: parse_reservation_id(HOLDER_RESERVATION_ID),
+                scope_revision: OverlapScopeRevision::from(
+                    &ReservationScopeSet::try_from(vec![reservation_scope(
+                        "crates/cargo-berth",
+                        ScopeKind::Tree,
+                    )])
+                    .expect("holder scopes should be non-empty"),
+                ),
+                scopes:         AuthorizedOverlapScopeSet::from(
+                    ReservationScopeSet::try_from(vec![
+                        reservation_scope("crates/cargo-berth/src", ScopeKind::Tree),
+                        reservation_scope("docs/berth-plan.md", ScopeKind::File),
+                    ])
+                    .expect("authorized scopes should be non-empty"),
+                ),
+            }])
+            .expect("authorized holders should be non-empty"),
+            blocker:   parse_reservation_id(HOLDER_RESERVATION_ID),
+            direction: OrderingDirection::RequesterBeforeHolder,
+            edge_id:   "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a21"
+                .parse::<EdgeId>()
+                .expect("edge identifier should parse"),
+            reason:    "The implementation must precede the dependent documentation update."
+                .parse::<OverlapAuthorizationReason>()
+                .expect("overlap authorization reason should parse"),
+            replaced:  Vec::new(),
         }
     }
 

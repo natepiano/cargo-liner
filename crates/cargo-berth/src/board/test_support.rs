@@ -217,7 +217,7 @@ impl BoardFixture {
                 phase_start_head: ProtectedPhaseStartHead::from(head),
                 worktree_root: actor.worktree_root.clone(),
                 worktree_administrative_locator: actor.worktree_administrative_locator.clone(),
-                authorization,
+                authorization: Box::new(authorization),
                 coordination_identity_provenance: CoordinationIdentityProvenance::Presented,
             },
         )?;
@@ -398,6 +398,7 @@ pub(super) fn conflict_authorization(
             direction: OrderingDirection::HolderBeforeRequester,
             edge_id: EdgeId::new(),
             reason: "holder must integrate first".parse::<OverlapAuthorizationReason>()?,
+            replaced: Vec::new(),
         },
         OverlapAnswerFixture::Defer => ConflictAuthorization::Defer {
             overlaps,

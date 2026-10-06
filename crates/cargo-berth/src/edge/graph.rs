@@ -25,7 +25,9 @@ use super::RepositoryReservationEvidence;
 use super::RepositorySnapshot;
 use super::cycle;
 use crate::answer::ConflictAuthorization;
+use crate::answer::ContradictedOrdering;
 use crate::answer::OverlapAuthorizationReason;
+use crate::answer::SequencedBlocker;
 use crate::ids::EdgeId;
 use crate::ids::EventId;
 use crate::ids::ProjectionGeneration;
@@ -359,6 +361,37 @@ impl OrderingGraph {
         })
     }
 
+    /// Return every live edge between the holder `sequenced_blocker` names and one of
+    /// `requesters` that points the opposite way to the order the answer chose.
+    ///
+    /// `requesters` are the claimant's nonterminal reservations in its own coordination run and
+    /// worktree. An edge in the answer's own direction is no contradiction, so the claim keeps it
+    /// and adds its own beside it.
+    pub(crate) fn contradicted_orderings(
+        &self,
+        sequenced_blocker: SequencedBlocker,
+        requesters: &HashSet<ReservationId>,
+    ) -> Vec<ContradictedOrdering> {
+        let holder = sequenced_blocker.blocker;
+        self.edges
+            .iter()
+            .filter_map(|edge| {
+                let (reservation_id, direction) =
+                    match (edge.before == holder, edge.after == holder) {
+                        (true, false) => (edge.after, OrderingDirection::HolderBeforeRequester),
+                        (false, true) => (edge.before, OrderingDirection::RequesterBeforeHolder),
+                        (true, true) | (false, false) => return None,
+                    };
+                (direction != sequenced_blocker.direction && requesters.contains(&reservation_id))
+                    .then_some(ContradictedOrdering {
+                        reservation_id,
+                        edge_id: edge.edge_id,
+                        holder,
+                    })
+            })
+            .collect()
+    }
+
     /// Return whether this predecessor still has a nonterminal dependent successor.
     pub(crate) fn has_nonterminal_dependent(
         &self,
@@ -481,7 +514,9 @@ impl OrderingGraph {
                 direction,
                 edge_id,
                 reason,
+                replaced,
             } => {
+                self.remove_replaced_edges(replaced)?;
                 let (before, after) = directed_endpoints(requester, *blocker, *direction);
                 let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(*blocker, overlaps)?;
                 self.add_edge(OrderingEdge {
@@ -498,21 +533,27 @@ impl OrderingGraph {
                 overlaps,
                 holders,
                 reason,
-            } => holders.iter().try_for_each(|holder| {
-                let (before, after) =
-                    directed_endpoints(requester, holder.blocker, holder.direction);
-                let scopes =
-                    OrderingOverlapScopeSet::from_authorized_overlaps(holder.blocker, overlaps)?;
-                self.add_edge(OrderingEdge {
-                    edge_id: holder.edge_id,
-                    before,
-                    after,
-                    scopes,
-                    reason: OrderingReason::from(reason),
-                    declaration_event_id: event_id,
-                    declaration: EdgeDeclaration::Acquisition,
+                replaced,
+            } => {
+                self.remove_replaced_edges(replaced)?;
+                holders.iter().try_for_each(|holder| {
+                    let (before, after) =
+                        directed_endpoints(requester, holder.blocker, holder.direction);
+                    let scopes = OrderingOverlapScopeSet::from_authorized_overlaps(
+                        holder.blocker,
+                        overlaps,
+                    )?;
+                    self.add_edge(OrderingEdge {
+                        edge_id: holder.edge_id,
+                        before,
+                        after,
+                        scopes,
+                        reason: OrderingReason::from(reason),
+                        declaration_event_id: event_id,
+                        declaration: EdgeDeclaration::Acquisition,
+                    })
                 })
-            }),
+            },
         }
     }
 
@@ -578,6 +619,29 @@ impl OrderingGraph {
             declaration_event_id: event_id,
             declaration: EdgeDeclaration::DeferredResolution,
         })
+    }
+
+    /// Retire each edge a `--replace` answer recorded, before that answer adds its own.
+    ///
+    /// The retired identifier stays in `edge_ids`, so no later fact can reuse it.
+    fn remove_replaced_edges(
+        &mut self,
+        replaced: &[ContradictedOrdering],
+    ) -> Result<(), EdgeReplayError> {
+        for contradicted_ordering in replaced {
+            let edge_id = contradicted_ordering.edge_id;
+            let index = self
+                .edges
+                .iter()
+                .position(|edge| edge.edge_id == edge_id)
+                .ok_or(EdgeReplayError::UnknownReplacedEdge(edge_id))?;
+            let edge = self.edges.remove(index);
+            self.endpoint_pairs.remove(&(edge.before, edge.after));
+            if let Some(successors) = self.adjacency.get_mut(&edge.before) {
+                successors.retain(|successor| *successor != edge.after);
+            }
+        }
+        Ok(())
     }
 
     fn add_edge(&mut self, edge: OrderingEdge) -> Result<(), EdgeReplayError> {
@@ -800,6 +864,8 @@ pub(crate) enum EdgeReplayError {
     },
     /// An edge names a reservation that no claim created.
     UnknownEndpoint(ReservationId),
+    /// A `--replace` answer retired an edge that was not live when it was recorded.
+    UnknownReplacedEdge(EdgeId),
 }
 
 impl Display for EdgeReplayError {
@@ -832,6 +898,10 @@ impl Display for EdgeReplayError {
                     "ordering edge names unknown reservation {reservation_id}"
                 )
             },
+            Self::UnknownReplacedEdge(edge_id) => write!(
+                formatter,
+                "replaced ordering edge {edge_id} is not a live edge"
+            ),
         }
     }
 }
@@ -864,18 +934,23 @@ const fn directed_endpoints(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::error::Error;
     use std::io;
 
     use super::DeferralResolution;
+    use super::EdgeReplayError;
     use super::OrderingGraph;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapSet;
     use crate::answer::ConflictAuthorization;
+    use crate::answer::ContradictedOrdering;
     use crate::answer::OverlapScopeRevision;
+    use crate::answer::SequencedBlocker;
     use crate::edge::DeferralOrigin;
     use crate::edge::EdgeDeclaration;
     use crate::ids::CoordinationRunId;
+    use crate::ids::EdgeId;
     use crate::ids::EventId;
     use crate::ids::RepoInstanceId;
     use crate::ids::ReservationId;
@@ -883,6 +958,7 @@ mod tests {
     use crate::ledger::ClaimSource;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
+    use crate::ledger::OrderingDirection;
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
@@ -1031,6 +1107,82 @@ mod tests {
                 EdgeDeclaration::Sequence
             );
         }
+        Ok(())
+    }
+
+    /// A `--replace` answer retires the edge it contradicts in the record that adds its own, so
+    /// replay holds only the re-ruled order; a replaced edge that is not live refuses replay.
+    #[test]
+    fn replaced_edge_retires_before_the_reruled_order_is_added() -> Result<(), Box<dyn Error>> {
+        let holder = ReservationId::new();
+        let earlier = ReservationId::new();
+        let reruled = ReservationId::new();
+        let earlier_edge = EdgeId::new();
+        let reruled_edge = EdgeId::new();
+        let sequence = |direction, edge_id, replaced| -> Result<_, Box<dyn Error>> {
+            Ok(ConflictAuthorization::Sequence {
+                overlaps: overlaps_with(&[holder])?,
+                blocker: holder,
+                direction,
+                edge_id,
+                reason: "the holder's order was re-ruled".parse()?,
+                replaced,
+            })
+        };
+        let contradicted = ContradictedOrdering {
+            reservation_id: earlier,
+            edge_id: earlier_edge,
+            holder,
+        };
+        let holder_claim = enrolled_claim(holder, &ConflictAuthorization::NoConflict)?;
+        let earlier_claim = enrolled_claim(
+            earlier,
+            &sequence(
+                OrderingDirection::RequesterBeforeHolder,
+                earlier_edge,
+                Vec::new(),
+            )?,
+        )?;
+        let reruled_claim = enrolled_claim(
+            reruled,
+            &sequence(
+                OrderingDirection::HolderBeforeRequester,
+                reruled_edge,
+                vec![contradicted],
+            )?,
+        )?;
+        let after_holder = SequencedBlocker {
+            blocker:   holder,
+            direction: OrderingDirection::HolderBeforeRequester,
+        };
+        let before_holder = SequencedBlocker {
+            blocker:   holder,
+            direction: OrderingDirection::RequesterBeforeHolder,
+        };
+
+        let graph = OrderingGraph::replay(&[holder_claim.clone(), earlier_claim.clone()])?;
+        let earlier_requester = HashSet::from([earlier]);
+        assert_eq!(
+            graph.contradicted_orderings(after_holder, &earlier_requester),
+            vec![contradicted]
+        );
+        assert_eq!(
+            graph.contradicted_orderings(before_holder, &earlier_requester),
+            Vec::new()
+        );
+
+        let graph =
+            OrderingGraph::replay(&[holder_claim.clone(), earlier_claim, reruled_claim.clone()])?;
+        assert_eq!(graph.edge_count(), 1);
+        assert_eq!(
+            graph.contradicted_orderings(after_holder, &HashSet::from([earlier, reruled])),
+            Vec::new()
+        );
+
+        assert!(matches!(
+            OrderingGraph::replay(&[holder_claim, reruled_claim]),
+            Err(EdgeReplayError::UnknownReplacedEdge(edge_id)) if edge_id == earlier_edge
+        ));
         Ok(())
     }
 

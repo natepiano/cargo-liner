@@ -16,7 +16,9 @@ use serde::Serialize;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
+use crate::answer::ContradictedOrdering;
 use crate::answer::DeferAnswerRequest;
+use crate::answer::OrderingReplacement;
 use crate::answer::OverlapApprover;
 use crate::answer::OverlapAuthorizationRequest;
 use crate::answer::PermissiveOverlapAnswer;
@@ -270,21 +272,23 @@ pub(crate) fn execute(
             approver,
         })) => OutputEnvelope::blocked_claim(conflicts, approver),
         Ok(Enrollment::Enrolled(ClaimExecution::AnsweredWithoutOverlap(blockers))) => {
-            let named_reservations = match blockers.as_slice() {
-                [blocker] => format!("reservation {blocker}"),
-                _ => format!(
-                    "reservations {}",
-                    blockers
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            };
             OutputEnvelope::invalid_input(
                 CommandVerb::Claim,
                 &format!(
-                    "No foreign reservation overlaps the requested paths, so the overlap answer naming {named_reservations} has nothing to authorize. Claim the same paths again with no overlap answer."
+                    "No foreign reservation overlaps the requested paths, so the overlap answer naming {} has nothing to authorize. Claim the same paths again with no overlap answer.",
+                    named_reservations(&blockers)
+                ),
+            )
+        },
+        Ok(Enrollment::Enrolled(ClaimExecution::ContradictsLiveOrdering(contradicted))) => {
+            OutputEnvelope::claim_contradicts_live_ordering(contradicted)
+        },
+        Ok(Enrollment::Enrolled(ClaimExecution::NothingToReplace(blockers))) => {
+            OutputEnvelope::invalid_input(
+                CommandVerb::Claim,
+                &format!(
+                    "--replace found no live ordering edge between {} and an earlier reservation of this run in this worktree that points the other way, so it has nothing to replace. Claim the same paths again without --replace.",
+                    named_reservations(&blockers)
                 ),
             )
         },
@@ -300,6 +304,21 @@ pub(crate) fn execute(
         Err(error) => error.into_output(CommandVerb::Claim),
     };
     output_envelope.with_alerts(reconciliation_report.alerts)
+}
+
+/// Name one reservation as `reservation <id>`, or several as `reservations <id>, <id>`.
+fn named_reservations(reservation_ids: &[ReservationId]) -> String {
+    match reservation_ids {
+        [reservation_id] => format!("reservation {reservation_id}"),
+        _ => format!(
+            "reservations {}",
+            reservation_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 enum ClaimExecution {
@@ -325,6 +344,8 @@ enum ClaimExecution {
         approver:  Option<OverlapApprover>,
     },
     AnsweredWithoutOverlap(Vec<ReservationId>),
+    ContradictsLiveOrdering(Vec<ContradictedOrdering>),
+    NothingToReplace(Vec<ReservationId>),
     ReservationLimitReached(u32),
     OrderingEdgeLimitReached(u32),
 }
@@ -1084,6 +1105,12 @@ fn claim_execution_from_outcome(
         LedgerTransactionOutcome::Rejected(ClaimRejection::AnsweredWithoutOverlap(blockers)) => {
             Ok(ClaimExecution::AnsweredWithoutOverlap(blockers))
         },
+        LedgerTransactionOutcome::Rejected(ClaimRejection::ContradictsLiveOrdering(
+            contradicted,
+        )) => Ok(ClaimExecution::ContradictsLiveOrdering(contradicted)),
+        LedgerTransactionOutcome::Rejected(ClaimRejection::NothingToReplace(blockers)) => {
+            Ok(ClaimExecution::NothingToReplace(blockers))
+        },
         LedgerTransactionOutcome::Rejected(ClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
@@ -1185,7 +1212,11 @@ fn validate_claim_transaction(
             request,
             conflicts,
             prepared_claim,
-            &ordering_graph,
+            &OrderingContext {
+                ordering_graph: &ordering_graph,
+                reservations: &reservations,
+                answering_worktree,
+            },
             maximum_ordering_edges,
         ),
     }
@@ -1819,11 +1850,15 @@ fn validate_first_touch_run(
 /// `ClaimRejection::AnsweredWithoutOverlap` reports that as its own outcome, because handing the
 /// empty conflict list to [`OutputEnvelope::blocked_claim`] would derive `blocked_by` from it
 /// and refuse an overlap it could not name.
+///
+/// A sequence answer that points opposite to a live edge between a named holder and one of the
+/// claimant's own reservations is refused as `ClaimRejection::ContradictsLiveOrdering` unless it
+/// carries `--replace`, which records those edges as retired; see [`replaced_orderings`].
 fn validate_authorization(
     request: PermissiveOverlapAuthorizationRequest,
     conflicts: Vec<ReservationConflict>,
     prepared_claim: PreparedClaim,
-    ordering_graph: &OrderingGraph,
+    ordering_context: &OrderingContext<'_>,
     maximum_ordering_edges: u32,
 ) -> TransactionValidation<ClaimRejection> {
     let PermissiveOverlapAuthorizationRequest { answer, reason } = request;
@@ -1845,9 +1880,16 @@ fn validate_authorization(
     if named_blockers != holders {
         return TransactionValidation::Reject(ClaimRejection::Conflict(conflicts));
     }
+    let replaced = match replaced_orderings(&answer, ordering_context) {
+        Ok(replaced) => replaced,
+        Err(rejection) => return TransactionValidation::Reject(rejection),
+    };
     if matches!(answer, PermissiveOverlapAnswer::Sequence { .. })
         && additions_exceed_limit(
-            ordering_graph.edge_count(),
+            ordering_context
+                .ordering_graph
+                .edge_count()
+                .saturating_sub(replaced.len()),
             conflicts.len(),
             maximum_ordering_edges,
         )
@@ -1856,8 +1898,69 @@ fn validate_authorization(
             maximum_ordering_edges,
         ));
     }
-    let authorization = ConflictAuthorization::answered(&answer, overlaps, reason);
+    let authorization = ConflictAuthorization::answered(&answer, overlaps, reason, replaced);
     TransactionValidation::Append(Box::new(prepared_claim.into_operation(authorization)))
+}
+
+/// The locked facts a sequence answer is checked against for contradicted live edges.
+struct OrderingContext<'state> {
+    ordering_graph:     &'state OrderingGraph,
+    reservations:       &'state RetainedReservationSet,
+    answering_worktree: AnsweringWorktree,
+}
+
+/// Return the live edges a sequence answer retires, or the rejection that stops it.
+///
+/// The claimant's own reservations are the nonterminal ones of its coordination run and
+/// worktree. An edge between one of them and a named holder that points opposite to the order
+/// the answer chose is a contradiction: without `--replace` the claim is refused, so two live
+/// edges never order the same work both ways; with it the edges are recorded as retired. A
+/// `--replace` that contradicts nothing is refused too, so a stale re-ruling never records
+/// silently. An override orders nothing, so it retires nothing.
+fn replaced_orderings(
+    answer: &PermissiveOverlapAnswer,
+    ordering_context: &OrderingContext<'_>,
+) -> Result<Vec<ContradictedOrdering>, ClaimRejection> {
+    let PermissiveOverlapAnswer::Sequence {
+        blockers,
+        replacement,
+    } = answer
+    else {
+        return Ok(Vec::new());
+    };
+    let AnsweringWorktree {
+        coordination_run_id,
+        worktree_id,
+    } = ordering_context.answering_worktree;
+    let requesters = ordering_context
+        .reservations
+        .iter()
+        .filter(|reservation| {
+            !reservation.is_terminal()
+                && reservation.actor().run == coordination_run_id
+                && reservation.actor().worktree == worktree_id
+        })
+        .map(Reservation::id)
+        .collect::<HashSet<_>>();
+    let contradicted = blockers
+        .iter()
+        .flat_map(|sequenced_blocker| {
+            ordering_context
+                .ordering_graph
+                .contradicted_orderings(*sequenced_blocker, &requesters)
+        })
+        .collect::<Vec<_>>();
+    match (replacement, contradicted.is_empty()) {
+        (OrderingReplacement::Keep, true) | (OrderingReplacement::Replace, false) => {
+            Ok(contradicted)
+        },
+        (OrderingReplacement::Keep, false) => {
+            Err(ClaimRejection::ContradictsLiveOrdering(contradicted))
+        },
+        (OrderingReplacement::Replace, true) => {
+            Err(ClaimRejection::NothingToReplace(answer.blockers()))
+        },
+    }
 }
 
 /// Whether adding `additions` to `count` would exceed `maximum`.
@@ -1872,17 +1975,17 @@ fn count_reaches_limit(count: usize, maximum: u32) -> bool {
 impl PreparedClaim {
     fn into_operation(self, authorization: ConflictAuthorization) -> JournalOperation {
         JournalOperation::Claim {
-            reservation_id: self.reservation_id,
-            scopes: self.scopes,
-            source: self.source,
-            purpose: self.purpose,
-            trunk_at_claim: self.trunk_at_claim,
-            target: Some(Box::new(self.target)),
-            head_snapshot: self.head_snapshot,
-            phase_start_head: self.phase_start_head,
-            worktree_root: self.worktree_root,
-            worktree_administrative_locator: self.worktree_administrative_locator,
-            authorization,
+            reservation_id:                   self.reservation_id,
+            scopes:                           self.scopes,
+            source:                           self.source,
+            purpose:                          self.purpose,
+            trunk_at_claim:                   self.trunk_at_claim,
+            target:                           Some(Box::new(self.target)),
+            head_snapshot:                    self.head_snapshot,
+            phase_start_head:                 self.phase_start_head,
+            worktree_root:                    self.worktree_root,
+            worktree_administrative_locator:  self.worktree_administrative_locator,
+            authorization:                    Box::new(authorization),
             coordination_identity_provenance: self.coordination_identity_provenance,
         }
     }
@@ -2278,6 +2381,10 @@ enum ClaimRejection {
     Conflict(Vec<ReservationConflict>),
     /// An overlap answer named these blockers while nothing overlapped the requested scopes.
     AnsweredWithoutOverlap(Vec<ReservationId>),
+    /// A sequence answer without `--replace` points opposite to these live edges.
+    ContradictsLiveOrdering(Vec<ContradictedOrdering>),
+    /// A `--replace` answer to these holders contradicted no live edge.
+    NothingToReplace(Vec<ReservationId>),
     Replay(ReservationReplayError),
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidCanonicalWorktreeRoot,

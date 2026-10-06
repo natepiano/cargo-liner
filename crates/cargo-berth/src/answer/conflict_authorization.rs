@@ -1,5 +1,6 @@
 //! Durable authorization recorded with a claim or widen operation.
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -23,6 +24,22 @@ pub(crate) struct SequencedHolder {
     pub(crate) direction: OrderingDirection,
     /// The edge born with this acquisition against `blocker`.
     pub(crate) edge_id:   EdgeId,
+}
+
+/// One live ordering edge between a holder a sequence answer named and a nonterminal reservation
+/// of the claimant's own coordination run and worktree, pointing the opposite way to that answer.
+///
+/// A claim without `--replace` is refused with these in its payload; a claim with it records them
+/// as `replaced`, and replay retires each `edge_id` before adding the claim's own edges.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[schemars(rename = "contradicted_ordering")]
+pub(crate) struct ContradictedOrdering {
+    /// The claimant's earlier reservation at the other endpoint of the edge.
+    pub(crate) reservation_id: ReservationId,
+    /// The live edge the new answer contradicts.
+    pub(crate) edge_id:        EdgeId,
+    /// The holder the new answer named, at one endpoint of the edge.
+    pub(crate) holder:         ReservationId,
 }
 
 /// The complete overlap decision recorded within a claim or widen transaction.
@@ -51,6 +68,9 @@ pub(crate) enum ConflictAuthorization {
         edge_id:   EdgeId,
         /// The caller's reason for selecting an order.
         reason:    OverlapAuthorizationReason,
+        /// The live edges `--replace` retired before `edge_id` was added; empty without it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        replaced:  Vec<ContradictedOrdering>,
     },
     /// One ordering edge per holder, each in its own direction, authorizes the shared scopes of
     /// every observed holder.
@@ -64,6 +84,10 @@ pub(crate) enum ConflictAuthorization {
         holders:  Vec<SequencedHolder>,
         /// The caller's reason for selecting an order.
         reason:   OverlapAuthorizationReason,
+        /// The live edges `--replace` retired before the holders' edges were added, each naming
+        /// its holder; empty without it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        replaced: Vec<ContradictedOrdering>,
     },
     /// Editing can proceed while integration remains held pending an order.
     Defer {
@@ -96,15 +120,17 @@ impl ConflictAuthorization {
     /// `overlaps` carries one binding per holder, and `answer` names exactly those holders, once
     /// each: the claim's `validate_authorization` refuses any other answer. A sequence answer
     /// gives each holder an ordering edge of its own, in the direction its flag chose: one holder
-    /// records [`Self::Sequence`], several record [`Self::SequencePerHolder`]. An override names
-    /// one holder, so `overlaps` binds only it.
+    /// records [`Self::Sequence`], several record [`Self::SequencePerHolder`]; either carries
+    /// `replaced`, the live edges `--replace` retires. An override names one holder, so
+    /// `overlaps` binds only it, and contradicts no order, so `replaced` is empty for it.
     pub(crate) fn answered(
         answer: &PermissiveOverlapAnswer,
         overlaps: AuthorizedOverlapSet,
         reason: OverlapAuthorizationReason,
+        replaced: Vec<ContradictedOrdering>,
     ) -> Self {
         match answer {
-            PermissiveOverlapAnswer::Sequence { blockers } => {
+            PermissiveOverlapAnswer::Sequence { blockers, .. } => {
                 let holders = blockers
                     .iter()
                     .map(|sequenced_blocker| SequencedHolder {
@@ -120,11 +146,13 @@ impl ConflictAuthorization {
                         direction: holder.direction,
                         edge_id: holder.edge_id,
                         reason,
+                        replaced,
                     },
                     _ => Self::SequencePerHolder {
                         overlaps,
                         holders,
                         reason,
+                        replaced,
                     },
                 }
             },
@@ -133,6 +161,18 @@ impl ConflictAuthorization {
                 blocker: *blocker,
                 reason,
             },
+        }
+    }
+
+    /// The live edges this answer's `--replace` retired; empty for every other answer.
+    pub(crate) fn replaced(&self) -> &[ContradictedOrdering] {
+        match self {
+            Self::Sequence { replaced, .. } | Self::SequencePerHolder { replaced, .. } => replaced,
+            Self::NoConflict
+            | Self::Enrollment { .. }
+            | Self::Defer { .. }
+            | Self::Override { .. }
+            | Self::ExistingAnswersCoverEveryOverlap { .. } => &[],
         }
     }
 
@@ -181,9 +221,11 @@ mod tests {
     use std::error::Error;
 
     use super::ConflictAuthorization;
+    use super::ContradictedOrdering;
     use super::SequencedHolder;
     use crate::answer::AuthorizedOverlap;
     use crate::answer::AuthorizedOverlapSet;
+    use crate::answer::OrderingReplacement;
     use crate::answer::OverlapScopeRevision;
     use crate::answer::PermissiveOverlapAnswer;
     use crate::answer::SequencedBlocker;
@@ -227,6 +269,7 @@ mod tests {
                 direction: OrderingDirection::HolderBeforeRequester,
                 edge_id:   EdgeId::new(),
                 reason:    "integrate after the holder".parse()?,
+                replaced:  Vec::new(),
             },
             ConflictAuthorization::Defer {
                 overlaps: overlaps.clone(),
@@ -295,6 +338,7 @@ mod tests {
                 },
             ],
             reason:   "integrate after the first holder and before the second".parse()?,
+            replaced: Vec::new(),
         };
 
         assert!(answer.covers(first_holder, &first_revision, &shared, PathCase::Sensitive));
@@ -338,10 +382,12 @@ mod tests {
 
         let one_holder = ConflictAuthorization::answered(
             &PermissiveOverlapAnswer::Sequence {
-                blockers: vec![after_first],
+                blockers:    vec![after_first],
+                replacement: OrderingReplacement::Keep,
             },
             AuthorizedOverlapSet::from(first_overlap.clone()),
             "integrate after the holder".parse()?,
+            Vec::new(),
         );
         assert!(matches!(
             one_holder,
@@ -351,10 +397,12 @@ mod tests {
 
         let per_holder = ConflictAuthorization::answered(
             &PermissiveOverlapAnswer::Sequence {
-                blockers: vec![after_first, before_second],
+                blockers:    vec![after_first, before_second],
+                replacement: OrderingReplacement::Keep,
             },
             AuthorizedOverlapSet::try_from(vec![first_overlap, second_overlap])?,
             "integrate after the first holder and before the second".parse()?,
+            Vec::new(),
         );
         let ConflictAuthorization::SequencePerHolder { holders, .. } = per_holder else {
             return Err("two holder bindings should record SequencePerHolder".into());
@@ -374,6 +422,53 @@ mod tests {
             .map(|holder| holder.edge_id)
             .collect::<HashSet<_>>();
         assert_eq!(edge_ids.len(), holders.len());
+        Ok(())
+    }
+
+    /// A record without `--replace` keeps its earlier wire form, so journals written before
+    /// `replaced` existed replay unchanged, and a record with it round-trips the retired edges.
+    #[test]
+    fn replaced_edges_are_additive_on_the_wire() -> Result<(), Box<dyn Error>> {
+        let holder = ReservationId::new();
+        let shared = ReservationScope {
+            path: "shared.rs".parse()?,
+            kind: ScopeKind::File,
+        };
+        let overlaps = AuthorizedOverlapSet::from(authorized_overlap(holder, &shared)?);
+        let answer = |replaced| -> Result<ConflictAuthorization, Box<dyn Error>> {
+            Ok(ConflictAuthorization::answered(
+                &PermissiveOverlapAnswer::Sequence {
+                    blockers:    vec![SequencedBlocker {
+                        blocker:   holder,
+                        direction: OrderingDirection::HolderBeforeRequester,
+                    }],
+                    replacement: OrderingReplacement::Replace,
+                },
+                overlaps.clone(),
+                "integrate after the holder".parse()?,
+                replaced,
+            ))
+        };
+
+        let kept = answer(Vec::new())?;
+        let kept_wire = serde_json::to_value(&kept)?;
+        assert!(kept_wire.get("replaced").is_none(), "{kept_wire}");
+        assert_eq!(
+            serde_json::from_value::<ConflictAuthorization>(kept_wire)?,
+            kept
+        );
+
+        let replaced = answer(vec![ContradictedOrdering {
+            reservation_id: ReservationId::new(),
+            edge_id: EdgeId::new(),
+            holder,
+        }])?;
+        let replaced_wire = serde_json::to_value(&replaced)?;
+        assert!(replaced_wire.get("replaced").is_some(), "{replaced_wire}");
+        assert_eq!(
+            serde_json::from_value::<ConflictAuthorization>(replaced_wire)?,
+            replaced
+        );
         Ok(())
     }
 

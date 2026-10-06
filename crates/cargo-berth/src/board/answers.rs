@@ -1,6 +1,7 @@
 //! Recorded overlap answers, the durable authorization context each one preserves, and the
 //! board's split of them by whether the reservation that answered is still live.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::slice;
 
@@ -15,6 +16,7 @@ use super::rows::WaitingAction;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
+use crate::answer::ContradictedOrdering;
 use crate::answer::OverlapAuthorizationReason;
 use crate::edge::DeferralOrigin;
 use crate::edge::EdgeReadiness;
@@ -53,6 +55,9 @@ pub(super) enum RecordedOverlapAnswer {
         authorization_reason:  OverlapAuthorizationReason,
         acquisition:           AnswerAcquisition,
         consequence:           OrderingConsequence,
+        /// The earlier edges to `blocker` this answer's `--replace` retired; empty without it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        replaced:              Vec<ContradictedOrdering>,
     },
     Defer {
         reservation_id:        ReservationId,
@@ -113,9 +118,16 @@ pub(super) enum AnswerAcquisition {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(super) enum OrderingConsequence {
-    Holding { action: WaitingAction },
+    Holding {
+        action: WaitingAction,
+    },
     Cancelled,
     Fulfilled,
+    /// A later `--replace` answer retired this edge and ordered the same holder the other way.
+    Replaced {
+        /// The reservation whose answer retired the edge.
+        reservation_id: ReservationId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -176,6 +188,37 @@ fn recorded_ordering_edge(
         .ok_or(BoardError::MissingOrderingEdge(edge_id))
 }
 
+/// The consequence of the sequence answer that recorded `edge_id`:
+/// [`OrderingConsequence::Replaced`] once a later `--replace` answer retired the edge, so replay
+/// holds no such edge, or the live edge's readiness otherwise.
+fn sequence_consequence(
+    constraints: &IntegrationConstraintProjection,
+    replaced_edges: &HashMap<EdgeId, ReservationId>,
+    edge_id: EdgeId,
+) -> Result<OrderingConsequence, BoardError> {
+    replaced_edges.get(&edge_id).map_or_else(
+        || recorded_ordering_edge(constraints, edge_id).map(ordering_consequence),
+        |reservation_id| {
+            Ok(OrderingConsequence::Replaced {
+                reservation_id: *reservation_id,
+            })
+        },
+    )
+}
+
+/// The entries of a several-holder answer's `replaced` that retired an edge to `holder`, the
+/// share that holder's own row shows.
+fn replaced_toward(
+    replaced: &[ContradictedOrdering],
+    holder: ReservationId,
+) -> Vec<ContradictedOrdering> {
+    replaced
+        .iter()
+        .filter(|contradicted_ordering| contradicted_ordering.holder == holder)
+        .copied()
+        .collect()
+}
+
 fn ordering_consequence(edge: &IntegrationOrderingConstraint) -> OrderingConsequence {
     match edge.readiness {
         EdgeReadiness::Holding { hold } => OrderingConsequence::Holding {
@@ -193,6 +236,7 @@ pub(super) fn board_overlap_answers(
     live_reservations: &HashSet<ReservationId>,
 ) -> Result<BoardOverlapAnswers, BoardError> {
     let resolved_pairs = resolved_defer_pairs(events);
+    let replaced_edges = replaced_edges(events);
     let mut answers = AnswerSplit {
         live_reservations,
         live: Vec::new(),
@@ -212,6 +256,7 @@ pub(super) fn board_overlap_answers(
                     acquisition: claim_acquisition(authorization),
                 },
                 &resolved_pairs,
+                &replaced_edges,
                 constraints,
             )?,
             JournalOperation::Widen {
@@ -232,6 +277,7 @@ pub(super) fn board_overlap_answers(
                     },
                 },
                 &resolved_pairs,
+                &replaced_edges,
                 constraints,
             )?,
             // An answer recorded without a reservation has no answering row to list.
@@ -248,6 +294,7 @@ pub(super) fn board_overlap_answers(
                         acquisition: AnswerAcquisition::Answer,
                     },
                     &resolved_pairs,
+                    &replaced_edges,
                     constraints,
                 )
             })?,
@@ -296,6 +343,26 @@ const fn claim_acquisition(authorization: &ConflictAuthorization) -> AnswerAcqui
         ConflictAuthorization::Enrollment { .. } => AnswerAcquisition::Enrollment,
         _ => AnswerAcquisition::Claim,
     }
+}
+
+/// Map each edge a `--replace` answer retired to the reservation whose answer retired it.
+fn replaced_edges(events: &[JournalEvent]) -> HashMap<EdgeId, ReservationId> {
+    events
+        .iter()
+        .filter_map(|event| match &event.operation {
+            JournalOperation::Claim {
+                reservation_id,
+                authorization,
+                ..
+            } => Some((*reservation_id, authorization.replaced())),
+            _ => None,
+        })
+        .flat_map(|(reservation_id, replaced)| {
+            replaced
+                .iter()
+                .map(move |contradicted_ordering| (contradicted_ordering.edge_id, reservation_id))
+        })
+        .collect()
 }
 
 fn resolved_defer_pairs(events: &[JournalEvent]) -> HashSet<(ReservationId, ReservationId)> {
@@ -378,22 +445,16 @@ fn reservation_answers(
     operation: &JournalOperation,
 ) -> Option<(ReservationId, &[ConflictAuthorization])> {
     match operation {
-        JournalOperation::Claim {
-            reservation_id,
-            authorization,
-            ..
-        }
-        | JournalOperation::Widen {
-            reservation_id,
-            authorization,
-            ..
-        } => Some((*reservation_id, slice::from_ref(authorization))),
         JournalOperation::Answer {
             reservation_id,
             authorizations,
             ..
         } => reservation_id.map(|reservation_id| (reservation_id, authorizations.as_slice())),
-        _ => None,
+        _ => operation
+            .acquisition_authorization()
+            .map(|(reservation_id, authorization)| {
+                (reservation_id, slice::from_ref(authorization))
+            }),
     }
 }
 
@@ -401,6 +462,7 @@ fn append_authorization_answer(
     answers: &mut AnswerSplit<'_>,
     row: RecordedAuthorizationRow<'_>,
     resolved_pairs: &HashSet<(ReservationId, ReservationId)>,
+    replaced_edges: &HashMap<EdgeId, ReservationId>,
     constraints: &IntegrationConstraintProjection,
 ) -> Result<(), BoardError> {
     let RecordedAuthorizationRow {
@@ -423,8 +485,9 @@ fn append_authorization_answer(
             direction,
             edge_id,
             reason,
+            replaced,
         } => {
-            let edge = recorded_ordering_edge(constraints, *edge_id)?;
+            let consequence = sequence_consequence(constraints, replaced_edges, *edge_id)?;
             answers.record(reservation_id, || {
                 Ok(RecordedOverlapAnswer::Sequence {
                     reservation_id,
@@ -433,7 +496,8 @@ fn append_authorization_answer(
                     exact_approved_scopes: overlaps.clone(),
                     authorization_reason: reason.clone(),
                     acquisition,
-                    consequence: ordering_consequence(edge),
+                    consequence,
+                    replaced: replaced.clone(),
                 })
             })?;
         },
@@ -443,9 +507,11 @@ fn append_authorization_answer(
             overlaps,
             holders,
             reason,
+            replaced,
         } => {
             for holder in holders {
-                let edge = recorded_ordering_edge(constraints, holder.edge_id)?;
+                let consequence =
+                    sequence_consequence(constraints, replaced_edges, holder.edge_id)?;
                 let exact_approved_scopes = overlaps
                     .of_holder(holder.blocker)
                     .map_err(|_| EdgeReplayError::MissingAuthorizedScopes(holder.blocker))?;
@@ -457,7 +523,8 @@ fn append_authorization_answer(
                         exact_approved_scopes,
                         authorization_reason: reason.clone(),
                         acquisition: acquisition.clone(),
-                        consequence: ordering_consequence(edge),
+                        consequence,
+                        replaced: replaced_toward(replaced, holder.blocker),
                     })
                 })?;
             }
@@ -713,6 +780,7 @@ mod tests {
             authorization_reason,
             acquisition,
             consequence,
+            replaced,
         } = sequence_answer
         else {
             return Err(
@@ -728,6 +796,7 @@ mod tests {
             "holder must integrate first"
         );
         assert!(matches!(acquisition, AnswerAcquisition::Claim));
+        assert_eq!(replaced.as_slice(), []);
         assert!(matches!(
             consequence,
             OrderingConsequence::Holding {

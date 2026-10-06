@@ -8,7 +8,9 @@ mod scope_binding;
 
 pub(crate) use approver::OverlapApprover;
 pub(crate) use conflict_authorization::ConflictAuthorization;
+pub(crate) use conflict_authorization::ContradictedOrdering;
 pub(crate) use request::DeferAnswerRequest;
+pub(crate) use request::OrderingReplacement;
 pub(crate) use request::OverlapAuthorizationReason;
 pub(crate) use request::OverlapAuthorizationRequest;
 pub(crate) use request::PermissiveOverlapAnswer;

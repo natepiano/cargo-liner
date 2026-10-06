@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::alert::Alert;
 use crate::alert::AlertRouting;
+use crate::answer::ContradictedOrdering;
 use crate::answer::OverlapApprover;
 use crate::board;
 use crate::board::BoardModel;
@@ -643,6 +644,9 @@ declare_output_contract_metadata! {
         OrderingEdgeLimitReached => ("ordering_edge_limit_reached", BlockedByOrdering);
         /// One or more foreign reservations overlap the requested paths.
         BlockedByOverlap => ("blocked_by_overlap", BlockedByOverlap);
+        /// A sequence answer points opposite to a live edge between a named holder and an
+        /// earlier reservation of the same run and worktree, and did not pass `--replace`.
+        ContradictsLiveOrdering => ("contradicts_live_ordering", BlockedByOverlap);
         /// One or more ordering or deferral holds reject integration.
         BlockedByOrdering => ("blocked_by_ordering", BlockedByOrdering);
         /// The caller can correct the request and retry without repairing the ledger.
@@ -1290,6 +1294,13 @@ enum ClaimPayload {
         /// The configured session that chooses the answer, when the repository names one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         approver:  Option<OverlapApprover>,
+    },
+    /// The sequence answer points opposite to live edges between its holders and earlier
+    /// reservations of the same run and worktree; `--replace` retires them.
+    ContradictsLiveOrdering {
+        /// Each contradicted edge, the earlier reservation at one endpoint, and the holder at the
+        /// other.
+        contradicted: Vec<ContradictedOrdering>,
     },
     /// Repository policy rejected another live reservation.
     ReservationLimitReached {
@@ -2323,6 +2334,45 @@ impl OutputEnvelope {
         }
     }
 
+    /// Build a claim rejection naming each live edge the sequence answer contradicts.
+    pub(crate) fn claim_contradicts_live_ordering(contradicted: Vec<ContradictedOrdering>) -> Self {
+        let mut blocked_by = Vec::<ReservationId>::new();
+        for contradicted_ordering in &contradicted {
+            if !blocked_by.contains(&contradicted_ordering.reservation_id) {
+                blocked_by.push(contradicted_ordering.reservation_id);
+            }
+        }
+        let edges = contradicted
+            .iter()
+            .map(|contradicted_ordering| {
+                format!(
+                    "edge {} between holder {} and reservation {}",
+                    contradicted_ordering.edge_id,
+                    contradicted_ordering.holder,
+                    contradicted_ordering.reservation_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let message = format!(
+            "This answer orders the opposite way to a live ordering edge this run already recorded in this worktree: {edges}. Re-run the claim with --replace to overturn the earlier order."
+        );
+        let presentation = engine_result_presentation(&message, &message);
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Claim,
+            status: OutputStatus::ContradictsLiveOrdering,
+            exit_code: BerthExit::BlockedByOverlap,
+            reservations: Vec::new(),
+            blocked_by,
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Claim(
+                ClaimPayload::ContradictsLiveOrdering { contradicted },
+            )),
+        }
+    }
+
     /// Build a typed claim rejection when no additional ordering edge is permitted.
     pub(crate) fn claim_ordering_edge_limit_reached(maximum: u32) -> Self {
         let message = format!(
@@ -2695,6 +2745,7 @@ impl OutputEnvelope {
             | OutputStatus::ReservationLimitReached
             | OutputStatus::OrderingEdgeLimitReached
             | OutputStatus::BlockedByOverlap
+            | OutputStatus::ContradictsLiveOrdering
             | OutputStatus::BlockedByOrdering
             | OutputStatus::InvalidInput
             | OutputStatus::Sequenced

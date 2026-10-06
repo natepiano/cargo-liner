@@ -54,6 +54,20 @@ pub(crate) struct SequencedBlocker {
     pub(crate) direction: OrderingDirection,
 }
 
+/// Whether a sequence answer may retire live ordering edges that point the other way.
+///
+/// The edges in question join a named holder to a nonterminal reservation of the claimant's own
+/// coordination run and worktree, so a later claim that orders the same work in the opposite
+/// direction re-rules the earlier answer instead of recording a second, contradicting one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OrderingReplacement {
+    /// Refuse the claim when its order contradicts a live edge; the caller did not pass
+    /// `--replace`.
+    Keep,
+    /// Retire every contradicted live edge in the same journal record that adds the new ones.
+    Replace,
+}
+
 /// One of the overlap answers that permits concurrent editing and reserves the claimed paths.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PermissiveOverlapAnswer {
@@ -62,7 +76,9 @@ pub(crate) enum PermissiveOverlapAnswer {
         /// One entry per distinct holder named by `--before` or `--after`, each in the direction
         /// its own flag chose; the CLI builds this only from one or more flags and refuses a
         /// holder named by both.
-        blockers: Vec<SequencedBlocker>,
+        blockers:    Vec<SequencedBlocker>,
+        /// Whether `--replace` lets this answer retire the live edges it contradicts.
+        replacement: OrderingReplacement,
     },
     /// Permit editing without adding an integration constraint.
     Override {
@@ -119,11 +135,15 @@ impl<'de> Deserialize<'de> for OverlapAuthorizationReason {
     }
 }
 
+impl From<bool> for OrderingReplacement {
+    fn from(replace: bool) -> Self { if replace { Self::Replace } else { Self::Keep } }
+}
+
 impl PermissiveOverlapAnswer {
     /// Return every blocker identifier the answer flags named.
     pub(crate) fn blockers(&self) -> Vec<ReservationId> {
         match self {
-            Self::Sequence { blockers } => blockers
+            Self::Sequence { blockers, .. } => blockers
                 .iter()
                 .map(|sequenced_blocker| sequenced_blocker.blocker)
                 .collect(),

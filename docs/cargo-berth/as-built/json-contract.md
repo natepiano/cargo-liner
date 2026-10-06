@@ -398,7 +398,13 @@ The sections mean:
   as `ordering_created_from_deferral`, and the `defer` answer it resolved
   leaves the list. `acquisition.origin` is `claim`, `enrollment`, or `widen`
   (with `added_scopes`, `cause`, and `edit_blocking_status`); a widen appears
-  here only when it recorded a new answer. A widen onto paths no other
+  here only when it recorded a new answer. A `sequence` entry carries
+  `blocker`, `direction`, and a `consequence` whose `state` is `holding` (with
+  `action`), `cancelled`, `fulfilled`, or `replaced` with `reservation_id`: the
+  reservation whose later `claim --replace` retired this answer's edge to the
+  same holder. A `sequence` entry recorded with `--replace` adds `replaced`,
+  the contradicted orderings it overturned toward its own `blocker`, in the
+  journal's `{ reservation_id, edge_id, holder }` form. A widen onto paths no other
   reservation holds (`authorization.kind = "no_conflict"`), or whose overlaps
   earlier answers already cover (`existing_answers_cover_every_overlap`), is
   scope growth: the row's `scopes` show it and the journal keeps the `widen`
@@ -754,6 +760,41 @@ for the acting coordination run and worktree. A valid explicit selection
 publishes the harness-session mapping onto that reservation, so the next
 ordinary `check` selects it without returning this ambiguity.
 
+## Contradicted ordering refusal
+
+A `claim` whose `--before` or `--after` answer orders a holder opposite to a
+live ordering edge between that holder and a nonterminal reservation of the
+same coordination run and worktree returns
+`status = "contradicts_live_ordering"` and exit code `1`, and appends nothing.
+Its payload names each contradicted edge:
+
+```json
+{
+  "kind": "claim",
+  "data": {
+    "status": "contradicts_live_ordering",
+    "contradicted": [{
+      "reservation_id": "01a036fb-1629-7712-96b7-1672b64a151f",
+      "edge_id": "01a036fb-2a41-7c03-8d55-0b3f6c1e9a27",
+      "holder": "01a036fa-b70a-7e72-89ae-0facf1976ed1"
+    }]
+  },
+  "alerts": []
+}
+```
+
+`reservation_id` is the claimant's earlier reservation, `edge_id` the live
+edge, and `holder` the holder the new answer named. `blocked_by` lists each
+earlier reservation once. The message says to re-run the claim with
+`--replace`, which records the same answer with the contradicted edges in the
+authorization's `replaced` array. An answer in the same direction as the live
+edge is no contradiction and records a second edge, as before.
+
+`--replace` with no contradicted edge returns `status = "invalid_input"` and
+exit code `5`, naming the holders, so a re-ruling that no longer applies never
+records. `--replace` without `--before` or `--after` is a usage error at exit
+code `5`.
+
 ## Drift outcomes
 
 A drift response carries `payload.kind = "drift"`. Each
@@ -951,7 +992,15 @@ These operation fields use the following tagged values:
   ordering edge per named holder in the direction its own flag chose:
   `requester_before_holder` for `--before`, `holder_before_requester` for
   `--after`. Board rows are unchanged: a several-holder answer lists one
-  `sequence` row per holder, each with its own `direction`. `enrollment` binds every counterpart observed when `init`
+  `sequence` row per holder, each with its own `direction`. `sequence` and
+  `sequence_per_holder` carry an optional `replaced` array, written only by a
+  `claim --replace` and absent otherwise: one `{ "reservation_id": <uuid-v7>,
+  "edge_id": <uuid-v7>, "holder": <uuid-v7> }` per live edge the answer
+  overturned, naming the claimant's earlier reservation, the edge, and the
+  holder. Replay removes each named edge before it adds the record's own
+  edges, so one record retires the old order and adds the new one; an edge id
+  replay does not hold makes the journal unreadable. The earlier reservation
+  stays live; only its edge to that holder retires. `enrollment` binds every counterpart observed when `init`
   enrolled the claim and holds integration for each pair until `sequence`
   orders it. `scope_revision` is required on every entry, but only
   `existing_answers_cover_every_overlap` compares it when deciding edit

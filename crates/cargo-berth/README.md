@@ -291,6 +291,19 @@ requester$ cargo berth claim src/panel.rs --after <merged-holder> --before <in-f
 A holder named by both `--before` and `--after` is refused as invalid input.
 `--defer` and `--override` cannot be combined with any other answer.
 
+To re-rule an order, claim again with the opposite flag and `--replace`. While
+an earlier reservation of the same run and worktree holds a live edge to that
+holder pointing the other way, the new answer is refused at exit 1 with status
+`contradicts_live_ordering`, naming the edge, and records nothing; with
+`--replace` the claim retires that edge and records the new order in one
+journal record. The earlier reservation stays live and keeps its other edges.
+`--replace` with nothing to overturn is refused as invalid input, and it
+requires `--before` or `--after`:
+
+```console
+requester$ cargo berth claim src/panel.rs --after <holder> --replace --overlap-why "the holder must land first after all"
+```
+
 Each answer requires `--overlap-why <text>` and records in that one
 invocation. An answer that leaves a conflicting holder unnamed, or names a
 reservation that does not conflict while another holder does, is refused at

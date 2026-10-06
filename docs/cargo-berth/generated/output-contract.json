@@ -4618,6 +4618,24 @@
                 "state"
               ],
               "type": "object"
+            },
+            {
+              "description": "A later `--replace` answer retired this edge and ordered the same holder the other way.",
+              "properties": {
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation whose answer retired the edge."
+                },
+                "state": {
+                  "const": "replaced",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "reservation_id"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -5122,6 +5140,13 @@
                 },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "replaced": {
+                  "description": "The earlier edges to `blocker` this answer's `--replace` retired; empty without it.",
+                  "items": {
+                    "$ref": "#/$defs/contradicted_ordering"
+                  },
+                  "type": "array"
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier"
@@ -6953,6 +6978,27 @@
               "type": "object"
             },
             {
+              "description": "The sequence answer points opposite to live edges between its holders and earlier\nreservations of the same run and worktree; `--replace` retires them.",
+              "properties": {
+                "contradicted": {
+                  "description": "Each contradicted edge, the earlier reservation at one endpoint, and the holder at the\nother.",
+                  "items": {
+                    "$ref": "#/$defs/contradicted_ordering"
+                  },
+                  "type": "array"
+                },
+                "status": {
+                  "const": "contradicts_live_ordering",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "contradicted"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Repository policy rejected another live reservation.",
               "properties": {
                 "maximum": {
@@ -7058,6 +7104,29 @@
               "type": "string"
             }
           ]
+        },
+        "contradicted_ordering": {
+          "description": "One live ordering edge between a holder a sequence answer named and a nonterminal reservation\nof the claimant's own coordination run and worktree, pointing the opposite way to that answer.\n\nA claim without `--replace` is refused with these in its payload; a claim with it records them\nas `replaced`, and replay retires each `edge_id` before adding the claim's own edges.",
+          "properties": {
+            "edge_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The live edge the new answer contradicts."
+            },
+            "holder": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The holder the new answer named, at one endpoint of the edge."
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The claimant's earlier reservation at the other endpoint of the edge."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "edge_id",
+            "holder"
+          ],
+          "type": "object"
         },
         "coordination_identity_recovery_action": {
           "description": "One executable response to a rejected coordination identity.",
@@ -8798,6 +8867,11 @@
             {
               "const": "blocked_by_overlap",
               "description": "One or more foreign reservations overlap the requested paths.",
+              "type": "string"
+            },
+            {
+              "const": "contradicts_live_ordering",
+              "description": "A sequence answer points opposite to a live edge between a named holder and an\nearlier reservation of the same run and worktree, and did not pass `--replace`.",
               "type": "string"
             },
             {
@@ -12460,6 +12534,24 @@
                 "state"
               ],
               "type": "object"
+            },
+            {
+              "description": "A later `--replace` answer retired this edge and ordered the same holder the other way.",
+              "properties": {
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation whose answer retired the edge."
+                },
+                "state": {
+                  "const": "replaced",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "reservation_id"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -12886,6 +12978,13 @@
                 },
                 "exact_approved_scopes": {
                   "$ref": "#/$defs/AuthorizedOverlapSet"
+                },
+                "replaced": {
+                  "description": "The earlier edges to `blocker` this answer's `--replace` retired; empty without it.",
+                  "items": {
+                    "$ref": "#/$defs/contradicted_ordering"
+                  },
+                  "type": "array"
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier"
@@ -14514,6 +14613,27 @@
               "type": "object"
             },
             {
+              "description": "The sequence answer points opposite to live edges between its holders and earlier\nreservations of the same run and worktree; `--replace` retires them.",
+              "properties": {
+                "contradicted": {
+                  "description": "Each contradicted edge, the earlier reservation at one endpoint, and the holder at the\nother.",
+                  "items": {
+                    "$ref": "#/$defs/contradicted_ordering"
+                  },
+                  "type": "array"
+                },
+                "status": {
+                  "const": "contradicts_live_ordering",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "contradicted"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Repository policy rejected another live reservation.",
               "properties": {
                 "maximum": {
@@ -14554,6 +14674,29 @@
               "type": "object"
             }
           ]
+        },
+        "contradicted_ordering": {
+          "description": "One live ordering edge between a holder a sequence answer named and a nonterminal reservation\nof the claimant's own coordination run and worktree, pointing the opposite way to that answer.\n\nA claim without `--replace` is refused with these in its payload; a claim with it records them\nas `replaced`, and replay retires each `edge_id` before adding the claim's own edges.",
+          "properties": {
+            "edge_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The live edge the new answer contradicts."
+            },
+            "holder": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The holder the new answer named, at one endpoint of the edge."
+            },
+            "reservation_id": {
+              "$ref": "#/$defs/uuid_v7_identifier",
+              "description": "The claimant's earlier reservation at the other endpoint of the edge."
+            }
+          },
+          "required": [
+            "reservation_id",
+            "edge_id",
+            "holder"
+          ],
+          "type": "object"
         },
         "coordination_identity_recovery_action": {
           "description": "One executable response to a rejected coordination identity.",

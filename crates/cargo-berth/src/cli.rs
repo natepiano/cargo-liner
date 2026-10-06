@@ -28,6 +28,7 @@ use clap::Subcommand;
 use clap::error::ErrorKind;
 
 use crate::answer::DeferAnswerRequest;
+use crate::answer::OrderingReplacement;
 use crate::answer::OverlapAuthorizationReason;
 use crate::answer::OverlapAuthorizationRequest;
 use crate::answer::PermissiveOverlapAnswer;
@@ -137,6 +138,7 @@ const CLAIM_BEFORE_ARGUMENT: &str = "before";
 const CLAIM_DEFER_ARGUMENT: &str = "defer";
 const CLAIM_OVERRIDE_ARGUMENT: &str = "override";
 const CLAIM_OVERRIDE_ARGUMENT_ID: &str = "override_reservation";
+const CLAIM_REPLACE_ARGUMENT: &str = "replace";
 const CLAIM_RESOLUTION_GROUP: &str = "claim-resolution";
 const COMPACT_JOURNAL_ARGUMENT: &str = "compact-journal";
 const COMPACT_JOURNAL_ARGUMENT_ID: &str = "compact_journal";
@@ -565,6 +567,14 @@ struct ClaimArguments {
         conflicts_with_all = [CLAIM_BEFORE_ARGUMENT, CLAIM_AFTER_ARGUMENT]
     )]
     override_reservation: Option<ReservationId>,
+    /// Retire the live ordering edges this --before or --after answer contradicts, the ones
+    /// between a named holder and an earlier reservation of this run in this worktree.
+    #[arg(
+        long = CLAIM_REPLACE_ARGUMENT,
+        requires = CLAIM_RESOLUTION_GROUP,
+        conflicts_with_all = [CLAIM_DEFER_ARGUMENT, CLAIM_OVERRIDE_ARGUMENT_ID]
+    )]
+    replace:              bool,
     /// Explain why these paths are being protected.
     #[arg(long = WHY_ARGUMENT, value_name = WHY_VALUE_NAME)]
     why:                  Option<String>,
@@ -1121,6 +1131,7 @@ impl ClaimArguments {
             after,
             defer,
             override_reservation,
+            replace,
             why,
             overlap_why,
             plan,
@@ -1161,6 +1172,7 @@ impl ClaimArguments {
             after,
             defer,
             override_reservation,
+            OrderingReplacement::from(replace),
             overlap_why.as_deref(),
         )?;
         let overlap_authorization = overlap_authorization_request(overlap_selection);
@@ -1189,6 +1201,7 @@ fn overlap_selection(
     after: Vec<ReservationId>,
     defer: Vec<ReservationId>,
     override_reservation: Option<ReservationId>,
+    replacement: OrderingReplacement,
     overlap_why: Option<&str>,
 ) -> Result<OverlapSelection, String> {
     let authorization_reason = || {
@@ -1232,6 +1245,7 @@ fn overlap_selection(
                 let authorization_reason = authorization_reason()?;
                 OverlapSelection::Sequence {
                     blockers,
+                    replacement,
                     authorization_reason,
                 }
             },
@@ -1287,6 +1301,7 @@ enum OverlapSelection {
     /// own flag chose.
     Sequence {
         blockers:             Vec<SequencedBlocker>,
+        replacement:          OrderingReplacement,
         authorization_reason: OverlapAuthorizationReason,
     },
     /// The requester defers the integration order with every named holder.
@@ -1306,9 +1321,13 @@ fn overlap_authorization_request(selection: OverlapSelection) -> OverlapAuthoriz
         OverlapSelection::NoOverlapRequested => return OverlapAuthorizationRequest::Absent,
         OverlapSelection::Sequence {
             blockers,
+            replacement,
             authorization_reason,
         } => (
-            PermissiveOverlapAnswer::Sequence { blockers },
+            PermissiveOverlapAnswer::Sequence {
+                blockers,
+                replacement,
+            },
             authorization_reason,
         ),
         OverlapSelection::Defer {
@@ -2369,6 +2388,7 @@ mod tests {
     use super::gate_lock_deadline_diagnostic;
     use super::gate_total_deadline_diagnostic;
     use super::without_subcommand_name;
+    use crate::answer::OrderingReplacement;
     use crate::answer::OverlapAuthorizationReason;
     use crate::answer::OverlapAuthorizationRequest;
     use crate::answer::PermissiveOverlapAnswer;
@@ -2901,7 +2921,7 @@ mod tests {
 
         assert_eq!(
             claim_request.overlap_authorization,
-            sequence_request(blockers, overlap_reason)?
+            sequence_request(blockers, OrderingReplacement::Keep, overlap_reason)?
         );
         Ok(())
     }
@@ -2934,7 +2954,7 @@ mod tests {
 
         assert_eq!(
             claim_request.overlap_authorization,
-            sequence_request(blockers, overlap_reason)?
+            sequence_request(blockers, OrderingReplacement::Keep, overlap_reason)?
         );
         Ok(())
     }
@@ -2960,6 +2980,66 @@ mod tests {
             refusal.contains(RESERVATION_ID) && refusal.contains("both --before and --after"),
             "{refusal}"
         );
+        Ok(())
+    }
+
+    /// `--replace` joins a `--before` or `--after` answer and asks it to retire the live edges
+    /// it contradicts.
+    #[test]
+    fn replace_flag_marks_a_sequence_answer_for_replacement() -> Result<(), String> {
+        let overlap_reason = "the holder must land first after all";
+        let claim_request = claim_request(&[
+            BINARY_NAME,
+            "claim",
+            "src/lib.rs",
+            "--after",
+            RESERVATION_ID,
+            "--replace",
+            "--overlap-why",
+            overlap_reason,
+        ])?;
+        let blockers = vec![sequenced_blocker(
+            RESERVATION_ID,
+            OrderingDirection::HolderBeforeRequester,
+        )?];
+
+        assert_eq!(
+            claim_request.overlap_authorization,
+            sequence_request(blockers, OrderingReplacement::Replace, overlap_reason)?
+        );
+        Ok(())
+    }
+
+    /// `--replace` re-rules an order, so it needs `--before` or `--after` and refuses `--defer`
+    /// and `--override`.
+    #[test]
+    fn replace_flag_requires_a_before_or_after_answer() -> Result<(), String> {
+        let missing_answer = parsed_verb(&[BINARY_NAME, "claim", "src/lib.rs", "--replace"])
+            .err()
+            .ok_or("--replace without --before or --after must be refused")?;
+        assert_eq!(
+            exit_for_parser_error(&missing_answer),
+            BerthExit::UsageError
+        );
+        for answer in ["--defer", "--override"] {
+            let error = parsed_verb(&[
+                BINARY_NAME,
+                "claim",
+                "src/lib.rs",
+                answer,
+                RESERVATION_ID,
+                "--replace",
+                "--overlap-why",
+                "the holder must land first after all",
+            ])
+            .err()
+            .ok_or_else(|| format!("{answer} with --replace must be refused"))?;
+            assert_eq!(exit_for_parser_error(&error), BerthExit::UsageError);
+            assert!(
+                error.to_string().contains("cannot be used with"),
+                "{answer} with --replace: {error}"
+            );
+        }
         Ok(())
     }
 
@@ -3307,6 +3387,7 @@ mod tests {
 
     fn sequence_request(
         blockers: Vec<SequencedBlocker>,
+        replacement: OrderingReplacement,
         overlap_reason: &str,
     ) -> Result<OverlapAuthorizationRequest, String> {
         let reason = overlap_reason
@@ -3314,7 +3395,10 @@ mod tests {
             .map_err(|error| error.to_string())?;
         Ok(OverlapAuthorizationRequest::Permissive(Box::new(
             PermissiveOverlapAuthorizationRequest {
-                answer: PermissiveOverlapAnswer::Sequence { blockers },
+                answer: PermissiveOverlapAnswer::Sequence {
+                    blockers,
+                    replacement,
+                },
                 reason,
             },
         )))

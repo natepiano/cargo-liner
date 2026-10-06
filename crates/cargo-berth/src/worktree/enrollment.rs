@@ -479,7 +479,7 @@ pub(crate) fn cover_claim(
         phase_start_head: footprint.merge_base.clone().into(),
         worktree_root,
         worktree_administrative_locator: footprint.context.administrative_locator().clone(),
-        authorization: ConflictAuthorization::NoConflict,
+        authorization: Box::new(ConflictAuthorization::NoConflict),
         coordination_identity_provenance: CoordinationIdentityProvenance::NotPresented,
     }))
 }
@@ -705,7 +705,7 @@ fn enroll_candidate(
                 phase_start_head: candidate.merge_base.clone().into(),
                 worktree_root,
                 worktree_administrative_locator: candidate.context.administrative_locator().clone(),
-                authorization,
+                authorization: Box::new(authorization),
                 coordination_identity_provenance: CoordinationIdentityProvenance::NotPresented,
             }))
         })
@@ -775,51 +775,40 @@ fn enrollment_authorization(
 fn unresolved_enrollment_overlaps(events: &[JournalEvent]) -> Vec<EnrollmentOverlap> {
     let mut pending = Vec::new();
     for event in events {
-        match &event.operation {
-            JournalOperation::Claim {
-                reservation_id,
-                authorization: ConflictAuthorization::Enrollment { overlaps },
-                ..
-            }
-            | JournalOperation::Widen {
-                reservation_id,
-                authorization: ConflictAuthorization::Enrollment { overlaps },
-                ..
-            } => {
-                for overlap in overlaps.as_slice() {
-                    let first = *reservation_id;
-                    let second = overlap.reservation_id;
-                    let Ok(shared_scopes) =
-                        ReservationScopeSet::try_from(overlap.scopes.as_slice().to_vec())
-                    else {
-                        continue;
-                    };
-                    pending.push(EnrollmentOverlap {
-                        first_reservation_id: first,
-                        second_reservation_id: second,
-                        shared_scopes,
-                        sequence_commands: [
-                            format!(
-                                "cargo berth sequence {first} {second} --why '{ENROLLMENT_SEQUENCE_REASON}'"
-                            ),
-                            format!(
-                                "cargo berth sequence {second} {first} --why '{ENROLLMENT_SEQUENCE_REASON}'"
-                            ),
-                        ],
-                    });
-                }
-            },
-            JournalOperation::ResolveDefer {
-                deferred_reservation_id,
-                blocker_reservation_id,
-                ..
-            } => {
-                pending.retain(|pair| {
-                    !(pair.first_reservation_id == *deferred_reservation_id
-                        && pair.second_reservation_id == *blocker_reservation_id)
+        if let Some((first, ConflictAuthorization::Enrollment { overlaps })) =
+            event.operation.acquisition_authorization()
+        {
+            for overlap in overlaps.as_slice() {
+                let second = overlap.reservation_id;
+                let Ok(shared_scopes) =
+                    ReservationScopeSet::try_from(overlap.scopes.as_slice().to_vec())
+                else {
+                    continue;
+                };
+                pending.push(EnrollmentOverlap {
+                    first_reservation_id: first,
+                    second_reservation_id: second,
+                    shared_scopes,
+                    sequence_commands: [
+                        format!(
+                            "cargo berth sequence {first} {second} --why '{ENROLLMENT_SEQUENCE_REASON}'"
+                        ),
+                        format!(
+                            "cargo berth sequence {second} {first} --why '{ENROLLMENT_SEQUENCE_REASON}'"
+                        ),
+                    ],
                 });
-            },
-            _ => {},
+            }
+        } else if let JournalOperation::ResolveDefer {
+            deferred_reservation_id,
+            blocker_reservation_id,
+            ..
+        } = &event.operation
+        {
+            pending.retain(|pair| {
+                !(pair.first_reservation_id == *deferred_reservation_id
+                    && pair.second_reservation_id == *blocker_reservation_id)
+            });
         }
     }
     pending

@@ -51,6 +51,7 @@ const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
 const MIXED_ANSWER_REASON: &str = "the first holder landed and the second builds on this claim";
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
+const RERULED_ORDER_REASON: &str = "the holder must land first after all";
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
@@ -1911,6 +1912,143 @@ fn a_foreign_holder_reaching_an_already_held_path_still_permits_widening_elsewhe
     );
 }
 
+/// A re-ruled order to the same holder, from the same run and worktree, is refused while the
+/// earlier edge stands: the refusal names that edge and appends nothing. The same order again is
+/// no contradiction and still records.
+#[test]
+fn a_reruled_order_is_refused_without_replace() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder, earlier, earlier_edge) =
+        requester_ordered_before_holder(repository.path(), &second_root);
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+
+    let refused = claim_library_answering(&second_root, &["--after", &holder]);
+    let envelope = json_output(&refused);
+
+    assert_eq!(refused.status.code(), Some(1), "{envelope:#}");
+    assert_eq!(envelope["status"], "contradicts_live_ordering");
+    assert_eq!(envelope["blocked_by"], serde_json::json!([earlier]));
+    assert_eq!(
+        envelope["payload"]["data"]["contradicted"],
+        serde_json::json!([{
+            "reservation_id": earlier,
+            "edge_id": earlier_edge,
+            "holder": holder,
+        }]),
+        "{envelope:#}"
+    );
+    assert!(
+        envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("--replace")),
+        "{envelope:#}"
+    );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let same_order = claim_library_answering(&second_root, &["--before", &holder]);
+    assert_eq!(
+        same_order.status.code(),
+        Some(0),
+        "{:#}",
+        json_output(&same_order)
+    );
+}
+
+/// `--replace` retires the contradicted edge in the claim record that adds the re-ruled one: the
+/// record names the retired edge, the board holds only the new order, and the earlier answer
+/// shows which reservation replaced it.
+#[test]
+fn replace_retires_the_contradicted_order() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (holder, earlier, earlier_edge) =
+        requester_ordered_before_holder(repository.path(), &second_root);
+
+    let replaced = claim_library_answering(&second_root, &["--after", &holder, "--replace"]);
+    let envelope = json_output(&replaced);
+
+    assert_eq!(replaced.status.code(), Some(0), "{envelope:#}");
+    let reruled = reservation_id(&replaced);
+    let authorization = &last_journal_event(repository.path())["authorization"];
+    assert_eq!(authorization["kind"], "sequence");
+    assert_eq!(authorization["direction"], "holder_before_requester");
+    let contradicted = serde_json::json!([{
+        "reservation_id": earlier,
+        "edge_id": earlier_edge,
+        "holder": holder,
+    }]);
+    assert_eq!(authorization["replaced"], contradicted, "{authorization:#}");
+    let reruled_edge = authorization["edge_id"].clone();
+
+    let board = run_berth(repository.path(), ["board", "--json"]);
+    let board_json = json_output(&board);
+    assert!(board.status.success(), "{board_json:#}");
+    let data = &board_json["payload"]["data"];
+    let ordering_edges = data["waiting"]["entries"]
+        .as_array()
+        .expect("the board should list its waiting entries")
+        .iter()
+        .filter(|entry| entry["hold"] == "ordering_edge")
+        .map(|entry| entry["edge_id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(ordering_edges, vec![reruled_edge], "{data:#}");
+    let answers = data["live_overlap_answers"]["entries"]
+        .as_array()
+        .expect("the board should list live overlap answers");
+    let answer_of = |reservation: &str| {
+        answers
+            .iter()
+            .find(|answer| {
+                answer["answer"] == "sequence" && answer["reservation_id"] == reservation
+            })
+            .expect("each reservation should list its sequence answer")
+    };
+    assert_eq!(
+        answer_of(&earlier)["consequence"],
+        serde_json::json!({ "state": "replaced", "reservation_id": reruled })
+    );
+    assert_eq!(answer_of(&reruled)["replaced"], contradicted);
+}
+
+/// `--replace` with no contradicted edge is refused as invalid input and appends nothing, so a
+/// stale re-ruling never records silently.
+#[test]
+fn replace_with_nothing_to_replace_is_invalid_input() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    dirty_source(repository.path(), "src/lib.rs");
+    let holder = reservation_id(&claim_explicit(
+        repository.path(),
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the holder file",
+    ));
+    dirty_source(&second_root, "src/lib.rs");
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+
+    let refused = claim_library_answering(&second_root, &["--after", &holder, "--replace"]);
+    let envelope = json_output(&refused);
+
+    assert_eq!(refused.status.code(), Some(5), "{envelope:#}");
+    assert_eq!(envelope["status"], "invalid_input");
+    assert!(
+        envelope["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(&holder) && message.contains("--replace")),
+        "{envelope:#}"
+    );
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let without_answer = run_berth(
+        &second_root,
+        ["claim", "file:src/lib.rs", "--replace", "--json"],
+    );
+    assert_eq!(without_answer.status.code(), Some(5));
+}
+
 /// Add a real worktree beside the repository, the second party berth has always refused.
 ///
 /// A distinct `--run` inside one worktree now names a second party too, but only a real
@@ -2421,6 +2559,50 @@ fn claim_after_every_named(requester_root: &Path, named: &[&str]) -> Output {
             "--json",
         ]);
     run_berth(requester_root, arguments)
+}
+
+/// Claim `src/lib.rs` from `requester_root` as `SECOND_RUN` with `answer`: the order flags
+/// naming the holder, and `--replace` when the test re-rules an earlier order.
+fn claim_library_answering(requester_root: &Path, answer: &[&str]) -> Output {
+    let arguments = ["claim", "file:src/lib.rs", "--run", SECOND_RUN]
+        .into_iter()
+        .chain(answer.iter().copied())
+        .chain([
+            "--overlap-why",
+            RERULED_ORDER_REASON,
+            "--why",
+            "protect the requester file",
+            "--json",
+        ]);
+    run_berth(requester_root, arguments)
+}
+
+/// A holder of `src/lib.rs` in the main worktree, answered from `requester_root` with
+/// `--before`: the holder, the requester's reservation, and the edge that answer recorded.
+fn requester_ordered_before_holder(
+    repository: &Path,
+    requester_root: &Path,
+) -> (String, String, String) {
+    dirty_source(repository, "src/lib.rs");
+    let holder = reservation_id(&claim_explicit(
+        repository,
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the holder file",
+    ));
+    dirty_source(requester_root, "src/lib.rs");
+    let first_answer = claim_library_answering(requester_root, &["--before", &holder]);
+    assert!(
+        first_answer.status.success(),
+        "{:#}",
+        json_output(&first_answer)
+    );
+    let earlier = reservation_id(&first_answer);
+    let edge_id = last_journal_event(repository)["authorization"]["edge_id"]
+        .as_str()
+        .expect("the first answer should record its edge")
+        .to_owned();
+    (holder, earlier, edge_id)
 }
 
 /// The holder and edge id one recorded holder or one board hold names.
