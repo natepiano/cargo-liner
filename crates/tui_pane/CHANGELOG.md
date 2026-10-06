@@ -5,7 +5,7 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-10-06
 
 ### Added
 - `[appearance] transparent`, on by default: `AppearanceConfig::transparent`, stepped as `transparent` under Appearance in the settings overlay (`FrameworkSetting::Transparent`), and mirrored into the theme state by `install_theme` and `apply_settings`; `transparent_background` and `set_transparent_background` read and set it. On, nothing paints a background under the app's main screen -- the focused-pane tint included -- so a transparent terminal window shows the desktop behind every cell. Off, `screen_ground` answers the theme's `text.bg_focus` for the app to paint the screen solid, and `draw_tile_grid` paints it under the grid while the contents are shown.
