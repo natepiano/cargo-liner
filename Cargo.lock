@@ -450,7 +450,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "tui_pane",
+ "tui_pane 0.8.0",
  "unicode-width",
  "uuid",
 ]
@@ -479,7 +479,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "toml 1.1.6+spec-1.1.0",
- "tui_pane",
+ "tui_pane 0.8.0",
 ]
 
 [[package]]
@@ -549,7 +549,7 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
- "tui_pane",
+ "tui_pane 0.8.0",
  "unicode-width",
  "walkdir",
 ]
@@ -569,7 +569,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "toml 1.1.6+spec-1.1.0",
- "tui_pane",
+ "tui_pane 0.8.0",
  "unicode-width",
  "uuid",
 ]
@@ -4503,6 +4503,39 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tui_pane"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab4fd735c32479e80d3ef49b0d6f6c9efce56d19495adeff6839df344bf6f07"
+dependencies = [
+ "chrono",
+ "crossbeam-channel",
+ "crossterm",
+ "dark-light",
+ "dirs",
+ "futures-lite",
+ "image",
+ "libc",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-io-kit",
+ "ratatui",
+ "screencapturekit",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-width",
+ "url",
+ "uuid",
+ "zbus",
+]
 
 [[package]]
 name = "tui_pane"
