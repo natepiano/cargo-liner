@@ -13,6 +13,7 @@ use tui_pane::PERF_LOG_TARGET;
 use tui_pane::TrackedItemKey;
 
 use super::frame_metrics::FrameMetrics;
+use super::frame_metrics::FrameSpeed;
 use super::processes;
 use super::run;
 use super::tree_state;
@@ -263,8 +264,9 @@ fn spawn_pending_background_tasks(app: &mut App) {
 }
 
 fn log_performance(app: &App, bg_stats: &PollBackgroundStats, metrics: &FrameMetrics) {
-    if metrics.is_slow() {
-        log_slow_frame(app, bg_stats, metrics);
+    match metrics.speed() {
+        FrameSpeed::BelowSlowThreshold => {},
+        FrameSpeed::Slow => log_slow_frame(app, bg_stats, metrics),
     }
 }
 
