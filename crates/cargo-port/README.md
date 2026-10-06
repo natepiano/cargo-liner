@@ -70,7 +70,7 @@ I try to keep the screenshots up to date but it's a lot of work so it is possibl
 3. **Git**: branch status, sync state, remotes, worktrees, GitHub rate-limit state, and pull request rows when available.
 4. **Languages**: per-project language totals by file count, code, comments, blanks, and total lines.
 5. **Diagnostics**: CPU and GPU utilization, with background refresh.
-6. **Targets**: examples, benches, binaries, and tests with source package and target kind.
+6. **Targets**: binaries, examples and benches, with source package and target kind.
 7. **Lint runs**: local lint/watch history and cached run artifacts.
 8. **CI runs**: GitHub Actions history with job-level status and duration columns.
 9. **Status bar**: current mode, pane navigation, active action, and shortcut help.
@@ -267,7 +267,8 @@ The targets pane will show you this project's targets - bins, examples, benches.
 
 1. The title bar of the pane will show you the count of each kind of target that is available in your project
 2. Runnable target names - you can launch it by hitting 'Enter' for a debug run, 'r' for `cargo run --release`.  The Source package is listed as a convenience so you don't have to scan back over to the project window. If it's a workspace, you'll see each target listed with its associated package. If it's a worktree group, you'll see the worktree checkout prefix the package (e.g. `worktree_checkout/package_name`).
-3. This screenshot has both examples and benches available to run. An output overlay window will pop up to show you the stdout when you run one.
+3. This screenshot has both examples and benches available to run. A run's output streams into the Output pane along the bottom; `Esc` stops the run.
+
 To see every running cargo process on the machine, use cargo-tile, installed from GitHub for now with `cargo install --git https://github.com/natepiano/cargo-liner cargo-tile`.
 
 ### Lint runs

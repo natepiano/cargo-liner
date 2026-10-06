@@ -1,7 +1,7 @@
 //! Framework-side keymap scaffolding.
 //!
 //! The `tui_pane`-driven keymap path coexists with the legacy
-//! `src/keymap.rs` path: the framework keymap owns targeted structural
+//! `src/tui/keymap/` path: the framework keymap owns targeted structural
 //! lookups while broad key dispatch remains on the legacy path.
 //!
 //! Surface:

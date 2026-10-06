@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[appearance] transparent`, on by default and toggled as **Transparent** under Appearance in the settings: nothing paints a background under the panes, the focused pane's tint included, so a transparent terminal window shows the desktop behind every pane. Off, the whole screen is painted solid in the theme's background. **Focused pane tint** applies only while it is off. A theme whose appearance disagrees with the terminal's background still paints that background, as before, so its text stays readable.
 
 ### Fixed
+- `Esc` with the finder or sccache window open now closes that window and leaves a running target going; it used to stop the target too.
 - **Focused pane tint** and **Transparent** in the settings draw as `< ON >` like every other on/off setting; they were drawn as plain text. Every setting is now one kind -- toggle, stepper or value -- that decides both how its row draws and how it answers the keys.
 - A project whose `direnv` environment cannot be loaded no longer reports every lint command as a failure. direnv exits nonzero before the shell starts -- the same exit Clippy uses for findings -- so the whole project turned red. Such a run is marked `no env` and shown yellow, the commands are recorded as skipped, and direnv's error is in the run's `direnv` log.
 - The settings overlay moves with `j`/`k` when `navigation_keys` enables vim keys; it was handed the untranslated key, so only the arrows reached it.
