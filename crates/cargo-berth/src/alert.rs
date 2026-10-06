@@ -113,6 +113,35 @@ impl Alert {
             },
         }
     }
+
+    /// Name this alert in one line for a heading; the `Display` line carries its recovery.
+    pub(crate) fn summary(&self) -> String {
+        match self {
+            Self::TargetMissing {
+                reservation_id,
+                target,
+                ..
+            } => format!(
+                "cargo-berth found integration target {} missing for reservation {reservation_id}",
+                target.short_name()
+            ),
+            Self::TargetUncovered { target, .. } => format!(
+                "cargo-berth found no registered worktree cover for integration target {}",
+                target.short_name()
+            ),
+            Self::MergeExtentUnavailable { reservation_id, .. } => format!(
+                "cargo-berth could not observe the merge extent of reservation {reservation_id}, which keeps its previous protection"
+            ),
+            Self::LostIntegrationEvidence(alert) => format!(
+                "cargo-berth lost the integration evidence of released reservation {}",
+                alert.reservation_id
+            ),
+            Self::OrphanedOutstanding(alert) => format!(
+                "cargo-berth found no validated worktree holder for protected reservation {}",
+                alert.reservation_id
+            ),
+        }
+    }
 }
 
 impl Display for Alert {

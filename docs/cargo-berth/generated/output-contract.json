@@ -8871,7 +8871,7 @@
             },
             {
               "const": "contradicts_live_ordering",
-              "description": "A sequence answer points opposite to a live edge between a named holder and an\nearlier reservation of the same run and worktree, and did not pass `--replace`.",
+              "description": "A sequence answer points opposite to a live edge between a named holder and an\nearlier reservation of the same run and worktree, and the claim did not pass\n`--replace`.",
               "type": "string"
             },
             {

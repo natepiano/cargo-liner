@@ -703,8 +703,8 @@ impl RecordCeiling {
 }
 
 impl JournalOperation {
-    /// The reservation a claim or widen acquired scopes for, with the overlap answer that
-    /// authorized the acquisition; `None` for every other operation.
+    /// The reservation a `Claim` or `Widen` acquired scopes for, with the `ConflictAuthorization`
+    /// that authorized the acquisition; `None` for every other operation.
     pub(crate) fn acquisition_authorization(
         &self,
     ) -> Option<(ReservationId, &ConflictAuthorization)> {

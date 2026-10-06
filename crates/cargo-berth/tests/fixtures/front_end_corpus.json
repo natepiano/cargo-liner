@@ -1581,7 +1581,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth widened this worktree reservation footprint.\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"AUTO-WIDEN: reservation reservation-widened now covers file:widened.rs\"}}\n"
+        "stdout": "{\"continue\":true,\"systemMessage\":\"cargo-berth added widened.rs to reservation reservation-widened\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"cargo-berth added widened.rs to reservation reservation-widened\"}}\n"
       },
       "expected_cargo_berth_calls": [
         [
@@ -2468,7 +2468,7 @@
       "expected": {
         "exit_code": 0,
         "stderr": "",
-        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth widened this worktree reservation footprint.\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"AUTO-WIDEN: reservation reservation-straying now covers file:widened.rs\"\n  }\n}\n"
+        "stdout": "{\n  \"continue\": true,\n  \"systemMessage\": \"cargo-berth added widened.rs to reservation reservation-straying\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PostToolUse\",\n    \"additionalContext\": \"cargo-berth added widened.rs to reservation reservation-straying\"\n  }\n}\n"
       },
       "expected_cargo_berth_calls": [
         [

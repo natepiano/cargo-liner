@@ -2816,11 +2816,11 @@ fn assert_session_start_feedback_matches_corpus(
 /// Compare one produced hook response against the text the corpus froze for it.
 ///
 /// The identifiers differ every run, so each observed identifier is restated as the one
-/// the corpus froze before the comparison. `PostToolUse` states exactly the notice lines,
-/// so its produced lines and its frozen lines have to be the same set and a line the corpus
-/// never froze fails here. `SessionStart` publishes every rendered block, so its response
-/// can carry notices and an integration-order overview the corpus never froze, and only the
-/// frozen lines are required to appear.
+/// the corpus froze before the comparison, in the summary and in the context alike. `PostToolUse`
+/// states exactly the notice lines, so its produced lines and its frozen lines have to be the same
+/// set and a line the corpus never froze fails here. `SessionStart` publishes every rendered block,
+/// so its response can carry notices and an integration-order overview the corpus never froze, and
+/// only the frozen lines are required to appear.
 fn assert_hook_feedback_matches_corpus(
     output: &Output,
     event: HookResponseEvent,
@@ -2857,12 +2857,16 @@ fn assert_hook_feedback_matches_corpus(
             )));
         }
     }
-    if feedback.system_message == expected_summary {
+    let restated_summary = identifiers
+        .iter()
+        .fold(feedback.system_message, |summary, identifier| {
+            summary.replace(&identifier.observed, &identifier.frozen)
+        });
+    if restated_summary == expected_summary {
         return Ok(());
     }
     Err(failure(format!(
-        "{corpus_entry_name} no longer states its frozen summary:\nfrozen={:?}\nproduced={:?}",
-        expected_summary, feedback.system_message
+        "{corpus_entry_name} no longer states its frozen summary:\nfrozen={expected_summary:?}\nproduced={restated_summary:?}"
     )))
 }
 
@@ -2969,6 +2973,10 @@ fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
         &bash_payload(repository.path(), WIDENING_SESSION),
     )?;
 
+    let feedback = hook_feedback(&output, HookResponseEvent::PostToolUse, "widening")?;
+    let added_line = format!("cargo-berth added widened.rs to reservation {reservation_id}");
+    assert_eq!(feedback.system_message, added_line);
+    assert_eq!(feedback.additional_context, added_line);
     assert_post_tool_use_feedback_matches_corpus(
         &output,
         POST_TOOL_USE_WIDENED_ENTRY,
@@ -2977,6 +2985,36 @@ fn post_tool_use_states_the_auto_widen_notice() -> TestResult {
             frozen:   "reservation-widened".to_owned(),
         }],
     )
+}
+
+/// A Bash call that writes the worktree's first file states one line naming the path and the
+/// new reservation, to the user and to the session alike.
+#[test]
+fn post_tool_use_names_the_paths_a_first_touch_reserved() -> TestResult {
+    let repository = committed_configuration_repository()?;
+    fs::write(repository.path().join("first-touch.rs"), "// first touch\n")?;
+
+    let output = run_post_tool_use(
+        repository.path(),
+        &bash_payload(repository.path(), WIDENING_SESSION),
+    )?;
+
+    let journal = fs::read_to_string(repository.path().join(JOURNAL_PATH))?;
+    let claim: Value = serde_json::from_str(
+        journal
+            .lines()
+            .last()
+            .ok_or_else(|| failure("the first touch should append its claim"))?,
+    )?;
+    assert_eq!(claim["op"], "claim");
+    let reservation_id = required_string(&claim, "/reservation_id", "first-touch claim")?;
+    let feedback = hook_feedback(&output, HookResponseEvent::PostToolUse, "first touch")?;
+    let reserved_line = format!(
+        "cargo-berth reserved first-touch.rs for this worktree (new reservation {reservation_id})"
+    );
+    assert_eq!(feedback.system_message, reserved_line);
+    assert_eq!(feedback.additional_context, reserved_line);
+    Ok(())
 }
 
 #[test]

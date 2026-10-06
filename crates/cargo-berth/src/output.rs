@@ -70,6 +70,7 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerInitialization;
 use crate::ledger::MUTATING_VERB_CONTENTION_TOLERANCE;
 use crate::ledger::ReservationPurpose;
+use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
 use crate::ledger::SkippedIntegrationHoldSet;
@@ -645,7 +646,8 @@ declare_output_contract_metadata! {
         /// One or more foreign reservations overlap the requested paths.
         BlockedByOverlap => ("blocked_by_overlap", BlockedByOverlap);
         /// A sequence answer points opposite to a live edge between a named holder and an
-        /// earlier reservation of the same run and worktree, and did not pass `--replace`.
+        /// earlier reservation of the same run and worktree, and the claim did not pass
+        /// `--replace`.
         ContradictsLiveOrdering => ("contradicts_live_ordering", BlockedByOverlap);
         /// One or more ordering or deferral holds reject integration.
         BlockedByOrdering => ("blocked_by_ordering", BlockedByOrdering);
@@ -3298,18 +3300,10 @@ impl OutputEnvelope {
                         },
                     },
                     DriftEffect::Widened { added_scopes } => {
-                        let added_scopes = added_scopes
-                            .as_slice()
-                            .iter()
-                            .map(|scope| format!("file:{}", scope.path))
-                            .collect::<Vec<_>>();
-                        notice_messages.push(
-                            presentation::automatic_widening_block(
-                                &reservation_id.to_string(),
-                                &added_scopes,
-                            )
-                            .detail,
-                        );
+                        notice_messages.push(presentation::automatic_widening_line(
+                            &reservation_id.to_string(),
+                            &scope_paths(added_scopes.as_slice()),
+                        ));
                     },
                     DriftEffect::Collision {
                         foreign_reservation_ids,
@@ -3322,7 +3316,7 @@ impl OutputEnvelope {
                 }
             }
         }
-        live_board_feedback(
+        post_tool_use_feedback(
             immediate_stop_messages,
             notice_messages,
             &self.payload.alerts,
@@ -3338,23 +3332,7 @@ impl OutputEnvelope {
             return PostToolUseRendering::FeedbackDecidedByLiveIncursionState;
         }
         let observed_effect = ObservedDriftEffect::from(report.results.as_slice());
-        let protection_alerts = self
-            .payload
-            .alerts
-            .iter()
-            .filter(|alert| {
-                matches!(
-                    alert,
-                    Alert::TargetMissing { .. }
-                        | Alert::TargetUncovered { .. }
-                        | Alert::LostIntegrationEvidence(_)
-                        | Alert::MergeExtentUnavailable { .. }
-                )
-            })
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let (prefix, immediate_stop) =
-            drift_rendering_prefix(&report.path_attribution, observed_effect);
+        let condition = DriftCondition::observed(&report.path_attribution, observed_effect);
         // A refused run must stop acting in this worktree whatever else the observation
         // found, so the refusal both earns the reader a message and makes it a stop. The
         // detail arms below that build their own lines never quote `self.message`, so the
@@ -3362,65 +3340,43 @@ impl OutputEnvelope {
         let mut refusal = Vec::new();
         append_scope_acquisition_rendering(&report.scope_acquisition, &mut refusal);
         let refused = !refusal.is_empty();
-        let immediate_stop = immediate_stop || refused;
-        let mut messages = match prefix {
-            "COLLISION: " => {
-                let mut details = automatic_widening_details(report);
-                details.extend(collision_details(report));
-                details.extend(refusal);
-                details
+        let immediate_stop = condition.stops()
+            || refused
+            || matches!(observed_effect, ObservedDriftEffect::Collision);
+        let messages = match &condition {
+            DriftCondition::FirstTouch {
+                acquisition,
+                scopes,
+            } => {
+                let mut lines = vec![first_touch_line(acquisition, scopes)];
+                lines.extend(refusal);
+                lines
             },
-            "AUTO-WIDEN: " => {
-                let mut details = automatic_widening_details(report);
-                details.extend(refusal);
-                details
+            DriftCondition::Collision => {
+                let mut lines = automatic_widening_lines(report);
+                lines.extend(collision_details(report));
+                lines.extend(refusal);
+                lines
             },
-            _ if !prefix.is_empty() || report.has_reportable_effect() || refused => {
-                vec![format!("{prefix}{}", self.message)]
+            DriftCondition::Widened => {
+                let mut lines = automatic_widening_lines(report);
+                lines.extend(refusal);
+                lines
             },
-            _ => Vec::new(),
+            DriftCondition::Unremarkable if !report.has_reportable_effect() && !refused => {
+                Vec::new()
+            },
+            DriftCondition::UnprotectedIncursion
+            | DriftCondition::ProtectedIncursion
+            | DriftCondition::AttributionRequired
+            | DriftCondition::Unremarkable => {
+                vec![format!("{}{}", condition.label(), self.message)]
+            },
         };
-        messages.extend(protection_alerts);
-        if messages.is_empty() {
-            return PostToolUseRendering::NoFeedback;
-        }
-        if !immediate_stop
-            && !matches!(observed_effect, ObservedDriftEffect::Collision)
-            && self
-                .payload
-                .alerts
-                .iter()
-                .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
-        {
-            let block = presentation::lost_integration_evidence_block(&messages.join("\n"));
-            return PostToolUseRendering::Feedback {
-                summary: block.summary,
-                detail:  block.detail,
-            };
-        }
-        if !immediate_stop
-            && !matches!(observed_effect, ObservedDriftEffect::Collision)
-            && self
-                .payload
-                .alerts
-                .iter()
-                .any(|alert| matches!(alert, Alert::MergeExtentUnavailable { .. }))
-        {
-            let block = presentation::actionable_board_notices_block(&messages);
-            return PostToolUseRendering::Feedback {
-                summary: block.summary,
-                detail:  block.detail,
-            };
-        }
-        let summary = if immediate_stop || matches!(observed_effect, ObservedDriftEffect::Collision)
-        {
-            "cargo-berth detected drift that requires an immediate stop."
+        if immediate_stop {
+            post_tool_use_feedback(messages, Vec::new(), &self.payload.alerts)
         } else {
-            "cargo-berth widened this worktree reservation footprint."
-        };
-        PostToolUseRendering::Feedback {
-            summary: summary.to_owned(),
-            detail:  messages.join("\n"),
+            post_tool_use_feedback(Vec::new(), messages, &self.payload.alerts)
         }
     }
 }
@@ -3441,14 +3397,14 @@ fn unverifiable_live_incursion_rendering() -> PostToolUseRendering {
 /// tells the reader a footprint grew on the invocation that refused to grow it. Front ends
 /// publish these blocks and never parse `message`, so the summary is the whole of what the
 /// reader is told. It leads because a refusal is a stop, which is the order
-/// `live_board_feedback` and the board's own notices already rank in.
+/// `post_tool_use_feedback` and the board's own notices already rank in.
 fn drift_non_incursion_presentation(
     report: &DriftReport,
     alerts: &[Alert],
 ) -> EnvelopePresentation {
     let mut refusal_details = Vec::new();
     append_scope_acquisition_rendering(&report.scope_acquisition, &mut refusal_details);
-    let mut widening_details = automatic_widening_details(report);
+    let mut widening_details = automatic_widening_lines(report);
     let lost_evidence_details = alerts
         .iter()
         .filter(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
@@ -3472,10 +3428,13 @@ fn drift_non_incursion_presentation(
                 &widening_details.join("\n"),
             ));
         },
-        ([_, ..], []) => blocks.push(presentation::engine_message_block(
-            "cargo-berth widened this worktree reservation footprint.",
-            &widening_details.join("\n"),
-        )),
+        ([_, ..], []) => {
+            let widening_lines = widening_details.join("\n");
+            blocks.push(presentation::engine_message_block(
+                &widening_lines,
+                &widening_lines,
+            ));
+        },
     }
     rendered_blocks_presentation(blocks)
 }
@@ -3488,7 +3447,8 @@ fn rendered_blocks_presentation(blocks: Vec<RenderedOutputBlock>) -> EnvelopePre
     )
 }
 
-fn automatic_widening_details(report: &DriftReport) -> Vec<String> {
+/// One line per reservation a drift observation widened, naming the paths it added.
+fn automatic_widening_lines(report: &DriftReport) -> Vec<String> {
     report
         .results
         .iter()
@@ -3498,18 +3458,10 @@ fn automatic_widening_details(report: &DriftReport) -> Vec<String> {
                 effects,
             } => effects.as_slice().iter().find_map(|effect| match effect {
                 DriftEffect::Widened { added_scopes } => {
-                    let added_scopes = added_scopes
-                        .as_slice()
-                        .iter()
-                        .map(|scope| format!("file:{}", scope.path))
-                        .collect::<Vec<_>>();
-                    Some(
-                        presentation::automatic_widening_block(
-                            &reservation_id.to_string(),
-                            &added_scopes,
-                        )
-                        .detail,
-                    )
+                    Some(presentation::automatic_widening_line(
+                        &reservation_id.to_string(),
+                        &scope_paths(added_scopes.as_slice()),
+                    ))
                 },
                 DriftEffect::Incursion { .. } | DriftEffect::Collision { .. } => None,
             }),
@@ -4314,16 +4266,22 @@ fn append_live_path_attribution_rendering(
     immediate_stop_messages: &mut Vec<String>,
     notice_messages: &mut Vec<String>,
 ) {
-    let message = drift_path_attribution_message(attribution);
     match attribution {
-        DriftPathAttributionOutcome::FirstTouchReserved { .. } => {
-            notice_messages.push(format!("FIRST-TOUCH CLAIM: {message}"));
-        },
+        DriftPathAttributionOutcome::FirstTouchReserved {
+            acquisition,
+            scopes,
+        } => notice_messages.push(first_touch_line(acquisition, scopes)),
         DriftPathAttributionOutcome::IncursionDetected { .. } => {
-            immediate_stop_messages.push(format!("POST-WRITE INCURSION: {message}"));
+            immediate_stop_messages.push(format!(
+                "POST-WRITE INCURSION: {}",
+                drift_path_attribution_message(attribution)
+            ));
         },
         DriftPathAttributionOutcome::Ambiguous { .. } => {
-            immediate_stop_messages.push(format!("DRIFT ATTRIBUTION REQUIRED: {message}"));
+            immediate_stop_messages.push(format!(
+                "DRIFT ATTRIBUTION REQUIRED: {}",
+                drift_path_attribution_message(attribution)
+            ));
         },
         DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
         },
@@ -4359,27 +4317,74 @@ impl From<&[ReservationDriftResult]> for ObservedDriftEffect {
     }
 }
 
-/// Choose the label one drift observation's condition is announced under, and whether it stops.
-const fn drift_rendering_prefix(
-    attribution: &DriftPathAttributionOutcome,
-    effect: ObservedDriftEffect,
-) -> (&'static str, bool) {
-    match attribution {
-        DriftPathAttributionOutcome::FirstTouchReserved { .. } => ("FIRST-TOUCH CLAIM: ", false),
-        DriftPathAttributionOutcome::IncursionDetected { protection, .. } => match protection {
-            PostWriteFreePathProtection::NotAcquired => {
-                ("POST-WRITE INCURSION: nothing was reserved. ", true)
+/// The condition one drift observation is announced under in `PostToolUse` feedback.
+enum DriftCondition<'report> {
+    /// Post-write first touch protected the changed paths.
+    FirstTouch {
+        acquisition: &'report FirstTouchReservationAcquisition,
+        scopes:      &'report ReservationScopeSet,
+    },
+    /// The write entered foreign reservations and nothing was reserved.
+    UnprotectedIncursion,
+    /// The write entered foreign reservations and its free paths were reserved.
+    ProtectedIncursion,
+    /// The changed paths need the caller to choose one of several reservations.
+    AttributionRequired,
+    /// At least one result collided with a scope another run holds.
+    Collision,
+    /// The results widened the acting run's reservations.
+    Widened,
+    /// The observation found none of the above.
+    Unremarkable,
+}
+
+impl<'report> DriftCondition<'report> {
+    /// Classify one observation; a path attribution outranks the results' own effect.
+    const fn observed(
+        attribution: &'report DriftPathAttributionOutcome,
+        effect: ObservedDriftEffect,
+    ) -> Self {
+        match attribution {
+            DriftPathAttributionOutcome::FirstTouchReserved {
+                acquisition,
+                scopes,
+            } => Self::FirstTouch {
+                acquisition,
+                scopes,
             },
-            PostWriteFreePathProtection::Acquired { .. } => ("POST-WRITE INCURSION: ", true),
-        },
-        DriftPathAttributionOutcome::Ambiguous { .. } => ("DRIFT ATTRIBUTION REQUIRED: ", true),
-        DriftPathAttributionOutcome::NotNeeded | DriftPathAttributionOutcome::Attributed { .. } => {
-            match effect {
-                ObservedDriftEffect::Collision => ("COLLISION: ", true),
-                ObservedDriftEffect::Widened => ("AUTO-WIDEN: ", false),
-                ObservedDriftEffect::Neither => ("", false),
-            }
-        },
+            DriftPathAttributionOutcome::IncursionDetected { protection, .. } => match protection {
+                PostWriteFreePathProtection::NotAcquired => Self::UnprotectedIncursion,
+                PostWriteFreePathProtection::Acquired { .. } => Self::ProtectedIncursion,
+            },
+            DriftPathAttributionOutcome::Ambiguous { .. } => Self::AttributionRequired,
+            DriftPathAttributionOutcome::NotNeeded
+            | DriftPathAttributionOutcome::Attributed { .. } => match effect {
+                ObservedDriftEffect::Collision => Self::Collision,
+                ObservedDriftEffect::Widened => Self::Widened,
+                ObservedDriftEffect::Neither => Self::Unremarkable,
+            },
+        }
+    }
+
+    /// Whether this condition stops the run that made the observation.
+    const fn stops(&self) -> bool {
+        matches!(
+            self,
+            Self::UnprotectedIncursion
+                | Self::ProtectedIncursion
+                | Self::AttributionRequired
+                | Self::Collision
+        )
+    }
+
+    /// The label the engine message is stated under when no line of its own names the condition.
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::UnprotectedIncursion => "POST-WRITE INCURSION: nothing was reserved. ",
+            Self::ProtectedIncursion => "POST-WRITE INCURSION: ",
+            Self::AttributionRequired => "DRIFT ATTRIBUTION REQUIRED: ",
+            Self::FirstTouch { .. } | Self::Collision | Self::Widened | Self::Unremarkable => "",
+        }
     }
 }
 
@@ -4396,12 +4401,18 @@ fn append_scope_acquisition_rendering(
     }
 }
 
-fn live_board_feedback(
+/// Assemble `PostToolUse` feedback from the lines that stop the run, the lines that only inform
+/// it, and the protection alerts addressed to this worktree.
+///
+/// A stop and lost integration evidence keep their fixed headings. Any other feedback gives the
+/// user the session's own lines, with each alert named by `Alert::summary` in place of its
+/// recovery line, so each reader is told each fact once.
+fn post_tool_use_feedback(
     mut immediate_stop_messages: Vec<String>,
     notice_messages: Vec<String>,
     alerts: &[Alert],
 ) -> PostToolUseRendering {
-    let protection_alert_messages = alerts
+    let protection_alerts = alerts
         .iter()
         .filter(|alert| {
             matches!(
@@ -4412,32 +4423,59 @@ fn live_board_feedback(
                     | Alert::MergeExtentUnavailable { .. }
             )
         })
-        .map(ToString::to_string)
         .collect::<Vec<_>>();
     if immediate_stop_messages.is_empty()
         && notice_messages.is_empty()
-        && protection_alert_messages.is_empty()
+        && protection_alerts.is_empty()
     {
         return PostToolUseRendering::NoFeedback;
     }
-    let summary = if !immediate_stop_messages.is_empty() {
+    let stated_lines = notice_messages
+        .iter()
+        .cloned()
+        .chain(protection_alerts.iter().map(|alert| alert.summary()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stops = !immediate_stop_messages.is_empty();
+    immediate_stop_messages.extend(notice_messages);
+    immediate_stop_messages.extend(protection_alerts.iter().map(ToString::to_string));
+    let detail = immediate_stop_messages.join("\n");
+    let summary = if stops {
         "cargo-berth detected drift that requires an immediate stop.".to_owned()
-    } else if alerts
+    } else if protection_alerts
         .iter()
         .any(|alert| matches!(alert, Alert::LostIntegrationEvidence(_)))
     {
-        "cargo-berth detected lost integration evidence for released work.".to_owned()
-    } else if !protection_alert_messages.is_empty() {
-        presentation::actionable_board_notices_block(&protection_alert_messages).summary
+        presentation::lost_integration_evidence_block(&detail).summary
     } else {
-        "cargo-berth widened this worktree reservation footprint.".to_owned()
+        stated_lines
     };
-    immediate_stop_messages.extend(notice_messages);
-    immediate_stop_messages.extend(protection_alert_messages);
-    PostToolUseRendering::Feedback {
-        summary,
-        detail: immediate_stop_messages.join("\n"),
+    PostToolUseRendering::Feedback { summary, detail }
+}
+
+/// State what one post-write first touch did with the changed paths.
+fn first_touch_line(
+    acquisition: &FirstTouchReservationAcquisition,
+    scopes: &ReservationScopeSet,
+) -> String {
+    let reservation_id = acquisition.reservation_id.to_string();
+    let paths = scope_paths(scopes.as_slice());
+    match acquisition.kind {
+        FirstTouchReservationAcquisitionKind::Appended => {
+            presentation::first_touch_reservation_line(&reservation_id, &paths)
+        },
+        FirstTouchReservationAcquisitionKind::Widened => {
+            presentation::automatic_widening_line(&reservation_id, &paths)
+        },
+        FirstTouchReservationAcquisitionKind::AlreadyHeld => {
+            presentation::already_reserved_line(&reservation_id, &paths)
+        },
     }
+}
+
+/// The repository-relative path of each scope, as the `PostToolUse` lines name them.
+fn scope_paths(scopes: &[ReservationScope]) -> Vec<String> {
+    scopes.iter().map(|scope| scope.path.to_string()).collect()
 }
 
 fn drift_path_attribution_message(attribution: &DriftPathAttributionOutcome) -> String {

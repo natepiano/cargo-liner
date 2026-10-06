@@ -205,18 +205,29 @@ pub(crate) fn replay_failure_block(
     }
 }
 
-/// Render a successful automatic reservation widening.
-pub(crate) fn automatic_widening_block(
-    reservation_id: &str,
-    added_scopes: &[String],
-) -> RenderedOutputBlock {
-    RenderedOutputBlock {
-        summary: "cargo-berth widened this worktree reservation footprint.".to_owned(),
-        detail:  format!(
-            "AUTO-WIDEN: reservation {reservation_id} now covers {}",
-            added_scopes.join(", ")
-        ),
-    }
+/// State the paths a post-write first touch reserved in a new reservation for this worktree.
+pub(crate) fn first_touch_reservation_line(reservation_id: &str, paths: &[String]) -> String {
+    format!(
+        "cargo-berth reserved {} for this worktree (new reservation {reservation_id})",
+        paths.join(", ")
+    )
+}
+
+/// State the paths a drift observation or a post-write first touch added to an existing
+/// reservation.
+pub(crate) fn automatic_widening_line(reservation_id: &str, added_paths: &[String]) -> String {
+    format!(
+        "cargo-berth added {} to reservation {reservation_id}",
+        added_paths.join(", ")
+    )
+}
+
+/// State the paths a post-write first touch found the acting run's reservation already holds.
+pub(crate) fn already_reserved_line(reservation_id: &str, paths: &[String]) -> String {
+    format!(
+        "cargo-berth found {} already in reservation {reservation_id}",
+        paths.join(", ")
+    )
 }
 
 /// The exact board actions for one reservation's outstanding incursions.
@@ -349,9 +360,10 @@ mod tests {
     use super::NonEmptyRenderedBlocks;
     use super::actionable_board_notices_block;
     use super::ambiguous_first_touch_block;
-    use super::automatic_widening_block;
+    use super::automatic_widening_line;
     use super::coordination_identity_block;
     use super::engine_message_block;
+    use super::first_touch_reservation_line;
     use super::lost_integration_evidence_block;
     use super::orphaned_outstanding_block;
     use super::outstanding_incursion_block;
@@ -439,14 +451,24 @@ mod tests {
     }
 
     #[test]
-    fn automatic_widening_block_names_the_reservation_and_scopes() {
-        let block = automatic_widening_block(
+    fn automatic_widening_line_names_the_reservation_and_paths() {
+        let line = automatic_widening_line(
             "reservation-a",
-            &["file:first.rs".to_owned(), "file:second.rs".to_owned()],
+            &["first.rs".to_owned(), "second.rs".to_owned()],
         );
         assert_eq!(
-            block.detail,
-            "AUTO-WIDEN: reservation reservation-a now covers file:first.rs, file:second.rs"
+            line,
+            "cargo-berth added first.rs, second.rs to reservation reservation-a"
+        );
+    }
+
+    #[test]
+    fn first_touch_reservation_line_names_the_paths_and_the_new_reservation() {
+        let line =
+            first_touch_reservation_line("reservation-a", &["crates/x/typography.rs".to_owned()]);
+        assert_eq!(
+            line,
+            "cargo-berth reserved crates/x/typography.rs for this worktree (new reservation reservation-a)"
         );
     }
 
@@ -538,8 +560,8 @@ mod tests {
 
     #[test]
     fn corpus_widening_matches_the_named_engine_block() -> Result<(), String> {
-        let block =
-            automatic_widening_block("reservation-widened", &["file:widened.rs".to_owned()]);
+        let line = automatic_widening_line("reservation-widened", &["widened.rs".to_owned()]);
+        let block = engine_message_block(&line, &line);
         assert_corpus_stdout_block("test_incursion_board_read_cost_is_constant#4", &block)
     }
 
