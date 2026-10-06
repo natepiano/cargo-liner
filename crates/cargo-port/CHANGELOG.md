@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - While a framework overlay is open, `h`/`l` always mean left/right rather than being folded into up/down by the pane underneath.
 - A settings key arriving in the same input batch as the key that opened the overlay is no longer dropped.
 - Project and target-directory sizes count a hard-linked file once. Cargo hard-links each binary, example, and test executable from `deps/` into the profile directory, and rustc hard-links incremental artifacts between session directories, so every such file was counted once per link: a `target/` that `du` measures at 96 GiB showed as 150 GiB.
+- Several cargo-port instances watching the same project no longer lint it once each and fight over cargo's build lock. One instance runs the lint; the others wait and show its result.
+- Under Ghostty, moving the mouse no longer walks the project-list selection through the tree. Ghostty answers the focus-reporting request with a focus-in event, and handling that event sent the request again, so the two looped.
+- Project roots sort by the directory name the list shows, not by absolute path, so roots from different include directories interleave alphabetically.
+- On Linux the first frame no longer waits for the file watcher to register every directory: about 1.3 s with 18,000 directories, now about 0.15 s. Registration runs on the watcher's own thread.
 
 ### Removed
 - **Breaking:** Remove the Running section of the Targets pane, its `K` kill binding, and the process scan behind them. To see every running cargo process, install [cargo-tile](https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-tile) from GitHub for now: `cargo install --git https://github.com/natepiano/cargo-liner cargo-tile`.
