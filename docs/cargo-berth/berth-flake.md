@@ -98,46 +98,23 @@ The user, 2026-10-06 14:36 PDT: "you should start a new worktree to fix the carg
 
 **Ruled out:** ambient `GIT_CONFIG_PARAMETERS` overriding the setting (no test path sets `maintenance.auto` through `-c`); per-repository `git config` instead of the environment (misses hooks, `cargo-berth`'s own git and any repository that does not set it).
 
-### Phase 2 — Discovery ignores an empty `.git` and stops at git's ceiling  · status: todo
+### Phase 2 — Discovery ignores an empty `.git` and stops at git's ceiling  · status: done
 
-**Follow-up 1 of 1** (showrunner, 2026-10-06) · then: plan done.
+#### As-built
 
-#### Work Order
-
-**Goal:** a `.git` directory that is not a git directory no longer makes cargo-berth treat its parent as a worktree, and the four "outside any repository" tests stop depending on what sits above their temporary directory. On natedev an empty `/tmp/.git` appears while a Codex seat's sandbox runs. In this phase's review it made four tests fail every time: `board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes` (`board.rs:1152`), `bare_repository_retains_repository_not_found_rejection` (`ledger.rs:1439`), `an_unrecorded_binary_bypass_warns_without_blocking_the_ref_update` (`gate.rs:3824`) and `a_tool_call_outside_any_repository_states_nothing_to_the_hook` (`hooks.rs:1113`). Each got `unconfigured` ("no cargo-berth configuration at /tmp/.claude/config/berth.toml") where it expected `ledger_unreadable` or exit 4.
-
-**Spec:**
-
-*A git directory's structure.* `WorktreeContext::discover` (`crates/cargo-berth/src/ledger/worktree_context.rs:72`–`105`) walks `invocation_directory.ancestors()` and accepts any `dot_git.is_dir()` (`:76`). It calls one private function that accepts a `.git` directory only when it holds the structure git requires of a git directory: a `HEAD` file, an `objects` directory and a `refs` directory. A `.git` that fails the check is skipped and the walk goes on to the next ancestor, as git does. The check is structural only; it does not validate `HEAD`'s contents as git does, which an empty or partial `.git` never reaches. `from_registered_root` (`:116`–`117`) is unchanged: git itself reported those roots, and rejecting one there would turn a registered checkout into no checkout for liveness and reconciliation. The `.git` file branch (`read_git_directory_file`, `:390`) is unchanged.
-
-*Git's ceiling.* `discover` honours `GIT_CEILING_DIRECTORIES` as git's own discovery does: a colon-separated list of absolute paths, empty entries ignored (git uses one only to skip symlink resolution, and this walk compares canonical forms throughout). The invocation directory is always examined, even when it is itself a ceiling; the walk never moves up into a ceiling directory. Compare paths in canonical form, so a test can name its temporary directory's parent. The ceiling list reaches the private discovery function as one named type (for example `DiscoveryCeilings`), parsed once from the environment by `discover`, never as a bare slice or `Option`. `git::repository_root` (`git/discovery.rs:48`) already gets this from git, because `git/command.rs` passes the variable through.
-
-*Fixtures that relied on an empty `.git`.* The unit tests at `crates/cargo-berth/src/coordination_identity.rs:1001`–`1003` and `crates/cargo-berth/src/drift/execution.rs:919`–`922` build a bare empty `.git` and expect `discover` to accept it. Give them a `.git` that passes the new check (`HEAD`, `objects/`, `refs/`), or `test_support::scratch_repository()` (`ledger/test_support.rs:7`).
-
-*Regression tests,* in `worktree_context.rs`'s `mod tests` (`:436`, modelled on `git_file_without_common_directory_is_a_main_worktree`, `:450`):
-- `an_empty_git_directory_is_not_a_repository`: an empty `.git` under the tempdir, then `discover` from a child directory reports `RepositoryNotFound` when the tempdir's parent is the ceiling.
-- `discovery_stops_at_the_ceiling`: a real repository whose child directory is named as the ceiling, then `discover` from below it reports `RepositoryNotFound`.
-- `the_invocation_directory_is_examined_even_at_the_ceiling`: a real repository's root named as the ceiling, then `discover` from that root finds the repository, as git does.
-
-Each test passes its ceiling explicitly (a parameter or an inner function that takes the ceiling list), never by setting the process environment: `cargo test` runs many tests in one process, where environment writes race.
-
-*The four tests.* Each sets `GIT_CEILING_DIRECTORIES` to its temporary directory's parent on every `cargo-berth` it starts, including the hook process in `hooks.rs` (`run_post_tool_use` → `spawn_hook_verb`, `tests/support/reader_compat_hooks.rs:54`). `spawn_hook_verb` keeps its signature, because `reader_compat.rs:278` also calls it; the hook test passes the ceiling through a variant beside it that takes the extra environment. Then a repository at `/tmp`, or above `/tmp/claude`, cannot reach them.
-
-*CHANGELOG.* One entry in `crates/cargo-berth/CHANGELOG.md` under the unreleased heading: an empty or partial `.git` directory is no longer taken for a repository, and discovery honours `GIT_CEILING_DIRECTORIES`.
+- `WorktreeContext::discover` accepts a `.git` directory only when `is_git_directory` holds: a `HEAD` file plus `objects/` and `refs/` directories. A `.git` that fails is skipped and the walk continues upward, so an empty `/tmp/.git` is not a repository.
+- `discover` honours `GIT_CEILING_DIRECTORIES` through `DiscoveryCeilings`, read with `env::var_os` and split with `env::split_paths`. As in git, empty, relative and missing entries are ignored and the rest still apply, and paths compare in canonical form. The invocation directory is always examined, a ceiling equal to it does not stop the walk, and the walk never moves up into a ceiling.
+- `discover_with_ceilings(dir, &ceilings)` is the testable core; tests build ceilings as values (`DiscoveryCeilings::from_paths` / `from_list`), never through the process environment.
+- `from_registered_root` and the `.git`-file branch are unchanged.
+- The four "outside any repository" integration tests set `GIT_CEILING_DIRECTORIES` to their temp directory's parent on every cargo-berth they start, so they no longer depend on what sits above TMPDIR. `spawn_hook_verb_with_ceiling` sits beside the unchanged `spawn_hook_verb`.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/worktree_context.rs` — the git-directory check, the ceiling, three regression tests
-- `crates/cargo-berth/src/coordination_identity.rs`, `crates/cargo-berth/src/drift/execution.rs` — their fixtures' `.git`
-- `crates/cargo-berth/CHANGELOG.md` — the entry
-- `crates/cargo-berth/tests/board.rs`, `crates/cargo-berth/tests/ledger.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/support/reader_compat_hooks.rs` — the ceiling on the four tests
+- `crates/cargo-berth/src/ledger/worktree_context.rs` — `is_git_directory`, `DiscoveryCeilings`, `discover_with_ceilings`, regression tests for the empty `.git`, the ceiling, the ceiling at the invocation directory, and a non-UTF-8 ceiling entry
+- `crates/cargo-berth/src/coordination_identity.rs`, `crates/cargo-berth/src/drift/execution.rs` — fixtures build `HEAD`, `objects/` and `refs/`
+- `crates/cargo-berth/tests/{board,ledger,gate,hooks}.rs`, `crates/cargo-berth/tests/support/reader_compat_hooks.rs` — the ceiling on the four tests
+- `crates/cargo-berth/CHANGELOG.md` — Unreleased/Fixed entry
 
-**Seats:** 1 writer + 1 tester
-- `impl`: `worktree_context.rs`, `coordination_identity.rs`, `drift/execution.rs`, `CHANGELOG.md`
-- `test`: `tests/board.rs`, `tests/ledger.rs`, `tests/gate.rs`, `tests/hooks.rs`, `tests/support/reader_compat_hooks.rs`
+**Gotchas:** a test fixture that makes a bare `.git` directory must also create `HEAD`, `objects/` and `refs/`, or discovery skips it. `tests/board.rs`, `tests/hooks.rs` and `tests/ledger.rs` each inline a copy of their `run_berth` environment policy to add the ceiling, so a change to that policy must reach the copies.
 
-**Constraints from prior phases:** Phase 1 turned off git's auto maintenance in `git_command` and `berth_command`, and in `fixture_git_command` (`cargo-berth-test-support`, re-exported from its `lib.rs`), which cargo-berth's own unit tests use. Leave that intact. Any git a new unit test under `crates/cargo-berth/src` starts comes from `cargo_berth_test_support::fixture_git_command()`, or from `ledger/test_support::scratch_repository()`, which uses it; never `Command::new("git")`. Phase 1's "test-only change" invariant does not hold here: this phase changes `crates/cargo-berth/src` and takes a CHANGELOG entry.
+**Ruled out:** rejecting a partial `.git` in `from_registered_root` (those roots come from git itself).
 
-**Acceptance gate:**
-- `verify.sh test cargo-berth` passes, with the three new unit tests included.
-- `verify.sh lint cargo-berth` passes.
-- Smoke (unit director): with an empty `/tmp/.git` created by hand, the four tests pass (`verify.sh test cargo-berth --no-cache --filter …` for each), and `/tmp/.git` is removed afterwards.

@@ -58,11 +58,57 @@ pub(crate) fn spawn_hook_verb(
     stdin: &[u8],
     ambient_session: &AmbientHarnessSession<'_>,
 ) -> TestResult<Output> {
+    spawn_hook_verb_for_discovery(
+        executable,
+        working_directory,
+        hook_event,
+        stdin,
+        ambient_session,
+        RepositoryDiscovery::Inherited,
+    )
+}
+
+/// Run a hook beneath a ceiling so ancestors of the fixture cannot be discovered.
+pub(crate) fn spawn_hook_verb_with_ceiling(
+    executable: &Path,
+    working_directory: &Path,
+    hook_event: &str,
+    stdin: &[u8],
+    ambient_session: &AmbientHarnessSession<'_>,
+    ceiling: &Path,
+) -> TestResult<Output> {
+    spawn_hook_verb_for_discovery(
+        executable,
+        working_directory,
+        hook_event,
+        stdin,
+        ambient_session,
+        RepositoryDiscovery::Ceiling(ceiling),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum RepositoryDiscovery<'ceiling> {
+    Inherited,
+    Ceiling(&'ceiling Path),
+}
+
+fn spawn_hook_verb_for_discovery(
+    executable: &Path,
+    working_directory: &Path,
+    hook_event: &str,
+    stdin: &[u8],
+    ambient_session: &AmbientHarnessSession<'_>,
+    discovery: RepositoryDiscovery<'_>,
+) -> TestResult<Output> {
     let mut command = berth_command(executable);
     command
         .args(["hook", hook_event])
         .current_dir(working_directory)
         .env_remove("CARGO_BERTH_RUN");
+    if let RepositoryDiscovery::Ceiling(ceiling) = discovery {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
     match *ambient_session {
         AmbientHarnessSession::Present(session_id) => {
             command.env("CARGO_BERTH_SESSION_ID", session_id);

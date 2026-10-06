@@ -1440,9 +1440,8 @@ fn bare_repository_retains_repository_not_found_rejection() {
     let bare_repository = tempdir().expect("bare repository should exist");
     git(bare_repository.path(), &["init", "--bare", "--quiet"]);
 
-    let rejected = run_berth(
-        bare_repository.path(),
-        [
+    let rejected = berth_command(BERTH_EXECUTABLE)
+        .args([
             "claim",
             "file:bare.rs",
             "--run",
@@ -1450,8 +1449,21 @@ fn bare_repository_retains_repository_not_found_rejection() {
             "--why",
             "bare repository rejection fixture",
             "--json",
-        ],
-    );
+        ])
+        .current_dir(bare_repository.path())
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .env_remove(GIT_DIRECTORY_ENVIRONMENT)
+        .env_remove(GIT_COMMON_DIRECTORY_ENVIRONMENT)
+        .env(
+            "GIT_CEILING_DIRECTORIES",
+            bare_repository
+                .path()
+                .parent()
+                .expect("temporary directory should have a parent"),
+        )
+        .output()
+        .expect("cargo-berth should run");
     let envelope = json_output(&rejected);
 
     assert_eq!(rejected.status.code(), Some(4));

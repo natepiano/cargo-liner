@@ -916,8 +916,12 @@ mod tests {
     impl WorktreeComparisonFixture {
         fn new() -> Self {
             let repository = tempdir().expect("temporary repository should exist");
-            fs::create_dir(repository.path().join(".git"))
-                .expect("git administrative directory should exist");
+            let git_directory = repository.path().join(".git");
+            fs::create_dir(&git_directory).expect("git administrative directory should exist");
+            fs::write(git_directory.join("HEAD"), "ref: refs/heads/main\n")
+                .expect("git HEAD should exist");
+            fs::create_dir(git_directory.join("objects")).expect("git objects should exist");
+            fs::create_dir(git_directory.join("refs")).expect("git refs should exist");
             let worktree_context = WorktreeContext::discover(repository.path())
                 .expect("worktree should be discovered");
             Self {
