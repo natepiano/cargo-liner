@@ -19,6 +19,32 @@ pub const EXECUTABLE_ENVIRONMENT: &str = "CARGO_BERTH_EXECUTABLE";
 /// Points git's hook lookup at a path that holds no hook on any platform.
 const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
 
+/// Git configuration inherited by every git process a test starts.
+const AUTO_MAINTENANCE_DISABLED_CONFIGURATION: [(&str, &str); 2] =
+    [("maintenance.auto", "false"), ("gc.auto", "0")];
+
+/// Keep git from leaving background maintenance in a test repository.
+pub(crate) fn disable_git_auto_maintenance(command: &mut Command) {
+    command.env(
+        "GIT_CONFIG_COUNT",
+        AUTO_MAINTENANCE_DISABLED_CONFIGURATION.len().to_string(),
+    );
+    for (index, (key, value)) in AUTO_MAINTENANCE_DISABLED_CONFIGURATION.iter().enumerate() {
+        command
+            .env(format!("GIT_CONFIG_KEY_{index}"), key)
+            .env(format!("GIT_CONFIG_VALUE_{index}"), value);
+    }
+}
+
+/// Start git for a fixture repository that runs no managed hook, with auto maintenance off.
+/// Every git command a unit test starts comes from this constructor.
+#[must_use]
+pub fn fixture_git_command() -> Command {
+    let mut command = Command::new("git");
+    disable_git_auto_maintenance(&mut command);
+    command
+}
+
 /// Start a git command whose managed hooks run the `cargo-berth` under test.
 ///
 /// A managed hook resolves `cargo-berth` when it runs, and an installed copy
@@ -30,11 +56,18 @@ const HOOKS_DISABLED_CONFIGURATION: &str = "core.hooksPath=/dev/null";
 /// The hook's `cargo-berth` would read this process's Claude Code session as its
 /// harness session, so the command clears `CLAUDE_CODE_SESSION_ENVIRONMENT`.
 ///
+/// Porcelain git can start detached `git maintenance` that outlives the command.
+/// On git 2.55, its child can still hold `.git/objects/maintenance.lock` after
+/// `git commit` returns, then delete it while a `RepositoryTemplate` copy reads
+/// that file. A geometric repack can also delete a pack another commit is
+/// reading. Every git a test starts therefore disables auto maintenance; hooks
+/// and `cargo-berth` inherit the setting.
+///
 /// `executable` is the test crate's own `env!("CARGO_BIN_EXE_cargo-berth")`,
 /// which only that crate can expand.
 #[must_use]
 pub fn git_command(executable: &str) -> Command {
-    let mut command = Command::new("git");
+    let mut command = fixture_git_command();
     command
         .env(EXECUTABLE_ENVIRONMENT, executable)
         .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT);
@@ -249,4 +282,63 @@ fn assert_success(output: &Output, arguments: &[OsString]) {
         "git {arguments:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
+    use super::fixture_git_command;
+
+    /// A fixture git command that ignores this machine's global and system configuration, so
+    /// a developer's own `maintenance.auto=false` cannot hide a missing setting.
+    fn machine_independent_git() -> Command {
+        let mut command = fixture_git_command();
+        command
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        command
+    }
+
+    #[test]
+    fn commit_starts_no_background_maintenance() {
+        let repository = tempdir().expect("temporary repository should exist");
+        let trace = repository.path().join("git-trace2.log");
+
+        let initialized = machine_independent_git()
+            .args(["init", "--quiet"])
+            .current_dir(repository.path())
+            .status()
+            .expect("git init should run");
+        assert!(initialized.success(), "git init should succeed");
+
+        let committed = machine_independent_git()
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "test commit",
+            ])
+            .env("GIT_TRACE2", &trace)
+            .current_dir(repository.path())
+            .status()
+            .expect("git commit should run");
+        assert!(committed.success(), "git commit should succeed");
+
+        let trace = fs::read_to_string(trace).expect("git trace should read");
+        assert!(
+            !trace
+                .lines()
+                .any(|line| line.contains("child_start") && line.contains("maintenance")),
+            "git commit started background maintenance:\n{trace}"
+        );
+    }
 }

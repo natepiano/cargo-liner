@@ -57,7 +57,10 @@ pub struct RepositoryTemplate {
     /// Builds the repository at the root it is given: its commits and
     /// configuration, and `cargo-berth init` when the fixture includes it. The
     /// build leaves the journal empty, so the only records that tie a ledger to
-    /// this repository are its identities.
+    /// this repository are its identities. It must return with no process it
+    /// started still running in the root: every test copies the root without a
+    /// lock once `.complete` exists. Start git through `git_command` or a
+    /// `GitDriver`, and `cargo-berth` through `berth_command`.
     pub build:            fn(&Path),
 }
 

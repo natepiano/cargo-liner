@@ -1447,7 +1447,7 @@ mod tests {
 
     /// Run a fixture Git command, keeping failures visible to the unit test.
     fn git_output(root: &Path, arguments: &[&str]) -> Result<String, Box<dyn Error>> {
-        let output = std::process::Command::new("git")
+        let output = cargo_berth_test_support::fixture_git_command()
             .args(arguments)
             .current_dir(root)
             .output()?;

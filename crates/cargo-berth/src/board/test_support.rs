@@ -6,7 +6,6 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -55,7 +54,6 @@ use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
-const GIT_BINARY: &str = "git";
 
 pub(super) type FixtureResult<T> = Result<T, Box<dyn Error>>;
 
@@ -441,7 +439,7 @@ fn git_object_id(repository_root: &Path, revision: &str) -> FixtureResult<GitObj
 }
 
 fn git(repository_root: &Path, arguments: &[&str]) -> FixtureResult<String> {
-    let output = Command::new(GIT_BINARY)
+    let output = cargo_berth_test_support::fixture_git_command()
         .arg("--no-optional-locks")
         .args(arguments)
         .current_dir(repository_root)

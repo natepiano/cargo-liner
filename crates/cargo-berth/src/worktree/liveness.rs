@@ -486,7 +486,6 @@ impl From<GitError> for WorktreeRegistryError {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::process::Command;
 
     use tempfile::tempdir;
 
@@ -545,7 +544,7 @@ mod tests {
     }
 
     fn run_git(repository_root: &Path, arguments: &[&str]) {
-        let output = Command::new("git")
+        let output = cargo_berth_test_support::fixture_git_command()
             .args(arguments)
             .current_dir(repository_root)
             .output()

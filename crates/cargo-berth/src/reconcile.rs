@@ -5444,7 +5444,6 @@ impl From<ReconciliationPlanningError> for ReconcileError {
 mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
-    use std::process::Command;
 
     use serde_json::Value;
     use serde_json::json;
@@ -5532,7 +5531,7 @@ mod tests {
     fn missing_rewrite_target_resolves_the_trunk_tip_once() -> Result<(), Box<dyn std::error::Error>>
     {
         let repository = tempfile::tempdir()?;
-        let initialized = Command::new("git")
+        let initialized = cargo_berth_test_support::fixture_git_command()
             .args(["init", "--quiet"])
             .current_dir(repository.path())
             .output()?;
