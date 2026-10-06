@@ -939,21 +939,23 @@ These operation fields use the following tagged values:
   reservation's lifecycle instead of reporting the ledger unreadable.
 - `authorization.kind` is `no_conflict`; `enrollment` with `overlaps`;
   `sequence` with `overlaps`, `blocker`, `direction`, `edge_id`, and `reason`;
-  `sequence_every_holder` with `overlaps`, `holders`, `direction`, and
-  `reason`; `defer` or `override` with `overlaps`, `blocker`, and `reason`; or
+  `sequence_per_holder` with `overlaps`, `holders`, and `reason`; `defer` or
+  `override` with `overlaps`, `blocker`, and `reason`; or
   `existing_answers_cover_every_overlap` with `overlaps`. `direction` is
   `requester_before_holder` or `holder_before_requester`. Each `overlaps` entry
   is `{ "reservation_id": <uuid-v7>, "scope_revision": <scope revision>,
-  "scopes": [scope...] }`. `sequence_every_holder` is recorded only when a
-  claim's `--before` or `--after` named several holders; a claim naming one
-  holder keeps `sequence`. Each `holders` entry is `{ "blocker": <uuid-v7>,
-  "edge_id": <uuid-v7> }`, one ordering edge per named holder, all sharing
-  `direction`. Board rows are unchanged: a several-holder answer lists one
-  `sequence` row per holder. `enrollment` binds every counterpart observed when `init`
+  "scopes": [scope...] }`. `sequence_per_holder` is recorded only when a
+  claim's `--before` and `--after` flags named several holders, in any mix; a
+  claim naming one holder keeps `sequence`. Each `holders` entry is `{
+  "blocker": <uuid-v7>, "direction": <direction>, "edge_id": <uuid-v7> }`, one
+  ordering edge per named holder in the direction its own flag chose:
+  `requester_before_holder` for `--before`, `holder_before_requester` for
+  `--after`. Board rows are unchanged: a several-holder answer lists one
+  `sequence` row per holder, each with its own `direction`. `enrollment` binds every counterpart observed when `init`
   enrolled the claim and holds integration for each pair until `sequence`
   orders it. `scope_revision` is required on every entry, but only
   `existing_answers_cover_every_overlap` compares it when deciding edit
-  coverage; `enrollment`, `sequence`, `sequence_every_holder`, `defer`, and
+  coverage; `enrollment`, `sequence`, `sequence_per_holder`, `defer`, and
   `override` cover their `scopes` whatever the counterpart's revision has
   become.
 - `coordination_identity_provenance` is `presented` or `not_presented`. It

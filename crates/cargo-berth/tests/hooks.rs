@@ -263,7 +263,7 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
         .ok_or_else(|| failure("blocking presentation should separate its summary and detail"))?;
     assert!(refusal_detail.ends_with('\n'));
     assert!(refusal_detail.contains(
-        "Answers 1, 2 and 3 name every holder by repeating their flag once per holder; answer 4 settles one named holder."
+        "Answers 1, 2 and 3 name every holder by repeating their flag once per holder, and one claim may mix answers 1 and 2, one flag per holder; answer 4 settles one named holder."
     ));
     assert!(refusal_detail.contains("cargo-berth claim <paths...> --before"));
     assert!(

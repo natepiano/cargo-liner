@@ -1335,7 +1335,7 @@ fn answered_blockers(authorizations: &[ConflictAuthorization]) -> WireOrderedRes
                 ConflictAuthorization::NoConflict
                 | ConflictAuthorization::Enrollment { .. }
                 | ConflictAuthorization::Sequence { .. }
-                | ConflictAuthorization::SequenceEveryHolder { .. }
+                | ConflictAuthorization::SequencePerHolder { .. }
                 | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => None,
             })
             .collect(),
@@ -1808,9 +1808,9 @@ fn validate_first_touch_run(
 /// what keeps the decision from applying to changed facts: the conflicts are recomputed here,
 /// under the ledger lock, and a holder the answer leaves unnamed, or a named reservation that no
 /// longer conflicts, refuses the claim exactly as an unanswered claim is refused. `--before` and
-/// `--after` repeat once per holder and record one ordering edge against each, as `--defer`
-/// repeats in [`validate_answer`]; `--override` names one holder, so set equality admits it only
-/// while one holder conflicts.
+/// `--after` repeat once per holder, mix in one claim, and record one ordering edge against each
+/// holder in the direction its own flag chose, as `--defer` repeats in [`validate_answer`];
+/// `--override` names one holder, so set equality admits it only while one holder conflicts.
 ///
 /// An answer reaches here because the caller supplied `--before`, `--after`, or `--override`,
 /// which the pre-edit refusal asks for by name. By the time the caller runs the answered claim,
@@ -1834,10 +1834,10 @@ fn validate_authorization(
             .collect::<Vec<_>>(),
     ) else {
         return TransactionValidation::Reject(ClaimRejection::AnsweredWithoutOverlap(
-            answer.blockers().to_vec(),
+            answer.blockers(),
         ));
     };
-    let named_blockers = answer.blockers().iter().copied().collect::<HashSet<_>>();
+    let named_blockers = answer.blockers().into_iter().collect::<HashSet<_>>();
     let holders = conflicts
         .iter()
         .map(|conflict| conflict.reservation_id)

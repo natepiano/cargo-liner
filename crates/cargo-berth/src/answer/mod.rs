@@ -13,6 +13,7 @@ pub(crate) use request::OverlapAuthorizationReason;
 pub(crate) use request::OverlapAuthorizationRequest;
 pub(crate) use request::PermissiveOverlapAnswer;
 pub(crate) use request::PermissiveOverlapAuthorizationRequest;
+pub(crate) use request::SequencedBlocker;
 pub(crate) use scope_binding::AuthorizedOverlap;
 #[cfg(test)]
 pub(crate) use scope_binding::AuthorizedOverlapScopeSet;

@@ -278,15 +278,25 @@ The four answers are:
 - `--override <holder>`: editing is authorized without an integration order.
   A later `sequence` command can still order the pair.
 
-`--before` and `--after` may also repeat, once per holder, so one claim orders
-the requester against every holder of a path, recording one ordering edge for
-each holder.
+`--before` and `--after` may also repeat, once per holder, and mix in one
+claim, so one claim orders the requester against every holder of a path,
+recording one ordering edge for each holder in the direction its own flag
+chose. A requester that comes after a holder already merged and before a
+holder still in flight names both:
+
+```console
+requester$ cargo berth claim src/panel.rs --after <merged-holder> --before <in-flight-holder> --overlap-why "builds on the merged phase; the in-flight phase builds on this one"
+```
+
+A holder named by both `--before` and `--after` is refused as invalid input.
+`--defer` and `--override` cannot be combined with any other answer.
 
 Each answer requires `--overlap-why <text>` and records in that one
-invocation. An answer that leaves a conflicting holder unnamed is refused at
-exit 1 and records nothing. Repeat `--before`, `--after` or `--defer` once per
-holder; `--override` names one holder, so narrow the requested scopes until
-one holder remains.
+invocation. An answer that leaves a conflicting holder unnamed, or names a
+reservation that does not conflict while another holder does, is refused at
+exit 1 and records nothing. Give every holder its own `--before` or `--after`, or repeat
+`--defer` once per holder; `--override` names one holder, so narrow the
+requested scopes until one holder remains.
 
 ## Drift and the post-commit warning
 

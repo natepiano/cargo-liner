@@ -4,7 +4,6 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::slice;
 use std::str::FromStr;
 
 use schemars::JsonSchema;
@@ -46,16 +45,24 @@ pub(crate) struct PermissiveOverlapAuthorizationRequest {
     pub(crate) reason: OverlapAuthorizationReason,
 }
 
+/// One holder a `--before` or `--after` flag named, and the order that flag chose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SequencedBlocker {
+    /// The holder named as the other endpoint of the ordering edge.
+    pub(crate) blocker:   ReservationId,
+    /// Which endpoint of the ordering edge must integrate first.
+    pub(crate) direction: OrderingDirection,
+}
+
 /// One of the overlap answers that permits concurrent editing and reserves the claimed paths.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PermissiveOverlapAnswer {
     /// Declare an integration order between the requester and every named blocker.
     Sequence {
-        /// The blockers named by each `--before` or `--after`; the CLI builds this only from
-        /// one or more flags.
-        blockers:  Vec<ReservationId>,
-        /// Which endpoint of each ordering edge must integrate first.
-        direction: OrderingDirection,
+        /// One entry per distinct holder named by `--before` or `--after`, each in the direction
+        /// its own flag chose; the CLI builds this only from one or more flags and refuses a
+        /// holder named by both.
+        blockers: Vec<SequencedBlocker>,
     },
     /// Permit editing without adding an integration constraint.
     Override {
@@ -114,10 +121,13 @@ impl<'de> Deserialize<'de> for OverlapAuthorizationReason {
 
 impl PermissiveOverlapAnswer {
     /// Return every blocker identifier the answer flags named.
-    pub(crate) fn blockers(&self) -> &[ReservationId] {
+    pub(crate) fn blockers(&self) -> Vec<ReservationId> {
         match self {
-            Self::Sequence { blockers, .. } => blockers,
-            Self::Override { blocker } => slice::from_ref(blocker),
+            Self::Sequence { blockers } => blockers
+                .iter()
+                .map(|sequenced_blocker| sequenced_blocker.blocker)
+                .collect(),
+            Self::Override { blocker } => vec![*blocker],
         }
     }
 }

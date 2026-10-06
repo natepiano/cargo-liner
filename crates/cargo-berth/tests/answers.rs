@@ -39,6 +39,7 @@ use std::time::Instant;
 use tempfile::TempDir;
 use tempfile::tempdir;
 
+const AFTER_EVERY_HOLDER_REASON: &str = "the requester builds on both holders";
 const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
 const FIRST_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1b";
 const GIT_BINARY: &str = "git";
@@ -48,10 +49,10 @@ const GIT_NO_OPTIONAL_LOCKS_ARG: &str = "--no-optional-locks";
 const GIT_REV_PARSE_COMMAND: &str = "rev-parse";
 const JOURNAL_PATH: &str = ".git/cargo-berth/journal.ndjson";
 const MANUAL_EVENT_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1e";
+const MIXED_ANSWER_REASON: &str = "the first holder landed and the second builds on this claim";
 const PAUSED_GIT_WRAPPER_TIMEOUT: Duration = Duration::from_secs(60);
 const RUN_ENVIRONMENT: &str = "CARGO_BERTH_RUN";
 const SECOND_RUN: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1c";
-const SEQUENCE_EVERY_HOLDER_REASON: &str = "the requester builds on both holders";
 const SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 const SESSION_MAPPING_PATH: &str = ".git/cargo-berth/session-identities.json";
 const SHELL_BINARY: &str = "sh";
@@ -742,7 +743,7 @@ fn an_answer_naming_one_holder_is_refused_while_another_holder_conflicts() {
 }
 
 /// One claim names both holders of a path with one `--after` each: one `claim` record carries a
-/// `sequence_every_holder` authorization with an ordering edge per holder, and the board holds
+/// `sequence_per_holder` authorization with an ordering edge per holder, and the board holds
 /// the requester behind both holders.
 #[test]
 fn one_claim_sequences_after_both_holders_of_a_path() {
@@ -764,14 +765,16 @@ fn one_claim_sequences_after_both_holders_of_a_path() {
     assert_eq!(recorded["op"], "claim");
     assert_eq!(recorded["reservation_id"], requester_id);
     let authorization = &recorded["authorization"];
-    assert_eq!(authorization["kind"], "sequence_every_holder");
-    assert_eq!(authorization["direction"], "holder_before_requester");
-    assert_eq!(authorization["reason"], SEQUENCE_EVERY_HOLDER_REASON);
+    assert_eq!(authorization["kind"], "sequence_per_holder");
+    assert_eq!(authorization["reason"], AFTER_EVERY_HOLDER_REASON);
     let mut recorded_edges = authorization["holders"]
         .as_array()
         .expect("a several-holder answer records its holders")
         .iter()
-        .map(|holder| ordering_pair(&holder["blocker"], &holder["edge_id"]))
+        .map(|holder| {
+            assert_eq!(holder["direction"], "holder_before_requester", "{holder:#}");
+            ordering_pair(&holder["blocker"], &holder["edge_id"])
+        })
         .collect::<Vec<_>>();
     recorded_edges.sort();
     assert_eq!(
@@ -818,6 +821,169 @@ fn one_claim_sequences_after_both_holders_of_a_path() {
             .status
             .success()
     );
+}
+
+/// One claim names one holder of a path with `--after` and the other with `--before`: one
+/// `claim` record carries a `sequence_per_holder` authorization whose edges each point the way
+/// their own flag chose, and the board holds the requester behind the first holder and the second
+/// holder behind the requester.
+#[test]
+fn one_claim_orders_after_one_holder_and_before_the_other() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let [earlier_holder, later_holder] =
+        <[String; 2]>::try_from(two_holders_of_the_library(repository.path(), &third_root))
+            .expect("the fixture should create two holders");
+
+    let answered = run_berth(
+        &second_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            "--after",
+            &earlier_holder,
+            "--before",
+            &later_holder,
+            "--overlap-why",
+            MIXED_ANSWER_REASON,
+            "--why",
+            "protect the requester file",
+            "--json",
+        ],
+    );
+    let envelope = json_output(&answered);
+
+    assert_eq!(answered.status.code(), Some(0), "{envelope:#}");
+    assert_eq!(envelope["status"], "claimed");
+    let requester_id = envelope["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("the claim should return its reservation id");
+    let recorded = last_journal_event(repository.path());
+    assert_eq!(recorded["op"], "claim");
+    assert_eq!(recorded["reservation_id"], requester_id);
+    let authorization = &recorded["authorization"];
+    assert_eq!(authorization["kind"], "sequence_per_holder");
+    assert_eq!(authorization["reason"], MIXED_ANSWER_REASON);
+    let recorded_holders = authorization["holders"]
+        .as_array()
+        .expect("a several-holder answer records its holders");
+    assert_eq!(recorded_holders.len(), 2, "{authorization:#}");
+    let recorded_edge = |holder: &str, direction: &str| {
+        let entry = recorded_holders
+            .iter()
+            .find(|entry| entry["blocker"] == holder)
+            .expect("each named holder should record an edge");
+        assert_eq!(entry["direction"], direction, "{entry:#}");
+        ordering_pair(&entry["blocker"], &entry["edge_id"]).1
+    };
+    let after_edge = recorded_edge(&earlier_holder, "holder_before_requester");
+    let before_edge = recorded_edge(&later_holder, "requester_before_holder");
+    assert_ne!(
+        after_edge, before_edge,
+        "each holder should record its own edge"
+    );
+
+    let board = run_berth(repository.path(), ["board", "--json"]);
+    assert!(
+        board.status.success(),
+        "{}",
+        String::from_utf8_lossy(&board.stdout)
+    );
+    let board_json = json_output(&board);
+    let waiting_edges = board_json["payload"]["data"]["waiting"]["entries"]
+        .as_array()
+        .expect("the board should list its waiting entries")
+        .iter()
+        .filter(|entry| entry["hold"] == "ordering_edge")
+        .map(|entry| {
+            let (predecessor, edge_id) = ordering_pair(&entry["predecessor"], &entry["edge_id"]);
+            let successor = entry["successor"]
+                .as_str()
+                .expect("an ordering hold should name its successor")
+                .to_owned();
+            (predecessor, successor, edge_id)
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        waiting_edges,
+        HashSet::from([
+            (earlier_holder, requester_id.to_owned(), after_edge),
+            (requester_id.to_owned(), later_holder, before_edge),
+        ]),
+        "the first holder should hold the requester, and the requester the second holder"
+    );
+}
+
+/// GM's case: two holders of the library were released as integrated before the claim, and one
+/// holder is live. Naming the released holders as well is refused with `blocked_by` naming only
+/// the live holder, and `--before` the live holder alone records the one-holder `sequence`.
+#[test]
+fn released_holders_are_no_longer_answered_and_naming_them_is_refused() {
+    let repository = initialized_repository();
+    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
+    let (_third_directory, third_root) = foreign_worktree(&repository, "third");
+    let released_holders = [
+        integrated_holder_of_the_library(repository.path()),
+        integrated_holder_of_the_library(repository.path()),
+    ];
+    dirty_source(&third_root, "src/lib.rs");
+    let live_holder = reservation_id(&claim_explicit(
+        &third_root,
+        "file:src/lib.rs",
+        THIRD_RUN,
+        "protect the live holder file",
+    ));
+    reconcile_fixture(repository.path());
+    let journal_before = journal_bytes(repository.path());
+
+    let naming_released = run_berth(
+        &second_root,
+        [
+            "claim",
+            "file:src/lib.rs",
+            "--run",
+            SECOND_RUN,
+            "--after",
+            &released_holders[0],
+            "--after",
+            &released_holders[1],
+            "--before",
+            &live_holder,
+            "--overlap-why",
+            MIXED_ANSWER_REASON,
+            "--why",
+            "protect the requester file",
+            "--json",
+        ],
+    );
+    let refusal = json_output(&naming_released);
+
+    assert_eq!(naming_released.status.code(), Some(1), "{refusal:#}");
+    assert_eq!(refusal["status"], "blocked_by_overlap");
+    assert_eq!(refusal["blocked_by"], serde_json::json!([live_holder]));
+    assert_eq!(journal_bytes(repository.path()), journal_before);
+
+    let answered = answer_claim(
+        &second_root,
+        "file:src/lib.rs",
+        SECOND_RUN,
+        "--before",
+        &live_holder,
+        AnswerReasons::new(
+            "protect the requester file",
+            "the live holder builds on this claim",
+        ),
+    );
+    let envelope = json_output(&answered);
+
+    assert_eq!(answered.status.code(), Some(0), "{envelope:#}");
+    let authorization = &last_journal_event(repository.path())["authorization"];
+    assert_eq!(authorization["kind"], "sequence", "{authorization:#}");
+    assert_eq!(authorization["blocker"], live_holder.as_str());
+    assert_eq!(authorization["direction"], "requester_before_holder");
 }
 
 /// An answer naming both holders and also a reservation that shares nothing with the claim is
@@ -2212,6 +2378,32 @@ fn two_holders_of_the_library(repository: &Path, third_root: &Path) -> Vec<Strin
     holders
 }
 
+/// A holder of `src/lib.rs` in the main worktree, on trunk, released as integrated: the first
+/// `release` checkpoints `HEAD`, already on trunk, and the second settles it.
+fn integrated_holder_of_the_library(repository: &Path) -> String {
+    let holder_id = reservation_id(&claim_explicit(
+        repository,
+        "file:src/lib.rs",
+        FIRST_RUN,
+        "protect the holder file",
+    ));
+    let checkpointed = run_berth(repository, ["release", &holder_id, "--json"]);
+    assert!(
+        checkpointed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checkpointed.stdout)
+    );
+    let released = run_berth(repository, ["release", &holder_id, "--json"]);
+    let envelope = json_output(&released);
+    assert!(released.status.success(), "{envelope:#}");
+    assert_eq!(envelope["status"], "integrated", "{envelope:#}");
+    assert_eq!(
+        envelope["payload"]["data"]["status"], "released",
+        "{envelope:#}"
+    );
+    holder_id
+}
+
 /// Claim `src/lib.rs` from `requester_root` as `SECOND_RUN`, with one `--after` per named
 /// reservation.
 fn claim_after_every_named(requester_root: &Path, named: &[&str]) -> Output {
@@ -2223,7 +2415,7 @@ fn claim_after_every_named(requester_root: &Path, named: &[&str]) -> Output {
         .chain(after_flags)
         .chain([
             "--overlap-why",
-            SEQUENCE_EVERY_HOLDER_REASON,
+            AFTER_EVERY_HOLDER_REASON,
             "--why",
             "protect the requester file",
             "--json",

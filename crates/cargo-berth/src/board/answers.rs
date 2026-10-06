@@ -437,12 +437,11 @@ fn append_authorization_answer(
                 })
             })?;
         },
-        // One row per holder, each with that holder's own binding and edge, so the board
-        // lists a several-holder answer exactly as it lists one `Sequence` answer per holder.
-        ConflictAuthorization::SequenceEveryHolder {
+        // One row per holder, each with that holder's own binding, direction and edge, so the
+        // board lists a several-holder answer exactly as it lists one `Sequence` answer per holder.
+        ConflictAuthorization::SequencePerHolder {
             overlaps,
             holders,
-            direction,
             reason,
         } => {
             for holder in holders {
@@ -454,7 +453,7 @@ fn append_authorization_answer(
                     Ok(RecordedOverlapAnswer::Sequence {
                         reservation_id,
                         blocker: holder.blocker,
-                        direction: *direction,
+                        direction: holder.direction,
                         exact_approved_scopes,
                         authorization_reason: reason.clone(),
                         acquisition: acquisition.clone(),

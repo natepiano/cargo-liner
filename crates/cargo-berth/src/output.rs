@@ -3830,12 +3830,12 @@ fn blocked_edit_refusal_detail(
     sections.join("\n\n")
 }
 
-/// Answers 1-3 name every holder by repeating their flag, and an override binds one holder, so a
-/// refusal naming several says how to answer them all.
+/// Answers 1-3 name every holder by repeating their flag, answers 1 and 2 mix, and an override
+/// binds one holder, so a refusal naming several says how to answer them all.
 fn append_several_holders_guidance(sections: &mut Vec<String>, conflicts: &[ReservationConflict]) {
     if conflicts.len() > 1 {
         sections.push(
-            "More than one holder remains. Answer every holder at once with answer 1, 2 or 3, repeating its flag once per holder; `--override` settles one holder, so it needs the requested scopes narrowed until one holder remains."
+            "More than one holder remains. Answer every holder in one claim: one `--before` or `--after` per holder, mixed as each holder needs, or one `--defer` per holder; `--override` settles one holder, so it needs the requested scopes narrowed until one holder remains."
                 .to_owned(),
         );
     }
@@ -3910,7 +3910,8 @@ pub(crate) const HOLDER_RESERVATION_ID_PLACEHOLDER: &str = "<holder-reservation-
 /// `<holder-reservation-id>` in every command it offers has named nobody, and the reader cannot
 /// run a single line of it. With one holder there is exactly one id those commands could carry,
 /// so it is substituted and they run as printed. With several, the placeholder stands: answers 1-3
-/// repeat their flag once per holder, and an override names the one holder the reader means.
+/// repeat their flag once per holder, answers 1 and 2 mix, and an override names the one holder
+/// the reader means.
 fn blocked_edit_answer_guidance(
     conflicts: &[ReservationConflict],
     approver: Option<&OverlapApprover>,
@@ -3930,7 +3931,7 @@ fn blocked_edit_answer_guidance(
 }
 
 pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
-    r#"Answers 1, 2 and 3 name every holder by repeating their flag once per holder; answer 4 settles one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
+    r#"Answers 1, 2 and 3 name every holder by repeating their flag once per holder, and one claim may mix answers 1 and 2, one flag per holder; answer 4 settles one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
 
 1. Land before the holder: `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates first; the holder stays held until the requester is on trunk. For a holder that will build on the requester's change.
 2. Land after the holder: `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates second, held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. For a requester that will build on the holder.
