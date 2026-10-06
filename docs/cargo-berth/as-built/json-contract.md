@@ -919,7 +919,9 @@ Each environment field is `unset`, `utf8` with its exact raw `value`,
 `unavailable` with `diagnostic`. A `utf8` path or value is retained only when
 its JSON-encoded string contents are at most 256 bytes; `observed_bytes` is the
 raw UTF-8 byte length before JSON escaping. Actor resolution canonicalizes the
-invocation directory and follows its `.git` filesystem metadata. A relative
+invocation directory and follows its `.git` filesystem metadata: it walks up to
+the nearest `.git` file, or `.git` directory holding `HEAD`, `objects/` and
+`refs/`, and never moves up into a `GIT_CEILING_DIRECTORIES` entry. A relative
 `gitdir:` locator is relative to the worktree root; a relative `commondir`
 locator is relative to the per-worktree administrative directory. Supplied
 `GIT_DIR` and `GIT_COMMON_DIR` values do not override that actor resolution,

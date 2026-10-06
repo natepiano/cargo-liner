@@ -454,6 +454,7 @@ Drift's stand-aside is narrow by construction. `comparable_worktree` stands asid
 | `CLAUDE_CODE_SESSION_ID` | Set by Claude Code to the id its hook payloads carry as `session_id`. Supplies the harness session id of any command other than `cargo-berth hook` and the managed git hooks only when `CARGO_BERTH_SESSION_ID` is unset, so a claim a Claude Code session runs directly maps under the key its edit hooks read. The managed git hooks never read it, because git hands its hooks the environment of whichever process ran git. |
 | `CARGO_BERTH_REFERENCE_TRANSACTION_ISSUING_DIRECTORY` | Exported by the managed `reference-transaction` hook before it changes directory; the gate reads the issuing checkout from it and has no fallback. |
 | `CARGO_BERTH_REFERENCE_TRANSACTION_TEMPLATE` | Exported by the managed `reference-transaction` hook: the fingerprint of the template it was rendered from. Any value but the binary's own makes the gate replace an outdated managed hook. |
+| `GIT_CEILING_DIRECTORIES` | Bounds worktree discovery as it bounds git's: the walk up from the invocation directory never moves into a listed directory, and empty, relative and missing entries are ignored. `docs/cargo-berth/as-built/test-git-and-discovery.md` covers discovery. |
 | `CARGO_BERTH_TEST_MUTATION_LOCK_READY_PATH` | Test-only signal that makes a waiting lock acquisition observable. |
 
 ## Invariants
