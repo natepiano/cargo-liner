@@ -14,7 +14,6 @@ use super::dismiss_target::DismissTarget;
 use super::hit_test::HITTABLE_Z_ORDER;
 use super::hit_test::HittableId;
 use super::hit_test::HoverTarget;
-use super::panes;
 use super::panes::PaneId;
 
 #[derive(Clone, Copy)]
@@ -47,14 +46,6 @@ pub(super) fn handle_click(app: &mut App, pos: Position, mode: ClickMode) -> boo
                 }
             } else {
                 set_pane_pos(app, pane, row);
-            }
-            if pane == PaneId::Targets {
-                // A click is a user-driven cursor move: re-derive the
-                // Running-box PID anchor from the clicked row.
-                panes::sync_running_targets_cursor(app);
-                if matches!(mode, ClickMode::Dispatch) {
-                    panes::toggle_targets_tree_row(app);
-                }
             }
         },
         HoverTarget::GlobalShortcutRow { row } => {

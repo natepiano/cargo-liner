@@ -42,7 +42,7 @@ impl App {
         self.project_list.set_project_storage(paths, storage);
     }
 
-    pub(in crate::tui) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
+    pub(in crate::tui::app) fn handle_disk_usage(&mut self, path: &Path, bytes: u64) {
         self.apply_disk_usage(path, bytes);
     }
     pub(super) fn handle_disk_usage_batch(&mut self, entries: Vec<(AbsolutePath, DirSizes)>) {
@@ -75,7 +75,6 @@ impl App {
             }
         }
         if lint_runtime_changed {
-            self.project_list.mark_visible_ownership_changed();
             if let Some(runtime) = self.lint.runtime()
                 && bytes == 0
             {

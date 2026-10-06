@@ -116,20 +116,13 @@ pub(super) use spec::behavior;
 pub(super) use spec::size_spec;
 pub(super) use system::Panes;
 pub(super) use targets::BuildMode;
-pub(super) use targets::CargoGroup;
 pub(super) use targets::RunTargetKind;
-pub(super) use targets::RunningListRow;
 pub(super) use targets::TargetEntry;
 #[cfg(test)]
 pub(super) use targets::TargetSource;
 pub(super) use targets::TargetsData;
 pub(super) use targets::TargetsPane;
-pub(super) use targets::build_running_list;
-pub(super) use targets::build_running_rows;
 pub(super) use targets::build_target_list_from_data;
-pub(super) use targets::format_start_age;
-pub(super) use targets::outline_subtree_len;
-pub(super) use targets::resolve_kill_request;
 use tui_pane::FocusedPane;
 #[cfg(test)]
 use tui_pane::Viewport;
@@ -150,7 +143,6 @@ use super::keymap::TargetsAction;
 use super::project_list_state::ProjectList;
 #[cfg(test)]
 use super::render_context::PaneRenderCtx;
-use super::running_targets::RunningTargetTerminationCapability;
 #[cfg(test)]
 use crate::project::RootItem;
 
@@ -201,15 +193,6 @@ pub(super) fn dispatch_targets_action(action: TargetsAction, app: &mut App) {
     actions::dispatch_targets_action(action, app);
 }
 
-pub(super) fn execute_target_kill(
-    app: &mut App,
-    termination_capability: RunningTargetTerminationCapability,
-) {
-    actions::execute_target_kill(app, termination_capability);
-}
-
-pub(super) fn sync_running_targets_cursor(app: &mut App) { actions::sync_running_cursor_pid(app); }
-
 pub(super) fn compute_disk_cache(entries: &ProjectList) -> (Vec<u64>, HashMap<usize, Vec<u64>>) {
     project_list::compute_disk_cache(entries)
 }
@@ -227,10 +210,6 @@ pub(super) fn render_tree_items(
     widths: &ProjectListWidths,
 ) -> Vec<ListItem<'static>> {
     project_list::render_tree_items(ctx, pane, viewport, widths)
-}
-
-pub(super) fn toggle_targets_tree_row(app: &mut App) -> bool {
-    actions::toggle_targets_tree_row(app)
 }
 
 pub(super) fn dispatch_lints_action(action: LintsAction, app: &mut App) {

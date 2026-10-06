@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use ratatui::Frame;
 use ratatui::layout::Alignment;
 use ratatui::layout::Constraint;
@@ -21,14 +19,8 @@ use tui_pane::Size;
 use tui_pane::ViewportOverflow;
 use tui_pane::label_color;
 
-use super::constants::MIN_TABLE_ROWS;
-use super::constants::RUNNING_BOX;
-use super::constants::RUNNING_CAP_PERCENT;
-use super::constants::RUNNING_CHROME;
 use super::constants::SOURCE_HEADER;
 use super::constants::TABLE_BOX;
-use super::constants::TABLE_CHROME;
-use super::constants::TABLE_FOOTER;
 use super::constants::TARGET_HEADER;
 use super::constants::TARGET_LEADING_PAD;
 use super::constants::TARGET_TABLE_COLUMN_SPACING;
@@ -36,32 +28,19 @@ use super::constants::TARGET_TABLE_GAP_COUNT;
 use super::data::TargetEntry;
 use super::data::TargetsData;
 use super::pane::TargetsPane;
-use super::running_subpane;
-use super::running_subpane::RunningListRow;
-use super::running_subpane::RunningRow;
-use super::running_subpane::RunningSubpaneRender;
 use crate::tui::columns;
 use crate::tui::panes;
-use crate::tui::panes::RenderStyles;
 use crate::tui::render;
-use crate::tui::render_context::PaneRenderCtx;
 use crate::tui::theme_roles;
 
 pub(super) fn render_targets_pane_body(
     frame: &mut Frame,
     area: Rect,
     pane: &mut TargetsPane,
-    styles: &RenderStyles,
-    ctx: &PaneRenderCtx<'_>,
 ) -> PaneFrameChrome {
-    // The Running list is global across all tracked workspaces, so it
-    // stays visible even when the selected project has no targets — the
-    // empty block renders only when there is nothing to show at all.
-    let running_rows = running_subpane::build_running_rows(ctx.running_targets);
-    let has_targets = pane.content().is_some_and(TargetsData::has_targets);
-    if has_targets || !running_rows.is_empty() {
+    if pane.content().is_some_and(TargetsData::has_targets) {
         let data = pane.content().cloned().unwrap_or_default();
-        render_targets_with_data(frame, area, pane, &data, &running_rows, styles)
+        render_targets_with_data(frame, area, pane, &data)
     } else {
         render_empty_targets(frame, area, pane)
     }
@@ -71,7 +50,6 @@ fn render_empty_targets(frame: &mut Frame, area: Rect, pane: &mut TargetsPane) -
     let _ = (frame, area);
     pane.viewport.clear_surface();
     pane.clear_row_rects();
-    pane.set_running_cursor_pid(None);
     PaneFrameChrome {
         title: " No Targets ".to_string(),
         focused: false,
@@ -89,71 +67,9 @@ struct Layout {
     name_max: usize,
 }
 
-/// The Targets pane's box tree: the table (one selectable row per target,
-/// plus its header chrome row, plus its footer boundary row while the
-/// Running box sits below) takes the room the Running box leaves; the
-/// Running box grows upward to [`RUNNING_CAP_PERCENT`] of the inner
-/// height and is omitted entirely while nothing runs. In degenerate
-/// heights the rendered-lines clamp reserves the table's
-/// [`MIN_TABLE_ROWS`] floor before the cap takes its share, shrinking the
-/// Running window first.
-fn targets_region(table_rows: usize, running_rows: usize, inner_height: u16) -> Region {
-    if running_rows == 0 {
-        return Region::stack(vec![Region::rows(table_rows, Size::Fill).header()]);
-    }
-    // An empty table has no data rows to protect — the floor only guards
-    // real targets from the Running window.
-    let floor = if table_rows == 0 { 0 } else { MIN_TABLE_ROWS };
-    let max_lines =
-        inner_height.saturating_sub(TABLE_CHROME + TABLE_FOOTER + floor + RUNNING_CHROME);
-    let lines = u16::try_from(running_rows)
-        .unwrap_or(u16::MAX)
-        .min(max_lines);
-    Region::stack(vec![
-        Region::rows(table_rows, Size::Fill).header().footer(),
-        Region::rows(running_rows, Size::cap(RUNNING_CAP_PERCENT))
-            .rule()
-            .header()
-            .lines(lines),
-    ])
-}
-
-/// Reconcile the highlight with this frame's Running list (D2): while it
-/// sits on an instance row it follows the anchored instance's PID as rows
-/// reorder; an anchored instance that exited hands the highlight to the
-/// adjacent row (next, else previous), and an emptied list drops it back
-/// onto the last table row. The `cargo` header row anchors by its stable
-/// list position instead of a PID. Navigation and clicks re-derive the
-/// anchor when the user moves the highlight.
-fn sync_running_cursor(
-    pane: &mut TargetsPane,
-    table_len: usize,
-    rows: &[RunningRow],
-    list: &[RunningListRow],
-) {
-    let Some(local) = pane.viewport.pos().checked_sub(table_len) else {
-        pane.set_running_cursor_pid(None);
-        return;
-    };
-    if let Some(pid) = pane.running_cursor_pid()
-        && let Some(index) = list
-            .iter()
-            .position(|row| matches!(row, RunningListRow::Instance(i) if rows[*i].pid == pid))
-    {
-        pane.viewport.set_pos(table_len + index);
-        return;
-    }
-    if list.is_empty() {
-        pane.viewport.set_pos(table_len.saturating_sub(1));
-        pane.set_running_cursor_pid(None);
-        return;
-    }
-    let index = local.min(list.len() - 1);
-    pane.viewport.set_pos(table_len + index);
-    pane.set_running_cursor_pid(match list[index] {
-        RunningListRow::Instance(i) => Some(rows[i].pid),
-        RunningListRow::CargoHeader { .. } => None,
-    });
+/// The targets table fills the pane body.
+fn targets_region(table_rows: usize) -> Region {
+    Region::stack(vec![Region::rows(table_rows, Size::Fill).header()])
 }
 
 fn render_targets_with_data(
@@ -161,30 +77,14 @@ fn render_targets_with_data(
     area: Rect,
     pane: &mut TargetsPane,
     data: &TargetsData,
-    running_rows: &[RunningRow],
-    styles: &RenderStyles,
 ) -> PaneFrameChrome {
     let pane_focus_state = pane.focus.pane_focus_state;
     let entries = panes::build_target_list_from_data(data);
-    // Drop expanded-outline state for PIDs that left the list, so a
-    // reused PID starts collapsed.
-    let live: HashSet<u32> = running_rows.iter().map(|row| row.pid).collect();
-    pane.retain_expanded_parents(&live);
-    let running_list = running_subpane::build_running_list(
-        running_rows,
-        pane.cargo_group(),
-        pane.expanded_parents(),
-    );
     let table_len = entries.len();
-
-    pane.viewport.set_len(table_len + running_list.len());
-    sync_running_cursor(pane, table_len, running_rows, &running_list);
+    pane.viewport.set_len(table_len);
     let cursor = pane.viewport.pos();
 
-    // The title's section counter tracks the table's target rows; a
-    // highlight in the Running box leaves it uncounted.
-    let cursor_entry = (cursor < table_len).then_some(cursor);
-    let targets_title = build_targets_title(pane_focus_state, cursor_entry, data);
+    let targets_title = build_targets_title(pane_focus_state, cursor, data);
     let mut chrome = PaneFrameChrome {
         title: targets_title,
         focused: matches!(pane_focus_state, PaneFocusState::Active),
@@ -192,50 +92,22 @@ fn render_targets_with_data(
     };
     let content_inner = tui_pane::frame_inner(area);
 
-    let region = targets_region(table_len, running_list.len(), content_inner.height);
-    let prior_offsets = [pane.viewport.scroll_offset(), 0];
-    let placed = region.place(content_inner, cursor, &prior_offsets);
+    let region = targets_region(table_len);
+    let placed = region.place(content_inner, cursor, &[pane.viewport.scroll_offset()]);
     let table_box = placed[TABLE_BOX];
-    let running_visible = placed
-        .get(RUNNING_BOX)
-        .map_or(0, |running| usize::from(running.content.height));
-
     pane.viewport.set_content_area(table_box.content);
     pane.viewport
-        .set_viewport_rows(usize::from(table_box.content.height) + running_visible);
+        .set_viewport_rows(usize::from(table_box.content.height));
 
-    let mut row_rects = render_targets_table(frame, pane, &entries, table_box, area, &mut chrome);
-
-    if !running_list.is_empty() {
-        running_subpane::render_running_subpane(
-            frame,
-            &RunningSubpaneRender {
-                rows: running_rows,
-                list: &running_list,
-                cargo_group: pane.cargo_group(),
-                expanded_parents: pane.expanded_parents(),
-                viewport: &pane.viewport,
-                focus: pane_focus_state,
-                table_len,
-                title_style: styles
-                    .chrome
-                    .title_style(matches!(pane_focus_state, PaneFocusState::Active)),
-            },
-            placed[RUNNING_BOX],
-            area,
-            &mut row_rects,
-            &mut chrome,
-        );
-    }
+    let row_rects = render_targets_table(frame, pane, &entries, table_box, area, &mut chrome);
     pane.set_row_rects(row_rects);
     chrome
 }
 
 /// Render the targets table into its placed box: the ratatui `Table`
 /// (header chrome row + data rows), the scroll-offset sync against the
-/// pane's viewport, and the table's pager — on the pane's bottom border
-/// while the table owns the full pane, on the table's footer row once the
-/// Running box sits below. Returns the visible data rows' hit-test rects.
+/// pane's viewport, and the pager on the pane's bottom border.
+/// Returns the visible data rows' hit-test rects.
 fn render_targets_table(
     frame: &mut Frame,
     pane: &mut TargetsPane,
@@ -256,16 +128,8 @@ fn render_targets_table(
         .column_spacing(TARGET_TABLE_COLUMN_SPACING)
         .row_highlight_style(Style::default())
         .header(build_header_row());
-    // Feed ratatui the prior offset while the highlight is in the table so
-    // its sticky scrolling is preserved; otherwise the box's re-clamped
-    // prior, since with no selection ratatui leaves the offset alone.
-    let mut table_state =
-        TableState::default().with_selected((cursor < table_len).then_some(cursor));
-    *table_state.offset_mut() = if cursor < table_len {
-        pane.viewport.scroll_offset()
-    } else {
-        table_box.scroll_offset
-    };
+    let mut table_state = TableState::default().with_selected(Some(cursor));
+    *table_state.offset_mut() = pane.viewport.scroll_offset();
     frame.render_stateful_widget(table, table_area, &mut table_state);
     pane.viewport.set_scroll_offset(table_state.offset());
 
@@ -288,64 +152,21 @@ fn render_targets_table(
         ));
     }
 
-    let table_cursor = if cursor < table_len {
-        cursor
-    } else {
-        table_offset
-    };
-    let overflow = ViewportOverflow::new(table_len, table_offset, table_visible, table_cursor);
-    if table_box.footer.height == 0 {
-        chrome.labels.extend(tui_pane::overflow_affordance_label(
-            pane_area,
-            overflow,
-            Style::default().fg(label_color()),
-        ));
-    } else {
-        push_table_footer(table_box.footer, pane_area, overflow, chrome);
-    }
-    row_rects
-}
-
-/// The table's lower boundary while the Running box sits below: nothing (a
-/// blank gap row) when every table row is visible, or a rule across the
-/// pane with the table's pager centered on it — the same affordance every
-/// pane renders on its bottom border — once it scrolls. Both go into the
-/// pane's chrome, so the grid pass draws them with the borders they meet.
-fn push_table_footer(
-    footer: Rect,
-    pane_area: Rect,
-    overflow: ViewportOverflow,
-    chrome: &mut PaneFrameChrome,
-) {
-    if overflow.label().is_none() {
-        return;
-    }
-    let rule_area = Rect {
-        x:      pane_area.x,
-        y:      footer.y,
-        width:  pane_area.width,
-        height: 1,
-    };
-    chrome.rules.push(rule_area);
+    let overflow = ViewportOverflow::new(table_len, table_offset, table_visible, cursor);
     chrome.labels.extend(tui_pane::overflow_affordance_label(
-        rule_area,
+        pane_area,
         overflow,
         Style::default().fg(label_color()),
     ));
+    row_rects
 }
 
-fn build_targets_title(
-    focus: PaneFocusState,
-    cursor_entry: Option<usize>,
-    data: &TargetsData,
-) -> String {
+fn build_targets_title(focus: PaneFocusState, cursor: usize, data: &TargetsData) -> String {
     let bin_count = data.binaries.len();
     let ex_count = data.examples.len();
     let bench_count = data.benches.len();
 
-    let focused_cursor = matches!(focus, PaneFocusState::Active)
-        .then_some(cursor_entry)
-        .flatten();
+    let focused_cursor = matches!(focus, PaneFocusState::Active).then_some(cursor);
     let section_cursor = |section_start: usize, section_len: usize| {
         focused_cursor
             .filter(|cursor| *cursor >= section_start && *cursor < section_start + section_len)
@@ -477,10 +298,7 @@ fn source_col_width_from(entries: &[TargetEntry]) -> usize {
 mod tests {
     use ratatui::layout::Rect;
 
-    use super::MIN_TABLE_ROWS;
-    use super::RUNNING_BOX;
     use super::TABLE_BOX;
-    use super::TABLE_CHROME;
     use super::TARGET_LEADING_PAD;
     use super::TARGET_TABLE_COLUMN_SPACING;
     use super::TARGET_TABLE_GAP_COUNT;
@@ -506,13 +324,24 @@ mod tests {
         }
     }
 
-    fn inner(height: u16) -> Rect {
-        Rect {
-            x: 0,
-            y: 0,
-            width: 60,
-            height,
-        }
+    /// Chrome rows the table box reserves: the ratatui `Table` header row.
+    const TABLE_CHROME: u16 = 1;
+
+    #[test]
+    fn table_fills_pane_body() {
+        let region = targets_region(5);
+        assert_eq!(region.total_selectable(), 5);
+        let area = Rect {
+            x:      0,
+            y:      0,
+            width:  60,
+            height: 20,
+        };
+        let placed = region.place(area, 0, &[0]);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(placed[TABLE_BOX].chrome.height, TABLE_CHROME);
+        assert_eq!(placed[TABLE_BOX].content.height, 20 - TABLE_CHROME);
+        assert_eq!(placed[TABLE_BOX].footer.height, 0);
     }
 
     #[test]
@@ -564,71 +393,5 @@ mod tests {
             layout.name_max,
             target_budget.saturating_sub(TARGET_LEADING_PAD)
         );
-    }
-
-    #[test]
-    fn tree_addresses_table_then_running_rows() {
-        let region = targets_region(5, 3, 20);
-        assert_eq!(region.total_selectable(), 8);
-        // The boundary row: down past the last table row enters the
-        // Running box.
-        assert_eq!(region.locate(4), Some((TABLE_BOX, 4)));
-        assert_eq!(region.locate(5), Some((RUNNING_BOX, 0)));
-        assert_eq!(region.locate(7), Some((RUNNING_BOX, 2)));
-        assert_eq!(region.locate(8), None);
-    }
-
-    #[test]
-    fn without_running_rows_the_table_owns_the_pane() {
-        let region = targets_region(5, 0, 20);
-        assert_eq!(region.total_selectable(), 5);
-        let placed = region.place(inner(20), 0, &[0]);
-        assert_eq!(placed.len(), 1);
-        assert_eq!(placed[TABLE_BOX].chrome.height, 1);
-        assert_eq!(placed[TABLE_BOX].content.height, 19);
-        // No footer either — the pager sits on the pane's bottom border.
-        assert_eq!(placed[TABLE_BOX].footer.height, 0);
-    }
-
-    #[test]
-    fn running_box_grows_upward_to_the_cap() {
-        // 30 running rows over a 20-row inner: the lines clamp caps the
-        // Running window at 13 (inner minus the table's chrome + footer +
-        // floor and the Running chrome), leaving the table its floor.
-        let placed = targets_region(5, 30, 20).place(inner(20), 0, &[0, 0]);
-        assert_eq!(placed[RUNNING_BOX].chrome.height, 2);
-        assert_eq!(placed[RUNNING_BOX].content.height, 13);
-        assert_eq!(placed[TABLE_BOX].content.height, 3);
-        // The table's footer boundary row sits between the boxes.
-        assert_eq!(placed[TABLE_BOX].footer.height, 1);
-        assert_eq!(placed[TABLE_BOX].footer.y + 1, placed[RUNNING_BOX].chrome.y);
-    }
-
-    #[test]
-    fn degenerate_height_keeps_the_table_floor() {
-        // An 8-row inner: 80% would give Running 6 of the 8 rows and the
-        // table only 2 (header + one row). The lines clamp shrinks the
-        // Running window so the table keeps its MIN_TABLE_ROWS data rows.
-        let placed = targets_region(5, 30, 8).place(inner(8), 0, &[0, 0]);
-        assert_eq!(placed[TABLE_BOX].content.height, MIN_TABLE_ROWS);
-        assert_eq!(placed[TABLE_BOX].chrome.height, TABLE_CHROME);
-        assert_eq!(placed[RUNNING_BOX].content.height, 1);
-    }
-
-    #[test]
-    fn without_targets_the_running_list_keeps_the_pane() {
-        // No table rows: the floor drops, so the Running window pays only
-        // the table's chrome + footer rows and its own chrome.
-        let placed = targets_region(0, 30, 8).place(inner(8), 0, &[0, 0]);
-        assert_eq!(placed[TABLE_BOX].content.height, 0);
-        assert_eq!(placed[RUNNING_BOX].content.height, 4);
-    }
-
-    #[test]
-    fn running_box_pins_to_the_newest_row_while_the_cursor_is_in_the_table() {
-        // 30 rows in a 13-row window: scrolled to the bottom (offset 17)
-        // whenever the highlight sits in the table.
-        let placed = targets_region(5, 30, 20).place(inner(20), 0, &[0, 5]);
-        assert_eq!(placed[RUNNING_BOX].scroll_offset, 17);
     }
 }

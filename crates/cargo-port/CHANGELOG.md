@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project and target-directory sizes count a hard-linked file once. Cargo hard-links each binary, example, and test executable from `deps/` into the profile directory, and rustc hard-links incremental artifacts between session directories, so every such file was counted once per link: a `target/` that `du` measures at 96 GiB showed as 150 GiB.
 
 ### Removed
-- **Breaking:** Remove the build monitor from the Output pane -- the opt-in view of running Cargo builds (`C`), its columns and activity rows, and the build termination behind `alt-k`/`alt-shift-k`. Use [cargo-tile](https://crates.io/crates/cargo-tile) instead. The Output pane stays: it still shows a target launched from the Targets pane, and `Esc` still stops that run.
+- **Breaking:** Remove the Running section of the Targets pane, its `K` kill binding, and the process scan behind them. To see every running cargo process, install [cargo-tile](https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-tile) from GitHub for now: `cargo install --git https://github.com/natepiano/cargo-liner cargo-tile`.
+- **Breaking:** Remove the build monitor from the Output pane -- the opt-in view of running Cargo builds (`C`), its columns and activity rows, and the build termination behind `alt-k`/`alt-shift-k`. Use [cargo-tile](https://github.com/natepiano/cargo-liner/tree/main/crates/cargo-tile) instead, installed from GitHub for now. The Output pane stays: it still shows a target launched from the Targets pane, and `Esc` still stops that run.
 
 ### Changed
 - Restore the pane borders 0.7.0 changed: each pane draws its own box again and the focused one lights its border. Cargo Port's four panes are four separate things to look at, not one lattice. The `active_border` theme key is read again, and a theme written while it was ignored takes the focused title's colour until it names its own.

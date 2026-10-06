@@ -159,7 +159,6 @@ use super::panes::SyncedDescriptionHeight;
 use super::project_list::VisibleRow;
 use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
-use super::running_targets::RunningTargetTerminationCapability;
 use super::sccache::SccacheStatusLine;
 use super::settings;
 use super::settings::SettingOption;
@@ -192,10 +191,8 @@ use crate::lint;
 use crate::lint::LintRuns;
 #[cfg(test)]
 use crate::lint::LintStatus;
-use crate::process_observation::ProcessRefreshExecutor;
 use crate::project;
 use crate::project::AbsolutePath;
-use crate::project::CargoWorkspaceIndex;
 #[cfg(test)]
 use crate::project::GitStatus;
 use crate::project::RootItem;
@@ -211,123 +208,111 @@ pub(super) struct App {
     /// (availability). App orchestration that touches Net plus
     /// other subsystems (toast push/dismiss, retry spawn) stays
     /// as named methods on `App`.
-    pub(super) net:                                         Net,
+    pub(super) net:                  Net,
     /// Panes subsystem. Owns `pane_manager`, `pane_data`,
     /// `hovered_pane_row`, and the pane-specific view state. App's
     /// impl-files reach pane state through this handle.
-    pub(super) panes:                                       Panes,
+    pub(super) panes:                Panes,
     /// Background subsystem. Owns the four mpsc channel pairs plus
     /// the watcher handle. The `background_*` pair is replaced wholesale on every
     /// rescan via [`Background::swap_background_channel`]; the others outlive
     /// any single rescan.
-    pub(super) background:                                  Background,
+    pub(super) background:           Background,
     /// Inflight subsystem. Owns the running-paths maps, toast
     /// slots, pending queues, and example-runner state.
-    pub(super) inflight:                                    Inflight,
+    pub(super) inflight:             Inflight,
     /// Lint subsystem. Owns the lint runtime, in-flight lint
     /// state, the disk cache stat counter, and the startup-pass
     /// trackers.
-    pub(super) lint:                                        Lint,
+    pub(super) lint:                 Lint,
     /// Ci subsystem. Owns `fetch_tracker`, `fetch_toast`, and
     /// per-project `display_modes`, plus `Ci::package_display`
     /// which returns the typed [`CiDisplay`](crate::tui::state::CiDisplay) for the package
     /// detail row.
-    pub(super) ci:                                          Ci,
+    pub(super) ci:                   Ci,
     /// Config subsystem. Owns `current_config`, `config_path`,
     /// and `config_last_seen`. Composes `WatchedFile<CargoPortConfig>`.
-    pub(super) config:                                      Config,
+    pub(super) config:               Config,
     /// Keymap subsystem. Owns `current_keymap`, `keymap_path`,
     /// `keymap_last_seen`, `keymap_diagnostics_id`. Composes
     /// `WatchedFile<ResolvedKeymap>`.
-    pub(super) keymap:                                      Keymap,
+    pub(super) keymap:               Keymap,
     /// Themes subsystem. Owns the user-themes directory watch and the
     /// parse-error toast slot used to dismiss prior diagnostics when
     /// the registry reloads cleanly. The active theme + registry
     /// themselves live in `tui_pane`'s `THEME_STATE`.
-    pub(super) themes:                                      ThemeRuntime,
+    pub(super) themes:               ThemeRuntime,
     /// Per-project ahead/behind tracker. Holds the eligibility flag,
     /// last-seen value, and the in-flight "Sync changes" task-toast
     /// id used to accumulate transitions within the linger window.
-    pub(super) sync_tracker:                                SyncTracker,
+    pub(super) sync_tracker:         SyncTracker,
     /// Per-project `GitStatus` tracker. Holds the last-seen value and
     /// the in-flight "Git status changes" task-toast id used to
     /// accumulate transitions within the linger window.
-    pub(super) git_status_tracker:                          GitStatusTracker,
+    pub(super) git_status_tracker:   GitStatusTracker,
     /// The central per-project data store. Lint runs, CI info, git
     /// info, language stats, package/workspace fields, and disk usage
     /// all live inside the tree. Every subsystem that produces
     /// per-project data writes into it.
-    pub(super) project_list:                                ProjectList,
-    /// Immutable workspace ownership view used by process features.
-    /// It rebuilds only after accepted Cargo metadata or the `ProjectList`
-    /// revision changes; event-loop wakes retain the current view.
-    pub(super) cargo_workspace_index:                       Arc<CargoWorkspaceIndex>,
-    /// Sole scheduler and owner of the shared host process observer.
-    pub(super) process_refresh_executor:                    ProcessRefreshExecutor,
-    /// Sole scheduler and owner of the shared host process observer.
-
-    /// Number of Running Targets attribution collections performed by this
-    /// app. Tests use it to verify the cadence gate precedes filesystem work.
-    #[cfg(test)]
-    pub(super) running_target_attribution_collection_count: u64,
+    pub(super) project_list:         ProjectList,
     /// Scan subsystem. Owns `scan` (`ScanState`),
     /// `dirty`, `data_generation`, `discovery_shimmers`,
     /// `pending_git_first_commit`, `metadata_store`,
     /// `target_dir_index`, `priority_fetch_path`, `lint_cache_usage`, and
     /// (test-only) `retry_spawn_mode`.
-    pub(super) scan:                                        Scan,
+    pub(super) scan:                 Scan,
     /// Startup-phase orchestrator. Owns the per-phase trackers
     /// (`disk`, `git`, `repo`, `metadata`, `lint_phase`,
     /// `lint_count`) plus the phase state that decides when the
     /// umbrella "Startup" toast may enter its close countdown.
-    pub(super) startup:                                     Startup,
-    pub(super) startup_services:                            StartupServices,
-    pub(super) visited_panes:                               HashSet<AppPaneId>,
+    pub(super) startup:              Startup,
+    pub(super) startup_services:     StartupServices,
+    pub(super) visited_panes:        HashSet<AppPaneId>,
     /// Overlays subsystem. Owns the overlay-mode enums
     /// (`FinderMode`, `KeymapMode`),
     /// the transient `inline_error` UI feedback, and the
     /// `status_flash` slot.
-    pub(super) overlays:                                    Overlays,
+    pub(super) overlays:             Overlays,
     /// The only owner of a [`ConfirmAction`] and its [`ConfirmationReadiness`].
-    confirmation_modal_state:                               ConfirmationModalState,
+    confirmation_modal_state:        ConfirmationModalState,
     /// sccache segment on the right of the status line. Owns the last
     /// `sccache --show-stats` summary and the poll cycle that refreshes it;
     /// the segment is absent until sccache reports both fields.
-    pub(super) sccache_status_line:                         SccacheStatusLine,
-    pub(super) animation_started:                           Instant,
+    pub(super) sccache_status_line:  SccacheStatusLine,
+    pub(super) animation_started:    Instant,
     /// Time the project-volume capacity was last requested. This refreshes on
     /// disk-watch updates and at a low fixed cadence for external disk use.
-    pub(super) storage_refresh_at:                          Instant,
+    pub(super) storage_refresh_at:   Instant,
     /// Time the last background crates.io refresh request was issued —
     /// the gap that keeps `App::refresh_crates_io_if_due` to one query
     /// per `CRATES_IO_REFRESH_INTERVAL_SECS`.
-    pub(super) crates_io_refresh_at:                        Instant,
+    pub(super) crates_io_refresh_at: Instant,
     /// Time each publishable crate name was last queried on crates.io,
     /// stamped by every fetch path (startup, watcher, priority, the
     /// background refresh). `refresh_crates_io_if_due` re-queries the
     /// oldest entry; a name absent from the map has never been queried
     /// and goes first.
-    pub(super) crates_io_checked_at:                        HashMap<String, Instant>,
-    pub(super) mouse_pos:                                   Option<Position>,
+    pub(super) crates_io_checked_at: HashMap<String, Instant>,
+    pub(super) mouse_pos:            Option<Position>,
     /// Framework aggregator from `tui_pane`. Owns the focused-pane id,
     /// quit/restart flags, the per-pane mode-query registry, and the
     /// framework-side `Toasts`/`KeymapPane`/`SettingsPane` overlays.
     /// Stored alongside the legacy keymap path; dispatch routes
     /// through it for targeted structural lookups.
-    pub(super) framework:                                   Framework<Self>,
+    pub(super) framework:            Framework<Self>,
     /// Framework keymap built at startup from
     /// [`tui_pane::Keymap::builder`]. Held in parallel with the legacy
     /// `keymap` field; the legacy path remains authoritative for broad
     /// key dispatch.
-    pub(super) framework_keymap:                            Rc<FrameworkKeymap<Self>>,
-    pub(super) pending_nav_chord:                           Vec<KeyBind>,
+    pub(super) framework_keymap:     Rc<FrameworkKeymap<Self>>,
+    pub(super) pending_nav_chord:    Vec<KeyBind>,
     /// Temp directories backing the config, keymap, themes, and cache paths
     /// this `App` was built against, handed over by
     /// [`test_support::TestApp::into_quiet_app`] when a fixture returns a bare
     /// `App`. Declared last so the directories are removed only after every
     /// field that reads from them has dropped.
     #[cfg(test)]
-    pub(super) fixture_dirs:                                Option<FixtureDirs>,
+    pub(super) fixture_dirs:         Option<FixtureDirs>,
 }
 
 impl App {
@@ -439,9 +424,8 @@ impl App {
     /// block-forever. Returns the animation cadence (~80 ms) while any
     /// on-screen animation is live, otherwise a ~1 s idle heartbeat
     /// floor. The floor keeps the mtime-polled config/keymap/theme
-    /// reload (`maybe_reload_*_from_disk`) and the 1 s running-targets
-    /// poll alive when idle, since the loop drains them on every wake
-    /// (PD1) and no filesystem watcher covers those files.
+    /// reload (`maybe_reload_*_from_disk`) alive when idle, since the loop drains them on every
+    /// wake (PD1) and no filesystem watcher covers those files.
     ///
     /// [`is_animating`](Self::is_animating) must mirror the render-time
     /// spinner and shimmer checks; toast timing comes from
@@ -671,7 +655,6 @@ impl App {
             framework,
             ..
         } = self;
-        let running_targets = panes.running_targets.snapshot();
         let output_presentation = OutputPresentation::derive(
             inflight.owned_run().output_state(),
             inflight.owned_run().running_label(),
@@ -697,7 +680,6 @@ impl App {
             ci_status_lookup,
             settings_render_inputs: overlay_inputs.settings,
             synced_description_height,
-            running_targets,
             output_presentation,
         };
         RenderBorrows {
@@ -721,7 +703,6 @@ impl App {
             config: &self.config,
             project_list: &self.project_list,
             scan: &self.scan,
-            running_targets: self.panes.running_targets.snapshot(),
             output_presentation,
         }
     }
@@ -798,27 +779,6 @@ impl App {
         self.open_confirmation(
             ConfirmAction::CleanGroup { primary, linked },
             confirmation_readiness,
-        );
-    }
-
-    /// Open a confirm dialog to `SIGTERM` the running instance named by
-    /// `label`. `termination_capability` carries the strong identity authority;
-    /// `pid` and `create_time` are display data.
-    pub fn request_kill_confirm(
-        &mut self,
-        label: String,
-        pid: u32,
-        create_time: u64,
-        termination_capability: RunningTargetTerminationCapability,
-    ) {
-        self.open_confirmation(
-            ConfirmAction::KillTarget {
-                label,
-                pid,
-                create_time,
-                termination_capability,
-            },
-            ConfirmationReadiness::Ready,
         );
     }
 
@@ -1040,9 +1000,7 @@ impl App {
             ConfirmAction::Clean(primary) | ConfirmAction::CleanGroup { primary, .. } => {
                 primary == workspace_root
             },
-            ConfirmAction::KillTarget { .. }
-            | ConfirmAction::PauseLintProject(_)
-            | ConfirmAction::PauseAllLints => false,
+            ConfirmAction::PauseLintProject(_) | ConfirmAction::PauseAllLints => false,
         };
         if action_primary_matches && verifying_primary == workspace_root {
             *readiness = ConfirmationReadiness::Ready;
@@ -1321,15 +1279,11 @@ impl App {
                 _ => false,
             },
             PaneBehavior::Cpu => self.panes.cpu.content().is_some(),
-            // The Running list is global, so the pane stays reachable
-            // while anything runs even when the project has no targets.
-            PaneBehavior::DetailTargets => {
-                self.panes
-                    .targets
-                    .content()
-                    .is_some_and(panes::TargetsData::has_targets)
-                    || self.panes.running_targets.snapshot().has_instances()
-            },
+            PaneBehavior::DetailTargets => self
+                .panes
+                .targets
+                .content()
+                .is_some_and(panes::TargetsData::has_targets),
             PaneBehavior::Lints => {
                 matches!(self.output_pane_visibility(), OutputPaneVisibility::Hidden)
                     && self.lint.content().is_some_and(panes::LintsData::has_runs)
@@ -2771,13 +2725,11 @@ mod tests {
         use crate::tui::integration::GitPane;
         use crate::tui::integration::NavAction;
         use crate::tui::integration::PackagePane;
-        use crate::tui::integration::TargetsPane;
         use crate::tui::keymap;
         use crate::tui::keymap::CiRunsAction;
         use crate::tui::keymap::GitAction;
         use crate::tui::keymap::OutputAction;
         use crate::tui::keymap::PackageAction;
-        use crate::tui::keymap::TargetsAction;
         use crate::tui::panes;
         use crate::tui::panes::CiData;
         use crate::tui::panes::CiEmptyState;
@@ -3001,14 +2953,8 @@ mod tests {
                 (AppPaneId::Git, &["activate"], |app| {
                     app.panes.git.set_content(GitData::default());
                 }),
-                // The targets shortcuts split by highlight zone: run/release
-                // show on table rows (Kill hidden), Kill shows on Running rows
-                // (run/release hidden — the anchor pid is `Some` exactly then).
                 (AppPaneId::Targets, &["run", "release"], |app| {
                     app.panes.targets.set_content(targets_data_with_binary());
-                }),
-                (AppPaneId::Targets, &["kill"], |app| {
-                    app.panes.targets.set_running_cursor_pid(Some(4242));
                 }),
                 (AppPaneId::Lints, &["open", "del history"], |_| {}),
                 // No git branch on this fixture, so the all/branch toggle is
@@ -3246,71 +3192,6 @@ mod tests {
                 pane.visibility(CiRunsAction::Activate, &app),
                 Visibility::Visible,
                 "Activate is Visible when cursor sits on a real run row",
-            );
-        }
-
-        #[test]
-        fn targets_kill_visibility_hidden_without_running_anchor() {
-            // `running_cursor_pid` is `None` whenever the highlight is on a
-            // table row (or no Running rows exist), so Kill drops from the bar.
-            let project = super::make_project(Some("demo"), "~/demo");
-            let mut app = make_app(&[project]);
-            app.panes.targets.set_content(targets_data_with_binary());
-
-            let pane = TargetsPane;
-            assert_eq!(
-                pane.visibility(TargetsAction::Kill, &app),
-                Visibility::Hidden,
-                "Kill must be Hidden while the highlight is on a table row",
-            );
-            assert_eq!(
-                pane.visibility(TargetsAction::Activate, &app),
-                Visibility::Visible,
-                "Activate is Visible while the highlight is on a table row",
-            );
-            assert_eq!(
-                pane.visibility(TargetsAction::ReleaseBuild, &app),
-                Visibility::Visible,
-                "ReleaseBuild is Visible while the highlight is on a table row",
-            );
-        }
-
-        #[test]
-        fn targets_kill_visibility_visible_with_running_anchor() {
-            let project = super::make_project(Some("demo"), "~/demo");
-            let mut app = make_app(&[project]);
-            app.panes.targets.set_running_cursor_pid(Some(4242));
-
-            let pane = TargetsPane;
-            assert_eq!(
-                pane.visibility(TargetsAction::Kill, &app),
-                Visibility::Visible,
-                "Kill is Visible while the highlight sits on a Running row",
-            );
-        }
-
-        #[test]
-        fn targets_run_visibility_hidden_in_the_running_list() {
-            // The run shortcuts belong to the targets table: a highlight past
-            // the table's rows sits in the Running list, where only Kill
-            // applies.
-            let project = super::make_project(Some("demo"), "~/demo");
-            let mut app = make_app(&[project]);
-            app.panes.targets.set_content(targets_data_with_binary());
-            let table_len = targets_data_with_binary().target_count();
-            app.panes.targets.viewport.set_len(table_len + 1);
-            app.panes.targets.viewport.set_pos(table_len);
-
-            let pane = TargetsPane;
-            assert_eq!(
-                pane.visibility(TargetsAction::Activate, &app),
-                Visibility::Hidden,
-                "Activate must be Hidden while the highlight is in the Running list",
-            );
-            assert_eq!(
-                pane.visibility(TargetsAction::ReleaseBuild, &app),
-                Visibility::Hidden,
-                "ReleaseBuild must be Hidden while the highlight is in the Running list",
             );
         }
 
@@ -4742,16 +4623,10 @@ mod tests {
         use crate::tui::panes::LintsProjectKind;
         use crate::tui::panes::OutputSelectionRange;
         use crate::tui::panes::PaneId;
-        use crate::tui::panes::RunTargetKind;
         use crate::tui::panes::SyncedDescriptionHeight;
-        use crate::tui::panes::TargetsData;
         use crate::tui::project_list::ExpandKey;
         use crate::tui::project_list_state::ProjectList;
         use crate::tui::render;
-        use crate::tui::running_targets::RunProfile;
-        use crate::tui::running_targets::RunningInstance;
-        use crate::tui::running_targets::RunningKey;
-        use crate::tui::running_targets::RunningTargets;
         use crate::tui::settings;
         use crate::tui::settings::SettingOption;
         use crate::tui::test_support as tui_test_support;
@@ -6254,7 +6129,6 @@ mod tests {
                 .expect("lock test store")
                 .upsert(WorkspaceMetadata {
                     declared_checkout_root: AbsolutePath::from(project_dir.clone()),
-                    cargo_workspace_root: AbsolutePath::from(project_dir.clone()),
                     target_directory: AbsolutePath::from(project_dir.join("target")),
                     packages,
                     fingerprint: ManifestFingerprint {
@@ -6274,154 +6148,6 @@ mod tests {
 
             assert_eq!(app.focused_pane_id(), PaneId::Targets);
             assert_eq!(app.panes.targets.viewport.pos(), 1);
-        }
-
-        #[test]
-        fn running_outline_parent_click_toggles_children() {
-            let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
-            let key = RunningKey {
-                target_dir:      AbsolutePath::from("/tmp/demo/target"),
-                run_target_kind: RunTargetKind::Binary,
-                name:            "demo".into(),
-            };
-            app.panes
-                .running_targets
-                .set_snapshot_for_test(RunningTargets::from_pairs(vec![(
-                    key,
-                    vec![
-                        RunningInstance::for_test(10, RunProfile::Debug),
-                        RunningInstance::for_test(20, RunProfile::Debug).with_parent(10),
-                    ],
-                )]));
-            render_ui(&mut app);
-
-            let (x, y) = pane_row_hit_point(&app, PaneId::Targets, 0);
-            click(&mut app, x, y);
-
-            assert_eq!(app.focused_pane_id(), PaneId::Targets);
-            assert_eq!(app.panes.targets.viewport.pos(), 0);
-            assert!(app.panes.targets.expanded_parents().contains(&10));
-
-            render_ui(&mut app);
-            let (x, y) = pane_row_hit_point(&app, PaneId::Targets, 0);
-            click(&mut app, x, y);
-
-            assert_eq!(app.panes.targets.viewport.pos(), 0);
-            assert!(!app.panes.targets.expanded_parents().contains(&10));
-        }
-
-        #[test]
-        fn focus_gained_on_running_outline_selects_without_toggling_children() {
-            let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
-            let key = RunningKey {
-                target_dir:      AbsolutePath::from("/tmp/demo/target"),
-                run_target_kind: RunTargetKind::Binary,
-                name:            "demo".into(),
-            };
-            app.panes
-                .running_targets
-                .set_snapshot_for_test(RunningTargets::from_pairs(vec![(
-                    key,
-                    vec![
-                        RunningInstance::for_test(10, RunProfile::Debug),
-                        RunningInstance::for_test(20, RunProfile::Debug).with_parent(10),
-                    ],
-                )]));
-            render_ui(&mut app);
-
-            app.set_focus(FocusedPane::App(AppPaneId::ProjectList));
-            let (x, y) = pane_row_hit_point(&app, PaneId::Targets, 0);
-            input::set_last_mouse_pos_for_test(Some((x, y)));
-            focus_gained(&mut app);
-
-            assert_eq!(app.focused_pane_id(), PaneId::Targets);
-            assert_eq!(app.panes.targets.viewport.pos(), 0);
-            assert!(!app.panes.targets.expanded_parents().contains(&10));
-
-            render_ui(&mut app);
-            let (x, y) = pane_row_hit_point(&app, PaneId::Targets, 0);
-            click(&mut app, x, y);
-
-            assert!(app.panes.targets.expanded_parents().contains(&10));
-        }
-
-        /// `Right`/`Left` expand and collapse the Running list's `cargo` group —
-        /// the same keys the project list's rows use — falling through to
-        /// ordinary row moves everywhere else.
-        #[test]
-        fn arrow_keys_expand_and_collapse_the_running_cargo_group() {
-            let mut app = make_app(&[make_package("demo", Path::new("/tmp/demo"))]);
-            app.panes.targets.set_content(TargetsData {
-                binaries: vec![panes::TargetEntry {
-                    name:              "demo".to_string(),
-                    display_name:      "demo".to_string(),
-                    run_target_kind:   panes::RunTargetKind::Binary,
-                    source:            panes::TargetSource::workspace_root("demo".into()),
-                    project_path:      AbsolutePath::from("/tmp/demo"),
-                    package_name:      "demo".to_string(),
-                    src_path:          AbsolutePath::from("/tmp/demo/src/main.rs"),
-                    required_features: Vec::new(),
-                }],
-                examples: Vec::new(),
-                benches:  Vec::new(),
-            });
-            let key = |name: &str| RunningKey {
-                target_dir:      AbsolutePath::from(format!("/tmp/{name}/target")),
-                run_target_kind: RunTargetKind::Binary,
-                name:            name.into(),
-            };
-            app.panes
-                .running_targets
-                .set_snapshot_for_test(RunningTargets::from_pairs(vec![
-                    (
-                        key("cargo-port"),
-                        vec![
-                            RunningInstance::for_test(7, RunProfile::Installed),
-                            RunningInstance::for_test(8, RunProfile::Installed),
-                        ],
-                    ),
-                    (
-                        key("worker"),
-                        vec![RunningInstance::for_test(9, RunProfile::Debug)],
-                    ),
-                ]));
-            app.set_focus_to_pane(PaneId::Targets);
-            // One table row + the collapsed list (header, debug instance).
-            app.panes.targets.viewport.set_len(3);
-            app.panes.targets.viewport.set_pos(1);
-
-            press_key(&mut app, KeyCode::Right);
-            assert_eq!(
-                app.panes.targets.cargo_group(),
-                panes::CargoGroup::Expanded,
-                "Right on the collapsed header expands the group",
-            );
-            assert_eq!(
-                app.panes.targets.viewport.pos(),
-                1,
-                "the highlight stays on the header",
-            );
-
-            // On the expanded header, Right falls through to a row move — into
-            // the first grouped instance, anchoring its PID.
-            press_key(&mut app, KeyCode::Right);
-            assert_eq!(app.panes.targets.viewport.pos(), 2);
-            assert_eq!(app.panes.targets.running_cursor_pid(), Some(7));
-
-            // Left on a grouped instance collapses the group and hands the
-            // highlight back to the header.
-            press_key(&mut app, KeyCode::Left);
-            assert_eq!(
-                app.panes.targets.cargo_group(),
-                panes::CargoGroup::Collapsed
-            );
-            assert_eq!(app.panes.targets.viewport.pos(), 1);
-            assert_eq!(app.panes.targets.running_cursor_pid(), None);
-
-            // Left on the collapsed header falls through to a row-up move, back
-            // into the table.
-            press_key(&mut app, KeyCode::Left);
-            assert_eq!(app.panes.targets.viewport.pos(), 0);
         }
 
         #[test]
@@ -6573,7 +6299,6 @@ mod tests {
                 .expect("lock test store")
                 .upsert(WorkspaceMetadata {
                     declared_checkout_root:   AbsolutePath::from(project_dir.clone()),
-                    cargo_workspace_root:     AbsolutePath::from(project_dir.clone()),
                     target_directory:         AbsolutePath::from(custom_target.clone()),
                     packages:                 std::collections::HashMap::new(),
                     fingerprint:              ManifestFingerprint {
@@ -6630,8 +6355,7 @@ mod tests {
             let mut packages = std::collections::HashMap::new();
             packages.insert(pkg_id, pkg);
             let workspace_metadata = WorkspaceMetadata {
-                declared_checkout_root: root.clone(),
-                cargo_workspace_root: root,
+                declared_checkout_root: root,
                 target_directory: AbsolutePath::from(project_dir.join("target")),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -6773,8 +6497,7 @@ mod tests {
                 let store = app.scan.metadata_store_handle();
                 let mut guard = store.lock().expect("lock test store");
                 guard.upsert(WorkspaceMetadata {
-                    declared_checkout_root:   root.clone(),
-                    cargo_workspace_root:     root,
+                    declared_checkout_root:   root,
                     target_directory:         target,
                     packages:                 std::collections::HashMap::new(),
                     fingerprint:              ManifestFingerprint {
@@ -6835,7 +6558,6 @@ mod tests {
                 packages.insert(pkg_id, pkg);
                 let workspace_metadata = WorkspaceMetadata {
                     declared_checkout_root: root.clone(),
-                    cargo_workspace_root: root.clone(),
                     target_directory: AbsolutePath::from(target_dir),
                     packages,
                     fingerprint: ManifestFingerprint {
@@ -7965,7 +7687,6 @@ mod tests {
                 .expect("lock test store")
                 .upsert(WorkspaceMetadata {
                     declared_checkout_root: project_path.clone(),
-                    cargo_workspace_root: project_path.clone(),
                     target_directory: AbsolutePath::from(project_path.as_path().join("target")),
                     packages,
                     fingerprint: ManifestFingerprint {
@@ -8152,7 +7873,6 @@ mod tests {
             packages.insert(pkg_id, pkg);
             let workspace_metadata = WorkspaceMetadata {
                 declared_checkout_root: workspace_root.clone(),
-                cargo_workspace_root: workspace_root.clone(),
                 target_directory: AbsolutePath::from("/never-real/demo/target"),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -11463,8 +11183,7 @@ mod tests {
             let mut packages = HashMap::new();
             packages.insert(record_id, record);
             let workspace_metadata = WorkspaceMetadata {
-                declared_checkout_root: workspace_path.clone(),
-                cargo_workspace_root: workspace_path,
+                declared_checkout_root: workspace_path,
                 target_directory: test_path("~/app/target"),
                 packages,
                 fingerprint: fake_fingerprint(),
@@ -12829,7 +12548,6 @@ mod tests {
         fn fake_metadata(workspace_root: &AbsolutePath) -> WorkspaceMetadata {
             WorkspaceMetadata {
                 declared_checkout_root:   workspace_root.clone(),
-                cargo_workspace_root:     workspace_root.clone(),
                 target_directory:         AbsolutePath::from(
                     workspace_root.as_path().join("target"),
                 ),
@@ -13227,7 +12945,6 @@ mod tests {
                 .expect("store")
                 .upsert(WorkspaceMetadata {
                     declared_checkout_root:   project_path.clone(),
-                    cargo_workspace_root:     project_path.clone(),
                     target_directory:         custom_target,
                     packages:                 HashMap::new(),
                     fingerprint:              fake_fingerprint(),
@@ -13270,7 +12987,6 @@ mod tests {
                 .expect("store")
                 .upsert(WorkspaceMetadata {
                     declared_checkout_root:   project_path.clone(),
-                    cargo_workspace_root:     project_path.clone(),
                     target_directory:         custom_target,
                     packages:                 HashMap::new(),
                     fingerprint:              fake_fingerprint(),
@@ -14284,7 +14000,6 @@ mod tests {
                 let mut guard = store.lock().expect("lock test metadata store");
                 guard.upsert(WorkspaceMetadata {
                     declared_checkout_root:   workspace_root.clone(),
-                    cargo_workspace_root:     workspace_root.clone(),
                     target_directory:         target_dir.clone(),
                     packages:                 HashMap::new(),
                     fingerprint:              fake_fingerprint(),
@@ -14363,7 +14078,6 @@ mod tests {
 
             let workspace_metadata = WorkspaceMetadata {
                 declared_checkout_root: project_path.clone(),
-                cargo_workspace_root: project_path.clone(),
                 target_directory: AbsolutePath::from(project_path.as_path().join("target")),
                 packages,
                 fingerprint: fake_fingerprint(),
@@ -14518,7 +14232,6 @@ mod tests {
 
             WorkspaceMetadata {
                 declared_checkout_root: root.clone(),
-                cargo_workspace_root: root.clone(),
                 target_directory: AbsolutePath::from(root.as_path().join("target")),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -14574,7 +14287,6 @@ mod tests {
 
             WorkspaceMetadata {
                 declared_checkout_root: workspace_root.clone(),
-                cargo_workspace_root: workspace_root.clone(),
                 target_directory: AbsolutePath::from(workspace_root.as_path().join("target")),
                 packages,
                 fingerprint: ManifestFingerprint {
@@ -15873,7 +15585,6 @@ mod tests {
             ci_status_lookup:          &holder.ci_status_lookup,
             settings_render_inputs:    None,
             synced_description_height: crate::tui::panes::SyncedDescriptionHeight::default(),
-            running_targets:           app.panes.running_targets.snapshot(),
             output_presentation:       crate::tui::panes::OutputPresentation::derive(
                 app.inflight.owned_run().output_state(),
                 app.inflight.owned_run().running_label(),

@@ -27,14 +27,6 @@ use crate::constants::RUST_TOOLCHAIN;
 use crate::constants::RUST_TOOLCHAIN_TOML;
 use crate::project::AbsolutePath;
 
-/// Revision of the accepted `cargo metadata` set.
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct AcceptedCargoMetadataRevision(u64);
-
-impl AcceptedCargoMetadataRevision {
-    const fn advance(&mut self) { self.0 = self.0.saturating_add(1); }
-}
-
 /// Process-wide cache of `cargo metadata` results, keyed by checkout root.
 ///
 /// Populated by [`BackgroundMsg::CargoMetadata`](crate::scan::BackgroundMsg)
@@ -43,15 +35,12 @@ impl AcceptedCargoMetadataRevision {
 /// this type directly.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceMetadataStore {
-    by_checkout_root:                 HashMap<AbsolutePath, WorkspaceMetadata>,
-    /// Monotonic revision of accepted `cargo metadata` results. Consumers
-    /// that cache immutable views rebuild only when this value changes.
-    accepted_cargo_metadata_revision: AcceptedCargoMetadataRevision,
+    by_checkout_root:         HashMap<AbsolutePath, WorkspaceMetadata>,
     /// Per-workspace monotonic counter. Every dispatch bumps the counter
     /// and stamps the spawned work with the new value; arrivals only
     /// commit if their stamp still matches the current counter. This
     /// coalesces rapid edits to a single accepted result.
-    pub dispatch_generations:         HashMap<AbsolutePath, u64>,
+    pub dispatch_generations: HashMap<AbsolutePath, u64>,
 }
 
 impl WorkspaceMetadataStore {
@@ -110,26 +99,12 @@ impl WorkspaceMetadataStore {
             .find(|pkg| pkg.manifest_path.as_path() == expected_manifest)
     }
 
-    /// Revision of the accepted metadata set. Dispatches and rejected
-    /// arrivals do not change this value.
-    pub(crate) const fn accepted_cargo_metadata_revision(&self) -> AcceptedCargoMetadataRevision {
-        self.accepted_cargo_metadata_revision
-    }
-
-    /// Accepted workspace metadata. `cargo metadata --no-deps` provides
-    /// workspace packages and targets only; registry and Git dependency
-    /// records are intentionally not represented here.
-    pub(crate) fn accepted_metadata(&self) -> impl Iterator<Item = &WorkspaceMetadata> {
-        self.by_checkout_root.values()
-    }
-
     /// Insert or replace the metadata for `declared_checkout_root`.
     pub(crate) fn upsert(&mut self, workspace_metadata: WorkspaceMetadata) {
         self.by_checkout_root.insert(
             workspace_metadata.declared_checkout_root.clone(),
             workspace_metadata,
         );
-        self.accepted_cargo_metadata_revision.advance();
     }
 
     /// Stamp the cached out-of-tree target size onto an existing metadata
@@ -182,8 +157,6 @@ impl WorkspaceMetadataStore {
 pub(crate) struct WorkspaceMetadata {
     /// Dispatch root used as the stable metadata-store key and checkout owner.
     pub declared_checkout_root:   AbsolutePath,
-    /// Workspace root reported by the accepted `cargo metadata` result.
-    pub cargo_workspace_root:     AbsolutePath,
     pub target_directory:         AbsolutePath,
     pub packages:                 HashMap<PackageId, PackageRecord>,
     pub fingerprint:              ManifestFingerprint,
@@ -524,7 +497,6 @@ mod tests {
         target_directory: AbsolutePath,
     ) -> WorkspaceMetadata {
         WorkspaceMetadata {
-            cargo_workspace_root: checkout_root.clone(),
             declared_checkout_root: checkout_root,
             target_directory,
             packages: std::collections::HashMap::new(),

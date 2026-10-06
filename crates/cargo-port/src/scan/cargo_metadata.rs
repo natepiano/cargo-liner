@@ -413,8 +413,6 @@ fn build_workspace_metadata(
     metadata: &Metadata,
     fingerprint: ManifestFingerprint,
 ) -> WorkspaceMetadata {
-    let cargo_workspace_root =
-        AbsolutePath::from(PathBuf::from(metadata.workspace_root.as_std_path()));
     let target_directory =
         AbsolutePath::from(PathBuf::from(metadata.target_directory.as_std_path()));
     let packages = metadata
@@ -449,7 +447,6 @@ fn build_workspace_metadata(
         .collect();
     WorkspaceMetadata {
         declared_checkout_root,
-        cargo_workspace_root,
         target_directory,
         packages,
         fingerprint,

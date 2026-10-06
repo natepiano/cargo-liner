@@ -118,4 +118,3 @@ use lang_pane::LangPane;
 pub use navigation::AppNavigation;
 pub use output_pane::OutputPane;
 pub use package_pane::PackagePane;
-pub use targets_pane::TargetsPane;

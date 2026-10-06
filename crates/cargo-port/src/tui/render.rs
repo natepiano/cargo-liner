@@ -3,8 +3,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -373,26 +371,6 @@ fn confirm_action_body(app: &App, action: &ConfirmAction) -> Vec<String> {
 
             lines
         },
-        ConfirmAction::KillTarget {
-            label,
-            pid,
-            create_time,
-            ..
-        } => {
-            // The label already carries the profile (`my_app (debug)`);
-            // the start age tells apart two otherwise-identical instances
-            // by how long each has been running.
-            let now_epoch = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs());
-            vec![
-                label.clone(),
-                format!(
-                    "pid {pid} · {}",
-                    panes::format_start_age(*create_time, now_epoch)
-                ),
-            ]
-        },
         ConfirmAction::PauseLintProject(project_root) => vec![
             project::home_relative_path(project_root.as_path()),
             "Kills running lint jobs for this project.".to_string(),
@@ -444,7 +422,6 @@ fn render_confirm_popup(
     let prompt = match action {
         ConfirmAction::Clean(_) => "Run cargo clean?",
         ConfirmAction::CleanGroup { .. } => "Run cargo clean on all checkouts?",
-        ConfirmAction::KillTarget { .. } => "Send SIGTERM?",
         ConfirmAction::PauseLintProject(_) => "Pause lints for selected project?",
         ConfirmAction::PauseAllLints => "Pause all lints?",
     };
@@ -572,7 +549,6 @@ fn dispatch_finder_render(app: &mut App, frame: &mut Frame) {
         ci_status_lookup: &ci_status_lookup,
         settings_render_inputs: None,
         synced_description_height: panes::SyncedDescriptionHeight::default(),
-        running_targets: split.running_targets,
         output_presentation: split.output_presentation,
     };
     // Finder body sizes the popup itself; area arg is unused.

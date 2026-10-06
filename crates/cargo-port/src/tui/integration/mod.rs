@@ -21,8 +21,6 @@ pub(super) use framework_keymap::GitPane;
 pub(super) use framework_keymap::OutputPane;
 #[cfg(test)]
 pub(super) use framework_keymap::PackagePane;
-#[cfg(test)]
-pub(super) use framework_keymap::TargetsPane;
 pub(super) use framework_keymap::build_framework_keymap;
 pub(super) use framework_keymap::owner_repo_key;
 pub(super) use framework_keymap::path_key;

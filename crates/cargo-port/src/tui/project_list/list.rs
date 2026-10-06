@@ -42,7 +42,6 @@ use crate::project::ProjectCiInfo;
 use crate::project::ProjectEntry;
 use crate::project::ProjectFields;
 use crate::project::ProjectInfo;
-use crate::project::ProjectListRevision;
 use crate::project::ProjectPrData;
 use crate::project::ProjectPrInfo;
 use crate::project::RepoInfo;
@@ -966,7 +965,6 @@ impl ProjectList {
     pub(in crate::tui) fn clear(&mut self) {
         if !self.roots.is_empty() {
             self.roots.clear();
-            self.advance_revision();
         }
     }
 
@@ -1017,16 +1015,6 @@ impl ProjectList {
     pub(in crate::tui) const fn cursor(&self) -> usize { self.cursor }
 
     pub(in crate::tui) const fn set_cursor(&mut self, cursor: usize) { self.cursor = cursor; }
-
-    /// Revision consumed by caches whose ownership follows visible project-list
-    /// content.
-    pub(in crate::tui) const fn revision(&self) -> ProjectListRevision { self.revision }
-
-    /// Record a tree, membership, row-kind, or project-visibility change even
-    /// when the resulting visible paths remain identical.
-    pub(in crate::tui) const fn mark_visible_ownership_changed(&mut self) {
-        self.advance_revision();
-    }
 
     pub(in crate::tui) fn select_project_path(&mut self, selected_project_path: AbsolutePath) {
         if self.paths.selected_project.as_ref() != Some(&selected_project_path) {
@@ -1115,7 +1103,6 @@ impl ProjectList {
         let visible_rows = self.compute_visible_rows(&self.expanded, include_non_rust);
         if self.cached_visible_rows != visible_rows {
             self.cached_visible_rows = visible_rows;
-            self.advance_revision();
         }
         let len = self.cached_visible_rows.len();
         if len == 0 {
@@ -1178,8 +1165,6 @@ impl ProjectList {
             },
         }
     }
-
-    const fn advance_revision(&mut self) { self.revision.advance(); }
 }
 
 // ── Row-navigation read-side ─────────────────────────────────────────────

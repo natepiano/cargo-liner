@@ -129,15 +129,13 @@ impl App {
             .apply_cargo_fields_from_workspace_metadata(&workspace_metadata);
         // Publish the accepted metadata before anything below resolves a
         // monitor scope. `sync_selected_project` resolves one, so upserting
-        // after it would resolve against the revision this call replaces and
-        // then rebuild the workspace index a second time to correct it.
+        // after it would resolve against the metadata this call replaces.
         let metadata_store = self.scan.metadata_store_handle();
         if let Ok(mut store) = metadata_store.lock() {
             store.upsert(workspace_metadata);
         }
         if tree_changed {
             self.panes.clear_for_tree_change();
-            self.project_list.mark_visible_ownership_changed();
             self.rebuild_visible_rows_now();
             if let Some(path) = selected_path {
                 self.project_list.select_project_in_tree(

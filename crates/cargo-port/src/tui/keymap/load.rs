@@ -806,7 +806,6 @@ activate = "enter"
 
 [targets]
 activate      = "enter"
-kill          = "K"
 release_build = "r"
 
 [ci_runs]

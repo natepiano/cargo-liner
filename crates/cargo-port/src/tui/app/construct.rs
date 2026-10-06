@@ -40,10 +40,6 @@ use crate::config;
 use crate::config::CargoPortConfig;
 use crate::config::CargoPortConfigurationPathResolution;
 use crate::lint::RuntimeHandle;
-use crate::process_observation::ProcessRefreshExecutionBackendSelection;
-use crate::process_observation::ProcessRefreshExecutor;
-use crate::process_observation::RunningTargetsRefreshSchedule;
-use crate::project::CargoWorkspaceIndex;
 use crate::project::RootItem;
 use crate::scan;
 use crate::scan::BackgroundMsg;
@@ -59,12 +55,9 @@ use crate::tui::messages::OwnedRunEvent;
 use crate::tui::overlays::Overlays;
 use crate::tui::panes::Panes;
 use crate::tui::project_list_state::ProjectList;
-use crate::tui::running_targets::RUNNING_TARGETS_REFRESH_INTERVAL;
 use crate::tui::sccache::SccacheStatusLine;
 use crate::tui::settings::StartupSettings;
-use crate::tui::startup_services::StartupEffect;
 use crate::tui::startup_services::StartupEnvironment;
-use crate::tui::startup_services::StartupServices;
 use crate::tui::startup_services::WatcherHandle;
 use crate::tui::startup_services::WatcherStartup;
 use crate::tui::state::Ci;
@@ -264,14 +257,7 @@ impl AppBuilder<Started> {
             keymap::ResolvedKeymap::defaults(),
         );
         let themes = ThemeRuntime::new(started.themes_dir_resolution.into_external_path());
-        let cargo_workspace_index = Arc::new(metadata_store.lock().map_or_else(
-            |_| CargoWorkspaceIndex::default(),
-            |metadata_store| {
-                CargoWorkspaceIndex::from_metadata_store(&metadata_store, projects.revision())
-            },
-        ));
         let scan = Scan::new(ScanState::new(scan_started_at), metadata_store);
-        let process_refresh_executor = process_refresh_executor(&startup_services);
         let mut overlays = Overlays::new();
         if let Some(warning) = started.lint_warning {
             overlays.set_status_flash(warning, Instant::now());
@@ -297,10 +283,6 @@ impl AppBuilder<Started> {
             net: Net::new(http_client),
             panes,
             project_list: projects,
-            cargo_workspace_index,
-            process_refresh_executor,
-            #[cfg(test)]
-            running_target_attribution_collection_count: 0,
             background,
             inflight,
             lint,
@@ -331,26 +313,6 @@ impl AppBuilder<Started> {
         app.finish_new();
         Ok(app)
     }
-}
-
-fn process_refresh_executor(startup_services: &StartupServices) -> ProcessRefreshExecutor {
-    let running_targets_polling_effect = startup_services.running_targets_polling_effect();
-    let (backend_selection, running_targets_refresh_schedule) = match running_targets_polling_effect
-    {
-        StartupEffect::Real => (
-            ProcessRefreshExecutionBackendSelection::DedicatedWorker,
-            RunningTargetsRefreshSchedule::Every(RUNNING_TARGETS_REFRESH_INTERVAL),
-        ),
-        StartupEffect::Suppressed => (
-            ProcessRefreshExecutionBackendSelection::Synchronous,
-            RunningTargetsRefreshSchedule::Suppressed,
-        ),
-    };
-    Background::start_process_refresh_executor(
-        backend_selection,
-        running_targets_refresh_schedule,
-        Instant::now(),
-    )
 }
 
 fn app_framework(settings_store: SettingsStore, toast_settings: ToastSettings) -> Framework<App> {

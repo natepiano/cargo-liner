@@ -11,7 +11,6 @@ use super::panes::ProjectListPane;
 use super::panes::TargetsPane;
 use super::project_list_state::ProjectList;
 use super::render_context::PaneRenderCtx;
-use super::running_targets::RunningTargets;
 use super::settings::SettingsRenderInputs;
 use super::state::Ci;
 use super::state::Config;
@@ -67,6 +66,5 @@ pub(super) struct FinderSplit<'a> {
     pub(super) config:              &'a Config,
     pub(super) project_list:        &'a ProjectList,
     pub(super) scan:                &'a Scan,
-    pub(super) running_targets:     &'a RunningTargets,
     pub(super) output_presentation: OutputPresentation<'a>,
 }
