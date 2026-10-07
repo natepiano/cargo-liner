@@ -1,6 +1,6 @@
 # Production — cargo-port-cleanup
 
-> **Status: PRODUCTION — running.** Removes the Running section of cargo-port's Targets pane and the process scan behind it. cargo-tile is the tool for watching running cargo processes. A second unit, cargo-tile, joined on 2026-10-06: the summary takes as many cells as it needs and pushes the other cells on.
+> **Status: PRODUCTION — wrapped 2026-10-06.** Removes the Running section of cargo-port's Targets pane and the process scan behind it. cargo-tile is the tool for watching running cargo processes. A second unit, cargo-tile, joined on 2026-10-06: the summary takes as many cells as it needs and pushes the other cells on.
 
 ## Production Context
 
@@ -20,7 +20,7 @@
 | Unit | Plan | Worktree | Branch | Session | Port | Owns |
 | --- | --- | --- | --- | --- | --- | --- |
 | cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | `cargo-port-cleanup` (closed) | — | `crates/cargo-port`, `docs/cargo-port` |
-| cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | `/home/natepiano/rust/cargo-tile-enh` | `enh/cargo-tile` | `cargo-tile` | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
+| cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | `cargo-tile` (closed) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | `berth-flake` (closed) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
 
 ## Hub files
@@ -39,7 +39,7 @@
 1. A final CI point: `validate_and_push.sh --to main` and its CI run green.
 2. `/release cargo-port 0.8.0`. The user asked for this on 2026-10-06 because the removal is a breaking change, and the request pre-approves the release. The release config pins the path-only `tui_pane` dependency to its crates.io version and stops when `crates/tui_pane` has drifted from it. If it stops there, bring that to the user. Done 2026-10-06: it stopped on tui_pane drift, and the user chose to release tui_pane 0.8.0 first.
 3. Install the released cargo-port on the Mac. The release's install check covers natedev. Done 2026-10-06: 0.8.0 on both machines.
-4. After cargo-tile's last phase merges and CI is green: install cargo-tile and cargo-handler from main on natedev and on the Mac.
+4. After cargo-tile's last phase merges and CI is green: install cargo-tile and cargo-handler from main on natedev and on the Mac. Done 2026-10-06: installed from 54cb9b11 on both machines.
 
 ## Production rules
 
