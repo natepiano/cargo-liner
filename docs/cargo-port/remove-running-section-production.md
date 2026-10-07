@@ -1,6 +1,6 @@
 # Production — cargo-port-cleanup
 
-> **Status: PRODUCTION — wrapped 2026-10-06.** Removes the Running section of cargo-port's Targets pane and the process scan behind it. cargo-tile is the tool for watching running cargo processes. A second unit, cargo-tile, joined on 2026-10-06: the summary takes as many cells as it needs and pushes the other cells on.
+> **Status: PRODUCTION — running.** Wrapped 2026-10-06 and reopened 2026-10-07 for the tile-mem unit, a memory column and total in cargo-tile. Removes the Running section of cargo-port's Targets pane and the process scan behind it. cargo-tile is the tool for watching running cargo processes. A second unit, cargo-tile, joined on 2026-10-06: the summary takes as many cells as it needs and pushes the other cells on.
 
 ## Production Context
 
@@ -10,7 +10,7 @@
 - **Showrunner checkout:** `/home/natepiano/rust/cargo-liner`
 - **Showrunner session:** cargo-liner
 - **Log:** `docs/cargo-port/remove-running-section-log.md`. It is git-excluded and holds one line per event.
-- **User zone:** America/Los_Angeles. Every time the showrunner reports is in this zone only.
+- **User zone:** `America/Los_Angeles`. Every time the showrunner reports is in this zone only.
 - **Updates:** every 15 minutes. Each update reports every unit in full.
 - **Merge tests:** a change to `crates/tui_pane` also tests `cargo-tile`, `cargo-handler` and `cargo-port`, which build on it.
 - **Capacity:** 32 cores, 60 GB (17 GB free on 2026-10-06), three units.
