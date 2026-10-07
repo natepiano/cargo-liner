@@ -268,6 +268,8 @@ fn unproven_row(roster: &Roster, pid: u32) -> CargoProcess {
     });
     process.cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
     process.subtree_cpu = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    process.memory = Measurement::Unavailable(MeasurementAbsence::Unproven);
+    process.subtree_memory = Measurement::Unavailable(MeasurementAbsence::Unproven);
     process.compiler = CompilerObservation::Unknown;
     process.managed = Measurement::Unavailable(MeasurementAbsence::Unproven);
     process

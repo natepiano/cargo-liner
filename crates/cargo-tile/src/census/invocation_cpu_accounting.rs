@@ -131,6 +131,8 @@ pub(super) struct InvocationMeasurements {
     pub(super) compilers: HashMap<Pid, CompilerObservation>,
     /// Settled invocation work, unavailable only when its own sample is unestablished.
     pub(super) cpu:       HashMap<Pid, Measurement<f32>>,
+    /// Resident bytes held on the same publication cadence as CPU.
+    pub(super) memory:    HashMap<Pid, Measurement<u64>>,
 }
 
 /// Evidence retained across a refresh to establish identity and monotonic CPU time.
@@ -228,27 +230,31 @@ enum CpuPublication {
 #[derive(Default)]
 pub(super) struct InvocationCpuAccounting {
     /// Native lifetimes preserve the first confirmed generation through registration gaps.
-    pub(super) owners:       HashMap<ProcessIdentity, InvocationId>,
+    pub(super) owners:          HashMap<ProcessIdentity, InvocationId>,
     /// Accumulated invocation work survives descendant exits between scans.
-    pub(super) invocations:  HashMap<InvocationId, InvocationCpuHistory>,
+    pub(super) invocations:     HashMap<InvocationId, InvocationCpuHistory>,
     /// Observed client destinations remain usable while their invocation lives.
-    pub(super) targets:      HashMap<InvocationId, HashSet<PathBuf>>,
+    pub(super) targets:         HashMap<InvocationId, HashSet<PathBuf>>,
     /// A compiler lifetime can never donate its accumulated history to another invocation.
-    pub(super) cache_owners: HashMap<ProcessIdentity, InvocationId>,
+    pub(super) cache_owners:    HashMap<ProcessIdentity, InvocationId>,
     /// Unavailable lifetime reads retain rows only during continuous pid presence.
-    pub(super) identities:   ProcessIdentities,
+    pub(super) identities:      ProcessIdentities,
     /// Bind the pre-refresh counters to the lifetime observed with their last sample.
-    pub(super) observed:     HashMap<Pid, LifetimeEvidence>,
+    pub(super) observed:        HashMap<Pid, LifetimeEvidence>,
     /// Where each invocation's reading has settled, moved on every scan.
     /// Keyed by invocation identity, so a replaced pid cannot inherit old readings.
-    pub(super) settled:      HashMap<InvocationId, Measurement<f32>>,
+    pub(super) settled:         HashMap<InvocationId, Measurement<f32>>,
     /// What the table is carrying, taken from
     /// [`settled`](Self::settled) when a reading falls due.
-    pub(super) reported:     HashMap<InvocationId, Measurement<f32>>,
+    pub(super) reported:        HashMap<InvocationId, Measurement<f32>>,
+    /// Compiler pid to invocation owner for this scan's detached compiler trees.
+    pub(super) detached:        HashMap<Pid, Pid>,
+    /// Resident bytes carried until the CPU reading falls due.
+    pub(super) reported_memory: HashMap<InvocationId, Measurement<u64>>,
     /// A never-published smoother has no previous snapshot to hold.
-    publication:             CpuPublication,
+    publication:                CpuPublication,
     /// The scan interval and the windows that smooth and hold a reading.
-    cadence:                 CensusCadence,
+    cadence:                    CensusCadence,
 }
 
 /// A cumulative subtree counter, retaining completed work on platforms without wait totals.
@@ -723,6 +729,34 @@ impl InvocationCpuAccounting {
             }
         }
         self.reported.clone()
+    }
+
+    /// What the `mem` column carries: replaced when a cpu reading falls due.
+    pub(super) fn report_memory(
+        &mut self,
+        sampled: &HashMap<InvocationId, Measurement<u64>>,
+        cargo: &[InvocationId],
+        due: bool,
+    ) -> HashMap<InvocationId, Measurement<u64>> {
+        self.reported_memory
+            .retain(|identity, _| cargo.contains(identity));
+        for identity in cargo {
+            let sample = sampled
+                .get(identity)
+                .copied()
+                .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven));
+            let reported = self
+                .reported_memory
+                .entry(identity.clone())
+                .or_insert(sample);
+            if due
+                || matches!(reported, Measurement::Unavailable(_))
+                || matches!(sample, Measurement::Unavailable(_))
+            {
+                *reported = sample;
+            }
+        }
+        self.reported_memory.clone()
     }
 
     /// Whether the table is due a fresh reading at `now`.
