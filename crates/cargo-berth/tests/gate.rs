@@ -3830,6 +3830,10 @@ fn an_unrecorded_binary_bypass_warns_without_blocking_the_ref_update() {
         "one-field\n",
         BYPASS_ENVIRONMENT,
         "1",
+        non_repository
+            .path()
+            .parent()
+            .expect("temporary directory should have a parent"),
     );
 
     assert_eq!(bypassed.status.code(), Some(4));
@@ -6697,6 +6701,7 @@ fn run_berth_with_input_and_environment(
     input: &str,
     name: &str,
     value: &str,
+    ceiling: &Path,
 ) -> Output {
     let mut child = berth_command()
         .args(arguments)
@@ -6705,6 +6710,7 @@ fn run_berth_with_input_and_environment(
         .env_remove(RUN_ENVIRONMENT)
         .env_remove(SESSION_ENVIRONMENT)
         .env(name, value)
+        .env("GIT_CEILING_DIRECTORIES", ceiling)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -1151,7 +1151,21 @@ fn human_board_uses_and_restores_an_attached_terminal() {
 #[test]
 fn board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes() {
     let outside_repository = tempdir().expect("temporary directory should exist");
-    let json = run_berth(outside_repository.path(), &["board", "--json"]);
+    let ceiling = outside_repository
+        .path()
+        .parent()
+        .expect("temporary directory should have a parent");
+    let run_outside = |arguments: &[&str]| {
+        berth_command(BERTH_EXECUTABLE)
+            .args(arguments)
+            .current_dir(outside_repository.path())
+            .env_remove("CARGO_BERTH_RUN")
+            .env_remove("CARGO_BERTH_SESSION_ID")
+            .env("GIT_CEILING_DIRECTORIES", ceiling)
+            .output()
+            .expect("cargo-berth should run")
+    };
+    let json = run_outside(&["board", "--json"]);
     assert_eq!(json.status.code(), Some(4));
     let envelope = json_output(&json);
     assert_eq!(envelope["status"], "ledger_unreadable");
@@ -1160,7 +1174,7 @@ fn board_outside_a_git_worktree_reports_the_same_unreadable_facts_in_both_modes(
     assert_eq!(envelope["reservations"], serde_json::json!([]));
     assert_eq!(envelope["blocked_by"], serde_json::json!([]));
 
-    let human = run_berth(outside_repository.path(), &["board"]);
+    let human = run_outside(&["board"]);
     assert_eq!(human.status.code(), Some(4));
     assert_eq!(
         String::from_utf8_lossy(&human.stdout).trim(),

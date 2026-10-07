@@ -74,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Discovery skips an empty or partial `.git` directory and honours `GIT_CEILING_DIRECTORIES` when searching for a worktree.
+
 - Integrated work releases itself. Reconciliation settles an integrated outstanding reservation with later branch work when another reservation of the same holder and target carries the same merge extent; without one it stays outstanding.
 
 - An overlap answer to a holder protecting many paths no longer exceeds the 16 KiB record limit. Answer, enrollment, and widen records named the holder's scope revision by copying every holder scope, so `claim --after <holder>` against a holder with a few hundred files failed with `invalid_input` however few paths the caller named. A scope revision is now a fixed-size SHA-256 digest of the scopes, in records, in board `exact_approved_scopes`, and in a conflict's `overlap_scope_revision`; `output_contract_version` is 6. Records written before the change carry the scope array and replay unchanged.

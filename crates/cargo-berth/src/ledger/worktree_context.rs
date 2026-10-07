@@ -1,5 +1,7 @@
 //! Filesystem discovery of a worktree's repository, administrative, and ledger paths.
 
+use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Error;
@@ -25,6 +27,48 @@ use crate::ids::WorktreeKind;
 
 /// The name of the administrative directory or file at a worktree root.
 const GIT_DIRECTORY_NAME: &str = ".git";
+
+/// Canonical directories that bound filesystem worktree discovery.
+struct DiscoveryCeilings(Vec<PathBuf>);
+
+impl DiscoveryCeilings {
+    fn from_environment() -> Self {
+        Self::from(
+            env::var_os("GIT_CEILING_DIRECTORIES")
+                .unwrap_or_default()
+                .as_os_str(),
+        )
+    }
+
+    fn contains(&self, directory: &Path) -> bool {
+        self.0.iter().any(|ceiling| ceiling == directory)
+    }
+}
+
+impl From<&OsStr> for DiscoveryCeilings {
+    /// Parse a path list as git does: an entry that is empty, relative, or missing is ignored,
+    /// and the rest still apply.
+    fn from(list: &OsStr) -> Self { env::split_paths(list).collect() }
+}
+
+impl FromIterator<PathBuf> for DiscoveryCeilings {
+    fn from_iter<Paths: IntoIterator<Item = PathBuf>>(paths: Paths) -> Self {
+        Self(
+            paths
+                .into_iter()
+                .filter(|path| path.is_absolute())
+                .filter_map(|path| fs::canonicalize(path).ok())
+                .collect(),
+        )
+    }
+}
+
+fn is_git_directory(directory: &Path) -> bool {
+    directory.is_dir()
+        && directory.join("HEAD").is_file()
+        && directory.join("objects").is_dir()
+        && directory.join("refs").is_dir()
+}
 
 /// Repository and administrative paths discovered without executing git.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,10 +114,21 @@ pub(crate) enum RegisteredWorktreeAvailability {
 impl WorktreeContext {
     /// Discover the containing worktree using only `.git` filesystem metadata.
     pub(crate) fn discover(invocation_directory: &Path) -> Result<Self, LedgerError> {
+        let ceilings = DiscoveryCeilings::from_environment();
+        Self::discover_with_ceilings(invocation_directory, &ceilings)
+    }
+
+    fn discover_with_ceilings(
+        invocation_directory: &Path,
+        ceilings: &DiscoveryCeilings,
+    ) -> Result<Self, LedgerError> {
         let invocation_directory = fs::canonicalize(invocation_directory)?;
         for repository_root in invocation_directory.ancestors() {
+            if repository_root != invocation_directory && ceilings.contains(repository_root) {
+                break;
+            }
             let dot_git = repository_root.join(GIT_DIRECTORY_NAME);
-            if dot_git.is_dir() {
+            if is_git_directory(&dot_git) {
                 let common_git_directory = fs::canonicalize(&dot_git)?;
                 return Self::build(
                     repository_root,
@@ -434,17 +489,97 @@ fn read_git_administrative_layout(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::ffi::OsStr;
     use std::fs;
+    use std::os::unix::ffi::OsStrExt;
 
     use tempfile::tempdir;
 
     use super::COORDINATION_RUN_MARKER_FILE_NAME;
     use super::CoordinationRunMarkerAtRetirement;
     use super::CoordinationRunMarkerRemoval;
+    use super::DiscoveryCeilings;
     use super::WorktreeContext;
     use crate::ids::CoordinationRunId;
     use crate::ids::WorktreeKind;
+    use crate::ledger::LedgerError;
     use crate::ledger::test_support;
+
+    #[test]
+    fn an_empty_git_directory_is_not_a_repository() {
+        let temporary_directory = tempdir().expect("temporary directory should exist");
+        fs::create_dir(temporary_directory.path().join(".git"))
+            .expect("empty git directory should exist");
+        let child = temporary_directory.path().join("child");
+        fs::create_dir(&child).expect("child directory should exist");
+        let parent = temporary_directory
+            .path()
+            .parent()
+            .expect("temporary directory should have a parent");
+        let ceilings = DiscoveryCeilings::from_iter([parent.to_path_buf()]);
+
+        assert!(matches!(
+            WorktreeContext::discover_with_ceilings(&child, &ceilings),
+            Err(LedgerError::RepositoryNotFound)
+        ));
+    }
+
+    #[test]
+    fn discovery_stops_at_the_ceiling() {
+        let repository = test_support::scratch_repository();
+        let ceiling = repository.path().join("ceiling");
+        let child = ceiling.join("child");
+        fs::create_dir_all(&child).expect("child directory should exist");
+        let ceilings = DiscoveryCeilings::from_iter([ceiling]);
+
+        assert!(matches!(
+            WorktreeContext::discover_with_ceilings(&child, &ceilings),
+            Err(LedgerError::RepositoryNotFound)
+        ));
+    }
+
+    #[test]
+    fn the_invocation_directory_is_examined_even_at_the_ceiling() {
+        let repository = test_support::scratch_repository();
+        let ceilings = DiscoveryCeilings::from_iter([repository.path().to_path_buf()]);
+
+        let context = WorktreeContext::discover_with_ceilings(repository.path(), &ceilings)
+            .expect("invocation directory should be discovered");
+
+        assert_eq!(context.repository_root(), repository.path());
+    }
+
+    #[test]
+    fn a_ceiling_at_the_invocation_directory_does_not_stop_the_walk() {
+        let repository = test_support::scratch_repository();
+        let child = repository.path().join("child");
+        fs::create_dir(&child).expect("child directory should exist");
+        let ceilings = DiscoveryCeilings::from_iter([child.clone()]);
+
+        let context = WorktreeContext::discover_with_ceilings(&child, &ceilings)
+            .expect("the repository above the invocation directory should be discovered");
+
+        assert_eq!(context.repository_root(), repository.path());
+    }
+
+    #[test]
+    fn a_ceiling_list_entry_that_is_not_utf8_leaves_the_other_ceilings() {
+        let repository = test_support::scratch_repository();
+        let ceiling = repository.path().join("ceiling");
+        let child = ceiling.join("child");
+        fs::create_dir_all(&child).expect("child directory should exist");
+        let mut list = ceiling.into_os_string();
+        list.push(":");
+        list.push(OsStr::from_bytes(b"/\xff"));
+
+        assert!(matches!(
+            WorktreeContext::discover_with_ceilings(
+                &child,
+                &DiscoveryCeilings::from(list.as_os_str())
+            ),
+            Err(LedgerError::RepositoryNotFound)
+        ));
+    }
 
     #[test]
     fn git_file_without_common_directory_is_a_main_worktree() {
