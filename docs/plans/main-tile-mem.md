@@ -69,7 +69,7 @@ it's purpose is to provide the memory usage of the running command as a column -
 
 **Ruled out:** revalidating a process's lifetime for memory when a pid is reused between the two refreshes of one scan: too unlikely to earn mechanism.
 
-### Phase 2 — Show the `mem` column  · status: todo
+### Phase 2 — Show the `mem` column  · status: done
 
 #### Work Order
 

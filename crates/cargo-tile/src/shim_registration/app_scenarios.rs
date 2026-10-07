@@ -377,7 +377,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
             .expect("v2 row");
         assert_eq!(
             older.matches(UNAVAILABLE_MEASUREMENT).count(),
-            3,
+            4,
             "{rendered}"
         );
         for (pid, content) in panes {
@@ -394,7 +394,7 @@ fn mixed_v2_v3_captures_render_blocked_rows_without_rewriting_publications() {
                     .expect("v2 command row");
                 assert_eq!(
                     row.matches(UNAVAILABLE_MEASUREMENT).count(),
-                    3,
+                    4,
                     "{rendered}"
                 );
             }
@@ -473,7 +473,7 @@ fn assert_mixed_command_pane(
             .expect("v2 row in shared command pane");
         assert_eq!(
             older.matches(UNAVAILABLE_MEASUREMENT).count(),
-            3,
+            4,
             "{rendered}"
         );
         let current = rendered
@@ -482,7 +482,7 @@ fn assert_mixed_command_pane(
             .expect("v3 process row in shared command pane");
         assert_eq!(
             current.matches(UNAVAILABLE_MEASUREMENT).count(),
-            1,
+            2,
             "{rendered}"
         );
     }
@@ -518,7 +518,7 @@ fn summary_registration_row_keeps_measurements_above_the_footer() {
         );
         assert_eq!(
             lines[fallback].matches(UNAVAILABLE_MEASUREMENT).count(),
-            3,
+            4,
             "{rendered}"
         );
         assert!(

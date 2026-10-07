@@ -127,8 +127,8 @@ fn assert_child_measurements(inner: Rect) {
     assert_eq!(child_lines.len(), 1, "{lines:#?}");
     assert_eq!(
         child_lines[0].matches(UNAVAILABLE_MEASUREMENT).count(),
-        3,
-        "the rows readout must leave CPU, compiler, and runs cells intact: {lines:#?}"
+        4,
+        "the rows readout must leave CPU, mem, compiler, and runs cells intact: {lines:#?}"
     );
     assert!(
         lines

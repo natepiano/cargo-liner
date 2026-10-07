@@ -628,7 +628,7 @@ def carrier_source_is_rendered(writer: RegistrationCarrier, source: str) -> bool
     # A sleeping process may never earn a CPU baseline. Its observed compiler
     # absence and managed count still distinguish it from registration-only data.
     unavailable = unavailable_measurements(rows[0])
-    expected = 3
+    expected = 4
     return unavailable == expected if source == 'registration' else unavailable < expected
 
 def assert_child_family(parent: StartedWriter,

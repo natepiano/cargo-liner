@@ -65,6 +65,7 @@ use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
 use crate::constants::ATTRACT_NOTE_LABEL;
+use crate::constants::BYTES_PER_GIBIBYTE;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
@@ -74,6 +75,8 @@ use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
 use crate::constants::MANAGED_COLUMN;
+use crate::constants::MEMORY_COLUMN;
+use crate::constants::MEMORY_UNIT;
 use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PARENT_COLUMN;
 use crate::constants::PID_COLUMN;
@@ -97,6 +100,7 @@ use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
+use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
 use crate::progress::Progress;
@@ -620,6 +624,7 @@ fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<Cow<
                     .map(|row| {
                         let mut promoted = row.clone();
                         promoted.process.cpu.clone_from(&row.process.subtree_cpu);
+                        promoted.process.memory = row.process.subtree_memory;
                         Cow::Owned(promoted)
                     }),
             );
@@ -1326,20 +1331,22 @@ impl PathGroup<'_> {
 /// and the columns stepping in and out as the eye moves between them.
 struct TableLayout {
     /// Column widths, in table order.
-    constraints:   Vec<Constraint>,
+    constraints:    Vec<Constraint>,
     /// The columns this cell draws, in table order.
-    columns:       Vec<usize>,
+    columns:        Vec<usize>,
+    /// Blank cells between adjacent columns.
+    column_spacing: u16,
     /// Cells the `command` column absorbed, which is what a command
     /// line too long for it is wrapped to.
-    command_width: u16,
+    command_width:  u16,
     /// How much of each row's command line the cell prints.
-    detail:        SummaryDetail,
+    detail:         SummaryDetail,
     /// Whether a row spells out its whole command line or only the
     /// name of what runs.
-    tree:          ProcessTree,
+    tree:           ProcessTree,
     /// The colour the cell is painted on, which a finished row's text
     /// is carried toward as it fades.
-    ground:        Color,
+    ground:         Color,
 }
 
 impl TableLayout {
@@ -1354,10 +1361,18 @@ impl TableLayout {
     ) -> Self {
         let columns = visible_columns(rows, kind);
         let constraints = fitted_constraints(rows, &columns);
+        let table_width = indented(area).width;
+        let column_spacing = table_column_spacing(table_width, &constraints);
         Self {
-            command_width: command_column_width(indented(area).width, &constraints, &columns),
+            command_width: command_column_width(
+                table_width,
+                &constraints,
+                &columns,
+                column_spacing,
+            ),
             constraints,
             columns,
+            column_spacing,
             detail: kind.detail(),
             tree,
             ground,
@@ -1416,7 +1431,7 @@ fn draw_process_table(
     let layout = TableLayout::of(rows, kind, area, ground, tree);
     Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
         .header(column_header(&layout, heading_fade(rows)))
-        .column_spacing(TABLE_COLUMN_SPACING)
+        .column_spacing(layout.column_spacing)
         .render(
             Rect {
                 height: TABLE_HEADER_HEIGHT.min(area.height),
@@ -1560,7 +1575,7 @@ fn draw_path_group(
         rows.into_iter().map(|drawn| drawn.row),
         layout.constraints.iter().copied(),
     )
-    .column_spacing(TABLE_COLUMN_SPACING)
+    .column_spacing(layout.column_spacing)
     .render(
         Rect {
             y: area.y.saturating_add(GROUP_HEADER_HEIGHT),
@@ -1594,6 +1609,10 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
         widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
         widths.observe_cell_usize(CPU_COLUMN, process.cpu.to_string().chars().count());
+        widths.observe_cell_usize(
+            MEMORY_COLUMN,
+            process.memory.map(memory_label).to_string().chars().count(),
+        );
         widths.observe_cell_usize(STATE_COLUMN, state_width(&process.state));
         widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
         widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
@@ -1615,6 +1634,25 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
             }
         })
         .collect()
+}
+
+/// Gap that keeps every fitted column at its requested width when possible.
+fn table_column_spacing(width: u16, constraints: &[Constraint]) -> u16 {
+    let columns_width = constraints
+        .iter()
+        .map(|constraint| match constraint {
+            Constraint::Length(width) | Constraint::Min(width) => *width,
+            // A future constraint kind cannot prove that the standard gap fits.
+            _ => u16::MAX,
+        })
+        .fold(0, u16::saturating_add);
+    let gaps = u16::try_from(constraints.len().saturating_sub(1)).unwrap_or(u16::MAX);
+    let standard_width = columns_width.saturating_add(TABLE_COLUMN_SPACING.saturating_mul(gaps));
+    if standard_width <= width {
+        TABLE_COLUMN_SPACING
+    } else {
+        TIGHT_TABLE_COLUMN_SPACING
+    }
 }
 
 /// The cell's one column-label row, drawn above the first group and
@@ -1689,6 +1727,10 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
         Text::from(Span::styled(process.start.clone(), muted)),
         Text::from(Span::styled(process.duration.clone(), muted)),
         Text::from(Span::styled(process.cpu.to_string(), muted)),
+        Text::from(Span::styled(
+            process.memory.map(memory_label).to_string(),
+            muted,
+        )),
         Text::from(state_cell(row, layout)),
         command,
         Text::from(compiler_cell(row, layout)),
@@ -1756,12 +1798,17 @@ fn parent_style(row: &TrackedRow, layout: &TableLayout) -> Style {
 /// line is wrapped to the width it is actually drawn in. Reading the
 /// column's own [`Constraint`] instead would give the floor it is never
 /// held to, since it is the column that absorbs the slack.
-fn command_column_width(width: u16, constraints: &[Constraint], columns: &[usize]) -> u16 {
+fn command_column_width(
+    width: u16,
+    constraints: &[Constraint],
+    columns: &[usize],
+    column_spacing: u16,
+) -> u16 {
     let Some(column) = columns.iter().position(|column| *column == COMMAND_COLUMN) else {
         return 0;
     };
     Layout::horizontal(constraints.iter().copied())
-        .spacing(TABLE_COLUMN_SPACING)
+        .spacing(column_spacing)
         .split(Rect {
             x: 0,
             y: 0,
@@ -1955,6 +2002,13 @@ fn managed_text(process: &CargoProcess) -> String {
         Measurement::Reading(count) => count.to_string(),
         Measurement::Unavailable(_) => UNAVAILABLE_MEASUREMENT.to_string(),
     }
+}
+
+/// Resident bytes as gibibytes to one decimal place, rounded half up.
+fn memory_label(bytes: u64) -> String {
+    let tenths = (u128::from(bytes) * 10 + u128::from(BYTES_PER_GIBIBYTE) / 2)
+        / u128::from(BYTES_PER_GIBIBYTE);
+    format!("{}.{}{MEMORY_UNIT}", tenths / 10, tenths % 10)
 }
 
 /// The `compiler` cell: driver name in the active color, its count muted
@@ -2223,6 +2277,25 @@ mod tests {
         row
     }
 
+    /// A row whose fitted columns require the smaller gap in a 65-cell area.
+    fn tight_command_row(pid: u32, parent: u32, arguments: &[&str]) -> TrackedRow {
+        let mut row = row(None);
+        row.process.pid = pid;
+        row.process.invocation_id = InvocationId::for_test(pid);
+        row.process.parent = VisibleParent::Ancestor(parent);
+        row.process.start = "17:18".to_string();
+        row.process.duration = "01:12".to_string();
+        row.process.cpu = Measurement::Reading("1177%".to_string());
+        row.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 2);
+        row.process.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 1,
+        });
+        row.process.managed = Measurement::Reading(1);
+        row.process.command = CommandText::of("cargo", arguments);
+        row
+    }
+
     /// One row of `buffer` as text, with the blanks to the right of it
     /// trimmed off.
     fn buffer_line(buffer: &Buffer, y: u16) -> String {
@@ -2291,6 +2364,71 @@ mod tests {
         buffer_line(buffer, y)[start..end].trim().to_string()
     }
 
+    /// Locate memory by the drawn column labels.
+    fn memory_cell_text(buffer: &Buffer, y: u16) -> String {
+        let header = buffer_line(buffer, 0);
+        let start = header
+            .find(TABLE_HEADERS[MEMORY_COLUMN])
+            .expect("the table draws a memory column");
+        let end = TABLE_HEADERS[MEMORY_COLUMN + 1..]
+            .iter()
+            .filter_map(|label| header.find(label))
+            .min()
+            .expect("the table draws a column after memory");
+        buffer_line(buffer, y)[start..end].trim().to_string()
+    }
+
+    #[test]
+    fn memory_column_follows_cpu_and_precedes_state_and_command() {
+        assert_eq!(TABLE_HEADERS[CPU_COLUMN + 1], "mem");
+        assert_eq!(TABLE_HEADERS[MEMORY_COLUMN + 1], "state");
+
+        let buffer = measurement_row_buffer(&row(None), TableKind::Command);
+        let header = buffer_line(&buffer, 0);
+        let cpu = header.find("cpu").expect("CPU heading");
+        let memory = header.find("mem").expect("memory heading");
+        let command = header.find("command").expect("command heading");
+
+        assert!(!header.contains("state"), "{header:?}");
+        assert!(cpu < memory && memory < command, "{header:?}");
+    }
+
+    #[test]
+    fn memory_labels_use_gibibytes_rounded_to_one_decimal_place() {
+        for (bytes, expected) in [
+            (0, "0.0G"),
+            (53_687_091, "0.0G"),
+            (53_687_092, "0.1G"),
+            (1 << 30, "1.0G"),
+            (13_249_974_108, "12.3G"),
+        ] {
+            assert_eq!(memory_label(bytes), expected);
+        }
+    }
+
+    #[test]
+    fn memory_cell_draws_available_and_unavailable_readings() {
+        for (memory, expected) in [
+            (
+                Measurement::Unavailable(MeasurementAbsence::Unproven),
+                UNAVAILABLE_MEASUREMENT,
+            ),
+            (Measurement::Reading(13_249_974_108), "12.3G"),
+        ] {
+            let mut row = row(None);
+            row.process.memory = memory;
+
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let buffer = measurement_row_buffer(&row, kind);
+                assert_eq!(
+                    memory_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+                    expected,
+                    "{kind:?}"
+                );
+            }
+        }
+    }
+
     /// Each absence reason occupies the CPU cell in both table layouts.
     #[test]
     fn unavailable_cpu_never_renders_as_a_measurement() {
@@ -2340,6 +2478,57 @@ mod tests {
     }
 
     #[test]
+    fn two_row_render_samples_keep_memory_aligned() {
+        let mut build = row(None);
+        build.process.memory = Measurement::Reading(322_122_547);
+        let mut test = row(None);
+        test.process.pid = 41_234;
+        test.process.invocation_id = InvocationId::for_test(41_234);
+        test.process.start = "11:05".to_string();
+        test.process.duration = "00:08".to_string();
+        test.process.cpu = Measurement::Reading("5%".to_string());
+        test.process.memory = Measurement::Reading(13_314_338_304);
+        test.process.command = CommandText::of("cargo", &["test"]);
+        let rows = [&build, &test];
+        let area = Rect::new(0, 0, 80, 5);
+
+        let draw = |kind| {
+            let mut buffer = Buffer::empty(area);
+            draw_process_table(
+                &mut buffer,
+                area,
+                &rows,
+                kind,
+                Color::Reset,
+                PinnedGroup::Unpinned,
+                ProcessTree::Long,
+            );
+            [
+                buffer_line(&buffer, 0),
+                buffer_line(&buffer, 2),
+                buffer_line(&buffer, 3),
+            ]
+        };
+
+        assert_eq!(
+            draw(TableKind::Summary),
+            [
+                " pid    start  dur    cpu  mem    command",
+                " 41233  11:04  00:18  12%  0.3G   cargo build",
+                " 41234  11:05  00:08  5%   12.4G  cargo test",
+            ]
+        );
+        assert_eq!(
+            draw(TableKind::Command),
+            [
+                " pid    parent  start  dur    cpu  mem    command                 compiler  runs",
+                " 41233          11:04  00:18  12%  0.3G   cargo build",
+                " 41234          11:05  00:08  5%   12.4G  cargo test",
+            ]
+        );
+    }
+
+    #[test]
     fn an_unknown_compiler_observation_has_a_visible_cell() {
         let mut row = row(None);
         row.process.compiler = CompilerObservation::Unknown;
@@ -2375,7 +2564,7 @@ mod tests {
             let buffer = measurement_row_buffer(&row, kind);
             let header = buffer_line(&buffer, 0);
             let text = buffer_line(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT);
-            for column in [CPU_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
+            for column in [CPU_COLUMN, MEMORY_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
                 let start = header
                     .find(TABLE_HEADERS[column])
                     .expect("measurement column");
@@ -2815,6 +3004,21 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(pids, vec![4200]);
+    }
+
+    #[test]
+    fn a_promoted_summary_row_draws_its_subtree_memory() {
+        let mut work = invocation(4200, &["build"]);
+        work.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
+        work.subtree_memory = Measurement::Reading(13_249_974_108);
+        let lead = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
+
+        let buffer = measurement_group_buffer(lead, vec![work], TableKind::Summary);
+
+        assert_eq!(
+            memory_cell_text(&buffer, TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT),
+            "12.3G"
+        );
     }
 
     /// Aggregate member samples before the roster carries them to either layout.
@@ -4280,18 +4484,92 @@ mod tests {
         assert!(columns.contains(&MANAGED_COLUMN));
     }
 
+    #[test]
+    fn a_tight_command_table_keeps_fixed_headers_and_parent_pids_whole() {
+        let area = Rect::new(0, 0, 65, 6);
+        let mut buffer = Buffer::empty(area);
+        let rows = [
+            tight_command_row(359_829, 359_762, &["build"]),
+            tight_command_row(359_830, 359_763, &["check"]),
+        ];
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        let header = buffer_line(&buffer, 0);
+        let parent_start = header.find(TABLE_HEADERS[PARENT_COLUMN]).unwrap();
+        let parent_end = header.find(TABLE_HEADERS[START_COLUMN]).unwrap();
+        assert_eq!(
+            parent_end - (parent_start + TABLE_HEADERS[PARENT_COLUMN].len()),
+            usize::from(TIGHT_TABLE_COLUMN_SPACING)
+        );
+        assert!(
+            header.contains(TABLE_HEADERS[COMPILER_COLUMN]),
+            "{header:?}"
+        );
+        for (y, parent) in [(2, "359762"), (3, "359763")] {
+            let line = buffer_line(&buffer, y);
+            assert_eq!(line[parent_start..parent_end].trim(), parent, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_fitting_command_table_keeps_two_cell_gaps_with_a_compiler() {
+        let area = Rect::new(0, 0, 80, 4);
+        let mut buffer = Buffer::empty(area);
+        let rows = [tight_command_row(359_829, 359_762, &["build"])];
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        let header = buffer_line(&buffer, 0);
+        let parent = header.find(TABLE_HEADERS[PARENT_COLUMN]).unwrap();
+        let start = header.find(TABLE_HEADERS[START_COLUMN]).unwrap();
+        assert_eq!(
+            start - (parent + TABLE_HEADERS[PARENT_COLUMN].len()),
+            usize::from(TABLE_COLUMN_SPACING)
+        );
+        assert!(buffer_line(&buffer, 2).contains(&format!("{}×1", COMPILER_PROCESS_NAMES[0])));
+    }
+
     /// The `command` column is the one that absorbs the slack, so what
     /// it is worth has to come off the solved layout rather than off the
     /// `Min` it is declared with.
     #[test]
     fn the_command_column_is_measured_at_the_width_it_absorbs() {
-        let rows = [long_row()];
+        let mut row = long_row();
+        row.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 124 / 10);
+        let rows = [row];
         let rows: Vec<&TrackedRow> = rows.iter().collect();
         let columns = visible_columns(&rows, TableKind::Command);
         let constraints = fitted_constraints(&rows, &columns);
 
-        let narrow = command_column_width(58, &constraints, &columns);
-        let wide = command_column_width(88, &constraints, &columns);
+        let narrow = command_column_width(
+            65,
+            &constraints,
+            &columns,
+            table_column_spacing(65, &constraints),
+        );
+        let wide = command_column_width(
+            95,
+            &constraints,
+            &columns,
+            table_column_spacing(95, &constraints),
+        );
 
         assert!(narrow > cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
         assert_eq!(wide.saturating_sub(narrow), 30);
@@ -4302,9 +4580,13 @@ mod tests {
     /// starts, and nothing of it is dropped.
     #[test]
     fn a_long_command_wraps_within_its_own_column() {
-        let area = Rect::new(0, 0, 64, 8);
+        let area = Rect::new(0, 0, 65, 8);
         let mut buffer = Buffer::empty(area);
-        let rows = [long_row()];
+        let rows = [tight_command_row(
+            359_829,
+            359_762,
+            &["build", "--features", "one,two", "--all"],
+        )];
 
         draw_process_table(
             &mut buffer,
@@ -4320,25 +4602,33 @@ mod tests {
         // the header row is where the column's own left edge is.
         let header = buffer_line(&buffer, 0);
         let left = header.find(TABLE_HEADERS[COMMAND_COLUMN]).unwrap();
+        let right = header.find(TABLE_HEADERS[COMPILER_COLUMN]).unwrap();
         // Row zero is the labels and row one the working directory, so
         // the invocation starts on row two and runs to the first blank.
-        let lines: Vec<String> = (2..buffer.area.height)
-            .map(|y| buffer_line(&buffer, y))
-            .take_while(|line| !line.is_empty())
+        let lines: Vec<u16> = (2..buffer.area.height)
+            .take_while(|y| !buffer_line(&buffer, *y).is_empty())
             .collect();
 
         assert!(lines.len() > 1, "{lines:#?}");
-        for line in lines.iter().skip(1) {
+        for &y in lines.iter().skip(1) {
+            let line = buffer_line(&buffer, y);
             assert!(line.len() > left, "{line:?}");
             assert!(line[..left].trim().is_empty(), "{line:?}");
         }
+        let command_lines: Vec<String> = lines
+            .iter()
+            .map(|&y| {
+                (left..right)
+                    .map(|x| buffer[(u16::try_from(x).unwrap(), y)].symbol())
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(command_lines[0], "cargo build");
         assert_eq!(
-            lines
-                .iter()
-                .map(|line| line[left..].trim())
-                .collect::<Vec<&str>>()
-                .join(" "),
-            "cargo build --features one,two,three --all-targets"
+            command_lines.join(" "),
+            "cargo build --features one,two --all"
         );
     }
 
