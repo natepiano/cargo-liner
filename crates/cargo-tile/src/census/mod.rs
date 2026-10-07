@@ -4,10 +4,6 @@ pub(crate) mod command_text;
 pub(crate) mod direct_capture;
 pub(crate) mod invocation_cpu_accounting;
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "tests should panic on unexpected values"
-)]
 mod memory_tests;
 pub(crate) mod process_identity;
 pub(crate) mod scan;

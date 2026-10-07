@@ -14,6 +14,7 @@ use super::InvocationId;
 use super::Measurement;
 use super::invocation_cpu_accounting::InvocationCpuAccounting;
 use super::invocation_cpu_accounting::MeasurementAbsence;
+use super::invocation_cpu_accounting::MemoryReport;
 use super::scan::CensusSequence;
 use super::scan::ProcessField;
 use super::scan::ProcessObservation;
@@ -166,30 +167,30 @@ fn memory_reporting_holds_until_due_and_replaces_unavailable_values_immediately(
 
     let first = HashMap::from([(invocation.clone(), Measurement::Reading(10))]);
     assert_eq!(
-        accounting.report_memory(&first, &cargo, false)[&invocation],
+        accounting.report_memory(&first, &cargo, MemoryReport::Keep)[&invocation],
         Measurement::Reading(10)
     );
 
     let changed = HashMap::from([(invocation.clone(), Measurement::Reading(20))]);
     assert_eq!(
-        accounting.report_memory(&changed, &cargo, false)[&invocation],
+        accounting.report_memory(&changed, &cargo, MemoryReport::Keep)[&invocation],
         Measurement::Reading(10)
     );
     assert_eq!(
-        accounting.report_memory(&changed, &cargo, true)[&invocation],
+        accounting.report_memory(&changed, &cargo, MemoryReport::Replace)[&invocation],
         Measurement::Reading(20)
     );
 
     let unavailable = Measurement::Unavailable(MeasurementAbsence::ReadFailed);
     let failed = HashMap::from([(invocation.clone(), unavailable)]);
     assert_eq!(
-        accounting.report_memory(&failed, &cargo, false)[&invocation],
+        accounting.report_memory(&failed, &cargo, MemoryReport::Keep)[&invocation],
         unavailable
     );
 
     let recovered = HashMap::from([(invocation.clone(), Measurement::Reading(30))]);
     assert_eq!(
-        accounting.report_memory(&recovered, &cargo, false)[&invocation],
+        accounting.report_memory(&recovered, &cargo, MemoryReport::Keep)[&invocation],
         Measurement::Reading(30)
     );
 }
@@ -200,9 +201,17 @@ fn memory_reporting_drops_departed_invocations_and_marks_missing_samples_unprove
     let unsampled = InvocationId::for_test(101);
     let mut accounting = InvocationCpuAccounting::default();
     let sampled = HashMap::from([(departed.clone(), Measurement::Reading(10))]);
-    accounting.report_memory(&sampled, std::slice::from_ref(&departed), true);
+    accounting.report_memory(
+        &sampled,
+        std::slice::from_ref(&departed),
+        MemoryReport::Replace,
+    );
 
-    let reported = accounting.report_memory(&sampled, std::slice::from_ref(&unsampled), false);
+    let reported = accounting.report_memory(
+        &sampled,
+        std::slice::from_ref(&unsampled),
+        MemoryReport::Keep,
+    );
 
     assert_eq!(
         reported,

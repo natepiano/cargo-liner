@@ -214,6 +214,15 @@ enum CpuPublication {
     Published(Instant),
 }
 
+/// Whether a scan replaces the memory the table reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MemoryReport {
+    /// A cpu reading falls due on this scan, so each memory reading is replaced.
+    Replace,
+    /// Between due scans a reading is kept unless it or its sample is unavailable.
+    Keep,
+}
+
 /// Each cargo invocation's CPU share as the table reports it, carried
 /// between scans.
 ///
@@ -249,7 +258,7 @@ pub(super) struct InvocationCpuAccounting {
     pub(super) reported:        HashMap<InvocationId, Measurement<f32>>,
     /// Compiler pid to invocation owner for this scan's detached compiler trees.
     pub(super) detached:        HashMap<Pid, Pid>,
-    /// Resident bytes carried until the CPU reading falls due.
+    /// Resident bytes per invocation as `report_memory` last returned them.
     pub(super) reported_memory: HashMap<InvocationId, Measurement<u64>>,
     /// A never-published smoother has no previous snapshot to hold.
     publication:                CpuPublication,
@@ -731,12 +740,13 @@ impl InvocationCpuAccounting {
         self.reported.clone()
     }
 
-    /// What the `mem` column carries: replaced when a cpu reading falls due.
+    /// The `mem` column's readings: `reported_memory`, replaced from `sampled` under
+    /// `MemoryReport::Replace` or when either reading is `Measurement::Unavailable`.
     pub(super) fn report_memory(
         &mut self,
         sampled: &HashMap<InvocationId, Measurement<u64>>,
         cargo: &[InvocationId],
-        due: bool,
+        memory_report: MemoryReport,
     ) -> HashMap<InvocationId, Measurement<u64>> {
         self.reported_memory
             .retain(|identity, _| cargo.contains(identity));
@@ -749,7 +759,7 @@ impl InvocationCpuAccounting {
                 .reported_memory
                 .entry(identity.clone())
                 .or_insert(sample);
-            if due
+            if memory_report == MemoryReport::Replace
                 || matches!(reported, Measurement::Unavailable(_))
                 || matches!(sample, Measurement::Unavailable(_))
             {
@@ -757,6 +767,15 @@ impl InvocationCpuAccounting {
             }
         }
         self.reported_memory.clone()
+    }
+
+    /// Whether the scan at `now` replaces the reported memory: the cpu reading's cadence.
+    pub(super) fn memory_report(&self, now: Instant) -> MemoryReport {
+        if self.is_due(now) {
+            MemoryReport::Replace
+        } else {
+            MemoryReport::Keep
+        }
     }
 
     /// Whether the table is due a fresh reading at `now`.

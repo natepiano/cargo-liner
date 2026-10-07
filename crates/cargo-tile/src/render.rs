@@ -2457,10 +2457,10 @@ mod tests {
     fn memory_labels_use_gibibytes_rounded_to_one_decimal_place() {
         for (bytes, expected) in [
             (0, "0.0G"),
-            (53_687_091, "0.0G"),
-            (53_687_092, "0.1G"),
-            (1 << 30, "1.0G"),
-            (13_249_974_108, "12.3G"),
+            (BYTES_PER_GIBIBYTE / 20, "0.0G"),
+            (BYTES_PER_GIBIBYTE / 20 + 1, "0.1G"),
+            (BYTES_PER_GIBIBYTE, "1.0G"),
+            (BYTES_PER_GIBIBYTE * 1234 / 100, "12.3G"),
         ] {
             assert_eq!(memory_label(bytes), expected);
         }
@@ -2470,19 +2470,22 @@ mod tests {
     #[test]
     fn summary_memory_total_is_complete_when_every_running_group_is_readable() {
         let roster = memory_roster(&[
-            (4100, Measurement::Reading(1 << 30)),
-            (4200, Measurement::Reading(3 << 29)),
+            (4100, Measurement::Reading(BYTES_PER_GIBIBYTE)),
+            (4200, Measurement::Reading(BYTES_PER_GIBIBYTE * 3 / 2)),
         ]);
 
-        assert_eq!(memory_total(&roster), SummaryMemoryTotal::Complete(5 << 29));
+        assert_eq!(
+            memory_total(&roster),
+            SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE * 5 / 2)
+        );
         assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 2.5G");
     }
 
     /// A fading group has stopped and contributes nothing to the running total.
     #[test]
     fn summary_memory_total_excludes_ended_groups() {
-        let live = memory_invocation(4100, Measurement::Reading(1 << 30));
-        let ended = memory_invocation(4200, Measurement::Reading(3 << 29));
+        let live = memory_invocation(4100, Measurement::Reading(BYTES_PER_GIBIBYTE));
+        let ended = memory_invocation(4200, Measurement::Reading(BYTES_PER_GIBIBYTE * 3 / 2));
         let mut roster = Roster::new();
         roster.observe(
             vec![cargo_group(live.clone()), cargo_group(ended)],
@@ -2490,7 +2493,10 @@ mod tests {
         );
         roster.observe(vec![cargo_group(live)], Instant::now());
 
-        assert_eq!(memory_total(&roster), SummaryMemoryTotal::Complete(1 << 30));
+        assert_eq!(
+            memory_total(&roster),
+            SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE)
+        );
         assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 1.0G");
     }
 
@@ -2498,14 +2504,17 @@ mod tests {
     #[test]
     fn summary_memory_total_is_at_least_the_readable_groups() {
         let roster = memory_roster(&[
-            (4100, Measurement::Reading(1 << 30)),
+            (4100, Measurement::Reading(BYTES_PER_GIBIBYTE)),
             (
                 4200,
                 Measurement::Unavailable(MeasurementAbsence::ReadFailed),
             ),
         ]);
 
-        assert_eq!(memory_total(&roster), SummaryMemoryTotal::AtLeast(1 << 30));
+        assert_eq!(
+            memory_total(&roster),
+            SummaryMemoryTotal::AtLeast(BYTES_PER_GIBIBYTE)
+        );
         assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 1.0G+");
     }
 
@@ -2552,7 +2561,10 @@ mod tests {
                 Measurement::Unavailable(MeasurementAbsence::Unproven),
                 UNAVAILABLE_MEASUREMENT,
             ),
-            (Measurement::Reading(13_249_974_108), "12.3G"),
+            (
+                Measurement::Reading(BYTES_PER_GIBIBYTE * 1234 / 100),
+                "12.3G",
+            ),
         ] {
             let mut row = row(None);
             row.process.memory = memory;
@@ -2626,7 +2638,7 @@ mod tests {
         test.process.start = "11:05".to_string();
         test.process.duration = "00:08".to_string();
         test.process.cpu = Measurement::Reading("5%".to_string());
-        test.process.memory = Measurement::Reading(13_314_338_304);
+        test.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 124 / 10);
         test.process.command = CommandText::of("cargo", &["test"]);
         let rows = [&build, &test];
         let area = Rect::new(0, 0, 80, 5);
@@ -3176,7 +3188,7 @@ mod tests {
     fn a_promoted_summary_row_draws_its_subtree_memory() {
         let mut work = invocation(4200, &["build"]);
         work.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
-        work.subtree_memory = Measurement::Reading(13_249_974_108);
+        work.subtree_memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 1234 / 100);
         let lead = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
 
         let buffer = measurement_group_buffer(lead, vec![work], TableKind::Summary);
