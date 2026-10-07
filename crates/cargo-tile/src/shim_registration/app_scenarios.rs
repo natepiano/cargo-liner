@@ -536,6 +536,75 @@ fn summary_registration_row_keeps_measurements_above_the_footer() {
     assert_publications(root.path(), &entries, &publications);
 }
 
+#[test]
+fn summary_memory_foot_reaches_the_grid_readout_row() {
+    let mut app = app_with_summary_memory();
+    let mut terminal = Terminal::new(TestBackend::new(120, 20)).expect("wide summary terminal");
+
+    let rendered = draw_settled(&mut terminal, &mut app);
+    let interior = summary_memory_foot_row(&rendered).trim_end();
+
+    assert!(interior.trim_start().starts_with("mem 2.5G"), "{rendered}");
+    let readout = interior
+        .find(TILE_ROWS_CONTENT_LABEL)
+        .expect("wide summary rows readout");
+    assert!(readout > interior.find("mem 2.5G").expect("memory total"));
+    assert!(interior[readout..].contains("  r/c: "), "{rendered}");
+}
+
+#[test]
+fn narrow_summary_keeps_memory_total_and_omits_rows_readout() {
+    let mut app = app_with_summary_memory();
+    let mut terminal = Terminal::new(TestBackend::new(64, 20)).expect("narrow summary terminal");
+
+    let rendered = draw_settled(&mut terminal, &mut app);
+    let interior = summary_memory_foot_row(&rendered).trim_end();
+
+    assert!(interior.trim_start().starts_with("mem 2.5G"), "{rendered}");
+    assert!(!interior.contains(TILE_ROWS_CONTENT_LABEL), "{rendered}");
+}
+
+/// Three running commands whose cells divide the frame into two columns.
+fn app_with_summary_memory() -> App {
+    let first = ["cargo", "build", "first"].map(OsString::from);
+    let second = ["cargo", "build", "second"].map(OsString::from);
+    let third = ["cargo", "build", "third"].map(OsString::from);
+    let records = ProcessObservations::new([
+        ProcessObservation::cargo(100, &first),
+        ProcessObservation::cargo(200, &second),
+        ProcessObservation::cargo(300, &third),
+    ]);
+    let mut sequence = CensusSequence::default();
+    let mut groups = sequence.sample_capture(&records, &Capture::default());
+    assert_eq!(groups.len(), 3);
+    for (group, memory) in groups.iter_mut().zip([
+        Measurement::Reading(1 << 30),
+        Measurement::Reading(3 << 29),
+        Measurement::Reading(0),
+    ]) {
+        group.lead.memory = memory;
+    }
+    let mut app = App::new_for_test().expect("summary memory app");
+    app.roster.observe(groups, Instant::now());
+    app
+}
+
+/// Draw once to create command cells, settle their motion, then draw their final layout.
+fn draw_settled(terminal: &mut Terminal<TestBackend>, app: &mut App) -> String {
+    drop(draw(terminal, app));
+    app.tiles.settle_for_test();
+    draw(terminal, app)
+}
+
+/// The summary cell's own readout row: the text between its borders, without the cells beside it.
+fn summary_memory_foot_row(rendered: &str) -> &str {
+    rendered
+        .lines()
+        .find(|line| line.contains("mem 2.5G"))
+        .and_then(|line| line.split(['│', '├', '┤', '┼']).nth(1))
+        .expect("summary memory foot")
+}
+
 fn published_capture(entries: &[(&str, u32, &str)]) -> (TempDir, Capture, Vec<Vec<u8>>) {
     let root = tempfile::tempdir().expect("capture root");
     fs::create_dir_all(root.path().join("state/pids")).expect("registration directory");

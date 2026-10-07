@@ -285,6 +285,10 @@ pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
 pub(crate) const BYTES_PER_GIBIBYTE: u64 = 1 << 30;
 /// Unit suffix for resident-memory readings.
 pub(crate) const MEMORY_UNIT: &str = "G";
+/// Label before the summary's total resident memory.
+pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
+/// Marks a summary total that excludes commands whose memory could not be read.
+pub(crate) const PARTIAL_TOTAL_MARK: &str = "+";
 /// Shown in `start` when a process's timestamp cannot be interpreted.
 pub(crate) const UNRESOLVED_TIME: &str = "--:--";
 /// CPU, mem, compiler and managed columns share this marker when no reading is established.

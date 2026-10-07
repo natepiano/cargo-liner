@@ -26,6 +26,7 @@ pub use action::TileAction;
 pub use constants::MIN_INITIAL_ROWS;
 pub use constants::TABLE_CELL;
 pub use constants::TILE_ROWS_CONTENT_LABEL;
+pub use draw::SummaryFoot;
 pub use draw::TileCells;
 pub use draw::TileGridContents;
 pub use draw::draw_tile_cell;
