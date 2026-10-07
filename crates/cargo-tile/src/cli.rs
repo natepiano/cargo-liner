@@ -199,10 +199,16 @@ fn account_hook_report(operation: HookOperation) -> io::Result<()> {
 /// Run one operation for database accounts after checking administrative privileges.
 fn all_accounts(operation: HookOperation) -> io::Result<()> {
     if !geteuid().is_root() {
+        // Root has no rustup default toolchain, so `sudo cargo tile` fails
+        // where this binary's own path does not.
+        let executable = env::current_exe().map_or_else(
+            |_| "cargo tile".to_owned(),
+            |path| path.display().to_string(),
+        );
         return Err(io::Error::new(
             ErrorKind::PermissionDenied,
             format!(
-                "run sudo cargo tile {} --all-accounts",
+                "run sudo {executable} {} --all-accounts",
                 operation.subcommand()
             ),
         ));
@@ -459,7 +465,9 @@ mod tests {
     /// Discovery fails before any per-toolchain install can handle errors.
     #[test]
     fn a_toolchain_discovery_failure_exits_successfully() {
-        let rustup_home = tempdir().expect("rustup home with no toolchains directory");
+        let rustup_home = tempdir().expect("rustup home whose toolchains cannot be listed");
+        fs::write(rustup_home.path().join(TOOLCHAINS_DIR), "not a directory")
+            .expect("a file where the toolchains directory belongs");
         let output = install_in_child(rustup_home.path());
         let stderr = String::from_utf8_lossy(&output.stderr);
 

@@ -80,8 +80,8 @@ pub(crate) const HANDLER_SUBCOMMAND_NAME: &str = "handler";
 pub(crate) const PORT_SUBCOMMAND_NAME: &str = "port";
 
 // startup
-/// Shown in the settings overlay when a path cannot be resolved on this
-/// platform.
+/// Shown as a row's directory when its process's working directory cannot
+/// be read -- another account's process, for one.
 pub(crate) const UNRESOLVED_PATH: &str = "unavailable";
 
 // status line and overlays

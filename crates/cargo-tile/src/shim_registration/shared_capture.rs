@@ -906,6 +906,20 @@ fn uninstall_reports_an_orphan_and_restores_later_toolchains_before_failing() {
 }
 
 #[test]
+fn account_with_rustup_settings_but_no_toolchains_directory_has_no_toolchains() {
+    let directory = tempfile::tempdir().expect("account fixture");
+    let account = account_at(directory.path(), "root");
+    fs::create_dir(account.home.join(".rustup")).expect("rustup settings only");
+    let reports = hook::run_account_hooks(&[account], cargo_tile(), HookOperation::Install);
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reports[0].outcome,
+        AccountHookOutcome::NoToolchains,
+        "{reports:?}"
+    );
+}
+
+#[test]
 fn injected_account_reports_child_toolchain_discovery_failure() {
     let directory = tempfile::tempdir().expect("account fixture");
     let account = account_at(directory.path(), "runner");
