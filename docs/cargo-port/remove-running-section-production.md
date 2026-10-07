@@ -4,7 +4,7 @@
 
 ## Production Context
 
-- **Source plans:** one plan, which the showrunner wrote on 2026-10-06 from the user's request, with no producer split. It shipped, and the as-built doc `docs/cargo-port/as-built/targets-pane.md` replaced it. The cargo-tile unit runs `docs/cargo-tile/summary-super-cell.md`, which it wrote in its worktree.
+- **Source plans:** one plan, which the showrunner wrote on 2026-10-06 from the user's request, with no producer split. It shipped, and the as-built doc `docs/cargo-port/as-built/targets-pane.md` replaced it. The cargo-tile unit ran a plan it wrote in its worktree. All three phases shipped, and the as-built doc `docs/cargo-tile/as-built/summary-depth.md` replaced it.
 - **Repository:** `/home/natepiano/rust/cargo-liner`
 - **Merge branch:** `main`. The unit merges here, and only the showrunner pushes it.
 - **Showrunner checkout:** `/home/natepiano/rust/cargo-liner`
@@ -20,7 +20,7 @@
 | Unit | Plan | Worktree | Branch | Session | Port | Owns |
 | --- | --- | --- | --- | --- | --- | --- |
 | cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | `cargo-port-cleanup` (closed) | — | `crates/cargo-port`, `docs/cargo-port` |
-| cargo-tile | `docs/cargo-tile/summary-super-cell.md` | `/home/natepiano/rust/cargo-tile-enh` | `enh/cargo-tile` | `cargo-tile` | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
+| cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | `/home/natepiano/rust/cargo-tile-enh` | `enh/cargo-tile` | `cargo-tile` | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | berth-flake-unit | `docs/cargo-berth/berth-flake.md` | `/home/natepiano/rust/cargo-liner-berth-flake` | `fix/berth-flake` | `berth-flake` | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
 
 ## Hub files

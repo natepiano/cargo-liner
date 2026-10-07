@@ -104,6 +104,14 @@ The other impls: `Globals<App>` for `AppGlobalAction`, `PollWork<App>` for
 `Ticker`, `TileCells<NoGroup>` for `Cells`, `AppIdentity` for `CargoHandler`,
 and `AppConfig` for `Config`.
 
+Three choices come from `tui_pane` itself and hold for every app built on it.
+The summary cell is always there: `tui_pane::TABLE_CELL` is the constant 1, and
+no grid exists without it. The grid actions (`+`, `-`, the arrows) are variants
+of the app's own `AppGlobalAction`, whose `dispatch` calls `TileGrid::apply`
+with a `tui_pane` `TileAction`, so they stay in the app's `[global]` keymap
+table. `tui_pane` ships no colours: each app hands its own built-in palettes to
+`ThemeRegistry::from_dir_with_builtins` and keeps its own `themes/*.toml`.
+
 ## What The Template Already Does
 
 - **The grid.** Cell one is titled `summary` and reads `nothing to show yet`.
