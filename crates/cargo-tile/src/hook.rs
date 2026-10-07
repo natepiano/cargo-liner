@@ -640,9 +640,19 @@ impl Hook {
         let directory = home.join(TOOLCHAINS_DIR);
         let mut entries = Vec::new();
         let mut failures = Vec::new();
-        for entry in fs::read_dir(&directory).map_err(|error| {
-            io::Error::new(error.kind(), format!("{}: {error}", directory.display()))
-        })? {
+        // A rustup home with no toolchains directory -- root's, say -- has
+        // no toolchains; it has not failed discovery.
+        let listing = match fs::read_dir(&directory) {
+            Ok(listing) => listing,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", directory.display()),
+                ));
+            },
+        };
+        for entry in listing {
             match entry {
                 Ok(entry) => entries.push(entry.path()),
                 Err(error) => failures.push(HookDiscovery::InspectionFailed {

@@ -1538,11 +1538,15 @@ enum ColumnHead {
 /// are not using, and they are not using it precisely because they do
 /// not need it.
 ///
+/// Under [`ColumnHead::Summary`] the summary's shortfall is served first
+/// out of the room going spare, so the depth it needs never depends on
+/// where the focus is.
+///
 /// `focused` names the cell holding the focus ring, which is served
-/// first out of the room going spare. That settles nothing while there
-/// is enough to go round -- every short cell is filled either way --
-/// and decides it where there is not: the cell being watched gets what
-/// it asked for and the others divide what is left.
+/// next out of what is left. That settles nothing while there is enough
+/// to go round -- every short cell is filled either way -- and decides
+/// it where there is not: the cell being watched gets what it asked for
+/// and the others divide what is left.
 fn shares(
     wants: &[u16],
     height: u16,
@@ -1575,8 +1579,9 @@ fn shares(
         .map(|(share, asked)| share.saturating_sub(*asked))
         .collect();
 
-    // The focus ring first, then the rest of the short cells over
-    // whatever it left, each in proportion to how short it is.
+    // The summary first when it heads the column, then the focus ring,
+    // then the rest of the short cells over whatever they left, each in
+    // proportion to how short it is.
     let mut room = spare.iter().copied().fold(0, u16::saturating_add);
     let mut taken = vec![0; count];
     if matches!(head, ColumnHead::Summary(_)) {

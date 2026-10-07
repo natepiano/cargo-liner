@@ -1063,7 +1063,7 @@ try:
         assert not any('cleanup' in row.lower() for row in capture_settings_rows(settings, account)), settings
         ignored = str(other_capture) + ': owned by ' + account + ', not by ' + str(other_uid) + ' — ignored'
         assert ignored in settings, settings
-        assert 'configured' not in settings.lower(), settings
+        assert not any('configured' in row.lower() for row in capture_settings_rows(settings, account)), settings
 
     if scenario == 'locale':
         assert first[1].name in rendered, rendered

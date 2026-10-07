@@ -3773,6 +3773,39 @@ mod tests {
         }
     }
 
+    /// A runner's build whose directory cannot be read heads as its account and
+    /// "unavailable"; once the shim registers it, the heading is its checkout.
+    #[test]
+    fn a_runner_heading_names_its_checkout_once_the_shim_registers_it() {
+        let checkout = "/run/github-runner/runner-one/hana/hana";
+        let mut unread = owned(
+            crate::constants::UNRESOLVED_PATH,
+            40,
+            1000,
+            AccountName::Resolved("runner-one".into()),
+        );
+        unread.process.directory_identity = WorkingDirectoryIdentity::Unavailable;
+        let mut registered = same_second(checkout, 41);
+        registered.process.provenance = RowProvenance::Direct(capture_context());
+        for (row, heading) in [
+            (&unread, "[runner-one] unavailable"),
+            (
+                &registered,
+                "[runner-one] /run/github-runner/runner-one/hana/hana",
+            ),
+        ] {
+            let groups = group_by_path(&[row], PinnedGroup::Unpinned);
+            assert_eq!(groups[0].heading(), heading);
+            for kind in [TableKind::Command, TableKind::Summary] {
+                let text = grouped_table_text(&[row], kind, PinnedGroup::Unpinned);
+                assert!(
+                    text.lines().any(|line| line.trim() == heading),
+                    "{kind:?}: {text}"
+                );
+            }
+        }
+    }
+
     /// One uid in one absolute directory draws one heading, whichever member sorts first.
     #[test]
     fn an_owner_row_joins_a_captured_group_of_its_uid_and_directory() {
