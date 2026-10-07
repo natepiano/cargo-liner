@@ -2302,8 +2302,8 @@ mod tests {
             let mut row = row(None);
             let pid = Pid::from_u32(row.process.pid);
             let shares = HashMap::from([(pid, Measurement::Unavailable(reason))]);
-            row.process.cpu = census::scan::aggregate_cpu(&shares, std::iter::once(pid))
-                .map(census::scan::cpu_label);
+            row.process.cpu =
+                census::scan::aggregate(&shares, std::iter::once(pid)).map(census::scan::cpu_label);
 
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
@@ -2324,8 +2324,8 @@ mod tests {
             let mut row = row(None);
             let pid = Pid::from_u32(row.process.pid);
             let shares = HashMap::from([(pid, Measurement::Reading(reading))]);
-            row.process.cpu = census::scan::aggregate_cpu(&shares, std::iter::once(pid))
-                .map(census::scan::cpu_label);
+            row.process.cpu =
+                census::scan::aggregate(&shares, std::iter::once(pid)).map(census::scan::cpu_label);
 
             for kind in [TableKind::Command, TableKind::Summary] {
                 let buffer = measurement_row_buffer(&row, kind);
@@ -2437,6 +2437,8 @@ mod tests {
             duration:           "00:18".to_string(),
             cpu:                Measurement::Reading("12%".to_string()),
             subtree_cpu:        Measurement::Reading("12%".to_string()),
+            memory:             Measurement::Unavailable(MeasurementAbsence::Unproven),
+            subtree_memory:     Measurement::Unavailable(MeasurementAbsence::Unproven),
             compiler:           CompilerObservation::None,
             state:              state.map_or(CaptureLookup::Unregistered, |state| {
                 CaptureLookup::Registered(CaptureRead::Progress(state))
@@ -2764,6 +2766,8 @@ mod tests {
             duration: "00:18".to_string(),
             cpu: Measurement::Reading("12%".to_string()),
             subtree_cpu: Measurement::Reading("12%".to_string()),
+            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
+            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
             compiler: CompilerObservation::None,
             state: CaptureLookup::Unregistered,
             managed: Measurement::Reading(0),
@@ -2823,7 +2827,7 @@ mod tests {
         let shares: HashMap<_, _> = members.into_iter().zip(samples).collect();
         let mut lead = invocation(4100, &["test"]);
         lead.cpu =
-            census::scan::aggregate_cpu(&shares, members.into_iter()).map(census::scan::cpu_label);
+            census::scan::aggregate(&shares, members.into_iter()).map(census::scan::cpu_label);
         let rest = members[1..]
             .iter()
             .map(|pid| {

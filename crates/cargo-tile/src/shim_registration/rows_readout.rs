@@ -78,6 +78,8 @@ fn invocation(pid: u32, marker: &str) -> CargoProcess {
         duration: "00:18".to_owned(),
         cpu: Measurement::Reading("12%".to_owned()),
         subtree_cpu: Measurement::Reading("12%".to_owned()),
+        memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
         compiler: CompilerObservation::None,
         state: CaptureLookup::Unregistered,
         managed: Measurement::Reading(0),

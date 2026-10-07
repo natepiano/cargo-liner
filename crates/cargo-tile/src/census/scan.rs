@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
+use std::ops::Add;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -277,6 +278,10 @@ pub(crate) struct CargoProcess {
     /// prepared on the worker for promotion into the summary. Any unavailable
     /// contributor prevents publishing a partial total.
     pub(crate) subtree_cpu:        Measurement<String>,
+    /// Resident bytes. A group lead carries the group's total; other rows carry their own bucket.
+    pub(crate) memory:             Measurement<u64>,
+    /// This invocation's bucket plus every assembled cargo descendant, for the summary.
+    pub(crate) subtree_memory:     Measurement<u64>,
     /// Compiler processes this invocation currently owns, when observed. On the
     /// invocation leading a group this is the whole group's tally, so
     /// the summary reports the build rather than the driver process.
@@ -552,7 +557,10 @@ fn scan(
 /// Tasks are Linux threads. They inherit a process's name and command,
 /// so including them would draw one cargo invocation more than once.
 fn process_discovery_refresh_kind() -> ProcessRefreshKind {
-    ProcessRefreshKind::nothing().without_tasks().with_cpu()
+    ProcessRefreshKind::nothing()
+        .without_tasks()
+        .with_cpu()
+        .with_memory()
 }
 
 /// Fields read for cargo, its ancestors, and compiler ownership evidence.
@@ -610,6 +618,7 @@ pub(crate) struct ProcessObservation<'scan> {
     pub(super) environment: &'scan [OsString],
     pub(super) lifetime:    Cow<'scan, LifetimeEvidence>,
     pub(super) cpu:         Measurement<f32>,
+    pub(super) memory:      u64,
     pub(super) accumulated: u64,
     /// Ordered accounting stores the native read while metadata remains shared.
     pub(super) native_cpu:  Cell<Measurement<Duration>>,
@@ -646,6 +655,7 @@ impl<'scan> ProcessObservation<'scan> {
             uid: process.user_id().map(|uid| **uid).into(),
             environment: process.environ(),
             cpu,
+            memory: process.memory(),
             lifetime: Cow::Borrowed(lifetime),
             accumulated: process.accumulated_cpu_time(),
             native_cpu: Cell::new(Measurement::Unavailable(MeasurementAbsence::ReadFailed)),
@@ -694,6 +704,7 @@ impl<'scan> ProcessObservation<'scan> {
                 u64::from(pid),
             ))),
             cpu:         Measurement::Unavailable(MeasurementAbsence::Unproven),
+            memory:      0,
             accumulated: 0,
             native_cpu:  Cell::new(Measurement::Unavailable(MeasurementAbsence::ReadFailed)),
             started:     1,
@@ -806,6 +817,8 @@ pub(super) struct Census {
     compilers:                Vec<(Pid, &'static str)>,
     /// Per-process validation is consulted only for an invocation's own counter.
     cpu:                      HashMap<Pid, Measurement<f32>>,
+    /// Resident bytes for every process in the discovery refresh.
+    memory:                   HashMap<Pid, u64>,
     /// Own accumulated task time is the available counter on Darwin.
     accumulated:              HashMap<Pid, Duration>,
     /// Owners of retained invocations, named from this scan's account table.
@@ -853,6 +866,7 @@ impl Census {
             rowless_cargo:                  Vec::new(),
             compilers:                      Vec::new(),
             cpu:                            HashMap::new(),
+            memory:                         HashMap::new(),
             accumulated:                    HashMap::new(),
             owners:                         HashMap::new(),
             #[cfg(test)]
@@ -870,6 +884,7 @@ impl Census {
                 .accumulated
                 .insert(pid, Duration::from_millis(process.accumulated));
             census.cpu.insert(pid, process.cpu);
+            census.memory.insert(pid, process.memory);
             let name = process.name();
             if command_text::is_cargo_name(name) {
                 census.cargo.push(pid);
@@ -1020,7 +1035,18 @@ impl Census {
             .iter()
             .filter_map(|pid| self.identities.get(pid).cloned())
             .collect();
+        let memory_sampled: HashMap<_, _> = self
+            .attribute_memory(&smoothing.detached)
+            .into_iter()
+            .filter_map(|(pid, memory)| {
+                self.identities
+                    .get(&pid)
+                    .map(|identity| (identity.clone(), memory))
+            })
+            .collect();
+        let due = smoothing.is_due(now);
         let reported = smoothing.settle(&sampled, &identities, now);
+        let reported_memory = smoothing.report_memory(&memory_sampled, &identities, due);
         InvocationMeasurements {
             compilers: self.attribute_compilers(),
             cpu:       self
@@ -1031,6 +1057,16 @@ impl Census {
                         .get(pid)
                         .and_then(|identity| reported.get(identity))
                         .map(|cpu| (*pid, *cpu))
+                })
+                .collect(),
+            memory:    self
+                .cargo
+                .iter()
+                .filter_map(|pid| {
+                    self.identities
+                        .get(pid)
+                        .and_then(|identity| reported_memory.get(identity))
+                        .map(|memory| (*pid, *memory))
                 })
                 .collect(),
         }
@@ -1058,7 +1094,7 @@ impl Census {
         smoothing.cache_owners.retain(|identity, _| {
             self.compiler_credit_retention(identity) == CompilerCreditRetention::Keep
         });
-        let detached = self
+        smoothing.detached = self
             .detached_compilers(system, &targets)
             .into_iter()
             .filter(|&(compiler, owner)| {
@@ -1082,7 +1118,7 @@ impl Census {
             .map(|pid| (pid, InvocationCpuContributions::default()))
             .collect();
         let mut evidence = self.cpu.clone();
-        self.collect_cpu_work(&detached, &mut work, &mut evidence, read);
+        self.collect_cpu_work(&smoothing.detached, &mut work, &mut evidence, read);
         #[cfg(target_os = "linux")]
         self.exclude_nested_cpu(&mut work, smoothing);
         work.into_iter()
@@ -1099,6 +1135,31 @@ impl Census {
                     .or_default()
                     .measure(work, evidence, now);
                 Some((pid, sample))
+            })
+            .collect()
+    }
+
+    /// Resident bytes per row-holding cargo: its own process and every process assigned to it.
+    fn attribute_memory(&self, detached: &HashMap<Pid, Pid>) -> HashMap<Pid, Measurement<u64>> {
+        let mut buckets = HashMap::<Pid, u64>::new();
+        for (&pid, &bytes) in &self.memory {
+            let owner = match self.cpu_assignment(pid, detached) {
+                CpuAssignment::Direct(owner) | CpuAssignment::Detached { owner, .. } => owner,
+                CpuAssignment::Unassigned => continue,
+            };
+            let bucket = buckets.entry(owner).or_default();
+            *bucket = bucket.saturating_add(bytes);
+        }
+        self.cargo
+            .iter()
+            .map(|&pid| {
+                let memory = match self.memory.get(&pid) {
+                    Some(&bytes) if bytes > 0 => {
+                        Measurement::Reading(buckets.get(&pid).copied().unwrap_or_default())
+                    },
+                    _ => Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+                };
+                (pid, memory)
             })
             .collect()
     }
@@ -1983,33 +2044,44 @@ impl Census {
         let mut groups = self.assemble_groups(system, home, rows);
         for group in &mut groups {
             let members: Vec<_> = std::iter::once(&group.lead).chain(&group.rest).collect();
-            let totals = subtree_cpu(&attributed.cpu, &members, &process_rows);
+            let cpu_totals = subtree_totals(&attributed.cpu, &members, &process_rows);
+            let memory_totals = subtree_totals(&attributed.memory, &members, &process_rows);
             if process_rows.contains(&group.lead.invocation_id) {
-                let pids = members.iter().map(|row| Pid::from_u32(row.pid));
+                let pids: Vec<_> = members.iter().map(|row| Pid::from_u32(row.pid)).collect();
                 let proven: HashSet<_> = members
                     .iter()
                     .filter(|row| process_rows.contains(&row.invocation_id))
                     .map(|row| row.pid)
                     .collect();
-                let cpu = if members.iter().all(|row| proven.contains(&row.pid)) {
-                    aggregate_cpu(&attributed.cpu, pids.clone()).map(cpu_label)
+                let (cpu, memory) = if members.iter().all(|row| proven.contains(&row.pid)) {
+                    (
+                        aggregate(&attributed.cpu, pids.iter().copied()).map(cpu_label),
+                        aggregate(&attributed.memory, pids.iter().copied()),
+                    )
                 } else {
-                    Measurement::Unavailable(MeasurementAbsence::Unproven)
+                    (
+                        Measurement::Unavailable(MeasurementAbsence::Unproven),
+                        Measurement::Unavailable(MeasurementAbsence::Unproven),
+                    )
                 };
-                let compiler = aggregate_compilers(&attributed.compilers, pids);
+                let compiler = aggregate_compilers(&attributed.compilers, pids.into_iter());
                 group.lead.cpu = cpu;
+                group.lead.memory = memory;
                 group.lead.compiler = compiler;
             }
-            for (row, total) in std::iter::once(&mut group.lead)
+            for ((row, cpu), memory) in std::iter::once(&mut group.lead)
                 .chain(&mut group.rest)
-                .zip(totals)
+                .zip(cpu_totals)
+                .zip(memory_totals)
             {
-                row.subtree_cpu = total.map(cpu_label);
+                row.subtree_cpu = cpu.map(cpu_label);
+                row.subtree_memory = memory;
             }
             for row in &mut group.rest {
                 if process_rows.contains(&row.invocation_id) {
                     let pid = Pid::from_u32(row.pid);
-                    row.cpu = aggregate_cpu(&attributed.cpu, std::iter::once(pid)).map(cpu_label);
+                    row.cpu = aggregate(&attributed.cpu, std::iter::once(pid)).map(cpu_label);
+                    row.memory = aggregate(&attributed.memory, std::iter::once(pid));
                     row.compiler = attributed
                         .compilers
                         .get(&pid)
@@ -2189,7 +2261,10 @@ impl Census {
                 .unwrap_or(CompilerObservation::Unknown),
             Measurement::Reading(managed.len()),
             home,
-            aggregate_cpu(&attributed.cpu, whole_group.clone()),
+            ResourceUse {
+                cpu:    aggregate(&attributed.cpu, whole_group.clone()),
+                memory: aggregate(&attributed.memory, whole_group.clone()),
+            },
             &self.direct_capture(capture, root),
         )?;
         // The lead reports the whole group's compilers: what a developer
@@ -2217,7 +2292,10 @@ impl Census {
                         .unwrap_or(CompilerObservation::Unknown),
                     Measurement::Reading(under),
                     home,
-                    aggregate_cpu(&attributed.cpu, std::iter::once(pid)),
+                    ResourceUse {
+                        cpu:    aggregate(&attributed.cpu, std::iter::once(pid)),
+                        memory: aggregate(&attributed.memory, std::iter::once(pid)),
+                    },
                     &self.direct_capture(capture, pid),
                 )
                 .ok()?;
@@ -2379,31 +2457,32 @@ fn aggregate_compilers(
     })
 }
 
-/// One CPU share across a whole group; an unavailable or missing member
+/// One total across a whole group; an unavailable or missing member
 /// prevents publishing a partial total as a measured value.
-pub(crate) fn aggregate_cpu(
-    shares: &HashMap<Pid, Measurement<f32>>,
+pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(
+    shares: &HashMap<Pid, Measurement<T>>,
     members: impl Iterator<Item = Pid>,
-) -> Measurement<f32> {
+) -> Measurement<T> {
     let mut seen = HashSet::new();
-    members
-        .filter(|pid| seen.insert(*pid))
-        .fold(Measurement::Reading(0.0), |total, pid| {
+    members.filter(|pid| seen.insert(*pid)).fold(
+        Measurement::Reading(T::default()),
+        |total, pid| {
             total
                 + shares
                     .get(&pid)
                     .copied()
                     .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven))
-        })
+        },
+    )
 }
 
 /// Sum each pid bucket once per subtree while retaining unavailable identities.
 /// The membership order also indexes the returned totals, independently of row age.
-fn subtree_cpu(
-    shares: &HashMap<Pid, Measurement<f32>>,
+fn subtree_totals<T: Copy + Default + Add<Output = T>>(
+    shares: &HashMap<Pid, Measurement<T>>,
     members: &[&CargoProcess],
     process_rows: &HashSet<InvocationId>,
-) -> Vec<Measurement<f32>> {
+) -> Vec<Measurement<T>> {
     let indices: HashMap<_, _> = members
         .iter()
         .enumerate()
@@ -2413,7 +2492,7 @@ fn subtree_cpu(
         .iter()
         .map(|row| {
             if process_rows.contains(&row.invocation_id) {
-                aggregate_cpu(shares, std::iter::once(Pid::from_u32(row.pid)))
+                aggregate(shares, std::iter::once(Pid::from_u32(row.pid)))
             } else {
                 Measurement::Unavailable(MeasurementAbsence::Unproven)
             }
@@ -2453,7 +2532,7 @@ fn subtree_cpu(
             totals[parent] = totals[parent]
                 + match totals[index] {
                     Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
-                    Measurement::Reading(_) => aggregate_cpu(shares, additional.iter().copied()),
+                    Measurement::Reading(_) => aggregate(shares, additional.iter().copied()),
                 };
             contributors[parent].extend(additional);
             remaining_children[parent] -= 1;
@@ -2471,6 +2550,13 @@ fn subtree_cpu(
     totals
 }
 
+/// Processor share and resident bytes summed over the processes one row reports.
+#[derive(Clone, Copy)]
+struct ResourceUse {
+    cpu:    Measurement<f32>,
+    memory: Measurement<u64>,
+}
+
 /// Format one cargo process into its table row.
 fn row(
     process: &ProcessObservation<'_>,
@@ -2478,7 +2564,7 @@ fn row(
     compiler: CompilerObservation,
     managed: Measurement<usize>,
     home: ScannerHome<'_>,
-    cpu: Measurement<f32>,
+    used: ResourceUse,
     direct: &DirectAssociation,
 ) -> Result<CargoProcess, RowAbsence> {
     let (directory_identity, path, command) =
@@ -2502,8 +2588,10 @@ fn row(
         start,
         started,
         duration,
-        cpu: cpu.map(cpu_label),
+        cpu: used.cpu.map(cpu_label),
         subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        memory: used.memory,
+        subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
         compiler,
         state: CaptureLookup::Unregistered,
         managed,
@@ -2621,6 +2709,8 @@ fn registration_row(
         duration,
         cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
         subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
+        subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
         compiler: CompilerObservation::Unknown,
         state: capture.read(&direct.key),
         managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
@@ -2792,6 +2882,14 @@ impl CensusSequence {
         )
     }
 
+    /// Resident bytes per cargo when `detached` names each compiler root's owner.
+    pub(super) fn attribute_memory(
+        records: &ProcessObservations<'_>,
+        detached: &HashMap<Pid, Pid>,
+    ) -> HashMap<Pid, Measurement<u64>> {
+        Census::take(records.records.values()).attribute_memory(detached)
+    }
+
     fn sample_attributed(
         &mut self,
         records: &ProcessObservations<'_>,
@@ -2807,6 +2905,7 @@ impl CensusSequence {
         let attributed = InvocationMeasurements {
             compilers: census.attribute_compilers(),
             cpu,
+            memory: census.attribute_memory(&HashMap::new()),
         };
         census.groups(records, &attributed, home, capture)
     }
@@ -2863,6 +2962,7 @@ impl CensusSequence {
             records,
             &InvocationMeasurements {
                 cpu:       HashMap::new(),
+                memory:    HashMap::new(),
                 compilers: HashMap::new(),
             },
             ScannerHome::Known(Path::new("/writer")),
@@ -2970,6 +3070,7 @@ mod tests {
         InvocationMeasurements {
             compilers: HashMap::new(),
             cpu:       HashMap::new(),
+            memory:    HashMap::new(),
         }
     }
 
@@ -3197,13 +3298,17 @@ mod tests {
             CompilerObservation::None,
             Measurement::Reading(3),
             ScannerHome::Known(Path::new("/writer")),
-            Measurement::Reading(42.0),
+            ResourceUse {
+                cpu:    Measurement::Reading(42.0),
+                memory: Measurement::Reading(1_024),
+            },
             &capture.row_source(10),
         )
         .expect("merged process row");
         assert_eq!(row.pid, pid.as_u32());
         assert_eq!(row.path, "~/project");
         assert_eq!(row.cpu, Measurement::Reading("42%".into()));
+        assert_eq!(row.memory, Measurement::Reading(1_024));
         assert_eq!(row.managed, Measurement::Reading(3));
         assert_eq!(row.compiler, CompilerObservation::None);
     }
@@ -3680,6 +3785,14 @@ mod tests {
         assert_eq!(row.path, "~/project");
         assert_eq!(
             row.cpu,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            row.memory,
+            Measurement::Unavailable(MeasurementAbsence::Unproven)
+        );
+        assert_eq!(
+            row.subtree_memory,
             Measurement::Unavailable(MeasurementAbsence::Unproven)
         );
         assert_eq!(row.compiler, CompilerObservation::Unknown);
@@ -5404,6 +5517,7 @@ mod tests {
             rowless_cargo:            Vec::new(),
             compilers:                Vec::new(),
             cpu:                      HashMap::new(),
+            memory:                   HashMap::new(),
             accumulated:              HashMap::new(),
             owners:                   HashMap::new(),
             registration_rows:        Vec::new(),
@@ -5454,6 +5568,8 @@ mod tests {
             duration:           "00:01".to_owned(),
             cpu:                Measurement::Reading("0%".to_owned()),
             subtree_cpu:        Measurement::Reading("0%".to_owned()),
+            memory:             Measurement::Unavailable(MeasurementAbsence::Unproven),
+            subtree_memory:     Measurement::Unavailable(MeasurementAbsence::Unproven),
             compiler:           CompilerObservation::None,
             state:              CaptureLookup::Unregistered,
             managed:            Measurement::Reading(0),
@@ -6078,7 +6194,7 @@ mod tests {
         let members = [1, 2, 3].into_iter().map(Pid::from);
 
         assert_eq!(
-            aggregate_cpu(&shares, members).map(cpu_label).to_string(),
+            aggregate(&shares, members).map(cpu_label).to_string(),
             "391%"
         );
     }
@@ -6086,7 +6202,10 @@ mod tests {
     #[test]
     fn a_group_with_a_missing_share_is_unavailable() {
         assert_eq!(
-            aggregate_cpu(&HashMap::new(), std::iter::once(Pid::from(1))),
+            aggregate(
+                &HashMap::<Pid, Measurement<f32>>::new(),
+                std::iter::once(Pid::from(1)),
+            ),
             Measurement::Unavailable(MeasurementAbsence::Unproven),
         );
     }
@@ -6096,7 +6215,7 @@ mod tests {
         let pid = Pid::from(1);
         let shares = HashMap::from([(pid, Measurement::Reading(0.0))]);
         assert_eq!(
-            aggregate_cpu(&shares, std::iter::once(pid))
+            aggregate(&shares, std::iter::once(pid))
                 .map(cpu_label)
                 .to_string(),
             "0%",
@@ -6116,7 +6235,7 @@ mod tests {
             ]);
             for members in [[Pid::from(1), Pid::from(2)], [Pid::from(2), Pid::from(1)]] {
                 assert_eq!(
-                    aggregate_cpu(&shares, members.into_iter()),
+                    aggregate(&shares, members.into_iter()),
                     Measurement::Unavailable(reason)
                 );
             }

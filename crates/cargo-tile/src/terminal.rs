@@ -338,6 +338,8 @@ fraying = "leading"
             duration: "00:01".to_owned(),
             cpu: Measurement::Reading("0%".to_owned()),
             subtree_cpu: Measurement::Reading("0%".to_owned()),
+            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
+            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
             compiler: CompilerObservation::None,
             state,
             managed: Measurement::Reading(0),
@@ -394,6 +396,8 @@ fraying = "leading"
         let reading = scan_process(InvocationId::for_test(11), CaptureLookup::Unregistered);
         let unavailable = CargoProcess {
             cpu: Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
+            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
             compiler: CompilerObservation::Unknown,
             managed: Measurement::Unavailable(MeasurementAbsence::Unproven),
             ..reading.clone()

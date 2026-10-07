@@ -870,6 +870,8 @@ mod tests {
             duration: "00:01".to_string(),
             cpu: Measurement::Reading("0%".to_string()),
             subtree_cpu: Measurement::Reading("0%".to_string()),
+            memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
+            subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
             compiler: CompilerObservation::None,
             state: CaptureLookup::Unregistered,
             managed: Measurement::Reading(0),

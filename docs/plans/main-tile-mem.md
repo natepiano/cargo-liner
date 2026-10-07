@@ -13,6 +13,7 @@ it's purpose is to provide the memory usage of the running command as a column -
 ## Delegation Context
 
 - **Project:** `cargo-tile` — a terminal grid of every running cargo command, one cell per command plus a summary cell. Its grid is drawn by `tui_pane`, which `cargo-handler` and `cargo-port` also build on.
+- **Project started:** 2026-10-07T19:56:19.784+00:00
 - **Worktree:** `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`. Every seat works only here. Set by the showrunner (production doc, Units table).
 - **Stack:** Rust workspace, ratatui 0.30.2, sysinfo 0.39.6.
 - **Layout:**
@@ -45,7 +46,7 @@ it's purpose is to provide the memory usage of the running command as a column -
 
 ## Phases
 
-### Phase 1 — Measure each command's memory  · status: todo
+### Phase 1 — Measure each command's memory  · status: done
 
 #### Work Order
 
