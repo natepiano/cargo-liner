@@ -9,7 +9,7 @@ The pieces:
 - A shared `/tmp/cargo-tile/<uid>` directory, read for every account and swept only for the reader's own, with each file proved on its own before unlink.
 - Registration parsing bound to kernel birth stamps, with a diagnostic for a newer framing version.
 - `install`, `uninstall` and `status` for every account, reporting each toolchain by name. A Darwin account keeps its full group membership past the 16-group `setgroups` limit.
-- Cargo rows that report the CPU time their invocation causes, including reaped children and compiler-cache work.
+- Cargo rows that report the CPU time their invocation causes, including reaped children and compiler-cache work, and the resident memory of the live processes it owns.
 - A Settings pane in which every line can be scrolled to.
 - A Linux desktop backdrop that does not spawn a process or open a session-bus connection on every capture tick.
 - cargo-berth readers that tolerate the `merge_extent_observed` journal record, with evidence decisions that match the live answer.
@@ -119,9 +119,9 @@ A legacy record can annotate a process row and never sources one. The generation
 
 Each scan (`census::scan` in `crates/cargo-tile/src/census/scan.rs`) takes `Capture::take(roots)` before the detail pass, adds every registered pid and its ancestors to the detailed set, then runs `include_registered_processes`, `identify_capture_wrappers` (processes whose argv forwards the registered command, the shim's JSON rewrite included, via `forwards_capture_command`), `collapse_shims` (an outer cargo with exactly one cargo child, same subcommand, same directory by `DirectoryComparison`), `identify_captures`, `select_rows`, `groups` and `associate_status`.
 
-Ownership resolves through `Capture::select(pid)`: the lowest root index first, then within that root one confirmed key, otherwise `Ambiguous`. `Census::captured_run` walks parents up to `PARENT_WALK_LIMIT` for the nearest selection. `Census::direct_capture` yields `DirectAssociation::Direct` only when the walk from the process to the shim pid crosses nothing but observed wrappers; any other intervening process gives the row `CaptureMembership::Enclosing`. A directly captured process row takes its directory and command from the record per field (`row_fields`) before display formatting. A confirmed registration with no directly representing process row sources its own row through `registration_row`: the record's directory, `cargo <args>`, the shim pid, start from the registration file's mtime, cpu and managed `Unavailable(Unproven)`. `registration_directory` shortens the directory to `~` only when the record's `WriterHome` is known and equals the scanner's home, so another account's path is shown in full. `RowProvenance::{Direct, Enclosing}` carries `CaptureContext { root, incarnation, account }`; `RowProvenance::Uncaptured(ProcessOwner)` carries the process owner's `Account`, named on the worker from the same `Users` table `Capture` named its roots from. `GroupingIdentity` in `crates/cargo-tile/src/render.rs` groups on that plus the raw `WorkingDirectoryIdentity`, so headings carry `[account]` and rows from different accounts never merge; an owner-only row joins the first captured group of its uid and directory.
+Ownership resolves through `Capture::select(pid)`: the lowest root index first, then within that root one confirmed key, otherwise `Ambiguous`. `Census::captured_run` walks parents up to `PARENT_WALK_LIMIT` for the nearest selection. `Census::direct_capture` yields `DirectAssociation::Direct` only when the walk from the process to the shim pid crosses nothing but observed wrappers; any other intervening process gives the row `CaptureMembership::Enclosing`. A directly captured process row takes its directory and command from the record per field (`row_fields`) before display formatting. A confirmed registration with no directly representing process row sources its own row through `registration_row`: the record's directory, `cargo <args>`, the shim pid, start from the registration file's mtime, and CPU, memory and managed measurements set to `Unavailable(Unproven)`. `registration_directory` shortens the directory to `~` only when the record's `WriterHome` is known and equals the scanner's home, so another account's path is shown in full. `RowProvenance::{Direct, Enclosing}` carries `CaptureContext { root, incarnation, account }`; `RowProvenance::Uncaptured(ProcessOwner)` carries the process owner's `Account`, named on the worker from the same `Users` table `Capture` named its roots from. `GroupingIdentity` in `crates/cargo-tile/src/render.rs` groups on that plus the raw `WorkingDirectoryIdentity`, so headings carry `[account]` and rows from different accounts never merge; an owner-only row joins the first captured group of its uid and directory.
 
-### Process census and CPU accounting (`crates/cargo-tile/src/census/`)
+### Process census, CPU and memory accounting (`crates/cargo-tile/src/census/`)
 
 **Module layout.** `mod.rs` re-exports only thirteen items used outside `census`: `command_name`, `DirectAssociation`, `SelectedProof`, `Measurement`, `InvocationId`, `VisibleParent`, `Ancestor`, `CargoGroup`, `CargoProcess`, `CompilerObservation`, `RowProvenance`, `RunStart`, `spawn_with_resolver`. Code inside `census` imports from the owning submodule.
 
@@ -135,10 +135,10 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 
 **Measurements.**
 - `Measurement<T>` is `Reading(T)` or `Unavailable(MeasurementAbsence::{FirstObservation, ReadFailed, Unproven})`. Adding any `Unavailable` to anything yields `Unavailable`.
-- `InvocationMeasurements { compilers, cpu }` holds disjoint per-pid buckets. A nested cargo's bucket is its own and is never folded into its parent's.
+- `InvocationMeasurements { compilers, cpu, memory }` holds the observations used to assemble rows. Its CPU and memory maps hold disjoint per-invocation buckets. A nested cargo's bucket is its own and is never folded into its parent's.
 
 **Cumulative CPU.**
-- `InvocationCpuAccounting` persists across scans. It holds `owners`, `invocations: HashMap<InvocationId, InvocationCpuHistory>`, `targets`, `cache_owners`, `identities`, `observed`, `settled`, `reported`, and `publication`.
+- `InvocationCpuAccounting` persists across scans. It holds `owners`, `invocations: HashMap<InvocationId, InvocationCpuHistory>`, `targets`, `cache_owners`, `identities`, `observed`, `settled`, `reported`, `detached`, `reported_memory`, and `publication`.
 - `InvocationCpuHistory::measure(InvocationCpuContributions { tree, detached, nested }, evidence, now)`:
   1. Updates each `RetainedSubtreeCpuTime`. On Linux the subtree total is the maximum of the current sum. On other platforms each process's maximum observed time is retained after the process exits.
   2. On Linux, subtracts retained nested-cargo totals.
@@ -158,13 +158,15 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 
 **Smoothing.** `settle` moves each settled reading toward the latest sample over `CPU_SMOOTHING_SECONDS` and publishes every `CPU_REPORT_MILLIS`. An unavailable sample replaces the published reading at once.
 
+**Resident memory.** The full-system discovery refresh reads each process's resident bytes on every scan. `attribute_memory` assigns each live process through the same direct or detached ownership used for CPU. `report_memory` publishes on the CPU reporting cadence, holds readable values between reports, and passes unavailability and recovery through immediately.
+
 **Grouping (`Census::groups`).**
 1. Builds process rows and snapshots `process_rows: HashSet<InvocationId>`.
 2. Only then appends registration-sourced rows (plus the `cfg(test)` `registration_rows`).
 3. Assembles groups.
-4. For each group, `subtree_cpu(&shares, &members, &process_rows)` walks the tree leaves first. It seeds a member from its pid bucket only when its identity is in `process_rows` and adds each descendant's pids once. Any unproven contributor or a cyclic parent chain makes the total `Unavailable(Unproven)`.
+4. For each group, `subtree_totals` walks the tree leaves first for CPU and memory. It seeds a member from its pid bucket only when its identity is in `process_rows` and adds each descendant's pids once. Any unproven contributor or a cyclic parent chain makes the total `Unavailable(Unproven)`.
 
-`CargoProcess.subtree_cpu` carries the result. `render::summary_rows` draws it for a promoted summary row. Command rows keep `aggregate_cpu`, which charges a pid shared by two rows once.
+`CargoProcess.subtree_cpu` and `CargoProcess.subtree_memory` carry the results. `render::summary_rows` draws them for a promoted summary row. Command rows keep their group or invocation values in `cpu` and `memory`; generic `aggregate` charges a pid shared by two rows once.
 
 **Test adapters.** `groups_with_registration_rows_for_test` and `groups_with_cpu_for_test` are `cfg(test)`. `census/summary_totals_tests.rs` (a `cfg(test)` module) drives them.
 
@@ -221,7 +223,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 - `SettingsRowIdentity::{Decoration, Selectable(SettingsRowPayload)}` (`settings_store/row.rs`): a selectable payload must equal the row's zero-based position among selectable rows.
 - Consumers: `cargo-tile` `render.rs` (geometry, `update_scroll`, then `render_lines`), `navigation.rs` and `interaction.rs`.
 - Input: crossterm carries the `use-dev-tty` feature in `crates/cargo-tile/Cargo.toml`. This selects the level-triggered Unix input backend, so a keystroke that arrives together with a resize is not lost.
-- Rows readout: `draw_with_readout`, `content_area` and `rows_readout_height` in `render.rs` split a tile's interior between contents and the readout row. The readout row counts toward height demand, and a one-row interior shows only the readout.
+- Rows readout: `draw_tile_grid`, `content_area` and `rows_readout_height` in `tiles/draw.rs` split a tile's interior between contents and the readout row. The public `SummaryFoot::{Empty, Text}` and defaulted `TileCells::summary_foot` let the summary use the left end of that row. Its rows readout stays whole at the right when it fits after a two-cell gap, and is omitted otherwise. The foot adds no row, the readout row counts toward height demand, and a one-row interior shows only that bottom row.
 
 ### Linux backdrop (`crates/tui_pane/src/backdrop/desktop/platform/linux/`, `backdrop/monitor/mod.rs`, `theme/poller.rs`)
 
@@ -328,7 +330,7 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - A live capture under the real path, scanned through the `/private/tmp` alias, survives the sweep. A record carrying a legacy `{ sec = ` boot is reported `IdentityUnknown` and never unlinked.
 - The reader reaps its own ended capture and leaves a foreign-owned directory untouched. The obsolete `roots` key is ignored.
 - `reader_regression` covers nested shims, a quiet JSON caller, recovery from ambiguity, locale and timezone variation, legacy registration survival, and removal of an ended staging file.
-- `census/summary_totals_tests.rs` covers promoted-summary CPU totals, including zero-own-tick parents and unreadable counters.
+- `census/summary_totals_tests.rs` covers promoted-summary CPU totals, including zero-own-tick parents and unreadable counters. `census/memory_tests.rs` covers memory attribution, group and subtree totals, publication cadence, and unavailable rows.
 - `root_scan/sweep_authority.rs` (`acl_tests`, `cfg(all(test, target_os = "macos"))`, 20 tests) exercises real ACLs through `/bin/chmod +a` with `CAPTURE_ACL_TEST_*` fixture constants.
 - cargo-berth `tests/reader_compat.rs` checks a chosen reader against the frozen `merge_extent_observed` ledger.
 
@@ -352,7 +354,7 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
   - Darwin: pass the credential-limit prefix and the uid to `__initgroups`, with the primary gid first.
   - Linux: pass the full list to `setgroups`.
   - All allocation and conversion happen in the parent. `pre_exec` makes credential syscalls only.
-- `Census::groups` snapshots `process_rows` before it injects registration rows. Subtree totals seed only members in that set. CPU aggregation keys on invocation identity and charges a pid once per lead.
+- `Census::groups` snapshots `process_rows` before it injects registration rows. CPU and memory subtree totals seed only members in that set. Aggregation keys on invocation identity and charges a pid once per lead.
 - Detached compiler work is charged only for a `CompileOwner::Unique`. Ancestry takes precedence.
 - `progress/mod.rs` and `census/mod.rs` re-export only items used across the crate. Other consumers import from the owning submodule.
 - Settings content is painted through `SettingsPane::render_lines`. A selectable row's payload is its position among selectable rows. The settings pane does no filesystem access; everything it shows was observed on the worker.
@@ -391,10 +393,11 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - A cargo-tile older than v3 framing writes `cargo-tile-v2`. When install progress is missing, check the installed version first.
 - The staged executable relies on the parent of `CAPTURE_ROOT` being sticky and root-owned.
 
-**CPU and census.**
+**CPU, memory and census.**
 - Two invocation identities can share one pid: a registration fallback and a process row whose command differs. Anything keyed on pid charges that pid twice.
 - A contested compile is refused silently: the row shows only its own tree's time.
 - On non-Linux platforms the counter is sysinfo's: `accumulated_cpu_time()` is quantized, and a rate is trustworthy only when the previous accumulated counter is positive. Start times are whole seconds, which is why registration-sourced rows use the registration mtime. `UpdateKind::OnlyIfNotSet` never re-reads a populated field, so the detail pass builds a fresh `System` per scan.
+- Resident memory is sampled on every `PROCESS_POLL_MILLIS` scan and reaches the table on the `CPU_REPORT_MILLIS` cadence. It is held, not smoothed.
 - An import used only under `cfg(target_os = "linux")` passes Linux lint but fails macOS lint as unused. `invocation_cpu_accounting.rs` guards those imports.
 - `RowAbsence::ProgramRejected` and `PolicyExcluded` both render as `GroupAbsence::Excluded`.
 
@@ -467,8 +470,9 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - `install` exits zero and `uninstall` exits nonzero because job-start hooks must not fail over capture setup, while automation must not read a partial uninstall as complete.
 - Restoring `cargo-tile-real` before installing over it was ruled out; the round trip is the window in which a second installer saves a shim as the real cargo. A file-locking dependency was ruled out in favour of the existing exclusive-create idiom.
 
-**CPU and census.**
+**CPU, memory and census.**
 - Counters are cumulative, including `cutime`/`cstime`, because rates from per-process snapshots miss reaped children and blank the row whenever a descendant appears or exits.
+- Memory is a resident-byte snapshot of live attributed processes, not a cumulative counter.
 - A contested compile charges nothing because every other choice overstates some row.
 - Command-text parsing is not folded into `scan.rs`: `scan.rs` is the largest file, and parsing has its own tests and no `Census` dependency.
 - Types are not re-exported beyond cross-crate use, so each consumer names the owning module.

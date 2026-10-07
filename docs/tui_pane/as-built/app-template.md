@@ -104,6 +104,11 @@ The other impls: `Globals<App>` for `AppGlobalAction`, `PollWork<App>` for
 `Ticker`, `TileCells<NoGroup>` for `Cells`, `AppIdentity` for `CargoHandler`,
 and `AppConfig` for `Config`.
 
+`TileCells` requires `summary_title`, `demands` and `draw`. Its defaulted
+`summary_foot`, `summary_labels` and `group_title` methods let an app add
+summary-foot text and border labels or name group cells without changing a
+minimal implementation. `summary_foot` returns `SummaryFoot::Empty` by default.
+
 Three choices come from `tui_pane` itself and hold for every app built on it.
 The summary cell is always there: `tui_pane::TABLE_CELL` is the constant 1, and
 no grid exists without it. The grid actions (`+`, `-`, the arrows) are variants
@@ -119,7 +124,8 @@ table. `tui_pane` ships no colours: each app hands its own built-in palettes to
   Tab / shift-Tab move the focus ring, and a click focuses the cell under it.
   The first column grows to `[tiles] initial_rows` (default 4, stepped in the
   settings overlay) before the grid squares up, and cells animate between
-  arrangements. Every cell's last row carries the framework's readout.
+  arrangements. Every cell reserves its last row for the framework's readout;
+  the summary can also carry an app-supplied foot at the left end of that row.
 - **The attract screen.** `a` shows or hides it, and it comes on by itself
   over the idle grid after a quiet spell. `r` draws one at random and `u` undoes
   that replacement. While it was asked for, the keys its three animation scopes
@@ -193,7 +199,7 @@ in makes the compiler name every site that has to handle it.
 | a setting | a field on `Config`, an `AppSetting` variant, a `SettingsRows::stepper` row in `settings::rows`, and an arm in `cycle`'s `SettingTarget::App` match; `the_default_config_serializes_to_the_known_file` pins the default `config.toml` |
 | a pane | an `AppPaneId` variant; a registration in `keymap::build_keymap`, `register` for a pane whose keys go in `keymap.toml` as the attract panes and favorites do, `register_pane` for one with none as the grid does; an entry in `APP_PANE_DISPLAY_ORDER`, or its shortcuts go unlisted; an arm in `HitTestRegistry::pane` and a place in `HIT_TEST_Z_ORDER` if a click can land on it; a rectangle in `render::draw_panes`, which gives the whole body to the grid |
 | a status-line entry | a `StatusLineNote` in `render::draw_status_line`'s notes, or a `StatusLineGlobal` in its globals |
-| tile contents | an id type in place of `NoGroup` in `tiles.rs`, and `Cells`' `summary_title`, `demands` and `draw` in `render.rs` |
+| tile contents | an id type in place of `NoGroup` in `tiles.rs`, and `Cells`' `summary_title`, `demands` and `draw` in `render.rs`; implement `summary_foot` when the summary needs text on its bottom row |
 
 ## Tests And Goldens
 

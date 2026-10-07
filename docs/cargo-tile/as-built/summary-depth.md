@@ -36,6 +36,8 @@ Every depth item is private to `crates/tui_pane/src/tiles/grid.rs`.
 
 cargo-tile's `tile_demands` (`crates/cargo-tile/src/render.rs`) measures the summary's `table_height` at the summary's entry in `content_widths`. That entry is the interior of the rect `Grid::new` gives the summary, widening included. cargo-handler's summary ask does not depend on width.
 
+The summary foot is requested only while the summary contents are shown. It shares the readout row already added in step 4, so it changes neither the summary's ask nor its depth.
+
 ### The depth rule
 
 `sync` calls `summary_depth` with fresh asks: `cell_wants` over the demands just measured, for the arrangement the scan is headed to. Starting from `k = 1`, it returns the first `k` whose `summary_share` over the full `area.height` reaches the summary's ask.
