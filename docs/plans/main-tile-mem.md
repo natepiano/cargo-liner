@@ -48,70 +48,26 @@ it's purpose is to provide the memory usage of the running command as a column -
 
 ### Phase 1 — Measure each command's memory  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Every `CargoProcess` the scan produces carries the resident memory of its command, attributed the way `cpu` is. Nothing on screen changes.
-
-**Spec:**
-
-Memory is resident set size in bytes, read from sysinfo's `Process::memory()` (author's call: resident, not virtual).
-
-1. **Read.** `process_discovery_refresh_kind()` adds `.with_memory()`. Named cost: on Linux sysinfo then reads `/proc/<pid>/statm` once per process per scan, about 2 ms per scan at 900 processes (measured on natedev 2026-10-07); on macOS it is the same `proc_pidinfo` call `with_cpu()` already makes.
-2. **Observe.** `ProcessObservation` gains `pub(super) memory: u64`, set from `process.memory()` in `metadata` and `0` in the test constructor `cargo`. `Census` gains `memory: HashMap<Pid, u64>`, filled in `take` for every process.
-3. **Attribute.** New `Census` method:
-   ```rust
-   /// Resident bytes per row-holding cargo: its own process and every process assigned to it.
-   fn attribute_memory(&self, detached: &HashMap<Pid, Pid>) -> HashMap<Pid, Measurement<u64>>
-   ```
-   For each `(pid, bytes)` in `self.memory`, `self.cpu_assignment(pid, detached)` names the owner: `Direct(owner)` and `Detached { owner, .. }` add `bytes` to the owner's bucket (saturating); `Unassigned` adds nothing. Buckets are disjoint: a nested cargo keeps its own bucket and its parent's does not include it, the same as `cpu`. The result has one entry per pid in `self.cargo`: `Unavailable(MeasurementAbsence::ReadFailed)` when that pid's own process is missing from `self.memory` or reads `0` (a live process always has resident pages; macOS reads `0` for a process another user owns), otherwise `Reading(bucket)`. Named cost: one more `cpu_assignment` walk per process per scan.
-4. **Share the detached map.** `attribute_cpu_with` already builds `detached` (compiler pid → owner pid, how sccache-started compilers are credited). It stores that map in a new field `InvocationCpuAccounting::detached: HashMap<Pid, Pid>`, replaced every scan, so its signature and its tests stay as they are. `attribute_with` passes `&smoothing.detached` to `attribute_memory` after the cpu pass.
-5. **Hold.** The `mem` reading changes on the same scans the `cpu` reading does. `InvocationCpuAccounting` gains `reported_memory: HashMap<InvocationId, Measurement<u64>>` and:
-   ```rust
-   /// What the `mem` column carries: replaced when a cpu reading falls due.
-   pub(super) fn report_memory(
-       &mut self,
-       sampled: &HashMap<InvocationId, Measurement<u64>>,
-       cargo: &[InvocationId],
-       due: bool,
-   ) -> HashMap<InvocationId, Measurement<u64>>
-   ```
-   It drops identities not in `cargo`. For each identity in `cargo` the sample is its entry in `sampled`, or `Unavailable(Unproven)`. The sample replaces the held value when `due`, when nothing is held, or when either the held value or the sample is `Unavailable`. It returns a clone of the held map. In `attribute_with`, read `let due = smoothing.is_due(now);` **before** `smoothing.settle(..)`, which stamps the publication. Key the samples by `self.identities`, as the cpu samples are.
-6. **Carry.** `InvocationMeasurements` gains `pub(super) memory: HashMap<Pid, Measurement<u64>>`. `CargoProcess` gains, directly after `subtree_cpu`:
-   ```rust
-   /// Resident bytes. A group lead carries the group's total; other rows carry their own bucket.
-   pub(crate) memory:         Measurement<u64>,
-   /// This invocation's bucket plus every assembled cargo descendant, for the summary.
-   pub(crate) subtree_memory: Measurement<u64>,
-   ```
-7. **Aggregate through the cpu code, not a copy of it.** `aggregate_cpu` becomes generic and is renamed `aggregate`:
-   `pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(shares: &HashMap<Pid, Measurement<T>>, members: impl Iterator<Item = Pid>) -> Measurement<T>` (the fold starts at `Measurement::Reading(T::default())`). `subtree_cpu` becomes generic the same way and is renamed `subtree_totals`. Every place `groups` (1984–2020), `group` (2192, 2220) and `row` set `cpu` or `subtree_cpu` from `attributed.cpu` also sets `memory` or `subtree_memory` from `attributed.memory`, under the same conditions and with no label step (bytes stay bytes). `row` takes the memory measurement as a parameter. `registration_row` sets both to `Unavailable(MeasurementAbsence::Unproven)`. Update the three `aggregate_cpu` call sites in `render.rs` tests (2305, 2327, 2826).
-8. **Fixtures.** `CensusSequence::sample_attributed` adds `memory: census.attribute_memory(&HashMap::new())`, so a fixture's `ProcessObservation.memory` reaches its rows. `CensusSequence::assemble` and `no_measurements` add `memory: HashMap::new()`. Every `CargoProcess { .. }` literal gains both fields as `Measurement::Unavailable(MeasurementAbsence::Unproven)`: `terminal.rs` (328, 358, 395), `roster.rs` (858), `shim_registration/rows_readout.rs` (68), `render.rs` (2425, 2752), `census/scan.rs` (5444), and `census/summary_totals_tests.rs` (255) if it builds one in full.
-9. **Tests**, in a new `crates/cargo-tile/src/census/memory_tests.rs`, declared `#[cfg(test)] mod memory_tests;` in `census/mod.rs`. Build processes with `ProcessObservation::cargo(pid, argv)`, set `parent` and `memory`, and run them through `CensusSequence` as `summary_totals_tests.rs` does; a non-cargo child is a `cargo` observation whose `name` is replaced.
-   - a command's reading is its own bytes plus its non-cargo children's;
-   - in a driver → child → nested tree the lead reads the whole group, each other row reads its own bucket, and the child's `subtree_memory` is its bucket plus the nested one;
-   - a cargo whose own process reads `0` is `Unavailable`, and so is its group lead (no partial total);
-   - a process under a detached compiler root is credited to the owner named in the `detached` map (call `attribute_memory` directly);
-   - `report_memory` keeps a held reading while not due, takes the new one when due, and passes a first reading and an `Unavailable` sample straight through;
-   - a registration-only row has no reading.
+- The census reads resident memory for every process: `process_discovery_refresh_kind()` asks sysinfo for it, `ProcessObservation.memory: u64` carries it, and `Census.memory: HashMap<Pid, u64>` holds it. `Census::attribute_memory(&self, detached: &HashMap<Pid, Pid>) -> HashMap<Pid, Measurement<u64>>` attributes it per cargo command the way cpu is attributed, compilers started through sccache included.
+- `CargoProcess.memory: Measurement<u64>` and `CargoProcess.subtree_memory: Measurement<u64>` hold resident bytes and sit directly after `subtree_cpu`. A group lead's `memory` is its whole group's total; every other row's is its own bucket. `subtree_memory` is the row's own bucket plus its nested cargo descendants. A registration-only row has both as `Unavailable(Unproven)`.
+- Readings change on the same scans as the cpu reading. `InvocationCpuAccounting::report_memory(&mut self, sampled, cargo: &[InvocationId], due: bool)` keeps a held reading until `due`, replaces it at once when the held value or the new sample is unavailable, and drops commands that have left. `attribute_with` reads `is_due` before `settle`.
+- `aggregate` (`pub(crate)`) and `subtree_totals` in `census/scan.rs` are generic over `T: Copy + Default + Add<Output = T>` and serve cpu and memory.
+- Nothing drawn differs: `TABLE_HEADERS` is unchanged.
 
 **Files:**
-- `crates/cargo-tile/src/census/scan.rs` — refresh kind, `ProcessObservation.memory`, `Census.memory`, `attribute_memory`, `attribute_with`, generic `aggregate` and `subtree_totals`, `CargoProcess` fields, `row`, `registration_row`, `groups`, `group`, fixtures.
-- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `InvocationMeasurements.memory`, `detached`, `reported_memory`, `report_memory`.
-- `crates/cargo-tile/src/census/mod.rs` — declares `memory_tests`.
-- `crates/cargo-tile/src/census/memory_tests.rs` — new; the tests above.
-- `crates/cargo-tile/src/census/summary_totals_tests.rs` — literal fields, if any.
-- `crates/cargo-tile/src/render.rs` — test literals and the renamed `aggregate` calls only.
-- `crates/cargo-tile/src/roster.rs` — test literal.
-- `crates/cargo-tile/src/terminal.rs` — test literals.
-- `crates/cargo-tile/src/shim_registration/rows_readout.rs` — test literal.
+- `crates/cargo-tile/src/census/scan.rs` — the memory read, attribution, aggregation, the two row fields, and the test fixture `CensusSequence::attribute_memory`.
+- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — `InvocationMeasurements.memory`, the held readings (`reported_memory`), and the detached-compiler map shared by cpu and memory (`detached`).
+- `crates/cargo-tile/src/census/memory_tests.rs` — eight fixture tests, declared in `census/mod.rs`.
 
-**Seats:** 1 writer + 1 tester — the code is one chain through `scan.rs`, and the tests are a new file written from the Spec.
-- `impl` — every file above except `memory_tests.rs`; hub: `crates/cargo-tile/src/census/mod.rs` (declares the test module).
-- `test` — `crates/cargo-tile/src/census/memory_tests.rs`, from Spec items 2, 3, 5, 6 and 9.
+**Binds later work:** `CargoProcess.memory` and `subtree_memory` are `Measurement<u64>` in bytes, already held to the cpu reporting interval, so the `mem` column and the summary total format what they are given. Every `CargoProcess` literal carries both fields. `aggregate_cpu` no longer exists; `aggregate` replaces it.
 
-**Constraints from prior phases:**
+**Gotchas:**
+- A cargo whose own process reads 0 bytes, or is absent from the sample, is `Unavailable(ReadFailed)`, and so is its group total.
+- `row` takes cpu and memory together as one private `ResourceUse` value, which keeps it inside the crate's argument-count lint.
 
-**Acceptance gate:** Build, Test and Lint from the Delegation Context are green, with every test in Spec item 9 present and passing. `TABLE_HEADERS` is unchanged, so no drawn cell differs from before this phase.
+**Ruled out:** revalidating a process's lifetime for memory when a pid is reused between the two refreshes of one scan: too unlikely to earn mechanism.
 
 ### Phase 2 — Show the `mem` column  · status: todo
 
@@ -148,7 +104,7 @@ Memory is resident set size in bytes, read from sysinfo's `Process::memory()` (a
 - `impl` — `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/render.rs`.
 - `test` — opens as impl: `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`.
 
-**Constraints from prior phases:** Phase 1 put `memory: Measurement<u64>` and `subtree_memory: Measurement<u64>` (resident bytes) on `CargoProcess`, directly after `subtree_cpu`. A group lead's `memory` is its whole group's total; every other row's is its own bucket. Readings are already held to the cpu reporting interval on the worker, so render formats what it is given. `aggregate_cpu` is now `aggregate`.
+**Constraints from prior phases:** Phase 1 put `memory: Measurement<u64>` and `subtree_memory: Measurement<u64>` (resident bytes) on `CargoProcess`, directly after `subtree_cpu`. A group lead's `memory` is its whole group's total; every other row's is its own bucket. Readings are already held to the cpu reporting interval on the worker, so render formats what it is given. `aggregate_cpu` is now `aggregate`. The two test row builders in `render.rs` (`CargoProcess` literals near 2437 and 2766) already carry both fields as `Measurement::Unavailable(MeasurementAbsence::Unproven)`; a render test sets `row.process.memory` to the reading it needs.
 
 **Acceptance gate:** Build, Test and Lint from the Delegation Context are green with the Spec item 5 tests. Running `cargo-tile` beside a build shows `mem` between `cpu` and `command` in the summary and in the build's own cell, as `N.NG`.
 
