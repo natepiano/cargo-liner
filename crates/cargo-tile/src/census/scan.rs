@@ -1044,9 +1044,9 @@ impl Census {
                     .map(|identity| (identity.clone(), memory))
             })
             .collect();
-        let due = smoothing.is_due(now);
+        let memory_report = smoothing.memory_report(now);
         let reported = smoothing.settle(&sampled, &identities, now);
-        let reported_memory = smoothing.report_memory(&memory_sampled, &identities, due);
+        let reported_memory = smoothing.report_memory(&memory_sampled, &identities, memory_report);
         InvocationMeasurements {
             compilers: self.attribute_compilers(),
             cpu:       self
@@ -2460,7 +2460,7 @@ fn aggregate_compilers(
 /// One total across a whole group; an unavailable or missing member
 /// prevents publishing a partial total as a measured value.
 pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(
-    shares: &HashMap<Pid, Measurement<T>>,
+    measurements: &HashMap<Pid, Measurement<T>>,
     members: impl Iterator<Item = Pid>,
 ) -> Measurement<T> {
     let mut seen = HashSet::new();
@@ -2468,7 +2468,7 @@ pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(
         Measurement::Reading(T::default()),
         |total, pid| {
             total
-                + shares
+                + measurements
                     .get(&pid)
                     .copied()
                     .unwrap_or(Measurement::Unavailable(MeasurementAbsence::Unproven))
@@ -2479,7 +2479,7 @@ pub(crate) fn aggregate<T: Copy + Default + Add<Output = T>>(
 /// Sum each pid bucket once per subtree while retaining unavailable identities.
 /// The membership order also indexes the returned totals, independently of row age.
 fn subtree_totals<T: Copy + Default + Add<Output = T>>(
-    shares: &HashMap<Pid, Measurement<T>>,
+    measurements: &HashMap<Pid, Measurement<T>>,
     members: &[&CargoProcess],
     process_rows: &HashSet<InvocationId>,
 ) -> Vec<Measurement<T>> {
@@ -2492,7 +2492,7 @@ fn subtree_totals<T: Copy + Default + Add<Output = T>>(
         .iter()
         .map(|row| {
             if process_rows.contains(&row.invocation_id) {
-                aggregate(shares, std::iter::once(Pid::from_u32(row.pid)))
+                aggregate(measurements, std::iter::once(Pid::from_u32(row.pid)))
             } else {
                 Measurement::Unavailable(MeasurementAbsence::Unproven)
             }
@@ -2532,7 +2532,7 @@ fn subtree_totals<T: Copy + Default + Add<Output = T>>(
             totals[parent] = totals[parent]
                 + match totals[index] {
                     Measurement::Unavailable(reason) => Measurement::Unavailable(reason),
-                    Measurement::Reading(_) => aggregate(shares, additional.iter().copied()),
+                    Measurement::Reading(_) => aggregate(measurements, additional.iter().copied()),
                 };
             contributors[parent].extend(additional);
             remaining_children[parent] -= 1;
@@ -2564,7 +2564,7 @@ fn row(
     compiler: CompilerObservation,
     managed: Measurement<usize>,
     home: ScannerHome<'_>,
-    used: ResourceUse,
+    resource_use: ResourceUse,
     direct: &DirectAssociation,
 ) -> Result<CargoProcess, RowAbsence> {
     let (directory_identity, path, command) =
@@ -2588,9 +2588,9 @@ fn row(
         start,
         started,
         duration,
-        cpu: used.cpu.map(cpu_label),
+        cpu: resource_use.cpu.map(cpu_label),
         subtree_cpu: Measurement::Unavailable(MeasurementAbsence::Unproven),
-        memory: used.memory,
+        memory: resource_use.memory,
         subtree_memory: Measurement::Unavailable(MeasurementAbsence::Unproven),
         compiler,
         state: CaptureLookup::Unregistered,

@@ -42,6 +42,7 @@ use crate::census::scan::CensusSequence;
 use crate::census::scan::ProcessField;
 use crate::census::scan::ProcessObservation;
 use crate::census::scan::ProcessObservations;
+use crate::constants::BYTES_PER_GIBIBYTE;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
@@ -578,8 +579,8 @@ fn app_with_summary_memory() -> App {
     let mut groups = sequence.sample_capture(&records, &Capture::default());
     assert_eq!(groups.len(), 3);
     for (group, memory) in groups.iter_mut().zip([
-        Measurement::Reading(1 << 30),
-        Measurement::Reading(3 << 29),
+        Measurement::Reading(BYTES_PER_GIBIBYTE),
+        Measurement::Reading(BYTES_PER_GIBIBYTE * 3 / 2),
         Measurement::Reading(0),
     ]) {
         group.lead.memory = memory;

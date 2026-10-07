@@ -168,7 +168,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         let demand_width = measured_width(&widths, &placement.content);
         let content_rows = cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
         if contents == TileGridContents::Shown {
-            let foot = match &placement.content {
+            let summary_foot = match &placement.content {
                 TileContent::Summary => cells.summary_foot(),
                 TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
             };
@@ -179,7 +179,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
                     inner,
                     content_rows,
                     demand_width,
-                    &foot,
+                    &summary_foot,
                     |buffer, inner| cells.draw(buffer, &placement.content, inner, ground),
                 );
             });
@@ -253,7 +253,7 @@ fn draw_cell<Id>(
     inner: Rect,
     rows: usize,
     measured_at: u16,
-    foot: &SummaryFoot,
+    summary_foot: &SummaryFoot,
     draw: impl FnOnce(&mut Buffer, Rect),
 ) {
     let contents = content_area(inner);
@@ -263,7 +263,7 @@ fn draw_cell<Id>(
             TileContent::Summary | TileContent::Group(_) => draw(buffer, contents),
         }
     }
-    match foot {
+    match summary_foot {
         SummaryFoot::Empty => draw_rows_readout(buffer, inner, rows, measured_at),
         SummaryFoot::Text(line) => {
             let foot_width = draw_summary_foot(buffer, inner, line);
@@ -476,16 +476,16 @@ mod tests {
     const FOOT_TEXT: &str = "mem 2.5G";
 
     struct StubCells {
-        foot:   SummaryFoot,
-        groups: Vec<u32>,
+        summary_foot: SummaryFoot,
+        groups:       Vec<u32>,
     }
 
     impl TileCells<u32> for StubCells {
         fn summary_title(&self) -> &'static str { "summary" }
 
-        fn summary_foot(&self) -> SummaryFoot { self.foot.clone() }
+        fn summary_foot(&self) -> SummaryFoot { self.summary_foot.clone() }
 
-        fn demands(&self, _widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
             TileDemands {
                 summary:       1,
                 summary_width: 0,
@@ -497,13 +497,7 @@ mod tests {
             }
         }
 
-        fn draw(
-            &self,
-            buffer: &mut Buffer,
-            content: &TileContent<u32>,
-            inner: Rect,
-            _ground: Color,
-        ) {
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
             let text = match content {
                 TileContent::Summary => "summary body",
                 TileContent::Group(_) => "group body",
@@ -563,8 +557,8 @@ mod tests {
     fn summary_foot_is_written_only_on_summary_readout_row() {
         let area = Rect::new(0, 0, 80, 16);
         let cells = StubCells {
-            foot:   SummaryFoot::Text(Line::raw(FOOT_TEXT)),
-            groups: vec![7],
+            summary_foot: SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            groups:       vec![7],
         };
         let (grid, buffer) = settled_grid(area, &cells);
         let placements = grid.placements(area, TileGrowth::default());
@@ -658,8 +652,8 @@ mod tests {
     fn hidden_grid_draws_no_summary_foot() {
         let area = Rect::new(0, 0, 80, 8);
         let cells = StubCells {
-            foot:   SummaryFoot::Text(Line::raw(FOOT_TEXT)),
-            groups: Vec::new(),
+            summary_foot: SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            groups:       Vec::new(),
         };
         let mut grid = TileGrid::new();
         let mut buffer = Buffer::empty(area);
