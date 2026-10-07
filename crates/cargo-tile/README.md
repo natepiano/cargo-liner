@@ -265,10 +265,23 @@ fourth column, the whole height of the grid, and cells added between one
 rearrangement and the next move nothing already on the screen. The number of
 columns is the same under both.
 
+A summary with more rows than its cell gets -- once every cell in its column
+has handed over the rows it is not using -- takes the next cell of its column
+as well, then the one after, as many as it needs, and every cell after it moves
+one place on for each one it takes. It gives each back once it fits in fewer.
+Each cell it takes counts toward `initial_rows` and the square, so taking one
+can rearrange the whole grid. It never takes more than its own column holds, nor
+so many that a cell would be too small to read; past that it is cut off at the
+bottom, and no command gives up its cell for it. The cells keep their numbers
+throughout: the summary is cell one and the cell after it is two, however many
+it covers. The arrows treat it as one tile -- down from it reaches the first
+cell under it -- and a click anywhere on it focuses it.
+
 `widen_summary`, off by default, lets the summary reach past its own column when
 its widest line -- a directory heading, or a row with its command line unwrapped
--- does not fit there. It keeps the height its own column gives it and takes the
-top of each next column in turn until that line fits or it reaches the right
+-- does not fit there. It keeps the height its own column gives it, the cells it
+has taken there included, and takes the top of each next column in turn until
+that line fits or it reaches the right
 edge; the cells of a column it covers divide what is left below it, and a column
 whose cells would no longer fit below it stops the summary there.
 
