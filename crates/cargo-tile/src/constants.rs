@@ -281,9 +281,13 @@ pub(crate) const START_TIME_FORMAT: &str = "%H:%M";
 pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
 /// Seconds in an hour, past which `dur` widens to `hh:mm:ss`.
 pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
+/// Number of bytes in one gibibyte.
+pub(crate) const BYTES_PER_GIBIBYTE: u64 = 1 << 30;
+/// Unit suffix for resident-memory readings.
+pub(crate) const MEMORY_UNIT: &str = "G";
 /// Shown in `start` when a process's timestamp cannot be interpreted.
 pub(crate) const UNRESOLVED_TIME: &str = "--:--";
-/// CPU, compiler and managed columns share this marker when no reading is established.
+/// CPU, mem, compiler and managed columns share this marker when no reading is established.
 pub(crate) const UNAVAILABLE_MEASUREMENT: &str = "--";
 /// Home directory stand-in in the working-directory header.
 pub(crate) const HOME_ALIAS: &str = "~";
@@ -318,8 +322,8 @@ pub(crate) const FLAG_MARK: char = '-';
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 9] = [
-    "pid", "parent", "start", "dur", "cpu", "state", "command", "compiler", "runs",
+pub(crate) const TABLE_HEADERS: [&str; 10] = [
+    "pid", "parent", "start", "dur", "cpu", "mem", "state", "command", "compiler", "runs",
 ];
 /// Index of the `pid` column in [`TABLE_HEADERS`].
 pub(crate) const PID_COLUMN: usize = 0;
@@ -338,6 +342,10 @@ pub(crate) const DURATION_COLUMN: usize = 3;
 /// stands beside `dur` because the two answer the same question from
 /// either end -- how long this has been going, and how hard.
 pub(crate) const CPU_COLUMN: usize = 4;
+/// Index of the `mem` column in [`TABLE_HEADERS`], which carries the
+/// resident memory used by the invocation and everything under it. A
+/// `12.4G` reading and its spacing take seven cells from `command`.
+pub(crate) const MEMORY_COLUMN: usize = 5;
 /// Index of the `state` column in [`TABLE_HEADERS`], which says that a
 /// command is waiting on another cargo's lock. How far along a command
 /// is goes on the working-directory heading over it instead. It is the
@@ -346,18 +354,18 @@ pub(crate) const CPU_COLUMN: usize = 4;
 /// line needs and reports nothing. Every row but the waiting one leaves
 /// the cell blank, so the one word in the column is the only thing in
 /// it.
-pub(crate) const STATE_COLUMN: usize = 5;
+pub(crate) const STATE_COLUMN: usize = 6;
 /// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
 /// whatever width the fitted columns leave, wherever it stands among
 /// them, so it comes ahead of the two that describe an invocation
 /// rather than after them.
-pub(crate) const COMMAND_COLUMN: usize = 6;
+pub(crate) const COMMAND_COLUMN: usize = 7;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 7;
+pub(crate) const COMPILER_COLUMN: usize = 8;
 /// Index of the `runs` column in [`TABLE_HEADERS`], which carries how
 /// many cargo invocations a command is managing. Blank on the rows that
 /// manage nothing, which is most of them.
-pub(crate) const MANAGED_COLUMN: usize = 8;
+pub(crate) const MANAGED_COLUMN: usize = 9;
 /// Columns the summary leaves out. One row there stands for a whole
 /// command rather than for a single invocation, and each of these
 /// describes an invocation: what is compiling under it at this instant,
@@ -401,6 +409,9 @@ pub(crate) const GROUP_GAP_HEIGHT: u16 = 1;
 pub(crate) const COMPILER_SEPARATOR_WIDTH: usize = 1;
 /// Blank cells between table columns.
 pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
+/// Blank cells between columns when their fitted widths do not fit with
+/// [`TABLE_COLUMN_SPACING`].
+pub(crate) const TIGHT_TABLE_COLUMN_SPACING: u16 = 1;
 /// Shown in place of the table when no cargo is running.
 pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 

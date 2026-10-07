@@ -178,6 +178,9 @@ came out as. A single argument too long for the column at all -- a path, a long
 `--features` list with no spaces in it -- is the one thing broken anywhere but a
 space, and only where no space would do.
 
+`mem` is the command's resident memory, its compilers and tests included, in
+gibibytes.
+
 A command's own cell is headed by what launched it. The parent chain above the
 command is walked and listed outermost first, one space deeper per level, each
 row carrying a pid and what that process is running -- the editor, the agent, the
@@ -203,9 +206,9 @@ passed through.
  6218 zed
   18581 node ~/.claude/local/claude
 
- pid    start  dur    cpu   command
+ pid    start  dur    cpu   mem    command
  ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
- 92130  10:04  00:12  310%  cargo build
+ 92130  10:04  00:12  310%  12.4G  cargo build
 ```
 
 A command typed into a terminal keeps that terminal's shell, and comes out as the
@@ -214,9 +217,9 @@ one row:
 ```
  12445 -zsh
 
- pid    start  dur    cpu   command
+ pid    start  dur    cpu   mem    command
  ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
- 92130  10:04  00:12  310%  cargo build
+ 92130  10:04  00:12  310%  12.4G  cargo build
 ```
 
 A command named by `commands.hidden_when_idle` closes its own cell's chain
@@ -231,9 +234,9 @@ says, which is where the work came from.
  6218 zed
   4100 cargo port
 
- pid    start  dur    cpu   command
+ pid    start  dur    cpu   mem    command
  ~/rust/cargo-liner ━━━━━━━━━━━━━━━╸╌╌╌╌╌ 62%
- 4212   10:04  00:12  310%  cargo build
+ 4212   10:04  00:12  310%  12.4G  cargo build
 ```
 
 The block never takes more than half the cell, the blank row under it included:

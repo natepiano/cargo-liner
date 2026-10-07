@@ -486,7 +486,7 @@ fn assert_nested_render(
     assert_eq!(cells.last(), Some(&"2"));
     assert_eq!(
         cells.iter().filter(|&&cell| cell == "--").count(),
-        if index == 1 { 0 } else { 2 }
+        if index == 1 { 1 } else { 3 }
     );
     for (pid, marker) in [("20", "probe-nested-check"), ("30", "probe-nested-test")] {
         let row = lines
