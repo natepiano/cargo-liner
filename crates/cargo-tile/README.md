@@ -179,7 +179,8 @@ came out as. A single argument too long for the column at all -- a path, a long
 space, and only where no space would do.
 
 `mem` is the command's resident memory, its compilers and tests included, in
-gibibytes.
+gibibytes. The summary's bottom row totals the memory of every running command;
+a `+` after the value means at least one command could not be read.
 
 A command's own cell is headed by what launched it. The parent chain above the
 command is walked and listed outermost first, one space deeper per level, each

@@ -90,7 +90,7 @@ it's purpose is to provide the memory usage of the running command as a column -
 
 **Ruled out:** leaving `parent` out of a cell too narrow for it (the row loses whose child it is); adding `mem` to the columns the summary hides.
 
-### Phase 3 — Memory total on the summary  · status: todo
+### Phase 3 — Memory total on the summary  · status: done
 
 #### Work Order
 

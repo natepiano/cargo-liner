@@ -31,6 +31,10 @@ pub(super) const TILE_BORDER_ROWS: u16 = 2;
 pub(super) const TILE_DEMAND_STEP: usize = 3;
 
 // cell readout
+/// Kept between the summary foot and the cell's left border.
+pub(super) const TILE_FOOT_LEFT_INSET: u16 = 1;
+/// Kept between the summary foot and the rows readout.
+pub(super) const TILE_FOOT_GAP: u16 = 2;
 /// Kept between a cell's left border and the number it carries, so the
 /// number is not flush against the line.
 pub(super) const TILE_NUMBER_INDENT: &str = " ";

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The summary cell's bottom row shows the memory of every running command, with `+` when at least one command could not be read.
 - A `mem` column: the command's resident memory, its compilers and tests included, in gibibytes.
 - `[appearance] transparent`, on by default and stepped under Appearance in the settings overlay: the grid paints nothing under its tiles, the focused tile's tint included, so a transparent terminal window shows the desktop behind every tile, and the focused tile's border lights to mark focus. Off, the grid is painted solid in the theme's background while its tiles are shown, and focus is the tint as before. The attract screen draws the same either way.
 - `[tiles] fill` decides how the grid's cells spread over its columns, stepped under Tiles in the settings overlay. `redistribute`, the default, keeps every column within one cell of the others, the taller ones first: twelve cells stand as three columns of four, thirteen as four, three, three and three, fourteen as four, four, three and three. `add_new` fills a column at a time, so the cell that opens a new column stands in it alone. The number of columns is the same either way.

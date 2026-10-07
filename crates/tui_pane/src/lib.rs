@@ -491,6 +491,7 @@ pub use theme::title_color;
 pub use theme::transparent_background;
 pub use theme::warning_color;
 pub use tiles::MIN_INITIAL_ROWS;
+pub use tiles::SummaryFoot;
 pub use tiles::TABLE_CELL;
 pub use tiles::TILE_ROWS_CONTENT_LABEL;
 pub use tiles::TileAction;

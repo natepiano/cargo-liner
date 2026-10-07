@@ -30,6 +30,7 @@ use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
 use tui_pane::StatusLineNote;
+use tui_pane::SummaryFoot;
 use tui_pane::TileCells;
 use tui_pane::TileGridContents;
 use tui_pane::Updates;
@@ -79,6 +80,7 @@ use crate::constants::MEMORY_COLUMN;
 use crate::constants::MEMORY_UNIT;
 use crate::constants::NO_PROCESSES_NOTE;
 use crate::constants::PARENT_COLUMN;
+use crate::constants::PARTIAL_TOTAL_MARK;
 use crate::constants::PID_COLUMN;
 use crate::constants::PROCESS_TREE_NOTE_LABEL;
 use crate::constants::PROGRESS_HEADING_EMPTY;
@@ -97,6 +99,7 @@ use crate::constants::SUMMARY_CELL_TITLE;
 use crate::constants::SUMMARY_HIDDEN_COLUMNS;
 use crate::constants::SUMMARY_LABEL_BORDER_RESERVE;
 use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
+use crate::constants::SUMMARY_MEMORY_LABEL;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
@@ -198,6 +201,35 @@ pub(crate) enum SummaryDetail {
     Trimmed,
 }
 
+/// The memory of every running command together, as far as it can be read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SummaryMemoryTotal {
+    /// Nothing is running, so there is no total.
+    NoRunningCommands,
+    /// Every running command was read; the bytes are the whole total.
+    Complete(u64),
+    /// At least one running command could not be read; the bytes are the rest.
+    AtLeast(u64),
+    /// Commands are running and none could be read.
+    NoReadableCommands,
+}
+
+impl SummaryMemoryTotal {
+    /// The text this state supplies to the summary cell's readout row.
+    fn foot(&self) -> SummaryFoot {
+        let value = match *self {
+            Self::NoRunningCommands => return SummaryFoot::Empty,
+            Self::Complete(bytes) => memory_label(bytes),
+            Self::AtLeast(bytes) => format!("{}{PARTIAL_TOTAL_MARK}", memory_label(bytes)),
+            Self::NoReadableCommands => UNAVAILABLE_MEASUREMENT.to_string(),
+        };
+        SummaryFoot::Text(Line::from(vec![
+            Span::styled(SUMMARY_MEMORY_LABEL, Style::default().fg(label_color())),
+            Span::styled(value, Style::default().fg(text_default())),
+        ]))
+    }
+}
+
 /// Draw one frame: panes fill the terminal above the status line, and an
 /// open overlay floats above both.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
@@ -277,6 +309,8 @@ struct Cells<'a> {
 
 impl TileCells<InvocationId> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
+
+    fn summary_foot(&self) -> SummaryFoot { memory_total(self.roster).foot() }
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
         tile_demands(self.roster, widths, self.hidden_when_idle, self.tree)
@@ -636,6 +670,32 @@ fn summary_rows<'a>(roster: &'a Roster, hidden_when_idle: &[String]) -> Vec<Cow<
         }
     }
     rows
+}
+
+/// The summary's memory total: every running command's group total.
+fn memory_total(roster: &Roster) -> SummaryMemoryTotal {
+    let mut running_groups = 0usize;
+    let mut unreadable_groups = 0usize;
+    let mut bytes = 0u64;
+    for group in roster
+        .groups()
+        .iter()
+        .filter(|group| !group.lead.is_ended())
+    {
+        running_groups = running_groups.saturating_add(1);
+        match group.lead.process.memory {
+            Measurement::Reading(reading) => bytes = bytes.saturating_add(reading),
+            Measurement::Unavailable(_) => {
+                unreadable_groups = unreadable_groups.saturating_add(1);
+            },
+        }
+    }
+    match (running_groups, unreadable_groups) {
+        (0, _) => SummaryMemoryTotal::NoRunningCommands,
+        (running, unreadable) if running == unreadable => SummaryMemoryTotal::NoReadableCommands,
+        (_, 0) => SummaryMemoryTotal::Complete(bytes),
+        _ => SummaryMemoryTotal::AtLeast(bytes),
+    }
 }
 
 /// What sccache reports, written along the summary cell's top border.
@@ -2406,6 +2466,85 @@ mod tests {
         }
     }
 
+    /// A complete total adds each live group's aggregate memory.
+    #[test]
+    fn summary_memory_total_is_complete_when_every_running_group_is_readable() {
+        let roster = memory_roster(&[
+            (4100, Measurement::Reading(1 << 30)),
+            (4200, Measurement::Reading(3 << 29)),
+        ]);
+
+        assert_eq!(memory_total(&roster), SummaryMemoryTotal::Complete(5 << 29));
+        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 2.5G");
+    }
+
+    /// A fading group has stopped and contributes nothing to the running total.
+    #[test]
+    fn summary_memory_total_excludes_ended_groups() {
+        let live = memory_invocation(4100, Measurement::Reading(1 << 30));
+        let ended = memory_invocation(4200, Measurement::Reading(3 << 29));
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![cargo_group(live.clone()), cargo_group(ended)],
+            Instant::now(),
+        );
+        roster.observe(vec![cargo_group(live)], Instant::now());
+
+        assert_eq!(memory_total(&roster), SummaryMemoryTotal::Complete(1 << 30));
+        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 1.0G");
+    }
+
+    /// Readable groups remain useful while an unreadable group marks the sum as partial.
+    #[test]
+    fn summary_memory_total_is_at_least_the_readable_groups() {
+        let roster = memory_roster(&[
+            (4100, Measurement::Reading(1 << 30)),
+            (
+                4200,
+                Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+            ),
+        ]);
+
+        assert_eq!(memory_total(&roster), SummaryMemoryTotal::AtLeast(1 << 30));
+        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 1.0G+");
+    }
+
+    /// Running groups with no readable memory retain their distinct state.
+    #[test]
+    fn summary_memory_total_names_when_no_command_is_readable() {
+        let roster = memory_roster(&[(
+            4100,
+            Measurement::Unavailable(MeasurementAbsence::ReadFailed),
+        )]);
+
+        assert_eq!(
+            memory_total(&roster),
+            SummaryMemoryTotal::NoReadableCommands
+        );
+        assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem --");
+    }
+
+    /// An empty roster has no memory total.
+    #[test]
+    fn summary_memory_total_names_when_nothing_is_running() {
+        let total = memory_total(&Roster::new());
+
+        assert_eq!(total, SummaryMemoryTotal::NoRunningCommands);
+        assert_eq!(total.foot(), SummaryFoot::Empty);
+    }
+
+    /// Flatten a text foot for assertions on its label and value.
+    fn summary_foot_text(foot: SummaryFoot) -> String {
+        match foot {
+            SummaryFoot::Text(line) => line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect(),
+            SummaryFoot::Empty => String::new(),
+        }
+    }
+
     #[test]
     fn memory_cell_draws_available_and_unavailable_readings() {
         for (memory, expected) in [
@@ -2963,6 +3102,33 @@ mod tests {
             nested: false,
             command: CommandText::of("cargo", arguments),
         }
+    }
+
+    /// A process with the group-total memory used by summary-foot tests.
+    fn memory_invocation(pid: u32, memory: Measurement<u64>) -> CargoProcess {
+        let mut process = invocation(pid, &["build"]);
+        process.memory = memory;
+        process
+    }
+
+    /// One group with `lead` and no child invocations.
+    fn cargo_group(lead: CargoProcess) -> CargoGroup {
+        CargoGroup {
+            lead,
+            rest: Vec::new(),
+            ancestry: Vec::new(),
+        }
+    }
+
+    /// A roster whose running groups carry the supplied memory states.
+    fn memory_roster(memories: &[(u32, Measurement<u64>)]) -> Roster {
+        let groups = memories
+            .iter()
+            .map(|&(pid, memory)| cargo_group(memory_invocation(pid, memory)))
+            .collect();
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        roster
     }
 
     /// `commands.hidden_when_idle` as the config hands it over.
