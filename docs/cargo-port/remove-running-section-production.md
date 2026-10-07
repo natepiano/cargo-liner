@@ -22,6 +22,7 @@
 | cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | `cargo-port-cleanup` (closed) | — | `crates/cargo-port`, `docs/cargo-port` |
 | cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | `cargo-tile` (closed) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | `berth-flake` (closed) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
+| tile-mem-unit | docs/plans/main-tile-mem.md | /home/natepiano/rust/cargo-liner-tile-mem | main-tile-mem | tile-mem | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
 
 ## Hub files
 
