@@ -71,42 +71,24 @@ it's purpose is to provide the memory usage of the running command as a column -
 
 ### Phase 2 — Show the `mem` column  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Every table in cargo-tile, the summary's and each command's, draws a `mem` column between `cpu` and `command`, in gibibytes to one decimal place.
-
-**Spec:**
-
-1. **Header and indices** (`constants.rs`). `TABLE_HEADERS` becomes `[&str; 10]`: `"pid", "parent", "start", "dur", "cpu", "mem", "state", "command", "compiler", "runs"`. New `MEMORY_COLUMN: usize = 5`, documented like its neighbours; `STATE_COLUMN = 6`, `COMMAND_COLUMN = 7`, `COMPILER_COLUMN = 8`, `MANAGED_COLUMN = 9`. `mem` stands directly after `cpu`, ahead of `state` (author's call: `state` joins only while a row is blocked, and the two measurements read together). `mem` is not added to `SUMMARY_HIDDEN_COLUMNS`: both table kinds draw it. `UNAVAILABLE_MEASUREMENT`'s doc names `mem` too.
-2. **Unit** (author's call, from "round to 1 decimal place"): always gibibytes, one decimal, suffix `G` — `0.0G`, `0.3G`, `12.4G`. One unit keeps the column a fixed width and lets the rows be added by eye. New constants `BYTES_PER_GIBIBYTE: u64 = 1 << 30` and `MEMORY_UNIT: &str = "G"`.
-3. **Label** (`render.rs`):
-   ```rust
-   /// Resident bytes as gibibytes to one decimal place, rounded half up.
-   fn memory_label(bytes: u64) -> String
-   ```
-   Integer arithmetic, no float cast: `tenths = (u128::from(bytes) * 10 + u128::from(BYTES_PER_GIBIBYTE) / 2) / u128::from(BYTES_PER_GIBIBYTE)`, then `format!("{}.{}{MEMORY_UNIT}", tenths / 10, tenths % 10)`. The cell's text is `process.memory.map(memory_label).to_string()`, which draws `--` for an unavailable reading through `Measurement`'s `Display`.
-4. **Table** (`render.rs`). `fitted_constraints` observes `MEMORY_COLUMN` with the cell text's width. `process_row`'s `cells` array gains the `mem` cell directly after the `cpu` cell, in the same `muted` style. `summary_rows`, where it copies `subtree_cpu` into a promoted row's `cpu`, also copies `subtree_memory` into its `memory`. Named cost: the column takes its width plus `TABLE_COLUMN_SPACING` (7 cells at `12.4G`) from each cell's `command` column.
-5. **Tests** (`render.rs` `mod tests`):
-   - `TABLE_HEADERS[CPU_COLUMN + 1] == "mem"` and `TABLE_HEADERS[MEMORY_COLUMN + 1] == "state"`, and a drawn header line reads `cpu`, `mem`, `command` in that order with no blocked row;
-   - `memory_label`: `0` → `0.0G`; `53_687_091` → `0.0G`; `53_687_092` → `0.1G`; `1 << 30` → `1.0G`; `13_249_974_108` → `12.3G`;
-   - an unavailable reading draws `--` in the `mem` cell in both `TableKind`s, and a reading draws its label in both;
-   - a promoted summary row draws its `subtree_memory`, not its own bucket;
-   - every existing test still passes (`cpu_cell_text` finds `mem` as the column after `cpu`).
-6. **Docs.** `README.md`: add `mem` to each sample table that shows `cpu` (three near lines 206–236) and one sentence where the columns are described: `mem` is the command's resident memory, its compilers and tests included, in gibibytes. `CHANGELOG.md`: one `### Added` line under `## [Unreleased]`.
+- Every process table draws a `mem` column directly after `cpu`. `TABLE_HEADERS` is `pid`, `parent`, `start`, `dur`, `cpu`, `mem`, `state`, `command`, `compiler`, `runs`, with `MEMORY_COLUMN = 5`, `STATE_COLUMN = 6`, `COMMAND_COLUMN = 7`, `COMPILER_COLUMN = 8`, `MANAGED_COLUMN = 9`. Both table kinds draw `mem`; `state` joins only while a row is blocked.
+- A cell is `process.memory.map(memory_label)`. `memory_label(bytes: u64) -> String` gives gibibytes to one decimal, rounded half up in integer arithmetic, with `MEMORY_UNIT` (`G`): `0.0G`, `0.3G`, `12.4G`. One unit keeps the column a fixed width. A row with no reading draws `UNAVAILABLE_MEASUREMENT` (`--`). A row promoted to the summary shows its group's `subtree_memory`.
+- Each table chooses its own gap. `table_column_spacing(width, &constraints) -> u16` returns `TABLE_COLUMN_SPACING` (2) when the fitted columns fit the drawn width and `TIGHT_TABLE_COLUMN_SPACING` (1) when they do not. `TableLayout.column_spacing` carries the result to both table builders and to `command_column_width`, so the command column wraps at the width that table gives it.
+- Render tests pin the column order, the label's rounding, the read and unread cells in both table kinds, the tight 65-wide cell (whole headers and whole parent pids at one-cell gaps), the fitting 80-wide cell (two-cell gaps), and command wrapping with no text lost.
 
 **Files:**
-- `crates/cargo-tile/src/constants.rs` — header, indices, unit constants.
-- `crates/cargo-tile/src/render.rs` — `memory_label`, `fitted_constraints`, `process_row`, `summary_rows`, tests.
-- `crates/cargo-tile/README.md` — sample tables and the column sentence.
-- `crates/cargo-tile/CHANGELOG.md` — the Added line.
+- `crates/cargo-tile/src/render.rs` — `memory_label`, the memory cell, `table_column_spacing`, `TableLayout.column_spacing`, the render tests.
+- `crates/cargo-tile/src/constants.rs` — the `mem` header, the column indices, `MEMORY_UNIT`, `BYTES_PER_GIBIBYTE`, `TIGHT_TABLE_COLUMN_SPACING`.
+- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the column, with sample tables spaced as the app draws them.
+- `crates/cargo-tile/src/census/scan_cpu_scenario_tests.rs`, `crates/cargo-tile/src/shim_registration/app_scenarios.rs`, `reader_scenario.py`, `rows_readout.rs` — each row's count of `--` cells includes the memory cell.
 
-**Seats:** 2 writers — the code is `constants.rs` and `render.rs` together, with its tests in `render.rs`'s own test module; the docs are separate files.
-- `impl` — `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/render.rs`.
-- `test` — opens as impl: `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`.
+**Binds later work:** `memory_label(bytes: u64) -> String`, `MEMORY_UNIT`, `BYTES_PER_GIBIBYTE` and `UNAVAILABLE_MEASUREMENT` format every memory value. The per-table gap rule stays as it is. `render::draw_cell_for_test` draws one cell through `tui_pane::draw_tile_cell`; only `render::draw` reaches `tui_pane::draw_tile_grid`.
 
-**Constraints from prior phases:** Phase 1 put `memory: Measurement<u64>` and `subtree_memory: Measurement<u64>` (resident bytes) on `CargoProcess`, directly after `subtree_cpu`. A group lead's `memory` is its whole group's total; every other row's is its own bucket. Readings are already held to the cpu reporting interval on the worker, so render formats what it is given. `aggregate_cpu` is now `aggregate`. The two test row builders in `render.rs` (`CargoProcess` literals near 2437 and 2766) already carry both fields as `Measurement::Unavailable(MeasurementAbsence::Unproven)`; a render test sets `row.process.memory` to the reading it needs.
+**Gotchas:** Tests outside `render.rs` count a row's `--` cells, so a new measurement column changes them. The grid picks its column count from the terminal width: tight command cells appear at 126 columns, two wide cells at 200. A table too narrow even at one-cell gaps still cuts columns: a 31-wide summary cuts `start` to `sta`.
 
-**Acceptance gate:** Build, Test and Lint from the Delegation Context are green with the Spec item 5 tests. Running `cargo-tile` beside a build shows `mem` between `cpu` and `command` in the summary and in the build's own cell, as `N.NG`.
+**Ruled out:** leaving `parent` out of a cell too narrow for it (the row loses whose child it is); adding `mem` to the columns the summary hides.
 
 ### Phase 3 — Memory total on the summary  · status: todo
 
@@ -118,47 +100,72 @@ it's purpose is to provide the memory usage of the running command as a column -
 
 The bottom interior row of every cell is the grid's readout row (`content rows: N  r/c: h/w`, right-aligned, drawn by `tui_pane`). Its left end is empty, and that is where the total goes (author's reading of "bottom left of the summary cell"). The grid owns that row, so the grid draws the text and the app supplies it.
 
-1. **`tui_pane` trait** (`tiles/draw.rs`). `TileCells` gains, with a default so `cargo-handler` is untouched:
+1. **`tui_pane` trait** (`tiles/draw.rs`). A new public type says whether the app has text for the row, and `TileCells` gains a method with a default so `cargo-handler` is untouched:
    ```rust
+   /// What the app writes at the left end of the summary cell's readout row.
+   pub enum SummaryFoot {
+       /// The app writes nothing there.
+       Empty,
+       /// The app's text, drawn from the left inset.
+       Text(Line<'static>),
+   }
+
    /// Text written at the left end of the summary cell's readout row.
-   /// None unless the app has some.
-   fn summary_foot(&self) -> Option<Line<'static>> { None }
+   fn summary_foot(&self) -> SummaryFoot { SummaryFoot::Empty }
    ```
-2. **Drawing.** `draw_tile_cell` keeps its public signature. Its body moves to a private `draw_cell(buffer, content, inner, rows, measured_at, foot: Option<&Line<'static>>, draw)`, which `draw_tile_cell` calls with `None`. `draw_tile_grid` calls `draw_cell` directly, passing `cells.summary_foot()` for the `TileContent::Summary` placement and `None` for every other. It is inside the `contents == TileGridContents::Shown` branch, so hidden contents draw no foot.
-   - The foot is drawn only where the readout row exists: `rows_readout_height(inner.width) > 0` and `inner.height >= TILE_ROWS_READOUT_HEIGHT`. Its row is the readout's (`inner.bottom() - TILE_ROWS_READOUT_HEIGHT`), its x is `inner.x + TILE_FOOT_LEFT_INSET`, and its width is the line's width capped at `inner.width - TILE_FOOT_LEFT_INSET`.
-   - The foot has the row first (author's call: the total is what the user asked for; the readout is a layout diagnostic). With a foot drawn, the readout is drawn only when its whole line fits in `inner.width - TILE_ROWS_RIGHT_INSET - TILE_FOOT_LEFT_INSET - foot width - TILE_FOOT_GAP`; otherwise it is left off that frame. With no foot, the readout is drawn exactly as today.
+   `SummaryFoot` is re-exported beside `TileCells`: `pub use draw::SummaryFoot;` in `tiles/mod.rs` and `pub use tiles::SummaryFoot;` in `lib.rs`. No bare `Option` carries this state (author's call from the type design rule; the trait's existing `group_title` keeps its signature, because the plan changes no existing public signature).
+2. **Drawing.** `draw_tile_cell` keeps its public signature. Its body moves to a private `draw_cell(buffer, content, inner, rows, measured_at, foot: &SummaryFoot, draw)`, which `draw_tile_cell` calls with `&SummaryFoot::Empty`. `draw_tile_grid` calls `draw_cell` directly, passing `cells.summary_foot()` for the `TileContent::Summary` placement and `SummaryFoot::Empty` for every other. It is inside the `contents == TileGridContents::Shown` branch, so hidden contents draw no foot.
+   - A `SummaryFoot::Text` is drawn only where the readout row exists: `rows_readout_height(inner.width) > 0` and `inner.height >= TILE_ROWS_READOUT_HEIGHT`. Its row is the readout's (`inner.bottom() - TILE_ROWS_READOUT_HEIGHT`), its x is `inner.x + TILE_FOOT_LEFT_INSET`, and its width is the line's width capped at `inner.width - TILE_FOOT_LEFT_INSET`.
+   - The foot has the row first (author's call: the total is what the user asked for; the readout is a layout diagnostic). With a `Text` foot drawn, the readout is drawn only when its whole line fits in `inner.width - TILE_ROWS_RIGHT_INSET - TILE_FOOT_LEFT_INSET - foot width - TILE_FOOT_GAP`; otherwise it is left off that frame. With `SummaryFoot::Empty`, the readout is drawn exactly as today.
    - New constants in `tiles/constants.rs`: `TILE_FOOT_LEFT_INSET: u16 = 1`, `TILE_FOOT_GAP: u16 = 2`.
    - The readout row is already counted in every demand (`add_readout_rows`), so the foot adds no rows and changes no layout.
 3. **`tui_pane` tests** (`draw.rs` `mod tests`, with a stub `TileCells`):
    - a foot is written from `inner.x + 1` on the last interior row of the summary cell, and on no other cell;
    - in a wide cell the readout still ends one column short of the right border;
    - in a cell too narrow for both, the foot is drawn and no readout text is;
-   - with no foot the buffer equals the one `draw_tile_cell` draws today;
+   - with `SummaryFoot::Empty` the buffer equals the one `draw_tile_cell` draws today;
    - `TileGridContents::Hidden` draws no foot.
-4. **cargo-tile** (`render.rs`). `Cells` implements `summary_foot` as `memory_total(self.roster)`:
+4. **cargo-tile** (`render.rs`). The total is a type of its own, so each state has a name:
    ```rust
+   /// The memory of every running command together, as far as it can be read.
+   enum SummaryMemoryTotal {
+       /// Nothing is running, so there is no total.
+       NoRunningCommands,
+       /// Every running command was read; the bytes are the whole total.
+       Complete(u64),
+       /// At least one running command could not be read; the bytes are the rest.
+       AtLeast(u64),
+       /// Commands are running and none could be read.
+       NoReadableCommands,
+   }
+
    /// The summary's memory total: every running command's group total.
-   fn memory_total(roster: &Roster) -> Option<Line<'static>>
+   fn memory_total(roster: &Roster) -> SummaryMemoryTotal
    ```
-   - It reads `group.lead.process.memory` for each group in `roster.groups()` whose lead is not `is_ended()`. A lead's `memory` is already its whole group's total, a driver the summary hides included, so nothing is counted twice and nothing is left out.
-   - No running group → `None`.
-   - Otherwise the line is `Span::styled(SUMMARY_MEMORY_LABEL, label_color())` then the value in `text_default()`. The value is `memory_label(sum of the readings)`. When at least one running group has no reading the value ends in `PARTIAL_TOTAL_MARK`, so `12.3G+` reads "at least" (author's call: a total is never shown as whole when it is not, and one unreadable command does not blank it). When no running group has a reading the value is `UNAVAILABLE_MEASUREMENT`.
+   - `memory_total` reads `group.lead.process.memory` for each group in `roster.groups()` whose lead is not `is_ended()`. A lead's `memory` is already its whole group's total, a driver the summary hides included, so nothing is counted twice and nothing is left out.
+   - It adds the readings itself, with `u64::saturating_add`, and counts the unreadable groups beside them. It never uses `Measurement`'s `Add`: that makes the whole sum unavailable when one operand is, which is the opposite of `AtLeast`.
+   - `SummaryMemoryTotal::foot(&self) -> SummaryFoot` draws it. `NoRunningCommands` is `SummaryFoot::Empty`. Every other state is `SummaryFoot::Text` of `Span::styled(SUMMARY_MEMORY_LABEL, label_color())` then the value in `text_default()`: `Complete(bytes)` is `memory_label(bytes)`; `AtLeast(bytes)` is `memory_label(bytes)` followed by `PARTIAL_TOTAL_MARK`, so `12.3G+` reads "at least" (author's call: a total is never shown as whole when it is not, and one unreadable command does not blank it); `NoReadableCommands` is `UNAVAILABLE_MEASUREMENT`.
+   - `Cells` implements `summary_foot` as `memory_total(self.roster).foot()`.
    - New constants in `constants.rs`: `SUMMARY_MEMORY_LABEL: &str = "mem "`, `PARTIAL_TOTAL_MARK: &str = "+"`.
-5. **cargo-tile tests** (`render.rs` `mod tests`): two running groups of `1 << 30` and `3 << 29` bytes give `mem 2.5G`; an ended group is left out; one reading and one unavailable give `mem 1.0G+`; only unavailable gives `mem --`; an empty roster gives `None`.
-6. **Docs.** `crates/tui_pane/CHANGELOG.md`: an `### Added` section under `## [Unreleased]` naming `TileCells::summary_foot`. `crates/cargo-tile/CHANGELOG.md`: one Added line. `crates/cargo-tile/README.md`: one sentence beside the Phase 2 column sentence — the summary's bottom row totals the memory of every running command, with `+` when a command cannot be read.
+5. **cargo-tile tests.**
+   - `render.rs` `mod tests`, on the state and its text: two running groups of `1 << 30` and `3 << 29` bytes give `Complete` and `mem 2.5G`; an ended group is left out; one reading and one unavailable give `AtLeast` and `mem 1.0G+`; only unavailable gives `NoReadableCommands` and `mem --`; an empty roster gives `NoRunningCommands` and `SummaryFoot::Empty`.
+   - `shim_registration/app_scenarios.rs`, through its whole-frame `draw(terminal, app)` helper, because only `render::draw` reaches `tui_pane::draw_tile_grid`: `summary_memory_foot_reaches_the_grid_readout_row` (the summary's bottom interior row starts with `mem ` and still ends with the `content rows:` readout) and `narrow_summary_keeps_memory_total_and_omits_rows_readout` (in a frame whose summary is too narrow for both, the row holds the total and no readout text).
+6. **Docs.** `crates/tui_pane/CHANGELOG.md`: an `### Added` section under `## [Unreleased]` naming `SummaryFoot` and `TileCells::summary_foot`. `crates/cargo-tile/CHANGELOG.md`: one Added line. `crates/cargo-tile/README.md`: one sentence beside the Phase 2 column sentence — the summary's bottom row totals the memory of every running command, with `+` when a command cannot be read.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs` — `summary_foot`, `draw_cell`, foot and readout placement, tests.
+- `crates/tui_pane/src/tiles/draw.rs` — `SummaryFoot`, `summary_foot`, `draw_cell`, foot and readout placement, tests.
+- `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the `SummaryFoot` re-exports.
 - `crates/tui_pane/src/tiles/constants.rs` — the two foot constants.
 - `crates/tui_pane/CHANGELOG.md` — the Added entry.
-- `crates/cargo-tile/src/render.rs` — `summary_foot`, `memory_total`, tests.
+- `crates/cargo-tile/src/render.rs` — `SummaryMemoryTotal`, `memory_total`, `summary_foot`, tests.
+- `crates/cargo-tile/src/shim_registration/app_scenarios.rs` — the two whole-frame tests.
 - `crates/cargo-tile/src/constants.rs` — the label and the mark.
 - `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the total.
 
-**Seats:** 2 writers — split by crate; the trait method's signature above is all the cargo-tile writer needs from `tui_pane`.
-- `impl` — `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/CHANGELOG.md`.
-- `test` — opens as impl: `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`.
+**Seats:** 2 writers — split by crate; `SummaryFoot` and the trait method's signature above are all the cargo-tile writer needs from `tui_pane`, and `SummaryMemoryTotal` with its state tests needs nothing from it.
+- `impl` — `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/CHANGELOG.md`; hub: `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs`.
+- `test` — opens as impl: `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/shim_registration/app_scenarios.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`.
 
-**Constraints from prior phases:** Phase 1: `CargoProcess.memory` is `Measurement<u64>` resident bytes, and a group lead's is the whole group's total. Phase 2: `render.rs` has `memory_label(bytes: u64) -> String` (gibibytes, one decimal, `G`), and `constants.rs` has `MEMORY_UNIT` and `BYTES_PER_GIBIBYTE`.
+**Constraints from prior phases:** Phase 1: `CargoProcess.memory` is `Measurement<u64>` resident bytes, and a group lead's is the whole group's total. Phase 2: `render.rs` has `memory_label(bytes: u64) -> String` (gibibytes, one decimal, `G`), and `constants.rs` has `MEMORY_UNIT` and `BYTES_PER_GIBIBYTE`. Phase 2 also made each table choose its own gap: `table_column_spacing` in `render.rs` returns two cells when the fitted columns fit and `TIGHT_TABLE_COLUMN_SPACING` (one) when they do not, and `TableLayout.column_spacing` carries it; this phase leaves that rule as it is. `render::draw_cell_for_test` draws one cell through `tui_pane::draw_tile_cell`, which passes no foot, so no existing test sees the summary's bottom row through the grid and none is expected to change; if one fails only because of the total, the cargo-tile writer owns it. Only `cargo-handler` and `cargo-tile` implement `TileCells`; `cargo-port` only depends on `tui_pane`. Where things are in `crates/cargo-tile/src/render.rs` after Phase 2: `draw` 203, `Cells` and its `TileCells` impl 265–300, `draw_cell_for_test` 511, `summary_rows` 614, `fitted_constraints` 1598, `process_row` 1690, `visible_columns` 1831, `memory_label` 2008, `mod tests` 2129.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane`, Build, Test and Lint for `cargo-tile`, and `bash ~/.claude/scripts/delegate/verify.sh check cargo-handler` and `... check cargo-port` are green, with the Spec item 3 and 5 tests. Running `cargo-tile` beside a build shows `mem N.NG` at the bottom left of the summary cell and `content rows:` still at its bottom right; with nothing running the bottom left is empty.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane`, Build, Test and Lint for `cargo-tile`, and `bash ~/.claude/scripts/delegate/verify.sh check cargo-handler` and `... check cargo-port` are green, with the Spec item 3 and 5 tests. Running `cargo-tile` beside a build shows `mem N.NG` at the bottom left of the summary cell and `content rows:` still at its bottom right; with nothing running the bottom left is empty. The shots show four states: a whole total, a `+` total (a command that cannot be read), nothing running, and a summary too narrow for both the total and the readout (a 64-column terminal).
