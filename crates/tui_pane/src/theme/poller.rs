@@ -246,9 +246,10 @@ fn read_system_appearance(runtime: &Runtime) -> AppearanceObservation {
 
 #[cfg(not(target_os = "linux"))]
 fn read_system_appearance(_runtime: &Runtime) -> AppearanceObservation {
-    dark_light::detect()
-        .map(AppearanceObservation::from)
-        .unwrap_or(AppearanceObservation::Unspecified)
+    dark_light::detect().map_or(
+        AppearanceObservation::Unspecified,
+        AppearanceObservation::from,
+    )
 }
 
 #[cfg(target_os = "linux")]
