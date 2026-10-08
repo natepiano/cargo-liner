@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Fixed
+- Cells moving between columns no longer leave an unpainted ring or write their contents over a column border when the background is opaque.
 - With `p` spelling command lines out, a cell whose chain holds a very long command line -- a `python3 -c` script, say -- no longer takes seconds a frame, which held up every key until the frame finished. Fitting the chain to its cell measured the whole chain again once per spare row; it now measures at most once per step of the chain.
 - A cargo run with no terminal no longer hangs on macOS once cargo has exited. The shim passed stderr to `tee` through a named FIFO, and now and then `tee` never saw its end-of-file; an anonymous pipe has no such rendezvous to lose. The shim borrows two closed descriptors from 3 to 9 to route around the pipe, leaving any the caller hands cargo open; a caller holding all but one of them, or running cargo with stdout closed, gets cargo uncaptured.
 - Running several instances at once no longer kills the desktop backdrop: each display is captured through one persistent multi-client ScreenCaptureKit stream that excludes the terminal's own windows.

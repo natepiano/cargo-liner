@@ -163,6 +163,14 @@ pub struct TilePlacement<Id> {
     pub frame:   PaneFrame,
 }
 
+/// One frame's cell pieces and the fixed column frames they move inside.
+pub(super) struct TileDrawing<Id> {
+    /// Every visible piece, in cell order.
+    pub(super) placements:   Vec<TilePlacement<Id>>,
+    /// Each column's band at the same point in the transition.
+    pub(super) column_bands: Vec<Rect>,
+}
+
 /// A cell after the summary.
 ///
 /// The identity here is what makes the motion work. A cell is animated
@@ -1043,10 +1051,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Every piece to draw this frame, in cell order.
     pub fn placements(&self, area: Rect, growth: TileGrowth) -> Vec<TilePlacement<Id>> {
+        self.drawing(area, growth).placements
+    }
+
+    /// Every piece and column frame to draw at one reading of the
+    /// transition clock.
+    pub(super) fn drawing(&self, area: Rect, growth: TileGrowth) -> TileDrawing<Id> {
         let settled = Grid::new(area, &self.drawn_held(), growth, &self.settings);
         let focused = self.focused_cell();
         let GridMotion::Moving(transition) = &self.motion else {
-            return cells(&self.slots)
+            let placements = cells(&self.slots)
                 .into_iter()
                 .filter_map(|(content, index)| {
                     Some(TilePlacement {
@@ -1056,11 +1070,18 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     })
                 })
                 .collect();
+            return TileDrawing {
+                placements,
+                column_bands: settled.columns,
+            };
         };
 
         let raw = self.progress();
         let progress = eased(raw);
         let before = Grid::new(area, &transition.held, growth, &self.settings);
+        let column_bands = (0..before.columns.len().max(settled.columns.len()))
+            .map(|column| column_band(&before, &settled, column, progress))
+            .collect();
         let turns = Turns::of(&before, &settled);
         let mut placements = Vec::new();
         // The summary keeps cell one throughout, but the grid around it
@@ -1109,7 +1130,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 &mut placements,
             );
         }
-        placements
+        TileDrawing {
+            placements,
+            column_bands,
+        }
     }
 
     /// Carry out one grid action: open or close a cell, or move the

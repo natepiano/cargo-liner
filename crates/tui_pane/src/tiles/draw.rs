@@ -28,14 +28,18 @@ use super::constants::TILE_ROWS_RIGHT_INSET;
 use super::constants::TILE_ROWS_WIDTH_LABEL;
 use super::grid::TileContent;
 use super::grid::TileDemands;
+use super::grid::TileDrawing;
 use super::grid::TileGrid;
 use super::growth::TileGrowth;
 use crate::GridLines;
 use crate::PaneBorders;
+use crate::PaneChrome;
+use crate::PaneFrame;
 use crate::PaneFrameLabel;
 use crate::default_pane_chrome;
 use crate::draw_clipped;
 use crate::error_color;
+use crate::frame_inner;
 use crate::label_color;
 use crate::pane_background;
 use crate::screen_ground;
@@ -150,16 +154,44 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     let mut demands = cells.demands(&widths);
     add_readout_rows(&mut demands, &widths);
     grid.sync(&demands, growth);
-    let placements = grid.placements(area, growth);
+    let drawing = grid.drawing(area, growth);
+    draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells);
+}
+
+/// Draw one grid snapshot: fixed column frames, then the cell pieces
+/// moving inside them.
+///
+/// Every column band contributes its whole frame on every pass. A cell
+/// piece contributes contents and lines only while at least one row of
+/// its body is visible between its clip's frame rows, so an edge alone
+/// cannot add a second line beside the column frame.
+fn draw_placements<Id: Clone + Eq + Debug>(
+    buffer: &mut Buffer,
+    area: Rect,
+    drawing: &TileDrawing<Id>,
+    demands: &TileDemands<Id>,
+    widths: &[(TileContent<Id>, u16)],
+    contents: TileGridContents,
+    cells: &impl TileCells<Id>,
+) {
     // Painted solid only while the work is shown: the attract screen
     // draws over bare panes, and keeps the terminal's own background.
-    if contents == TileGridContents::Shown
-        && let Some(ground) = screen_ground()
-    {
+    let painted_ground = if contents == TileGridContents::Shown {
+        screen_ground()
+    } else {
+        None
+    };
+    if let Some(ground) = painted_ground {
         buffer.set_style(area, Style::default().bg(ground));
     }
     let mut grid_lines = GridLines::new(area);
-    for placement in &placements {
+    for &column in &drawing.column_bands {
+        grid_lines.add(PaneFrame::new(column));
+    }
+    for placement in &drawing.placements {
+        if !has_visible_body_row(placement.frame) {
+            continue;
+        }
         // The ground a fading row is carried toward is the one its own
         // cell is painted on, which focus moves.
         let ground = pane_background(placement.frame.is_focused());
@@ -172,7 +204,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         // the layout as it stood before `sync` -- the readout carries it
         // beside the cell's own so a cell measured at one width and
         // drawn at another says so rather than only looking wrong.
-        let demand_width = measured_width(&widths, &placement.content);
+        let demand_width = measured_width(widths, &placement.content);
         let content_rows = cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
         if contents == TileGridContents::Shown {
             let summary_foot = match &placement.content {
@@ -218,7 +250,28 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     // single tile. Focus is the background tint under a tile's contents,
     // and lights the tile's border only where the screen is transparent
     // and no tint is painted.
-    grid_lines.render(buffer, default_pane_chrome(), PaneBorders::Shared);
+    let chrome = default_pane_chrome();
+    let chrome = painted_ground.map_or(chrome, |ground| PaneChrome {
+        inactive_border: chrome.inactive_border.bg(ground),
+        ..chrome
+    });
+    grid_lines.render(buffer, chrome, PaneBorders::Shared);
+}
+
+/// Whether a placement has a pane-interior row visible between its
+/// clip's frame rows.
+fn has_visible_body_row(frame: PaneFrame) -> bool {
+    let body = frame.inner();
+    let clip_body = frame_inner(frame.clip());
+    if body.is_empty() || clip_body.is_empty() {
+        return false;
+    }
+    let shares_columns = body.left() < clip_body.right() && clip_body.left() < body.right();
+    let shifted_top = i64::from(body.top()) + i64::from(frame.shift());
+    let shifted_bottom = i64::from(body.bottom()) + i64::from(frame.shift());
+    shares_columns
+        && shifted_top < i64::from(clip_body.bottom())
+        && shifted_bottom > i64::from(clip_body.top())
 }
 
 /// Draw one cell's interior: its contents, then the readout along its
@@ -487,8 +540,11 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::symbols::line;
+
     use super::*;
     use crate::TileDemand;
+    use crate::tiles::grid::TilePlacement;
 
     const FOOT_TEXT: &str = "mem 2.5G";
 
@@ -544,6 +600,70 @@ mod tests {
             .collect()
     }
 
+    fn is_lattice_glyph(symbol: &str) -> bool {
+        [
+            line::HORIZONTAL,
+            line::VERTICAL,
+            line::TOP_LEFT,
+            line::TOP_RIGHT,
+            line::BOTTOM_LEFT,
+            line::BOTTOM_RIGHT,
+            line::VERTICAL_RIGHT,
+            line::VERTICAL_LEFT,
+            line::HORIZONTAL_DOWN,
+            line::HORIZONTAL_UP,
+            line::CROSS,
+        ]
+        .contains(&symbol)
+    }
+
+    fn assert_lattice_background(buffer: &Buffer, area: Rect, expected: Color) {
+        let mut lines = 0;
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let cell = &buffer[(x, y)];
+                if is_lattice_glyph(cell.symbol()) {
+                    lines += 1;
+                    assert_eq!(cell.bg, expected, "line background at ({x}, {y})");
+                }
+            }
+        }
+        assert!(lines > 0, "the placements draw lattice lines");
+    }
+
+    /// Draw hand-built moving pieces inside hand-built column frames.
+    fn draw_motion_fixture(area: Rect, drawing: &TileDrawing<u32>) -> Buffer {
+        let groups = vec![7, 8, 9];
+        let demands = TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        groups
+                .iter()
+                .map(|&id| TileDemand { id, rows: 1 })
+                .collect(),
+        };
+        let measured = area.width.saturating_sub(2);
+        let widths = groups
+            .iter()
+            .map(|&id| (TileContent::Group(id), measured))
+            .collect::<Vec<_>>();
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups,
+        };
+        let mut buffer = Buffer::empty(area);
+        draw_placements(
+            &mut buffer,
+            area,
+            drawing,
+            &demands,
+            &widths,
+            TileGridContents::Shown,
+            &cells,
+        );
+        buffer
+    }
+
     /// Draw a settled grid with `cells` into a new buffer.
     fn settled_grid(area: Rect, cells: &StubCells) -> (TileGrid<u32>, Buffer) {
         let growth = TileGrowth::default();
@@ -568,6 +688,194 @@ mod tests {
             cells,
         );
         (grid, buffer)
+    }
+
+    #[test]
+    fn a_piece_in_flight_leaves_no_cell_unpainted() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 60, 12);
+        let middle_column = Rect::new(20, 0, 21, 12);
+        let last_column = Rect::new(40, 0, 20, 12);
+        let drawing = TileDrawing {
+            placements:   vec![
+                TilePlacement {
+                    content: TileContent::Summary,
+                    frame:   crate::PaneFrame::new(Rect::new(0, 0, 21, 12)),
+                },
+                TilePlacement {
+                    content: TileContent::Group(7),
+                    frame:   crate::PaneFrame::shifted(Rect::new(20, 0, 21, 7), -2, middle_column),
+                },
+                TilePlacement {
+                    content: TileContent::Group(7),
+                    frame:   crate::PaneFrame::shifted(Rect::new(40, 6, 20, 6), 3, last_column),
+                },
+            ],
+            column_bands: vec![Rect::new(0, 0, 21, 12), middle_column, last_column],
+        };
+        let demands = TileDemands {
+            summary:       2,
+            summary_width: 0,
+            groups:        vec![TileDemand { id: 7, rows: 2 }],
+        };
+        let widths = [(TileContent::Summary, 19), (TileContent::Group(7), 19)];
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       vec![7],
+        };
+        let mut buffer = Buffer::empty(area);
+
+        draw_placements(
+            &mut buffer,
+            area,
+            &drawing,
+            &demands,
+            &widths,
+            TileGridContents::Shown,
+            &cells,
+        );
+
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                assert_ne!(
+                    buffer[(x, y)].bg,
+                    Color::Reset,
+                    "cell ({x}, {y}) is unpainted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_over_an_overlapped_cell_sits_on_the_screen_ground() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 20, 10);
+        let drawing = TileDrawing {
+            placements:   vec![
+                TilePlacement {
+                    content: TileContent::Group(7),
+                    frame:   crate::PaneFrame::shifted(Rect::new(0, 5, 20, 5), -2, area),
+                },
+                TilePlacement {
+                    content: TileContent::Group(8),
+                    frame:   crate::PaneFrame::new(Rect::new(0, 0, 20, 6)),
+                },
+            ],
+            column_bands: vec![area],
+        };
+        let demands = TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        vec![TileDemand { id: 7, rows: 2 }, TileDemand { id: 8, rows: 2 }],
+        };
+        let widths = [(TileContent::Group(7), 18), (TileContent::Group(8), 18)];
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       vec![7, 8],
+        };
+        let draw = |contents| {
+            let mut buffer = Buffer::empty(area);
+            draw_placements(
+                &mut buffer,
+                area,
+                &drawing,
+                &demands,
+                &widths,
+                contents,
+                &cells,
+            );
+            buffer
+        };
+
+        let shown = draw(TileGridContents::Shown);
+        let ground = screen_ground().unwrap_or(Color::Reset);
+        assert_ne!(
+            ground,
+            Color::Reset,
+            "the opaque screen has a painted ground"
+        );
+        assert_lattice_background(&shown, area, ground);
+
+        let hidden = draw(TileGridContents::Hidden);
+        assert_lattice_background(&hidden, area, Color::Reset);
+    }
+
+    #[test]
+    fn a_new_column_draws_its_whole_frame_while_its_first_cell_rises() {
+        let area = Rect::new(0, 0, 12, 6);
+        let columns = [Rect::new(0, 0, 7, 6), Rect::new(6, 0, 6, 6)];
+        let drawing = TileDrawing {
+            placements:   vec![
+                TilePlacement {
+                    content: TileContent::Group(7),
+                    frame:   PaneFrame::new(columns[0]),
+                },
+                TilePlacement {
+                    content: TileContent::Group(8),
+                    frame:   PaneFrame::new(Rect::new(6, 3, 6, 3)),
+                },
+            ],
+            column_bands: columns.to_vec(),
+        };
+
+        let buffer = draw_motion_fixture(area, &drawing);
+
+        assert_eq!(buffer_line(&buffer, area.top()), "┌─────┬────┐");
+        assert_eq!(buffer_line(&buffer, area.bottom() - 1), "└─────┴────┘");
+        for y in area.top()..area.bottom() {
+            assert_ne!(buffer[(6, y)].symbol(), " ", "left side at row {y}");
+            assert_ne!(buffer[(11, y)].symbol(), " ", "right side at row {y}");
+        }
+    }
+
+    #[test]
+    fn a_piece_entering_the_middle_column_leaves_the_bottom_frame_whole() {
+        let area = Rect::new(0, 0, 13, 6);
+        let columns = [
+            Rect::new(0, 0, 5, 6),
+            Rect::new(4, 0, 5, 6),
+            Rect::new(8, 0, 5, 6),
+        ];
+        let drawing = TileDrawing {
+            placements:   vec![
+                TilePlacement {
+                    content: TileContent::Group(7),
+                    frame:   PaneFrame::new(columns[0]),
+                },
+                TilePlacement {
+                    content: TileContent::Group(8),
+                    frame:   PaneFrame::shifted(Rect::new(4, 3, 5, 3), 2, columns[1]),
+                },
+                TilePlacement {
+                    content: TileContent::Group(9),
+                    frame:   PaneFrame::new(columns[2]),
+                },
+            ],
+            column_bands: columns.to_vec(),
+        };
+
+        let buffer = draw_motion_fixture(area, &drawing);
+
+        assert_eq!(buffer_line(&buffer, area.bottom() - 1), "└───┴───┴───┘");
+    }
+
+    #[test]
+    fn an_edge_only_piece_adds_no_line_above_the_column_frame() {
+        let area = Rect::new(0, 0, 6, 5);
+        let drawing = TileDrawing {
+            placements:   vec![TilePlacement {
+                content: TileContent::Group(7),
+                frame:   PaneFrame::shifted(Rect::new(0, 0, 6, 3), 3, area),
+            }],
+            column_bands: vec![area],
+        };
+
+        let buffer = draw_motion_fixture(area, &drawing);
+
+        assert_eq!(
+            area_lines(&buffer, area),
+            ["┌────┐", "│    │", "│    │", "│    │", "└────┘"]
+        );
     }
 
     #[test]
