@@ -192,6 +192,10 @@ fn draw_placements<Id: Clone + Eq + Debug>(
         if !has_visible_body_row(placement.frame) {
             continue;
         }
+        // Contents retain the pane's own motion; its clip is the shared
+        // topology the border lattice follows.
+        let line_frame =
+            PaneFrame::new(placement.frame.clip()).with_focus(placement.frame.is_focused());
         // The ground a fading row is carried toward is the one its own
         // cell is painted on, which focus moves.
         let ground = pane_background(placement.frame.is_focused());
@@ -225,10 +229,10 @@ fn draw_placements<Id: Clone + Eq + Debug>(
         }
         match &placement.content {
             TileContent::Summary => {
-                grid_lines.add_titled(placement.frame, cells.summary_title());
+                grid_lines.add_titled(line_frame, cells.summary_title());
                 if contents == TileGridContents::Shown {
-                    for label in cells.summary_labels(placement.frame.rect()) {
-                        grid_lines.add_label(placement.frame, label);
+                    for label in cells.summary_labels(line_frame.rect()) {
+                        grid_lines.add_label(line_frame, label);
                     }
                 }
             },
@@ -238,11 +242,11 @@ fn draw_placements<Id: Clone + Eq + Debug>(
                 .group_title(id)
                 .filter(|_| contents == TileGridContents::Shown)
             {
-                Some(title) => grid_lines.add_titled(placement.frame, title),
-                None => grid_lines.add(placement.frame),
+                Some(title) => grid_lines.add_titled(line_frame, title),
+                None => grid_lines.add(line_frame),
             },
             TileContent::Empty(_) => {
-                grid_lines.add(placement.frame);
+                grid_lines.add(line_frame);
             },
         }
     }
@@ -540,13 +544,18 @@ fn draw_number(buffer: &mut Buffer, number: usize, inner: Rect) {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use ratatui::symbols::line;
 
     use super::*;
     use crate::TileDemand;
+    use crate::TileFill;
+    use crate::tiles::constants::PROGRESS_SCALE;
     use crate::tiles::grid::TilePlacement;
 
     const FOOT_TEXT: &str = "mem 2.5G";
+    const MOTION_SNAPSHOTS: u32 = 24;
 
     struct StubCells {
         summary_foot: SummaryFoot,
@@ -633,7 +642,16 @@ mod tests {
 
     /// Draw hand-built moving pieces inside hand-built column frames.
     fn draw_motion_fixture(area: Rect, drawing: &TileDrawing<u32>) -> Buffer {
-        let groups = vec![7, 8, 9];
+        draw_motion_fixture_with_width(area, drawing, area.width.saturating_sub(2))
+    }
+
+    /// Draw moving pieces with the width their contents were measured at.
+    fn draw_motion_fixture_with_width(
+        area: Rect,
+        drawing: &TileDrawing<u32>,
+        measured: u16,
+    ) -> Buffer {
+        let groups = (7..=18).collect::<Vec<_>>();
         let demands = TileDemands {
             summary:       0,
             summary_width: 0,
@@ -642,7 +660,6 @@ mod tests {
                 .map(|&id| TileDemand { id, rows: 1 })
                 .collect(),
         };
-        let measured = area.width.saturating_sub(2);
         let widths = groups
             .iter()
             .map(|&id| (TileContent::Group(id), measured))
@@ -662,6 +679,253 @@ mod tests {
             &cells,
         );
         buffer
+    }
+
+    /// A full three-column grid opening a fourth column with three pieces.
+    fn column_transition(area: Rect, opening: bool) -> (TileGrid<u32>, TileGrowth) {
+        let growth = TileGrowth {
+            initial_rows:  3,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let groups = |ids: &[u32]| TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        ids.iter().map(|&id| TileDemand { id, rows: 1 }).collect(),
+        };
+        let (before, after): (&[u32], &[u32]) = if opening {
+            (
+                &[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+                &[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+            )
+        } else {
+            (
+                &[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+                &[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+            )
+        };
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.sync(&groups(before), growth);
+        grid.settle_for_test();
+        grid.sync(&groups(after), growth);
+        (grid, growth)
+    }
+
+    /// One cell leaving between two residents in a single column.
+    fn middle_departure(area: Rect) -> (TileGrid<u32>, TileGrowth) {
+        let growth = TileGrowth {
+            initial_rows:  4,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let groups = |ids: &[u32]| TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        ids.iter().map(|&id| TileDemand { id, rows: 1 }).collect(),
+        };
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.sync(&groups(&[7, 8, 9]), growth);
+        grid.settle_for_test();
+        grid.sync(&groups(&[7, 9]), growth);
+        (grid, growth)
+    }
+
+    /// Twenty-four evenly spaced readings of the raw motion clock.
+    fn motion_snapshots() -> impl Iterator<Item = u32> {
+        (0..MOTION_SNAPSHOTS).map(|step| step * PROGRESS_SCALE / (MOTION_SNAPSHOTS - 1))
+    }
+
+    /// The visible pane-interior rows after its shift and clip are applied.
+    fn visible_body_rows(frame: PaneFrame) -> Option<Range<u16>> {
+        let body = frame.inner();
+        let clip = frame_inner(frame.clip());
+        let top = (i64::from(body.top()) + i64::from(frame.shift())).max(i64::from(clip.top()));
+        let bottom =
+            (i64::from(body.bottom()) + i64::from(frame.shift())).min(i64::from(clip.bottom()));
+        let top = u16::try_from(top).ok()?;
+        let bottom = u16::try_from(bottom).ok()?;
+        (top < bottom).then_some(top..bottom)
+    }
+
+    fn doubled_line_failure(buffer: &Buffer, area: Rect, motion: &str, raw: u32) -> Option<String> {
+        for y in area.top()..area.bottom().saturating_sub(1) {
+            for x in area.left()..area.right().saturating_sub(2) {
+                let horizontal_run = |row| {
+                    (x..x + 3).all(|column| buffer[(column, row)].symbol() == line::HORIZONTAL)
+                };
+                if horizontal_run(y) && horizontal_run(y + 1) {
+                    return Some(format!(
+                        "{motion} at raw {raw} draws horizontal lines on rows {y} and {}",
+                        y + 1
+                    ));
+                }
+            }
+        }
+
+        let right_edges = [
+            line::VERTICAL,
+            line::VERTICAL_LEFT,
+            line::TOP_RIGHT,
+            line::BOTTOM_RIGHT,
+        ];
+        let left_edges = [
+            line::VERTICAL,
+            line::VERTICAL_RIGHT,
+            line::TOP_LEFT,
+            line::BOTTOM_LEFT,
+        ];
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right().saturating_sub(1) {
+                let left = buffer[(x, y)].symbol();
+                let right = buffer[(x + 1, y)].symbol();
+                if right_edges.contains(&left) && left_edges.contains(&right) {
+                    return Some(format!(
+                        "{motion} at raw {raw} draws vertical lines side by side at ({x}, {y})"
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    fn row_gap_failure(
+        buffer: &Buffer,
+        drawing: &TileDrawing<u32>,
+        motion: &str,
+        raw: u32,
+    ) -> Option<String> {
+        for &band in &drawing.column_bands {
+            let bodies = drawing
+                .placements
+                .iter()
+                .filter(|placement| {
+                    let clip = placement.frame.clip();
+                    clip.left() == band.left() && clip.right() == band.right()
+                })
+                .filter_map(|placement| visible_body_rows(placement.frame))
+                .collect::<Vec<_>>();
+            if bodies.len() < 2 {
+                continue;
+            }
+            let Some(first_body_row) = bodies.iter().map(|body| body.start).min() else {
+                continue;
+            };
+            let Some(last_body_row) = bodies.iter().map(|body| body.end).max() else {
+                continue;
+            };
+            let ground = screen_ground().unwrap_or(Color::Reset);
+            for y in first_body_row..last_body_row {
+                let mut interior = band.left().saturating_add(1)..band.right().saturating_sub(1);
+                let has_body = interior.clone().any(|x| buffer[(x, y)].bg != ground);
+                let has_separator = interior.any(|x| is_lattice_glyph(buffer[(x, y)].symbol()));
+                if !has_body && !has_separator {
+                    return Some(format!(
+                        "{motion} at raw {raw} leaves row {y} bare between neighbouring cells"
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// A band row with neither pane ground nor a separator.
+    fn bare_band_row_failure(
+        buffer: &Buffer,
+        drawing: &TileDrawing<u32>,
+        motion: &str,
+        raw: u32,
+    ) -> Option<String> {
+        let ground = screen_ground().unwrap_or(Color::Reset);
+        for &band in &drawing.column_bands {
+            let inner = frame_inner(band);
+            if inner.is_empty() {
+                continue;
+            }
+            for y in inner.top()..inner.bottom() {
+                let cells = (inner.left()..inner.right()).map(|x| &buffer[(x, y)]);
+                if cells
+                    .clone()
+                    .all(|cell| cell.bg == ground && !is_lattice_glyph(cell.symbol()))
+                {
+                    let frames = drawing
+                        .placements
+                        .iter()
+                        .filter(|placement| {
+                            let clip = placement.frame.clip();
+                            clip.x == band.x && clip.width == band.width
+                        })
+                        .map(|placement| {
+                            (
+                                &placement.content,
+                                placement.frame.rect(),
+                                placement.frame.shift(),
+                                placement.frame.clip(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    return Some(format!(
+                        "{motion} at raw {raw} leaves band {band:?} row {y} on the screen ground; \
+                         frames={frames:?}"
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// A moving piece whose nearest content row has not moved with its slot.
+    fn missing_sliding_content(
+        buffer: &Buffer,
+        drawing: &TileDrawing<u32>,
+        motion: &str,
+        raw: u32,
+    ) -> Option<String> {
+        for placement in &drawing.placements {
+            if placement.frame.shift() == 0
+                || !matches!(placement.content, TileContent::Group(_))
+                || drawing
+                    .placements
+                    .iter()
+                    .filter(|other| other.content == placement.content)
+                    .count()
+                    < 2
+            {
+                continue;
+            }
+            let Some(rows) = visible_body_rows(placement.frame) else {
+                continue;
+            };
+            let inner = frame_inner(placement.frame.clip());
+            let text = rows
+                .clone()
+                .flat_map(|y| (inner.left()..inner.right()).map(move |x| buffer[(x, y)].symbol()))
+                .collect::<String>();
+            let (nearest, visible_width) = if placement.frame.shift() < 0 {
+                (
+                    TILE_ROWS_CONTENT_LABEL,
+                    inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET),
+                )
+            } else {
+                ("group body", inner.width)
+            };
+            let visible_nearest = nearest
+                .chars()
+                .take(usize::from(visible_width))
+                .collect::<String>();
+            if !text.contains(&visible_nearest) {
+                return Some(format!(
+                    "{motion} at raw {raw} omits {visible_nearest:?} from {:?}; rect={:?}, shift={}, \
+                     clip={:?}, rows={rows:?}, text={text:?}",
+                    placement.content,
+                    placement.frame.rect(),
+                    placement.frame.shift(),
+                    placement.frame.clip()
+                ));
+            }
+        }
+        None
     }
 
     /// Draw a settled grid with `cells` into a new buffer.
@@ -876,6 +1140,149 @@ mod tests {
             area_lines(&buffer, area),
             ["┌────┐", "│    │", "│    │", "│    │", "└────┘"]
         );
+    }
+
+    #[test]
+    fn no_line_is_doubled_through_a_transition() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 60, 18);
+        let mut failures = Vec::new();
+        for (motion, opening) in [("opening", true), ("closing", false)] {
+            let (grid, growth) = column_transition(area, opening);
+            for raw in motion_snapshots() {
+                let drawing = grid.drawing_at(area, growth, raw);
+                let buffer = draw_motion_fixture(area, &drawing);
+                if let Some(failure) = doubled_line_failure(&buffer, area, motion, raw) {
+                    let frames: Vec<_> = drawing
+                        .placements
+                        .iter()
+                        .map(|placement| (&placement.content, placement.frame))
+                        .collect();
+                    failures.push(format!(
+                        "{failure}; bands={:?}; frames={frames:?}",
+                        drawing.column_bands
+                    ));
+                    break;
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn two_cells_entering_a_column_never_double_a_frame_line() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 80, 10);
+        let (grid, growth) = column_transition(area, true);
+        for raw in motion_snapshots() {
+            let drawing = grid.drawing_at(area, growth, raw);
+            let buffer = draw_motion_fixture(area, &drawing);
+            assert_eq!(
+                doubled_line_failure(&buffer, area, "two head arrivals", raw),
+                None,
+                "bands={:?}; frames={:?}",
+                drawing.column_bands,
+                drawing
+                    .placements
+                    .iter()
+                    .map(|placement| (&placement.content, placement.frame))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_collapsing_cell_leaves_no_ground_only_row_between_neighbours() {
+        crate::set_transparent_background(false);
+        crate::set_focused_pane_tint(true);
+        let area = Rect::new(0, 0, 60, 18);
+        let mut failures = Vec::new();
+        for (motion, grid, growth) in [
+            {
+                let (grid, growth) = column_transition(area, true);
+                ("middle arrival", grid, growth)
+            },
+            {
+                let (grid, growth) = middle_departure(area);
+                ("middle departure", grid, growth)
+            },
+        ] {
+            for raw in motion_snapshots() {
+                let drawing = grid.drawing_at(area, growth, raw);
+                let buffer = draw_motion_fixture(area, &drawing);
+                if let Some(failure) = row_gap_failure(&buffer, &drawing, motion, raw) {
+                    let frames: Vec<_> = drawing
+                        .placements
+                        .iter()
+                        .map(|placement| (&placement.content, placement.frame))
+                        .collect();
+                    failures.push(format!("{failure}; frames={frames:?}"));
+                    break;
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn sliding_pieces_leave_no_band_row_on_the_screen_ground() {
+        crate::set_transparent_background(false);
+        crate::set_focused_pane_tint(true);
+        let area = Rect::new(0, 0, 200, 50);
+        let mut failures = Vec::new();
+        for (motion, opening) in [
+            ("right crossing and opening", true),
+            ("left crossing and closing", false),
+        ] {
+            let (grid, growth) = column_transition(area, opening);
+            for raw in motion_snapshots() {
+                let drawing = grid.drawing_at(area, growth, raw);
+                let buffer = draw_motion_fixture_with_width(area, &drawing, 64);
+                if let Some(failure) = bare_band_row_failure(&buffer, &drawing, motion, raw) {
+                    failures.push(failure);
+                    break;
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn a_sliding_arrival_shows_its_nearest_content_row_with_its_first_visible_row() {
+        crate::set_transparent_background(false);
+        crate::set_focused_pane_tint(true);
+        let area = Rect::new(0, 0, 200, 50);
+        let mut saw_above = false;
+        let mut saw_below = false;
+        let mut failures = Vec::new();
+        for (motion, opening) in [("opening column", true), ("closing old column", false)] {
+            let (grid, growth) = column_transition(area, opening);
+            for raw in motion_snapshots() {
+                let drawing = grid.drawing_at(area, growth, raw);
+                let buffer = draw_motion_fixture_with_width(area, &drawing, 64);
+                for placement in &drawing.placements {
+                    if drawing
+                        .placements
+                        .iter()
+                        .filter(|other| other.content == placement.content)
+                        .count()
+                        < 2
+                        || visible_body_rows(placement.frame).is_none()
+                    {
+                        continue;
+                    }
+                    saw_above |= placement.frame.shift() < 0;
+                    saw_below |= placement.frame.shift() > 0;
+                }
+                if let Some(failure) = missing_sliding_content(&buffer, &drawing, motion, raw) {
+                    failures.push(failure);
+                    break;
+                }
+            }
+        }
+        assert!(saw_above, "the fixtures include a piece sliding from above");
+        assert!(saw_below, "the fixtures include a piece sliding from below");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
