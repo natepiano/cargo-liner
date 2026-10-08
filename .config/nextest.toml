@@ -35,3 +35,11 @@ priority = 90
 [[profile.default.overrides]]
 filter       = 'binary_id(cargo-tile::shim_modes)'
 slow-timeout = { period = "30s", terminate-after = 4 }
+
+# A reader scenario ends itself: its script fails at 20s with a line naming
+# what it waited for, and stops hard at 25s. This cap sits above both, so it
+# ends only a hang the script cannot report. On macOS CI one such hang ran to
+# the job's 15-minute limit.
+[[profile.default.overrides]]
+filter       = 'binary_id(cargo-tile::unit_tests) & test(/^shim_registration::reader_scenarios::/)'
+slow-timeout = { period = "20s", terminate-after = 2 }

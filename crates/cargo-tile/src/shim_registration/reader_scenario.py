@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import codecs
 from collections.abc import Callable
 import errno
+import faulthandler
 import fcntl
 import os
 from pathlib import Path
@@ -19,7 +21,7 @@ import subprocess
 import sys
 import termios
 import time
-from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, Iterator, TypeVar, cast
 
 if TYPE_CHECKING:
     # A started writer is (child, observations, registration, fields, log).
@@ -30,7 +32,7 @@ if TYPE_CHECKING:
     Snapshot = tuple[str, list[list[Foreground]]]
 
 root = Path(sys.argv[1]).resolve()
-binary, source, scenario, observation_argument, smoothing_argument = sys.argv[2:]
+binary, source, scenario, observation_argument, smoothing_argument, *deadline_arguments = sys.argv[2:]
 timestamps_requested = os.environ.get('CARGO_TILE_READER_TIMESTAMPS') == '1'
 timestamp_origin = time.monotonic()
 previous_timestamp = timestamp_origin
@@ -52,7 +54,12 @@ READER_SCENARIOS = (
     'child-source-switch', 'locale', 'root-headings', 'settings-scroll-burst',
     'cpu-cache-server', 'quiet-json-long', 'excluded',
 )
-assert scenario in READER_SCENARIOS or scenario == '--terminal-frame-self-check', scenario
+SELF_CHECK_SCENARIOS = (
+    '--reader-end-self-check', '--scenario-deadline-self-check',
+    '--terminal-frame-self-check',
+)
+assert scenario in READER_SCENARIOS or scenario in SELF_CHECK_SCENARIOS, scenario
+assert len(deadline_arguments) <= 1, deadline_arguments
 # Ratatui completes every cursorless draw with Crossterm's Hide command.
 frame_end = b'\x1b[?25l'
 # The reader counts only this script's writers; leave room for every asserted row.
@@ -60,6 +67,14 @@ terminal_rows = 40
 terminal_columns = 240
 # How long wait_for polls before it fails.
 wait_seconds = 10
+SCENARIO_DEADLINE_SECONDS = wait_seconds * 2
+HARD_STOP_GRACE_SECONDS = wait_seconds / 2
+READER_EXIT_SECONDS = wait_seconds / 2
+READER_KILLED_EXIT_SECONDS = wait_seconds / 10
+READER_STOP_SECONDS = wait_seconds / 2
+WRITER_KILLED_EXIT_SECONDS = wait_seconds / 10
+scenario_deadline_seconds = (float(deadline_arguments[0]) if deadline_arguments
+                             else SCENARIO_DEADLINE_SECONDS)
 home = root / 'home'
 work = home / ('repair-group-' + root.name)
 capture_parent = root / 'capture'
@@ -88,7 +103,7 @@ def copy_named_shell(path: Path) -> None:
         # A relocated platform shell is killed before exec completes. Sign only
         # the owned fixture copy so it can run under its cargo/compiler name.
         _ = subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)],
-                           check=True, capture_output=True, text=True)
+                           check=True, capture_output=True, text=True, timeout=wait_seconds)
 
 writer_locale = 'POSIX'
 environment: dict[str, str] = {}
@@ -170,7 +185,7 @@ exit 37
 
     if scenario == 'locale':
         locales = subprocess.run(['locale', '-a'], check=True, capture_output=True,
-                                 text=True).stdout.split()
+                                 text=True, timeout=wait_seconds).stdout.split()
         writer_locale = next((name for name in locales if name not in ('C', 'POSIX')
                               and not name.lower().startswith('c.')), 'POSIX')
     environment = dict(os.environ)
@@ -191,6 +206,31 @@ cache_server = None
 reader: int | None = None
 terminal: int | None = None
 transcript = bytearray()
+pending_wait = 'scenario startup'
+
+@contextmanager
+def named_wait(description: str) -> Iterator[None]:
+    global pending_wait
+    previous = pending_wait
+    pending_wait = description
+    try:
+        yield
+    finally:
+        pending_wait = previous
+
+def scenario_deadline_reached(_signal_number, _frame) -> None:
+    raise TimeoutError(
+        f'{scenario} exceeded {scenario_deadline_seconds:g} seconds while waiting for {pending_wait}')
+
+def arm_scenario_deadline() -> None:
+    _ = signal.signal(signal.SIGALRM, scenario_deadline_reached)
+    _ = signal.setitimer(signal.ITIMER_REAL, scenario_deadline_seconds)
+    faulthandler.dump_traceback_later(
+        scenario_deadline_seconds + HARD_STOP_GRACE_SECONDS, exit=True)
+
+def cancel_scenario_deadline() -> None:
+    _ = signal.setitimer(signal.ITIMER_REAL, 0)
+    faulthandler.cancel_dump_traceback_later()
 
 def reader_pid() -> int:
     return required(reader, 'reader process is used before pty.fork')
@@ -204,12 +244,13 @@ def wait_for(predicate: Callable[[], object], description: str,
     # Filesystem and ps predicates pause between checks; a predicate that blocks on a
     # terminal read passes pause=0. A caller that bounds nested waits passes their deadline.
     deadline = time.monotonic() + wait_seconds if deadline is None else deadline
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(pause)
-    details = diagnostics() if diagnostics is not None else ('\n' + screen() if transcript else '')
-    raise AssertionError(description + details)
+    with named_wait(description):
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(pause)
+        details = diagnostics() if diagnostics is not None else ('\n' + screen() if transcript else '')
+        raise AssertionError(description + details)
 
 def start_writer(name: str, writer_home: Path, command: str = 'build',
                  nested_directory: Path | None = None, directory: Path = work,
@@ -323,7 +364,8 @@ done
     else:
         started = subprocess.run(['ps', '-p', str(child.pid), '-o', 'lstart='], check=True,
                                  capture_output=True, text=True,
-                                 env=dict(environment, LC_ALL='C', TZ='UTC0')).stdout.strip()
+                                 env=dict(environment, LC_ALL='C', TZ='UTC0'),
+                                 timeout=wait_seconds).stdout.strip()
         fields[3] = str(int(datetime.strptime(started, '%a %b %d %H:%M:%S %Y')
                            .replace(tzinfo=timezone.utc).timestamp())).encode()
     fields[1] += b'-carrier'
@@ -383,7 +425,8 @@ while [ ! -f "$OBSERVED/release" ]; do sleep 0.02; done
 
 def process_parent(pid: int) -> int:
     return int(subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='], check=True,
-                              capture_output=True, text=True).stdout.strip())
+                              capture_output=True, text=True,
+                              timeout=wait_seconds).stdout.strip())
 
 def cpu_readings_in_frame(rendered: str, writers: tuple[StartedWriter, ...]
                           ) -> list[tuple[StartedWriter, int]]:
@@ -490,12 +533,60 @@ def read_terminal(duration: float) -> None:
         if not read_pending():
             return
 
-def drain_terminal(duration: float) -> None:
-    # Keep reading for all of duration, or until the reader closes its terminal.
-    deadline = time.monotonic() + duration
-    while (remaining := deadline - time.monotonic()) > 0:
-        if select.select([reader_terminal()], [], [], remaining)[0] and not read_pending():
+def reader_exited_before(deadline: float, terminal_fd: int | None) -> bool:
+    while True:
+        finished, _status = os.waitpid(reader_pid(), os.WNOHANG)
+        if finished:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        pause = min(0.01, remaining)
+        if terminal_fd is None:
+            time.sleep(pause)
+        elif select.select([terminal_fd], [], [], pause)[0] and not read_pending():
+            time.sleep(pause)
+
+def close_reader_terminal() -> None:
+    global terminal
+    if terminal is not None:
+        os.close(terminal)
+        terminal = None
+
+def end_reader(request: bytes | signal.Signals, exit_seconds: float = READER_EXIT_SECONDS,
+               killed_exit_seconds: float = READER_KILLED_EXIT_SECONDS) -> None:
+    terminal_fd = reader_terminal()
+    if reader_exited_before(time.monotonic(), terminal_fd):
+        close_reader_terminal()
+        return
+    if isinstance(request, bytes):
+        try:
+            _ = os.write(terminal_fd, request)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+        request_name = repr(request)
+    else:
+        try:
+            os.kill(reader_pid(), request)
+        except ProcessLookupError:
+            pass
+        request_name = request.name
+    description = 'reader to exit after ' + request_name
+    with named_wait(description):
+        if reader_exited_before(time.monotonic() + exit_seconds, terminal_fd):
+            close_reader_terminal()
             return
+    for end_signal in (signal.SIGCONT, signal.SIGKILL):
+        try:
+            os.kill(reader_pid(), end_signal)
+        except ProcessLookupError:
+            pass
+    close_reader_terminal()
+    description = 'reader to exit after SIGKILL'
+    with named_wait(description):
+        if not reader_exited_before(time.monotonic() + killed_exit_seconds, None):
+            raise AssertionError(description)
 
 class CompletedTerminalFrames:
     """Keep the mutable draw separate from the last completed screen."""
@@ -734,18 +825,30 @@ def assert_settings_scroll() -> None:
     terminal_rows = 10
     transcript_start = len(transcript)
     input_attributes = termios.tcgetattr(reader_terminal())
-    if scenario == 'settings-scroll-burst':
-        # Queue both events while the already-rendering reader is descheduled.
-        os.kill(reader_pid(), signal.SIGSTOP)
-        stopped, status = os.waitpid(reader_pid(), os.WUNTRACED)
-        assert stopped == reader and os.WIFSTOPPED(status), (stopped, status)
     try:
+        if scenario == 'settings-scroll-burst':
+            # Queue both events while the already-rendering reader is descheduled.
+            os.kill(reader_pid(), signal.SIGSTOP)
+            deadline = time.monotonic() + READER_STOP_SECONDS
+            description = 'reader to stop after SIGSTOP'
+            with named_wait(description):
+                while time.monotonic() < deadline:
+                    stopped, status = os.waitpid(reader_pid(), os.WNOHANG | os.WUNTRACED)
+                    if stopped:
+                        assert stopped == reader and os.WIFSTOPPED(status), (stopped, status)
+                        break
+                    time.sleep(0.005)
+                else:
+                    raise AssertionError('reader did not stop after SIGSTOP')
         _ = fcntl.ioctl(reader_terminal(), termios.TIOCSWINSZ,
                         struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
         written = os.write(reader_terminal(), b's')
     finally:
         if scenario == 'settings-scroll-burst':
-            os.kill(reader_pid(), signal.SIGCONT)
+            try:
+                os.kill(reader_pid(), signal.SIGCONT)
+            except ProcessLookupError:
+                pass
     def popup_diagnostics() -> str:
         received = bytes(transcript[transcript_start:])
         # Inspect queued input only after timeout; successful runs never read it.
@@ -868,15 +971,46 @@ def assert_completed_terminal_frames() -> None:
     rendered, colors = split_frame('\x1b[2J\x1b[H\x1b[é visible'.encode() + frame_end)
     assert rendered.rstrip() == 'é visible', 'invalid CSI consumes its cancelling UTF-8 character'
 
+def assert_reader_end_bounds_output_writer() -> None:
+    global reader, terminal
+    reader, terminal = pty.fork()
+    if reader == 0:
+        _ = signal.setitimer(signal.ITIMER_REAL, 0)
+        _ = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        _ = os.write(1, b'reader ready\n')
+        while True:
+            _ = os.write(1, b'pending reader output\n')
+    def reader_is_ready() -> bool:
+        read_terminal(0.01)
+        return b'reader ready' in transcript
+    wait_for(reader_is_ready, 'reader end stand-in to become ready', pause=0,
+             deadline=time.monotonic() + 0.2)
+    end_reader(signal.SIGTERM, exit_seconds=0.02, killed_exit_seconds=0.2)
+
+arm_scenario_deadline()
+
 if scenario == '--terminal-frame-self-check':
     assert_completed_terminal_frames()
     record_timestamp('assertions')
     record_timestamp('cleanup')
+    cancel_scenario_deadline()
     sys.exit(0)
 
-prepare_fixture()
+if scenario == '--reader-end-self-check':
+    assert_reader_end_bounds_output_writer()
+    record_timestamp('assertions')
+    record_timestamp('cleanup')
+    cancel_scenario_deadline()
+    sys.exit(0)
+
+if scenario == '--scenario-deadline-self-check':
+    try:
+        wait_for(lambda: False, 'deadline self-check predicate')
+    finally:
+        record_timestamp('cleanup')
 
 try:
+    prepare_fixture()
     if scenario == 'cpu-cache-server':
         prepare_cpu_workload()
     arguments: tuple[str, ...] = ()
@@ -1038,19 +1172,8 @@ finally:
     record_timestamp('cleanup start')
     try:
         if reader is not None and reader != 0:
-            finished, status = os.waitpid(reader, os.WNOHANG)
-            if not finished:
-                if scenario == 'settings-scroll-burst':
-                    os.kill(reader, signal.SIGTERM)
-                    _ = os.waitpid(reader, 0)
-                else:
-                    _ = os.write(reader_terminal(), b'q')
-                    drain_terminal(0.3)
-                    finished, status = os.waitpid(reader, os.WNOHANG)
-                    if not finished:
-                        os.kill(reader, signal.SIGTERM)
-                        _ = os.waitpid(reader, 0)
-            os.close(reader_terminal())
+            request = signal.SIGTERM if scenario == 'settings-scroll-burst' else b'q'
+            end_reader(request)
     finally:
         if cache_server is not None:
             (root / 'cpu-server/release').touch()
@@ -1059,7 +1182,12 @@ finally:
             except ProcessLookupError:
                 pass
         for server_process in detached_servers:
-            _ = server_process.wait(timeout=5)
+            description = 'cache server to exit'
+            with named_wait(description):
+                try:
+                    _ = server_process.wait(timeout=5)
+                except subprocess.TimeoutExpired as error:
+                    raise AssertionError(description) from error
         for observations in parent_owned_children:
             (observations / 'release').touch()
         # Release every writer before waiting on any, so their release polls overlap.
@@ -1068,10 +1196,19 @@ finally:
                 if (observations / nested_command).is_dir():
                     (observations / nested_command / 'release').touch()
             (observations / 'release').touch()
-        for child, _ in writers:
+        for child, observations in writers:
+            description = 'writer ' + observations.name + ' to exit'
             try:
-                _ = child.wait(timeout=5)
+                with named_wait(description):
+                    _ = child.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
-                _ = child.wait()
+                description = 'writer ' + observations.name + ' to exit after SIGKILL'
+                with named_wait(description):
+                    try:
+                        _ = child.wait(timeout=WRITER_KILLED_EXIT_SECONDS)
+                    except subprocess.TimeoutExpired as error:
+                        raise AssertionError(description) from error
         record_timestamp('cleanup')
+
+cancel_scenario_deadline()
