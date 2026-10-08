@@ -123,12 +123,27 @@ fn notices(app: &App) -> Vec<(&'static str, &str)> {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tui_pane::Appearance;
     use tui_pane::FrameworkSetting;
     use tui_pane::TileFill;
 
     use super::*;
     use crate::census::CensusUpdate;
     use crate::census::MachineState;
+
+    #[test]
+    fn applying_an_appearance_replaces_the_theme_notice() {
+        let mut app = App::new_for_test().expect("test app should build");
+        app.startup_note = Some("earlier notice".to_string());
+        app.loaded_config.config.appearance.light_theme = "Missing Light".to_string();
+
+        app.apply_system_appearance(Appearance::Light);
+
+        assert_eq!(
+            app.startup_note.as_deref(),
+            Some("theme `Missing Light` not found — using a built-in")
+        );
+    }
 
     /// A typed list reaches the config, the scheduler's copy and the
     /// census, which drops the answer of a host taken out.

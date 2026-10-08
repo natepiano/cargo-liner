@@ -2254,12 +2254,14 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Instant;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Cell;
     use sysinfo::Pid;
+    use tui_pane::Appearance;
     use tui_pane::BackdropNotice;
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
@@ -2568,6 +2570,36 @@ mod tests {
             SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE * 5 / 2)
         );
         assert_eq!(summary_foot_text(memory_total(&roster).foot()), "mem 2.5G");
+    }
+
+    /// The light summary value reads on both its transparent and painted grounds.
+    #[test]
+    fn the_summary_memory_total_reads_on_the_light_theme() {
+        let previous_theme = tui_pane::theme();
+        let previous_transparency = tui_pane::transparent_background();
+        let light = theme::builtins::builtins()
+            .into_iter()
+            .find(|variant| variant.appearance == Appearance::Light)
+            .expect("the app ships a light theme")
+            .theme;
+        let expected_ink = light.text.default.color;
+        tui_pane::set_active_theme(Arc::new(light));
+
+        for transparent in [false, true] {
+            tui_pane::set_transparent_background(transparent);
+            let SummaryFoot::Text(line) = SummaryMemoryTotal::Complete(BYTES_PER_GIBIBYTE).foot()
+            else {
+                panic!("a memory reading supplies summary text");
+            };
+            let value = line.spans.last().expect("the total has a value span");
+            let ground = pane_background(false);
+
+            assert_eq!(value.style.fg, Some(expected_ink));
+            assert_ne!(value.style.fg, Some(ground), "transparent={transparent}");
+        }
+
+        tui_pane::set_active_theme(previous_theme);
+        tui_pane::set_transparent_background(previous_transparency);
     }
 
     /// A fading group has stopped and contributes nothing to the running total.

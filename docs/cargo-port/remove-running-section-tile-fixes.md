@@ -158,7 +158,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - A title always on the entering piece: that piece starts one row tall, on a border row another title uses.
 - A second vector of roles beside the placements: the two lengths could disagree.
 
-### Phase 4 — `auto` follows the system's light or dark setting  · status: todo
+### Phase 4 — `auto` follows the system's light or dark setting  · status: done
 
 #### Work Order
 

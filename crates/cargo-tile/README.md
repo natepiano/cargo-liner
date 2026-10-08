@@ -74,7 +74,7 @@ on macOS that is `~/Library/Application Support/cargo-tile/`, on Linux
 
 ```toml
 [appearance]
-mode        = "auto"          # auto follows the terminal; light / dark pin one
+mode        = "auto"          # auto follows the system's light or dark setting
 light_theme = "Default Light"
 dark_theme  = "Default Dark"
 transparent = true            # false paints the grid solid in the theme's background

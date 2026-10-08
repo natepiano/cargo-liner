@@ -4,13 +4,16 @@
 //! loop polls.
 
 use std::process::ExitCode;
+use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
+use tui_pane::Appearance;
 use tui_pane::PollWork;
 use tui_pane::Repaint;
 use tui_pane::install_theme;
 use tui_pane::run_terminal;
+use tui_pane::spawn_appearance_watcher;
 
 use crate::app::App;
 use crate::census;
@@ -24,7 +27,15 @@ use crate::theme;
 /// event loop with the terminal in the alternate screen.
 pub(crate) fn run() -> ExitCode {
     let loaded_config = LoadedConfig::load::<CargoHandler>();
-    let startup_note = install_theme(&loaded_config.config.appearance, theme::builtins());
+    let mut startup_note = install_theme(&loaded_config.config.appearance, theme::builtins());
+    let (appearance_sender, appearance_updates) = mpsc::channel();
+    let startup_appearance = spawn_appearance_watcher(move |appearance| {
+        let _ = appearance_sender.send(appearance);
+    });
+    if let Some(appearance) = startup_appearance {
+        startup_note =
+            tui_pane::apply_system_appearance(appearance, &loaded_config.config.appearance);
+    }
     // Read before the config is handed to the app, which takes it.
     let iterm2_profile = loaded_config.config.appearance.iterm2_profile.clone();
     let mut app = match App::new(loaded_config, startup_note) {
@@ -35,7 +46,10 @@ pub(crate) fn run() -> ExitCode {
         },
     };
     run_terminal(&mut app, &iterm2_profile, |app| {
-        Ticker::new(census::schedule::spawn(app.remote_machines.clone()))
+        Ticker::new(
+            census::schedule::spawn(app.remote_machines.clone()),
+            appearance_updates,
+        )
     })
 }
 
@@ -45,6 +59,8 @@ pub(crate) fn run() -> ExitCode {
 struct Ticker {
     /// Answers from the census scheduler.
     updates:      Receiver<CensusUpdate>,
+    /// Light or dark appearances observed by the watcher.
+    appearances:  Receiver<Appearance>,
     /// The unix second the ages were last drawn at, while any row is
     /// shown.
     shown_second: Option<u64>,
@@ -52,11 +68,22 @@ struct Ticker {
 
 impl Ticker {
     /// Poll `updates` for census answers.
-    const fn new(updates: Receiver<CensusUpdate>) -> Self {
+    const fn new(updates: Receiver<CensusUpdate>, appearances: Receiver<Appearance>) -> Self {
         Self {
             updates,
+            appearances,
             shown_second: None,
         }
+    }
+
+    /// Apply every system appearance that arrived since the last pass.
+    fn drain_appearances(&self, app: &mut App) -> bool {
+        let mut changed = false;
+        while let Ok(appearance) = self.appearances.try_recv() {
+            app.apply_system_appearance(appearance);
+            changed = true;
+        }
+        changed
     }
 
     /// Fold in the census answers that have arrived, answering whether
@@ -93,6 +120,7 @@ impl Ticker {
     /// [`PollWork::poll`] at `unix_now` in unix seconds.
     fn poll_at(&mut self, app: &mut App, now: Instant, unix_now: u64) -> Repaint {
         let census_changed = self.drain_census(app);
+        let appearance_changed = self.drain_appearances(app);
         let ages_moved = self.ages_moved(app, unix_now);
         // Each of the three is asked every pass: asking is what moves it
         // on, so none may be skipped because another already wants a
@@ -105,6 +133,7 @@ impl Ticker {
         // it waits out before coming back.
         let attract = app.attract.frame_due();
         if census_changed
+            || appearance_changed
             || ages_moved
             || favorites == Repaint::Needed
             || grid_moving
@@ -158,7 +187,8 @@ mod tests {
         let growth = app.loaded_config.config.tiles.growth();
         app.tiles.set_layout(Rect::new(0, 0, 80, 23), growth);
         let (_sender, receiver) = mpsc::channel();
-        let mut ticker = Ticker::new(receiver);
+        let (_appearance_sender, appearance_receiver) = mpsc::channel();
+        let mut ticker = Ticker::new(receiver, appearance_receiver);
         assert_eq!(ticker.poll(&mut app, Instant::now()), Repaint::NotNeeded);
 
         dispatch_key(&mut app, key(KeyCode::Char('+')));
@@ -173,7 +203,8 @@ mod tests {
     fn shown_rows_repaint_each_second_and_on_a_changed_answer() {
         let mut app = App::new_for_test().expect("test app should build");
         let (sender, receiver) = mpsc::channel();
-        let mut ticker = Ticker::new(receiver);
+        let (_appearance_sender, appearance_receiver) = mpsc::channel();
+        let mut ticker = Ticker::new(receiver, appearance_receiver);
         let now = Instant::now();
         let row = AgentRow {
             agent:        Agent::Claude,

@@ -319,7 +319,7 @@ overlay. Its defaults:
 
 ```toml
 [appearance]
-mode           = "auto"          # auto follows the terminal; light / dark pin one
+mode           = "auto"          # auto follows the system's light or dark setting
 light_theme    = "Default Light"
 dark_theme     = "Default Dark"
 iterm2_profile = "cargo-handler" # "" to leave the iTerm2 session alone

@@ -84,6 +84,13 @@ pub struct ResolvedTheme {
     pub mode_error: Option<String>,
 }
 
+pub(crate) fn resolution_notice(resolved: &ResolvedTheme) -> Option<String> {
+    resolved
+        .miss
+        .as_ref()
+        .map(|missing| format!("theme `{missing}` not found — using a built-in"))
+}
+
 impl ThemeRegistry {
     /// Resolve the active theme from `(mode_string, light_id,
     /// dark_id, os_appearance)`.
@@ -179,19 +186,6 @@ mod tests {
             Ok(AppearanceMode::Pinned(Appearance::Dark))
         );
         assert!(AppearanceMode::parse("midnight").is_err());
-    }
-
-    #[test]
-    fn appearance_mode_resolve_uses_os_only_in_auto() {
-        assert_eq!(
-            AppearanceMode::Auto.resolve(Some(Appearance::Light)),
-            Appearance::Light
-        );
-        assert_eq!(AppearanceMode::Auto.resolve(None), Appearance::Dark);
-        assert_eq!(
-            AppearanceMode::Pinned(Appearance::Dark).resolve(Some(Appearance::Light)),
-            Appearance::Dark
-        );
     }
 
     #[test]

@@ -11,6 +11,8 @@ use crate::ThemeState;
 use crate::ThemeVariant;
 use crate::install_theme_state;
 use crate::set_transparent_background;
+use crate::theme;
+use crate::theme::RememberedAppearance;
 
 /// Install the theme `appearance` selects, process-wide.
 ///
@@ -43,15 +45,20 @@ pub(crate) fn resolve_appearance<I: AppIdentity>(
     registry: &ThemeRegistry,
     appearance: &AppearanceConfig<I>,
 ) -> (Arc<Theme>, Option<String>) {
+    resolve_appearance_for(registry, appearance, theme::remembered_system_appearance())
+}
+
+fn resolve_appearance_for<I: AppIdentity>(
+    registry: &ThemeRegistry,
+    appearance: &AppearanceConfig<I>,
+    remembered: RememberedAppearance,
+) -> (Arc<Theme>, Option<String>) {
     let resolved = registry.resolve_active(
         &appearance.mode,
         &appearance.light_theme,
         &appearance.dark_theme,
-        None,
+        remembered.observed(),
     );
-    let note = resolved
-        .miss
-        .as_ref()
-        .map(|missing| format!("theme `{missing}` not found — using a built-in"));
+    let note = theme::resolution_notice(&resolved);
     (resolved.theme, note)
 }
