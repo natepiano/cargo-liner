@@ -204,6 +204,21 @@ fn reader_scenario_deadline_names_scenario_and_pending_wait() {
     );
 }
 
+/// Concurrent waits cannot restore the name of a wait that has already finished.
+#[test]
+fn reader_scenario_deadline_names_a_wait_still_pending_in_another_thread() {
+    let scenario = "--concurrent-deadline-self-check";
+    let output = reader_script_result(scenario, ScenarioDeadline::After(Duration::from_millis(50)));
+    let stderr = reader_diagnostics(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "--concurrent-deadline-self-check exceeded 0.05 seconds while waiting for concurrent pending predicate"
+        ),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn settings_click_after_navigation_selects_the_row_still_drawn() {
     let mut app = App::new_for_test().expect("build isolated settings app");

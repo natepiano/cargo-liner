@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import codecs
@@ -20,6 +21,7 @@ import struct
 import subprocess
 import sys
 import termios
+import threading
 import time
 from typing import TYPE_CHECKING, ClassVar, Iterator, TypeVar, cast
 
@@ -36,14 +38,16 @@ binary, source, scenario, observation_argument, smoothing_argument, *deadline_ar
 timestamps_requested = os.environ.get('CARGO_TILE_READER_TIMESTAMPS') == '1'
 timestamp_origin = time.monotonic()
 previous_timestamp = timestamp_origin
+timestamp_lock = threading.Lock()
 
 def record_timestamp(name: str) -> None:
     global previous_timestamp
-    now = time.monotonic()
-    if timestamps_requested:
-        print(f'reader timestamp {name}: +{now - timestamp_origin:.6f}s '
-              f'({now - previous_timestamp:.6f}s)', file=sys.stderr, flush=True)
-    previous_timestamp = now
+    with timestamp_lock:
+        now = time.monotonic()
+        if timestamps_requested:
+            print(f'reader timestamp {name}: +{now - timestamp_origin:.6f}s '
+                  f'({now - previous_timestamp:.6f}s)', file=sys.stderr, flush=True)
+        previous_timestamp = now
 
 record_timestamp('python start')
 # How long the CPU scenario reads the table, and how long the reader's
@@ -55,8 +59,8 @@ READER_SCENARIOS = (
     'cpu-cache-server', 'quiet-json-long', 'excluded',
 )
 SELF_CHECK_SCENARIOS = (
-    '--reader-end-self-check', '--scenario-deadline-self-check',
-    '--terminal-frame-self-check',
+    '--concurrent-deadline-self-check', '--reader-end-self-check',
+    '--scenario-deadline-self-check', '--terminal-frame-self-check',
 )
 assert scenario in READER_SCENARIOS or scenario in SELF_CHECK_SCENARIOS, scenario
 assert len(deadline_arguments) <= 1, deadline_arguments
@@ -104,13 +108,20 @@ def copy_named_shell(path: Path) -> None:
         # the owned fixture copy so it can run under its cargo/compiler name.
         _ = subprocess.run(['/usr/bin/codesign', '--force', '--sign', '-', str(path)],
                            check=True, capture_output=True, text=True, timeout=wait_seconds)
+    record_timestamp('copied shell ' + path.name)
+
+def link_named_shell(path: Path) -> None:
+    os.link(bin_directory / 'cargo-tile-real', path)
+    record_timestamp('linked shell ' + path.name)
 
 writer_locale = 'POSIX'
 environment: dict[str, str] = {}
 
 def prepare_fixture() -> None:
     global environment, writer_locale
-    for directory in (work, pids, bin_directory, root / 'config/cargo-tile',
+    bin_directory.mkdir(parents=True)
+    copy_named_shell(bin_directory / 'cargo-tile-real')
+    for directory in (work, pids, root / 'config/cargo-tile',
                       home / 'Library/Application Support/cargo-tile', root / 'rustup/toolchains'):
         directory.mkdir(parents=True)
     configuration = '[capture]\nauto_install = false\n'
@@ -127,7 +138,6 @@ def prepare_fixture() -> None:
     assert shim_source.splitlines().count(assignment) == 1
     _ = (bin_directory / 'cargo').write_text(
         shim_source.replace(assignment, 'capture_parent=' + shlex.quote(str(capture_parent))))
-    copy_named_shell(bin_directory / 'cargo-tile-real')
     _ = (work / 'build').write_text('''accumulate_own_cpu() {
     if [ -r "/proc/$$/stat" ]; then
         while :; do
@@ -173,7 +183,11 @@ while [ ! -f "$OBSERVED/release" ] && [ "$remaining" -gt 0 ]; do
         printf 'writer remains captured after reader scan\\n' >&2
         rm "$OBSERVED/pulse"
     fi
-    sleep 0.02
+    if [ -p "$OBSERVED/notification" ]; then
+        IFS= read -r notification < "$OBSERVED/notification" || :
+    else
+        sleep 0.02
+    fi
     remaining=$((remaining - 1))
 done
 [ "$remaining" -gt 0 ] || exit 92
@@ -201,26 +215,38 @@ exit 37
 writers: list[tuple[subprocess.Popen[bytes], Path]] = []
 parent_owned_children: list[Path] = []
 detached_servers: list[subprocess.Popen[bytes]] = []
-# prepare_cpu_workload assigns this through global; an annotation narrows it to None at module scope.
+# CPU setup assigns these through globals; annotations narrow them at module scope.
 cache_server = None
+cache_server_process: subprocess.Popen[bytes] | None = None
 reader: int | None = None
 terminal: int | None = None
 transcript = bytearray()
-pending_wait = 'scenario startup'
+pending_waits: dict[int, tuple[str, ...]] = {}
 
 @contextmanager
 def named_wait(description: str) -> Iterator[None]:
-    global pending_wait
-    previous = pending_wait
-    pending_wait = description
+    thread = threading.get_ident()
+    previous = pending_waits.get(thread, ())
+    pending_waits[thread] = (*previous, description)
     try:
         yield
     finally:
-        pending_wait = previous
+        if previous:
+            pending_waits[thread] = previous
+        else:
+            _ = pending_waits.pop(thread, None)
+
+def pending_wait_description() -> str:
+    # Python runs signal handlers with the GIL held, so this snapshot cannot race
+    # a worker's context entry or exit.
+    waits = tuple(pending_waits.values())
+    return next((descriptions[-1] for descriptions in waits if descriptions),
+                'scenario execution')
 
 def scenario_deadline_reached(_signal_number, _frame) -> None:
     raise TimeoutError(
-        f'{scenario} exceeded {scenario_deadline_seconds:g} seconds while waiting for {pending_wait}')
+        f'{scenario} exceeded {scenario_deadline_seconds:g} seconds while waiting for '
+        f'{pending_wait_description()}')
 
 def arm_scenario_deadline() -> None:
     _ = signal.signal(signal.SIGALRM, scenario_deadline_reached)
@@ -238,6 +264,26 @@ def reader_pid() -> int:
 def reader_terminal() -> int:
     return required(terminal, 'reader terminal is used before pty.fork')
 
+def start_reader_process(reader_environment: dict[str, str]) -> None:
+    global reader, terminal
+    if scenario == 'cpu-cache-server':
+        prerequisites = (
+            root / ('probe-first-' + root.name) / 'cpu-ready',
+            root / ('probe-unrelated-' + root.name) / 'cpu-ready',
+            root / 'cpu-server/compiler-pid',
+        )
+        missing = [str(path) for path in prerequisites if not path.exists()]
+        assert not missing, 'reader starts before CPU baselines: ' + ', '.join(missing)
+    record_timestamp('reader exec')
+    reader, terminal = pty.fork()
+    if reader == 0:
+        _ = fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
+        os.chdir(root)
+        if scenario == 'settings-scroll-burst':
+            _ = (root / 'reader-terminal').write_text(os.ttyname(0))
+        reader_environment['CARGO_TILE_TEST_READER'] = scenario
+        os.execve(binary, [binary, '--exact', 'shim_registration::reader_scenarios::reader_child', '--nocapture'], reader_environment)
+
 def wait_for(predicate: Callable[[], object], description: str,
              diagnostics: Callable[[], str] | None = None, *, pause: float = 0.02,
              deadline: float | None = None) -> None:
@@ -252,13 +298,36 @@ def wait_for(predicate: Callable[[], object], description: str,
         details = diagnostics() if diagnostics is not None else ('\n' + screen() if transcript else '')
         raise AssertionError(description + details)
 
+class WriterNotification:
+    """Wake one source-switch fixture shell without a polling process."""
+
+    def __init__(self, observations: Path) -> None:
+        path = observations / 'notification'
+        os.mkfifo(path)
+        self.read_descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        self.write_descriptor = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+
+    def send(self) -> None:
+        written = os.write(self.write_descriptor, b'\n')
+        assert written == 1, written
+
+    def close(self) -> None:
+        os.close(self.write_descriptor)
+        os.close(self.read_descriptor)
+
+writer_notifications: dict[Path, WriterNotification] = {}
+
 def start_writer(name: str, writer_home: Path, command: str = 'build',
                  nested_directory: Path | None = None, directory: Path = work,
-                 arguments: tuple[str, ...] = ()) -> StartedWriter:
+                 arguments: tuple[str, ...] = (),
+                 additional_environment: tuple[tuple[str, str], ...] = ()) -> StartedWriter:
     name += '-' + root.name
     observations = root / name
     observations.mkdir()
+    if scenario == 'child-source-switch':
+        writer_notifications[observations] = WriterNotification(observations)
     child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations))
+    child_environment.update(additional_environment)
     if nested_directory is not None:
         nested_directory.mkdir()
         for nested_command in ('check', 'test'):
@@ -271,6 +340,9 @@ def start_writer(name: str, writer_home: Path, command: str = 'build',
                                  cwd=directory, env=child_environment, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=output, start_new_session=True)
     writers.append((child, observations))
+    wait_for(lambda: (observations / 'output').stat().st_size > 0,
+             'writer produces no output', pause=0.005)
+    record_timestamp('writer first output ' + name)
     wait_for(lambda: (observations / 'cargo-pid').exists(), 'cargo does not start', pause=0.005)
     publications = capture / 'state/pids'
     wait_for(lambda: any(publications.glob(str(child.pid) + '.*')),
@@ -322,11 +394,17 @@ class ParentOwnedChild:
     def __init__(self, pid: int) -> None:
         self.pid: int = pid
 
+def trigger_writer(observations: Path, trigger: str) -> None:
+    (observations / trigger).touch()
+    if observations in writer_notifications:
+        writer_notifications[observations].send()
+
 def start_registration_carrier(template: StartedWriter) -> RegistrationCarrier:
     # The process keeps one kernel identity while alternating between cargo argv
     # and a non-cargo registration carrier.
     observations = root / ('probe-carrier-' + root.name)
     observations.mkdir()
+    writer_notifications[observations] = WriterNotification(observations)
     directory = home / ('registered-directory-' + root.name)
     directory.mkdir(parents=True)
     _ = shutil.copyfile(work / 'build', directory / 'build')
@@ -336,7 +414,11 @@ while [ ! -f "$OBSERVED/release" ]; do
     if [ -f "$OBSERVED/activate" ]; then
         exec "$CARRIER_CARGO" "$CARRIER_COMMAND" "$CARRIER_NAME"
     fi
-    sleep 0.02
+    if [ -p "$OBSERVED/notification" ]; then
+        IFS= read -r notification < "$OBSERVED/notification" || :
+    else
+        sleep 0.02
+    fi
 done
 ''')
     child_environment = dict(environment, HOME=str(home), OBSERVED=str(observations),
@@ -351,6 +433,7 @@ done
     _ = launch_file.write_text(
         'cd ' + shlex.quote(str(directory)) + '\nexec ' + shlex.join(launch) + '\n')
     _ = launch_file.rename(template[1] / 'spawn-child')
+    trigger_writer(template[1], 'spawn-child')
     observed_pid = template[1] / 'child-started'
     wait_for(lambda: observed_pid.exists() and observed_pid.read_text().isdigit(),
              'readable parent does not spawn its only child', pause=0.005)
@@ -379,7 +462,7 @@ done
     return child, observations, registration, fields, log
 
 def prepare_cpu_workload() -> None:
-    global cache_server
+    global cache_server_process
     workload = root / 'cpu-workload.sh'
     environment['CPU_WORKLOAD'] = str(workload)
 
@@ -389,7 +472,7 @@ def prepare_cpu_workload() -> None:
     environment['CPU_TARGET'] = str(work / 'target')
     (work / 'target/debug/deps').mkdir(parents=True)
     for name in ('sccache', 'rustc'):
-        copy_named_shell(bin_directory / name)
+        link_named_shell(bin_directory / name)
     environment['RUSTC_WRAPPER'] = str(bin_directory / 'sccache')
     compiler = server / 'compile.sh'
     _ = compiler.write_text('''printf '%s' "$$" > "$CPU_SERVER/compiler-pid"
@@ -397,14 +480,14 @@ while [ ! -f "$CPU_SERVER/release" ]; do :; done
 ''')
     service = server / 'serve.sh'
     _ = service.write_text('''printf '%s' "$$" > "$CPU_SERVER/server-pid"
-while [ ! -f "$CPU_SERVER/request" ]; do sleep 0.02; done
+while [ ! -f "$CPU_SERVER/request" ]; do sleep 0.005; done
 "$CPU_RUSTC" "$CPU_COMPILE" --crate-name cache_fixture --out-dir "$CPU_TARGET/debug/deps" &
 wait
 ''')
     client = server / 'client.sh'
     _ = client.write_text('''printf '%s' "$$" > "$OBSERVED/client-pid"
 printf 'compile' > "$CPU_SERVER/request"
-while [ ! -f "$OBSERVED/release" ]; do sleep 0.02; done
+while [ ! -f "$OBSERVED/release" ]; do sleep 0.005; done
 ''')
     _ = workload.write_text('exec "$RUSTC_WRAPPER" ' + shlex.quote(str(client)) + '\n')
     server_environment = dict(environment, CPU_RUSTC=str(bin_directory / 'rustc'),
@@ -414,14 +497,21 @@ while [ ! -f "$OBSERVED/release" ]; do sleep 0.02; done
         server_process = subprocess.Popen(
             [str(bin_directory / 'sccache'), str(service)], env=server_environment,
             stdin=subprocess.DEVNULL, stdout=output, stderr=output, start_new_session=True)
+    cache_server_process = server_process
     detached_servers.append(server_process)
+    record_timestamp('cache server launched')
+
+def finish_cpu_workload_start() -> None:
+    global cache_server
+    server = root / 'cpu-server'
+    server_process = required(cache_server_process, 'cache server process is not started')
     wait_for(lambda: (server / 'server-pid').exists()
              and (server / 'server-pid').read_text(),
              'cache server does not start', pause=0.005)
     cache_server = int((server / 'server-pid').read_text())
     assert cache_server == server_process.pid
     assert os.getsid(cache_server) == cache_server
-    record_timestamp('cache server')
+    record_timestamp('cache server ready')
 
 def process_parent(pid: int) -> int:
     return int(subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='], check=True,
@@ -718,10 +808,14 @@ def unavailable_measurements(row: str) -> int:
     return row.replace('│', ' ').split().count('--')
 
 def carrier_source_in_rendered(writer: RegistrationCarrier, source: str, rendered: str) -> bool:
-    rows = [line for line in rendered.splitlines() if writer[1].name in line]
-    if len(rows) != 1:
+    lines = rendered.splitlines()
+    matching = [index for index, line in enumerate(lines) if writer[1].name in line]
+    if len(matching) != 1:
         return False
-    unavailable = unavailable_measurements(rows[0])
+    child_line = matching[0]
+    if not any('parent' in line and 'command' in line for line in lines[:child_line]):
+        return False
+    unavailable = unavailable_measurements(lines[child_line])
     expected = 4
     if source == 'registration':
         return unavailable == expected
@@ -778,7 +872,7 @@ def assert_child_source_switch(carrier: RegistrationCarrier) -> None:
     initial = assert_child_family(first, carrier, screen())
     record_timestamp('carrier process')
     for source, trigger in (('registration', 'retire'), ('process', 'activate')):
-        (carrier[1] / trigger).touch()
+        trigger_writer(carrier[1], trigger)
         wait_for(lambda: carrier_source_is_rendered(carrier, source),
                  'reader does not observe child source ' + source, pause=0)
         observed = assert_child_family(first, carrier, screen())
@@ -987,6 +1081,32 @@ def assert_reader_end_bounds_output_writer() -> None:
              deadline=time.monotonic() + 0.2)
     end_reader(signal.SIGTERM, exit_seconds=0.02, killed_exit_seconds=0.2)
 
+def assert_concurrent_deadline_names_pending_wait() -> None:
+    # The deadline is armed below, once only the second wait is pending.
+    cancel_scenario_deadline()
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_second = threading.Event()
+    def finish_first_wait() -> None:
+        with named_wait('finished concurrent predicate'):
+            first_started.set()
+            assert second_started.wait(0.2), 'second concurrent wait does not start'
+    def hold_second_wait() -> None:
+        assert first_started.wait(0.2), 'first concurrent wait does not start'
+        with named_wait('concurrent pending predicate'):
+            second_started.set()
+            release_second.wait()
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        first = executor.submit(finish_first_wait)
+        second = executor.submit(hold_second_wait)
+        first.result(timeout=0.2)
+        arm_scenario_deadline()
+        second.result()
+    finally:
+        release_second.set()
+        executor.shutdown()
+
 arm_scenario_deadline()
 
 if scenario == '--terminal-frame-self-check':
@@ -1003,6 +1123,12 @@ if scenario == '--reader-end-self-check':
     cancel_scenario_deadline()
     sys.exit(0)
 
+if scenario == '--concurrent-deadline-self-check':
+    try:
+        assert_concurrent_deadline_names_pending_wait()
+    finally:
+        record_timestamp('cleanup')
+
 if scenario == '--scenario-deadline-self-check':
     try:
         wait_for(lambda: False, 'deadline self-check predicate')
@@ -1018,9 +1144,9 @@ try:
     first_name = 'probe-first'
     first_command = 'build'
     nested_directory: Path | None = None
+    json_format = ('--message-format=json',)
     if scenario == 'quiet-json-long':
         quiet = '--quiet'
-        json_format = ('--message-format=json',)
         arguments = (quiet, *json_format, quiet, '--', '--quiet', '-q')
         first_name = 'probe-json'
         first_command = 'check'
@@ -1029,19 +1155,41 @@ try:
         first_name = 'probe-enclosing'
         first_command = 'clippy'
         nested_directory = home / ('nested-directory-' + root.name)
-    first = start_writer(first_name, home, first_command, nested_directory,
-                         arguments=first_arguments)
     retained: list[Path] = []
     removed: list[Path] = []
     # Scenario setup assigns these; the same scenario reads them again after the reader scans.
     unrelated: StartedWriter | None = None
-    quiet_writer = first if scenario == 'quiet-json-long' else None
     carrier: RegistrationCarrier | None = None
+    reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
+    # Family assertions observe ANSI foregrounds even when the outer test runner is uncolored.
+    _ = reader_environment.pop('NO_COLOR', None)
+    if scenario == 'cpu-cache-server':
+        idle = root / 'idle-workload.sh'
+        _ = idle.write_text('while [ ! -f "$OBSERVED/release" ]; do sleep 0.005; done\n')
+        unrelated_directory = home / ('unrelated-cpu-' + root.name)
+        unrelated_directory.mkdir()
+        _ = shutil.copyfile(work / 'build', unrelated_directory / 'build')
+        other_target = unrelated_directory / 'target'
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_start = executor.submit(
+                start_writer, first_name, home, first_command, nested_directory,
+                arguments=first_arguments)
+            unrelated_start = executor.submit(
+                start_writer, 'probe-unrelated', home, directory=unrelated_directory,
+                command='build', arguments=('--target-dir', str(other_target)),
+                additional_environment=(('CPU_WORKLOAD', str(idle)),))
+            finish_cpu_workload_start()
+            first = first_start.result()
+            unrelated = unrelated_start.result()
+    else:
+        first = start_writer(first_name, home, first_command, nested_directory,
+                             arguments=first_arguments)
+
+    quiet_writer = first if scenario == 'quiet-json-long' else None
     enclosing = first if scenario == 'excluded' else None
     if scenario == 'cpu-cache-server':
         wait_for(lambda: (first[1] / 'cpu-ready').exists(),
                  'invocation baseline is not established', pause=0.005)
-    if scenario == 'cpu-cache-server':
         cache_server = required(cache_server, 'prepare_cpu_workload does not assign cache_server')
         assert process_parent(cache_server) == os.getpid()
         wait_for(lambda: (root / 'cpu-server/compiler-pid').exists()
@@ -1051,17 +1199,7 @@ try:
         assert process_parent(compiler_pid) == cache_server
         client_pid = int((first[1] / 'client-pid').read_text())
         assert process_parent(client_pid) == int((first[1] / 'cargo-pid').read_text())
-        idle = root / 'idle-workload.sh'
-        _ = idle.write_text('while [ ! -f "$OBSERVED/release" ]; do sleep 0.02; done\n')
-        environment['CPU_WORKLOAD'] = str(idle)
-        unrelated_directory = home / ('unrelated-cpu-' + root.name)
-        unrelated_directory.mkdir()
-        _ = shutil.copyfile(work / 'build', unrelated_directory / 'build')
-        other_target = unrelated_directory / 'target'
-        unrelated = start_writer('probe-unrelated', home, directory=unrelated_directory,
-                                 command='build',
-                                 arguments=('--target-dir', str(other_target)))
-        unrelated_ready = unrelated[1] / 'cpu-ready'
+        unrelated_ready = required(unrelated, 'CPU setup does not assign unrelated')[1] / 'cpu-ready'
         wait_for(lambda: unrelated_ready.exists(),
                  'second invocation baseline is not established', pause=0.005)
     if scenario == 'quiet-json-long':
@@ -1071,6 +1209,7 @@ try:
                             b'--', b'--quiet', b'-q', b''], observed
         retained.extend((quiet_writer[2], quiet_writer[4]))
     if scenario == 'child-source-switch':
+        start_reader_process(reader_environment)
         carrier = start_registration_carrier(first)
         retained.extend((carrier[2], carrier[4]))
     if scenario == 'root-headings':
@@ -1082,18 +1221,9 @@ try:
         # and its still-running nested commands retained their artifacts.
         removed.extend(seed_ended_publication(enclosing))
 
-    reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
-    # Family assertions observe ANSI foregrounds even when the outer test runner is uncolored.
-    _ = reader_environment.pop('NO_COLOR', None)
-    record_timestamp('reader exec')
-    reader, terminal = pty.fork()
-    if reader == 0:
-        _ = fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack('HHHH', terminal_rows, terminal_columns, 0, 0))
-        os.chdir(root)
-        if scenario == 'settings-scroll-burst':
-            _ = (root / 'reader-terminal').write_text(os.ttyname(0))
-        reader_environment['CARGO_TILE_TEST_READER'] = scenario
-        os.execve(binary, [binary, '--exact', 'shim_registration::reader_scenarios::reader_child', '--nocapture'], reader_environment)
+    if reader is None:
+        start_reader_process(reader_environment)
+
     def reader_has_scanned():
         read_terminal(0.1)
         rendered = screen()
@@ -1171,44 +1301,53 @@ except Exception:
 finally:
     record_timestamp('cleanup start')
     try:
-        if reader is not None and reader != 0:
-            request = signal.SIGTERM if scenario == 'settings-scroll-burst' else b'q'
-            end_reader(request)
-    finally:
         if cache_server is not None:
             (root / 'cpu-server/release').touch()
             try:
                 os.killpg(cache_server, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-        for server_process in detached_servers:
-            description = 'cache server to exit'
-            with named_wait(description):
-                try:
-                    _ = server_process.wait(timeout=5)
-                except subprocess.TimeoutExpired as error:
-                    raise AssertionError(description) from error
         for observations in parent_owned_children:
-            (observations / 'release').touch()
+            trigger_writer(observations, 'release')
         # Release every writer before waiting on any, so their release polls overlap.
         for _, observations in writers:
             for nested_command in ('check', 'test'):
                 if (observations / nested_command).is_dir():
                     (observations / nested_command / 'release').touch()
-            (observations / 'release').touch()
-        for child, observations in writers:
-            description = 'writer ' + observations.name + ' to exit'
-            try:
-                with named_wait(description):
-                    _ = child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGKILL)
-                description = 'writer ' + observations.name + ' to exit after SIGKILL'
+            trigger_writer(observations, 'release')
+        record_timestamp('cleanup releases sent')
+    finally:
+        try:
+            if reader is not None and reader != 0:
+                request = signal.SIGTERM if scenario == 'settings-scroll-burst' else b'q'
+                end_reader(request)
+            record_timestamp('cleanup reader ended')
+        finally:
+            for server_process in detached_servers:
+                description = 'cache server to exit'
                 with named_wait(description):
                     try:
-                        _ = child.wait(timeout=WRITER_KILLED_EXIT_SECONDS)
+                        _ = server_process.wait(timeout=5)
                     except subprocess.TimeoutExpired as error:
                         raise AssertionError(description) from error
+            record_timestamp('cleanup servers ended')
+            for child, observations in writers:
+                description = 'writer ' + observations.name + ' to exit'
+                try:
+                    with named_wait(description):
+                        _ = child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    description = 'writer ' + observations.name + ' to exit after SIGKILL'
+                    with named_wait(description):
+                        try:
+                            _ = child.wait(timeout=WRITER_KILLED_EXIT_SECONDS)
+                        except subprocess.TimeoutExpired as error:
+                            raise AssertionError(description) from error
+                record_timestamp('cleanup writer ended ' + observations.name)
+            for notification in writer_notifications.values():
+                notification.close()
+            record_timestamp('cleanup notifications closed')
         record_timestamp('cleanup')
 
 cancel_scenario_deadline()
