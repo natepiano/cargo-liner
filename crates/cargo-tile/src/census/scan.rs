@@ -444,29 +444,44 @@ pub(crate) fn spawn_with_resolver(
     scope: CensusScope,
     resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
 ) -> (Receiver<Scan>, JoinHandle<()>) {
-    let (sender, receiver) = mpsc::channel();
-    let worker = thread::spawn(move || {
-        let roots = resolve();
+    spawn_resolved_scan_loop(cadence.poll, resolve, move || {
         let mut system = System::new();
         let mut smoothing = InvocationCpuAccounting::new(cadence);
         let home = dirs::home_dir();
-        let scanner_home = home.as_deref().into();
+        move |roots| {
+            scan(
+                &mut system,
+                &mut smoothing,
+                Instant::now(),
+                home.as_deref().into(),
+                &excluded.snapshot(),
+                roots,
+                scope,
+            )
+        }
+    })
+}
+
+/// Resolve capture roots once, then publish every scan produced from them.
+fn spawn_resolved_scan_loop<Published, Prepare, TakeScan>(
+    poll: Duration,
+    resolve: impl FnOnce() -> CaptureRoots + Send + 'static,
+    prepare: Prepare,
+) -> (Receiver<Published>, JoinHandle<()>)
+where
+    Published: Send + 'static,
+    Prepare: FnOnce() -> TakeScan + Send + 'static,
+    TakeScan: FnMut(&CaptureRoots) -> Published + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let roots = resolve();
+        let mut take_scan = prepare();
         loop {
-            if sender
-                .send(scan(
-                    &mut system,
-                    &mut smoothing,
-                    Instant::now(),
-                    scanner_home,
-                    &excluded.snapshot(),
-                    &roots,
-                    scope,
-                ))
-                .is_err()
-            {
+            if sender.send(take_scan(&roots)).is_err() {
                 return;
             }
-            thread::sleep(cadence.poll);
+            thread::sleep(poll);
         }
     });
     (receiver, worker)
@@ -3006,7 +3021,6 @@ mod tests {
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
-    use crate::config::Config;
     use crate::constants::CAPTURE_ASSOCIATION_AMBIGUOUS;
     use crate::constants::CAPTURE_LIVE_RUNS_DIR;
     use crate::constants::COMPILER_COLUMN;
@@ -5432,21 +5446,17 @@ mod tests {
 
     #[test]
     fn spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans() {
-        let excluded = ExcludedCommands::new(Config::default().commands.excluded);
         let parent = tempdir().expect("isolated capture parent");
-        // Every scan recreates the capture directory, so `parent` stays in the test
-        // body until after the worker joins; once it is removed, the child cannot be
-        // recreated.
         let capture = parent.path().join("capture");
+        fs::create_dir(&capture).expect("capture directory");
         let caller = thread::current().id();
         let resolutions = Arc::new(AtomicUsize::new(0));
         let worker_resolutions = Arc::clone(&resolutions);
         let (started, resolution_started) = mpsc::channel();
         let (release, resolution_release) = mpsc::channel();
-        let (scans, worker) = spawn_with_resolver(
-            excluded,
-            CensusCadence::for_test(),
-            CensusScope::default(),
+        let worker_capture = capture.clone();
+        let (scans, worker) = spawn_resolved_scan_loop(
+            CensusCadence::for_test().poll,
             move || {
                 assert_ne!(thread::current().id(), caller);
                 worker_resolutions.fetch_add(1, Ordering::SeqCst);
@@ -5454,8 +5464,32 @@ mod tests {
                 resolution_release
                     .recv_timeout(WORKER_REPLY_TIMEOUT)
                     .expect("spawn must return before resolution is released");
-                // No capture root is scanned; this test owns only worker scheduling.
-                CaptureRoots::from_parent(&capture)
+                resolved_test_roots(&[&worker_capture])
+            },
+            move || {
+                let mut generation = ["first", "second"].into_iter();
+                move |roots| {
+                    let generation = generation.next().unwrap_or("later");
+                    write_versioned_capture(
+                        &capture,
+                        4_000_000,
+                        generation,
+                        "/writer/project",
+                        "/writer",
+                        "build",
+                        "",
+                    );
+                    Capture::take_roots(roots, &|pid| {
+                        KernelObservation::for_test(pid, Observation::Ended)
+                    });
+                    assert!(
+                        !capture
+                            .join(CAPTURE_LIVE_RUNS_DIR)
+                            .join(format!("4000000.{generation}"))
+                            .exists()
+                    );
+                    generation
+                }
             },
         );
 
@@ -5464,11 +5498,18 @@ mod tests {
             .expect("worker must reach root resolution");
         assert!(matches!(scans.try_recv(), Err(mpsc::TryRecvError::Empty)));
         release.send(()).expect("release worker root resolution");
-        for _ in 0..2 {
+        assert_eq!(
             scans
                 .recv_timeout(WORKER_REPLY_TIMEOUT)
-                .expect("worker must publish successive scans");
-        }
+                .expect("worker publishes its first scan"),
+            "first"
+        );
+        assert_eq!(
+            scans
+                .recv_timeout(WORKER_REPLY_TIMEOUT)
+                .expect("worker publishes its second scan"),
+            "second"
+        );
         drop(scans);
         worker
             .join()
@@ -5847,17 +5888,9 @@ mod tests {
         );
         symlink(&original, &alias).expect("original ancestor alias");
         let roots = resolved_test_roots(&[&alias.join("capture")]);
-        let mut system = System::new();
-        let mut smoothing = InvocationCpuAccounting::default();
-        scan(
-            &mut system,
-            &mut smoothing,
-            Instant::now(),
-            ScannerHome::Unavailable,
-            &[],
-            &roots,
-            CensusScope::default(),
-        );
+        Capture::take_roots(&roots, &|observed_pid| {
+            KernelObservation::for_test(observed_pid, Observation::Ended)
+        });
         assert!(
             !root
                 .join(CAPTURE_LIVE_RUNS_DIR)
@@ -5876,15 +5909,9 @@ mod tests {
             "build",
             "",
         );
-        scan(
-            &mut system,
-            &mut smoothing,
-            Instant::now(),
-            ScannerHome::Unavailable,
-            &[],
-            &roots,
-            CensusScope::default(),
-        );
+        Capture::take_roots(&roots, &|observed_pid| {
+            KernelObservation::for_test(observed_pid, Observation::Ended)
+        });
 
         assert!(
             !root

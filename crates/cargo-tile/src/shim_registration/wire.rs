@@ -24,14 +24,25 @@ struct InstalledShim {
     /// Keep the toolchain, capture root, and observations alive through assertions.
     directory:             TempDir,
     birth_time_separation: BirthTimeSeparation,
+    real_date:             PathBuf,
+    real_ln:               PathBuf,
 }
 
 impl InstalledShim {
     /// Install the repository script beside cargo that snapshots its live registration.
     fn new(birth_time_separation: BirthTimeSeparation) -> Self {
+        let utilities = Command::new("sh")
+            .args(["-c", "command -v ln; command -v date"])
+            .output()
+            .expect("locate system utilities before changing the child PATH");
+        assert!(utilities.status.success());
+        let utilities = String::from_utf8(utilities.stdout).expect("utility paths are UTF-8");
+        let mut utilities = utilities.lines();
         let fixture = Self {
             directory: tempfile::tempdir().expect("create isolated toolchain"),
             birth_time_separation,
+            real_ln: PathBuf::from(utilities.next().expect("system ln path")),
+            real_date: PathBuf::from(utilities.next().expect("system date path")),
         };
         for directory in [
             "bin",
@@ -92,15 +103,22 @@ impl InstalledShim {
             .expect("execute copied shim with stand-in cargo")
     }
 
+    /// Run while keeping this invocation's observations separate from earlier runs.
+    fn run_recorded_in(&self, observations: &str, arguments: &[&str]) -> Output {
+        self.command_recorded_in(observations, arguments)
+            .output()
+            .expect("execute copied shim with stand-in cargo")
+    }
+
     /// Allow tests to change only the child environment and invocation schedule.
     fn command(&self, arguments: &[&str]) -> Command {
-        let utilities = Command::new("sh")
-            .args(["-c", "command -v ln; command -v date"])
-            .output()
-            .expect("locate system utilities before changing the child PATH");
-        assert!(utilities.status.success());
-        let utilities = String::from_utf8(utilities.stdout).expect("utility paths are UTF-8");
-        let mut utilities = utilities.lines();
+        self.command_recorded_in("observations", arguments)
+    }
+
+    /// Build a command whose files do not replace another invocation's observations.
+    fn command_recorded_in(&self, observations: &str, arguments: &[&str]) -> Command {
+        let observations = self.path(observations);
+        fs::create_dir_all(&observations).expect("create invocation observations");
         let mut search_path = vec![self.path("tools")];
         search_path.extend(std::env::split_paths(
             &std::env::var_os("PATH").expect("test runner supplies PATH"),
@@ -158,7 +176,7 @@ exec sh "$0" "$@""#,
                 .current_dir(self.path("home/work tree\twith\nlines"))
                 .env("HOME", self.path("home"))
                 .env("SHIM_TEST_ACCOUNT_DIRECTORY", self.path("capture"))
-            .env("SHIM_TEST_OBSERVATIONS", self.path("observations"))
+            .env("SHIM_TEST_OBSERVATIONS", observations)
             .env(
                 "SHIM_TEST_BIRTH_TIME_SEPARATION",
                 match self.birth_time_separation {
@@ -168,11 +186,11 @@ exec sh "$0" "$@""#,
             )
                 .env(
                     "SHIM_TEST_REAL_LN",
-                    utilities.next().expect("system ln path"),
+                    &self.real_ln,
                 )
                 .env(
                     "SHIM_TEST_REAL_DATE",
-                    utilities.next().expect("system date path"),
+                    &self.real_date,
                 )
                 .env("SHIM_TEST_GENERATION", "20260909-204000")
                 .env("SHIM_TEST_NATIVE_PLATFORM", std::env::consts::OS)
@@ -385,11 +403,15 @@ fn executable(path: &Path, source: &str) {
 }
 
 /// Exercise Darwin's conversion contract on either supported test host.
-fn install_darwin_observers(fixture: &InstalledShim) {
-    fs::write(fixture.path("observations/darwin-conversion"), b"")
-        .expect("select controlled Darwin observations");
+fn install_darwin_observers(fixture: &InstalledShim, observations: &str) {
+    fs::create_dir_all(fixture.path(observations)).expect("create Darwin observations");
     fs::write(
-        fixture.path("observations/darwin-time.py"),
+        fixture.path(&format!("{observations}/darwin-conversion")),
+        b"",
+    )
+    .expect("select controlled Darwin observations");
+    fs::write(
+        fixture.path(&format!("{observations}/darwin-time.py")),
         r"import locale
 import os
 import sys
@@ -430,6 +452,61 @@ printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/ps-convers
 [ "${LC_ALL-}" = C ] || exit 91
 [ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] || exit 92
 exec python3 "$SHIM_TEST_OBSERVATIONS/darwin-time.py" ps
+"#,
+    );
+}
+
+/// Serve the two fixed UTC timestamps without launching a language runtime.
+fn install_darwin_fallback_observers(fixture: &InstalledShim, observations: &str) {
+    fs::create_dir_all(fixture.path(observations)).expect("create Darwin observations");
+    fs::write(
+        fixture.path(&format!("{observations}/darwin-conversion")),
+        b"",
+    )
+    .expect("select controlled Darwin observations");
+    executable(
+        &fixture.path("tools/uname"),
+        "#!/bin/sh\nprintf 'Darwin\\n'\n",
+    );
+    executable(
+        &fixture.path("tools/sysctl"),
+        r#"#!/bin/sh
+set -eu
+[ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = kern.bootsessionuuid ] || exit 91
+printf '12345678-1234-1234-1234-123456789abc\n'
+"#,
+    );
+    executable(
+        &fixture.path("tools/ps"),
+        r#"#!/bin/sh
+set -eu
+printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/ps-conversion"
+[ "${LC_ALL-}" = C ] || exit 91
+[ "$1" = -o ] && [ "$2" = lstart= ] && [ "$3" = -p ] || exit 92
+case $SHIM_TEST_BIRTH in
+    1793511000) printf 'Sun Nov 01 05:30:00 2026\n' ;;
+    1793514600) printf 'Sun Nov 01 06:30:00 2026\n' ;;
+    *) exit 93 ;;
+esac
+"#,
+    );
+    executable(
+        &fixture.path("tools/date"),
+        r#"#!/bin/sh
+set -eu
+if [ "$1" = +%Y%m%d-%H%M%S ]; then
+    printf '%s\n' "$SHIM_TEST_GENERATION"
+    printf '%s' "$SHIM_TEST_GENERATION" > "$SHIM_TEST_OBSERVATIONS/calendar"
+    exit 0
+fi
+printf '%s\000' "${LC_ALL-}" "${TZ-}" "$@" > "$SHIM_TEST_OBSERVATIONS/date-conversion"
+[ "${LC_ALL-}" = C ] && [ "${TZ-}" = UTC0 ] || exit 91
+[ "$#" -eq 5 ] && [ "$1" = -j ] && [ "$2" = -f ] && [ "$5" = +%s ] || exit 92
+case $4 in
+    'Sun Nov 01 05:30:00 2026') printf '1793511000\n' ;;
+    'Sun Nov 01 06:30:00 2026') printf '1793514600\n' ;;
+    *) exit 93 ;;
+esac
 "#,
     );
 }
@@ -516,10 +593,15 @@ fn versioned_fields_preserve_original_argument_bytes() {
 }
 
 /// Check the executed argv separately from the original argv published by the shim.
-fn assert_executed_arguments(arguments: &[&str], executed: &[&str]) {
-    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    assert_cargo_result(&fixture.run(arguments));
-    let observed = fs::read(fixture.path("observations/arguments")).expect("read executed argv");
+fn assert_executed_arguments(
+    fixture: &InstalledShim,
+    observations: &str,
+    arguments: &[&str],
+    executed: &[&str],
+) {
+    assert_cargo_result(&fixture.run_recorded_in(observations, arguments));
+    let observed =
+        fs::read(fixture.path(&format!("{observations}/arguments"))).expect("read executed argv");
     assert_eq!(
         nul_fields(&observed),
         executed
@@ -527,7 +609,7 @@ fn assert_executed_arguments(arguments: &[&str], executed: &[&str]) {
             .map(|word| word.as_bytes())
             .collect::<Vec<_>>()
     );
-    let registration = fixture.registration();
+    let registration = fixture.registration_at(observations);
     assert_eq!(
         &registration.fields()[8..],
         arguments
@@ -539,7 +621,10 @@ fn assert_executed_arguments(arguments: &[&str], executed: &[&str]) {
 
 #[test]
 fn short_quiet_json_removes_repeated_quiet_only_before_separator() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     assert_executed_arguments(
+        &fixture,
+        "observations",
         &[
             "check",
             "probe-json",
@@ -563,7 +648,10 @@ fn short_quiet_json_removes_repeated_quiet_only_before_separator() {
 
 #[test]
 fn separate_json_format_removes_repeated_quiet_only_before_separator() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     assert_executed_arguments(
+        &fixture,
+        "observations",
         &[
             "check",
             "probe-json",
@@ -589,19 +677,33 @@ fn separate_json_format_removes_repeated_quiet_only_before_separator() {
 
 #[test]
 fn non_json_arguments_preserve_both_quiet_spellings() {
-    assert_executed_arguments(&["check", "probe-mismatch"], &["check", "probe-mismatch"]);
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+    assert_executed_arguments(
+        &fixture,
+        "observations/without-quiet",
+        &["check", "probe-mismatch"],
+        &["check", "probe-mismatch"],
+    );
     for quiet in ["--quiet", "-q"] {
         let arguments = ["check", "probe-mismatch", quiet];
-        assert_executed_arguments(&arguments, &arguments);
+        assert_executed_arguments(
+            &fixture,
+            &format!("observations/{quiet}"),
+            &arguments,
+            &arguments,
+        );
     }
 }
 
 #[test]
 fn json_arguments_preserve_both_quiet_spellings_after_separator() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     let executed = ["check", "probe-mismatch", "--message-format=json", "--"];
-    assert_executed_arguments(&executed, &executed);
+    assert_executed_arguments(&fixture, "observations/without-quiet", &executed, &executed);
     for quiet in ["--quiet", "-q"] {
         assert_executed_arguments(
+            &fixture,
+            &format!("observations/{quiet}"),
             &[
                 "check",
                 "probe-mismatch",
@@ -623,14 +725,17 @@ fn json_arguments_preserve_both_quiet_spellings_after_separator() {
 
 #[test]
 fn quiet_json_rewrite_preserves_unrelated_arguments() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     let executed = [
         "check",
         "probe-mismatch",
         "--message-format=json",
         "--release",
     ];
-    assert_executed_arguments(&executed, &executed);
+    assert_executed_arguments(&fixture, "observations/without-quiet", &executed, &executed);
     assert_executed_arguments(
+        &fixture,
+        "observations/with-quiet",
         &[
             "check",
             "probe-mismatch",
@@ -650,12 +755,13 @@ fn quiet_json_rewrite_preserves_unrelated_arguments() {
 /// The old whitespace-joined representation could not distinguish these invocations.
 #[test]
 fn one_argument_with_a_space_differs_from_two_arguments() {
-    let joined = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    let separated = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    assert_cargo_result(&joined.run(&["run", "--", "a b"]));
-    assert_cargo_result(&separated.run(&["run", "--", "a", "b"]));
-    let joined = joined.registration();
-    let separated = separated.registration();
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+    assert_cargo_result(&fixture.run_recorded_in("observations/joined", &["run", "--", "a b"]));
+    assert_cargo_result(
+        &fixture.run_recorded_in("observations/separated", &["run", "--", "a", "b"]),
+    );
+    let joined = fixture.registration_at("observations/joined");
+    let separated = fixture.registration_at("observations/separated");
     let joined_fields = joined.fields();
     let separated_fields = separated.fields();
     assert_eq!(joined_fields[7], b"3");
@@ -867,24 +973,28 @@ fn publication_after_final_confirmation_survives_delayed_unlinks() {
 /// Real calendar conversion stays unambiguous without changing cargo's environment.
 #[test]
 fn darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     for timezone in ["UTC0", "UTC-11"] {
-        let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-        install_darwin_observers(&fixture);
+        let observations = format!("observations/{timezone}");
+        install_darwin_observers(&fixture, &observations);
         let output = fixture
-            .command(&["build"])
+            .command_recorded_in(&observations, &["build"])
             .env("LC_ALL", "POSIX")
             .env("LANG", "C")
             .env("TZ", timezone)
             .output()
             .expect("run controlled Darwin writer");
         assert_cargo_result(&output);
-        assert_eq!(fixture.registration().fields()[3], b"1788957296");
+        assert_eq!(
+            fixture.registration_at(&observations).fields()[3],
+            b"1788957296"
+        );
         for utility in ["date", "ps"] {
-            let observed = fs::read(fixture.path(&format!("observations/{utility}-conversion")))
+            let observed = fs::read(fixture.path(&format!("{observations}/{utility}-conversion")))
                 .expect("observe conversion environment");
             assert_eq!(&nul_fields(&observed)[..2], [b"C".as_slice(), b"UTC0"]);
         }
-        let cargo = fs::read(fixture.path("observations/locale-settings"))
+        let cargo = fs::read(fixture.path(&format!("{observations}/locale-settings")))
             .expect("cargo records unmodified environment");
         assert_eq!(
             &nul_fields(&cargo)[..3],
@@ -897,7 +1007,7 @@ fn darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment() {
 #[test]
 fn darwin_birth_conversion_removes_ps_column_padding() {
     let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    install_darwin_observers(&fixture);
+    install_darwin_observers(&fixture, "observations");
     let output = fixture
         .command(&["build"])
         .env("SHIM_TEST_PS_PADDING", "1")
@@ -923,7 +1033,7 @@ fn darwin_birth_conversion_removes_ps_column_padding() {
 #[test]
 fn darwin_birth_conversion_falls_back_to_gnu_date() {
     let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    install_darwin_observers(&fixture);
+    install_darwin_observers(&fixture, "observations");
     fs::write(fixture.path("observations/gnu-date"), b"")
         .expect("select a GNU coreutils date on the search path");
     assert_cargo_result(&fixture.run(&["build"]));
@@ -952,46 +1062,46 @@ fn darwin_birth_conversion_falls_back_to_gnu_date() {
 /// The two occurrences of 01:30 at DST fallback must publish different epoch seconds.
 #[test]
 fn darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback() {
-    let births = ["1793511000", "1793514600"];
-    let mut wall_times = Vec::new();
+    let births_and_utc_offsets = [
+        (1_793_511_000_i64, -4 * 60 * 60),
+        (1_793_514_600_i64, -5 * 60 * 60),
+    ];
+    assert_eq!(
+        births_and_utc_offsets[1].0 - births_and_utc_offsets[0].0,
+        60 * 60,
+        "fallback occurrences are one hour apart"
+    );
+    assert_eq!(
+        births_and_utc_offsets[0].0 + births_and_utc_offsets[0].1,
+        births_and_utc_offsets[1].0 + births_and_utc_offsets[1].1,
+        "both epochs convert to the same local time"
+    );
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     let mut published = Vec::new();
-    for birth in births {
-        let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-        install_darwin_observers(&fixture);
+    for (birth, _) in births_and_utc_offsets {
+        let birth = birth.to_string();
+        let observations = format!("observations/{birth}");
+        install_darwin_fallback_observers(&fixture, &observations);
         let timezone = "EST5EDT,M3.2.0,M11.1.0";
-        let ambiguous = Command::new("python3")
-            .arg(fixture.path("observations/darwin-time.py"))
-            .arg("ps")
-            .env("LC_ALL", "C")
-            .env("TZ", timezone)
-            .env("SHIM_TEST_BIRTH", birth)
-            .output()
-            .expect("format the repeated local wall-clock time independently");
-        assert!(ambiguous.status.success());
-        wall_times.push(ambiguous.stdout);
         let output = fixture
-            .command(&["build"])
+            .command_recorded_in(&observations, &["build"])
             .env("LC_ALL", "POSIX")
             .env("LANG", "C")
             .env("TZ", timezone)
-            .env("SHIM_TEST_BIRTH", birth)
+            .env("SHIM_TEST_BIRTH", &birth)
             .output()
             .expect("publish during the repeated DST hour");
         assert_cargo_result(&output);
-        let registration = fixture.registration();
+        let registration = fixture.registration_at(&observations);
         assert_eq!(registration.fields()[3], birth.as_bytes());
         published.push(registration.fields()[3].to_vec());
-        let cargo = fs::read(fixture.path("observations/locale-settings"))
+        let cargo = fs::read(fixture.path(&format!("{observations}/locale-settings")))
             .expect("cargo records its inherited timezone");
         assert_eq!(
             &nul_fields(&cargo)[..3],
             [b"POSIX".as_slice(), timezone.as_bytes(), b"C"]
         );
     }
-    assert_eq!(
-        wall_times[0], wall_times[1],
-        "fixture crosses the repeated hour"
-    );
     assert_ne!(published[0], published[1]);
 }
 
@@ -999,7 +1109,7 @@ fn darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback() {
 #[test]
 fn failed_darwin_birth_conversion_publishes_empty_identity_field() {
     let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    install_darwin_observers(&fixture);
+    install_darwin_observers(&fixture, "observations");
     fs::write(fixture.path("observations/fail-conversion"), b"")
         .expect("fail after emitting partial conversion output");
     assert_cargo_result(&fixture.run(&["build"]));
@@ -1112,14 +1222,16 @@ fn occupied_directory_is_a_setup_failure_and_keeps_its_contents() {
 /// TERM can arrive after ln succeeds but before setup records ownership of its name.
 #[test]
 fn term_after_publication_cleans_artifacts_without_starting_cargo() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
     for target in ["shim", "setup"] {
-        let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+        let observations = format!("observations/{target}");
+        fs::create_dir_all(fixture.path(&observations)).expect("create signal observations");
         fs::write(
-            fixture.path("observations/signal-after-publication"),
+            fixture.path(&format!("{observations}/signal-after-publication")),
             target,
         )
         .expect("request TERM before ln returns to the setup shell");
-        let output = fixture.run(&["build"]);
+        let output = fixture.run_recorded_in(&observations, &["build"]);
         assert_eq!(
             output.status.code(),
             Some(143),
@@ -1127,9 +1239,13 @@ fn term_after_publication_cleans_artifacts_without_starting_cargo() {
         );
         assert_eq!(output.stdout, [] as [u8; 0]);
         assert_eq!(output.stderr, [] as [u8; 0]);
-        assert!(fixture.path("observations/staged-registration").exists());
         assert!(
-            !fixture.path("observations/arguments").exists(),
+            fixture
+                .path(&format!("{observations}/staged-registration"))
+                .exists()
+        );
+        assert!(
+            !fixture.path(&format!("{observations}/arguments")).exists(),
             "cargo must not start after TERM"
         );
         assert_eq!(

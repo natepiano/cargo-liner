@@ -15,6 +15,7 @@ mod tests {
     use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::process::Child;
     use std::process::Command;
     use std::process::ExitStatus;
     use std::process::Output;
@@ -59,7 +60,10 @@ case ${SHIM_TEST_SCENARIO-} in
         ;;
     signal-shim)
         kill -"$SHIM_TEST_SIGNAL" "$(cat "$SHIM_TEST_OBSERVATIONS/shim-pid")"
-        sleep 0.05
+        true > "$SHIM_TEST_OBSERVATIONS/cargo-held"
+        while [ ! -f "$SHIM_TEST_OBSERVATIONS/release-cargo" ]; do
+            sleep 0.01
+        done
         printf 'after the signal\n' >&2
         true > "$SHIM_TEST_OBSERVATIONS/cargo-finished"
         exit "$SHIM_TEST_EXIT_STATUS"
@@ -265,13 +269,23 @@ exec sh "$SHIM_TEST_SHIM" "$@"
         }
 
         /// Wait on the shim alone, killing it once it outlives `SHIM_DEADLINE`.
-        fn run_detached(&self, mut command: Command) -> DetachedRun {
+        fn run_detached(&self, command: Command) -> DetachedRun {
+            self.run_detached_after_start(command, |_| {})
+        }
+
+        /// Start the shim, let the caller inspect the live child, then wait for its exit.
+        fn run_detached_after_start(
+            &self,
+            mut command: Command,
+            after_start: impl FnOnce(&mut Child),
+        ) -> DetachedRun {
             let stdout_path = self.directory.path().join("stdout");
             let stderr_path = self.directory.path().join("stderr");
             command
                 .stdout(fs::File::create(&stdout_path).expect("create stdout file"))
                 .stderr(fs::File::create(&stderr_path).expect("create stderr file"));
             let mut child = command.spawn().expect("start installed shim");
+            after_start(&mut child);
             let started = Instant::now();
             let status = loop {
                 if let Some(status) = child.try_wait().expect("poll installed shim") {
@@ -288,6 +302,19 @@ exec sh "$SHIM_TEST_SHIM" "$@"
                 status,
                 stdout: fs::read(stdout_path).expect("read stdout file"),
                 stderr: fs::read(stderr_path).expect("read stderr file"),
+            }
+        }
+
+        /// Wait until cargo records that it reached a test handshake.
+        fn wait_for_observation(&self, name: &str) {
+            let path = self.observations.join(name);
+            let started = Instant::now();
+            while !path.exists() {
+                assert!(
+                    started.elapsed() <= SHIM_DEADLINE,
+                    "cargo did not record {name}"
+                );
+                thread::sleep(EXIT_POLL);
             }
         }
 
@@ -770,40 +797,64 @@ exec {} "$@"
     }
 
     /// Account, state, and registration symlinks must never redirect a write.
+    fn assert_symlinked_capture_directory(relative: &str, capture_path: CapturePath) {
+        let toolchain = InstalledToolchain::new();
+        let target = toolchain.directory.path().join("unrelated");
+        fs::create_dir(&target).expect("create symlink target");
+        fs::write(target.join("keep"), b"untouched").expect("seed target");
+        let link = if relative.is_empty() {
+            toolchain.root.clone()
+        } else {
+            toolchain.root.join(relative)
+        };
+        fs::create_dir_all(link.parent().expect("symlink parent")).expect("create parent");
+        symlink(&target, &link).expect("replace capture directory with symlink");
+        let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
+        let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &arguments);
+        toolchain.assert_cargo(&output, 0o066, &arguments);
+        assert_eq!(
+            entries(&target).len(),
+            1,
+            "no capture reaches symlink target"
+        );
+        assert_eq!(
+            fs::read(target.join("keep")).expect("read sentinel"),
+            b"untouched"
+        );
+        assert_eq!(
+            fs::read(toolchain.observations.join("environment")).expect("cargo environment"),
+            UNCAPTURED_ENVIRONMENT
+        );
+    }
+
     #[test]
-    fn symlinked_capture_directories_preserve_cargo_and_target_contents() {
-        for relative in ["", "state", "state/pids"] {
-            for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-                let toolchain = InstalledToolchain::new();
-                let target = toolchain.directory.path().join("unrelated");
-                fs::create_dir(&target).expect("create symlink target");
-                fs::write(target.join("keep"), b"untouched").expect("seed target");
-                let link = if relative.is_empty() {
-                    toolchain.root.clone()
-                } else {
-                    toolchain.root.join(relative)
-                };
-                fs::create_dir_all(link.parent().expect("symlink parent")).expect("create parent");
-                symlink(&target, &link).expect("replace capture directory with symlink");
-                let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
-                let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &arguments);
-                toolchain.assert_cargo(&output, 0o066, &arguments);
-                assert_eq!(
-                    entries(&target).len(),
-                    1,
-                    "no capture reaches symlink target"
-                );
-                assert_eq!(
-                    fs::read(target.join("keep")).expect("read sentinel"),
-                    b"untouched"
-                );
-                assert_eq!(
-                    fs::read(toolchain.observations.join("environment"))
-                        .expect("cargo environment"),
-                    UNCAPTURED_ENVIRONMENT
-                );
-            }
-        }
+    fn symlinked_account_directory_pty_preserves_cargo_and_target_contents() {
+        assert_symlinked_capture_directory("", CapturePath::Pty);
+    }
+
+    #[test]
+    fn symlinked_account_directory_without_terminal_preserves_cargo_and_target_contents() {
+        assert_symlinked_capture_directory("", CapturePath::NoTerminal);
+    }
+
+    #[test]
+    fn symlinked_state_directory_pty_preserves_cargo_and_target_contents() {
+        assert_symlinked_capture_directory("state", CapturePath::Pty);
+    }
+
+    #[test]
+    fn symlinked_state_directory_without_terminal_preserves_cargo_and_target_contents() {
+        assert_symlinked_capture_directory("state", CapturePath::NoTerminal);
+    }
+
+    #[test]
+    fn symlinked_registration_directory_pty_preserves_cargo_and_target_contents() {
+        assert_symlinked_capture_directory("state/pids", CapturePath::Pty);
+    }
+
+    #[test]
+    fn symlinked_registration_directory_without_terminal_preserves_cargo_and_target_contents() {
+        assert_symlinked_capture_directory("state/pids", CapturePath::NoTerminal);
     }
 
     /// Inject the account identity while all processes retain the test runner's uid.
@@ -1026,19 +1077,29 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         toolchain.assert_capture_modes(CapturePath::NoTerminal);
     }
 
-    /// Every status cargo exits with comes back as the shim's own, SIGKILL included.
+    /// A numeric cargo exit status comes back as the shim's own status.
+    fn assert_no_terminal_cargo_exit_status(status: i32) {
+        let toolchain = InstalledToolchain::new();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command.env("SHIM_TEST_EXIT_STATUS", status.to_string());
+        let output = command.output().expect("run installed shim to completion");
+        assert_eq!(output.status.code(), Some(status), "{output:?}");
+        assert_eq!(output.stdout, b"cargo-stdout\n");
+        assert_eq!(output.stderr, b"cargo-stderr\n");
+        toolchain.assert_capture_modes(CapturePath::NoTerminal);
+    }
+
     #[test]
-    fn no_terminal_returns_cargo_exit_status() {
-        for status in [0, 1, 255] {
-            let toolchain = InstalledToolchain::new();
-            let mut command = toolchain.no_terminal(&["build"]);
-            command.env("SHIM_TEST_EXIT_STATUS", status.to_string());
-            let output = command.output().expect("run installed shim to completion");
-            assert_eq!(output.status.code(), Some(status), "{output:?}");
-            assert_eq!(output.stdout, b"cargo-stdout\n");
-            assert_eq!(output.stderr, b"cargo-stderr\n");
-            toolchain.assert_capture_modes(CapturePath::NoTerminal);
-        }
+    fn no_terminal_returns_cargo_exit_status_zero() { assert_no_terminal_cargo_exit_status(0); }
+
+    #[test]
+    fn no_terminal_returns_cargo_exit_status_one() { assert_no_terminal_cargo_exit_status(1); }
+
+    #[test]
+    fn no_terminal_returns_cargo_exit_status_255() { assert_no_terminal_cargo_exit_status(255); }
+
+    #[test]
+    fn no_terminal_returns_cargo_sigkill_status() {
         let toolchain = InstalledToolchain::new();
         let mut command = toolchain.no_terminal(&["build"]);
         command.env("SHIM_TEST_SCENARIO", "kill");
@@ -1057,31 +1118,54 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         toolchain.assert_cleaned_up();
     }
 
-    /// A signal sent to the shim alone waits for cargo, whose later stderr is still
-    /// mirrored, and then ends the shim with the signal's status.
-    #[test]
-    fn signal_to_the_shim_alone_waits_for_cargo() {
-        for (signal, status) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
-            let toolchain = InstalledToolchain::new();
-            let mut command = toolchain.no_terminal(&["build"]);
-            command
-                .env("SHIM_TEST_SCENARIO", "signal-shim")
-                .env("SHIM_TEST_SIGNAL", signal);
-            let run = toolchain.run_detached(command);
-            assert_eq!(
-                run.status.as_ref().and_then(ExitStatus::code),
-                Some(status),
-                "{signal}: {}",
-                String::from_utf8_lossy(&run.stderr)
-            );
+    /// A signal sent to the shim alone waits for cargo and preserves later stderr.
+    fn assert_signal_to_the_shim_alone_waits_for_cargo(signal: &str, status: i32) {
+        let toolchain = InstalledToolchain::new();
+        let mut command = toolchain.no_terminal(&["build"]);
+        command
+            .env("SHIM_TEST_SCENARIO", "signal-shim")
+            .env("SHIM_TEST_SIGNAL", signal);
+        let run = toolchain.run_detached_after_start(command, |shim| {
+            toolchain.wait_for_observation("cargo-held");
+            let returned_while_cargo_was_held = shim
+                .try_wait()
+                .expect("inspect shim while cargo is held")
+                .is_some();
+            fs::write(toolchain.observations.join("release-cargo"), b"")
+                .expect("release held cargo");
             assert!(
-                toolchain.observations.join("cargo-finished").exists(),
-                "the shim returned on {signal} before cargo finished"
+                !returned_while_cargo_was_held,
+                "the shim returned on {signal} while cargo was held"
             );
-            assert_eq!(run.stdout, b"");
-            assert_eq!(run.stderr, b"after the signal\n", "{signal}");
-            toolchain.assert_cleaned_up();
-        }
+        });
+        assert_eq!(
+            run.status.as_ref().and_then(ExitStatus::code),
+            Some(status),
+            "{signal}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(
+            toolchain.observations.join("cargo-finished").exists(),
+            "the shim returned on {signal} before cargo finished"
+        );
+        assert_eq!(run.stdout, b"");
+        assert_eq!(run.stderr, b"after the signal\n", "{signal}");
+        toolchain.assert_cleaned_up();
+    }
+
+    #[test]
+    fn sighup_to_the_shim_alone_waits_for_cargo() {
+        assert_signal_to_the_shim_alone_waits_for_cargo("HUP", 129);
+    }
+
+    #[test]
+    fn sigint_to_the_shim_alone_waits_for_cargo() {
+        assert_signal_to_the_shim_alone_waits_for_cargo("INT", 130);
+    }
+
+    #[test]
+    fn sigterm_to_the_shim_alone_waits_for_cargo() {
+        assert_signal_to_the_shim_alone_waits_for_cargo("TERM", 143);
     }
 
     /// An interrupt to the caller's whole process group reaches cargo, tee and the shim
@@ -1154,36 +1238,51 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
         }
     }
 
-    /// Relative and numeric homes cannot be interpreted as an absolute prefix or argc.
+    /// A relative home cannot become an absolute registration prefix or argc.
+    fn assert_relative_home_is_omitted(capture_path: CapturePath, home: &'static str) {
+        let toolchain = InstalledToolchain::new();
+        let output = toolchain.run(
+            capture_path,
+            HomeSelection::Relative(home),
+            0o066,
+            &["build"],
+        );
+        toolchain.assert_cargo(&output, 0o066, &["build"]);
+        toolchain.assert_capture_modes(capture_path);
+        let inherited = fs::read(toolchain.observations.join("directory-fields"))
+            .expect("cargo records its unchanged HOME");
+        assert_eq!(
+            inherited.split(|byte| *byte == 0).nth(1),
+            Some(home.as_bytes())
+        );
+        let registrations = entries(&toolchain.observations.join("root/state/pids"));
+        let registration = fs::read(&registrations[0]).expect("extended registration");
+        let fields: Vec<_> = registration
+            .strip_suffix(&[0])
+            .expect("terminated record")
+            .split(|byte| *byte == 0)
+            .collect();
+        assert_eq!(&fields[6..], [b"".as_slice(), b"1", b"build"]);
+    }
+
     #[test]
-    fn relative_home_is_omitted_from_registration_but_preserved_for_cargo() {
-        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            for home in ["relative/home", "1"] {
-                let toolchain = InstalledToolchain::new();
-                let output = toolchain.run(
-                    capture_path,
-                    HomeSelection::Relative(home),
-                    0o066,
-                    &["build"],
-                );
-                toolchain.assert_cargo(&output, 0o066, &["build"]);
-                toolchain.assert_capture_modes(capture_path);
-                let inherited = fs::read(toolchain.observations.join("directory-fields"))
-                    .expect("cargo records its unchanged HOME");
-                assert_eq!(
-                    inherited.split(|byte| *byte == 0).nth(1),
-                    Some(home.as_bytes())
-                );
-                let registrations = entries(&toolchain.observations.join("root/state/pids"));
-                let registration = fs::read(&registrations[0]).expect("extended registration");
-                let fields: Vec<_> = registration
-                    .strip_suffix(&[0])
-                    .expect("terminated record")
-                    .split(|byte| *byte == 0)
-                    .collect();
-                assert_eq!(&fields[6..], [b"".as_slice(), b"1", b"build"]);
-            }
-        }
+    fn pty_omits_relative_home_path_from_registration_but_preserves_it_for_cargo() {
+        assert_relative_home_is_omitted(CapturePath::Pty, "relative/home");
+    }
+
+    #[test]
+    fn no_terminal_omits_relative_home_path_from_registration_but_preserves_it_for_cargo() {
+        assert_relative_home_is_omitted(CapturePath::NoTerminal, "relative/home");
+    }
+
+    #[test]
+    fn pty_omits_numeric_relative_home_from_registration_but_preserves_it_for_cargo() {
+        assert_relative_home_is_omitted(CapturePath::Pty, "1");
+    }
+
+    #[test]
+    fn no_terminal_omits_numeric_relative_home_from_registration_but_preserves_it_for_cargo() {
+        assert_relative_home_is_omitted(CapturePath::NoTerminal, "1");
     }
 
     /// Accounts without a home environment still reach cargo and publish capture.
