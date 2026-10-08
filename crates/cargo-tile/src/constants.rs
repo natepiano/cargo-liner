@@ -423,6 +423,8 @@ pub(crate) const TABLE_HEADERS: [&str; 10] = [
 /// Rows the column-label row at the top of the pane occupies. There is
 /// one for the whole table, not one per working-directory group.
 pub(crate) const TABLE_HEADER_HEIGHT: u16 = 1;
+/// Stands for a table that has rows and no room for a column.
+pub(crate) const TABLE_NO_COLUMNS_MARKER: &str = "\u{2026}";
 /// Blank cells between columns when their fitted widths do not fit with
 /// [`TABLE_COLUMN_SPACING`].
 pub(crate) const TIGHT_TABLE_COLUMN_SPACING: u16 = 1;

@@ -104,6 +104,7 @@ use crate::constants::TABLE_COLUMN_DROP_ORDER;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
+use crate::constants::TABLE_NO_COLUMNS_MARKER;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
@@ -520,6 +521,9 @@ fn table_height(
         height: TABLE_HEADER_HEIGHT,
     };
     let layout = TableLayout::of(rows, kind, area, pane_background(false), tree);
+    if layout.columns.is_empty() {
+        return usize::from(TABLE_HEADER_HEIGHT);
+    }
     let groups = group_by_path(rows, pinned);
     let gaps = groups
         .len()
@@ -1515,16 +1519,23 @@ fn draw_process_table(
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
     let layout = TableLayout::of(rows, kind, area, ground, tree);
+    let header_area = Rect {
+        height: TABLE_HEADER_HEIGHT.min(area.height),
+        ..indented(area)
+    };
+    let faded = heading_fade(rows);
+    if layout.columns.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            TABLE_NO_COLUMNS_MARKER,
+            column_header_style(&layout, faded),
+        )))
+        .render(header_area, buffer);
+        return;
+    }
     Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
-        .header(column_header(&layout, heading_fade(rows)))
+        .header(column_header(&layout, faded))
         .column_spacing(layout.column_spacing)
-        .render(
-            Rect {
-                height: TABLE_HEADER_HEIGHT.min(area.height),
-                ..indented(area)
-            },
-            buffer,
-        );
+        .render(header_area, buffer);
 
     let mut remaining = area;
     remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
@@ -1761,7 +1772,7 @@ fn remove_column(column: usize, columns: &mut Vec<usize>, constraints: &mut Vec<
 /// The cell's one column-label row, drawn above the first group and
 /// aligned with every group's rows by [`indented`].
 fn column_header(layout: &TableLayout, faded: u8) -> Row<'static> {
-    let style = Style::default().fg(layout.ink(label_color(), faded));
+    let style = column_header_style(layout, faded);
     Row::new(
         TABLE_HEADERS
             .iter()
@@ -1769,6 +1780,11 @@ fn column_header(layout: &TableLayout, faded: u8) -> Row<'static> {
             .filter(|(column, _)| layout.columns.contains(column))
             .map(|(_, label)| Span::styled((*label).to_string(), style)),
     )
+}
+
+/// Style shared by the column labels and their no-room stand-in.
+fn column_header_style(layout: &TableLayout, faded: u8) -> Style {
+    Style::default().fg(layout.ink(label_color(), faded))
 }
 
 /// One table row and how many lines it stands on.
@@ -4781,6 +4797,92 @@ mod tests {
         ]
     }
 
+    /// Draw a table whose usable width is stated independently of its indent.
+    fn narrow_table_buffer(
+        rows: &[&TrackedRow],
+        kind: TableKind,
+        interior_width: u16,
+        height: u16,
+    ) -> Buffer {
+        let area = Rect::new(
+            0,
+            0,
+            interior_width.saturating_add(cell_width(SECTION_ITEM_INDENT)),
+            height,
+        );
+        let mut buffer = Buffer::empty(area);
+        draw_process_table(
+            &mut buffer,
+            area,
+            rows,
+            kind,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+        buffer
+    }
+
+    #[test]
+    fn occupied_tables_without_room_for_a_whole_pid_draw_only_an_elision() {
+        let rows = whole_pid_rows();
+        let row_refs: Vec<&TrackedRow> = rows.iter().collect();
+        let narrowest_pid_width = rows
+            .iter()
+            .map(|row| cell_width(&row.process.pid.to_string()))
+            .min()
+            .expect("the fixture has rows");
+        let marker_column = cell_width(SECTION_ITEM_INDENT);
+
+        for kind in [TableKind::Command, TableKind::Summary] {
+            for interior_width in 1..narrowest_pid_width {
+                let buffer =
+                    narrow_table_buffer(&row_refs, kind, interior_width, TABLE_HEADER_HEIGHT);
+                let line = buffer_line(&buffer, 0);
+
+                assert_eq!(line.trim(), TABLE_NO_COLUMNS_MARKER);
+                assert_eq!(digit_runs(&line), Vec::<String>::new());
+                assert_eq!(filled_rows(&buffer), usize::from(TABLE_HEADER_HEIGHT));
+                assert_eq!(buffer[(marker_column, 0)].fg, label_color());
+            }
+        }
+    }
+
+    #[test]
+    fn occupied_tables_with_no_interior_area_draw_nothing() {
+        let rows = whole_pid_rows();
+        let row_refs: Vec<&TrackedRow> = rows.iter().collect();
+
+        for kind in [TableKind::Command, TableKind::Summary] {
+            let zero_width = narrow_table_buffer(&row_refs, kind, 0, TABLE_HEADER_HEIGHT);
+            assert_eq!(filled_rows(&zero_width), 0);
+
+            let zero_height = narrow_table_buffer(&row_refs, kind, 1, 0);
+            assert_eq!(zero_height.content, Vec::<Cell>::new());
+        }
+    }
+
+    #[test]
+    fn empty_tables_without_room_for_a_whole_pid_draw_no_elision() {
+        let rows = whole_pid_rows();
+        let narrowest_pid_width = rows
+            .iter()
+            .map(|row| cell_width(&row.process.pid.to_string()))
+            .min()
+            .expect("the fixture has rows");
+
+        for kind in [TableKind::Command, TableKind::Summary] {
+            for interior_width in 1..narrowest_pid_width {
+                let buffer = narrow_table_buffer(&[], kind, interior_width, 3);
+                assert!(
+                    buffer_rows(&buffer)
+                        .iter()
+                        .all(|line| !line.contains(TABLE_NO_COLUMNS_MARKER))
+                );
+            }
+        }
+    }
+
     /// Check every inner width for one table kind.
     fn assert_whole_table_columns(
         kind: TableKind,
@@ -4804,6 +4906,15 @@ mod tests {
                 PinnedGroup::Unpinned,
                 ProcessTree::Long,
             );
+
+            if layout.columns.is_empty() {
+                let expected = if interior_width == 0 {
+                    ""
+                } else {
+                    TABLE_NO_COLUMNS_MARKER
+                };
+                assert_eq!(buffer_line(&buffer, 0).trim(), expected);
+            }
 
             if interior_width >= full_width {
                 assert_eq!(layout.columns, full_columns, "{kind:?} at {interior_width}");
