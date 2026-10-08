@@ -1,6 +1,6 @@
 # tile-fixes
 
-> **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** cargo-tile draws a moving cell on the painted ground, keeps every label and readout whole or marked, reads on a light terminal, shows the summary alone when the window is too small for cells, sizes the summary to what it asks, and nextest starts the slow tests first.
+> **Status: IMPLEMENTATION PLAN — phased, delegate-ready.** cargo-tile draws a moving cell on the painted ground, keeps every label and readout whole or marked, follows the system's light or dark setting, shows the summary alone when the window is too small for cells, sizes the summary to what it asks, and nextest starts the slow tests first.
 
 > **Production: remove-running-section** — unit `tile-fixes-unit`; production doc `docs/cargo-port/remove-running-section-production.md`
 
@@ -39,8 +39,10 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 - **Key files:**
   - `crates/tui_pane/src/pane/frame.rs` — `PaneFrame` (66), `draw_clipped` (196), `fill_pane` (229), `blit` (237), `GridLines::add` (436), `GridLines::add_titled` (480), `overlay_row` (599), `written_row` (642), `write_overlay` (661), `mark` (670), tests from 761 (`a_title_stops_inside_the_corner` 1071, `a_shifted_pane_keeps_only_what_lands_in_its_clip` 1132).
   - `crates/tui_pane/src/pane/chrome.rs` — `pane_fill` (129), `screen_ground` (145), `pane_background` (157).
-  - `crates/tui_pane/src/tiles/draw.rs` — `draw_tile_grid` (144), `draw_placements` (168), `has_visible_body_row` (263), `draw_cell` (310), `draw_rows_readout` (401), `draw_rows_readout_after_foot` (407), `rows_readout_line` (428), `draw_rows_readout_line` (461), `draw_summary_foot` (469), `content_area` (495), `readout_area` (513), tests from 542 (`StubCells` 551, `draw_motion_fixture` 635, `settled_grid` 668).
-  - `crates/tui_pane/src/tiles/grid.rs` — `TileDrawing` (167), `TileGrid` (323), `sync` (549), `queue_with_depth` (777), `progress` (1040), `placements` (1053), `drawing` (1059), `Grid::new` (1275), `columns` (1496), `fits` (1649), `shared_run` (1756), `Turns` (1773), `moving_cell` (1867), `wrapping_cell` (1921), `column_band` (1979), `lerp_rect` (2079), tests from 2140.
+  - `crates/tui_pane/src/tiles/draw.rs` — `draw_tile_grid` (144), `draw_placements` (168), `has_visible_body_row` (267), `draw_cell` (314), `draw_rows_readout` (405), `draw_rows_readout_after_foot` (411), `rows_readout_line` (432), `draw_rows_readout_line` (465), `draw_summary_foot` (473), `content_area` (499), `readout_area` (517), tests from 546 (`StubCells` 560, `draw_motion_fixture` 644, `settled_grid` 932, `draw_tile_cell_draws_only_the_readout_on_its_foot_row` 1443).
+  - `crates/tui_pane/src/tiles/grid.rs` — `TileDrawing` (167), `CellTransition` (240), `BandPieceMotion` (271), `TileGrid` (396), `sync` (622), `target` (822), `queue_with_depth` (850), `cycle_focus` (1057), `cell_at` (1108), `progress` (1125), `placements` (1138), `drawing` (1144), `drawing_at` (1149), `Grid::new` (1402), `columns` (1624), `shares` (1702), `fits` (1777), `summary_share` (1790), `summary_depth` (1810), `shared_run` (1884), `moving_cell` (1991), `wrapping_cell` (2081), `column_bands` (2120), `column_endpoint` (2164), `place_band_pieces` (2246), `band_piece_dividers` (2296), `piece_frame` (2360), `lerp_rect` (2436), tests from 2484.
+  - `crates/tui_pane/src/tiles/host.rs` — `cycle_step` (56), `hit_test_at` (92), `handle_tile_click` (104): the grid's keys and clicks.
+  - `crates/tui_pane/src/app_config/theme_install.rs` — `install_theme` (26), `resolve_appearance` (42); `crates/tui_pane/src/theme/` — `state.rs` (`ThemeState`, `set_active_theme` 141), `resolver.rs` (`AppearanceMode` 23, `resolve_active` 105), `poller.rs` (`spawn_appearance_poller` 180).
   - `crates/tui_pane/src/tiles/constants.rs` — `MIN_TILE_HEIGHT` (18), `MIN_TILE_WIDTH` (21), the `TILE_ROWS_*` readout constants.
   - `crates/tui_pane/src/bar/status_line.rs` — `render` (162), `status_line_note_spans` (205), `status_line_global_spans` (222), `render_sections` (272). No test module yet.
   - `crates/cargo-tile/src/render.rs` — `draw` layout (238), `Cells` and its `TileCells` impl (312), `summary_width` (438), `sccache_label` (716), `draw_ancestry` (939; truncation at 983), `ancestry_stem` (1130), `ancestry_room` (1144), `ancestry_rows` (1159), `ancestry_lines` (1180), `PathGroup::heading` (1373), `draw_path_group` (1634), `process_row` (1827), `heading_gauge` (2051), `cell_width` (2180), `draw_status_line` (2187), tests from 2300 (`buffer_line` 2419, `narrow_table_buffer` 4801, `buffer_rows` 5510).
@@ -96,48 +98,36 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 ### Phase 2 — Touching cells and columns share one line through a motion  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** While cells open, close and change columns, two cells that touch share one separator and two columns share one divider in every frame, as they do when the grid is still.
-
-**Spec:**
-
-Follow-up to Phase 1, written under the production's hard landing rule: Phase 1's last design check (2026-10-08, 47 frames of a 200x50 pty capture, ten `+`/`-` motions) raised six rows that all predate Phase 1. Measured over every frame in the first second of each motion, before Phase 1 → after it: a line doubled on the grid's top or bottom frame row 8.1% → 8.4%; two separators on adjacent rows between two cells 37.2% → 27.9%; two vertical lines side by side between columns 12.0% → 1.5%. The gate below takes all three to zero.
-
-Cause, one for all three: settled neighbours overlap on one inclusive frame line (`upper.bottom() - 1 == lower.top()`, `left.right() - 1 == right.left()`). In a motion each rect is worked out alone: `moving_cell` (`grid.rs:1867`) interpolates a resident, arriving or departing cell with `lerp_rect` (2079); `column_band` (1979) does the same per band, an absent column being a zero-width rect on the exclusive `area.right()`; `wrapping_cell` (1921) truncates its two pieces' shifts separately with `travel`. Nothing keeps the shared line shared, so it shows as two adjacent rows or columns.
-
-0. **A pure entry point.** `TileGrid::progress` (`grid.rs:1040`) reads the clock, so no test can drive `drawing` (1059) through exact steps. Extract `pub(super) fn drawing_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id>`, `raw` on the `PROGRESS_SCALE` scale before easing, as the file's motion helpers take it; `drawing` reads the clock once and delegates. `placements` and `TileDrawing`'s two fields are unchanged, so `draw_placements` (`draw.rs:168`) needs no change for this.
-1. **Columns share their dividers.** `Grid::columns` holds overlapping rects, not divider positions. In `drawing_at`, derive each end's divider vector as `d0 = first.left()` followed by every band's `right() - 1`, pad the shorter vector with `area.right() - 1`, interpolate each divider once, and form band `k` as the inclusive span `dk..=d(k+1)`. An opening or closing column therefore collapses onto the last drawable column, not today's zero-width rect on exclusive `area.right()`; a one-cell band there re-adds the outer line and nothing else. Keep today's per-band top and bottom interpolation for the columns below a widened summary. At every step the first divider is `area.left()`, the last is `area.right() - 1`, and each band's right divider is its neighbour's left. Covers the bare `│` beside the frame and the `┐┌` pair beside an opening or closing column.
-2. **One row topology per column band.** Replace the `(Option<usize>, Option<usize>)` pair taken by `moving_cell` and `Turns::covers` (1833) with `CellTransition::{PresentAtBothEnds { before_cell, after_cell }, Arriving { after_cell }, Departing { before_cell }}`; `(None, None)` is not a state. Resolve each transition into the ordered pieces of its band, `BandPieceMotion::{Resident, Entering { edge }, Leaving { edge }}`, and interpolate the band's inclusive divider rows once: a cell growing or shrinking in place moves one divider for both neighbours; an arrival or departure collapses on `band.top()` or `band.bottom() - 1`; a cell crossing columns stays one leaving and one entering `PaneFrame::shifted` piece, each taking its place in its own band's order. Build each piece from two consecutive dividers; the first and last boundaries are the band's own frame rows. Keep transition order, never sort interpolated rects: `sync` reorders only by close then open, which `no_step_of_a_reorder_draws_two_cells_crossing` pins. `edge_rect` (2004) and `closing_rect` (2038) go or shrink to what the topology still needs. Both new types are private to `grid.rs`.
-3. **No ground-only row between neighbours.** With the ground painted, every row between two neighbouring visible bodies is their one shared separator, never bare ground (design check: rows 44 to 47 under a closing job's cell, rows 9 to 24 of a new column). This is item 2 seen on screen: add no second mechanism. A piece collapsed to its border draws nothing (`has_visible_body_row`, `draw.rs:263`, pinned by `an_edge_only_piece_adds_no_line_above_the_column_frame`); that stays.
-4. **A queued step never sends a cell through a third column.** In the capture a job's cell went to the foot of the left column for 0.37 s, then back to the head of the middle column where it started, while the summary was squeezed. 0.37 s is one of two queued steps (`animation_millis` 720 over two). `queue_with_depth` (777) queues a summary-depth change as its own step before or after the slot steps, and `Grid::new` (1275) lays columns out from the cell count plus `summary_depth - 1`, so a depth-only step can re-divide the columns and the next step put them back. Reproduce it first: a grid of three columns with a job at the head of the middle one, then one `sync` or `+` whose queue holds a depth step and a slot step; walk every queued `(slots, depth)` grid. Rule: at every queued step each surviving cell stands in the column it has at the start of the queue or the one it has at its end. Where a depth-only step breaks the rule, fold that depth change into the slot step beside it; other queues keep today's separate steps. Also pin the in-place handover, which already holds: `sync` during an opening leaves the transition in flight untouched and the claimed cell never appears in a second band. If the reproduction shows another cause, fix that cause in `grid.rs` and say so in the summary.
-
-Tests, all pure, through `drawing_at` at 24 evenly spaced `raw` values per motion; reuse `grid.rs`'s `test_area`, `even`, `quiet`, `add_new`, `redistribute`, `drawn`, `seeded_grid` and `draw.rs`'s `StubCells`, `area_lines`, `buffer_line`, `is_lattice_glyph`, `draw_motion_fixture`:
-- `grid.rs`: `column_bands_tile_the_area_through_a_transition` — an opening and a closing column: item 1's three statements at every step.
-- `grid.rs`: `pieces_in_a_column_share_their_separators_through_a_transition` — opening, closing, growing in place and a cell crossing columns: in every band each piece's bottom row is the next piece's top row, the first and last boundaries are the band's frame rows.
-- `grid.rs`: `a_queued_depth_step_keeps_every_cell_in_a_column_it_starts_or_ends_in` and `a_cell_claimed_during_an_opening_stays_in_its_transition_column` (item 4).
-- `draw.rs`: `no_line_is_doubled_through_a_transition` — render those snapshots with `draw_motion_fixture` and read the buffer: no `───` on two adjacent rows at the same columns, no pair matching `[│┤┐┘][│├┌└]` on any row.
-- `draw.rs`: `a_collapsing_cell_leaves_no_ground_only_row_between_neighbours` (item 3), opening and closing.
-
-Changelog: extend the `## [Unreleased]` Fixed entry in `crates/tui_pane/CHANGELOG.md` and `crates/cargo-tile/CHANGELOG.md`.
+- `pub(super) fn drawing_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id>` is the pure entry to a motion; `raw` is on the `PROGRESS_SCALE` scale before easing. `TileGrid::drawing` reads the clock once and delegates. `TileDrawing` keeps its name and its two fields.
+- Column bands share their dividers. Each end's dividers are interpolated once and band `k` is the inclusive span `dk..=d(k+1)`: at every step the first divider is `area.left()`, the last is `area.right() - 1`, and each band's right divider is its neighbour's left. An opening or closing column collapses onto the last drawable column (test `column_bands_tile_the_area_through_a_transition`).
+- Each cell of a step resolves to a `CellTransition::{PresentAtBothEnds { before_cell, after_cell }, Arriving { after_cell }, Departing { before_cell }}` and then to the ordered pieces of its band, `BandPieceMotion::{Resident { before, after }, Entering { edge, after, sliding }, Leaving { before, edge, sliding }}`. A band's divider rows are interpolated once and each piece is built from two consecutive dividers: a piece's bottom row is the next piece's top row, and the first and last boundaries are the band's frame rows (test `pieces_in_a_column_share_their_separators_through_a_transition`). A departure keeps its place in the band's order and closes onto the divider between its neighbours. Pieces keep transition order and are never sorted by interpolated rect (test `no_step_of_a_reorder_draws_two_cells_crossing`). Both types are crate-private.
+- `shift_to_clip` shifts a sliding piece's border onto the divider its clip has, so the piece's first visible row is its own content and no band row is left on the screen ground (tests `no_line_is_doubled_through_a_transition`, `a_collapsing_cell_leaves_no_ground_only_row_between_neighbours`).
+- `queue_with_depth` drops a queued step that would put a surviving cell in a column that is neither the one it has at the start of the queue nor the one it has at its end (test `a_queued_depth_step_keeps_every_cell_in_a_column_it_starts_or_ends_in`). A `sync` during an opening leaves the transition in flight untouched, and the claimed cell stays in its transition's column (test `a_cell_claimed_during_an_opening_stays_in_its_transition_column`).
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `drawing`, `drawing_at`, `queue_with_depth`, `Turns::covers`, `moving_cell`, `wrapping_cell`, `column_band`, `edge_rect`, `closing_rect`, `CellTransition`, `BandPieceMotion`, tests.
-- `crates/tui_pane/src/tiles/draw.rs` — render tests; `draw_placements` or `has_visible_body_row` only if a render test proves a change is needed.
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry.
+- `crates/tui_pane/src/tiles/grid.rs` — `drawing`, `drawing_at`, `CellTransition`, `BandPieceMotion`, `shift_to_clip`, `wrapping_cell`, `queue_with_depth`, column and row dividers, motion tests
+- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` and `line_frame` draw the lattice and titles from the shared clip; render tests
+- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry
 
-**Seats:** 1 writer + 1 tester — the geometry is one hand in `grid.rs`; the render tests are a real lane in `draw.rs`, written against this Spec while the geometry is built.
-- `impl` — `crates/tui_pane/src/tiles/grid.rs` (types, geometry, queue, its in-module tests), both changelogs. Lands `drawing_at` first and posts it on the board.
-- `test` — `crates/tui_pane/src/tiles/draw.rs`: the two render tests, written against items 1 to 3 and failing until `impl` lands them; any change to `draw_placements` they prove necessary.
+**Binds later work:**
+- `drawing_at` is the pure entry to a motion; `drawing` reads the clock once and delegates. Motion tests drive `drawing_at` at 24 evenly spaced `raw` values per motion and build complete queued drawings.
+- `BandPieceMotion` does not reach `draw_placements`: the renderer cannot tell a leaving piece from an entering one.
+- `sliding: false` on a `Leaving` piece covers both an ordinary collapsing departure and a piece left in a closing column.
+- `drawing_at` draws from the transition's start arrangement; `target()` is only the queue's end.
+- Queue rule: at every queued step each surviving cell stands in the column it has at the start of the queue or the one it has at its end; `queue_with_depth` drops a step that breaks it.
 
-**Constraints from prior phases:** Phase 1 added the crate-private `TileDrawing` snapshot (`placements`, `column_bands`) returned by `TileGrid::drawing`, drew every column band as a fixed frame in `draw_placements`, and stopped a pane's side lines at its clip's top and bottom rows in `GridLines::add` (`frame.rs`). The drawing path is `draw_tile_grid` (`draw.rs:144`) → `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)` (168). `frame.rs` does not change here. `TileDrawing` keeps its name and fields. No new public item; no `#[allow]`.
+**Gotchas:**
+- A cell leaving a column the step removes is not sliding (`wrapping_cell`: `sliding: from_column < after.widths.len()`), so it is drawn as a whole shortened cell and its title shows twice.
+- A settled cell with one body row draws its readout and no label.
+- Steps queue one after another at 720 ms each; a key pressed during a motion waits for it.
+- A capture with transparent on reads as unpainted by design; only transparent-off measures count.
+- The pure render tests miss defects that a frame-by-frame replay of a live capture shows (`+`/`-` steps at 200x50, transparent off and on); a motion change is checked against both.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
-- Unit director's capture as in Phase 1 (200x50, five `+`, five `-`, transparent off and on), every frame in the first second of each motion: no line doubled on a frame row, no two separators on adjacent rows, no two vertical lines side by side; the Phase 1 measures still zero (no unpainted cell with transparent off, no line off the ground, no stub out of the grid).
-- A fresh helper's design check of PNG renders of those frames, each motion frame 0.2 to 0.5 s in: pass.
+**Ruled out:** filling each band's interior with the pane ground in `draw_placements` after clipped content (the shifted border leaves no row to fill); changing `text_default()` to the terminal's foreground on a transparent screen (it breaks text on painted surfaces).
 
-### Phase 3 — A closing column empties in one motion  · status: todo
+### Phase 3 — A closing column empties in one motion  · status: done
 
 #### Work Order
 
@@ -147,41 +137,149 @@ Changelog: extend the `## [Unreleased]` Fixed entry in `crates/tui_pane/CHANGELO
 
 Follow-up to Phase 2 under the production's hard landing rule. Phase 2's last design check (44 frames, fourteen `+`/`-` steps at 200x50) passed every line, background and arrival state and raised this one row on style. In three close steps where the last column goes away (`ph2d_off_11_close_motion`, `ph2d_on_09_close_motion`, `ph2d_on_13_close_motion`): the cell moving to the neighbour column is drawn in the closing column as a whole shortened cell, title on its top row and readout on its bottom row, while it is also arriving in the neighbour column with its title; and the cell being removed grows under it (22 to 32 rows). Where the column stays, a leaving cell slides off the top and shows only its last rows.
 
-Cause as read; reproduce it in a render test first. `wrapping_cell` (`grid.rs`) builds the piece left in the old column as `BandPieceMotion::Leaving { sliding: from_column < after.widths.len(), .. }`, so it does not slide when its column is absent from the after grid: `piece_frame` draws it as a plain `PaneFrame::new(rect)` whose rows collapse, and the departing cell below takes those rows.
+Cause as read; reproduce it in a render test first. `wrapping_cell` (`grid.rs`) builds the piece left in the old column as `BandPieceMotion::Leaving { sliding: from_column < after.widths.len(), .. }`, so it does not slide when its column is absent from the after grid: `piece_frame` (2360) draws it as a plain `PaneFrame::new(rect)` whose rows collapse, and the departing cell below takes those rows. `sliding: false` thus means two things, an ordinary collapsing departure and a piece left in a closing column. And `BandPieceMotion` is gone before `draw_placements` (`draw.rs:168`) draws titles, so the renderer cannot tell a leaving piece from an entering one.
+
+Types: give the piece left in a closing column its own state in `BandPieceMotion`, so no flag carries two meanings. Carry each piece's title role to the renderer in `TileDrawing`, as a crate-private value per piece whose variants say who draws the title (for example `PieceTitle::{Shown, OnTheEnteringPiece}`); the renderer never works it out from duplicates. `TilePlacement` is public and does not change, and `placements()` returns what it returns today. The private `Drawn` (`grid.rs:221`) holds a cell's content and focus: rename it for that.
 
 Rule (unit director's default; the showrunner owns the look and may replace it before dispatch):
-1. A column the step removes closes as one: every piece in it keeps the rows and the contents it has at the start of the step, nothing in it moves up or down or changes height, and the band narrows onto its divider as Phase 2 built it.
+1. A column the step removes closes as one: every piece in it keeps the rows and the contents it has at the start of the step, nothing in it moves up or down or changes height, and the band narrows onto its divider as Phase 2 built it. This holds for a band shortened under a widened summary too: `Grid::new` (1402) shortens the bands a widened summary covers, while an absent column's end is the full-height last screen column (`column_endpoint`, 2164), so today a closing band's top and bottom travel and `band_piece_dividers` (2296) anchors its pieces to them. A closing column keeps its starting top and bottom rows for the whole step; only its left edge and width change.
 2. A cell's title is drawn once: on its entering piece. A `Leaving` piece, in a closing column or a staying one, adds its lines without a title.
 3. Phase 2's measures hold in every frame: no doubled line, no interior row on the screen ground, no blank slot, no cell in a third column.
 
 Tests, pure, 24 snapshots per step through `drawing_at`, with `draw_motion_fixture`:
-- `draw.rs`: `a_title_is_on_screen_once_while_its_cell_changes_columns` — a column closing and a column staying.
-- `grid.rs`: `no_piece_in_a_closing_column_changes_height` — every piece's rows at every snapshot equal its rows at the start.
+- `draw.rs`: `a_title_is_on_screen_once_while_its_cell_changes_columns` — a column closing and a column staying. `StubCells` (560) supplies no group title today: give it one.
+- `grid.rs`: `no_piece_in_a_closing_column_changes_height` — every piece's rows at every snapshot equal its rows at the start, with and without `widen_summary` covering the closing column. It replaces `a_cell_in_a_closing_column_makes_no_vertical_travel` (4258), which checks one crossing piece at one midpoint.
 - Phase 2's motion and render tests pass unchanged; a test that pinned the old shape is changed only for this rule and named in the summary.
 
 Changelog: extend the `## [Unreleased]` Fixed entry in both changelogs.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `wrapping_cell`, `place_band_pieces`, `band_piece_dividers`, `piece_frame`, tests.
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` (title only on a piece that is not leaving), render test.
+- `crates/tui_pane/src/tiles/grid.rs` — `BandPieceMotion`, `TileDrawing`, `Drawn`, `wrapping_cell`, `column_bands`, `column_endpoint`, `place_band_pieces`, `band_piece_dividers`, `piece_frame`, tests.
+- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` (a title only where the piece's title role says so), `StubCells`, render test.
 - `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry.
 
-**Seats:** 1 writer + 1 tester — the geometry is one hand in `grid.rs`; the render test is written from this Spec in `draw.rs`.
-- `impl` — `crates/tui_pane/src/tiles/grid.rs`, both changelogs; takes `draw.rs` for the title rule once `test` posts `done`.
-- `test` — `crates/tui_pane/src/tiles/draw.rs`: the render test, failing until `impl` lands the rule.
+**Seats:** 2 writers — geometry and types in `grid.rs`, title drawing in `draw.rs`. In Phase 2 the tester finished its render tests in nine minutes and the one writer then took `draw.rs` as well.
+- `impl` — `crates/tui_pane/src/tiles/grid.rs`, both changelogs. Its first edit adds the title role to `TileDrawing`, every piece `Shown`, and posts the type's name and variants on the board.
+- `test` — opens as impl: `crates/tui_pane/src/tiles/draw.rs`, the title drawn from the title role, `StubCells`' title, and the render test.
 
-**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion, resolved each cell into `BandPieceMotion::{Resident, Entering, Leaving}` pieces that share their dividers per column band, and shifts a sliding piece onto the edge of its clip (`shift_to_clip`). `TileDrawing` keeps its fields. No new public item; no `#[allow]`.
+**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion, resolved each cell into `BandPieceMotion::{Resident, Entering, Leaving}` pieces that share their dividers per column band, and shifts a sliding piece onto the edge of its clip (`shift_to_clip`). `TileDrawing` is crate-private (`pub(super)`) and gains the title role; `TilePlacement` and every public signature stay as they are. No new public item; no `#[allow]`.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
 - Unit director's capture as in Phase 2 (200x50, seven `+`, seven `-`, transparent off and on): Phase 2's measures all zero, and in each step that removes a column no piece in it changes height and no title shows twice.
 - A fresh helper's design check of those frames: pass.
 
-### Phase 4 — Headings, titles and readouts are whole or marked, and text reads on a light terminal  · status: todo
+### Phase 4 — `auto` follows the system's light or dark setting  · status: todo
 
 #### Work Order
 
-**Goal:** At every cell width a directory heading, a border title and the foot readout are drawn whole, shortened with `…`, or left out — never cut bare; and every value in the summary and the cells can be read on a light terminal as well as a dark one, with transparent on and off.
+**Goal:** With `[appearance] mode = "auto"`, cargo-tile and cargo-handler draw the light theme on a light system and the dark theme on a dark one, from the first frame and when the system changes while they run, so every value reads on a light terminal with transparent on and off.
+
+**Spec:**
+
+The user's report (2026-10-08, cargo-tile on a Mac in light mode): the summary's memory total could not be read, "it's because it's white".
+
+Cause as read; reproduce it in a test first. The default mode is `"auto"` (`DEFAULT_APPEARANCE_MODE`, `crates/tui_pane/src/app_config/constants.rs:19`), and cargo-tile's README says `auto follows the terminal` (line 77). But `install_theme` (`app_config/theme_install.rs:26`) and `apply_settings` (`app_settings/step.rs:143`) both call `resolve_appearance` (`theme_install.rs:42`), which passes `None` as the system's appearance to `ThemeRegistry::resolve_active` (`theme/resolver.rs:105`), and `auto` with no system appearance is dark. Only cargo-port observes the system: `spawn_appearance_poller` (`theme/poller.rs:180`) is called at `crates/cargo-port/src/tui/terminal/run.rs:202` and applied by `apply_os_appearance` (`crates/cargo-port/src/tui/app/async_tasks/config.rs`). So cargo-tile and cargo-handler always draw the dark theme. With transparent on, the dark theme's white default text (`theme/fallback.rs:65`) stands on the terminal's own light background: the memory total (`SummaryMemoryTotal::foot`, `crates/cargo-tile/src/render.rs:219`). The light theme's default text is black (`fallback.rs:109`).
+
+Rule:
+1. `tui_pane` remembers the system's appearance beside the active theme, as a named state and never a bare `Option`: not yet observed, or observed light or dark. `resolve_appearance` reads it, so `install_theme` and `apply_settings` both resolve `auto` from it. A pinned `light` or `dark` ignores it, as today. Not yet observed resolves dark, as today.
+2. One public function in `tui_pane` takes a newly observed appearance and the app's `AppearanceConfig`, stores the appearance and makes the theme it now selects the active one (`set_active_theme`, `theme/state.rs:141`). Model it on cargo-port's `apply_os_appearance`; cargo-port's own code is not this unit's and does not change.
+3. Each app reads the system's appearance once before its first frame, so the first frame is already right. Reuse what the poller reads (`dark_light::detect` off Linux, the settings portal on Linux); when it cannot be read, the app starts dark, as today.
+4. Each app follows a change while it runs. cargo-tile and cargo-handler have no tokio runtime, and `tui_pane` has one (`rt`, `time`): add a public `tui_pane` function that runs the existing poller task on its own named thread with a current-thread runtime and calls `on_change` there. The app's callback only sends on a channel; its loop (`crates/cargo-tile/src/terminal.rs`, the `try_recv` drains near 231 to 261; `crates/cargo-handler/src/terminal.rs:67`) applies the change through rule 2 and redraws. Cost, to state in the changelog entry's wording only if it is user-visible: one idle thread; on Linux one held session-bus subscription and no polling; elsewhere one `dark_light::detect` every 1500 ms (`POLL_INTERVAL`, `theme/constants.rs:69`), as cargo-port already pays.
+5. With the light theme active, read every ink the summary and the cells use, transparent on and off: a literal `Color::White` or `Color::Black`, and each blend toward a ground (`blend_color` at `render.rs:961`, `Layout::ink` at 1476, `pane_background` at `pane/chrome.rs:157`). Each must read on the light theme's ground and on a light terminal's own background. Fix what does not, in the theme or at the call site, and list each in the summary.
+
+Tests, all pure; none starts the watcher thread or reads the system:
+- `tui_pane`: `auto_resolves_from_the_observed_system_appearance`, `a_pinned_mode_ignores_the_system`, `an_unobserved_system_resolves_dark`, `a_newly_observed_appearance_changes_the_active_theme`.
+- `cargo-tile` `render.rs`: `the_summary_memory_total_reads_on_the_light_theme` — with the light theme active the value's foreground is the light theme's default text and differs from its ground, transparent on and off.
+
+Docs: `crates/cargo-tile/README.md` line 77 says `auto` follows the system's light or dark setting; check `crates/cargo-handler/README.md` says the same where it names the mode. One Fixed line under `## [Unreleased]` in each of the three changelogs.
+
+**Files:**
+- `crates/tui_pane/src/theme/state.rs`, `crates/tui_pane/src/theme/resolver.rs`, `crates/tui_pane/src/theme/poller.rs`, `crates/tui_pane/src/theme/mod.rs` — the remembered appearance, the thread that watches it, tests.
+- `crates/tui_pane/src/app_config/theme_install.rs`, `crates/tui_pane/src/app_settings/step.rs` — `resolve_appearance` reads the remembered appearance.
+- `crates/tui_pane/src/lib.rs` — the two new public functions.
+- `crates/tui_pane/CHANGELOG.md` — Fixed line.
+- `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/app.rs` — the startup read, the channel, applying a change.
+- `crates/cargo-tile/src/render.rs` — the test, any ink rule 5 finds.
+- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the mode's wording, Fixed line.
+- `crates/cargo-handler/src/terminal.rs`, `crates/cargo-handler/src/app.rs` — the same wiring.
+- `crates/cargo-handler/README.md`, `crates/cargo-handler/CHANGELOG.md` — the mode's wording, Fixed line.
+
+**Seats:** 2 writers — the framework and one app, and the other app.
+- `impl` — every `crates/tui_pane` file above and every `crates/cargo-handler` file above. Its first edit adds the two public functions with their final signatures and posts them on the board.
+- `test` — opens as impl: every `crates/cargo-tile` file above.
+
+**Constraints from prior phases:** Phases 1 to 3 changed only `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/tiles/` and changelogs; nothing in `theme/`, `app_config/` or either app's `terminal.rs`. `text_default()` (`theme/accessors.rs:100`) stays the theme's colour: painted surfaces such as the status bar (`bar/palette.rs:69`) pair it with a painted ground. New public items are the two functions and, if a caller outside `tui_pane` must name it, the remembered-appearance type; name each in the summary. No `#[allow]`.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
+- Unit director's settled captures of cargo-tile beside a real `cargo check`, 126x50, six ways: `mode = "light"` on a light terminal and `mode = "dark"` on a dark one, each with transparent off and on; and `mode = "auto"` with transparent on and off, whose theme matches this machine's system setting, named in the notice. Every value in the summary and the cells reads in all six; the memory total is named in the notice.
+- A fresh helper's design check of those six shots: pass.
+
+### Phase 5 — A floor for cells, and the summary alone below it  · status: todo
+
+#### Work Order
+
+**Goal:** cargo-tile never makes a command cell narrower than 40 cells, a window too small for the grid shows the summary alone, filling the window, and what a narrow window still shows (the summary, its border title, its foot readout and the status line) is whole, shortened with `…`, or absent at every width.
+
+**Spec:**
+
+1. **Status line fit** (`tui_pane`, `status_line.rs`, `render` at 162 and `render_sections` at 272). Nothing is measured today: the right block is right-aligned, starts at column 0 when it is wider than the row, and its tail (`? shortcuts`) is cut. New order, whole items only:
+   1. the globals (` ? shortcuts`) are kept while they fit the row with their one trailing cell;
+   2. notes are added in front of the globals from the last note backwards while each fits whole — so the app's name and version, the first note, go first;
+   3. the left segment (uptime, then navigation) is drawn only when it fits whole in the room left of the right block with one cell between; its navigation spans go before the uptime does;
+   4. the centre is drawn only when it fits whole between them.
+
+   Add a test module to `status_line.rs`; build the spans with the file's own helpers.
+2. **A floor where cells stop being useful** (user, 2026-10-08: "cargo tile becomes useless when it is too small"). The framework minimum (`MIN_TILE_WIDTH`, 8) stays as it is, because `cargo-handler` draws its agent cells on the same grid and its narrow cells are its own design. Add `TileGrid::set_min_tile_width(&mut self, width: u16)` in `tui_pane` (it writes `settings.min_tile_width`, never below the framework minimum), and have cargo-tile call it once where it builds its grid (`app.rs:207`) with a new `MIN_CELL_WIDTH = 40`: 38 cells inside hold a whole `[account] project` heading of ordinary length, a pid with a 28-cell command, and the whole foot readout; an 80-column terminal holds two columns. `fits` (`grid.rs:1777`) already refuses to open a cell that would make columns narrower — on `+`, on a command arriving, on `sync` — so in cargo-tile five columns need 196 terminal columns, four 157, three 118, two 79, one 40. A command refused a cell is still counted in the summary, as today.
+3. **Too small shows the summary alone** (user, 2026-10-08: "the only way it is useful at narrow column width is just simply to show the summary table only"). Add `TileGrid::holds_in(&self, area: Rect, growth: TileGrowth) -> bool`, crate-private (`pub(super)`): the `fits` test applied to every arrangement the grid may still draw, which is the one on screen (`slots` at `depth`), the start of the transition in flight (`transition.held`), and each queued step through `target()` (822). The target alone is not enough: `drawing_at` (1149) draws from the transition's start, so a two-column target fits 79 columns while the three-column arrangement it is closing from is still drawn, under 40 a cell. For each it counts every position laid out, cells `+ TABLE_CELL + depth.saturating_sub(1)`, because `Grid::new` adds the summary's depth before it divides the columns; `fits` given the cell count alone accepts a deep-summary grid that does not fit. In `draw_tile_grid` (`draw.rs:144`), after `grid.sync`, when it is false and contents are shown: draw the summary cell alone, its frame on the whole `area`, through the same path a settled summary cell takes in `draw_placements` and `draw_cell` (title, labels, foot, readout, ground and tint as any cell), with no column band and no command cell, and return. The summary's demand and its measured width come from the whole area's inner width in that frame, not from the arrangement's column. There is no motion into or out of this state: the frame after a resize is the summary alone or the settled grid. The grid keeps syncing and keeps its cells, so they stand in their settled rects in the first frame whose area holds them; a command refused a cell while the window was small opens one by the ordinary `sync` rule once there is room. Contents hidden: nothing is drawn, as today. An area too small for a frame with one body row and one body cell draws nothing. The same rule serves `cargo-handler` at its own 8-cell minimum, where today it draws border-only slivers. This replaces the earlier plan's `window too small` notice: no `TILE_GRID_TOO_SMALL` constant and no surface type are added.
+
+   The state is one thing, read by everything: a crate-private `GridDisplay::{Cells, SummaryAlone}` (name the seat's), worked out from `holds_in` over the last area and growth, serves drawing, hit-testing and focus. Today a draw-only branch would leave `cell_at` (1108) dividing the area as the hidden grid and Tab (`cycle_focus`, 1057, through `host.rs:56`) walking cells nobody sees. While the summary is alone: `cell_at` answers the summary for every point in the area; `cycle_focus` and the arrow steps take no step and report the key unspent; the summary is drawn as the focused cell. The focus the grid holds is not changed, so the cell that had it has it again in the first frame that shows the cells.
+4. **The summary reads at every width** (`cargo-tile`, `draw_summary`, `render.rs:611`). Alone in a narrow window the summary is all the user has. Its table already sheds columns (`TABLE_NO_COLUMNS_MARKER`, `narrow_table_buffer` at `render.rs:4801`). Pin it: at every inner width from 6 to 38, each header, each table value and the foot is whole, shortened with `…`, or absent. Fix in `draw_summary` whatever the test finds cut bare, by the plan's first invariant (the end of a path survives; a value is never cut without its mark).
+5. **Border title** (`tui_pane`, `write_overlay`, `frame.rs:661`). A title wider than its row is cut bare (` summar`, `┌ Tar┐`). For `OverlayStyle::Title`, when the text is wider than `row.width`, draw its first `row.width - 1` cells and then `…`; a row one cell wide draws `…` alone. `written_row` already records the drawn width. Labels (`OverlayStyle::Label`) are whole or absent through `clear_run` and do not change. Name the glyph `TITLE_ELISION` in `crates/tui_pane/src/pane/constants.rs`. `a_title_stops_inside_the_corner` now expects `┌ Ta…┐`. Measure with `unicode_width`, as the file does.
+6. **Foot readout** (`tui_pane`, `draw.rs`). `readout_area` clamps the line to the room and the `Paragraph` cuts it (`conten`, `r/c: 22/2`). `rows_readout_line` becomes `rows_readout_lines(inner, rows, measured_at) -> Vec<Line<'static>>`, widest first:
+   1. the whole line as today: `content rows: N[ @ W]  r/c: H/W`;
+   2. `content rows: N @ W` — only when `measured_at != inner.width`;
+   3. `content rows: N`.
+
+   `draw_rows_readout` draws the first candidate whose width is at most `inner.width - TILE_ROWS_RIGHT_INSET`, right-aligned as now, and nothing when none fits. `draw_rows_readout_after_foot` runs the same list against the room left after the summary foot. The readout row stays reserved either way, so no cell changes height. One exception, from Phase 2's last design check: a cell with a single body row drew `content rows: 0  r/c: 1/49` and no label, so it had no name. A cell with one body row gives that row to its contents (its label) and draws no readout; `readout_row` returns `CellTooSmall` there. Today that reservation rests on the clamp: `content_area` (`draw.rs:499`) asks `readout_area(inner, inner.width) -> Option<Rect>` (517), which clamps the width to the room. So separate the two: replace `readout_area` with `readout_row(inner) -> ReadoutRow`, `ReadoutRow::{Reserved(Rect), CellTooSmall}`, the whole last interior row inside the right inset. `content_area` reads only that. The drawing functions pick the first candidate no wider than the reserved row's room and right-align it there; no candidate is ever clamped, and no readout function returns a bare `Option<Rect>`.
+
+Tests, all pure: `status_line.rs` — at every width from 0 to the full row's natural width, each item's text appears whole or not at all, and the globals outlast the notes. `grid.rs`/`draw.rs` — with the minimum set to 40, `fits` holds at 196, 157, 118, 79 and 40 columns and fails one under each; a grid left at the framework minimum still fits three columns in 22; `holds_in_counts_the_headed_summary_depth`; `a_grid_too_wide_for_its_window_draws_the_summary_alone` (three columns opened at 200 columns, drawn at 100: the summary's frame is the whole area, its title on the top row, no column divider and no command cell's text anywhere); `the_cells_stand_settled_in_the_first_frame_that_holds_them` (the same grid drawn again at 200: every cell in its settled rect, nothing in flight); `a_command_refused_in_a_small_window_opens_when_there_is_room` (first synced at 30 columns with two commands, then at 100); `a_hidden_grid_too_small_draws_nothing`; `a_closing_column_in_flight_never_draws_a_cell_under_the_floor` and `a_depth_change_in_flight_never_draws_a_cell_under_the_floor` (every snapshot of the step through `drawing_at`, at a width the target fits and the start does not); `a_click_anywhere_in_the_summary_alone_picks_the_summary`; `tab_takes_no_step_while_the_summary_is_alone` (`host.rs`, beside `tab_walks_the_cells_and_wraps`); `focus_returns_to_its_cell_with_the_cells`. `render.rs` — `the_summary_alone_is_whole_marked_or_absent_at_every_width` (item 4).
+
+- `frame.rs`: the updated `a_title_stops_inside_the_corner`, and `a_title_one_cell_wide_is_the_mark_alone`.
+- `draw.rs`: `the_rows_readout_is_a_whole_candidate_at_every_width` — for each inner width from 0 to 60: the readout row, trimmed, is empty or equals one of the candidates exactly. Update `draw_tile_cell_draws_only_the_readout_on_its_foot_row` (1443; a four-row cell) only if its expected text changes (it should not). `a_cell_with_one_body_row_draws_its_contents_and_no_readout` — one interior row: the row holds the cell's contents and no readout text.
+
+README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentences: command cells are never narrower than 40 cells, and a window too small for them shows the summary alone. Changelogs: Changed lines under `## [Unreleased]`.
+
+**Files:**
+- `crates/tui_pane/src/bar/status_line.rs` — fit pass, test module.
+- `crates/tui_pane/src/tiles/grid.rs` — `set_min_tile_width`, `holds_in`, the display state, `cell_at`, `cycle_focus`, tests.
+- `crates/tui_pane/src/tiles/host.rs` — keys and clicks while the summary is alone, tests.
+- `crates/tui_pane/src/tiles/draw.rs` — the summary alone in `draw_tile_grid`, readout candidates, tests.
+- `crates/tui_pane/src/pane/frame.rs` — `write_overlay`, tests.
+- `crates/tui_pane/src/pane/constants.rs` — `TITLE_ELISION`.
+- `crates/tui_pane/CHANGELOG.md` — Changed lines.
+- `crates/cargo-tile/src/render.rs` — `draw_summary`, test.
+- `crates/cargo-tile/src/constants.rs` — `MIN_CELL_WIDTH`.
+- `crates/cargo-tile/src/app.rs` — sets the grid's minimum cell width.
+- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the floor and the summary alone.
+
+**Seats:** 2 writers — the grid and the status line, and everything else.
+- `impl` — `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/CHANGELOG.md`. Its first edit adds `TileGrid::set_min_tile_width` with its final signature and posts it on the board.
+- `test` — opens as impl: `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`. It messages `impl` for its line in the `tui_pane` changelog.
+
+**Constraints from prior phases:** Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the summary-alone branch goes in `draw_tile_grid` (`draw.rs:144`) after `grid.sync` and before `grid.drawing` and `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)`, which stays the owner of the ordinary ground and frame. Phase 2 changed how `grid.rs` places moving pieces and column bands and added `TileGrid::drawing_at`; it changed nothing a settled grid shows. Phase 3 gave each piece in `TileDrawing` a title role: the summary drawn alone shows its title. Phase 4 made `auto` follow the system's appearance. `write_overlay` (`frame.rs:661`) still cuts a title bare and `readout_area` still clamps the readout: items 5 and 6 fix both here, because the summary alone draws both in a narrow window. `set_min_tile_width` is this phase's only new public item; no `#[allow]`.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
+- Unit director's settled captures beside a real `cargo check`, 50 rows: cells at 200, 126, 90, 64, 48 and 40 columns; the summary alone at 39, 32, 24 and 16 columns; and one window shrunk from 200 to 100 while three columns are open (the summary alone), then grown back to 200 (the cells back). In the summary alone nothing is cut bare. At every width the summary, each border title, each foot readout and the status line are whole or marked, and no command cell is drawn under 40 wide. Directory headings and ancestry inside command cells are Phase 6's and do not fail this gate.
+- A fresh helper's design check of all twelve shots: pass. The notice lists the shots on each side of the switch so the user can judge the width.
+
+### Phase 6 — Headings and ancestry are whole or marked  · status: todo
+
+#### Work Order
+
+**Goal:** Inside a command cell, a directory heading is drawn whole, shortened with `…`, or left out, and ancestry text breaks at path and word boundaries or ends in `…` — never cut bare.
 
 **Spec:**
 
@@ -192,102 +290,65 @@ Changelog: extend the `## [Unreleased]` Fixed entry in both changelogs.
    4. forms 2 then 3 again without the `[account] ` prefix;
    5. the empty string.
 
-   A shorter `…tail` form is not built: Phase 5 keeps every command cell at 40 cells or wider, where form 4 always fits.
+   A shorter `…tail` form is not built: the floor keeps every command cell at 40 cells or wider, where form 4 always fits.
 
    The project name is the end of the path, so the end is what survives. `…` is `ANCESTRY_ELISION`'s glyph; name a `HEADING_ELISION` constant for it. `heading_gauge` and `summary_width` keep measuring the whole heading: the gauge already goes before the heading sheds anything, and `widen_summary` asks for the whole width.
-2. **Border title** (`tui_pane`, `write_overlay`, `frame.rs:661`). A title wider than its row is cut bare (` summar`, `┌ Tar┐`). For `OverlayStyle::Title`, when the text is wider than `row.width`, draw its first `row.width - 1` cells and then `…`; a row one cell wide draws `…` alone. `written_row` already records the drawn width. Labels (`OverlayStyle::Label`) are whole or absent through `clear_run` and do not change. Name the glyph `TITLE_ELISION` in `crates/tui_pane/src/pane/constants.rs`. `a_title_stops_inside_the_corner` now expects `┌ Ta…┐`. Measure with `unicode_width`, as the file does.
-3. **Foot readout** (`tui_pane`, `draw.rs`). `readout_area` clamps the line to the room and the `Paragraph` cuts it (`conten`, `r/c: 22/2`). `rows_readout_line` becomes `rows_readout_lines(inner, rows, measured_at) -> Vec<Line<'static>>`, widest first:
-   1. the whole line as today: `content rows: N[ @ W]  r/c: H/W`;
-   2. `content rows: N @ W` — only when `measured_at != inner.width`;
-   3. `content rows: N`.
-
-   `draw_rows_readout` draws the first candidate whose width is at most `inner.width - TILE_ROWS_RIGHT_INSET`, right-aligned as now, and nothing when none fits. `draw_rows_readout_after_foot` runs the same list against the room left after the summary foot. The readout row stays reserved either way, so no cell changes height. One exception, from Phase 2's last design check: a cell with a single body row drew `content rows: 0  r/c: 1/49` and no label, so it had no name. A cell with one body row gives that row to its contents (its label) and draws no readout; `readout_row` returns `CellTooSmall` there. Today that reservation rests on the clamp: `content_area` (`draw.rs:495`) asks `readout_area(inner, inner.width) -> Option<Rect>` (513), which clamps the width to the room. So separate the two: replace `readout_area` with `readout_row(inner) -> ReadoutRow`, `ReadoutRow::{Reserved(Rect), CellTooSmall}`, the whole last interior row inside the right inset. `content_area` reads only that. The drawing functions pick the first candidate no wider than the reserved row's room and right-align it there; no candidate is ever clamped, and no readout function returns a bare `Option<Rect>`.
-4. **Text reads on a light terminal** (user, 2026-10-08, cargo-tile on a Mac in light mode: the summary's memory total could not be read, "it's because it's white"). The total's value is drawn in `text_default()` (`render.rs:230`, in `SummaryMemoryTotal::foot`), the theme's default text colour, `Color::White` in the fallback theme (`crates/tui_pane/src/theme/fallback.rs:65`); the `mem ` label beside it is `label_color()` (gray) and reads. `text_default()` (`crates/tui_pane/src/theme/accessors.rs:100`) has 72 call sites across the three apps, six in cargo-tile's `render.rs` (230, 961, 1816, 1906, 1917) and two in the foot readout (`tiles/draw.rs:456`, `459`).
-   - Reproduce first, in a pure render test: draw the summary foot with `transparent_background()` on, then off, and read the value's foreground. State in the summary which case puts white on the terminal's own background.
-   - Rule: default text stands on one of two grounds. On the painted screen ground (`chrome::screen_ground()`, transparent off) it keeps the theme's colour, which the theme pairs with that ground. With transparent on nothing is painted under it, so it takes the terminal's own foreground, `Color::Reset`, which the terminal pairs with its own background, light or dark.
-   - Where: `text_default()` itself, so one change reaches every caller in all three apps. Before changing it, list its callers that blend or convert the colour (`blend_color`, `Layout::ink` at `render.rs:1476`, the RGB conversion at `chrome.rs:179`): each must still produce a readable ink on both grounds with transparent on. A caller that needs a concrete colour reads the theme's colour through a crate-private accessor; add a public item only if a caller outside `tui_pane` needs one, and name it in the summary.
-   - Audit cargo-tile's summary and cells for any other ink that assumes a dark ground with transparent on (a literal `Color::White`, a `bright` or `default` theme colour used as a foreground, a fade that blends toward a ground that is not painted). Fix each by the same rule and list them in the summary.
+2. **Wrap at boundaries** (`cargo-tile`, `Wrap::push`, `wrap.rs:72`). A word wider than a whole line is cut today at a raw cell count. New rule for that branch: break after a boundary character — any of `WRAP_BREAK_AFTER = "/-=_.:,"` — taking the last boundary that fits the room left on the current line; with none in that room and the line not empty, wrap first and try a whole line; with none in a whole line either, cut at the line's width as today. Words that fit a line are untouched. `wrapped` serves the ancestry chain and the table's command column, and demand and draw both call it, so they stay in step.
+3. **A cut level says so** (`draw_ancestry`, `render.rs:983`). `lines.truncate(budget.max(1))` drops a level's last lines bare. When it drops any, the last kept line ends in `ANCESTRY_ELISION`: appended when the line has a free cell inside `ancestry_room`, otherwise replacing its last cell.
+4. **No room, no command** (`ancestry_stem`, `ancestry_room`, `render.rs:1130`, `1144`). When a level's room for its command is under `ANCESTRY_MIN_COMMAND_WIDTH` (8), the level draws its pid alone on one row; `ancestry_rows` counts it as one row. The pid stays whole or absent as now.
 
 Tests, all pure:
-- `accessors.rs` or `render.rs`: `default_text_takes_the_terminals_foreground_on_a_transparent_screen` and `default_text_keeps_the_theme_colour_on_the_painted_ground`; `render.rs`: `the_summary_memory_total_reads_on_either_ground`.
 - `render.rs`: `every_heading_width_is_whole_marked_or_absent` — for each width from 0 to the whole heading's width, for a qualified and an unqualified group: the drawn heading is the whole heading, or contains exactly one `…` and ends with a suffix of the path, or is empty; and it never exceeds the width. One case pins `[natepiano] …/tool-based-ui-frame-time`.
-- `frame.rs`: the updated `a_title_stops_inside_the_corner`, and `a_title_one_cell_wide_is_the_mark_alone`.
-- `draw.rs`: `the_rows_readout_is_a_whole_candidate_at_every_width` — for each inner width from 0 to 60: the readout row, trimmed, is empty or equals one of the candidates exactly. Update `draw_tile_cell_draws_only_the_readout_on_its_foot_row` only if its expected text changes (it should not).
+- `wrap.rs`: a long path breaks only after `/`, a flag after `=` and `-`, a run with no boundary still cuts at the width; update the tests that pin today's cuts (`wrap.rs` 219, 227; `render.rs` 3112, 3140).
+- `render.rs`: a truncated level ends in `…`; a level under the minimum room draws its pid alone; demand equals draw at widths 22 to 60.
 
-Changelogs: one Changed line each under `## [Unreleased]`.
+Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs` — `PathGroup::fitted_heading`, `draw_path_group`, test.
-- `crates/cargo-tile/src/constants.rs` — `HEADING_ELISION`, `HEADING_MIN_TAIL`.
+- `crates/cargo-tile/src/render.rs` — `PathGroup::fitted_heading`, `draw_path_group`, `draw_ancestry`, `ancestry_stem`, `ancestry_room`, `ancestry_rows`, `ancestry_lines`, tests.
+- `crates/cargo-tile/src/wrap.rs` — boundary breaks, tests.
+- `crates/cargo-tile/src/constants.rs` — `HEADING_ELISION`, `HEADING_MIN_TAIL`, `WRAP_BREAK_AFTER`, `ANCESTRY_MIN_COMMAND_WIDTH`.
 - `crates/cargo-tile/CHANGELOG.md` — Changed line.
-- `crates/tui_pane/src/pane/frame.rs` — `write_overlay`, tests.
-- `crates/tui_pane/src/pane/constants.rs` — `TITLE_ELISION`.
-- `crates/tui_pane/src/tiles/draw.rs` — readout candidates, test.
-- `crates/tui_pane/src/theme/accessors.rs` — `text_default`, tests; any `tui_pane` caller the audit names.
-- `crates/tui_pane/CHANGELOG.md` — Changed line, Fixed line.
-- `crates/cargo-handler/src/**`, `crates/cargo-port/src/**` — only a test that pinned white default text on a transparent screen; name each in the summary.
 
-**Seats:** 2 writers — the work splits by crate.
-- `impl` — `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/theme/accessors.rs`, `crates/tui_pane/CHANGELOG.md`, and any `cargo-handler` or `cargo-port` test the colour rule changes.
-- `test` — opens as impl: `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/CHANGELOG.md`.
+**Seats:** 2 writers — drawing in `render.rs`, wrapping in `wrap.rs`.
+- `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/CHANGELOG.md`. Its first edit adds the four constants and posts their names on the board.
+- `test` — opens as impl: `crates/cargo-tile/src/wrap.rs`.
 
-**Constraints from prior phases:** Phase 1 split `draw_tile_grid` into itself plus a private `draw_placements` in `draw.rs`, and changed `draw_clipped` and `blit` in `frame.rs`; neither touches titles or readouts. Phase 2 changed how `grid.rs` places moving pieces and column bands; `draw.rs` gained render tests beside the readout code and no readout change. The drawing path is `draw_tile_grid` (`draw.rs:144`) → `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)` (168).
+**Constraints from prior phases:** Phases 1 to 4 changed `tui_pane` and no rule for text inside a cargo-tile cell. Phase 5 set cargo-tile's floor (`MIN_CELL_WIDTH = 40`), so every command cell drawn here is 40 cells or wider; it added `TITLE_ELISION` in `tui_pane`, made the foot readout a list of whole candidates, and fixed in `draw_summary` whatever was cut bare. None of that changes here. `wrapped` also serves the summary table's command column, so Phase 5's `the_summary_alone_is_whole_marked_or_absent_at_every_width` passes unchanged. No `tui_pane` change; no new public item; no `#[allow]`.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port`, `... lint tui_pane` and `... lint cargo-tile` green; the named tests pass; no test in the run takes a second.
-- Unit director's settled captures beside a real `cargo check`, 50 rows, at 200, 126, 90, 64, 48 and 40 columns: no heading, title or foot readout is cut bare in any of them.
-- The 126-column capture rendered four ways: on a dark and on a light terminal (white background, black foreground), each with transparent off and on. Every value in the summary and the cells is readable in all four; the memory total is named in the notice.
-- A fresh helper's design check of those ten shots. Headings, titles, readouts and light-terminal text must pass; defects in ancestry text, the status line and cells under 40 wide are recorded for Phase 5 and do not fail this gate.
+- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, then `... test cargo-tile` green; the named tests pass; no test in the run takes a second.
+- Unit director's settled captures beside a real `cargo check`, 50 rows, at 200, 126, 90, 64, 48 and 40 columns: no heading is cut bare, and ancestry breaks only at a boundary or ends in `…`.
+- A fresh helper's design check of those six shots: pass.
 
-### Phase 5 — Ancestry, status line, a floor for cells, and the summary alone below it  · status: todo
+### Phase 7 — Slow tests start first  · status: todo
 
 #### Work Order
 
-**Goal:** Ancestry text breaks at path and word boundaries, the status line drops whole items as the row narrows, cargo-tile never makes a command cell narrower than 40 cells, and a window too small for the grid shows the summary alone, filling the window.
+**Goal:** In a full `cargo nextest run`, every test that takes 0.8 s or more on natedev or the Mac starts before any faster test. Ordering only: no test is rewritten (user's words: "for now").
 
 **Spec:**
 
-1. **Wrap at boundaries** (`cargo-tile`, `Wrap::push`, `wrap.rs:72`). A word wider than a whole line is cut today at a raw cell count. New rule for that branch: break after a boundary character — any of `WRAP_BREAK_AFTER = "/-=_.:,"` — taking the last boundary that fits the room left on the current line; with none in that room and the line not empty, wrap first and try a whole line; with none in a whole line either, cut at the line's width as today. Words that fit a line are untouched. `wrapped` serves the ancestry chain and the table's command column, and demand and draw both call it, so they stay in step.
-2. **A cut level says so** (`draw_ancestry`, `render.rs:983`). `lines.truncate(budget.max(1))` drops a level's last lines bare. When it drops any, the last kept line ends in `ANCESTRY_ELISION`: appended when the line has a free cell inside `ancestry_room`, otherwise replacing its last cell.
-3. **No room, no command** (`ancestry_stem`, `ancestry_room`, `render.rs:1130`, `1144`). When a level's room for its command is under `ANCESTRY_MIN_COMMAND_WIDTH` (8), the level draws its pid alone on one row; `ancestry_rows` counts it as one row. The pid stays whole or absent as now.
-4. **Status line fit** (`tui_pane`, `status_line.rs`, `render` at 162 and `render_sections` at 272). Nothing is measured today: the right block is right-aligned, starts at column 0 when it is wider than the row, and its tail (`? shortcuts`) is cut. New order, whole items only:
-   1. the globals (` ? shortcuts`) are kept while they fit the row with their one trailing cell;
-   2. notes are added in front of the globals from the last note backwards while each fits whole — so the app's name and version, the first note, go first;
-   3. the left segment (uptime, then navigation) is drawn only when it fits whole in the room left of the right block with one cell between; its navigation spans go before the uptime does;
-   4. the centre is drawn only when it fits whole between them.
-
-   Add a test module to `status_line.rs`; build the spans with the file's own helpers.
-5. **A floor where cells stop being useful** (user, 2026-10-08: "cargo tile becomes useless when it is too small"). The framework minimum (`MIN_TILE_WIDTH`, 8) stays as it is, because `cargo-handler` draws its agent cells on the same grid and its narrow cells are its own design. Add `TileGrid::set_min_tile_width(&mut self, width: u16)` in `tui_pane` (it writes `settings.min_tile_width`, never below the framework minimum), and have cargo-tile call it once where it builds its grid (`app.rs:207`) with a new `MIN_CELL_WIDTH = 40`: 38 cells inside hold a whole `[account] project` heading of ordinary length, a pid with a 28-cell command, and the whole foot readout; an 80-column terminal holds two columns. `fits` (`grid.rs:1777`) already refuses to open a cell that would make columns narrower — on `+`, on a command arriving, on `sync` — so in cargo-tile five columns need 196 terminal columns, four 157, three 118, two 79, one 40. A command refused a cell is still counted in the summary, as today.
-6. **Too small shows the summary alone** (user, 2026-10-08: "the only way it is useful at narrow column width is just simply to show the summary table only"). Add `TileGrid::holds_in(&self, area: Rect, growth: TileGrowth) -> bool`, crate-private (`pub(super)`): the `fits` test applied to the arrangement the grid is headed for. It counts every position that arrangement lays out, `target().len() + TABLE_CELL + target_depth().saturating_sub(1)`, because `Grid::new` adds the summary's depth before it divides the columns; `fits` given the cell count alone accepts a deep-summary grid that does not fit. In `draw_tile_grid` (`draw.rs:144`), after `grid.sync`, when it is false and contents are shown: draw the summary cell alone, its frame on the whole `area`, through the same path a settled summary cell takes in `draw_placements` and `draw_cell` (title, labels, foot, readout, ground and tint as any cell), with no column band and no command cell, and return. The summary's demand and its measured width come from the whole area's inner width in that frame, not from the arrangement's column. There is no motion into or out of this state: the frame after a resize is the summary alone or the settled grid. The grid keeps syncing and keeps its cells, so they stand in their settled rects in the first frame whose area holds them; a command refused a cell while the window was small opens one by the ordinary `sync` rule once there is room. Contents hidden: nothing is drawn, as today. An area too small for a frame with one body row and one body cell draws nothing. The same rule serves `cargo-handler` at its own 8-cell minimum, where today it draws border-only slivers. This replaces the earlier plan's `window too small` notice: no `TILE_GRID_TOO_SMALL` constant and no surface type are added.
-7. **The summary reads at every width** (`cargo-tile`, `draw_summary`, `render.rs:611`). Alone in a narrow window the summary is all the user has. Its table already sheds columns (`TABLE_NO_COLUMNS_MARKER`, `narrow_table_buffer` at `render.rs:4801`). Pin it: at every inner width from 6 to 38, each header, each table value and the foot is whole, shortened with `…`, or absent. Fix in `draw_summary` whatever the test finds cut bare, by the rules Phase 4 set (the end of a path survives; a value is never cut without its mark).
-
-Tests, all pure: `wrap.rs` — a long path breaks only after `/`, a flag after `=` and `-`, a run with no boundary still cuts at the width; update the tests that pin today's cuts (`wrap.rs` 219, 227; `render.rs` 3112, 3140). `render.rs` — a truncated level ends in `…`; a level under the minimum room draws its pid alone; demand equals draw at widths 22 to 60. `status_line.rs` — at every width from 0 to the full row's natural width, each item's text appears whole or not at all, and the globals outlast the notes. `grid.rs`/`draw.rs` — with the minimum set to 40, `fits` holds at 196, 157, 118, 79 and 40 columns and fails one under each; a grid left at the framework minimum still fits three columns in 22; `holds_in_counts_the_headed_summary_depth`; `a_grid_too_wide_for_its_window_draws_the_summary_alone` (three columns opened at 200 columns, drawn at 100: the summary's frame is the whole area, its title on the top row, no column divider and no command cell's text anywhere); `the_cells_stand_settled_in_the_first_frame_that_holds_them` (the same grid drawn again at 200: every cell in its settled rect, nothing in flight); `a_command_refused_in_a_small_window_opens_when_there_is_room` (first synced at 30 columns with two commands, then at 100); `a_hidden_grid_too_small_draws_nothing`. `render.rs` — `the_summary_alone_is_whole_marked_or_absent_at_every_width` (item 7).
-
-README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentences: command cells are never narrower than 40 cells, and a window too small for them shows the summary alone. Changelogs: Changed lines under `## [Unreleased]`.
+1. **Measure before.** On each machine run the suite CI runs, `cargo nextest run --all-features --workspace --exclude cargo-mend --tests`, three times with JUnit turned on from outside the repo config: a file `junit.toml` holding `[profile.default.junit]` / `path = "junit.xml"`, passed as `--tool-config-file tile-fixes:<path>/junit.toml`. Each `testcase` then carries its start `timestamp` and `time`. Record the wall time of each run and, per test, its slowest time. On the Mac work in a checkout of this branch outside `/tmp`, reached with `ssh mac`.
+2. **The slow set** is every test at 0.8 s or more in any of the six runs, less the seven reader scenarios the config already orders. Known members to confirm by name with `cargo nextest list`: in `cargo-tile::unit_tests`, `progress::capture::…::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`, eight in `shim_registration::wire::`, two in `hook::`; two each in `cargo-tile::shim_modes` and `cargo-tile::cli_lifecycle`; in `cargo-handler`, `census::codex::…::reads_threads_by_id_whoever_started_them` and `…::reads_interactive_threads_created_in_the_span`; in `tui_pane`, `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw`.
+3. **One override.** Append to `.config/nextest.toml` one `[[profile.default.overrides]]` with `priority = 80` and a `filter` that names each slow test exactly: `binary_id(<id>) & (test(=<name>) | …)` per binary, joined with `|`. No regular expressions, so a test added later is not swept in by accident. A comment above it says what the list is, the threshold, the date measured, and how to re-measure. nextest resolves each setting from the first override that sets it, so the two existing priorities (100, 90), the `cargo-tile-readers` group and both `slow-timeout` entries keep working unchanged; the new override sets `priority` alone and names none of the reader scenarios.
+4. **Measure after**, the same three runs per machine.
 
 **Files:**
-- `crates/cargo-tile/src/wrap.rs` — boundary breaks, tests.
-- `crates/cargo-tile/src/render.rs` — `draw_ancestry`, `ancestry_stem`, `ancestry_room`, `ancestry_rows`, `ancestry_lines`, `draw_summary`, tests.
-- `crates/cargo-tile/src/constants.rs` — `WRAP_BREAK_AFTER`, `ANCESTRY_MIN_COMMAND_WIDTH`, `MIN_CELL_WIDTH`.
-- `crates/cargo-tile/src/app.rs` — sets the grid's minimum cell width.
-- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the floor and the summary alone.
-- `crates/tui_pane/src/bar/status_line.rs` — fit pass, test module.
-- `crates/tui_pane/src/tiles/grid.rs` — `set_min_tile_width`, `holds_in`, tests.
-- `crates/tui_pane/src/tiles/draw.rs` — the summary alone in `draw_tile_grid`, tests.
-- `crates/tui_pane/CHANGELOG.md` — Changed lines.
+- `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
 
-**Seats:** 2 writers — the work splits by crate.
-- `impl` — `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/CHANGELOG.md`.
-- `test` — opens as impl: `crates/cargo-tile/src/wrap.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`.
+**Seats:** 1 writer + 1 tester — one configuration owner and one measurement lane.
+- `impl` — `.config/nextest.toml`.
+- `test` — no file; runs the three before and three after measurements on natedev and the Mac, checks every exact filter name, and hands the measured slow set and start order to `impl`.
 
-**Constraints from prior phases:** Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the summary-alone branch goes in `draw_tile_grid` (`draw.rs:144`) after `grid.sync` and before `grid.drawing` and `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)`, which stays the owner of the ordinary ground and frame. Phase 2 changed how `grid.rs` places moving pieces and column bands and added `TileGrid::drawing_at`; it changed nothing a settled grid shows. Phase 4 added `PathGroup::fitted_heading` and `HEADING_ELISION` in cargo-tile, `TITLE_ELISION` in `tui_pane/src/pane/constants.rs`, made the foot readout a list of whole candidates (`rows_readout_lines`), and made `text_default()` the terminal's own foreground on a transparent screen. `set_min_tile_width` is this phase's only new public item.
+**Constraints from prior phases:** Phases 1 to 6 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port`, `... lint tui_pane` and `... lint cargo-tile` green; the named tests pass; no test in the run takes a second.
-- Unit director's settled captures beside a real `cargo check`, 50 rows: cells at 200, 126, 90, 64, 48 and 40 columns; the summary alone at 39, 32, 24 and 16 columns; and one window shrunk from 200 to 100 while three columns are open (the summary alone), then grown back to 200 (the cells back). Nothing is cut bare anywhere, ancestry breaks only at a boundary or carries `…`, the status line holds only whole items, and no command cell is drawn under 40 wide.
-- A fresh helper's design check of all twelve shots: pass. The notice lists the shots on each side of the switch so the user can judge the width.
+- `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
+- After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
+- The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 
-### Phase 6 — The summary takes the rows it asks for, not a second position  · status: todo
+### Phase 8 — The summary takes the rows it asks for, not a second position  · status: todo
 
 #### Work Order
 
@@ -325,36 +386,9 @@ Changelogs: one Changed line each under `## [Unreleased]`.
 - `impl` — `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/constants.rs`, both changelogs.
 - `test` — `crates/tui_pane/src/tiles/draw.rs`: the render test, failing until `impl` lands the rule.
 
-**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which counts `target_depth()`: a summary that stays shallower lets a grid hold in a smaller window, and `holds_in`'s tests must still pass. `cargo-handler` draws on the same grid, so its summary follows the same rule. No new public item; no `#[allow]`.
+**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. No new public item; no `#[allow]`.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
 - Unit director's capture at 200x50 with seven `+` and seven `-` (it reaches ten cells and four columns), transparent off: in every settled frame the summary shows no blank body row while a cell in its column is short of what it asks, and Phase 2's motion measures still read zero.
 - A fresh helper's design check of the settled shots and one motion shot per step, against Phase 2's shots of the same steps: pass.
-
-### Phase 7 — Slow tests start first  · status: todo
-
-#### Work Order
-
-**Goal:** In a full `cargo nextest run`, every test that takes 0.8 s or more on natedev or the Mac starts before any faster test. Ordering only: no test is rewritten (user's words: "for now").
-
-**Spec:**
-
-1. **Measure before.** On each machine run the suite CI runs, `cargo nextest run --all-features --workspace --exclude cargo-mend --tests`, three times with JUnit turned on from outside the repo config: a file `junit.toml` holding `[profile.default.junit]` / `path = "junit.xml"`, passed as `--tool-config-file tile-fixes:<path>/junit.toml`. Each `testcase` then carries its start `timestamp` and `time`. Record the wall time of each run and, per test, its slowest time. On the Mac work in a checkout of this branch outside `/tmp`, reached with `ssh mac`.
-2. **The slow set** is every test at 0.8 s or more in any of the six runs, less the seven reader scenarios the config already orders. Known members to confirm by name with `cargo nextest list`: in `cargo-tile::unit_tests`, `progress::capture::…::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`, eight in `shim_registration::wire::`, two in `hook::`; two each in `cargo-tile::shim_modes` and `cargo-tile::cli_lifecycle`; in `cargo-handler`, `census::codex::…::reads_threads_by_id_whoever_started_them` and `…::reads_interactive_threads_created_in_the_span`; in `tui_pane`, `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw`.
-3. **One override.** Append to `.config/nextest.toml` one `[[profile.default.overrides]]` with `priority = 80` and a `filter` that names each slow test exactly: `binary_id(<id>) & (test(=<name>) | …)` per binary, joined with `|`. No regular expressions, so a test added later is not swept in by accident. A comment above it says what the list is, the threshold, the date measured, and how to re-measure. nextest resolves each setting from the first override that sets it, so the two existing priorities (100, 90), the `cargo-tile-readers` group and both `slow-timeout` entries keep working unchanged; the new override sets `priority` alone and names none of the reader scenarios.
-4. **Measure after**, the same three runs per machine.
-
-**Files:**
-- `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
-
-**Seats:** 1 writer + 1 tester — one configuration owner and one measurement lane.
-- `impl` — `.config/nextest.toml`.
-- `test` — no file; runs the three before and three after measurements on natedev and the Mac, checks every exact filter name, and hands the measured slow set and start order to `impl`.
-
-**Constraints from prior phases:** Phases 1 to 6 added render tests to `tui_pane` and `cargo-tile`; each runs well under a second and none joins the slow set.
-
-**Acceptance gate:**
-- `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
-- After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
-- The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.

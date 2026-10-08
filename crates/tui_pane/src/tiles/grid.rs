@@ -58,6 +58,7 @@ use super::action::TileAction;
 use super::constants::MIN_INITIAL_ROWS;
 use super::constants::PROGRESS_SCALE;
 use super::constants::TABLE_CELL;
+use super::draw;
 use super::growth::TileGrowth;
 use super::settings::TileSettings;
 use crate::CycleDirection;
@@ -163,12 +164,37 @@ pub struct TilePlacement<Id> {
     pub frame:   PaneFrame,
 }
 
+/// Which copy of a cell draws its name while the cell crosses columns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PieceName {
+    /// This piece draws the cell's title or empty-cell number.
+    Shown,
+    /// The cell's other piece draws its name.
+    OnTheOtherPiece,
+}
+
+/// One visible piece and the name role its placed geometry gives it.
+pub(super) struct TilePiece<Id> {
+    /// What and where the piece draws.
+    pub(super) placement: TilePlacement<Id>,
+    /// Whether this piece draws the cell's name.
+    pub(super) name:      PieceName,
+}
+
 /// One frame's cell pieces and the fixed column frames they move inside.
 pub(super) struct TileDrawing<Id> {
     /// Every visible piece, in cell order.
-    pub(super) placements:   Vec<TilePlacement<Id>>,
+    pub(super) pieces:       Vec<TilePiece<Id>>,
     /// Each column's band at the same point in the transition.
     pub(super) column_bands: Vec<Rect>,
+}
+
+impl<Id> TileDrawing<Id> {
+    /// The placements carried by this frame's pieces.
+    #[cfg(test)]
+    pub(super) fn placements(&self) -> impl Iterator<Item = &TilePlacement<Id>> {
+        self.pieces.iter().map(|piece| &piece.placement)
+    }
 }
 
 /// A cell after the summary.
@@ -215,17 +241,16 @@ enum Direction {
     Down,
 }
 
-/// What a cell draws and whether it holds focus -- everything a
-/// [`TilePlacement`] carries that is not geometry.
+/// A cell's content and focus appearance, apart from its geometry.
 #[derive(Clone)]
-struct Drawn<Id> {
+struct CellAppearance<Id> {
     /// What the cell draws.
     content: TileContent<Id>,
     /// Whether the cell holds focus, which is what lights its border.
     focused: bool,
 }
 
-impl<Id: Clone> Drawn<Id> {
+impl<Id: Clone> CellAppearance<Id> {
     /// This cell drawn at `frame`, focus carried onto it.
     fn at(&self, frame: PaneFrame) -> TilePlacement<Id> {
         TilePlacement {
@@ -294,6 +319,11 @@ enum BandPieceMotion {
         /// Whether its contents slide through the edge while it shrinks.
         sliding: bool,
     },
+    /// The piece keeps its starting rows while its whole column closes.
+    ClosingWithColumn {
+        /// Its rect before the move.
+        before: Rect,
+    },
 }
 
 /// One cell piece assigned to the column topology it moves within.
@@ -305,7 +335,7 @@ struct BandPiece<Id> {
     /// How far this piece's row boundary has moved.
     progress: u32,
     /// What the piece draws.
-    drawn:    Drawn<Id>,
+    drawn:    CellAppearance<Id>,
 }
 
 /// Where the focus ring is located within the current arrangement.
@@ -999,6 +1029,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.motion = GridMotion::Settled;
     }
 
+    /// Make a multi-step test transition run directly between its endpoints.
+    #[cfg(test)]
+    pub(super) const fn collapse_queued_changes_for_test(&mut self) {
+        self.settings.max_pending_steps = 1;
+    }
+
     /// Move focus one cell in `direction`, staying put at the edges.
     ///
     /// The grid is ragged -- a column can hold fewer cells than the one
@@ -1136,7 +1172,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Every piece to draw this frame, in cell order.
     pub fn placements(&self, area: Rect, growth: TileGrowth) -> Vec<TilePlacement<Id>> {
-        self.drawing(area, growth).placements
+        self.drawing(area, growth)
+            .pieces
+            .into_iter()
+            .map(|piece| piece.placement)
+            .collect()
     }
 
     /// Every piece and column frame to draw at one reading of the
@@ -1150,18 +1190,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let settled = Grid::new(area, &self.drawn_held(), growth, &self.settings);
         let focused = self.focused_cell();
         let GridMotion::Moving(transition) = &self.motion else {
-            let placements = cells(&self.slots)
+            let pieces = cells(&self.slots)
                 .into_iter()
                 .filter_map(|(content, index)| {
-                    Some(TilePlacement {
-                        content,
-                        frame: PaneFrame::new(settled.cell(index)?)
-                            .with_focus(focused == FocusLocation::Cell(index)),
+                    Some(TilePiece {
+                        placement: TilePlacement {
+                            content,
+                            frame: PaneFrame::new(settled.cell(index)?)
+                                .with_focus(focused == FocusLocation::Cell(index)),
+                        },
+                        name:      PieceName::Shown,
                     })
                 })
                 .collect();
             return TileDrawing {
-                placements,
+                pieces,
                 column_bands: settled.columns,
             };
         };
@@ -1181,7 +1224,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 after_cell:  TABLE_CELL,
             },
             eased(turns.summary(raw)),
-            Drawn {
+            CellAppearance {
                 content: TileContent::Summary,
                 focused: self.focus == Focus::Summary,
             },
@@ -1239,16 +1282,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 &settled,
                 transition,
                 piece_progress,
-                Drawn {
+                CellAppearance {
                     content,
                     focused: self.focus == Focus::Cell(slot),
                 },
                 &mut pieces,
             );
         }
-        let placements = place_band_pieces(&before, &settled, &column_bands, pieces);
+        let pieces = place_band_pieces(&before, &settled, &column_bands, pieces);
         TileDrawing {
-            placements,
+            pieces,
             column_bands,
         }
     }
@@ -1993,7 +2036,7 @@ fn moving_cell<Id: Clone>(
     after: &Grid,
     transition: CellTransition,
     progress: u32,
-    drawn: Drawn<Id>,
+    drawn: CellAppearance<Id>,
     out: &mut Vec<BandPiece<Id>>,
 ) {
     match transition {
@@ -2055,10 +2098,16 @@ fn moving_cell<Id: Clone>(
             };
             out.push(BandPiece {
                 column,
-                motion: BandPieceMotion::Leaving {
-                    before:  before_rect,
-                    edge:    BandEdge::Bottom,
-                    sliding: false,
+                motion: if column < after.columns.len() {
+                    BandPieceMotion::Leaving {
+                        before:  before_rect,
+                        edge:    BandEdge::Bottom,
+                        sliding: false,
+                    }
+                } else {
+                    BandPieceMotion::ClosingWithColumn {
+                        before: before_rect,
+                    }
                 },
                 progress,
                 drawn,
@@ -2083,7 +2132,7 @@ fn wrapping_cell<Id: Clone>(
     (from_column, to_column): (usize, usize),
     (from, to): (Rect, Rect),
     progress: u32,
-    drawn: Drawn<Id>,
+    drawn: CellAppearance<Id>,
     out: &mut Vec<BandPiece<Id>>,
 ) {
     let (leaving_edge, entering_edge) = if to_column < from_column {
@@ -2093,10 +2142,14 @@ fn wrapping_cell<Id: Clone>(
     };
     out.push(BandPiece {
         column: from_column,
-        motion: BandPieceMotion::Leaving {
-            before:  from,
-            edge:    leaving_edge,
-            sliding: from_column < after.widths.len(),
+        motion: if from_column < after.columns.len() {
+            BandPieceMotion::Leaving {
+                before:  from,
+                edge:    leaving_edge,
+                sliding: true,
+            }
+        } else {
+            BandPieceMotion::ClosingWithColumn { before: from }
         },
         progress,
         drawn: drawn.clone(),
@@ -2137,8 +2190,14 @@ fn column_bands(before: &Grid, after: &Grid, progress: u32) -> Vec<Rect> {
         .map(|column| {
             let from = column_endpoint(before, column);
             let to = column_endpoint(after, column);
-            let top = lerp(from.top(), to.top(), progress);
-            let bottom = lerp(from.bottom(), to.bottom(), progress);
+            let (top, bottom) = if column < after.columns.len() {
+                (
+                    lerp(from.top(), to.top(), progress),
+                    lerp(from.bottom(), to.bottom(), progress),
+                )
+            } else {
+                (from.top(), from.bottom())
+            };
             Rect {
                 x:      dividers[column],
                 y:      top,
@@ -2214,9 +2273,9 @@ impl BandPieceMotion {
     /// This piece's lower inclusive divider before the move.
     const fn before_bottom(self, band: Rect, previous: u16) -> u16 {
         match self {
-            Self::Resident { before, .. } | Self::Leaving { before, .. } => {
-                before.bottom().saturating_sub(1)
-            },
+            Self::Resident { before, .. }
+            | Self::Leaving { before, .. }
+            | Self::ClosingWithColumn { before } => before.bottom().saturating_sub(1),
             Self::Entering {
                 edge,
                 sliding: true,
@@ -2232,6 +2291,7 @@ impl BandPieceMotion {
             Self::Resident { after, .. } | Self::Entering { after, .. } => {
                 after.bottom().saturating_sub(1)
             },
+            Self::ClosingWithColumn { before } => before.bottom().saturating_sub(1),
             Self::Leaving {
                 edge,
                 sliding: true,
@@ -2248,7 +2308,7 @@ fn place_band_pieces<Id: Clone>(
     after: &Grid,
     bands: &[Rect],
     pieces: Vec<BandPiece<Id>>,
-) -> Vec<TilePlacement<Id>> {
+) -> Vec<TilePiece<Id>> {
     let mut rects = vec![Rect::ZERO; pieces.len()];
     let from_bands = column_bands(before, after, 0);
     let to_bands = column_bands(before, after, PROGRESS_SCALE);
@@ -2282,14 +2342,61 @@ fn place_band_pieces<Id: Clone>(
             rects[index] = rect;
         }
     }
+    let frames = pieces
+        .iter()
+        .zip(&rects)
+        .map(|(piece, &rect)| piece_frame(piece.motion, rect, bands[piece.column]))
+        .collect::<Vec<_>>();
+    let names = (0..pieces.len())
+        .map(|index| piece_name(index, &pieces, &frames))
+        .collect::<Vec<_>>();
     pieces
         .into_iter()
-        .zip(rects)
-        .map(|(piece, rect)| {
-            let frame = piece_frame(piece.motion, rect, bands[piece.column]);
-            piece.drawn.at(frame)
+        .zip(frames)
+        .zip(names)
+        .map(|((piece, frame), name)| TilePiece {
+            placement: piece.drawn.at(frame),
+            name,
         })
         .collect()
+}
+
+/// Which of a crossing cell's adjacent pieces owns its name.
+///
+/// [`wrapping_cell`] adds the leaving piece immediately before the
+/// entering one. A single-piece cell therefore never delegates its
+/// name, while a crossing delegates only once the arriving piece can
+/// draw the row on which an empty cell carries its number. If neither
+/// piece can draw that row, the entering piece takes over once its
+/// border has a row above the column floor, preserving the title.
+fn piece_name<Id>(index: usize, pieces: &[BandPiece<Id>], frames: &[PaneFrame]) -> PieceName {
+    let entering = matches!(
+        pieces[index].motion,
+        BandPieceMotion::Entering { sliding: true, .. }
+    );
+    let followed_by_entering = pieces.get(index + 1).is_some_and(|piece| {
+        matches!(
+            piece.motion,
+            BandPieceMotion::Entering { sliding: true, .. }
+        )
+    });
+    let (leaving_frame, entering_frame) = if entering {
+        let Some(leaving) = index.checked_sub(1).and_then(|leaving| frames.get(leaving)) else {
+            return PieceName::Shown;
+        };
+        (*leaving, frames[index])
+    } else if followed_by_entering {
+        (frames[index], frames[index + 1])
+    } else {
+        return PieceName::Shown;
+    };
+    let entering_draws = draw::name_row_is_visible(entering_frame)
+        || (!draw::name_row_is_visible(leaving_frame) && entering_frame.clip().height >= 2);
+    if entering == entering_draws {
+        PieceName::Shown
+    } else {
+        PieceName::OnTheOtherPiece
+    }
 }
 
 /// Inclusive row dividers shared by every ordered piece in one band.
@@ -2361,7 +2468,8 @@ fn piece_frame(motion: BandPieceMotion, rect: Rect, band: Rect) -> PaneFrame {
     match motion {
         BandPieceMotion::Resident { .. }
         | BandPieceMotion::Entering { sliding: false, .. }
-        | BandPieceMotion::Leaving { sliding: false, .. } => PaneFrame::new(rect),
+        | BandPieceMotion::Leaving { sliding: false, .. }
+        | BandPieceMotion::ClosingWithColumn { .. } => PaneFrame::new(rect),
         BandPieceMotion::Entering {
             edge,
             after,
@@ -3355,8 +3463,7 @@ mod tests {
         let grid = synced_motion(&before, &after, growth);
         let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
         let pieces = drawing
-            .placements
-            .iter()
+            .placements()
             .filter(|placement| placement.content == TileContent::Group(4))
             .collect::<Vec<_>>();
         assert_eq!(pieces.len(), 2);
@@ -3392,8 +3499,8 @@ mod tests {
 
     /// One cell as the wrapping tests draw it; nothing about the motion
     /// depends on what it holds.
-    fn drawn() -> Drawn<u32> {
-        Drawn {
+    fn drawn() -> CellAppearance<u32> {
+        CellAppearance {
             content: TileContent::Summary,
             focused: false,
         }
@@ -3405,7 +3512,7 @@ mod tests {
         after: &Grid,
         transition: CellTransition,
         progress: u32,
-        drawn: Drawn<u32>,
+        drawn: CellAppearance<u32>,
     ) -> Vec<TilePlacement<u32>> {
         let bands: Vec<Rect> = (0..before.columns.len().max(after.columns.len()))
             .map(|column| column_band(before, after, column, progress))
@@ -3413,6 +3520,9 @@ mod tests {
         let mut pieces = Vec::new();
         moving_cell(before, after, transition, progress, drawn, &mut pieces);
         place_band_pieces(before, after, &bands, pieces)
+            .into_iter()
+            .map(|piece| piece.placement)
+            .collect()
     }
 
     /// The pile of lines a closing column used to leave behind. A cell
@@ -3466,8 +3576,8 @@ mod tests {
             (rect.x, rect.width)
         };
         assert_eq!(
-            column(&placed[0]),
-            column(&placed[2]),
+            column(&placed[0].placement),
+            column(&placed[2].placement),
             "the piece on its way out stands in the column as it is now"
         );
     }
@@ -3559,7 +3669,7 @@ mod tests {
         );
         let closed = place_band_pieces(&before, &after, &bands, pieces)
             .last()
-            .map(|placement| placement.frame.clip())
+            .map(|piece| piece.placement.frame.clip())
             .unwrap_or_default();
         assert_eq!(closed.height, 1, "only its edge remains");
         assert_eq!(
@@ -3672,8 +3782,7 @@ mod tests {
                     let endpoint_columns =
                         [before.column_of(before_cell), after.column_of(after_cell)];
                     for placement in drawing
-                        .placements
-                        .iter()
+                        .placements()
                         .filter(|placement| placement.content == TileContent::Group(id))
                     {
                         let clip = placement.frame.clip();
@@ -3739,10 +3848,9 @@ mod tests {
     fn assert_shared_piece_rows(grid: &TileGrid<u32>, growth: TileGrowth) {
         for raw in motion_steps() {
             let drawing = grid.drawing_at(test_area(), growth, raw);
-            for band in drawing.column_bands {
+            for &band in &drawing.column_bands {
                 let pieces: Vec<Rect> = drawing
-                    .placements
-                    .iter()
+                    .placements()
                     .map(|placement| placement.frame.clip())
                     .filter(|rect| rect.x == band.x && rect.width == band.width)
                     .collect();
@@ -3796,8 +3904,7 @@ mod tests {
     /// Settled cell rects in screen order, with collapsed motion pieces omitted.
     fn endpoint_rects(drawing: &TileDrawing<u32>) -> Vec<Rect> {
         let mut rects = drawing
-            .placements
-            .iter()
+            .placements()
             .map(|placement| placement.frame.clip())
             .filter(|rect| rect.width > 1 && rect.height > 1)
             .collect::<Vec<_>>();
@@ -3901,8 +4008,7 @@ mod tests {
         for raw in motion_steps() {
             assert!(
                 grid.drawing_at(test_area(), growth, raw)
-                    .placements
-                    .iter()
+                    .placements()
                     .all(|placement| placement.content != TileContent::Group(99)),
                 "the claim waits for the opening at {raw}"
             );
@@ -3912,8 +4018,7 @@ mod tests {
         for raw in motion_steps() {
             let claimed = grid
                 .drawing_at(test_area(), growth, raw)
-                .placements
-                .iter()
+                .placements()
                 .filter(|placement| placement.content == TileContent::Group(99))
                 .count();
             assert_eq!(claimed, 1, "one claimed piece is drawn at {raw}");
@@ -4249,42 +4354,87 @@ mod tests {
         );
     }
 
-    /// A cell in a column that is closing travels nowhere up or
-    /// down: the column is being pushed off the right edge and the cell
-    /// goes with it. Given the slide as well it was drawn sliding up
-    /// through a column that was sliding away, in the one place the eye
-    /// was watching a column simply go.
+    /// Every piece leaves with a closing column at its starting rows,
+    /// including when a wide summary has shortened the column.
     #[test]
-    fn a_cell_in_a_closing_column_makes_no_vertical_travel() {
+    fn no_piece_in_a_closing_column_changes_height() {
         let area = test_area();
-        let growth = add_new(3);
-        let grid = synced_motion(&[1, 2, 3, 4, 5, 6], &[1, 2, 3, 4, 6], growth);
-        let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
-        assert_eq!(drawing.column_bands.len(), 3, "the last column is closing");
-        let pieces = drawing
-            .placements
-            .iter()
-            .filter(|placement| placement.content == TileContent::Group(6))
-            .collect::<Vec<_>>();
-        assert_eq!(pieces.len(), 2);
-        let closing = pieces
-            .iter()
-            .find(|placement| placement.frame.clip().x == drawing.column_bands[2].x)
-            .expect("one piece leaves with the closing column");
-        let arriving = pieces
-            .iter()
-            .find(|placement| placement.frame.clip().x == drawing.column_bands[1].x)
-            .expect("one piece arrives in the column that stays");
+        let before = [1, 2, 3, 4, 5, 6];
+        let after = [1, 2, 3, 4, 6];
+        let ordinary_growth = redistribute(3);
+        let ordinary = synced_motion(&before, &after, ordinary_growth);
 
-        assert_eq!(
-            closing.frame.shift(),
-            0,
-            "the piece in the closing column stands still"
-        );
-        assert!(
-            arriving.frame.shift() > 0,
-            "while the piece arriving at the foot of the next column still rises"
-        );
+        let covered_growth = widening(3);
+        let mut covered = seeded_grid();
+        covered.set_layout(area, covered_growth);
+        covered.sync(&wide_summary(&before, u16::MAX), covered_growth);
+        covered.settle_for_test();
+        covered.sync(&wide_summary(&after, u16::MAX), covered_growth);
+
+        for (label, grid, growth, shortened) in [
+            ("full-height", ordinary, ordinary_growth, false),
+            ("under the summary", covered, covered_growth, true),
+        ] {
+            let start = grid.drawing_at(area, growth, 0);
+            assert_eq!(start.column_bands.len(), 3, "{label} column count");
+            let column = start.column_bands.len() - 1;
+            let start_band = start.column_bands[column];
+            assert_eq!(
+                start_band.top() > area.top(),
+                shortened,
+                "{label} starting top"
+            );
+            let starting_rows = start
+                .placements()
+                .filter(|placement| {
+                    let clip = placement.frame.clip();
+                    clip.x == start_band.x && clip.width == start_band.width
+                })
+                .map(|placement| {
+                    let rect = placement.frame.rect();
+                    let clip = placement.frame.clip();
+                    (
+                        placement.content.clone(),
+                        rect.y,
+                        rect.height,
+                        clip.y,
+                        clip.height,
+                        placement.frame.shift(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert!(starting_rows.len() > 1, "{label} has stacked pieces");
+
+            for raw in motion_steps() {
+                let drawing = grid.drawing_at(area, growth, raw);
+                let band = drawing.column_bands[column];
+                let rows = drawing
+                    .placements()
+                    .filter(|placement| {
+                        let clip = placement.frame.clip();
+                        clip.x == band.x && clip.width == band.width
+                    })
+                    .map(|placement| {
+                        let rect = placement.frame.rect();
+                        let clip = placement.frame.clip();
+                        (
+                            placement.content.clone(),
+                            rect.y,
+                            rect.height,
+                            clip.y,
+                            clip.height,
+                            placement.frame.shift(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(rows, starting_rows, "{label} at raw {raw}");
+                assert_eq!(
+                    (band.top(), band.bottom()),
+                    (start_band.top(), start_band.bottom()),
+                    "{label} band at raw {raw}"
+                );
+            }
+        }
     }
 
     /// The same cell in a column the grid keeps does slide off its
@@ -4298,8 +4448,7 @@ mod tests {
         let grid = synced_motion(&before, &after, growth);
         let drawing = grid.drawing_at(area, growth, PROGRESS_SCALE / 2);
         let leaving = drawing
-            .placements
-            .iter()
+            .placements()
             .filter(|placement| placement.content == TileContent::Group(4))
             .find(|placement| placement.frame.shift() < 0)
             .expect("the piece leaving travels upward");
@@ -4321,8 +4470,7 @@ mod tests {
         let drawing = grid.drawing_at(test_area(), redistribute(4), 0);
         let placement = |content| {
             drawing
-                .placements
-                .iter()
+                .placements()
                 .find(|placement| placement.content == content)
                 .expect("the transition still draws this command")
         };
@@ -4935,15 +5083,15 @@ mod tests {
                         after_cell:  2,
                     },
                     progress,
-                    Drawn {
+                    CellAppearance {
                         content: TileContent::Empty(2),
                         focused: false,
                     },
                     &mut pieces,
                 );
                 let placed = place_band_pieces(&before, &after, &bands, pieces);
-                let summary = &placed[0];
-                let second = &placed[1];
+                let summary = &placed[0].placement;
+                let second = &placed[1].placement;
                 assert_eq!(summary.frame.rect().bottom() - 1, second.frame.rect().top());
             }
         }
