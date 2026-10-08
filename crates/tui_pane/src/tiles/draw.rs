@@ -63,7 +63,7 @@ pub enum TileGridContents {
 pub enum SummaryFoot {
     /// The app writes nothing there.
     Empty,
-    /// The app's text, drawn from the left inset.
+    /// The app's text, drawn whole from the left inset or not at all.
     Text(Line<'static>),
 }
 
@@ -77,7 +77,8 @@ pub trait TileCells<Id> {
     /// The title written into the summary cell's top border.
     fn summary_title(&self) -> &str;
 
-    /// Text written at the left end of the summary cell's readout row.
+    /// Text drawn whole or not at all at the left end of the summary
+    /// cell's readout row.
     fn summary_foot(&self) -> SummaryFoot { SummaryFoot::Empty }
 
     /// Rows each cell's contents would take given all the room they
@@ -263,11 +264,16 @@ fn draw_cell<Id>(
             TileContent::Summary | TileContent::Group(_) => draw(buffer, contents),
         }
     }
-    match summary_foot {
-        SummaryFoot::Empty => draw_rows_readout(buffer, inner, rows, measured_at),
-        SummaryFoot::Text(line) => {
-            let foot_width = draw_summary_foot(buffer, inner, line);
-            draw_rows_readout_after_foot(buffer, inner, rows, measured_at, foot_width);
+    let foot_draw_outcome = match summary_foot {
+        SummaryFoot::Empty => SummaryFootDrawOutcome::NotDrawn,
+        SummaryFoot::Text(line) => draw_summary_foot(buffer, inner, line),
+    };
+    match foot_draw_outcome {
+        SummaryFootDrawOutcome::NotDrawn => {
+            draw_rows_readout(buffer, inner, rows, measured_at);
+        },
+        SummaryFootDrawOutcome::DrawnWhole { width } => {
+            draw_rows_readout_after_foot(buffer, inner, rows, measured_at, width);
         },
     }
 }
@@ -400,15 +406,26 @@ fn draw_rows_readout_line(buffer: &mut Buffer, inner: Rect, line: Line<'static>)
     Paragraph::new(line).render(area, buffer);
 }
 
-/// Draw the app's text at the left end of the readout row.
-fn draw_summary_foot(buffer: &mut Buffer, inner: Rect, line: &Line<'static>) -> u16 {
+/// Whether the summary foot was drawn without clipping.
+enum SummaryFootDrawOutcome {
+    NotDrawn,
+    DrawnWhole { width: u16 },
+}
+
+/// Draw the app's whole text at the left end of the readout row, or nothing.
+fn draw_summary_foot(
+    buffer: &mut Buffer,
+    inner: Rect,
+    line: &Line<'static>,
+) -> SummaryFootDrawOutcome {
     let height = rows_readout_height(inner.width);
     if height == 0 || inner.height < TILE_ROWS_READOUT_HEIGHT {
-        return 0;
+        return SummaryFootDrawOutcome::NotDrawn;
     }
-    let width = u16::try_from(line.width())
-        .unwrap_or(u16::MAX)
-        .min(inner.width.saturating_sub(TILE_FOOT_LEFT_INSET));
+    let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
+    if width > inner.width.saturating_sub(TILE_FOOT_LEFT_INSET) {
+        return SummaryFootDrawOutcome::NotDrawn;
+    }
     Paragraph::new(line.clone()).render(
         Rect {
             x: inner.x.saturating_add(TILE_FOOT_LEFT_INSET),
@@ -418,7 +435,7 @@ fn draw_summary_foot(buffer: &mut Buffer, inner: Rect, line: &Line<'static>) -> 
         },
         buffer,
     );
-    width
+    SummaryFootDrawOutcome::DrawnWhole { width }
 }
 
 /// The cell interior above the readout, or the whole interior when it cannot show one.
@@ -625,6 +642,86 @@ mod tests {
         let row = buffer_line(&buffer, inner.bottom() - TILE_ROWS_READOUT_HEIGHT);
         assert!(row.contains(FOOT_TEXT));
         assert!(!row.contains(TILE_ROWS_CONTENT_LABEL));
+    }
+
+    #[test]
+    fn summary_foot_is_drawn_whole_or_absent_at_every_width() {
+        let foot_width = u16::try_from(Line::raw(FOOT_TEXT).width()).unwrap_or(u16::MAX);
+        let lines_fit_side_by_side = |width| {
+            let inner = Rect::new(0, 0, width, 3);
+            let readout_width =
+                u16::try_from(rows_readout_line(inner, 1, width).width()).unwrap_or(u16::MAX);
+            foot_width
+                .saturating_add(TILE_FOOT_LEFT_INSET)
+                .saturating_add(TILE_FOOT_GAP)
+                .saturating_add(readout_width)
+                .saturating_add(TILE_ROWS_RIGHT_INSET)
+                <= width
+        };
+        let first_side_by_side_width = (0..=u16::MAX)
+            .find(|&width| lines_fit_side_by_side(width))
+            .unwrap_or(u16::MAX);
+        assert!(
+            lines_fit_side_by_side(first_side_by_side_width),
+            "the summary foot and readout fit side by side at some width"
+        );
+
+        for width in 0..=first_side_by_side_width {
+            let inner = Rect::new(0, 0, width, 3);
+            let y = inner.bottom() - TILE_ROWS_READOUT_HEIGHT;
+            let mut foot_buffer = Buffer::empty(inner);
+            draw_cell(
+                &mut foot_buffer,
+                &TileContent::<u32>::Summary,
+                inner,
+                1,
+                width,
+                &SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+                |_, _| {},
+            );
+
+            if foot_width <= width.saturating_sub(TILE_FOOT_LEFT_INSET)
+                && rows_readout_height(width) > 0
+            {
+                let rendered: String = (TILE_FOOT_LEFT_INSET..TILE_FOOT_LEFT_INSET + foot_width)
+                    .map(|x| foot_buffer[(x, y)].symbol())
+                    .collect();
+                assert_eq!(rendered, FOOT_TEXT, "summary inner width {width}");
+            } else {
+                let mut empty_buffer = Buffer::empty(inner);
+                draw_cell(
+                    &mut empty_buffer,
+                    &TileContent::<u32>::Summary,
+                    inner,
+                    1,
+                    width,
+                    &SummaryFoot::Empty,
+                    |_, _| {},
+                );
+                for x in 0..width {
+                    assert_eq!(
+                        foot_buffer[(x, y)],
+                        empty_buffer[(x, y)],
+                        "summary inner width {width}, column {x}"
+                    );
+                }
+            }
+        }
+
+        let inner = Rect::new(0, 0, first_side_by_side_width, 3);
+        let mut buffer = Buffer::empty(inner);
+        draw_cell(
+            &mut buffer,
+            &TileContent::<u32>::Summary,
+            inner,
+            1,
+            inner.width,
+            &SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            |_, _| {},
+        );
+        let row = buffer_line(&buffer, inner.bottom() - TILE_ROWS_READOUT_HEIGHT);
+        assert!(row.contains(FOOT_TEXT));
+        assert!(row.contains(TILE_ROWS_CONTENT_LABEL));
     }
 
     #[test]

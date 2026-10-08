@@ -143,7 +143,7 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 
 **Ruled out:** a shell warmup before the scenario (no gain on macOS); codesign as the cost of fixture preparation.
 
-### Phase 4 — Mem total whole or absent  · status: todo
+### Phase 4 — Mem total whole or absent  · status: done
 
 #### Work Order
 
