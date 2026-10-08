@@ -164,6 +164,32 @@ pub(crate) const CARGO_MESSAGE_FORMAT_JSON_PREFIX: &str = "--message-format=json
 pub(crate) const CARGO_QUIET_FLAGS: [&str; 2] = ["--quiet", "-q"];
 
 // running-cargo table
+/// What stands in the ancestry block for the levels a short cell has no
+/// room to draw.
+pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";
+/// Blank rows between the ancestry block and the table under it.
+pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
+/// Added to a cell's indent once per level of the ancestry block, so
+/// the chain reads as a staircase down to the command.
+pub(crate) const ANCESTRY_LEVEL_INDENT: &str = " ";
+/// Rows the ancestry block needs before it can drop levels out of the
+/// middle rather than off the end: one for the top-level parent, one
+/// for the elision, and one for the level nearest the command.
+pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
+/// The bare `--` handing everything after it to whatever cargo runs.
+/// Those arguments are the other program's, so the summary passes them
+/// through untouched however they are spelled.
+pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
+/// What the status line says while the attract screen is being shown
+/// because it was asked for. Stands alone for the same reason
+/// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
+/// grid is still there, it is being drawn over.
+pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
+/// Number of bytes in one gibibyte.
+pub(crate) const BYTES_PER_GIBIBYTE: u64 = 1 << 30;
+/// What a cargo binary is called in the `command` column, whatever the
+/// name it happens to be installed under.
+pub(crate) const CARGO_DISPLAY_NAME: &str = "cargo";
 /// Process names that are the genuine cargo binary.
 ///
 /// Matching on the process's own name rather than on its arguments keeps
@@ -173,13 +199,6 @@ pub(crate) const CARGO_QUIET_FLAGS: [&str; 2] = ["--quiet", "-q"];
 /// shim at `~/.rustup/toolchains/*/bin/cargo` renames the binary it
 /// wraps, and the renamed process is still the cargo doing the work.
 pub(crate) const CARGO_PROCESS_NAMES: [&str; 2] = ["cargo", "cargo-tile-real"];
-/// What a cargo binary is called in the `command` column, whatever the
-/// name it happens to be installed under.
-pub(crate) const CARGO_DISPLAY_NAME: &str = "cargo";
-/// What marks the toolchain selector cargo takes ahead of a subcommand,
-/// as in `cargo +nightly build`. Reading a subcommand out of an argument
-/// list means stepping over one of these first.
-pub(crate) const CARGO_TOOLCHAIN_SELECTOR: char = '+';
 /// Prefix the binary behind an external subcommand carries.
 ///
 /// `cargo nextest run` does not stay a `cargo` process: cargo replaces
@@ -188,68 +207,54 @@ pub(crate) const CARGO_TOOLCHAIN_SELECTOR: char = '+';
 /// left above it. Every tool installed as a cargo subcommand -- mend,
 /// clippy, nextest -- reaches the table this way.
 pub(crate) const CARGO_SUBCOMMAND_PREFIX: &str = "cargo-";
-/// The one `cargo-` binary left out of the table: this one. cargo-tile
-/// watching the builds is not one of the builds.
-pub(crate) const SELF_PROCESS_NAME: &str = BINARY_NAME;
+/// Cargo exports the target directory to compiler wrappers when configured here.
+pub(crate) const CARGO_TARGET_DIR_ENV: &str = "CARGO_TARGET_DIR";
+/// Cargo's explicit target directory takes precedence over its environment.
+pub(crate) const CARGO_TARGET_DIR_FLAG: &str = "--target-dir";
+/// What marks the toolchain selector cargo takes ahead of a subcommand,
+/// as in `cargo +nightly build`. Reading a subcommand out of an argument
+/// list means stepping over one of these first.
+pub(crate) const CARGO_TOOLCHAIN_SELECTOR: char = '+';
+/// What `CensusCadence::for_test` divides the production poll interval by.
+///
+/// A 50 ms scan still spans five of Linux's 10 ms clock ticks
+/// (`USER_HZ` is 100), so a sampled CPU share keeps its resolution; the
+/// scan never goes below that.
+#[cfg(test)]
+pub(crate) const CENSUS_TEST_CADENCE_DIVISOR: u32 = 5;
+/// How long a CPU reading is held in PTY tests, in milliseconds.
+#[cfg(test)]
+pub(crate) const CENSUS_TEST_CPU_REPORT_MILLIS: u64 = 50;
+/// The CPU smoothing window in PTY tests, in milliseconds.
+#[cfg(test)]
+pub(crate) const CENSUS_TEST_CPU_SMOOTHING_MILLIS: u64 = 100;
+/// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
+/// whatever width the fitted columns leave, wherever it stands among
+/// them, so it comes ahead of the two that describe an invocation
+/// rather than after them.
+pub(crate) const COMMAND_COLUMN: usize = 7;
+/// Index of the `compiler` column in [`TABLE_HEADERS`].
+pub(crate) const COMPILER_COLUMN: usize = 8;
 /// Compiler driver names counted under each cargo invocation, in
 /// reporting priority order: with a wrapper in use every `rustc` is a
 /// child of one, so `sccache` wins to avoid counting a compile twice.
 pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = [SCCACHE_BINARY, RUSTC_BINARY];
-/// Rust compiler processes can execute outside the requesting cargo's ancestry.
-pub(crate) const RUSTC_BINARY: &str = "rustc";
-/// Both rustc and its cache client carry the destination of a compilation.
-pub(crate) const RUSTC_OUT_DIR_FLAG: &str = "--out-dir";
-/// Cargo's explicit target directory takes precedence over its environment.
-pub(crate) const CARGO_TARGET_DIR_FLAG: &str = "--target-dir";
-/// Cargo exports the target directory to compiler wrappers when configured here.
-pub(crate) const CARGO_TARGET_DIR_ENV: &str = "CARGO_TARGET_DIR";
-/// Linux publishes its clock frequency in the scanner's auxiliary vector.
-#[cfg(target_os = "linux")]
-pub(crate) const CPU_AUXV_PATH: &str = "/proc/self/auxv";
+/// Cells the `\u{d7}` separator occupies in a `compiler` cell.
+pub(crate) const COMPILER_SEPARATOR_WIDTH: usize = 1;
 /// The ELF auxiliary-vector tag `AT_CLKTCK` supplies stat ticks per second.
 #[cfg(target_os = "linux")]
 pub(crate) const CPU_AUXV_CLOCK_TICKS: usize = 17;
 /// Each auxiliary-vector entry has a native-word tag followed by its value.
 #[cfg(target_os = "linux")]
 pub(crate) const CPU_AUXV_ENTRY_WORDS: usize = 2;
-/// utime begins at field 14, index 11 after removing pid and comm.
+/// Linux publishes its clock frequency in the scanner's auxiliary vector.
 #[cfg(target_os = "linux")]
-pub(crate) const CPU_STAT_TIME_INDEX: usize = 11;
-/// utime, stime, cutime and cstime account for both live and reaped work.
-#[cfg(target_os = "linux")]
-pub(crate) const CPU_STAT_TIME_FIELDS: usize = 4;
-/// The process every tree on this machine roots at -- `launchd` on
-/// macOS, `init` on Linux. An ancestry walk stops short of it: a row
-/// naming the one process everything descends from tells one command
-/// from no other.
-pub(crate) const ROOT_PROCESS_PID: u32 = 1;
-/// Added to a cell's indent once per level of the ancestry block, so
-/// the chain reads as a staircase down to the command.
-pub(crate) const ANCESTRY_LEVEL_INDENT: &str = " ";
-/// Blank rows between the ancestry block and the table under it.
-pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
-/// Rows the ancestry block needs before it can drop levels out of the
-/// middle rather than off the end: one for the top-level parent, one
-/// for the elision, and one for the level nearest the command.
-pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
-/// What stands in the ancestry block for the levels a short cell has no
-/// room to draw.
-pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";
-/// Process names an ancestry chain steps over: the shells a command is
-/// typed into, and the login process a terminal session starts under.
-/// None of them launched anything -- they passed a command through --
-/// and a row for one says only that a terminal was involved, which the
-/// row above it already said.
-pub(crate) const TRANSPARENT_PROCESS_NAMES: [&str; 9] = [
-    "login", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh",
-];
-/// How far up a parent chain to look for the cargo process that owns a
-/// compiler, bounding the walk against a reparented cycle.
-pub(crate) const PARENT_WALK_LIMIT: usize = 32;
-/// Delay between process scans. Each scan reads the costly per-process
-/// fields for cargo processes only, so a quarter second stays cheap while
-/// keeping a freshly started build visible almost immediately.
-pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
+pub(crate) const CPU_AUXV_PATH: &str = "/proc/self/auxv";
+/// Index of the `cpu` column in [`TABLE_HEADERS`], which carries the
+/// share of a core the invocation and everything under it are using. It
+/// stands beside `dur` because the two answer the same question from
+/// either end -- how long this has been going, and how hard.
+pub(crate) const CPU_COLUMN: usize = 4;
 /// How long a `cpu` reading is carried before the table takes a fresh
 /// one, in milliseconds.
 ///
@@ -271,94 +276,87 @@ pub(crate) const CPU_REPORT_MILLIS: u64 = 1000;
 /// instead of taking it, over a window long enough to average a burst
 /// out and short enough that a build ramping up is not left behind.
 pub(crate) const CPU_SMOOTHING_SECONDS: f32 = 2.0;
-/// What `CensusCadence::for_test` divides the production poll interval by.
-///
-/// A 50 ms scan still spans five of Linux's 10 ms clock ticks
-/// (`USER_HZ` is 100), so a sampled CPU share keeps its resolution; the
-/// scan never goes below that.
-#[cfg(test)]
-pub(crate) const CENSUS_TEST_CADENCE_DIVISOR: u32 = 5;
-/// How long a CPU reading is held in PTY tests, in milliseconds.
-#[cfg(test)]
-pub(crate) const CENSUS_TEST_CPU_REPORT_MILLIS: u64 = 50;
-/// The CPU smoothing window in PTY tests, in milliseconds.
-#[cfg(test)]
-pub(crate) const CENSUS_TEST_CPU_SMOOTHING_MILLIS: u64 = 100;
-/// `chrono` format for the `start` column.
-pub(crate) const START_TIME_FORMAT: &str = "%H:%M";
-/// Seconds in a minute, for splitting a run time into its parts.
-pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
-/// Seconds in an hour, past which `dur` widens to `hh:mm:ss`.
-pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
-/// Number of bytes in one gibibyte.
-pub(crate) const BYTES_PER_GIBIBYTE: u64 = 1 << 30;
-/// Unit suffix for resident-memory readings.
-pub(crate) const MEMORY_UNIT: &str = "G";
-/// Marks a summary total that excludes commands whose memory could not be read.
-pub(crate) const PARTIAL_TOTAL_MARK: &str = "+";
-/// Label before the summary's total resident memory.
-pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
-/// Shown in `start` when a process's timestamp cannot be interpreted.
-pub(crate) const UNRESOLVED_TIME: &str = "--:--";
-/// CPU, mem, compiler and managed columns share this marker when no reading is established.
-pub(crate) const UNAVAILABLE_MEASUREMENT: &str = "--";
-/// Home directory stand-in in the working-directory header.
-pub(crate) const HOME_ALIAS: &str = "~";
-/// The argument the summary leaves out, in either of the two spellings
-/// cargo accepts -- `--manifest-path <path>` and `--manifest-path=<path>`.
-const MANIFEST_PATH_FLAG: &str = "--manifest-path";
-/// Flags the summary leaves out, with the word each of them takes.
-/// Both spellings count: `--color always` and `--color=always`.
-///
-/// What they have in common is that none of them say anything about
-/// what is being built. A `--manifest-path` names the directory already
-/// heading the row, in full and in absolute form; a `--message-format`
-/// or `--color` names how the caller wanted the output rendered, which
-/// is the caller's business rather than the run's. Between them they
-/// are long enough to push the subcommand -- the one word worth
-/// reading -- off the edge of a narrow cell.
-///
-/// Only these. Everything else stands, however long: `-p` names which
-/// member of a workspace is being built and `--all-targets` names how
-/// much of it, which is exactly what the row is there to say.
-pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
-    [MANIFEST_PATH_FLAG, CARGO_MESSAGE_FORMAT_FLAG, "--color"];
-/// The bare `--` handing everything after it to whatever cargo runs.
-/// Those arguments are the other program's, so the summary passes them
-/// through untouched however they are spelled.
-pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
+/// utime, stime, cutime and cstime account for both live and reaped work.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_STAT_TIME_FIELDS: usize = 4;
+/// utime begins at field 14, index 11 after removing pid and comm.
+#[cfg(target_os = "linux")]
+pub(crate) const CPU_STAT_TIME_INDEX: usize = 11;
+/// Index of the `dur` column in [`TABLE_HEADERS`].
+pub(crate) const DURATION_COLUMN: usize = 3;
 /// What marks a word as an argument rather than as part of the name of
 /// what runs. The short display keeps words up to the first of these,
 /// which is where `cargo mend --manifest-path ... --json` becomes
 /// `cargo mend`.
 pub(crate) const FLAG_MARK: char = '-';
-/// Column headers, in table order. The working directory is not among
-/// them: it heads the group of invocations that share it rather than
-/// repeating on every row.
-pub(crate) const TABLE_HEADERS: [&str; 10] = [
-    "pid", "parent", "start", "dur", "cpu", "mem", "state", "command", "compiler", "runs",
-];
-/// Index of the `pid` column in [`TABLE_HEADERS`].
-pub(crate) const PID_COLUMN: usize = 0;
+/// What the status line says while the display is held still. It stands
+/// alone rather than labelling a value: there is nothing to report but
+/// that nothing is being reported.
+pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
+/// Blank rows between one working directory's table and the next.
+pub(crate) const GROUP_GAP_HEIGHT: u16 = 1;
+/// Rows the working-directory header above each group's table occupies.
+pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
+/// Home directory stand-in in the working-directory header.
+pub(crate) const HOME_ALIAS: &str = "~";
+/// Index of the `runs` column in [`TABLE_HEADERS`], which carries how
+/// many cargo invocations a command is managing. Blank on the rows that
+/// manage nothing, which is most of them.
+pub(crate) const MANAGED_COLUMN: usize = 9;
+/// The argument the summary leaves out, in either of the two spellings
+/// cargo accepts -- `--manifest-path <path>` and `--manifest-path=<path>`.
+const MANIFEST_PATH_FLAG: &str = "--manifest-path";
+/// Index of the `mem` column in [`TABLE_HEADERS`], which carries the
+/// resident memory used by the invocation and everything under it. A
+/// `12.4G` reading and its spacing take seven cells from `command`.
+pub(crate) const MEMORY_COLUMN: usize = 5;
+/// Unit suffix for resident-memory readings.
+pub(crate) const MEMORY_UNIT: &str = "G";
+/// Shown in place of the table when no cargo is running.
+pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
 /// Index of the `parent` column in [`TABLE_HEADERS`], which names what
 /// started an invocation: the cargo above it where there is one, and
 /// otherwise the foot of the chain drawn over the table. It stands
 /// beside `pid` because the two are read together -- the eye follows a
 /// row's parent up to whatever carries that number.
 pub(crate) const PARENT_COLUMN: usize = 1;
+/// How far up a parent chain to look for the cargo process that owns a
+/// compiler, bounding the walk against a reparented cycle.
+pub(crate) const PARENT_WALK_LIMIT: usize = 32;
+/// Marks a summary total that excludes commands whose memory could not be read.
+pub(crate) const PARTIAL_TOTAL_MARK: &str = "+";
+/// Index of the `pid` column in [`TABLE_HEADERS`].
+pub(crate) const PID_COLUMN: usize = 0;
+/// Delay between process scans. Each scan reads the costly per-process
+/// fields for cargo processes only, so a quarter second stays cheap while
+/// keeping a freshly started build visible almost immediately.
+pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
+/// What the status line says while every cell is spelling out its
+/// command lines in full. Stands alone like [`ATTRACT_NOTE_LABEL`] and
+/// [`FROZEN_NOTE_LABEL`], and says the thing the display cannot: a cell
+/// whose rows wrap three deep in manifest paths is doing it because it
+/// was asked to, not because the commands grew.
+pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "tree";
+/// The process every tree on this machine roots at -- `launchd` on
+/// macOS, `init` on Linux. An ancestry walk stops short of it: a row
+/// naming the one process everything descends from tells one command
+/// from no other.
+pub(crate) const ROOT_PROCESS_PID: u32 = 1;
+/// Rust compiler processes can execute outside the requesting cargo's ancestry.
+pub(crate) const RUSTC_BINARY: &str = "rustc";
+/// Both rustc and its cache client carry the destination of a compilation.
+pub(crate) const RUSTC_OUT_DIR_FLAG: &str = "--out-dir";
+/// Seconds in an hour, past which `dur` widens to `hh:mm:ss`.
+pub(crate) const SECONDS_PER_HOUR: u64 = 3600;
+/// Seconds in a minute, for splitting a run time into its parts.
+pub(crate) const SECONDS_PER_MINUTE: u64 = 60;
+/// The one `cargo-` binary left out of the table: this one. cargo-tile
+/// watching the builds is not one of the builds.
+pub(crate) const SELF_PROCESS_NAME: &str = BINARY_NAME;
 /// Index of the `start` column in [`TABLE_HEADERS`].
 pub(crate) const START_COLUMN: usize = 2;
-/// Index of the `dur` column in [`TABLE_HEADERS`].
-pub(crate) const DURATION_COLUMN: usize = 3;
-/// Index of the `cpu` column in [`TABLE_HEADERS`], which carries the
-/// share of a core the invocation and everything under it are using. It
-/// stands beside `dur` because the two answer the same question from
-/// either end -- how long this has been going, and how hard.
-pub(crate) const CPU_COLUMN: usize = 4;
-/// Index of the `mem` column in [`TABLE_HEADERS`], which carries the
-/// resident memory used by the invocation and everything under it. A
-/// `12.4G` reading and its spacing take seven cells from `command`.
-pub(crate) const MEMORY_COLUMN: usize = 5;
+/// `chrono` format for the `start` column.
+pub(crate) const START_TIME_FORMAT: &str = "%H:%M";
 /// Index of the `state` column in [`TABLE_HEADERS`], which says that a
 /// command is waiting on another cargo's lock. How far along a command
 /// is goes on the working-directory heading over it instead. It is the
@@ -368,17 +366,6 @@ pub(crate) const MEMORY_COLUMN: usize = 5;
 /// the cell blank, so the one word in the column is the only thing in
 /// it.
 pub(crate) const STATE_COLUMN: usize = 6;
-/// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
-/// whatever width the fitted columns leave, wherever it stands among
-/// them, so it comes ahead of the two that describe an invocation
-/// rather than after them.
-pub(crate) const COMMAND_COLUMN: usize = 7;
-/// Index of the `compiler` column in [`TABLE_HEADERS`].
-pub(crate) const COMPILER_COLUMN: usize = 8;
-/// Index of the `runs` column in [`TABLE_HEADERS`], which carries how
-/// many cargo invocations a command is managing. Blank on the rows that
-/// manage nothing, which is most of them.
-pub(crate) const MANAGED_COLUMN: usize = 9;
 /// Columns the summary leaves out. One row there stands for a whole
 /// command rather than for a single invocation, and each of these
 /// describes an invocation: what is compiling under it at this instant,
@@ -396,37 +383,63 @@ pub(crate) const MANAGED_COLUMN: usize = 9;
 /// to the command's own cell is the colour on `pid`, which it keeps.
 pub(crate) const SUMMARY_HIDDEN_COLUMNS: [usize; 3] =
     [PARENT_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN];
-/// What the status line says while the display is held still. It stands
-/// alone rather than labelling a value: there is nothing to report but
-/// that nothing is being reported.
-pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
-/// What the status line says while the attract screen is being shown
-/// because it was asked for. Stands alone for the same reason
-/// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
-/// grid is still there, it is being drawn over.
-pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
-/// What the status line says while every cell is spelling out its
-/// command lines in full. Stands alone like the two above it, and says
-/// the thing the display cannot: a cell whose rows wrap three deep in
-/// manifest paths is doing it because it was asked to, not because the
-/// commands grew.
-pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "tree";
-/// Rows the working-directory header above each group's table occupies.
-pub(crate) const GROUP_HEADER_HEIGHT: u16 = 1;
+/// Flags the summary leaves out, with the word each of them takes.
+/// Both spellings count: `--color always` and `--color=always`.
+///
+/// What they have in common is that none of them say anything about
+/// what is being built. A `--manifest-path` names the directory already
+/// heading the row, in full and in absolute form; a `--message-format`
+/// or `--color` names how the caller wanted the output rendered, which
+/// is the caller's business rather than the run's. Between them they
+/// are long enough to push the subcommand -- the one word worth
+/// reading -- off the edge of a narrow cell.
+///
+/// Only these. Everything else stands, however long: `-p` names which
+/// member of a workspace is being built and `--all-targets` names how
+/// much of it, which is exactly what the row is there to say.
+pub(crate) const SUMMARY_HIDDEN_VALUED_FLAGS: [&str; 3] =
+    [MANIFEST_PATH_FLAG, CARGO_MESSAGE_FORMAT_FLAG, "--color"];
+/// Label before the summary's total resident memory.
+pub(crate) const SUMMARY_MEMORY_LABEL: &str = "mem ";
+/// Order whole columns leave a table too narrow for them, first to go first.
+pub(crate) const TABLE_COLUMN_DROP_ORDER: [usize; 8] = [
+    MANAGED_COLUMN,
+    COMPILER_COLUMN,
+    START_COLUMN,
+    DURATION_COLUMN,
+    MEMORY_COLUMN,
+    CPU_COLUMN,
+    STATE_COLUMN,
+    PARENT_COLUMN,
+];
+/// Blank cells between table columns.
+pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
+/// Column headers, in table order. The working directory is not among
+/// them: it heads the group of invocations that share it rather than
+/// repeating on every row.
+pub(crate) const TABLE_HEADERS: [&str; 10] = [
+    "pid", "parent", "start", "dur", "cpu", "mem", "state", "command", "compiler", "runs",
+];
 /// Rows the column-label row at the top of the pane occupies. There is
 /// one for the whole table, not one per working-directory group.
 pub(crate) const TABLE_HEADER_HEIGHT: u16 = 1;
-/// Blank rows between one working directory's table and the next.
-pub(crate) const GROUP_GAP_HEIGHT: u16 = 1;
-/// Cells the `\u{d7}` separator occupies in a `compiler` cell.
-pub(crate) const COMPILER_SEPARATOR_WIDTH: usize = 1;
-/// Blank cells between table columns.
-pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
+/// Stands for a table that has rows and no room for a column.
+pub(crate) const TABLE_NO_COLUMNS_MARKER: &str = "\u{2026}";
 /// Blank cells between columns when their fitted widths do not fit with
 /// [`TABLE_COLUMN_SPACING`].
 pub(crate) const TIGHT_TABLE_COLUMN_SPACING: u16 = 1;
-/// Shown in place of the table when no cargo is running.
-pub(crate) const NO_PROCESSES_NOTE: &str = "no cargo processes running";
+/// Process names an ancestry chain steps over: the shells a command is
+/// typed into, and the login process a terminal session starts under.
+/// None of them launched anything -- they passed a command through --
+/// and a row for one says only that a terminal was involved, which the
+/// row above it already said.
+pub(crate) const TRANSPARENT_PROCESS_NAMES: [&str; 9] = [
+    "login", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh",
+];
+/// CPU, mem, compiler and managed columns share this marker when no reading is established.
+pub(crate) const UNAVAILABLE_MEASUREMENT: &str = "--";
+/// Shown in `start` when a process's timestamp cannot be interpreted.
+pub(crate) const UNRESOLVED_TIME: &str = "--:--";
 
 // capture root status
 /// Competing generations explain why no capture can supply a row's fields.

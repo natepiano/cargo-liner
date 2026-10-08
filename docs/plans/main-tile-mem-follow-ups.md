@@ -91,7 +91,7 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 - A separate scan-watching child process for the CPU scenario: it cost a process start, and checking every completed screen proves the same.
 - Treating the source-switch scenario's first second as a product floor: it was presentation time.
 
-### Phase 2 — Whole pids and ordered constants  · status: todo
+### Phase 2 — Whole pids and ordered constants  · status: done
 
 #### Work Order
 
@@ -111,7 +111,7 @@ Rule: at every width, a pid is drawn whole or not drawn. This holds for the `pid
 - **Width asks.** `summary_width` (391–442) keeps asking for the full table; dropping columns is what happens when the grid cannot give it.
 - **Settings overlay.** Its diagnostics print pids in prose (`settings.rs` 375–415). The overlay breaks a word only when the value column is under seven cells, which a usable terminal never gives. This phase leaves it as it is (author's scope call).
 - **Tests** (fast, in-process, in `render.rs`'s `mod tests`, with the existing helpers): two `tight_command_row` fixtures with distinct seven-digit `pid` and `parent`; draw with `draw_process_table` for both `TableKind`s at every interior width from 0 to 90; in the `pid` and `parent` columns' solved rectangles every run of digits equals a whole fixture pid; no header is cut; at 61 and over (command) and 39 and over (summary) every column shows; the drop order is the one above. An ancestry test does the same over widths for the chain.
-- **Cost:** at most ten width checks per table layout, and one solve where there was one.
+- **Cost:** at most ten fit checks added per table layout, beside the one spacing check that was already there, and one solve where there was one.
 
 Constants in name order. The rule (`~/rust/nate_style/rust/constants-file-organization.md`): "Within each section, sort constants alphabetically by name." Use plain ascending ASCII order of the identifier. Each doc comment and attribute moves with its constant. No value, type or visibility changes.
 
@@ -135,3 +135,50 @@ Constants in name order. The rule (`~/rust/nate_style/rust/constants-file-organi
 - No test takes a second or more: the width sweeps are in-process and add no process start.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` green; the width-sweep tests for both table kinds and the ancestry chain pass; both constants sections are in ascending name order with every value, type and visibility unchanged (`git diff` of each section shows moved lines and the one reworded doc comment only); the real binary beside a real build at 64 columns shows whole pids and whole headers.
+
+### Phase 3 — Reader tests under a second on both systems  · status: todo
+
+#### Work Order
+
+**Goal:** Every cargo-tile reader test passes in under a second alone, on macOS and on Linux.
+
+**Spec:**
+
+Work only in worktree `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`. Test code only: no product file changes.
+
+The showrunner's scope: "measure first, then cut fixture preparation where the measurement points; target every reader test under a second alone on both macOS and Linux, with the 0.26s CPU observation as the only accepted floor; report in-suite times on both systems after it."
+
+Measured 2026-10-07, on the tree at `f2bdaaed`:
+
+- Alone on a quiet Mac: `reader_keeps_parent_family_across_its_only_childs_source_switch` 0.98 to 1.18s; `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` 1.30s. Alone on Linux the CPU test took 1.22s and the source switch 0.44 to 0.83s.
+- Source switch on the Mac, from the harness timestamps (`CARGO_TILE_READER_TIMESTAMPS=1`): first writer up at 0.20s (0.045s on Linux), reader start to first frame 0.14s, the two switches 0.29s, cleanup 0.13s; the script ends at 0.87s and the test at about 1.0s.
+- CPU test on the Mac: cache server up at 0.15s, first writer at 0.31s, second writer at 0.60s, reader start 0.67s, first frame 0.82s, CPU rows 0.87s, CPU observation ends 1.13s (0.26s, the accepted floor), cleanup 0.10s.
+- On the Mac, `codesign` of a copied `/bin/sh` takes 24 ms. The cost is the first run of each newly signed copy: copy, sign and first run take 119 to 266 ms, against 5 ms for a later run of the same file. `copy_named_shell` makes such a copy three times in the script. `python3 -c pass` takes 18 ms and `ps -p … -o lstart=` 4 ms.
+- Inside the full suite several reader tests pass over a second. Mac: CPU 1.8 to 2.0s, excluded command 1.4 to 1.6s, foreign owner 1.2 to 1.3s, source switch 0.9 to 1.1s. Linux: CPU 1.8s, source switch 1.2s, locale 1.0s.
+
+Work:
+
+- **Measure before each cut.** Add a timestamp at each fixture step that has none (each `copy_named_shell`, each writer's first output, the cache server's readiness), run the two tests, and cut only what the timestamps show. Put the before and after numbers for each cut in the summary.
+- **First run of a signed copy.** Find a way for the named shells to skip the first-run cost: one signed copy per scenario reused through hard links or `exec -a`-style naming, or the copies made and run once in parallel with the rest of the preparation. Whatever is chosen, the process must still appear under its cargo or compiler name to the reader, which is what the copy exists for. Prove each option on the Mac before keeping it.
+- **Preparation in parallel.** The CPU test starts its cache server and two writers one after another (0.60s on the Mac). Start what does not depend on each other together.
+- **The floor.** The CPU observation window (`cpu_observation_window` of the test cadence) stays as it is. No assertion is weakened and no wait is replaced by a fixed sleep.
+- **The hang repair stays.** `end_reader`, the bounded waits, the scenario deadline and its hard stop, and the two tests that pin them are not loosened. Cleanup may get faster only by doing less waiting on work that has already ended.
+- **In-suite times.** After the cuts, run the whole cargo-tile suite on both systems and report each reader test's time. If a test is still over a second only inside the suite, say what it waits on there; do not edit `.config/nextest.toml`.
+
+The Mac: the unit director runs the Mac measurements and sends the numbers to the seat. The seat writes on Linux and never assumes a Mac result.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario.py` — fixture preparation, timestamps.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — only if the runner's own start-up shows in the measurement.
+
+**Seats:** 1 writer — the scenario script cannot split, and the tests are the script itself.
+- `impl` — `crates/cargo-tile/src/shim_registration/reader_scenario.py`; hub: `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
+- `test` — opens as impl: no files; this phase leaves the seat idle
+
+**Constraints from prior phases:**
+- The fix commit `f2bdaaed` made every reader scenario end itself: a scenario fails at 20s naming what it waited for, stops hard at 25s, and nextest ends a reader test at 40s. On macOS a process cannot finish exiting while its terminal holds unread output, so the script must keep reading the reader's terminal until the reader has exited.
+- Phase 1 gave the source-switch reader a test-only motion policy that settles tile motion at once; without it the tile-opening animation costs 0.72s.
+- Phase 2 drops whole table columns when a table is too narrow. The scenarios run at 240 by 40, where every column is drawn.
+- These tests also run on macOS in CI: no GNU-only tool use.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; every `shim_registration::reader_scenarios::` test under a second alone on Linux and, run by the unit director, on the Mac; the once-hung test passes 150 times under CPU load on the Mac; in-suite times for both systems are in the checkpoint notice.
