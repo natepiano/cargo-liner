@@ -12,8 +12,12 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 #[cfg(target_os = "linux")]
 use std::future::Future;
+use std::future::pending;
 #[cfg(target_os = "linux")]
 use std::pin::Pin;
+use std::sync::Mutex;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 #[cfg(not(target_os = "linux"))]
@@ -26,6 +30,7 @@ use futures_lite::StreamExt;
 #[cfg(target_os = "linux")]
 use futures_lite::stream;
 use tokio::runtime::Handle;
+use tokio::runtime::Runtime;
 #[cfg(not(target_os = "linux"))]
 use tokio::time::Interval;
 #[cfg(not(target_os = "linux"))]
@@ -182,6 +187,68 @@ where
     F: Fn(Appearance) + Send + 'static,
 {
     handle.spawn(run(on_change));
+}
+
+/// Read the current system appearance, then watch it on a dedicated thread.
+///
+/// Returns the startup observation after its read completes. Later changes are
+/// delivered to `on_change`.
+#[must_use]
+pub fn spawn_appearance_watcher<F>(on_change: F) -> Option<Appearance>
+where
+    F: Fn(Appearance) + Send + 'static,
+{
+    let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+    let thread = thread::Builder::new()
+        .name(module_path!().to_owned())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+            else {
+                let _ = startup_sender.send(AppearanceObservation::Unspecified);
+                return;
+            };
+            let initial = read_system_appearance(&runtime);
+            let history = Mutex::new(AppearanceHistory::Observed(initial));
+            if startup_sender.send(initial).is_err() {
+                return;
+            }
+            spawn_appearance_poller(runtime.handle(), move |observed| {
+                let mut history = history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                history.observe(AppearanceObservation::Selected(observed), &on_change);
+            });
+            runtime.block_on(pending::<()>());
+        });
+    if thread.is_err() {
+        return None;
+    }
+    match startup_receiver.recv() {
+        Ok(AppearanceObservation::Selected(observed)) => Some(observed),
+        Ok(AppearanceObservation::Unspecified) | Err(_) => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_system_appearance(runtime: &Runtime) -> AppearanceObservation {
+    runtime.block_on(async {
+        let mut backend = PortalBackend;
+        let Ok(connection) = backend.connect().await else {
+            return AppearanceObservation::Unspecified;
+        };
+        PortalBackend::read(&connection)
+            .await
+            .unwrap_or(AppearanceObservation::Unspecified)
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_system_appearance(_runtime: &Runtime) -> AppearanceObservation {
+    dark_light::detect()
+        .map(AppearanceObservation::from)
+        .unwrap_or(AppearanceObservation::Unspecified)
 }
 
 #[cfg(target_os = "linux")]

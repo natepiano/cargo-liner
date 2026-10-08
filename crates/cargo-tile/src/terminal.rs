@@ -1,6 +1,6 @@
 //! Starting the grid: load its configuration, build the app, and run it
-//! under [`tui_pane::run_terminal`] with the scans and the sccache reads
-//! as the work the loop polls.
+//! under [`tui_pane::run_terminal`] with appearance changes, scans and
+//! sccache reads as the work the loop polls.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,6 +9,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
+use tui_pane::Appearance;
 use tui_pane::PollWork;
 use tui_pane::Repaint;
 use tui_pane::Updates;
@@ -111,10 +112,18 @@ fn run_with_scanner(
     grid_motion: GridMotion,
 ) -> ExitCode {
     let loaded_config = LoadedConfig::load::<CargoTile>();
-    let startup_note = install_theme(
+    let mut startup_note = install_theme(
         &loaded_config.config.appearance,
         theme::builtins::builtins(),
     );
+    let (appearance_changes, appearances) = mpsc::channel();
+    let startup_appearance = tui_pane::spawn_appearance_watcher(move |appearance| {
+        let _ = appearance_changes.send(appearance);
+    });
+    if let Some(appearance) = startup_appearance {
+        startup_note =
+            tui_pane::apply_system_appearance(appearance, &loaded_config.config.appearance);
+    }
     // Read before the config is handed to the app, which takes it.
     let iterm2_profile = loaded_config.config.appearance.iterm2_profile.clone();
     let mut app = match App::new(loaded_config, startup_note) {
@@ -129,7 +138,11 @@ fn run_with_scanner(
     capture::stand_up(&mut app);
 
     run_terminal(&mut app, &iterm2_profile, |app| {
-        Workers::new(spawn(app.excluded_commands.clone()), grid_motion)
+        Workers::new(
+            spawn(app.excluded_commands.clone()),
+            appearances,
+            grid_motion,
+        )
     })
 }
 
@@ -137,6 +150,8 @@ fn run_with_scanner(
 /// scans, the sccache reads, the favorites overlay's removal fade, the
 /// roster's fades, the grid's motion and the attract screen's frames.
 struct Workers {
+    /// System appearance changes waiting to be applied on the terminal thread.
+    appearances:     Receiver<Appearance>,
     /// Process scans from the census worker.
     scans:           Receiver<Scan>,
     /// Each due read runs on a worker of its own and replies here, so a
@@ -149,10 +164,15 @@ struct Workers {
 }
 
 impl Workers {
-    /// Poll `scans`, with a fresh channel for the sccache reads.
-    fn new(scans: Receiver<Scan>, grid_motion: GridMotion) -> Self {
+    /// Hold the watcher channels, with a fresh channel for the sccache reads.
+    fn new(
+        scans: Receiver<Scan>,
+        appearances: Receiver<Appearance>,
+        grid_motion: GridMotion,
+    ) -> Self {
         let (sccache_reads, sccache_replies) = mpsc::channel();
         Self {
+            appearances,
             scans,
             sccache_reads,
             sccache_replies,
@@ -164,6 +184,7 @@ impl Workers {
 impl PollWork<App> for Workers {
     fn poll(&mut self, app: &mut App, now: Instant) -> Repaint {
         let mut dirty = tui_pane::poll_favorites(app, now) == Repaint::Needed;
+        dirty |= drain_appearances(app, &self.appearances);
         // Frozen, every one of these is skipped: what a scan found,
         // how far a fade has walked and where a travelling cell has
         // reached are the whole of what moves on this screen. The
@@ -216,6 +237,19 @@ impl PollWork<App> for Workers {
             Repaint::NotNeeded
         }
     }
+}
+
+/// Apply the newest queued system appearance and request a frame for it.
+fn drain_appearances(app: &mut App, appearances: &Receiver<Appearance>) -> bool {
+    let mut latest = None;
+    while let Ok(appearance) = appearances.try_recv() {
+        latest = Some(appearance);
+    }
+    let Some(appearance) = latest else {
+        return false;
+    };
+    app.apply_system_appearance(appearance);
+    true
 }
 
 /// Empty both worker channels without reading anything out of them,

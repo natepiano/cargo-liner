@@ -132,8 +132,8 @@ pub fn step_framework_setting<C: AppConfig>(
     apply_settings(loaded, theme_note);
 }
 
-/// Re-resolve the active theme from the edited config and write the
-/// file.
+/// Re-resolve the active theme from the edited config and the remembered
+/// system appearance, then write the file.
 ///
 /// A configured theme id that matched nothing leaves its note in
 /// `theme_note` (cleared when every id resolves); a failed write
@@ -157,8 +157,82 @@ fn theme_ids(appearance: Appearance) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::SettingStep;
-    use super::stepped;
+    use std::path::PathBuf;
+
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    use super::*;
+    use crate::ThemeId;
+    use crate::ThemeRegistry;
+    use crate::ThemeState;
+    use crate::ThemeVariant;
+    use crate::apply_system_appearance;
+    use crate::fallback_theme;
+    use crate::install_theme_state;
+    use crate::theme;
+
+    struct TestApp;
+
+    impl AppIdentity for TestApp {
+        const BINARY_NAME: &'static str = "test-app";
+        const CONFIG_DIRNAME: &'static str = "test-app";
+        const DEFAULT_LIGHT_THEME: &'static str = "App Light";
+        const DEFAULT_DARK_THEME: &'static str = "App Dark";
+
+        fn config_path() -> Option<PathBuf> { None }
+    }
+
+    #[derive(Default, Deserialize, Serialize)]
+    struct TestConfig {
+        appearance:    AppearanceConfig<TestApp>,
+        initial_rows:  InitialRows,
+        tile_fill:     TileFill,
+        widen_summary: bool,
+    }
+
+    impl AppConfig for TestConfig {
+        type Identity = TestApp;
+
+        fn appearance(&self) -> &AppearanceConfig<Self::Identity> { &self.appearance }
+
+        fn appearance_mut(&mut self) -> &mut AppearanceConfig<Self::Identity> {
+            &mut self.appearance
+        }
+
+        fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.initial_rows }
+
+        fn tile_fill_mut(&mut self) -> &mut TileFill { &mut self.tile_fill }
+
+        fn widen_summary_mut(&mut self) -> &mut bool { &mut self.widen_summary }
+    }
+
+    fn variant(id: &str, appearance: Appearance) -> ThemeVariant {
+        ThemeVariant {
+            id: ThemeId::new(id),
+            appearance,
+            theme: fallback_theme(appearance),
+        }
+    }
+
+    fn install_test_state() {
+        // Nextest gives each test its own process, so this process-wide state
+        // belongs only to the caller.
+        install_theme_state(ThemeState::with_registry(
+            ThemeRegistry::new_with_builtins(vec![
+                variant("App Dark", Appearance::Dark),
+                variant("App Light", Appearance::Light),
+            ]),
+            fallback_theme(Appearance::Dark),
+        ));
+    }
+
+    fn loaded_config() -> LoadedConfig<TestConfig> {
+        LoadedConfig {
+            config: TestConfig::default(),
+            error:  None,
+        }
+    }
 
     fn values() -> Vec<String> { ["a", "b", "c"].map(String::from).to_vec() }
 
@@ -178,5 +252,35 @@ mod tests {
     #[test]
     fn no_values_leaves_the_current_one() {
         assert_eq!(stepped(&[], "z", SettingStep::Next), "z");
+    }
+
+    #[test]
+    fn applying_settings_uses_the_remembered_system_appearance() {
+        install_test_state();
+        let mut loaded = loaded_config();
+        let mut notice = None;
+
+        assert!(apply_system_appearance(Appearance::Light, &loaded.config.appearance).is_none());
+        apply_settings(&mut loaded, &mut notice);
+        assert_eq!(*theme(), fallback_theme(Appearance::Light));
+
+        assert!(apply_system_appearance(Appearance::Dark, &loaded.config.appearance).is_none());
+        apply_settings(&mut loaded, &mut notice);
+        assert_eq!(*theme(), fallback_theme(Appearance::Dark));
+
+        loaded.config.appearance.mode = "light".to_string();
+        apply_settings(&mut loaded, &mut notice);
+        assert_eq!(*theme(), fallback_theme(Appearance::Light));
+    }
+
+    #[test]
+    fn applying_settings_defaults_auto_to_dark_without_an_observation() {
+        install_test_state();
+        let mut loaded = loaded_config();
+        let mut notice = None;
+
+        apply_settings(&mut loaded, &mut notice);
+
+        assert_eq!(*theme(), fallback_theme(Appearance::Dark));
     }
 }

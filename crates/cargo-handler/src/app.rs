@@ -11,6 +11,7 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
 use tui_pane::AppIdentity;
+use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
 use tui_pane::FavoritesHost;
@@ -123,6 +124,12 @@ impl App {
             CargoHandler::keymap_path(),
             census,
         )
+    }
+
+    /// Apply a system appearance reported by the background watcher.
+    pub(crate) fn apply_system_appearance(&mut self, appearance: Appearance) {
+        self.startup_note =
+            tui_pane::apply_system_appearance(appearance, &self.loaded_config.config.appearance);
     }
 
     /// Build the app with the keymap read from `keymap_path`, or from

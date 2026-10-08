@@ -11,6 +11,7 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use tui_pane::AppContext;
 use tui_pane::AppIdentity;
+use tui_pane::Appearance;
 use tui_pane::AttractHost;
 use tui_pane::AttractMode;
 use tui_pane::FavoritesHost;
@@ -226,6 +227,12 @@ impl App {
             None,
         )
     }
+
+    /// Remember a system appearance and select the configured theme for it.
+    pub(crate) fn apply_system_appearance(&mut self, appearance: Appearance) {
+        self.startup_note =
+            tui_pane::apply_system_appearance(appearance, &self.loaded_config.config.appearance);
+    }
 }
 
 impl AppContext for App {
@@ -367,6 +374,8 @@ impl FavoritesHost for App {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use tui_pane::Appearance;
+
     use super::App;
     use crate::progress::capture_roots::AccountCaptureDirectory;
 
@@ -374,5 +383,19 @@ mod tests {
     fn roots_wait_for_worker_observations() {
         let app = App::new_for_test().expect("test app");
         assert_eq!(app.root_status, [] as [AccountCaptureDirectory; 0]);
+    }
+
+    #[test]
+    fn applying_an_appearance_replaces_the_theme_notice() {
+        let mut app = App::new_for_test().expect("test app");
+        app.startup_note = Some("earlier notice".to_string());
+        app.loaded_config.config.appearance.light_theme = "Missing Light".to_string();
+
+        app.apply_system_appearance(Appearance::Light);
+
+        assert_eq!(
+            app.startup_note.as_deref(),
+            Some("theme `Missing Light` not found — using a built-in")
+        );
     }
 }

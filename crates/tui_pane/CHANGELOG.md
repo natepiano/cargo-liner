@@ -14,6 +14,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
 
 ### Fixed
+- `appearance.mode = "auto"` selects the theme for the system's remembered light or dark setting at startup and after a change; before the system supplies a setting it selects dark as before.
 - A pane moving between tile-grid columns carries the screen ground under its border ring and keeps its contents off the column's frame. Its nearest content row arrives with the first visible row of its slot, and no interior row falls back to the screen ground as the pane closes. The frame stays whole while columns and cells move, without outward stubs or a second line from a piece whose body is not yet visible. Touching cells and columns keep one shared line throughout openings, closings, row changes and column crossings. A closing column keeps every cell at its starting height while it narrows, including below a widened summary, and every moving cell keeps exactly one title visible.
 
 ## [0.8.0] - 2026-10-06
