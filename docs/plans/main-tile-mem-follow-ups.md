@@ -145,38 +145,21 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 
 ### Phase 4 — Mem total whole or absent  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** The summary tile's memory total is drawn whole, value with its unit, or not at all, at every width.
-
-**Spec:** Work only in worktree `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`.
-
-The showrunner's routing, verbatim: "item 4 (the summary's mem total losing its unit at 30 and 24 columns) is yours as phase 4 ... Phase 4: the mem total is drawn whole, value with its unit, or not at all, at every width; a capture and a design check pass as for phase 2. The "…" marker stands."
-
-What is wrong today. `draw_summary_foot` (`crates/tui_pane/src/tiles/draw.rs`) draws the app's foot text at the left end of the summary tile's readout row and clips it to the row: `width = line.width().min(inner.width - TILE_FOOT_LEFT_INSET)`. In the real binary at 30 terminal columns the total reads `mem 24.6` and at 24 columns `mem 23`: a value with its unit cut off, which reads as a different measurement.
-
-Intended behavior:
-- When the foot line's whole width fits in `inner.width - TILE_FOOT_LEFT_INSET`, it is drawn as today.
-- When it does not fit, `draw_summary_foot` draws nothing. It reports which happened through a private type, `SummaryFootDrawOutcome::{NotDrawn, DrawnWhole { width }}`, never a bare `0` or an `Option<u16>`. On `NotDrawn` the caller takes the `draw_rows_readout` path, so the row is exactly the one `SummaryFoot::Empty` draws; `draw_rows_readout_after_foot` runs only for `DrawnWhole`.
-- The doc comments on `SummaryFoot::Text` and `TileCells::summary_foot` and the unreleased entry in `crates/tui_pane/CHANGELOG.md` say the foot is drawn whole or not at all.
-- The rule lives in `draw_summary_foot`, the one place the foot is drawn. No caller measures the text, and cargo-tile's `SummaryMemoryTotal::foot` (`crates/cargo-tile/src/render.rs`) is unchanged.
-- No shorter form is drawn: no value without its unit, no label alone.
-- `SummaryFoot`, `TileCells::summary_foot` and every public signature of `tui_pane` stay as they are.
-
-Tests, in `draw.rs`'s `mod tests`, fast and in-process, with the existing helpers (`FOOT_TEXT`, `StubCells`): sweep every summary inner width from 0 up to the first width that shows the foot and the readout side by side. At each width where the foot does not fit, the whole readout row equals the row a render with `SummaryFoot::Empty` draws at that width; at each width where it fits, the row holds the exact `FOOT_TEXT`. Update `summary_foot_wins_when_readout_does_not_fit` only if its width no longer holds the whole foot.
+- The summary tile's foot text (cargo-tile's memory total, `mem 12.3G`) is drawn whole, value with its unit, or not at all.
+- `draw_summary_foot` returns the private `SummaryFootDrawOutcome`: `NotDrawn` when the text is wider than `inner.width - TILE_FOOT_LEFT_INSET` or the tile has no readout row, `DrawnWhole { width }` otherwise.
+- `draw_cell` maps `SummaryFoot::Empty` to `NotDrawn`. `NotDrawn` takes `draw_rows_readout`, so a summary tile with no room for its foot draws exactly the row a tile with no foot draws; `draw_rows_readout_after_foot` runs only for `DrawnWhole`.
+- The doc comments on `SummaryFoot::Text` and `TileCells::summary_foot` and the unreleased `tui_pane` changelog entry state the rule. No public signature changed; cargo-tile's `SummaryMemoryTotal::foot` is unchanged.
+- `summary_foot_is_drawn_whole_or_absent_at_every_width` sweeps every summary inner width from 0 to the first width that shows foot and readout side by side: a non-fitting width equals a `SummaryFoot::Empty` render cell for cell, a fitting width holds the exact foot text.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_summary_foot`, its private outcome type, its doc comments and its tests.
-- `crates/tui_pane/CHANGELOG.md` — the unreleased summary-foot entry.
+- `crates/tui_pane/src/tiles/draw.rs` — the draw step, `SummaryFootDrawOutcome`, and the width sweep in its test module
+- `crates/tui_pane/CHANGELOG.md` — the unreleased `SummaryFoot` entry
 
-**Seats:** 1 writer — one function and its tests in one file, plus a changelog line.
-- `impl` — `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/CHANGELOG.md`.
-- `test` — opens as impl: no files; this phase leaves the seat idle.
+**Gotchas:**
+- The rows readout is still cut by a cell narrower than its text (`draw_rows_readout_line` clips). With the foot absent, a narrow summary tile shows that cut readout: `content` at 30 terminal columns, `conten` at 24.
+- The fit test uses `Line::width()`. No app writes non-ASCII foot text; a text that measure reports narrower than the renderer draws could still be cut.
 
-**Constraints from prior phases:**
-- Phase 2: a table too narrow for a whole pid draws one `…` (`TABLE_NO_COLUMNS_MARKER`); that marker stands and this phase does not touch it or `crates/cargo-tile/src/render.rs`.
-- Phase 2: the grid's column count varies with how many commands run, so one terminal width does not always reach a given tile width; the capture that proves this phase needs a summary tile interior narrower than the total's text (seen at 30 and 24 terminal columns).
-- `tui_pane` is shared: no public signature changes. cargo-tile is the only producer of `SummaryFoot::Text`; cargo-handler inherits `SummaryFoot::Empty`, and cargo-port implements no `TileCells`. Both crates' tests still run before the checkpoint.
-- No test may take a second or more. This phase's tests are in-process and run in milliseconds. Phase 3: four reader tests pass a second inside the macOS suite under load and none does alone; those times are reported, not a gate of this phase.
+**Ruled out:** a shorter form of the total for narrow tiles; guarding the fit test against text whose measured width differs from its drawn width.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, run by the unit director; captures of the real binary during one live build: a wide control capture showing the complete total with its unit, then 30 and 24 terminal columns with the running row still visible and the total whole or absent; a design check by a fresh helper passes on all three captures.

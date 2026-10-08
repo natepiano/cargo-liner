@@ -67,6 +67,12 @@ pub enum SummaryFoot {
     Text(Line<'static>),
 }
 
+/// Whether the summary foot was drawn without clipping.
+enum SummaryFootDrawOutcome {
+    NotDrawn,
+    DrawnWhole { width: u16 },
+}
+
 /// What an app draws inside the cells of a [`TileGrid`].
 ///
 /// [`draw_tile_grid`] owns the arrangement, the borders, the readout
@@ -404,12 +410,6 @@ fn draw_rows_readout_line(buffer: &mut Buffer, inner: Rect, line: Line<'static>)
         return;
     };
     Paragraph::new(line).render(area, buffer);
-}
-
-/// Whether the summary foot was drawn without clipping.
-enum SummaryFootDrawOutcome {
-    NotDrawn,
-    DrawnWhole { width: u16 },
 }
 
 /// Draw the app's whole text at the left end of the readout row, or nothing.

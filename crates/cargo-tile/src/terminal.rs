@@ -50,17 +50,6 @@ pub(crate) struct Scan {
     pub(crate) shared_directory: SharedCaptureDirectory,
 }
 
-/// Load configuration, install the theme, build the keymap, and run the
-/// event loop with the terminal in the alternate screen.
-pub(crate) fn run() -> ExitCode {
-    run_with_capture_parent(
-        PathBuf::from(CAPTURE_ROOT),
-        CensusCadence::default(),
-        CensusScope::default(),
-        GridMotion::Animated,
-    )
-}
-
 /// Whether tile positions travel between layouts or reach the new layout on the next poll.
 #[derive(Clone, Copy)]
 pub(crate) enum GridMotion {
@@ -71,7 +60,7 @@ pub(crate) enum GridMotion {
 
 impl GridMotion {
     #[cfg(not(test))]
-    const fn settle_if_immediate(self, _app: &mut App) {
+    const fn settle_if_immediate(self, _: &mut App) {
         match self {
             Self::Animated => {},
         }
@@ -84,6 +73,17 @@ impl GridMotion {
             Self::Immediate => app.tiles.settle_for_test(),
         }
     }
+}
+
+/// Load configuration, install the theme, build the keymap, and run the
+/// event loop with the terminal in the alternate screen.
+pub(crate) fn run() -> ExitCode {
+    run_with_capture_parent(
+        PathBuf::from(CAPTURE_ROOT),
+        CensusCadence::default(),
+        CensusScope::default(),
+        GridMotion::Animated,
+    )
 }
 
 /// The executable supplies the fixed parent, the production cadence and
