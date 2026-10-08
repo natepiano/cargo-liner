@@ -129,45 +129,34 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 ### Phase 3 — A closing column empties in one motion  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** When a step removes a column, the cells in it leave without any of them growing and without a cell's title showing twice.
-
-**Spec:**
-
-Follow-up to Phase 2 under the production's hard landing rule. Phase 2's last design check (44 frames, fourteen `+`/`-` steps at 200x50) passed every line, background and arrival state and raised this one row on style. In three close steps where the last column goes away (`ph2d_off_11_close_motion`, `ph2d_on_09_close_motion`, `ph2d_on_13_close_motion`): the cell moving to the neighbour column is drawn in the closing column as a whole shortened cell, title on its top row and readout on its bottom row, while it is also arriving in the neighbour column with its title; and the cell being removed grows under it (22 to 32 rows). Where the column stays, a leaving cell slides off the top and shows only its last rows.
-
-Cause as read; reproduce it in a render test first. `wrapping_cell` (`grid.rs`) builds the piece left in the old column as `BandPieceMotion::Leaving { sliding: from_column < after.widths.len(), .. }`, so it does not slide when its column is absent from the after grid: `piece_frame` (2360) draws it as a plain `PaneFrame::new(rect)` whose rows collapse, and the departing cell below takes those rows. `sliding: false` thus means two things, an ordinary collapsing departure and a piece left in a closing column. And `BandPieceMotion` is gone before `draw_placements` (`draw.rs:168`) draws titles, so the renderer cannot tell a leaving piece from an entering one.
-
-Types: give the piece left in a closing column its own state in `BandPieceMotion`, so no flag carries two meanings. Carry each piece's title role to the renderer in `TileDrawing`, as a crate-private value per piece whose variants say who draws the title (for example `PieceTitle::{Shown, OnTheEnteringPiece}`); the renderer never works it out from duplicates. `TilePlacement` is public and does not change, and `placements()` returns what it returns today. The private `Drawn` (`grid.rs:221`) holds a cell's content and focus: rename it for that.
-
-Rule (unit director's default; the showrunner owns the look and may replace it before dispatch):
-1. A column the step removes closes as one: every piece in it keeps the rows and the contents it has at the start of the step, nothing in it moves up or down or changes height, and the band narrows onto its divider as Phase 2 built it. This holds for a band shortened under a widened summary too: `Grid::new` (1402) shortens the bands a widened summary covers, while an absent column's end is the full-height last screen column (`column_endpoint`, 2164), so today a closing band's top and bottom travel and `band_piece_dividers` (2296) anchors its pieces to them. A closing column keeps its starting top and bottom rows for the whole step; only its left edge and width change.
-2. A cell's title is drawn once: on its entering piece. A `Leaving` piece, in a closing column or a staying one, adds its lines without a title.
-3. Phase 2's measures hold in every frame: no doubled line, no interior row on the screen ground, no blank slot, no cell in a third column.
-
-Tests, pure, 24 snapshots per step through `drawing_at`, with `draw_motion_fixture`:
-- `draw.rs`: `a_title_is_on_screen_once_while_its_cell_changes_columns` — a column closing and a column staying. `StubCells` (560) supplies no group title today: give it one.
-- `grid.rs`: `no_piece_in_a_closing_column_changes_height` — every piece's rows at every snapshot equal its rows at the start, with and without `widen_summary` covering the closing column. It replaces `a_cell_in_a_closing_column_makes_no_vertical_travel` (4258), which checks one crossing piece at one midpoint.
-- Phase 2's motion and render tests pass unchanged; a test that pinned the old shape is changed only for this rule and named in the summary.
-
-Changelog: extend the `## [Unreleased]` Fixed entry in both changelogs.
+- A column that a step removes closes as one. `BandPieceMotion::ClosingWithColumn { before }` keeps each piece's starting rows and contents; the band keeps its starting top and bottom rows and only its left edge and width change, also where a widened summary shortens the band.
+- `TileDrawing { pieces: Vec<TilePiece<Id>>, column_bands }`, `TilePiece { placement, name }` and `PieceName::{Shown, OnTheOtherPiece}` are `pub(super)`. `TilePlacement` and the public `placements()` are unchanged.
+- `fn piece_name<Id>(index: usize, pieces: &[BandPiece<Id>], frames: &[PaneFrame]) -> PieceName` in `grid.rs` decides the name role from the placed frames. A cell with one piece is `Shown`. Of a crossing cell's two pieces the leaving one is `Shown` until the entering one's name row is visible (`draw::name_row_is_visible(frame: PaneFrame) -> bool`), or, when neither can show a number, until the entering clip is two rows tall.
+- `draw_placements` draws a border title, a group title and an empty cell's number only on the `Shown` piece; the other piece draws frame, ground and readout.
+- `CellAppearance<Id>` holds a cell's content and focus.
+- Tests, `grid.rs`: `no_piece_in_a_closing_column_changes_height`. Tests, `draw.rs`: `a_title_is_on_screen_once_while_its_cell_moves_{right_and_columns_stay, right_and_a_column_closes, left_and_its_column_closes, left_and_columns_stay}`, `an_empty_cell_number_is_on_screen_once_while_it_moves_*` with the same four endings, and `a_departing_cell_keeps_its_title_while_its_border_is_visible`. One test per crossing arrangement keeps each well under a second.
 
 **Files:**
-- `crates/tui_pane/src/tiles/grid.rs` — `BandPieceMotion`, `TileDrawing`, `Drawn`, `wrapping_cell`, `column_bands`, `column_endpoint`, `place_band_pieces`, `band_piece_dividers`, `piece_frame`, tests.
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` (a title only where the piece's title role says so), `StubCells`, render test.
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry.
+- `crates/tui_pane/src/tiles/grid.rs` — motion states, `TileDrawing`, `TilePiece`, `PieceName`, `piece_name`, closing-column test
+- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` reads the name role, `name_row_is_visible`, name-once render tests
+- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — `## [Unreleased]` Fixed entry
 
-**Seats:** 2 writers — geometry and types in `grid.rs`, title drawing in `draw.rs`. In Phase 2 the tester finished its render tests in nine minutes and the one writer then took `draw.rs` as well.
-- `impl` — `crates/tui_pane/src/tiles/grid.rs`, both changelogs. Its first edit adds the title role to `TileDrawing`, every piece `Shown`, and posts the type's name and variants on the board.
-- `test` — opens as impl: `crates/tui_pane/src/tiles/draw.rs`, the title drawn from the title role, `StubCells`' title, and the render test.
+**Binds later work:**
+- The renderer reads `TileDrawing { pieces, column_bands }`; each `TilePiece` carries its `PieceName`, so the role and the placement cannot differ in count.
+- `piece_name` is the one place that decides the name role. `draw.rs` never works it out from duplicate ids, and anything a cell shows once (border title, group title, empty cell's number) follows `PieceName::Shown`.
+- `BandPieceMotion::ClosingWithColumn` stays a state of its own, separate from `Leaving`; a piece in a closing column never moves vertically or changes height.
+- `no_piece_in_a_closing_column_changes_height`, the eight name-once render tests and `a_departing_cell_keeps_its_title_while_its_border_is_visible` keep passing through any change to `grid.rs` or `draw.rs`.
 
-**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion, resolved each cell into `BandPieceMotion::{Resident, Entering, Leaving}` pieces that share their dividers per column band, and shifts a sliding piece onto the edge of its clip (`shift_to_clip`). `TileDrawing` is crate-private (`pub(super)`) and gains the title role; `TilePlacement` and every public signature stay as they are. No new public item; no `#[allow]`.
+**Gotchas:**
+- A cargo-tile job cell has no border title: its heading and ancestry are content, laid out by each piece separately, so a crossing job cell can show a row twice or not at all. `PieceName` does not cover it.
+- A `-` pressed during a motion starts 0.64 to 0.93 s late; a capture frame at a fixed offset can predate the step, so a capture locates the step in the replay.
+- The bare-row test helpers count a row as covered only by pane ground, a lattice glyph, or a title on a border row of the piece that draws it.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
-- Unit director's capture as in Phase 2 (200x50, seven `+`, seven `-`, transparent off and on): Phase 2's measures all zero, and in each step that removes a column no piece in it changes height and no title shows twice.
-- A fresh helper's design check of those frames: pass.
+**Ruled out:**
+- A title always on the entering piece: that piece starts one row tall, on a border row another title uses.
+- A second vector of roles beside the placements: the two lengths could disagree.
 
 ### Phase 4 — `auto` follows the system's light or dark setting  · status: todo
 
@@ -268,7 +257,7 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentenc
 - `impl` — `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/CHANGELOG.md`. Its first edit adds `TileGrid::set_min_tile_width` with its final signature and posts it on the board.
 - `test` — opens as impl: `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`. It messages `impl` for its line in the `tui_pane` changelog.
 
-**Constraints from prior phases:** Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the summary-alone branch goes in `draw_tile_grid` (`draw.rs:144`) after `grid.sync` and before `grid.drawing` and `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)`, which stays the owner of the ordinary ground and frame. Phase 2 changed how `grid.rs` places moving pieces and column bands and added `TileGrid::drawing_at`; it changed nothing a settled grid shows. Phase 3 gave each piece in `TileDrawing` a title role: the summary drawn alone shows its title. Phase 4 made `auto` follow the system's appearance. `write_overlay` (`frame.rs:661`) still cuts a title bare and `readout_area` still clamps the readout: items 5 and 6 fix both here, because the summary alone draws both in a narrow window. `set_min_tile_width` is this phase's only new public item; no `#[allow]`.
+**Constraints from prior phases:** Phase 3 made `TileDrawing` hold `pieces: Vec<TilePiece<Id>>` (a `TilePlacement` and its `PieceName::{Shown, OnTheOtherPiece}`) and `column_bands`; `draw_placements` draws a cell's border title or empty-cell number only on the piece whose name is `Shown`, and `piece_name` in `grid.rs` is the one place that decides it. A cell drawn alone has one piece, always `Shown`. Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the summary-alone branch goes in `draw_tile_grid` (`draw.rs:144`) after `grid.sync` and before `grid.drawing` and `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)`, which stays the owner of the ordinary ground and frame. Phase 2 changed how `grid.rs` places moving pieces and column bands and added `TileGrid::drawing_at`; it changed nothing a settled grid shows. Phase 3 gave each piece in `TileDrawing` a title role: the summary drawn alone shows its title. Phase 4 made `auto` follow the system's appearance. `write_overlay` (`frame.rs:661`) still cuts a title bare and `readout_area` still clamps the readout: items 5 and 6 fix both here, because the summary alone draws both in a narrow window. `set_min_tile_width` is this phase's only new public item; no `#[allow]`.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
@@ -386,7 +375,7 @@ Changelogs: one Changed line each under `## [Unreleased]`.
 - `impl` — `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/constants.rs`, both changelogs.
 - `test` — `crates/tui_pane/src/tiles/draw.rs`: the render test, failing until `impl` lands the rule.
 
-**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. No new public item; no `#[allow]`.
+**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 3 made a column the step removes close as one piece (`BandPieceMotion::ClosingWithColumn`; test `no_piece_in_a_closing_column_changes_height`, with and without a widened summary over the closing column) and gave each piece a name role (`TilePiece`, `PieceName`, `piece_name`); a change to the summary's rows keeps both, and the `a_title_is_on_screen_once_*` and `an_empty_cell_number_is_on_screen_once_*` render tests pass unchanged. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. No new public item; no `#[allow]`.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
