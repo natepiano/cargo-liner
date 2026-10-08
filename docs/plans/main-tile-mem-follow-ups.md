@@ -120,50 +120,28 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 
 ### Phase 3 — Reader tests under a second on both systems  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Every cargo-tile reader test passes in under a second alone, on macOS and on Linux.
-
-**Spec:**
-
-Work only in worktree `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`. Test code only: no product file changes.
-
-The showrunner's scope: "measure first, then cut fixture preparation where the measurement points; target every reader test under a second alone on both macOS and Linux, with the 0.26s CPU observation as the only accepted floor; report in-suite times on both systems after it."
-
-Measured 2026-10-07, on the tree at `f2bdaaed`:
-
-- Alone on a quiet Mac: `reader_keeps_parent_family_across_its_only_childs_source_switch` 0.98 to 1.18s; `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` 1.30s. Alone on Linux the CPU test took 1.22s and the source switch 0.44 to 0.83s.
-- Source switch on the Mac, from the harness timestamps (`CARGO_TILE_READER_TIMESTAMPS=1`): first writer up at 0.20s (0.045s on Linux), reader start to first frame 0.14s, the two switches 0.29s, cleanup 0.13s; the script ends at 0.87s and the test at about 1.0s.
-- CPU test on the Mac: cache server up at 0.15s, first writer at 0.31s, second writer at 0.60s, reader start 0.67s, first frame 0.82s, CPU rows 0.87s, CPU observation ends 1.13s (0.26s, the accepted floor), cleanup 0.10s.
-- On the Mac, `codesign` of a copied `/bin/sh` takes 24 ms. The cost is the first run of each newly signed copy: copy, sign and first run take 119 to 266 ms, against 5 ms for a later run of the same file. `copy_named_shell` makes such a copy three times in the script. `python3 -c pass` takes 18 ms and `ps -p … -o lstart=` 4 ms.
-- Inside the full suite several reader tests pass over a second. Mac: CPU 1.8 to 2.0s, excluded command 1.4 to 1.6s, foreign owner 1.2 to 1.3s, source switch 0.9 to 1.1s. Linux: CPU 1.8s, source switch 1.2s, locale 1.0s.
-
-Work:
-
-- **Measure before each cut.** Add a timestamp at each fixture step that has none (each `copy_named_shell`, each writer's first output, the cache server's readiness), run the two tests, and cut only what the timestamps show. Put the before and after numbers for each cut in the summary.
-- **First run of a signed copy.** Find a way for the named shells to skip the first-run cost: one signed copy per scenario reused through hard links or `exec -a`-style naming, or the copies made and run once in parallel with the rest of the preparation. Whatever is chosen, the process must still appear under its cargo or compiler name to the reader, which is what the copy exists for. Prove each option on the Mac before keeping it.
-- **Preparation in parallel.** The CPU test starts its cache server and two writers one after another (0.60s on the Mac). Start what does not depend on each other together.
-- **The floor.** The CPU observation window (`cpu_observation_window` of the test cadence) stays as it is. No assertion is weakened and no wait is replaced by a fixed sleep.
-- **The hang repair stays.** `end_reader`, the bounded waits, the scenario deadline and its hard stop, and the two tests that pin them are not loosened. Cleanup may get faster only by doing less waiting on work that has already ended.
-- **In-suite times.** After the cuts, run the whole cargo-tile suite on both systems and report each reader test's time. If a test is still over a second only inside the suite, say what it waits on there; do not edit `.config/nextest.toml`.
-
-The Mac: the unit director runs the Mac measurements and sends the numbers to the seat. The seat writes on Linux and never assumes a Mac result.
+- Every cargo-tile reader test passes in under a second run alone on Linux and macOS. The slowest is the compiler-cache CPU test (0.70s on Linux, 0.93s on macOS), whose 0.26s CPU observation window is the accepted floor.
+- `link_named_shell` signs one copy of the shell per scenario (`cargo-tile-real`) and hard-links every other name to it.
+- The CPU scenario starts its cache server and both writers together. `start_reader_process` starts the reader only after both invocation CPU baselines exist.
+- The source-switch scenario wakes its fixture shells through a named pipe: `WriterNotification` (`send`, `close`) and `trigger_writer(observations, trigger)`. A shell reads `$OBSERVED/notification` when the pipe exists and sleeps 20 ms otherwise. Its reader starts before the registration carrier.
+- A scenario deadline (`signal.setitimer`) raises `TimeoutError` naming the wait still pending in any thread (`pending_waits`), and a hard stop follows it. `reader_scenario_deadline_names_a_wait_still_pending_in_another_thread` pins it.
+- `CARGO_TILE_READER_TIMESTAMPS=1` prints a timestamp per fixture step, cleanup steps included.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/reader_scenario.py` — fixture preparation, timestamps.
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — only if the runner's own start-up shows in the measurement.
+- `crates/cargo-tile/src/shim_registration/reader_scenario.py` — the reader scenarios and their fixture.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — the runner that starts the script and passes its deadline.
 
-**Seats:** 1 writer — the scenario script cannot split, and the tests are the script itself.
-- `impl` — `crates/cargo-tile/src/shim_registration/reader_scenario.py`; hub: `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`
-- `test` — opens as impl: no files; this phase leaves the seat idle
+**Gotchas:**
+- On macOS a reader started before both CPU baselines loses the CPU row's reading; Linux does not show it.
+- A signed copy of the shell costs about 0.025s on macOS. Fixed 20 ms shell polls and serial starts were the cost of fixture preparation.
+- A fixture shell that reads the named pipe needs the sleep fallback: with the pipe gone, a bare read loop spins a core.
+- Linux timings do not predict macOS. A cut is measured on the Mac in turn with the version before it.
+- Inside the macOS suite under load four reader tests take 1.2 to 1.8s (excluded command, foreign owner, quiet JSON, CPU); alone none does. A source-switch run alone on a loaded Mac is occasionally just over a second, in the reader's own steps.
+- A ten-second source-switch failure showed twice on macOS and not again in about 300 runs; its cause is unproven.
 
-**Constraints from prior phases:**
-- The fix commit `f2bdaaed` made every reader scenario end itself: a scenario fails at 20s naming what it waited for, stops hard at 25s, and nextest ends a reader test at 40s. On macOS a process cannot finish exiting while its terminal holds unread output, so the script must keep reading the reader's terminal until the reader has exited.
-- Phase 1 gave the source-switch reader a test-only motion policy that settles tile motion at once; without it the tile-opening animation costs 0.72s.
-- Phase 2 drops whole table columns when a table is too narrow. The scenarios run at 240 by 40, where every column is drawn.
-- These tests also run on macOS in CI: no GNU-only tool use.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; every `shim_registration::reader_scenarios::` test under a second alone on Linux and, run by the unit director, on the Mac; the once-hung test passes 150 times under CPU load on the Mac; in-suite times for both systems are in the checkpoint notice.
+**Ruled out:** a shell warmup before the scenario (no gain on macOS); codesign as the cost of fixture preparation.
 
 ### Phase 4 — Mem total whole or absent  · status: todo
 
@@ -179,24 +157,26 @@ What is wrong today. `draw_summary_foot` (`crates/tui_pane/src/tiles/draw.rs`) d
 
 Intended behavior:
 - When the foot line's whole width fits in `inner.width - TILE_FOOT_LEFT_INSET`, it is drawn as today.
-- When it does not fit, `draw_summary_foot` draws nothing and returns 0, so `draw_rows_readout_after_foot` lays the rows readout out exactly as it does with no foot.
+- When it does not fit, `draw_summary_foot` draws nothing. It reports which happened through a private type, `SummaryFootDrawOutcome::{NotDrawn, DrawnWhole { width }}`, never a bare `0` or an `Option<u16>`. On `NotDrawn` the caller takes the `draw_rows_readout` path, so the row is exactly the one `SummaryFoot::Empty` draws; `draw_rows_readout_after_foot` runs only for `DrawnWhole`.
+- The doc comments on `SummaryFoot::Text` and `TileCells::summary_foot` and the unreleased entry in `crates/tui_pane/CHANGELOG.md` say the foot is drawn whole or not at all.
 - The rule lives in `draw_summary_foot`, the one place the foot is drawn. No caller measures the text, and cargo-tile's `SummaryMemoryTotal::foot` (`crates/cargo-tile/src/render.rs`) is unchanged.
 - No shorter form is drawn: no value without its unit, no label alone.
 - `SummaryFoot`, `TileCells::summary_foot` and every public signature of `tui_pane` stay as they are.
 
-Tests, in `draw.rs`'s `mod tests`, fast and in-process, with the existing helpers (`FOOT_TEXT`, the test `TileCells`): at every summary inner width from 0 up to the width that shows the foot and the readout side by side, the readout row holds the whole foot text or none of its characters; at a width one cell short of the foot the readout is drawn as it is with `SummaryFoot::Empty`. Update `summary_foot_wins_when_readout_does_not_fit` only if its width no longer holds the whole foot.
+Tests, in `draw.rs`'s `mod tests`, fast and in-process, with the existing helpers (`FOOT_TEXT`, `StubCells`): sweep every summary inner width from 0 up to the first width that shows the foot and the readout side by side. At each width where the foot does not fit, the whole readout row equals the row a render with `SummaryFoot::Empty` draws at that width; at each width where it fits, the row holds the exact `FOOT_TEXT`. Update `summary_foot_wins_when_readout_does_not_fit` only if its width no longer holds the whole foot.
 
 **Files:**
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_summary_foot` and its tests.
+- `crates/tui_pane/src/tiles/draw.rs` — `draw_summary_foot`, its private outcome type, its doc comments and its tests.
+- `crates/tui_pane/CHANGELOG.md` — the unreleased summary-foot entry.
 
-**Seats:** 1 writer — one function and its tests in one file.
-- `impl` — `crates/tui_pane/src/tiles/draw.rs`.
+**Seats:** 1 writer — one function and its tests in one file, plus a changelog line.
+- `impl` — `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/CHANGELOG.md`.
 - `test` — opens as impl: no files; this phase leaves the seat idle.
 
 **Constraints from prior phases:**
 - Phase 2: a table too narrow for a whole pid draws one `…` (`TABLE_NO_COLUMNS_MARKER`); that marker stands and this phase does not touch it or `crates/cargo-tile/src/render.rs`.
 - Phase 2: the grid's column count varies with how many commands run, so one terminal width does not always reach a given tile width; the capture that proves this phase needs a summary tile interior narrower than the total's text (seen at 30 and 24 terminal columns).
-- `tui_pane` is shared with cargo-handler and cargo-port: no public signature changes, and both crates' tests run before the checkpoint.
-- No test may take a second or more.
+- `tui_pane` is shared: no public signature changes. cargo-tile is the only producer of `SummaryFoot::Text`; cargo-handler inherits `SummaryFoot::Empty`, and cargo-port implements no `TileCells`. Both crates' tests still run before the checkpoint.
+- No test may take a second or more. This phase's tests are in-process and run in milliseconds. Phase 3: four reader tests pass a second inside the macOS suite under load and none does alone; those times are reported, not a gate of this phase.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green, run by the unit director; captures of the real binary at 30 and 24 terminal columns show the total whole or absent; a design check by a fresh helper passes on those captures.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-handler` and `bash ~/.claude/scripts/delegate/verify.sh test cargo-port` green, run by the unit director; captures of the real binary during one live build: a wide control capture showing the complete total with its unit, then 30 and 24 terminal columns with the running row still visible and the total whole or absent; a design check by a fresh helper passes on all three captures.
