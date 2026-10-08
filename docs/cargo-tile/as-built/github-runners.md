@@ -123,7 +123,7 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 
 ### Process census, CPU and memory accounting (`crates/cargo-tile/src/census/`)
 
-**Module layout.** `mod.rs` re-exports only thirteen items used outside `census`: `command_name`, `DirectAssociation`, `SelectedProof`, `Measurement`, `InvocationId`, `VisibleParent`, `Ancestor`, `CargoGroup`, `CargoProcess`, `CompilerObservation`, `RowProvenance`, `RunStart`, `spawn_with_resolver`. Code inside `census` imports from the owning submodule.
+**Module layout.** `mod.rs` re-exports only seventeen items used outside `census`: `command_name`, `DirectAssociation`, `SelectedProof`, `CensusCadence`, `Measurement`, `InvocationId`, `VisibleParent`, `Ancestor`, `CargoGroup`, `CargoProcess`, `CensusScope`, `CompilerObservation`, `ExcludedCommands`, `ProcessOwner`, `RowProvenance`, `RunStart`, `spawn_with_resolver`. Code inside `census` imports from the owning submodule.
 
 | File | Contents |
 | --- | --- |
@@ -333,6 +333,13 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - `census/summary_totals_tests.rs` covers promoted-summary CPU totals, including zero-own-tick parents and unreadable counters. `census/memory_tests.rs` covers memory attribution, group and subtree totals, publication cadence, and unavailable rows.
 - `root_scan/sweep_authority.rs` (`acl_tests`, `cfg(all(test, target_os = "macos"))`, 20 tests) exercises real ACLs through `/bin/chmod +a` with `CAPTURE_ACL_TEST_*` fixture constants.
 - cargo-berth `tests/reader_compat.rs` checks a chosen reader against the frozen `merge_extent_observed` ledger.
+- Every cargo-tile reader test passes in under a second run alone on Linux and macOS. The slowest is the compiler-cache CPU test (0.70s on Linux, 0.93s on macOS); its 0.26s CPU observation window is the accepted floor. Linux timings do not predict macOS: measure a cut on the Mac against the version before it.
+- `CensusCadence::for_test` polls and reports every 50 ms and smooths over 100 ms, from `CENSUS_TEST_CPU_REPORT_MILLIS` and `CENSUS_TEST_CPU_SMOOTHING_MILLIS`. `spawn_resolved_scan_loop` (private, `census/scan.rs`) is the scan worker's loop; `spawn_with_resolver` calls it, and the worker test drives it with a cheap scanner and asserts one root resolution across two scans.
+- `GridMotion` (private, `terminal.rs`) is `Animated` in the shipped binary. A `#[cfg(test)]` `Immediate` variant settles tile motion at once, for the source-switch reader only. Any other reader scenario that waits for a row inside a newly opened tile pays the grid's 720 ms opening animation.
+- The shim signal tests wait on a handshake with the fixture cargo: it writes `cargo-held`, waits for `release-cargo`, then writes `cargo-finished`, and `run_detached_after_start` runs the check between the two. `darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback` asserts in process that the two epochs are an hour apart and give equal local time.
+- Reader fixtures: `link_named_shell` signs one copy of the shell per scenario (`cargo-tile-real`) and hard-links every other name to it. The CPU scenario starts its cache server and both writers together, and `start_reader_process` starts the reader only after both invocation CPU baselines exist; on macOS a reader started earlier loses the CPU row's reading. The source-switch scenario wakes its fixture shells through a named pipe (`WriterNotification`, `trigger_writer`). A shell reads `$OBSERVED/notification` when the pipe exists and sleeps 20 ms otherwise, because a bare read loop on a missing pipe spins a core.
+- A scenario deadline (`signal.setitimer`) raises `TimeoutError` naming the wait still pending in any thread (`pending_waits`), and a hard stop follows it. `CARGO_TILE_READER_TIMESTAMPS=1` prints a timestamp per fixture step, cleanup steps included.
+- The reader scenarios read drawn table columns in a 240 by 40 terminal, so a change to which columns a table draws must leave them whole at that size.
 
 ## Invariants
 

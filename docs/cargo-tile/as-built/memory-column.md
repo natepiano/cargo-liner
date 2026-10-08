@@ -84,9 +84,9 @@ enum SummaryMemoryTotal {
 - Registration-only rows remain unavailable and withhold totals that they make unprovable.
 - The summary total includes running groups only. Fading, ended groups do not contribute.
 - A partial summary is explicit. Readable groups form `AtLeast`, shown with `+`. If none are readable, show `mem --`.
-- The `mem` column stays after `cpu` and remains visible in both table kinds. It is not part of `SUMMARY_HIDDEN_COLUMNS`.
+- The `mem` column stays after `cpu` and belongs to both table kinds. It is not part of `SUMMARY_HIDDEN_COLUMNS`; only a table too narrow for its fitted columns drops it, in `TABLE_COLUMN_DROP_ORDER`.
 - The summary foot appears only in the summary cell. It shares the existing readout row and does not change row demand.
-- The memory foot wins on a narrow row. The rows readout is whole or absent, never clipped beside it.
+- The memory foot is drawn whole or not at all; when absent for width, the row follows the `SummaryFoot::Empty` readout path.
 - `tui_pane` remains source-compatible for existing users. `summary_foot` has an `Empty` default, and existing public drawing signatures do not change.
 - Named literals remain in each crate's `constants.rs`.
 - Census and render coverage stays fixture-based and fast.
@@ -101,12 +101,21 @@ enum SummaryMemoryTotal {
 - `UNAVAILABLE_MEASUREMENT = "--"`, `SUMMARY_MEMORY_LABEL = "mem "`, and `PARTIAL_TOTAL_MARK = "+"`.
 - `TABLE_COLUMN_SPACING = 2`; `TIGHT_TABLE_COLUMN_SPACING = 1`. A `12.4G` cell plus its normal gap takes seven columns from the command area.
 - `TILE_FOOT_LEFT_INSET = 1`, `TILE_FOOT_GAP = 2`, `TILE_ROWS_RIGHT_INSET = 1`, and `TILE_ROWS_READOUT_HEIGHT = 1`.
-- A 65-column command table uses one-cell gaps while retaining whole headers and parent PIDs. An 80-column fitting table keeps two-cell gaps. Those cell widths arise around 126- and 200-column terminal layouts. A table narrower than its fitted columns still truncates headers and cells.
+- A 65-column command table uses one-cell gaps while retaining whole headers and parent PIDs. An 80-column fitting table keeps two-cell gaps. Those cell widths arise around 126- and 200-column terminal layouts. A table narrower than its fitted columns at one-cell gaps drops whole columns in `TABLE_COLUMN_DROP_ORDER` (runs, compiler, start, dur, mem, cpu, state, parent), then `command`, then `pid`. Headers and cells are never cut. A table with rows and no room for any column draws `TABLE_NO_COLUMNS_MARKER` (`…`) at the start of its first row, in the header style, and `table_height` asks for that one row.
+- `TableLayout` keeps one solved width per kept column (`column_widths`); `TableLayout::column_width` is 0 for an omitted column. A `pid` or `parent` cell narrower than its text is drawn blank (`number_text_if_fits`), and `ancestry_stem` leaves a level's pid off when the indent plus the whole pid does not fit.
+- With typical content a command table shows every column from an interior width of 61 (69 with `state`), a summary table from 39 (47 with `state`). The binary shows `pid command` at 64 terminal columns, `pid` alone at 48, and the marker in tiles whose interior is under 8 cells.
+- A narrow layout runs up to eleven fit scans: ten from column dropping beside the spacing check.
+- `ANCESTRY_ELISION` and `TABLE_NO_COLUMNS_MARKER` are the same character. The ancestry one sits at the chain's indent, the table one at the start of the header row.
+- `draw_summary_foot` returns the private `SummaryFootDrawOutcome`: `NotDrawn` when the text is wider than `inner.width - TILE_FOOT_LEFT_INSET` or the tile has no readout row, `DrawnWhole { width }` otherwise. `draw_cell` maps `SummaryFoot::Empty` to `NotDrawn`; `NotDrawn` takes `draw_rows_readout`, and only `DrawnWhole` takes `draw_rows_readout_after_foot`.
+- The rows readout is still cut by a cell narrower than its text (`draw_rows_readout_line` clips). With the foot absent, a narrow summary tile shows `content` at 30 terminal columns and `conten` at 24.
+- The foot's fit test uses `Line::width()`. No app writes non-ASCII foot text; a text that measure reports narrower than the renderer draws could still be cut.
 - Adding a measurement column changes fixtures that count `--` cells. CPU, memory, compiler, and runs can all contribute that marker.
 - The full-system pass now pays for resident-memory refreshes. The detailed second refresh still targets cargo, ancestors, registrations, and compiler evidence.
 - `ResourceUse` groups CPU and memory for `row` so the constructor stays inside the crate's argument-count limit.
 - Memory does not revalidate process lifetime between the discovery and detail refreshes. PID reuse inside that interval was judged too unlikely to justify more mechanism.
-- Do not remove `parent` to save width. A narrow row would lose the identity of the cargo above it.
+- Keep `parent` last in `TABLE_COLUMN_DROP_ORDER`. It names the cargo above a row, so it leaves only after every other fitted column; `pid` outlasts every column.
+- Do not shorten the memory total for a narrow tile. A value without its unit, or a cut value, reads as a different number.
+- Do not draw nothing for a table with rows and no room: an occupied tile then reads as empty.
 - Do not hide memory from the summary. It is command-level information, not invocation-only detail.
 - A bare `Option` cannot express the summary's empty, complete, lower-bound, and wholly unreadable states.
 - The renderer's cell-level helper uses public `draw_tile_cell`, which supplies an empty foot. Only the full grid path through `draw_tile_grid` exercises the summary foot.
