@@ -1,6 +1,6 @@
 # Production — cargo-port-cleanup
 
-> **Status: PRODUCTION — running.** Wrapped 2026-10-06 and reopened 2026-10-07 for the tile-mem unit, a memory column and total in cargo-tile. Removes the Running section of cargo-port's Targets pane and the process scan behind it. cargo-tile is the tool for watching running cargo processes. A second unit, cargo-tile, joined on 2026-10-06: the summary takes as many cells as it needs and pushes the other cells on.
+> **Status: PRODUCTION — wrapped 2026-10-08.** Wrapped 2026-10-06, reopened 2026-10-07 for the tile-mem unit, a memory column and total in cargo-tile, and wrapped again 2026-10-08 with every unit closed. Removes the Running section of cargo-port's Targets pane and the process scan behind it. cargo-tile is the tool for watching running cargo processes. A second unit, cargo-tile, joined on 2026-10-06: the summary takes as many cells as it needs and pushes the other cells on.
 
 ## Production Context
 
@@ -22,7 +22,7 @@
 | cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | `cargo-port-cleanup` (closed) | — | `crates/cargo-port`, `docs/cargo-port` |
 | cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | `cargo-tile` (closed) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 | berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | `berth-flake` (closed) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
-| tile-mem-unit | docs/cargo-tile/as-built/memory-column.md | /home/natepiano/rust/cargo-liner-tile-mem | main-tile-mem | tile-mem | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
+| tile-mem-unit | `docs/cargo-tile/as-built/memory-column.md` (as-built; plan done) | removed 2026-10-08 | `main-tile-mem` (deleted) | `tile-mem` (closed) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
 
 ## Hub files
 
