@@ -58,8 +58,10 @@ use super::constants::BORDER_LINE_WIDTH;
 /// border drawn around that is a closed box -- a pane sliding upward out
 /// of view would grow a new top edge sealing it shut. The sides are
 /// worked out against the full rect and each cell is dropped
-/// individually where it lands outside the clip, which is what leaves
-/// the cut edge open.
+/// individually where it lands outside the clip. A side stops at the
+/// clip's top or bottom row instead of pointing beyond it. When the clip
+/// cuts through the pane's interior, [`GridLines`] closes it on that
+/// fixed row instead of giving the pane an edge that travels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaneFrame {
     /// Where the pane sits with no motion applied, its border lines
@@ -182,9 +184,10 @@ pub const fn frame_inner(rect: Rect) -> Rect {
 /// A pane standing still inside its clip goes straight to `buffer`,
 /// which is both the common case and the only path a pane that never
 /// moves takes. A pane in mid-flight is drawn into a scratch buffer
-/// instead, and only the rows still inside its clip are copied across --
-/// that is what makes a pane leaving a column vanish at the column's
-/// edge rather than running over its neighbour.
+/// instead. On an opaque screen the scratch buffer starts on the same
+/// screen ground as the target, then only the rows still inside the
+/// clip are copied across. That is what makes a pane leaving a column
+/// vanish at the column's edge rather than running over its neighbour.
 ///
 /// `draw` is handed the pane's [`inner`](PaneFrame::inner) rect and the
 /// buffer to draw into, which is the scratch one when the pane is
@@ -201,6 +204,9 @@ pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mu
         return;
     }
     let mut scratch = Buffer::empty(frame.rect);
+    if let Some(ground) = chrome::screen_ground() {
+        scratch.set_style(frame.rect, Style::default().bg(ground));
+    }
     fill_pane(&mut scratch, frame, inner);
     draw(&mut scratch, inner);
     blit(buffer, &scratch, frame);
@@ -213,10 +219,11 @@ pub fn draw_clipped(buffer: &mut Buffer, frame: PaneFrame, draw: impl FnOnce(&mu
 /// it keeps it: a cell's style is patched rather than replaced, so a
 /// span setting only a foreground leaves the tint showing through.
 ///
-/// Only [`inner`](PaneFrame::inner) is filled, so the tint stops
-/// inside the ring of border cells and the lines [`GridLines`] draws
-/// keep the terminal's own background. A border is a cell two panes
-/// share; tinting it would hand that cell to whichever pane drew last.
+/// Only [`inner`](PaneFrame::inner) is filled, so the tint stops inside
+/// the ring of border cells. A moving pane's ring keeps the screen
+/// ground laid into its scratch buffer; a still pane leaves its target's
+/// existing background there. A border is a cell two panes share;
+/// tinting it would hand that cell to whichever pane drew last.
 ///
 /// [`Block`]: ratatui::widgets::Block
 fn fill_pane(buffer: &mut Buffer, frame: PaneFrame, inner: Rect) {
@@ -237,6 +244,13 @@ fn blit(target: &mut Buffer, scratch: &Buffer, frame: PaneFrame) {
             continue;
         };
         if source < rect.top() || source >= rect.bottom() {
+            continue;
+        }
+        let source_is_inside =
+            source > rect.top() && source < rect.bottom().saturating_sub(BORDER_LINE_WIDTH);
+        let target_is_clip_border =
+            y == clip.top() || y == clip.bottom().saturating_sub(BORDER_LINE_WIDTH);
+        if source_is_inside && target_is_clip_border {
             continue;
         }
         for x in rect.left().max(clip.left())..rect.right().min(clip.right()) {
@@ -408,7 +422,9 @@ impl GridLines {
     }
 
     /// Add one pane's four edges, displaced and cut off the way the pane
-    /// itself is drawn.
+    /// itself is drawn. The pane's sides stop on the clip's top and
+    /// bottom rows. Where either row cuts through the pane's interior,
+    /// it also becomes a horizontal line fixed to the clip.
     ///
     /// Edges are added rather than assigned, so where two panes share a
     /// border the second one asks for nothing the first has not already
@@ -430,9 +446,24 @@ impl GridLines {
             self.mark(frame, x, bottom, sides);
         }
         for y in top..=bottom {
-            let sides = run(y, top, bottom, Side::Up, Side::Down);
+            let inside_pane = y > top && y < bottom;
+            let landed_row = frame.shifted_row(y);
+            let clip_bottom = frame.clip.bottom().saturating_sub(BORDER_LINE_WIDTH);
+            let on_clip_top = landed_row == Some(frame.clip.top());
+            let on_clip_bottom = landed_row == Some(clip_bottom);
+            let visible_top = if on_clip_top { y } else { top };
+            let visible_bottom = if on_clip_bottom { y } else { bottom };
+            let sides = run(y, visible_top, visible_bottom, Side::Up, Side::Down);
             self.mark(frame, left, y, sides);
             self.mark(frame, right, y, sides);
+            let cuts_top = inside_pane && on_clip_top;
+            let cuts_bottom = inside_pane && on_clip_bottom;
+            if cuts_top || cuts_bottom {
+                for x in left..=right {
+                    let sides = run(x, left, right, Side::Left, Side::Right);
+                    self.mark(frame, x, y, sides);
+                }
+            }
         }
     }
 
@@ -845,14 +876,55 @@ mod tests {
         );
     }
 
-    /// A pane shifted up past its clip leaves only the part still inside
-    /// it, which is how a pane crossing columns stops at the edge.
     #[test]
-    fn a_shifted_pane_is_cut_off_at_its_clip() {
+    fn a_panes_own_bottom_edge_on_its_clips_top_row_has_no_outward_stub() {
         let area = Rect::new(0, 0, 4, 4);
         assert_eq!(
             rendered(area, &[PaneFrame::shifted(Rect::new(0, 0, 4, 3), -2, area)]),
-            ["└──┘", "    ", "    ", "    "]
+            ["────", "    ", "    ", "    "]
+        );
+    }
+
+    #[test]
+    fn a_panes_own_top_edge_on_its_clips_bottom_row_has_no_outward_stub() {
+        let area = Rect::new(0, 0, 4, 4);
+        assert_eq!(
+            rendered(area, &[PaneFrame::shifted(Rect::new(0, 1, 4, 3), 2, area)]),
+            ["    ", "    ", "    ", "────"]
+        );
+    }
+
+    #[test]
+    fn a_pane_cut_at_its_clips_top_row_leaves_that_row_a_whole_line() {
+        let area = Rect::new(0, 0, 6, 4);
+        assert_eq!(
+            rendered(area, &[PaneFrame::shifted(Rect::new(0, 1, 6, 4), -2, area)]),
+            ["┌────┐", "│    │", "└────┘", "      "]
+        );
+    }
+
+    #[test]
+    fn a_pane_cut_at_its_clips_bottom_row_leaves_that_row_a_whole_line() {
+        let area = Rect::new(0, 0, 6, 4);
+        assert_eq!(
+            rendered(area, &[PaneFrame::shifted(Rect::new(0, 0, 6, 3), 2, area)]),
+            ["      ", "      ", "┌────┐", "└────┘"]
+        );
+    }
+
+    #[test]
+    fn a_cut_pane_joins_the_frame_line_between_its_neighbours() {
+        let area = Rect::new(0, 0, 10, 4);
+        assert_eq!(
+            rendered(
+                area,
+                &[
+                    PaneFrame::new(Rect::new(0, 0, 4, 4)),
+                    PaneFrame::shifted(Rect::new(3, 1, 4, 4), -2, Rect::new(3, 0, 4, 4),),
+                    PaneFrame::new(Rect::new(6, 0, 4, 4)),
+                ]
+            )[0],
+            "┌──┬──┬──┐"
         );
     }
 
@@ -1058,8 +1130,8 @@ mod tests {
     /// keeps nothing that falls outside the clip.
     #[test]
     fn a_shifted_pane_keeps_only_what_lands_in_its_clip() {
-        let area = Rect::new(0, 0, 6, 4);
-        let clip = Rect::new(0, 2, 6, 2);
+        let area = Rect::new(0, 0, 6, 5);
+        let clip = Rect::new(0, 2, 6, 3);
         let mut buffer = Buffer::empty(area);
         draw_clipped(
             &mut buffer,
@@ -1070,5 +1142,77 @@ mod tests {
         );
         assert_eq!(buffer[(1, 1)].symbol(), " ");
         assert_eq!(buffer[(1, 3)].symbol(), "x");
+    }
+
+    #[test]
+    fn a_shifted_pane_lands_on_the_screen_ground() {
+        let area = Rect::new(0, 0, 6, 5);
+        let frame = PaneFrame::shifted(Rect::new(0, 0, 6, 4), 1, area);
+        let landed = Rect::new(0, 1, 6, 4);
+
+        crate::set_transparent_background(false);
+        let ground = chrome::screen_ground().unwrap_or(Color::Reset);
+        assert_ne!(
+            ground,
+            Color::Reset,
+            "the opaque screen has a ground colour"
+        );
+        let mut buffer = Buffer::empty(area);
+        buffer.set_style(area, Style::default().bg(ground));
+        draw_clipped(&mut buffer, frame, |target, inner| {
+            target[(inner.x, inner.y)].set_symbol("x");
+        });
+
+        for y in landed.top()..landed.bottom() {
+            for x in landed.left()..landed.right() {
+                let on_ring = x == landed.left()
+                    || x == landed.right() - BORDER_LINE_WIDTH
+                    || y == landed.top()
+                    || y == landed.bottom() - BORDER_LINE_WIDTH;
+                let expected = if on_ring {
+                    ground
+                } else {
+                    chrome::pane_background(false)
+                };
+                assert_eq!(buffer[(x, y)].bg, expected, "background at ({x}, {y})");
+                assert_ne!(buffer[(x, y)].bg, Color::Reset);
+            }
+        }
+
+        crate::set_transparent_background(true);
+        let mut buffer = Buffer::empty(area);
+        draw_clipped(&mut buffer, frame, |target, inner| {
+            target[(inner.x, inner.y)].set_symbol("x");
+        });
+        for y in landed.top()..landed.bottom() {
+            for x in landed.left()..landed.right() {
+                assert_eq!(buffer[(x, y)].bg, Color::Reset, "background at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_shifted_pane_keeps_its_contents_off_the_clip_border_rows() {
+        let area = Rect::new(0, 0, 6, 4);
+        let frame = PaneFrame::shifted(Rect::new(0, 1, 6, 4), -2, area);
+        let mut buffer = Buffer::empty(area);
+
+        draw_clipped(&mut buffer, frame, |target, inner| {
+            for y in inner.top()..inner.bottom() {
+                for x in inner.left()..inner.right() {
+                    target[(x, y)].set_symbol("x");
+                }
+            }
+        });
+
+        assert!(
+            (area.left()..area.right()).all(|x| buffer[(x, area.top())].symbol() != "x"),
+            "the clip's top border holds no pane contents"
+        );
+        assert_eq!(
+            buffer[(1, 1)].symbol(),
+            "x",
+            "the next row keeps its contents"
+        );
     }
 }

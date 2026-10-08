@@ -17,6 +17,7 @@ do the narrow column work - and for now just make sure slow tests run first in a
 ## Delegation Context
 
 - **Project:** `cargo-tile` — a terminal grid of every running cargo command, one cell per command plus a summary cell. Its grid, borders and status line are drawn by `tui_pane`, which `cargo-handler` and `cargo-port` also build on.
+- **Project started:** 2026-10-08T13:55:41.455+00:00
 - **Worktree:** `/home/natepiano/rust/cargo-liner-tile-fixes`, branch `remove-running-section-tile-fixes`. Every seat works only here. Set by the showrunner (production doc, Units table).
 - **Stack:** Rust workspace, ratatui 0.30.2, cargo-nextest (0.9.143 on natedev, 0.9.136 on the Mac).
 - **Layout:**
@@ -54,7 +55,7 @@ do the narrow column work - and for now just make sure slow tests run first in a
 
 ## Phases
 
-### Phase 1 — A cell in flight stands on the painted ground  · status: todo
+### Phase 1 — A cell in flight stands on the painted ground  · status: done
 
 #### Work Order
 
@@ -94,7 +95,48 @@ Changelog: one line under `## [Unreleased]` → Fixed in `crates/tui_pane/CHANGE
 - Unit director's capture, `transparent = false`, 200x50: start `cargo-tile tile`, open five empty tiles with `+`, close them with `-`, replay every completed frame with pyte. No frame has a default-background cell inside the grid area, and no frame has a letter or digit on a row that is a border row in the settled frame before or after it. The same run with `transparent = true` still draws every frame.
 - A recording of the same motion in Ghostty with `transparent = false`, and a fresh helper's design check of its frames: pass.
 
-### Phase 2 — Headings, titles and readouts are whole or marked  · status: todo
+### Phase 2 — Touching cells and columns share one line through a motion  · status: todo
+
+#### Work Order
+
+**Goal:** While cells open, close and change columns, two cells that touch share one separator and two columns share one divider in every frame, as they do when the grid is still.
+
+**Spec:**
+
+Follow-up to Phase 1, written under the production's hard landing rule: Phase 1's last design check (2026-10-08, 47 frames of a 200x50 pty capture, ten `+`/`-` motions) raised six rows that all predate Phase 1. Measured over every frame in the first second of each motion, before Phase 1 → after it: a line doubled on the grid's top or bottom frame row 8.1% → 8.4%; two separators on adjacent rows between two cells 37.2% → 27.9%; two vertical lines side by side between columns 12.0% → 1.5%. The gate below takes all three to zero.
+
+Cause, one for all three: every moving piece and every column band is interpolated on its own (`lerp_rect`, `grid.rs:2079`; `column_band`, `grid.rs:1979`), each edge rounded separately, so two rects that share a border row or column at rest land one cell apart mid-motion.
+
+1. **Columns share their dividers.** `TileGrid::drawing` (`grid.rs`) interpolates the divider columns, not each band: with dividers `d0 = area.left() … dn = area.right() - 1`, band `k` spans `dk..=d(k+1)`. A column that opens starts with both its dividers on the area's right edge and a column that closes ends there, so a band one cell wide is the outer edge itself and adds no line. The bands always tile the area: first left edge on `area.left()`, last right edge on `area.right() - 1`, each band's right edge its neighbour's left edge. Covers the bare `│` beside the frame for a column one cell wide and the `┐┌` pair beside an opening or closing column.
+2. **Cells in a column share their separators.** Within one column band, the pieces drawn this frame are stacked from shared boundary rows: a piece's bottom edge row is the next piece's top edge row, the first piece's top edge is the band's top row and the last piece's bottom edge is the band's bottom row. Interpolate the boundaries, then build each piece's rect from two consecutive ones; a piece crossing columns (`wrapping_cell`, `grid.rs:1921`) keeps its two `PaneFrame::shifted` pieces, each stacked the same way in its own band. No separator lands on the row beside a band's top or bottom row: a piece with no body row is not drawn (`has_visible_body_row`, `draw.rs`), and its neighbour's edge takes the band's frame row instead of stopping one row short.
+3. **A slot changing size keeps its cell.** A cell arriving or closing shows its body colour and clipped contents for the whole motion; no bare black slot stands between two cells or under a separator (design check row: rows 44 to 47 of a closing job's cell, and rows 9 to 24 of a new column). First reproduce it in a test that hands `draw_placements` a closing piece; if the black is the ground showing through a gap that item 2 closes, say so in the summary and add no second mechanism.
+4. **One motion, one direction.** In the capture a job's cell moved to the foot of the left column for 0.37 s and then back to the head of the middle column where it had started, while the summary was squeezed below its content rows. Find why with a test that starts a transition, changes the held set before it ends (a job arriving during a `+`), and reads `drawing()` at several points: a cell whose settled column is the same before and after never leaves that column. If the cause is outside `grid.rs`'s transition code, report it in the summary and change nothing for it.
+
+Tests, all pure, none waiting on the clock (drive `progress` directly as the existing motion tests do):
+- `grid.rs`: `column_bands_tile_the_area_through_a_transition` — for an opening and a closing column, at each of 24 progress steps: the bands satisfy item 1's three statements.
+- `grid.rs`: `pieces_in_a_column_share_their_separators_through_a_transition` — opening, closing and a cell crossing columns, 24 steps each: item 2's statements hold for every band.
+- `draw.rs`: `no_line_is_doubled_through_a_transition` — render those snapshots through `draw_placements` and read the buffer back: no `───` on two adjacent rows at the same columns, and no pair matching `[│┤┐┘][│├┌└]` on any row.
+- `draw.rs`: one render test each for items 3 and 4 as they are reproduced.
+
+Changelog: extend the `## [Unreleased]` Fixed entry in `crates/tui_pane/CHANGELOG.md` and `crates/cargo-tile/CHANGELOG.md`.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs` — `drawing`, `column_band`, `moving_cell`, `wrapping_cell`, `edge_rect`, `closing_rect`, `lerp_rect`, tests.
+- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements`, `has_visible_body_row`, tests.
+- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — Fixed entry.
+
+**Seats:** 2 writers — geometry and drawing sit in separate files of `tui_pane`.
+- `impl` — `crates/tui_pane/src/tiles/grid.rs`, both changelogs.
+- `test` — opens as impl: `crates/tui_pane/src/tiles/draw.rs` (the render tests, items 3 and 4's reproductions, and any drawing change they need).
+
+**Constraints from prior phases:** Phase 1 added the crate-private `TileDrawing` snapshot (`placements`, `column_bands`) returned by `TileGrid::drawing`, drew every column band as a fixed frame in `draw_placements`, and stopped a pane's side lines at its clip's top and bottom rows in `GridLines::add` (`frame.rs`). `frame.rs` does not change here. No new public item; no `#[allow]`.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
+- Unit director's capture as in Phase 1 (200x50, five `+`, five `-`, transparent off and on), every frame in the first second of each motion: no line doubled on a frame row, no two separators on adjacent rows, no two vertical lines side by side; the Phase 1 measures still zero (no unpainted cell with transparent off, no line off the ground, no stub out of the grid).
+- A fresh helper's design check of PNG renders of those frames, each motion frame 0.2 to 0.5 s in: pass.
+
+### Phase 3 — Headings, titles and readouts are whole or marked  · status: todo
 
 #### Work Order
 
@@ -139,14 +181,14 @@ Changelogs: one Changed line each under `## [Unreleased]`.
 - `impl` — `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/CHANGELOG.md`.
 - `test` — opens as impl: `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/CHANGELOG.md`.
 
-**Constraints from prior phases:** Phase 1 split `draw_tile_grid` into itself plus a private `draw_placements` in `draw.rs`, and changed `draw_clipped` and `blit` in `frame.rs`; neither touches titles or readouts.
+**Constraints from prior phases:** Phase 1 split `draw_tile_grid` into itself plus a private `draw_placements` in `draw.rs`, and changed `draw_clipped` and `blit` in `frame.rs`; neither touches titles or readouts. Phase 2 changed how `grid.rs` places moving pieces and column bands; `draw.rs` gained render tests beside the readout code and no readout change.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port`, `... lint tui_pane` and `... lint cargo-tile` green; the named tests pass; no test in the run takes a second.
 - Unit director's settled captures beside a real `cargo check`, 50 rows, at 200, 126, 90, 64, 30 and 24 columns: no heading, title or foot readout is cut bare in any of them.
-- A fresh helper's design check of those six captures. Headings, titles and readouts must pass; defects in ancestry text, the status line and tile geometry at 30 and 24 are recorded for Phase 3 and do not fail this gate.
+- A fresh helper's design check of those six captures. Headings, titles and readouts must pass; defects in ancestry text, the status line and tile geometry at 30 and 24 are recorded for Phase 4 and do not fail this gate.
 
-### Phase 3 — Ancestry, status line and a floor for the grid  · status: todo
+### Phase 4 — Ancestry, status line and a floor for the grid  · status: todo
 
 #### Work Order
 
@@ -187,14 +229,14 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentenc
 - `impl` — `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/CHANGELOG.md`.
 - `test` — opens as impl: `crates/cargo-tile/src/wrap.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`.
 
-**Constraints from prior phases:** Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the notice goes in `draw_tile_grid` before it is called. Phase 2 added `PathGroup::fitted_heading` and `HEADING_ELISION` in cargo-tile, `TITLE_ELISION` in `tui_pane/src/pane/constants.rs`, and made the foot readout a list of whole candidates (`rows_readout_lines`) — a cell 22 wide inside draws `content rows: N`.
+**Constraints from prior phases:** Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the notice goes in `draw_tile_grid` before it is called. Phase 2 changed how `grid.rs` places moving pieces and column bands, and nothing a settled grid shows. Phase 3 added `PathGroup::fitted_heading` and `HEADING_ELISION` in cargo-tile, `TITLE_ELISION` in `tui_pane/src/pane/constants.rs`, and made the foot readout a list of whole candidates (`rows_readout_lines`) — a cell 22 wide inside draws `content rows: N`.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port`, `... lint tui_pane` and `... lint cargo-tile` green; the named tests pass; no test in the run takes a second.
 - Unit director's settled captures beside a real `cargo check`, 50 rows, at 200, 126, 90, 64, 30 and 24 columns, plus one at 20 columns (the notice) and one with the window shrunk from 200 to 40 while three columns are open (the notice): nothing is cut bare anywhere, ancestry breaks only at a boundary or carries `…`, the status line holds only whole items.
 - A fresh helper's design check of all eight captures: pass.
 
-### Phase 4 — Slow tests start first  · status: todo
+### Phase 5 — Slow tests start first  · status: todo
 
 #### Work Order
 
@@ -214,7 +256,7 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentenc
 - `impl` — `.config/nextest.toml`.
 - `test` — opens as impl: no file; runs the natedev measurements and hands the slow set to `impl`.
 
-**Constraints from prior phases:** Phases 1 to 3 added render tests to `tui_pane` and `cargo-tile`; each runs well under a second and none joins the slow set.
+**Constraints from prior phases:** Phases 1 to 4 added render tests to `tui_pane` and `cargo-tile`; each runs well under a second and none joins the slow set.
 
 **Acceptance gate:**
 - `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
