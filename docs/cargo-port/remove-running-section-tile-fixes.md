@@ -127,7 +127,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** filling each band's interior with the pane ground in `draw_placements` after clipped content (the shifted border leaves no row to fill); changing `text_default()` to the terminal's foreground on a transparent screen (it breaks text on painted surfaces).
 
-### Phase 3 — A closing column empties in one motion  · status: todo
+### Phase 3 — A closing column empties in one motion  · status: done
 
 #### Work Order
 

@@ -26,6 +26,7 @@ use super::constants::TILE_ROWS_CONTENT_LABEL;
 use super::constants::TILE_ROWS_READOUT_HEIGHT;
 use super::constants::TILE_ROWS_RIGHT_INSET;
 use super::constants::TILE_ROWS_WIDTH_LABEL;
+use super::grid::PieceName;
 use super::grid::TileContent;
 use super::grid::TileDemands;
 use super::grid::TileDrawing;
@@ -188,49 +189,66 @@ fn draw_placements<Id: Clone + Eq + Debug>(
     for &column in &drawing.column_bands {
         grid_lines.add(PaneFrame::new(column));
     }
-    for placement in &drawing.placements {
-        if !has_visible_body_row(placement.frame) {
+    for piece in &drawing.pieces {
+        let placement = &piece.placement;
+        let visible_body = has_visible_body_row(placement.frame);
+        let draws_name = piece.name == PieceName::Shown;
+        if !visible_body && !draws_name {
             continue;
         }
         // Contents retain the pane's own motion; its clip is the shared
         // topology the border lattice follows.
         let line_frame =
             PaneFrame::new(placement.frame.clip()).with_focus(placement.frame.is_focused());
-        // The ground a fading row is carried toward is the one its own
-        // cell is painted on, which focus moves.
-        let ground = pane_background(placement.frame.is_focused());
-        let cell_rows = match &placement.content {
-            TileContent::Summary => demands.summary,
-            TileContent::Group(id) => demands.rows_for(id),
-            TileContent::Empty(_) => 0,
-        };
-        // The width the demand above was measured at, which is read off
-        // the layout as it stood before `sync` -- the readout carries it
-        // beside the cell's own so a cell measured at one width and
-        // drawn at another says so rather than only looking wrong.
-        let demand_width = measured_width(widths, &placement.content);
-        let content_rows = cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
-        if contents == TileGridContents::Shown {
-            let summary_foot = match &placement.content {
-                TileContent::Summary => cells.summary_foot(),
-                TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
+        if visible_body {
+            // The ground a fading row is carried toward is the one its
+            // own cell is painted on, which focus moves.
+            let ground = pane_background(placement.frame.is_focused());
+            let cell_rows = match &placement.content {
+                TileContent::Summary => demands.summary,
+                TileContent::Group(id) => demands.rows_for(id),
+                TileContent::Empty(_) => 0,
             };
-            draw_clipped(buffer, placement.frame, |buffer, inner| {
-                draw_cell(
-                    buffer,
-                    &placement.content,
-                    inner,
-                    content_rows,
-                    demand_width,
-                    &summary_foot,
-                    |buffer, inner| cells.draw(buffer, &placement.content, inner, ground),
-                );
-            });
+            // The width the demand above was measured at, which is read
+            // off the layout as it stood before `sync` -- the readout
+            // carries it beside the cell's own so a cell measured at one
+            // width and drawn at another says so.
+            let demand_width = measured_width(widths, &placement.content);
+            let content_rows =
+                cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
+            if contents == TileGridContents::Shown {
+                let summary_foot = match &placement.content {
+                    TileContent::Summary => cells.summary_foot(),
+                    TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
+                };
+                draw_clipped(buffer, placement.frame, |buffer, inner| {
+                    draw_cell(
+                        buffer,
+                        inner,
+                        content_rows,
+                        demand_width,
+                        &summary_foot,
+                        |buffer, inner| match &placement.content {
+                            TileContent::Empty(number) if draws_name => {
+                                draw_number(buffer, *number, inner);
+                            },
+                            TileContent::Empty(_) => {},
+                            TileContent::Summary | TileContent::Group(_) => {
+                                cells.draw(buffer, &placement.content, inner, ground);
+                            },
+                        },
+                    );
+                });
+            }
         }
         match &placement.content {
             TileContent::Summary => {
-                grid_lines.add_titled(line_frame, cells.summary_title());
-                if contents == TileGridContents::Shown {
+                if draws_name {
+                    grid_lines.add_titled(line_frame, cells.summary_title());
+                } else if visible_body {
+                    grid_lines.add(line_frame);
+                }
+                if visible_body && contents == TileGridContents::Shown {
                     for label in cells.summary_labels(line_frame.rect()) {
                         grid_lines.add_label(line_frame, label);
                     }
@@ -240,14 +258,16 @@ fn draw_placements<Id: Clone + Eq + Debug>(
             // the contents.
             TileContent::Group(id) => match cells
                 .group_title(id)
-                .filter(|_| contents == TileGridContents::Shown)
+                .filter(|_| draws_name && contents == TileGridContents::Shown)
             {
                 Some(title) => grid_lines.add_titled(line_frame, title),
-                None => grid_lines.add(line_frame),
+                None if visible_body => grid_lines.add(line_frame),
+                None => {},
             },
-            TileContent::Empty(_) => {
+            TileContent::Empty(_) if visible_body => {
                 grid_lines.add(line_frame);
             },
+            TileContent::Empty(_) => {},
         }
     }
     // Neighbouring tiles meet on one line, so no cell belongs to a
@@ -278,6 +298,20 @@ fn has_visible_body_row(frame: PaneFrame) -> bool {
         && shifted_bottom > i64::from(clip_body.top())
 }
 
+/// Whether a moving piece can show the row on which an empty cell is named.
+pub(super) fn name_row_is_visible(frame: PaneFrame) -> bool {
+    let body = frame.inner();
+    let clip_body = frame_inner(frame.clip());
+    if body.is_empty() || clip_body.is_empty() {
+        return false;
+    }
+    let row = i64::from(body.top()) + i64::from(frame.shift());
+    body.left() < clip_body.right()
+        && clip_body.left() < body.right()
+        && row >= i64::from(clip_body.top())
+        && row < i64::from(clip_body.bottom())
+}
+
 /// Draw one cell's interior: its contents, then the readout along its
 /// foot.
 ///
@@ -301,19 +335,20 @@ pub fn draw_tile_cell<Id>(
 ) {
     draw_cell(
         buffer,
-        content,
         inner,
         rows,
         measured_at,
         &SummaryFoot::Empty,
-        draw,
+        |buffer, inner| match content {
+            TileContent::Empty(number) => draw_number(buffer, *number, inner),
+            TileContent::Summary | TileContent::Group(_) => draw(buffer, inner),
+        },
     );
 }
 
 /// Draw one cell with the app's summary foot sharing its readout row.
-fn draw_cell<Id>(
+fn draw_cell(
     buffer: &mut Buffer,
-    content: &TileContent<Id>,
     inner: Rect,
     rows: usize,
     measured_at: u16,
@@ -322,10 +357,7 @@ fn draw_cell<Id>(
 ) {
     let contents = content_area(inner);
     if !contents.is_empty() {
-        match content {
-            TileContent::Empty(number) => draw_number(buffer, *number, contents),
-            TileContent::Summary | TileContent::Group(_) => draw(buffer, contents),
-        }
+        draw(buffer, contents);
     }
     let foot_draw_outcome = match summary_foot {
         SummaryFoot::Empty => SummaryFootDrawOutcome::NotDrawn,
@@ -552,10 +584,24 @@ mod tests {
     use crate::TileDemand;
     use crate::TileFill;
     use crate::tiles::constants::PROGRESS_SCALE;
+    use crate::tiles::grid::TilePiece;
     use crate::tiles::grid::TilePlacement;
 
     const FOOT_TEXT: &str = "mem 2.5G";
+    const GROUP_TITLE_GLYPHS: &[u8] =
+        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     const MOTION_SNAPSHOTS: u32 = 24;
+    const TITLE_AREA: Rect = Rect::new(0, 0, 200, 50);
+    const CLOSING_GROWTH: TileGrowth = TileGrowth {
+        initial_rows:  3,
+        fill:          TileFill::AddNew,
+        widen_summary: false,
+    };
+    const STAYING_GROWTH: TileGrowth = TileGrowth {
+        initial_rows:  4,
+        fill:          TileFill::Redistribute,
+        widen_summary: false,
+    };
 
     struct StubCells {
         summary_foot: SummaryFoot,
@@ -566,6 +612,10 @@ mod tests {
         fn summary_title(&self) -> &'static str { "summary" }
 
         fn summary_foot(&self) -> SummaryFoot { self.summary_foot.clone() }
+
+        fn group_title(&self, id: &u32) -> Option<Span<'static>> {
+            Some(Span::raw(group_title(*id)))
+        }
 
         fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
             TileDemands {
@@ -581,7 +631,7 @@ mod tests {
 
         fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
             let text = match content {
-                TileContent::Summary => "summary body",
+                TileContent::Summary => "table body",
                 TileContent::Group(_) => "group body",
                 TileContent::Empty(_) => return,
             };
@@ -607,6 +657,13 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// The one-cell title used by motion fixtures, which stays whole
+    /// until a closing column has no title cell left.
+    fn group_title(id: u32) -> String {
+        let index = usize::try_from(id).unwrap_or_default() % GROUP_TITLE_GLYPHS.len();
+        char::from(GROUP_TITLE_GLYPHS[index]).to_string()
     }
 
     fn is_lattice_glyph(symbol: &str) -> bool {
@@ -643,6 +700,14 @@ mod tests {
     /// Draw hand-built moving pieces inside hand-built column frames.
     fn draw_motion_fixture(area: Rect, drawing: &TileDrawing<u32>) -> Buffer {
         draw_motion_fixture_with_width(area, drawing, area.width.saturating_sub(2))
+    }
+
+    /// One hand-built piece and its inseparable name role.
+    fn tile_piece(content: TileContent<u32>, frame: PaneFrame, name: PieceName) -> TilePiece<u32> {
+        TilePiece {
+            placement: TilePlacement { content, frame },
+            name,
+        }
     }
 
     /// Draw moving pieces with the width their contents were measured at.
@@ -798,8 +863,7 @@ mod tests {
     ) -> Option<String> {
         for &band in &drawing.column_bands {
             let bodies = drawing
-                .placements
-                .iter()
+                .placements()
                 .filter(|placement| {
                     let clip = placement.frame.clip();
                     clip.left() == band.left() && clip.right() == band.right()
@@ -817,10 +881,8 @@ mod tests {
             };
             let ground = screen_ground().unwrap_or(Color::Reset);
             for y in first_body_row..last_body_row {
-                let mut interior = band.left().saturating_add(1)..band.right().saturating_sub(1);
-                let has_body = interior.clone().any(|x| buffer[(x, y)].bg != ground);
-                let has_separator = interior.any(|x| is_lattice_glyph(buffer[(x, y)].symbol()));
-                if !has_body && !has_separator {
+                let interior = band.left().saturating_add(1)..band.right().saturating_sub(1);
+                if !row_has_coverage(buffer, drawing, ground, interior, y) {
                     return Some(format!(
                         "{motion} at raw {raw} leaves row {y} bare between neighbouring cells"
                     ));
@@ -830,7 +892,52 @@ mod tests {
         None
     }
 
-    /// A band row with neither pane ground nor a separator.
+    /// Whether pane ground, a lattice line or an owned title covers one row.
+    fn row_has_coverage(
+        buffer: &Buffer,
+        drawing: &TileDrawing<u32>,
+        ground: Color,
+        cells: Range<u16>,
+        y: u16,
+    ) -> bool {
+        cells.into_iter().any(|x| {
+            let cell = &buffer[(x, y)];
+            cell.bg != ground
+                || is_lattice_glyph(cell.symbol())
+                || drawing
+                    .pieces
+                    .iter()
+                    .any(|piece| piece_title_covers(piece, cell.symbol(), x, y))
+        })
+    }
+
+    /// Whether this cell contains the exact title character this piece owns.
+    fn piece_title_covers(piece: &TilePiece<u32>, symbol: &str, x: u16, y: u16) -> bool {
+        if piece.name != PieceName::Shown {
+            return false;
+        }
+        let clip = piece.placement.frame.clip();
+        let Some(offset) = x.checked_sub(clip.left().saturating_add(1)) else {
+            return false;
+        };
+        if y != clip.top() || x >= clip.right().saturating_sub(1) {
+            return false;
+        }
+        let title = match &piece.placement.content {
+            TileContent::Summary => "summary".to_string(),
+            TileContent::Group(id) => group_title(*id),
+            TileContent::Empty(_) => return false,
+        };
+        title
+            .chars()
+            .nth(usize::from(offset))
+            .is_some_and(|character| {
+                let mut encoded = [0; 4];
+                symbol == character.encode_utf8(&mut encoded)
+            })
+    }
+
+    /// A band row with no painted cell, frame line or title.
     fn bare_band_row_failure(
         buffer: &Buffer,
         drawing: &TileDrawing<u32>,
@@ -844,14 +951,9 @@ mod tests {
                 continue;
             }
             for y in inner.top()..inner.bottom() {
-                let cells = (inner.left()..inner.right()).map(|x| &buffer[(x, y)]);
-                if cells
-                    .clone()
-                    .all(|cell| cell.bg == ground && !is_lattice_glyph(cell.symbol()))
-                {
+                if !row_has_coverage(buffer, drawing, ground, inner.left()..inner.right(), y) {
                     let frames = drawing
-                        .placements
-                        .iter()
+                        .placements()
                         .filter(|placement| {
                             let clip = placement.frame.clip();
                             clip.x == band.x && clip.width == band.width
@@ -882,12 +984,11 @@ mod tests {
         motion: &str,
         raw: u32,
     ) -> Option<String> {
-        for placement in &drawing.placements {
+        for placement in drawing.placements() {
             if placement.frame.shift() == 0
                 || !matches!(placement.content, TileContent::Group(_))
                 || drawing
-                    .placements
-                    .iter()
+                    .placements()
                     .filter(|other| other.content == placement.content)
                     .count()
                     < 2
@@ -961,19 +1062,22 @@ mod tests {
         let middle_column = Rect::new(20, 0, 21, 12);
         let last_column = Rect::new(40, 0, 20, 12);
         let drawing = TileDrawing {
-            placements:   vec![
-                TilePlacement {
-                    content: TileContent::Summary,
-                    frame:   crate::PaneFrame::new(Rect::new(0, 0, 21, 12)),
-                },
-                TilePlacement {
-                    content: TileContent::Group(7),
-                    frame:   crate::PaneFrame::shifted(Rect::new(20, 0, 21, 7), -2, middle_column),
-                },
-                TilePlacement {
-                    content: TileContent::Group(7),
-                    frame:   crate::PaneFrame::shifted(Rect::new(40, 6, 20, 6), 3, last_column),
-                },
+            pieces:       vec![
+                tile_piece(
+                    TileContent::Summary,
+                    crate::PaneFrame::new(Rect::new(0, 0, 21, 12)),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(7),
+                    crate::PaneFrame::shifted(Rect::new(20, 0, 21, 7), -2, middle_column),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(7),
+                    crate::PaneFrame::shifted(Rect::new(40, 6, 20, 6), 3, last_column),
+                    PieceName::Shown,
+                ),
             ],
             column_bands: vec![Rect::new(0, 0, 21, 12), middle_column, last_column],
         };
@@ -1015,15 +1119,17 @@ mod tests {
         crate::set_transparent_background(false);
         let area = Rect::new(0, 0, 20, 10);
         let drawing = TileDrawing {
-            placements:   vec![
-                TilePlacement {
-                    content: TileContent::Group(7),
-                    frame:   crate::PaneFrame::shifted(Rect::new(0, 5, 20, 5), -2, area),
-                },
-                TilePlacement {
-                    content: TileContent::Group(8),
-                    frame:   crate::PaneFrame::new(Rect::new(0, 0, 20, 6)),
-                },
+            pieces:       vec![
+                tile_piece(
+                    TileContent::Group(7),
+                    crate::PaneFrame::shifted(Rect::new(0, 5, 20, 5), -2, area),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(8),
+                    crate::PaneFrame::new(Rect::new(0, 0, 20, 6)),
+                    PieceName::Shown,
+                ),
             ],
             column_bands: vec![area],
         };
@@ -1069,22 +1175,24 @@ mod tests {
         let area = Rect::new(0, 0, 12, 6);
         let columns = [Rect::new(0, 0, 7, 6), Rect::new(6, 0, 6, 6)];
         let drawing = TileDrawing {
-            placements:   vec![
-                TilePlacement {
-                    content: TileContent::Group(7),
-                    frame:   PaneFrame::new(columns[0]),
-                },
-                TilePlacement {
-                    content: TileContent::Group(8),
-                    frame:   PaneFrame::new(Rect::new(6, 3, 6, 3)),
-                },
+            pieces:       vec![
+                tile_piece(
+                    TileContent::Group(7),
+                    PaneFrame::new(columns[0]),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(8),
+                    PaneFrame::new(Rect::new(6, 3, 6, 3)),
+                    PieceName::Shown,
+                ),
             ],
             column_bands: columns.to_vec(),
         };
 
         let buffer = draw_motion_fixture(area, &drawing);
 
-        assert_eq!(buffer_line(&buffer, area.top()), "┌─────┬────┐");
+        assert_eq!(buffer_line(&buffer, area.top()), "┌7────┬────┐");
         assert_eq!(buffer_line(&buffer, area.bottom() - 1), "└─────┴────┘");
         for y in area.top()..area.bottom() {
             assert_ne!(buffer[(6, y)].symbol(), " ", "left side at row {y}");
@@ -1101,19 +1209,22 @@ mod tests {
             Rect::new(8, 0, 5, 6),
         ];
         let drawing = TileDrawing {
-            placements:   vec![
-                TilePlacement {
-                    content: TileContent::Group(7),
-                    frame:   PaneFrame::new(columns[0]),
-                },
-                TilePlacement {
-                    content: TileContent::Group(8),
-                    frame:   PaneFrame::shifted(Rect::new(4, 3, 5, 3), 2, columns[1]),
-                },
-                TilePlacement {
-                    content: TileContent::Group(9),
-                    frame:   PaneFrame::new(columns[2]),
-                },
+            pieces:       vec![
+                tile_piece(
+                    TileContent::Group(7),
+                    PaneFrame::new(columns[0]),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(8),
+                    PaneFrame::shifted(Rect::new(4, 3, 5, 3), 2, columns[1]),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(9),
+                    PaneFrame::new(columns[2]),
+                    PieceName::Shown,
+                ),
             ],
             column_bands: columns.to_vec(),
         };
@@ -1127,10 +1238,11 @@ mod tests {
     fn an_edge_only_piece_adds_no_line_above_the_column_frame() {
         let area = Rect::new(0, 0, 6, 5);
         let drawing = TileDrawing {
-            placements:   vec![TilePlacement {
-                content: TileContent::Group(7),
-                frame:   PaneFrame::shifted(Rect::new(0, 0, 6, 3), 3, area),
-            }],
+            pieces:       vec![tile_piece(
+                TileContent::Group(7),
+                PaneFrame::shifted(Rect::new(0, 0, 6, 3), 3, area),
+                PieceName::OnTheOtherPiece,
+            )],
             column_bands: vec![area],
         };
 
@@ -1140,6 +1252,444 @@ mod tests {
             area_lines(&buffer, area),
             ["┌────┐", "│    │", "│    │", "│    │", "└────┘"]
         );
+    }
+
+    fn title_demands(ids: &[u32]) -> TileDemands<u32> {
+        TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        ids.iter().map(|&id| TileDemand { id, rows: 1 }).collect(),
+        }
+    }
+
+    fn title_motion(
+        area: Rect,
+        before: &[u32],
+        after: &[u32],
+        growth: TileGrowth,
+    ) -> TileGrid<u32> {
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.sync(&title_demands(before), growth);
+        grid.settle_for_test();
+        grid.sync(&title_demands(after), growth);
+        grid
+    }
+
+    fn collapsed_title_motion(
+        area: Rect,
+        before: &[u32],
+        after: &[u32],
+        growth: TileGrowth,
+    ) -> TileGrid<u32> {
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.sync(&title_demands(before), growth);
+        grid.settle_for_test();
+        grid.collapse_queued_changes_for_test();
+        grid.sync(&title_demands(after), growth);
+        grid
+    }
+
+    fn assert_titles_once(name: &str, grid: &TileGrid<u32>, area: Rect, growth: TileGrowth) {
+        for raw in motion_snapshots() {
+            let drawing = grid.drawing_at(area, growth, raw);
+            let buffer = draw_motion_fixture_with_width(area, &drawing, 64);
+            let screen = area_lines(&buffer, area).concat();
+            let mut contents = drawing
+                .placements()
+                .filter(|placement| {
+                    let clip = placement.frame.clip().intersection(area);
+                    clip.width > 2 && clip.height >= 2
+                })
+                .map(|placement| placement.content.clone())
+                .collect::<Vec<_>>();
+            contents.sort_by_key(|content| match content {
+                TileContent::Summary => 0,
+                TileContent::Group(id) => *id,
+                TileContent::Empty(id) => u32::try_from(*id).unwrap_or(u32::MAX),
+            });
+            contents.dedup();
+            for content in contents {
+                let title = match content {
+                    TileContent::Summary => "summary".to_string(),
+                    TileContent::Group(id) => group_title(id),
+                    TileContent::Empty(_) => continue,
+                };
+                assert_eq!(
+                    screen.matches(&title).count(),
+                    1,
+                    "{name} at raw {raw} has the wrong count for {title:?}; frames={:?}",
+                    drawing
+                        .placements()
+                        .filter(|placement| placement.content == content)
+                        .map(|placement| placement.frame)
+                        .collect::<Vec<_>>()
+                );
+            }
+            for piece in drawing.placements().filter(|piece| {
+                drawing
+                    .placements()
+                    .filter(|other| other.content == piece.content)
+                    .count()
+                    == 2
+            }) {
+                let TileContent::Group(id) = piece.content else {
+                    continue;
+                };
+                let bottoms = drawing
+                    .column_bands
+                    .iter()
+                    .find(|band| {
+                        let clip = piece.frame.clip();
+                        clip.x == band.x && clip.width == band.width
+                    })
+                    .map(|band| band.bottom().saturating_sub(1))
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    bottoms.len(),
+                    1,
+                    "{name} at raw {raw} places the piece in one column band"
+                );
+                for bottom in bottoms {
+                    assert!(
+                        !buffer_line(&buffer, bottom).contains(&group_title(id)),
+                        "{name} at raw {raw} puts the crossing title on a column floor"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every title is on screen once through the step from `before` to `after`.
+    fn assert_titles_once_through(name: &str, before: &[u32], after: &[u32], growth: TileGrowth) {
+        let grid = title_motion(TITLE_AREA, before, after, growth);
+        assert_titles_once(name, &grid, TITLE_AREA, growth);
+    }
+
+    /// Whether this piece has enough visible room for `draw_number`'s output.
+    fn number_has_room(frame: PaneFrame, number: usize) -> bool {
+        let contents = content_area(frame.inner());
+        let clip = frame_inner(frame.clip());
+        let indent = u16::try_from(TILE_NUMBER_INDENT.len()).unwrap_or(u16::MAX);
+        let width = u16::try_from(number.to_string().len()).unwrap_or(u16::MAX);
+        let left = contents.left().saturating_add(indent);
+        let right = left.saturating_add(width);
+        let row = i64::from(contents.top()) + i64::from(frame.shift());
+        !contents.is_empty()
+            && right <= contents.right()
+            && left >= clip.left()
+            && right <= clip.right()
+            && row >= i64::from(clip.top())
+            && row < i64::from(clip.bottom())
+    }
+
+    /// Whether `number` is present at this piece's own number position and style.
+    fn piece_draws_number(buffer: &Buffer, frame: PaneFrame, number: usize) -> bool {
+        if !number_has_room(frame, number) {
+            return false;
+        }
+        let contents = content_area(frame.inner());
+        let indent = u16::try_from(TILE_NUMBER_INDENT.len()).unwrap_or(u16::MAX);
+        let left = contents.left().saturating_add(indent);
+        let row =
+            u16::try_from(i64::from(contents.top()) + i64::from(frame.shift())).unwrap_or_default();
+        number
+            .to_string()
+            .chars()
+            .enumerate()
+            .all(|(offset, digit)| {
+                let x = left.saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+                let cell = &buffer[(x, row)];
+                let mut encoded = [0; 4];
+                cell.symbol() == digit.encode_utf8(&mut encoded) && cell.fg == title_color()
+            })
+    }
+
+    /// Every empty-cell number is drawn by exactly one piece through one motion.
+    fn assert_empty_numbers_once(name: &str, grid: &TileGrid<u32>, growth: TileGrowth) {
+        let mut saw_crossing = false;
+        for raw in motion_snapshots() {
+            let mut drawing = grid.drawing_at(TITLE_AREA, growth, raw);
+            for piece in &mut drawing.pieces {
+                if let TileContent::Group(id) = piece.placement.content {
+                    piece.placement.content =
+                        TileContent::Empty(usize::try_from(id).unwrap_or(usize::MAX));
+                }
+            }
+            let buffer = draw_motion_fixture_with_width(TITLE_AREA, &drawing, 64);
+            let mut numbers = drawing
+                .pieces
+                .iter()
+                .filter_map(|piece| match piece.placement.content {
+                    TileContent::Empty(number) => Some(number),
+                    TileContent::Summary | TileContent::Group(_) => None,
+                })
+                .collect::<Vec<_>>();
+            numbers.sort_unstable();
+            numbers.dedup();
+            for number in numbers {
+                let pieces = drawing
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.placement.content == TileContent::Empty(number))
+                    .collect::<Vec<_>>();
+                saw_crossing |= pieces.len() == 2;
+                if !pieces
+                    .iter()
+                    .any(|piece| number_has_room(piece.placement.frame, number))
+                {
+                    continue;
+                }
+                let copies = pieces
+                    .iter()
+                    .filter(|piece| piece_draws_number(&buffer, piece.placement.frame, number))
+                    .count();
+                assert_eq!(
+                    copies,
+                    1,
+                    "{name} at raw {raw} draws {copies} copies of empty cell {number}; frames={:?}",
+                    pieces
+                        .iter()
+                        .map(|piece| piece.placement.frame)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        assert!(saw_crossing, "{name} exercises a crossing empty cell");
+    }
+
+    /// Every empty-cell number is drawn once through the step from `before` to `after`.
+    fn assert_empty_numbers_once_through(
+        name: &str,
+        before: &[u32],
+        after: &[u32],
+        growth: TileGrowth,
+    ) {
+        let grid = title_motion(TITLE_AREA, before, after, growth);
+        assert_empty_numbers_once(name, &grid, growth);
+    }
+
+    #[test]
+    fn a_title_is_on_screen_once_while_its_cell_moves_right_and_columns_stay() {
+        let before = (20..=35).collect::<Vec<_>>();
+        let after = (20..=34).collect::<Vec<_>>();
+        assert_titles_once_through(
+            "right crossing while columns stay",
+            &before,
+            &after,
+            STAYING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn a_title_is_on_screen_once_while_its_cell_moves_right_and_a_column_closes() {
+        let before = (20..=25).collect::<Vec<_>>();
+        assert_titles_once_through(
+            "right crossing while a column closes",
+            &before,
+            &[20, 22, 21, 23, 24],
+            CLOSING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn a_title_is_on_screen_once_while_its_cell_moves_left_and_its_column_closes() {
+        let before = (20..=25).collect::<Vec<_>>();
+        assert_titles_once_through(
+            "left crossing while the source column closes",
+            &before,
+            &[20, 21, 22, 23, 25],
+            CLOSING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn a_title_is_on_screen_once_while_its_cell_moves_left_and_columns_stay() {
+        let before = (20..=34).collect::<Vec<_>>();
+        let after = (20..=35).collect::<Vec<_>>();
+        assert_titles_once_through(
+            "left crossing while columns stay",
+            &before,
+            &after,
+            STAYING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn an_empty_cell_number_is_on_screen_once_while_it_moves_right_and_columns_stay() {
+        let before = (20..=35).collect::<Vec<_>>();
+        let after = (20..=34).collect::<Vec<_>>();
+        assert_empty_numbers_once_through(
+            "right crossing while columns stay",
+            &before,
+            &after,
+            STAYING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn an_empty_cell_number_is_on_screen_once_while_it_moves_right_and_a_column_closes() {
+        let before = (20..=25).collect::<Vec<_>>();
+        let grid =
+            collapsed_title_motion(TITLE_AREA, &before, &[20, 22, 21, 23, 24], CLOSING_GROWTH);
+        assert_empty_numbers_once(
+            "right crossing while a column closes",
+            &grid,
+            CLOSING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn an_empty_cell_number_is_on_screen_once_while_it_moves_left_and_its_column_closes() {
+        let before = (20..=25).collect::<Vec<_>>();
+        assert_empty_numbers_once_through(
+            "left crossing while the source column closes",
+            &before,
+            &[20, 21, 22, 23, 25],
+            CLOSING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn an_empty_cell_number_is_on_screen_once_while_it_moves_left_and_columns_stay() {
+        let before = (20..=34).collect::<Vec<_>>();
+        let after = (20..=35).collect::<Vec<_>>();
+        assert_empty_numbers_once_through(
+            "left crossing while columns stay",
+            &before,
+            &after,
+            STAYING_GROWTH,
+        );
+    }
+
+    #[test]
+    fn a_departing_cell_keeps_its_title_while_its_border_is_visible() {
+        let area = Rect::new(0, 0, 80, 24);
+        let groups = |ids: &[u32]| TileDemands {
+            summary:       0,
+            summary_width: 0,
+            groups:        ids.iter().map(|&id| TileDemand { id, rows: 1 }).collect(),
+        };
+        let motion = |before: &[u32], after: &[u32], growth| {
+            let mut grid = TileGrid::new();
+            grid.set_layout(area, growth);
+            grid.sync(&groups(before), growth);
+            grid.settle_for_test();
+            grid.sync(&groups(after), growth);
+            grid
+        };
+        let staying_growth = TileGrowth {
+            initial_rows:  4,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let closing_growth = TileGrowth {
+            initial_rows:  3,
+            fill:          TileFill::AddNew,
+            widen_summary: false,
+        };
+
+        for (name, grid, growth, departing) in [
+            (
+                "staying column",
+                motion(&[20, 21, 22], &[20, 21], staying_growth),
+                staying_growth,
+                22,
+            ),
+            (
+                "closing column",
+                motion(
+                    &[20, 21, 22, 23, 24, 25],
+                    &[20, 21, 22, 23, 24],
+                    closing_growth,
+                ),
+                closing_growth,
+                25,
+            ),
+        ] {
+            let title = group_title(departing);
+            for raw in motion_snapshots() {
+                let drawing = grid.drawing_at(area, growth, raw);
+                assert_eq!(
+                    drawing
+                        .pieces
+                        .iter()
+                        .filter(|piece| {
+                            piece.placement.content == TileContent::Group(departing)
+                        })
+                        .count(),
+                    1,
+                    "the departing piece remains in the drawing"
+                );
+                for piece in drawing
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.placement.content == TileContent::Group(departing))
+                {
+                    let clip = piece.placement.frame.clip().intersection(area);
+                    if !clip.is_empty() {
+                        assert_eq!(piece.name, PieceName::Shown, "{name} at raw {raw}");
+                    }
+                    let title_width = u16::try_from(title.len()).unwrap_or(u16::MAX);
+                    if clip.height < 2 || clip.width < title_width.saturating_add(2) {
+                        continue;
+                    }
+                    let buffer = draw_motion_fixture_with_width(area, &drawing, 64);
+                    let screen = area_lines(&buffer, area).concat();
+                    assert_eq!(
+                        screen.matches(&title).count(),
+                        1,
+                        "{name} at raw {raw}; frame={:?}",
+                        piece.placement.frame
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn content_glyphs_do_not_cover_ground_only_rows() {
+        crate::set_transparent_background(false);
+        let area = Rect::new(0, 0, 12, 9);
+        let drawing = TileDrawing {
+            pieces:       vec![
+                tile_piece(
+                    TileContent::Group(7),
+                    PaneFrame::new(Rect::new(0, 0, 12, 3)),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(8),
+                    PaneFrame::new(Rect::new(0, 6, 12, 3)),
+                    PieceName::Shown,
+                ),
+            ],
+            column_bands: vec![area],
+        };
+        let ground = screen_ground().unwrap_or(Color::Reset);
+        assert_ne!(ground, Color::Reset, "the opaque screen has a ground");
+        let pane = pane_background(false);
+        let mut buffer = Buffer::empty(area);
+        buffer.set_style(area, Style::default().bg(ground));
+        let target = 4;
+        for y in frame_inner(area).top()..frame_inner(area).bottom() {
+            if y != target {
+                buffer[(area.left() + 1, y)].set_bg(pane);
+            }
+        }
+        buffer[(area.left() + 2, target)].set_symbol("x");
+
+        for failure in [
+            row_gap_failure(&buffer, &drawing, "fixture", 0),
+            bare_band_row_failure(&buffer, &drawing, "fixture", 0),
+        ] {
+            assert!(
+                failure.is_some_and(|failure| failure.contains("row 4")),
+                "the content glyph must not hide the ground-only row"
+            );
+        }
     }
 
     #[test]
@@ -1154,8 +1704,7 @@ mod tests {
                 let buffer = draw_motion_fixture(area, &drawing);
                 if let Some(failure) = doubled_line_failure(&buffer, area, motion, raw) {
                     let frames: Vec<_> = drawing
-                        .placements
-                        .iter()
+                        .placements()
                         .map(|placement| (&placement.content, placement.frame))
                         .collect();
                     failures.push(format!(
@@ -1183,8 +1732,7 @@ mod tests {
                 "bands={:?}; frames={:?}",
                 drawing.column_bands,
                 drawing
-                    .placements
-                    .iter()
+                    .placements()
                     .map(|placement| (&placement.content, placement.frame))
                     .collect::<Vec<_>>()
             );
@@ -1212,8 +1760,7 @@ mod tests {
                 let buffer = draw_motion_fixture(area, &drawing);
                 if let Some(failure) = row_gap_failure(&buffer, &drawing, motion, raw) {
                     let frames: Vec<_> = drawing
-                        .placements
-                        .iter()
+                        .placements()
                         .map(|placement| (&placement.content, placement.frame))
                         .collect();
                     failures.push(format!("{failure}; frames={frames:?}"));
@@ -1260,10 +1807,9 @@ mod tests {
             for raw in motion_snapshots() {
                 let drawing = grid.drawing_at(area, growth, raw);
                 let buffer = draw_motion_fixture_with_width(area, &drawing, 64);
-                for placement in &drawing.placements {
+                for placement in drawing.placements() {
                     if drawing
-                        .placements
-                        .iter()
+                        .placements()
                         .filter(|other| other.content == placement.content)
                         .count()
                         < 2
@@ -1324,7 +1870,6 @@ mod tests {
         let mut buffer = Buffer::empty(buffer_area);
         draw_cell(
             &mut buffer,
-            &TileContent::<u32>::Summary,
             inner,
             1,
             inner.width,
@@ -1346,7 +1891,6 @@ mod tests {
         let mut buffer = Buffer::empty(inner);
         draw_cell(
             &mut buffer,
-            &TileContent::<u32>::Summary,
             inner,
             1,
             inner.width,
@@ -1387,7 +1931,6 @@ mod tests {
             let mut foot_buffer = Buffer::empty(inner);
             draw_cell(
                 &mut foot_buffer,
-                &TileContent::<u32>::Summary,
                 inner,
                 1,
                 width,
@@ -1406,7 +1949,6 @@ mod tests {
                 let mut empty_buffer = Buffer::empty(inner);
                 draw_cell(
                     &mut empty_buffer,
-                    &TileContent::<u32>::Summary,
                     inner,
                     1,
                     width,
@@ -1427,7 +1969,6 @@ mod tests {
         let mut buffer = Buffer::empty(inner);
         draw_cell(
             &mut buffer,
-            &TileContent::<u32>::Summary,
             inner,
             1,
             inner.width,
