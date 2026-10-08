@@ -93,48 +93,30 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 
 ### Phase 2 — Whole pids and ordered constants  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** At every width cargo-tile draws a pid whole or not at all, and the two named constants sections are in name order.
-
-**Spec:**
-
-Work only in worktree `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`.
-
-Today each non-command column asks for `max(header, widest cell)` (`fitted_constraints`, `render.rs` about 1653–1697) and `command` is `Min(7)`. ratatui honours the `Min` before the other columns' `Length`s, so a table narrower than its fitted columns clips them: `start` becomes `sta` and a seven-digit pid becomes its first digits. `table_column_spacing` (1699–1715) picks two cells or one and never checks that the table fits at one. With typical content a command table is whole from an interior width of 61 (69 with `state`), a summary table from 39 (47 with `state`).
-
-Rule: at every width, a pid is drawn whole or not drawn. This holds for the `pid` and `parent` columns, for a row promoted into the summary, and for the ancestry chain over a command table.
-
-- **Tables drop whole columns.** After `visible_columns` (1882–1910) picks the columns, `TableLayout::of` (1412–1439) drops whole columns until the fitted widths plus one-cell gaps fit the table width. Drop order, first to go first: `runs`, `compiler`, `start`, `dur`, `mem`, `cpu`, `state`, `parent`. `pid` and `command` stay while a whole pid, one gap and the `command` minimum fit. Narrower than that, the table shows `pid` alone. Narrower than a whole pid, it shows nothing. The order is a named constant in `crates/cargo-tile/src/constants.rs`, built from the `*_COLUMN` indices. `column_header` and `process_row` already draw only `layout.columns`, so headers are never cut either. `parent` goes last among the droppable columns because a narrow row must keep the identity of the cargo above it.
-- **Backstop.** `TableLayout` keeps the solved width of each column (generalize `command_column_width`, 1861–1880, into one solved-width pass). A `pid` or `parent` cell whose solved width is under its text is drawn blank.
-- **Ancestry chain.** `ancestry_lines` (1187–1216) draws a level's pid only when the indent plus the whole pid fits the width; otherwise that level's pid is left off (`ancestry_stem`, 1125–1131).
-- **Width asks.** `summary_width` (391–442) keeps asking for the full table; dropping columns is what happens when the grid cannot give it.
-- **Settings overlay.** Its diagnostics print pids in prose (`settings.rs` 375–415). The overlay breaks a word only when the value column is under seven cells, which a usable terminal never gives. This phase leaves it as it is (author's scope call).
-- **Tests** (fast, in-process, in `render.rs`'s `mod tests`, with the existing helpers): two `tight_command_row` fixtures with distinct seven-digit `pid` and `parent`; draw with `draw_process_table` for both `TableKind`s at every interior width from 0 to 90; in the `pid` and `parent` columns' solved rectangles every run of digits equals a whole fixture pid; no header is cut; at 61 and over (command) and 39 and over (summary) every column shows; the drop order is the one above. An ancestry test does the same over widths for the chain.
-- **Cost:** at most ten fit checks added per table layout, beside the one spacing check that was already there, and one solve where there was one.
-
-Constants in name order. The rule (`~/rust/nate_style/rust/constants-file-organization.md`): "Within each section, sort constants alphabetically by name." Use plain ascending ASCII order of the identifier. Each doc comment and attribute moves with its constant. No value, type or visibility changes.
-
-- `crates/cargo-tile/src/constants.rs`, `// running-cargo table` (lines 166–429, next section at 431). All `pub(crate) const` but the private `MANIFEST_PATH_FLAG` (309). The Linux constants carry `#[cfg(target_os = "linux")]` (207–219), and `CENSUS_TEST_CADENCE_DIVISOR`, `CENSUS_TEST_CPU_REPORT_MILLIS` and `CENSUS_TEST_CPU_SMOOTHING_MILLIS` each carry `#[cfg(test)]` (279–286): each attribute moves with its constant. `COMPILER_PROCESS_NAMES` uses `RUSTC_BINARY`; a forward reference is legal. `PROCESS_TREE_NOTE_LABEL`'s doc comment (about 408–412) says "Stands alone like the two above it": name them, `ATTRACT_NOTE_LABEL` and `FROZEN_NOTE_LABEL`. Comments that say a column stands beside or ahead of another are about `TABLE_HEADERS` and stay.
-- `crates/tui_pane/src/tiles/constants.rs`, `// cell readout` (lines 33–59). Name order: `TILE_FOOT_GAP`, `TILE_FOOT_LEFT_INSET`, `TILE_NUMBER_INDENT`, `TILE_ROWS_CELL_LABEL`, `TILE_ROWS_CELL_SEPARATOR`, `TILE_ROWS_CONTENT_LABEL`, `TILE_ROWS_READOUT_HEIGHT`, `TILE_ROWS_RIGHT_INSET`, `TILE_ROWS_WIDTH_LABEL`.
-- The drop-order constant this phase adds goes into the `// running-cargo table` section in name order.
+- `TableLayout::of` drops whole columns in `TABLE_COLUMN_DROP_ORDER` (runs, compiler, start, dur, mem, cpu, state, parent) until the fitted widths plus one-cell gaps fit; then `command`, then `pid`. Headers and cells are never cut.
+- `TableLayout` keeps one solved width per kept column (`column_widths`); `TableLayout::column_width` is 0 for an omitted column. A `pid` or `parent` cell narrower than its text is drawn blank (`number_text_if_fits`).
+- A table that has rows and keeps no column draws `TABLE_NO_COLUMNS_MARKER` (`…`) at the start of its first row, in the header style (`column_header_style`), and nothing else; `table_height` asks for that one row. A table with no rows, or with no interior area, draws no marker.
+- `ancestry_stem` leaves a level's pid off when the indent plus the whole pid does not fit.
+- The `// running-cargo table` section of cargo-tile's constants and the `// cell readout` section of tui_pane's tile constants are in ascending name order; `PROCESS_TREE_NOTE_LABEL`'s doc names `ATTRACT_NOTE_LABEL` and `FROZEN_NOTE_LABEL`.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs` — whole-column dropping in `TableLayout::of`, the solved-width pass, blank pid cells under their text width, ancestry pids whole or left off, the tests.
-- `crates/cargo-tile/src/constants.rs` — the `// running-cargo table` section in name order, the drop-order constant.
-- `crates/tui_pane/src/tiles/constants.rs` — the `// cell readout` section in name order.
+- `crates/cargo-tile/src/render.rs` — column dropping, solved widths, the no-room marker, blank undersized pid cells, ancestry pids, the width-sweep and marker tests
+- `crates/cargo-tile/src/constants.rs` — `TABLE_COLUMN_DROP_ORDER`, `TABLE_NO_COLUMNS_MARKER`, the section in name order
+- `crates/tui_pane/src/tiles/constants.rs` — the section in name order
 
-**Seats:** 2 writers — the work splits by file: the table code with its tests, and the two constants files. The render tests need private items of `render.rs`, so they are written with the code.
-- `impl` — `crates/cargo-tile/src/render.rs`
-- `test` — opens as impl: `crates/tui_pane/src/tiles/constants.rs`; hub: `crates/cargo-tile/src/constants.rs` (the re-sort, and the drop-order constant `impl` asks for)
+**Gotchas:**
+- A narrow layout runs up to eleven fit scans: ten from column dropping beside the spacing check that was already there.
+- A width sweep of 0 to 90 in one test passes a second inside the full suite; the sweeps are split into four width ranges per table kind.
+- With typical content a command table shows every column from an interior width of 61 (69 with `state`), a summary table from 39 (47 with `state`). The real binary shows `pid command` at 64 terminal columns, `pid` alone at 48, and the marker in tiles whose interior is under 8 cells (seen at 24 columns).
+- The grid's column count varies with how many commands run, so one terminal width does not always reach the no-room state: a capture that must show the marker needs a tile interior narrower than the indent plus a whole pid.
+- `ANCESTRY_ELISION` and `TABLE_NO_COLUMNS_MARKER` are the same character; the ancestry one sits at the chain's indent, the table one at the start of the header row.
 
-**Constraints from prior phases:**
-- Phase 1 added `CENSUS_TEST_CPU_REPORT_MILLIS` and `CENSUS_TEST_CPU_SMOOTHING_MILLIS`, both `#[cfg(test)]`, beside `CENSUS_TEST_CADENCE_DIVISOR` in the `// running-cargo table` section; they are sorted with the rest. `READER_TIMESTAMPS_ENV` is in the `// test harness` section and stays where it is.
-- Phase 1 changed no drawing code. It added a private `GridMotion` policy in `crates/cargo-tile/src/terminal.rs` whose settle-at-once variant exists only in test builds; this phase does not touch that file.
-- The reader scenarios (`crates/cargo-tile/src/shim_registration/reader_scenario.py`, a 240 by 40 terminal) read drawn table columns: `carrier_source_in_rendered` counts the unavailable cells on a row, and the CPU scenario reads the `cpu` column on every completed screen. Dropping columns must leave every column drawn in those cells at that size. `verify.sh test cargo-tile` covers them. Neither seat edits that file; a scenario that fails because a column was dropped is posted to the board for the unit director.
-- No test takes a second or more: the width sweeps are in-process and add no process start.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` green; the width-sweep tests for both table kinds and the ancestry chain pass; both constants sections are in ascending name order with every value, type and visibility unchanged (`git diff` of each section shows moved lines and the one reworded doc comment only); the real binary beside a real build at 64 columns shows whole pids and whole headers.
+**Ruled out:**
+- Treating the eleventh fit scan as a defect: it is the earlier spacing check, not added work.
+- Changing the settings overlay's pid prose: it breaks a word only under seven value cells, which a usable terminal never gives.
+- Drawing nothing for a table with rows and no room: an occupied tile then reads as empty.
 
 ### Phase 3 — Reader tests under a second on both systems  · status: todo
 
