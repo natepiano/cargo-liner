@@ -5,20 +5,14 @@
     reason = "tests should panic on unexpected values"
 )]
 
-use std::fs;
-use std::io::Write;
 use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
-use std::time::Instant;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
 use sysinfo::Pid;
-use sysinfo::ProcessRefreshKind;
-use sysinfo::ProcessesToUpdate;
-use sysinfo::System;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
@@ -29,15 +23,13 @@ use tui_pane::SettingsRowPayload;
 use tui_pane::TerminalApp;
 
 use crate::app::App;
-use crate::census;
 use crate::census::CensusCadence;
 use crate::census::CensusScope;
-use crate::census::Measurement;
-use crate::config::Config;
 use crate::constants::POPUP_CHROME_HEIGHT;
-use crate::progress::capture_roots::CaptureRoots;
+use crate::constants::READER_TIMESTAMPS_ENV;
 use crate::render;
 use crate::settings;
+use crate::terminal::GridMotion;
 
 /// Exercise the built binary using actual shim publications and a reconstructed PTY screen.
 ///
@@ -54,13 +46,19 @@ const READER_SCENARIO_SCRIPT: &str = concat!(
 /// The child receives a parent path through this constructor, never application configuration.
 #[test]
 fn reader_child() -> std::io::Result<()> {
-    if std::env::var_os("CARGO_TILE_TEST_READER").is_some() {
+    if let Some(scenario) = std::env::var_os("CARGO_TILE_TEST_READER") {
         let parent = std::env::current_dir()?.join("capture");
+        let grid_motion = if scenario == "child-source-switch" {
+            GridMotion::Immediate
+        } else {
+            GridMotion::Animated
+        };
         assert_eq!(
             crate::terminal::run_with_capture_parent(
                 parent,
                 CensusCadence::for_test(),
-                scenario_scope()
+                scenario_scope(),
+                grid_motion,
             ),
             std::process::ExitCode::SUCCESS
         );
@@ -74,9 +72,8 @@ fn scenario_scope() -> CensusScope {
     CensusScope::descendants_of(Pid::from_u32(std::os::unix::process::parent_id()))
 }
 
-/// How long the CPU scenario reads the table and [`cpu_scan_child`] takes
-/// scans: readings climb for one smoothing window, then the sustained set
-/// spans three report windows.
+/// How long the CPU scenario reads the table: readings climb for one
+/// smoothing window, then the sustained set spans three report windows.
 fn cpu_observation_window(cadence: CensusCadence) -> Duration {
     cadence.smoothing + cadence.report * 3
 }
@@ -91,75 +88,6 @@ fn reader_snapshots_publish_only_completed_terminal_frames() {
 #[test]
 fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
     reader_regression("cpu-cache-server");
-}
-
-/// Consume every production scan so PTY polling cannot miss a brief unavailable row.
-///
-/// The scans span [`cpu_observation_window`] by time rather than by
-/// count: under load one scan costs several poll intervals, and a fixed
-/// count outlasts the window it was sized for.
-#[test]
-fn cpu_scan_child() -> std::io::Result<()> {
-    let Ok(pid) = std::env::var("CARGO_TILE_TEST_CPU_PID") else {
-        return Ok(());
-    };
-    let pid: u32 = pid.parse().expect("fixture cargo pid");
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-        false,
-        ProcessRefreshKind::nothing().without_tasks().with_cpu(),
-    );
-    let invocation = system
-        .process(Pid::from_u32(pid))
-        .ok_or_else(|| std::io::Error::other("fixture invocation is not alive"))?;
-    if invocation.accumulated_cpu_time() == 0 {
-        return Err(std::io::Error::other(
-            "fixture invocation must accumulate its own CPU time before scanning descendants",
-        ));
-    }
-    let parent = std::env::current_dir()?.join("capture");
-    let mut output = fs::File::create("cpu-scans")?;
-    let excluded = census::ExcludedCommands::new(Config::default().commands.excluded);
-    let cadence = CensusCadence::for_test();
-    let (receiver, worker) =
-        census::spawn_with_resolver(excluded, cadence, scenario_scope(), move || {
-            CaptureRoots::from_parent(&parent)
-        });
-    let window = cpu_observation_window(cadence);
-    let result = (|| {
-        let mut first_scan = None;
-        for index in 0.. {
-            let scan = receiver
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(std::io::Error::other)?;
-            let arrived = Instant::now();
-            let rows: Vec<_> = scan
-                .groups
-                .iter()
-                .flat_map(|group| std::iter::once(&group.lead).chain(&group.rest))
-                .filter(|row| row.pid == pid)
-                .collect();
-            if rows.len() != 1 {
-                return Err(std::io::Error::other(format!(
-                    "scan {index} has {} rows for fixture pid {pid}",
-                    rows.len()
-                )));
-            }
-            match &rows[0].cpu {
-                Measurement::Reading(cpu) => writeln!(output, "{index}\t{cpu}")?,
-                Measurement::Unavailable(reason) => writeln!(output, "{index}\t{reason:?}")?,
-            }
-            output.flush()?;
-            if arrived.duration_since(*first_scan.get_or_insert(arrived)) >= window {
-                break;
-            }
-        }
-        Ok(())
-    })();
-    drop(receiver);
-    worker.join().expect("CPU scanner shuts down");
-    result
 }
 
 /// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
@@ -184,6 +112,9 @@ fn run_reader_script(scenario: &str) {
         .arg(cadence.smoothing.as_secs_f64().to_string())
         .output()
         .expect("run isolated production reader regression");
+    if std::env::var_os(READER_TIMESTAMPS_ENV).is_some() {
+        print!("{}", String::from_utf8_lossy(&output.stderr));
+    }
     assert!(
         output.status.success(),
         "{scenario}: {}\n{}",

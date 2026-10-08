@@ -56,6 +56,10 @@ use crate::constants::CARGO_TARGET_DIR_ENV;
 use crate::constants::CARGO_TARGET_DIR_FLAG;
 #[cfg(test)]
 use crate::constants::CENSUS_TEST_CADENCE_DIVISOR;
+#[cfg(test)]
+use crate::constants::CENSUS_TEST_CPU_REPORT_MILLIS;
+#[cfg(test)]
+use crate::constants::CENSUS_TEST_CPU_SMOOTHING_MILLIS;
 #[cfg(target_os = "linux")]
 use crate::constants::CPU_AUXV_CLOCK_TICKS;
 #[cfg(target_os = "linux")]
@@ -181,16 +185,16 @@ impl Default for CensusCadence {
 }
 
 impl CensusCadence {
-    /// Every production interval divided by [`CENSUS_TEST_CADENCE_DIVISOR`],
-    /// so a reader under test scans, smooths and reports at the
-    /// executable's proportions in a fraction of the time.
+    /// A 50 ms scan, 50 ms report interval and 100 ms smoothing window
+    /// keep PTY CPU assertions below one second while each Linux sample
+    /// still spans five clock ticks.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
         let production = Self::default();
         Self {
             poll:      production.poll / CENSUS_TEST_CADENCE_DIVISOR,
-            report:    production.report / CENSUS_TEST_CADENCE_DIVISOR,
-            smoothing: production.smoothing / CENSUS_TEST_CADENCE_DIVISOR,
+            report:    Duration::from_millis(CENSUS_TEST_CPU_REPORT_MILLIS),
+            smoothing: Duration::from_millis(CENSUS_TEST_CPU_SMOOTHING_MILLIS),
         }
     }
 

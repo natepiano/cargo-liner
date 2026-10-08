@@ -57,7 +57,33 @@ pub(crate) fn run() -> ExitCode {
         PathBuf::from(CAPTURE_ROOT),
         CensusCadence::default(),
         CensusScope::default(),
+        GridMotion::Animated,
     )
+}
+
+/// Whether tile positions travel between layouts or reach the new layout on the next poll.
+#[derive(Clone, Copy)]
+pub(crate) enum GridMotion {
+    Animated,
+    #[cfg(test)]
+    Immediate,
+}
+
+impl GridMotion {
+    #[cfg(not(test))]
+    const fn settle_if_immediate(self, _app: &mut App) {
+        match self {
+            Self::Animated => {},
+        }
+    }
+
+    #[cfg(test)]
+    fn settle_if_immediate(self, app: &mut App) {
+        match self {
+            Self::Animated => {},
+            Self::Immediate => app.tiles.settle_for_test(),
+        }
+    }
 }
 
 /// The executable supplies the fixed parent, the production cadence and
@@ -67,16 +93,23 @@ pub(crate) fn run_with_capture_parent(
     parent: PathBuf,
     cadence: CensusCadence,
     scope: CensusScope,
+    grid_motion: GridMotion,
 ) -> ExitCode {
-    run_with_scanner(move |excluded| {
-        census::spawn_with_resolver(excluded, cadence, scope, move || {
-            crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
-        })
-        .0
-    })
+    run_with_scanner(
+        move |excluded| {
+            census::spawn_with_resolver(excluded, cadence, scope, move || {
+                crate::progress::capture_roots::CaptureRoots::from_parent(&parent)
+            })
+            .0
+        },
+        grid_motion,
+    )
 }
 
-fn run_with_scanner(spawn: impl FnOnce(ExcludedCommands) -> Receiver<Scan>) -> ExitCode {
+fn run_with_scanner(
+    spawn: impl FnOnce(ExcludedCommands) -> Receiver<Scan>,
+    grid_motion: GridMotion,
+) -> ExitCode {
     let loaded_config = LoadedConfig::load::<CargoTile>();
     let startup_note = install_theme(
         &loaded_config.config.appearance,
@@ -96,7 +129,7 @@ fn run_with_scanner(spawn: impl FnOnce(ExcludedCommands) -> Receiver<Scan>) -> E
     capture::stand_up(&mut app);
 
     run_terminal(&mut app, &iterm2_profile, |app| {
-        Workers::new(spawn(app.excluded_commands.clone()))
+        Workers::new(spawn(app.excluded_commands.clone()), grid_motion)
     })
 }
 
@@ -111,16 +144,19 @@ struct Workers {
     sccache_reads:   Sender<SccacheSummary>,
     /// Where those reads reply.
     sccache_replies: Receiver<SccacheSummary>,
+    /// PTY regressions settle motion so their assertions wait on data, not presentation time.
+    grid_motion:     GridMotion,
 }
 
 impl Workers {
     /// Poll `scans`, with a fresh channel for the sccache reads.
-    fn new(scans: Receiver<Scan>) -> Self {
+    fn new(scans: Receiver<Scan>, grid_motion: GridMotion) -> Self {
         let (sccache_reads, sccache_replies) = mpsc::channel();
         Self {
             scans,
             sccache_reads,
             sccache_replies,
+            grid_motion,
         }
     }
 }
@@ -163,6 +199,7 @@ impl PollWork<App> for Workers {
             // which is the one thing here that draws without an event
             // behind it.
             if app.tiles.tick() {
+                self.grid_motion.settle_if_immediate(app);
                 dirty = true;
             }
             // The attract screen is the other: it asks for frames on its

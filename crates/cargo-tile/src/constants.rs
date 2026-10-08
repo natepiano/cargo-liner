@@ -46,6 +46,11 @@ pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 #[cfg(test)]
 pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
 
+// test harness
+/// Enables reader-harness timestamp output for a requested timing run.
+#[cfg(test)]
+pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
+
 // lifecycle
 /// The binary's own name: what the command line calls itself in help
 /// and in anything it reports going wrong, and the fallback executable
@@ -266,15 +271,19 @@ pub(crate) const CPU_REPORT_MILLIS: u64 = 1000;
 /// instead of taking it, over a window long enough to average a burst
 /// out and short enough that a build ramping up is not left behind.
 pub(crate) const CPU_SMOOTHING_SECONDS: f32 = 2.0;
-/// What `CensusCadence::for_test` divides every production interval by.
+/// What `CensusCadence::for_test` divides the production poll interval by.
 ///
 /// A 50 ms scan still spans five of Linux's 10 ms clock ticks
 /// (`USER_HZ` is 100), so a sampled CPU share keeps its resolution; the
-/// scan never goes below that. The smoothing window shrinks in step, so
-/// the smoothing factor (0.1175) and each sample's weight stay the
-/// executable's.
+/// scan never goes below that.
 #[cfg(test)]
 pub(crate) const CENSUS_TEST_CADENCE_DIVISOR: u32 = 5;
+/// How long a CPU reading is held in PTY tests, in milliseconds.
+#[cfg(test)]
+pub(crate) const CENSUS_TEST_CPU_REPORT_MILLIS: u64 = 50;
+/// The CPU smoothing window in PTY tests, in milliseconds.
+#[cfg(test)]
+pub(crate) const CENSUS_TEST_CPU_SMOOTHING_MILLIS: u64 = 100;
 /// `chrono` format for the `start` column.
 pub(crate) const START_TIME_FORMAT: &str = "%H:%M";
 /// Seconds in a minute, for splitting a run time into its parts.
