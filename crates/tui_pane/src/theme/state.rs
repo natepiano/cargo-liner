@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use super::Appearance;
@@ -13,6 +14,7 @@ use crate::AppIdentity;
 use crate::AppearanceConfig;
 
 /// The system appearance retained for resolving `appearance.mode = "auto"`.
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RememberedAppearance {
     /// The system setting has not supplied a light or dark value.
@@ -24,6 +26,18 @@ pub(crate) enum RememberedAppearance {
 }
 
 impl RememberedAppearance {
+    const fn code(self) -> u8 { self as u8 }
+
+    const fn from_code(code: u8) -> Self {
+        if code == Self::Light as u8 {
+            Self::Light
+        } else if code == Self::Dark as u8 {
+            Self::Dark
+        } else {
+            Self::NotObserved
+        }
+    }
+
     /// Convert at the boundary of the existing resolver API.
     pub(crate) const fn observed(self) -> Option<Appearance> {
         match self {
@@ -58,7 +72,10 @@ impl From<Appearance> for RememberedAppearance {
 pub struct ThemeState {
     registry:              RwLock<Arc<ThemeRegistry>>,
     current:               RwLock<Arc<Theme>>,
-    remembered_appearance: RwLock<RememberedAppearance>,
+    /// The last system appearance. Every writer runs on the app's terminal
+    /// thread: the watcher callback only sends through a channel, and settings
+    /// application also runs there.
+    remembered_appearance: AtomicU8,
     /// When true, [`PaneChrome::block`](crate::PaneChrome::block) paints
     /// a subtle background tint behind the focused pane to lift it
     /// from neighbours. Defaults to true; client apps can mirror their
@@ -90,7 +107,7 @@ impl ThemeState {
         Self {
             registry:              RwLock::new(Arc::new(registry)),
             current:               RwLock::new(Arc::new(initial)),
-            remembered_appearance: RwLock::new(RememberedAppearance::NotObserved),
+            remembered_appearance: AtomicU8::new(RememberedAppearance::NotObserved.code()),
             focused_pane_tint:     AtomicBool::new(true),
             transparent:           AtomicBool::new(true),
         }
@@ -116,14 +133,7 @@ impl ThemeState {
     }
 
     fn remembered_appearance(&self) -> RememberedAppearance {
-        #[expect(
-            clippy::expect_used,
-            reason = "a panic while recording the system appearance leaves no reliable value"
-        )]
-        *self
-            .remembered_appearance
-            .read()
-            .expect("appearance RwLock poisoned")
+        RememberedAppearance::from_code(self.remembered_appearance.load(Ordering::Relaxed))
     }
 
     fn replace_active_theme(&self, theme: Arc<Theme>) {
@@ -152,15 +162,10 @@ fn apply_system_appearance_to<I: AppIdentity>(
     observed: Appearance,
     appearance: &AppearanceConfig<I>,
 ) -> Option<String> {
-    #[expect(
-        clippy::expect_used,
-        reason = "a panic while recording the system appearance leaves no reliable value"
-    )]
-    let mut remembered = state
+    let remembered = RememberedAppearance::from(observed);
+    state
         .remembered_appearance
-        .write()
-        .expect("appearance RwLock poisoned");
-    *remembered = observed.into();
+        .store(remembered.code(), Ordering::Relaxed);
     let registry = state.theme_registry();
     let resolved = registry.resolve_active(
         &appearance.mode,
@@ -170,7 +175,6 @@ fn apply_system_appearance_to<I: AppIdentity>(
     );
     let notice = resolution_notice(&resolved);
     state.replace_active_theme(resolved.theme);
-    drop(remembered);
     notice
 }
 
@@ -333,6 +337,24 @@ mod tests {
             appearance,
             theme: fallback_theme(appearance),
         }
+    }
+
+    #[test]
+    fn remembered_appearance_codes_round_trip() {
+        for appearance in [
+            RememberedAppearance::NotObserved,
+            RememberedAppearance::Light,
+            RememberedAppearance::Dark,
+        ] {
+            assert_eq!(
+                RememberedAppearance::from_code(appearance.code()),
+                appearance
+            );
+        }
+        assert_eq!(
+            RememberedAppearance::from_code(u8::MAX),
+            RememberedAppearance::NotObserved
+        );
     }
 
     #[test]
