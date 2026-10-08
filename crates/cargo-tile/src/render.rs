@@ -4884,15 +4884,15 @@ mod tests {
     }
 
     /// Check every inner width for one table kind.
-    fn assert_whole_table_columns(
-        kind: TableKind,
-        full_width: u16,
-        interior_widths: impl Iterator<Item = u16>,
-    ) {
+    fn assert_whole_table_columns(kind: TableKind, interior_widths: impl Iterator<Item = u16>) {
         let rows = whole_pid_rows();
         let row_refs: Vec<&TrackedRow> = rows.iter().collect();
         let indent = cell_width(SECTION_ITEM_INDENT);
         let full_columns = visible_columns(&row_refs, kind);
+        let full_width = table_width_with_spacing(
+            &fitted_constraints(&row_refs, &full_columns),
+            TIGHT_TABLE_COLUMN_SPACING,
+        );
         for interior_width in interior_widths {
             let area = Rect::new(0, 0, interior_width + indent, 8);
             let layout = TableLayout::of(&row_refs, kind, area, Color::Reset, ProcessTree::Long);
@@ -4945,42 +4945,42 @@ mod tests {
 
     #[test]
     fn command_widths_0_to_22_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Command, 61, 0..=22);
+        assert_whole_table_columns(TableKind::Command, 0..=22);
     }
 
     #[test]
     fn command_widths_23_to_45_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Command, 61, 23..=45);
+        assert_whole_table_columns(TableKind::Command, 23..=45);
     }
 
     #[test]
     fn command_widths_46_to_68_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Command, 61, 46..=68);
+        assert_whole_table_columns(TableKind::Command, 46..=68);
     }
 
     #[test]
     fn command_widths_69_to_90_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Command, 61, 69..=90);
+        assert_whole_table_columns(TableKind::Command, 69..=90);
     }
 
     #[test]
     fn summary_widths_0_to_22_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Summary, 39, 0..=22);
+        assert_whole_table_columns(TableKind::Summary, 0..=22);
     }
 
     #[test]
     fn summary_widths_23_to_45_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Summary, 39, 23..=45);
+        assert_whole_table_columns(TableKind::Summary, 23..=45);
     }
 
     #[test]
     fn summary_widths_46_to_68_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Summary, 39, 46..=68);
+        assert_whole_table_columns(TableKind::Summary, 46..=68);
     }
 
     #[test]
     fn summary_widths_69_to_90_draw_whole_pids_headers_and_columns() {
-        assert_whole_table_columns(TableKind::Summary, 39, 69..=90);
+        assert_whole_table_columns(TableKind::Summary, 69..=90);
     }
 
     #[test]

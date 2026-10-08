@@ -46,11 +46,6 @@ pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 #[cfg(test)]
 pub(crate) const POPUP_CHROME_HEIGHT: u16 = 2;
 
-// test harness
-/// Enables reader-harness timestamp output for a requested timing run.
-#[cfg(test)]
-pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
-
 // lifecycle
 /// The binary's own name: what the command line calls itself in help
 /// and in anything it reports going wrong, and the fallback executable
@@ -111,6 +106,11 @@ pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 /// Rows the status line occupies along the bottom of the terminal.
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
+
+// test harness
+/// Enables reader-harness timestamp output for a requested timing run.
+#[cfg(test)]
+pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
 
 // tiles
 /// `tiles.widen_summary` when `config.toml` says nothing: the summary
