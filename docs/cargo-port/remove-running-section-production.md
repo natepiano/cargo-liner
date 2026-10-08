@@ -17,13 +17,13 @@
 
 ## Units
 
-| Unit | Plan | Worktree | Branch | Session | Port | Owns |
-| --- | --- | --- | --- | --- | --- | --- |
-| cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | `cargo-port-cleanup` (closed) | — | `crates/cargo-port`, `docs/cargo-port` |
-| cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | `cargo-tile` (closed) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
-| berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | `berth-flake` (closed) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
-| tile-mem-unit | `docs/cargo-tile/as-built/memory-column.md` (as-built; plan done) | removed 2026-10-08 | `main-tile-mem` (deleted) | `tile-mem` (closed) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
-| tile-fixes-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile-fixes | remove-running-section-tile-fixes | tile-fixes | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
+| Unit | Plan | Worktree | Branch | Port | Owns |
+| --- | --- | --- | --- | --- | --- |
+| cleanup-unit | `docs/cargo-port/as-built/targets-pane.md` (as-built; plan done) | removed 2026-10-06 | `cleanup/running` (deleted) | — | `crates/cargo-port`, `docs/cargo-port` |
+| cargo-tile | `docs/cargo-tile/as-built/summary-depth.md` (as-built; plan done) | removed 2026-10-06 | `enh/cargo-tile` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
+| berth-flake-unit | `docs/cargo-berth/as-built/test-git-and-discovery.md` (as-built; plan done) | removed 2026-10-06 | `fix/berth-flake` (deleted) | — | `crates/cargo-berth`, `crates/cargo-berth-test-support`, `docs/cargo-berth` |
+| tile-mem-unit | `docs/cargo-tile/as-built/memory-column.md` (as-built; plan done) | removed 2026-10-08 | `main-tile-mem` (deleted) | — | `crates/tui_pane`, `crates/cargo-tile`, `crates/cargo-handler`, `docs/cargo-tile` |
+| tile-fixes-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile-fixes | remove-running-section-tile-fixes | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
 
 ## Hub files
 
