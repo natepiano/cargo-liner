@@ -5,7 +5,11 @@
     reason = "tests should panic on unexpected values"
 )]
 
+use std::fs;
+use std::fs::File;
 use std::process::Command;
+use std::process::ExitStatus;
+use std::process::Stdio;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -94,12 +98,37 @@ fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
 /// The reader receives the shim's actual records, with no copied Rust implementation.
 fn reader_regression(scenario: &str) { run_reader_script(scenario); }
 
+#[derive(Clone, Copy)]
+enum ScenarioDeadline {
+    Default,
+    After(Duration),
+}
+
+struct ReaderScenarioResult {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 /// The parser self-check uses the same script without starting a reader.
 fn run_reader_script(scenario: &str) {
+    let output = reader_script_result(scenario, ScenarioDeadline::Default);
+    assert!(
+        output.status.success(),
+        "{scenario}: {}\n{}",
+        reader_diagnostics(&output.stderr),
+        reader_diagnostics(&output.stdout)
+    );
+}
+
+fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderScenarioResult {
     let directory = tempfile::tempdir().expect("isolate writer and reader processes");
+    let stdout_path = directory.path().join("scenario.stdout");
+    let stderr_path = directory.path().join("scenario.stderr");
     // The script times its CPU observation against the reader's own windows.
     let cadence = CensusCadence::for_test();
-    let output = Command::new("python3")
+    let mut command = Command::new("python3");
+    command
         .arg(READER_SCENARIO_SCRIPT)
         .arg(directory.path())
         .arg(std::env::current_exe().expect("integration reader executable"))
@@ -110,17 +139,28 @@ fn run_reader_script(scenario: &str) {
         .arg(scenario)
         .arg(cpu_observation_window(cadence).as_secs_f64().to_string())
         .arg(cadence.smoothing.as_secs_f64().to_string())
-        .output()
-        .expect("run isolated production reader regression");
-    if std::env::var_os(READER_TIMESTAMPS_ENV).is_some() {
-        print!("{}", String::from_utf8_lossy(&output.stderr));
+        .stdout(Stdio::from(
+            File::create(&stdout_path).expect("create reader scenario stdout file"),
+        ))
+        .stderr(Stdio::from(
+            File::create(&stderr_path).expect("create reader scenario stderr file"),
+        ));
+    if let ScenarioDeadline::After(duration) = deadline {
+        command.arg(duration.as_secs_f64().to_string());
     }
-    assert!(
-        output.status.success(),
-        "{scenario}: {}\n{}",
-        reader_diagnostics(&output.stderr),
-        reader_diagnostics(&output.stdout)
-    );
+    let status = command
+        .status()
+        .expect("run isolated production reader regression");
+    let stdout = fs::read(stdout_path).expect("read reader scenario stdout file");
+    let stderr = fs::read(stderr_path).expect("read reader scenario stderr file");
+    if std::env::var_os(READER_TIMESTAMPS_ENV).is_some() {
+        print!("{}", String::from_utf8_lossy(&stderr));
+    }
+    ReaderScenarioResult {
+        status,
+        stdout,
+        stderr,
+    }
 }
 
 /// Keep failed assertions readable without hundreds of empty terminal cells.
@@ -141,6 +181,27 @@ fn reader_diagnostics(output: &[u8]) -> String {
 #[test]
 fn reader_opens_settings_when_resize_and_key_are_pending_together() {
     reader_regression("settings-scroll-burst");
+}
+
+/// A reader that ignores its end request cannot keep the script alive by filling its terminal.
+#[test]
+fn reader_end_deadline_kills_a_reader_that_ignores_end_and_keeps_writing() {
+    run_reader_script("--reader-end-self-check");
+}
+
+/// The process-wide deadline identifies the scenario and pending predicate.
+#[test]
+fn reader_scenario_deadline_names_scenario_and_pending_wait() {
+    let scenario = "--scenario-deadline-self-check";
+    let output = reader_script_result(scenario, ScenarioDeadline::After(Duration::from_millis(50)));
+    let stderr = reader_diagnostics(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "--scenario-deadline-self-check exceeded 0.05 seconds while waiting for deadline self-check predicate"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]

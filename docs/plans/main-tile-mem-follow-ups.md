@@ -39,7 +39,7 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
   - `crates/cargo-tile/tests/shim_modes.rs` — run helpers (204–215, 331–361), `symlinked_capture_directories_preserve_cargo_and_target_contents` (774–805), `no_terminal_returns_cargo_exit_status` (1031–1057), `relative_home_is_omitted_from_registration_but_preserved_for_cargo` (1159–1186), `signal_to_the_shim_alone_waits_for_cargo`.
   - `.config/nextest.toml` — slot rules for the reader tests (1–30). Not changed by this plan.
   - `crates/cargo-tile/src/render.rs` — `summary_width` (391–442), `summary_rows` (648–670), ancestry `Paragraph` (959–982), `ancestry_stem` (1125–1131), `ancestry_lines` (1187–1216), `TableLayout::of` (1412–1439), `fitted_constraints` (1653–1697), `table_column_spacing` (1699–1715), `column_header` (1720–1729), pid and parent cells (1778–1818), `command_column_width` (1861–1880), `visible_columns` (1882–1910), `mod tests` from 2189.
-  - `crates/cargo-tile/src/constants.rs` — `// running-cargo table` section (161–420; the next section starts at 422), `TABLE_HEADERS` and the `*_COLUMN` indices, `TABLE_COLUMN_SPACING`, `TIGHT_TABLE_COLUMN_SPACING`.
+  - `crates/cargo-tile/src/constants.rs` — `// running-cargo table` section (166–429; the next section starts at 431), `TABLE_HEADERS` and the `*_COLUMN` indices, `TABLE_COLUMN_SPACING`, `TIGHT_TABLE_COLUMN_SPACING`.
   - `crates/tui_pane/src/tiles/constants.rs` — `// cell readout` section (33–59; the next section starts at 61).
   - `crates/cargo-tile/src/settings.rs` — pid text in settings diagnostics (375–415). Not changed by this plan.
   - `~/rust/nate_style/rust/constants-file-organization.md` — the constants rule: "Within each section, sort constants alphabetically by name."
@@ -62,57 +62,34 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 
 ### Phase 1 — Fast cargo-tile tests  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** No cargo-tile test takes a second or more in `verify.sh test cargo-tile` on the loaded machine, and each test named below runs in about half a second or less.
-
-**Spec:**
-
-Work only in worktree `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`.
-
-Measured 2026-10-07 16:15 PDT with `verify.sh test cargo-tile`, machine load average about 41: 749 tests passed. Five took a second or more, all in `shim_registration::reader_scenarios`: `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` 2.9s, `reader_keeps_one_direct_row_for_quiet_json` 1.5s, `reader_keeps_parent_family_across_its_only_childs_source_switch` 1.4s, `reader_ignores_foreign_owned_account_and_reports_its_owner_in_settings` 1.4s, `reader_excludes_a_live_command_without_sweeping_its_capture` 1.3s. Under the heavier load of a merge run these also crossed a second: `wire::darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback` 2.1s, `census::scan::tests::repeated_scans_reuse_roots_resolved_before_an_ancestor_alias_changes` 2.0s, three `shim_modes` tests 1.7–1.9s, `wire::non_json_arguments_preserve_both_quiet_spellings` 1.7s. At load 41 those ran at 0.4–0.75s, as did `reader_opens_settings_when_resize_and_key_are_pending_together` 0.73s, `reader_accepts_live_writer_under_different_locale_and_timezone` 0.55s, `spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans` 0.64s and `signal_to_the_shim_alone_waits_for_cargo` 0.75s.
-
-Target: no cargo-tile test at or over one second, and each test named here at or under about half a second, so heavier load does not push it back over. A test left over a second is reported by name with the product behavior that sets its floor. No test in this list sleeps on purpose: the time is process starts and repeated setup. No product behavior changes; the only product-side code is the `#[cfg(test)]` cadence.
-
-Reader scenarios (`reader_scenarios.rs`, `reader_scenario.py`). Each scenario starts Python (`reader_scenarios.rs` 170–186), builds a fixture tree and copies a shell as `cargo-tile-real` (`reader_scenario.py` 58–60, 94–98), runs `locale -a` (145–148) whether or not locale is under test, starts each writer through the real shim (186–233; a shell, the shim, its setup utilities, a fake cargo, `tee`), and forks a PTY that re-execs the test binary as `reader_child` (1010–1017). Each scan refreshes every process on the host (`census/scan.rs` 512–516). Test cadence is production divided by five: 50 ms poll, 200 ms cpu report, 400 ms smoothing (`invocation_cpu_accounting.rs` 183–194).
-
-1. First add phase timestamps to the Python harness (Python start, each writer, reader exec, first frame, assertions, cleanup), printed only on request, so each change below is measured. They stay in the harness.
-2. Run `locale -a` only for the locale scenario. Move the terminal-frame self-check ahead of fixture and locale setup (`reader_snapshots_publish_only_completed_terminal_frames` exits at 929–931 after paying for both).
-3. Locale scenario: every writer already runs under the differing locale and timezone, so fold its assertions into another live-reader scenario and drop its own reader launch. The test `reader_accepts_live_writer_under_different_locale_and_timezone` keeps its name and still fails when a writer under a different locale or timezone is not accepted.
-4. Foreign-owner scenario: copy the first live writer's publication into the foreign root with the foreign metadata in place of starting a second writer (983–984). It still proves a foreign-owned publication cannot relabel a live cargo pid.
-5. Resize-and-key scenario: end the PTY test once the queued resize and key open settings (729–778). Move the walk over 24 accounts and five settings (781–833) to an in-process `TestBackend` test beside `settings_click_after_navigation_selects_the_row_still_drawn` (`reader_scenarios.rs` 215–272).
-6. Cpu-attribution scenario: the only one with a real floor, smoothing plus three report windows. Give it a `#[cfg(test)]` cadence through `CensusCadence`: 50 ms poll, 50 ms report, 100 ms smoothing, so the window is 250 ms and a sample still spans five Linux clock ticks. Any number it needs is a named constant in `crates/cargo-tile/src/constants.rs`, beside `CENSUS_TEST_CADENCE_DIVISOR`.
-7. Quiet-JSON scenario: make the quiet writer the first writer in place of a generic writer followed by a quiet one (937, 971–979).
-8. Excluded scenario: make the excluded enclosing writer the first writer and seed the ended sibling's registration and log directly with a known-ended pid (985–999, 295–301). Both live nested commands stay.
-9. Source-switch scenario (`reader_keeps_parent_family_across_its_only_childs_source_switch`, 240–293, 671–684): use the timestamps to find what it waits on and cut it; the shared changes above apply.
-10. `.config/nextest.toml` stays as it is. A test's reported time starts when the test starts, so the slot rules add queueing, not measured time, and the all-slots rule was added for a real flake.
-
-`wire::non_json_arguments_preserve_both_quiet_spellings` (`wire.rs` 591–596): three `assert_executed_arguments` calls, each with a new temporary installation (31–64), a utility-locator shell (96–103) and a full shim run. Share one installation and one utility lookup across a test's runs, each run in its own observations subdirectory, so each spelling is still proved alone. Use the same helper in the other multi-run `wire` tests (`json_arguments_preserve_both_quiet_spellings_after_separator`, `darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment`, and any other test that installs more than once).
-
-`wire::darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback` (955–990): two full setups and six Python launches. One installation; the two real shim runs stay; the standalone Python wall-time calls (962–969) go, replaced by an in-process conversion or by the mocked `ps` adapter recording the local time it produced; a shell observer serves the two fixed timestamps where Python is not needed. The test must still show the two epochs share local 01:30 and publish different birth fields.
-
-`census::scan::tests::repeated_scans_reuse_roots_resolved_before_an_ancestor_alias_changes` (`census/scan.rs` about 5823–5901): two full host scans to prove something about `CaptureRoots`. Call `Capture::take_roots(&roots, observer)` twice with `KernelObservation::for_test(..., Observation::Ended)` for the seeded records, retargeting the alias between the calls; keep the file-presence assertions. Check `spawn_returns_while_root_resolution_waits_and_resolves_once_across_scans` for the same cost and cut it the same way where it applies.
-
-`shim_modes` (`crates/cargo-tile/tests/shim_modes.rs`): the slow tests are serial matrices of full shim runs. Split each cell into its own test behind one shared helper: `symlinked_capture_directories_preserve_cargo_and_target_contents` (six cells: three symlink positions by two capture paths, 774–805), `relative_home_is_omitted_from_registration_but_preserved_for_cargo` (four cells: two capture paths by two HOME values, 1159–1186), `no_terminal_returns_cargo_exit_status` (statuses 0, 1, 255 and a SIGKILL case, 1031–1057). Each new test's name states its cell. Measure `signal_to_the_shim_alone_waits_for_cargo` and cut what it waits on, or name its floor.
-
-Each seat times its own tests with `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and reports the before and after time of every test it changed.
+- The shim signal tests wait on a handshake with the fixture cargo: it writes `cargo-held`, waits for `release-cargo`, then writes `cargo-finished`. `run_detached_after_start` runs the check between the two. Each of the three tests takes about 0.06s.
+- `darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback` asserts in process that the two epochs are an hour apart and give equal local time.
+- `spawn_resolved_scan_loop` (private, `census/scan.rs`) is the scan worker's loop. `spawn_with_resolver` calls it, and the worker test drives it with a cheap scanner and asserts one root resolution across two scans.
+- `CensusCadence::for_test` polls and reports every 50 ms and smooths over 100 ms, from `CENSUS_TEST_CPU_REPORT_MILLIS` and `CENSUS_TEST_CPU_SMOOTHING_MILLIS`.
+- The reader scenarios use a shell carrier with a seeded registration and read readiness from the drawn row at each source. `CompletedTerminalFrames` queues every completed screen; the CPU scenario checks each one in its 250 ms window and starts no extra process.
+- `GridMotion` (private, `terminal.rs`) is `Animated` in the shipped binary. A `#[cfg(test)]` `Immediate` variant settles tile motion at once, for the source-switch reader only.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — scenario entry tests, the new in-process settings walk test, the cpu scenario's cadence.
-- `crates/cargo-tile/src/shim_registration/reader_scenario.py` — timestamps, `locale -a` only for locale, self-check first, fewer writers per scenario.
-- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — the `#[cfg(test)]` cadence on `CensusCadence`.
-- `crates/cargo-tile/src/constants.rs` — named numbers for that cadence.
-- `crates/cargo-tile/src/shim_registration/wire.rs` — one installation per test, no standalone Python wall-time calls.
-- `crates/cargo-tile/src/census/scan.rs` — the two census tests only.
-- `crates/cargo-tile/tests/shim_modes.rs` — one test per matrix cell.
+- `crates/cargo-tile/tests/shim_modes.rs` — the shim signal handshake tests
+- `crates/cargo-tile/src/shim_registration/wire.rs` — the in-process Darwin birth-time test
+- `crates/cargo-tile/src/census/scan.rs` — the scan loop and its worker test
+- `crates/cargo-tile/src/census/invocation_cpu_accounting.rs` — the test cadence
+- `crates/cargo-tile/src/constants.rs` — the two test cadence constants and `READER_TIMESTAMPS_ENV`
+- `crates/cargo-tile/src/shim_registration/reader_scenario.py`, `reader_scenarios.rs` — the reader scenarios and their entry tests
+- `crates/cargo-tile/src/terminal.rs` — the motion policy
 
-**Seats:** 2 writers — the work splits by file group: the reader scenarios, and every other slow test. No tester: the phase is itself test code.
-- `impl` — `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py`, `crates/cargo-tile/src/census/invocation_cpu_accounting.rs`; hub: `crates/cargo-tile/src/constants.rs` (the cadence constants)
-- `test` — opens as impl: `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/census/scan.rs`, `crates/cargo-tile/tests/shim_modes.rs`
+**Binds later work:** the reader scenarios read drawn table columns in a 240 by 40 terminal, so a change to which columns a table draws must leave them whole at that size. The two test cadence constants sit in the `// running-cargo table` section of `constants.rs`.
 
-**Constraints from prior phases:**
+**Gotchas:**
+- A reader scenario that waits for a row inside a newly opened tile pays the grid's 720 ms opening animation unless its reader uses the settle-at-once policy.
+- `reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` has a floor of the 250 ms window plus the reader's 0.3s start: 0.67s alone, and over a second once under heavy machine load.
+- The shell handshake, the ended-pid choice and the in-process Darwin test were first run on Linux only.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green, with no test at or over one second in its output and each test named in the Spec at or under about half a second (a test over that is named with what sets its floor); `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; every test that was split or reshaped is listed with what it still proves.
+**Ruled out:**
+- A separate scan-watching child process for the CPU scenario: it cost a process start, and checking every completed screen proves the same.
+- Treating the source-switch scenario's first second as a product floor: it was presentation time.
 
 ### Phase 2 — Whole pids and ordered constants  · status: todo
 
@@ -138,7 +115,7 @@ Rule: at every width, a pid is drawn whole or not drawn. This holds for the `pid
 
 Constants in name order. The rule (`~/rust/nate_style/rust/constants-file-organization.md`): "Within each section, sort constants alphabetically by name." Use plain ascending ASCII order of the identifier. Each doc comment and attribute moves with its constant. No value, type or visibility changes.
 
-- `crates/cargo-tile/src/constants.rs`, `// running-cargo table` (lines 161–420, next section at 422). All `pub(crate) const` but the private `MANIFEST_PATH_FLAG`. The Linux constants carry `#[cfg(target_os = "linux")]` (202–214) and `CENSUS_TEST_CADENCE_DIVISOR` carries `#[cfg(test)]` (276): each attribute moves with its constant. `COMPILER_PROCESS_NAMES` uses `RUSTC_BINARY`; a forward reference is legal. `PROCESS_TREE_NOTE_LABEL`'s doc comment (399–403) says "Stands alone like the two above it": name them, `ATTRACT_NOTE_LABEL` and `FROZEN_NOTE_LABEL`. Comments that say a column stands beside or ahead of another are about `TABLE_HEADERS` and stay.
+- `crates/cargo-tile/src/constants.rs`, `// running-cargo table` (lines 166–429, next section at 431). All `pub(crate) const` but the private `MANIFEST_PATH_FLAG` (309). The Linux constants carry `#[cfg(target_os = "linux")]` (207–219), and `CENSUS_TEST_CADENCE_DIVISOR`, `CENSUS_TEST_CPU_REPORT_MILLIS` and `CENSUS_TEST_CPU_SMOOTHING_MILLIS` each carry `#[cfg(test)]` (279–286): each attribute moves with its constant. `COMPILER_PROCESS_NAMES` uses `RUSTC_BINARY`; a forward reference is legal. `PROCESS_TREE_NOTE_LABEL`'s doc comment (about 408–412) says "Stands alone like the two above it": name them, `ATTRACT_NOTE_LABEL` and `FROZEN_NOTE_LABEL`. Comments that say a column stands beside or ahead of another are about `TABLE_HEADERS` and stay.
 - `crates/tui_pane/src/tiles/constants.rs`, `// cell readout` (lines 33–59). Name order: `TILE_FOOT_GAP`, `TILE_FOOT_LEFT_INSET`, `TILE_NUMBER_INDENT`, `TILE_ROWS_CELL_LABEL`, `TILE_ROWS_CELL_SEPARATOR`, `TILE_ROWS_CONTENT_LABEL`, `TILE_ROWS_READOUT_HEIGHT`, `TILE_ROWS_RIGHT_INSET`, `TILE_ROWS_WIDTH_LABEL`.
 - The drop-order constant this phase adds goes into the `// running-cargo table` section in name order.
 
@@ -151,6 +128,10 @@ Constants in name order. The rule (`~/rust/nate_style/rust/constants-file-organi
 - `impl` — `crates/cargo-tile/src/render.rs`
 - `test` — opens as impl: `crates/tui_pane/src/tiles/constants.rs`; hub: `crates/cargo-tile/src/constants.rs` (the re-sort, and the drop-order constant `impl` asks for)
 
-**Constraints from prior phases:** Phase 1 may add cadence constants beside `CENSUS_TEST_CADENCE_DIVISOR` in the `// running-cargo table` section; they are sorted with the rest. Phase 1 changes no drawing code.
+**Constraints from prior phases:**
+- Phase 1 added `CENSUS_TEST_CPU_REPORT_MILLIS` and `CENSUS_TEST_CPU_SMOOTHING_MILLIS`, both `#[cfg(test)]`, beside `CENSUS_TEST_CADENCE_DIVISOR` in the `// running-cargo table` section; they are sorted with the rest. `READER_TIMESTAMPS_ENV` is in the `// test harness` section and stays where it is.
+- Phase 1 changed no drawing code. It added a private `GridMotion` policy in `crates/cargo-tile/src/terminal.rs` whose settle-at-once variant exists only in test builds; this phase does not touch that file.
+- The reader scenarios (`crates/cargo-tile/src/shim_registration/reader_scenario.py`, a 240 by 40 terminal) read drawn table columns: `carrier_source_in_rendered` counts the unavailable cells on a row, and the CPU scenario reads the `cpu` column on every completed screen. Dropping columns must leave every column drawn in those cells at that size. `verify.sh test cargo-tile` covers them. Neither seat edits that file; a scenario that fails because a column was dropped is posted to the board for the unit director.
+- No test takes a second or more: the width sweeps are in-process and add no process start.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` green; the width-sweep tests for both table kinds and the ancestry chain pass; both constants sections are in ascending name order with every value, type and visibility unchanged (`git diff` of each section shows moved lines and the one reworded doc comment only); the real binary beside a real build at 64 columns shows whole pids and whole headers.
