@@ -118,7 +118,7 @@ Also from the showrunner, for the as-built amendment: `docs/cargo-tile/as-built/
 - Changing the settings overlay's pid prose: it breaks a word only under seven value cells, which a usable terminal never gives.
 - Drawing nothing for a table with rows and no room: an occupied tile then reads as empty.
 
-### Phase 3 — Reader tests under a second on both systems  · status: todo
+### Phase 3 — Reader tests under a second on both systems  · status: done
 
 #### Work Order
 
@@ -164,3 +164,39 @@ The Mac: the unit director runs the Mac measurements and sends the numbers to th
 - These tests also run on macOS in CI: no GNU-only tool use.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` green; every `shim_registration::reader_scenarios::` test under a second alone on Linux and, run by the unit director, on the Mac; the once-hung test passes 150 times under CPU load on the Mac; in-suite times for both systems are in the checkpoint notice.
+
+### Phase 4 — Mem total whole or absent  · status: todo
+
+#### Work Order
+
+**Goal:** The summary tile's memory total is drawn whole, value with its unit, or not at all, at every width.
+
+**Spec:** Work only in worktree `/home/natepiano/rust/cargo-liner-tile-mem`, branch `main-tile-mem`.
+
+The showrunner's routing, verbatim: "item 4 (the summary's mem total losing its unit at 30 and 24 columns) is yours as phase 4 ... Phase 4: the mem total is drawn whole, value with its unit, or not at all, at every width; a capture and a design check pass as for phase 2. The "…" marker stands."
+
+What is wrong today. `draw_summary_foot` (`crates/tui_pane/src/tiles/draw.rs`) draws the app's foot text at the left end of the summary tile's readout row and clips it to the row: `width = line.width().min(inner.width - TILE_FOOT_LEFT_INSET)`. In the real binary at 30 terminal columns the total reads `mem 24.6` and at 24 columns `mem 23`: a value with its unit cut off, which reads as a different measurement.
+
+Intended behavior:
+- When the foot line's whole width fits in `inner.width - TILE_FOOT_LEFT_INSET`, it is drawn as today.
+- When it does not fit, `draw_summary_foot` draws nothing and returns 0, so `draw_rows_readout_after_foot` lays the rows readout out exactly as it does with no foot.
+- The rule lives in `draw_summary_foot`, the one place the foot is drawn. No caller measures the text, and cargo-tile's `SummaryMemoryTotal::foot` (`crates/cargo-tile/src/render.rs`) is unchanged.
+- No shorter form is drawn: no value without its unit, no label alone.
+- `SummaryFoot`, `TileCells::summary_foot` and every public signature of `tui_pane` stay as they are.
+
+Tests, in `draw.rs`'s `mod tests`, fast and in-process, with the existing helpers (`FOOT_TEXT`, the test `TileCells`): at every summary inner width from 0 up to the width that shows the foot and the readout side by side, the readout row holds the whole foot text or none of its characters; at a width one cell short of the foot the readout is drawn as it is with `SummaryFoot::Empty`. Update `summary_foot_wins_when_readout_does_not_fit` only if its width no longer holds the whole foot.
+
+**Files:**
+- `crates/tui_pane/src/tiles/draw.rs` — `draw_summary_foot` and its tests.
+
+**Seats:** 1 writer — one function and its tests in one file.
+- `impl` — `crates/tui_pane/src/tiles/draw.rs`.
+- `test` — opens as impl: no files; this phase leaves the seat idle.
+
+**Constraints from prior phases:**
+- Phase 2: a table too narrow for a whole pid draws one `…` (`TABLE_NO_COLUMNS_MARKER`); that marker stands and this phase does not touch it or `crates/cargo-tile/src/render.rs`.
+- Phase 2: the grid's column count varies with how many commands run, so one terminal width does not always reach a given tile width; the capture that proves this phase needs a summary tile interior narrower than the total's text (seen at 30 and 24 terminal columns).
+- `tui_pane` is shared with cargo-handler and cargo-port: no public signature changes, and both crates' tests run before the checkpoint.
+- No test may take a second or more.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check tui_pane`, `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` and `bash ~/.claude/scripts/delegate/verify.sh test tui_pane` green; `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile` green, run by the unit director; captures of the real binary at 30 and 24 terminal columns show the total whole or absent; a design check by a fresh helper passes on those captures.
