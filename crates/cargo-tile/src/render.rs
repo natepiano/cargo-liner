@@ -100,6 +100,7 @@ use crate::constants::SUMMARY_HIDDEN_COLUMNS;
 use crate::constants::SUMMARY_LABEL_BORDER_RESERVE;
 use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
 use crate::constants::SUMMARY_MEMORY_LABEL;
+use crate::constants::TABLE_COLUMN_DROP_ORDER;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
@@ -1122,22 +1123,27 @@ fn ancestry_levels(
 /// every line the command wraps onto is set to -- under the command
 /// rather than under the pid, so a wrapped line reads as more of the
 /// same command instead of as another step of the chain.
-fn ancestry_stem(ancestor: &Ancestor, level: usize) -> (String, String) {
+fn ancestry_stem(ancestor: &Ancestor, level: usize, width: u16) -> (String, String) {
     let indent = format!(
         "{SECTION_HEADER_INDENT}{}",
         ANCESTRY_LEVEL_INDENT.repeat(level)
     );
-    (indent, ancestor.pid.to_string())
+    let label = ancestor.pid.to_string();
+    if cell_width(&indent).saturating_add(cell_width(&label)) <= width {
+        (indent, label)
+    } else {
+        (indent, String::new())
+    }
 }
 
 /// Cells `level`'s command has to itself at `width`.
 fn ancestry_room(ancestor: &Ancestor, level: usize, width: u16) -> u16 {
-    let (indent, label) = ancestry_stem(ancestor, level);
+    let (indent, label) = ancestry_stem(ancestor, level, width);
     let stem = indent
         .chars()
         .count()
         .saturating_add(label.chars().count())
-        .saturating_add(1);
+        .saturating_add(usize::from(!label.is_empty()));
     u16::try_from(usize::from(width).saturating_sub(stem)).unwrap_or(u16::MAX)
 }
 
@@ -1184,13 +1190,14 @@ fn ancestry_lines(
             Span::styled(ANCESTRY_ELISION, Style::default().fg(pid)),
         ])];
     };
-    let (indent, label) = ancestry_stem(ancestor, level);
+    let (indent, label) = ancestry_stem(ancestor, level, width);
+    let separator = if label.is_empty() { "" } else { " " };
     let hanging = " ".repeat(
         indent
             .chars()
             .count()
             .saturating_add(label.chars().count())
-            .saturating_add(1),
+            .saturating_add(separator.len()),
     );
     let wrapped = wrap::wrapped(
         vec![Span::styled(
@@ -1208,7 +1215,7 @@ fn ancestry_lines(
                 vec![
                     Span::raw(indent.clone()),
                     Span::styled(label.clone(), Style::default().fg(pid)),
-                    Span::raw(" "),
+                    Span::raw(separator),
                 ]
             } else {
                 vec![Span::raw(hanging.clone())]
@@ -1394,11 +1401,10 @@ struct TableLayout {
     constraints:    Vec<Constraint>,
     /// The columns this cell draws, in table order.
     columns:        Vec<usize>,
+    /// Solved widths for `columns`, in the same order.
+    column_widths:  Vec<u16>,
     /// Blank cells between adjacent columns.
     column_spacing: u16,
-    /// Cells the `command` column absorbed, which is what a command
-    /// line too long for it is wrapped to.
-    command_width:  u16,
     /// How much of each row's command line the cell prints.
     detail:         SummaryDetail,
     /// Whether a row spells out its whole command line or only the
@@ -1419,24 +1425,44 @@ impl TableLayout {
         ground: Color,
         tree: ProcessTree,
     ) -> Self {
-        let columns = visible_columns(rows, kind);
-        let constraints = fitted_constraints(rows, &columns);
+        let mut columns = visible_columns(rows, kind);
+        let mut constraints = fitted_constraints(rows, &columns);
         let table_width = indented(area).width;
+        for column in TABLE_COLUMN_DROP_ORDER {
+            let Some(position) = columns.iter().position(|candidate| *candidate == column) else {
+                continue;
+            };
+            if table_constraints_fit(table_width, &constraints) {
+                break;
+            }
+            columns.remove(position);
+            constraints.remove(position);
+        }
+        if !table_constraints_fit(table_width, &constraints) {
+            remove_column(COMMAND_COLUMN, &mut columns, &mut constraints);
+        }
+        if !table_constraints_fit(table_width, &constraints) {
+            remove_column(PID_COLUMN, &mut columns, &mut constraints);
+        }
         let column_spacing = table_column_spacing(table_width, &constraints);
+        let column_widths = solved_column_widths(table_width, &constraints, column_spacing);
         Self {
-            command_width: command_column_width(
-                table_width,
-                &constraints,
-                &columns,
-                column_spacing,
-            ),
             constraints,
             columns,
+            column_widths,
             column_spacing,
             detail: kind.detail(),
             tree,
             ground,
         }
+    }
+
+    /// Solved cells for `column`, or none when the table left it out.
+    fn column_width(&self, column: usize) -> u16 {
+        self.columns
+            .iter()
+            .position(|candidate| *candidate == column)
+            .map_or(0, |position| self.column_widths[position])
     }
 
     /// `color` as something `faded` of the way out draws it: carried
@@ -1698,20 +1724,37 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
 
 /// Gap that keeps every fitted column at its requested width when possible.
 fn table_column_spacing(width: u16, constraints: &[Constraint]) -> u16 {
+    if table_width_with_spacing(constraints, TABLE_COLUMN_SPACING) <= width {
+        TABLE_COLUMN_SPACING
+    } else {
+        TIGHT_TABLE_COLUMN_SPACING
+    }
+}
+
+/// Whether every requested width and one-cell gap fits in `width`.
+fn table_constraints_fit(width: u16, constraints: &[Constraint]) -> bool {
+    table_width_with_spacing(constraints, TIGHT_TABLE_COLUMN_SPACING) <= width
+}
+
+/// Width requested by `constraints`, including the gaps between them.
+fn table_width_with_spacing(constraints: &[Constraint], spacing: u16) -> u16 {
     let columns_width = constraints
         .iter()
         .map(|constraint| match constraint {
             Constraint::Length(width) | Constraint::Min(width) => *width,
-            // A future constraint kind cannot prove that the standard gap fits.
+            // A future constraint kind cannot establish a finite table width.
             _ => u16::MAX,
         })
         .fold(0, u16::saturating_add);
     let gaps = u16::try_from(constraints.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let standard_width = columns_width.saturating_add(TABLE_COLUMN_SPACING.saturating_mul(gaps));
-    if standard_width <= width {
-        TABLE_COLUMN_SPACING
-    } else {
-        TIGHT_TABLE_COLUMN_SPACING
+    columns_width.saturating_add(spacing.saturating_mul(gaps))
+}
+
+/// Remove `column` and its aligned constraint when it is present.
+fn remove_column(column: usize, columns: &mut Vec<usize>, constraints: &mut Vec<Constraint>) {
+    if let Some(position) = columns.iter().position(|candidate| *candidate == column) {
+        columns.remove(position);
+        constraints.remove(position);
     }
 }
 
@@ -1761,29 +1804,30 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
     } else {
         Style::default().fg(success_color())
     };
-    let command = wrap::wrapped(
-        vec![
-            Span::styled(process.command.program.clone(), program),
-            Span::styled(
-                match layout.tree {
-                    ProcessTree::Long => process.command.line(layout.detail),
-                    ProcessTree::Short => process.command.named(),
-                },
-                arguments,
-            ),
-        ],
-        layout.command_width,
-    );
-    let lines = u16::try_from(command.height()).unwrap_or(u16::MAX);
+    let command_width = layout.column_width(COMMAND_COLUMN);
+    let command = if command_width == 0 {
+        Text::default()
+    } else {
+        wrap::wrapped(
+            vec![
+                Span::styled(process.command.program.clone(), program),
+                Span::styled(
+                    match layout.tree {
+                        ProcessTree::Long => process.command.line(layout.detail),
+                        ProcessTree::Short => process.command.named(),
+                    },
+                    arguments,
+                ),
+            ],
+            command_width,
+        )
+    };
+    let lines = u16::try_from(command.height()).unwrap_or(u16::MAX).max(1);
+    let pid = number_text_if_fits(process.pid.to_string(), layout.column_width(PID_COLUMN));
+    let parent = number_text_if_fits(parent_text(process), layout.column_width(PARENT_COLUMN));
     let cells = [
-        Text::from(Span::styled(
-            process.pid.to_string(),
-            pid_style(row, layout),
-        )),
-        Text::from(Span::styled(
-            parent_text(process),
-            parent_style(row, layout),
-        )),
+        Text::from(Span::styled(pid, pid_style(row, layout))),
+        Text::from(Span::styled(parent, parent_style(row, layout))),
         Text::from(Span::styled(process.start.clone(), muted)),
         Text::from(Span::styled(process.duration.clone(), muted)),
         Text::from(Span::styled(process.cpu.to_string(), muted)),
@@ -1815,6 +1859,15 @@ fn parent_text(process: &CargoProcess) -> String {
     match &process.parent {
         VisibleParent::Invocation { pid, .. } | VisibleParent::Ancestor(pid) => pid.to_string(),
         VisibleParent::None => String::new(),
+    }
+}
+
+/// Keep a numeric cell only when its solved column holds every digit.
+fn number_text_if_fits(text: String, width: u16) -> String {
+    if cell_width(&text) <= width {
+        text
+    } else {
+        String::new()
     }
 }
 
@@ -1850,23 +1903,11 @@ fn parent_style(row: &TrackedRow, layout: &TableLayout) -> Style {
     Style::default().fg(layout.ink(color, row.faded()))
 }
 
-/// Cells the `command` column is left with once the fitted columns have
-/// taken theirs.
-///
-/// [`Table`] solves its columns with [`Layout`], so this solves the same
-/// one -- the same constraints at the same spacing -- and the command
-/// line is wrapped to the width it is actually drawn in. Reading the
-/// column's own [`Constraint`] instead would give the floor it is never
-/// held to, since it is the column that absorbs the slack.
-fn command_column_width(
-    width: u16,
-    constraints: &[Constraint],
-    columns: &[usize],
-    column_spacing: u16,
-) -> u16 {
-    let Some(column) = columns.iter().position(|column| *column == COMMAND_COLUMN) else {
-        return 0;
-    };
+/// Solved widths for every constraint, matching [`Table`]'s layout.
+fn solved_column_widths(width: u16, constraints: &[Constraint], column_spacing: u16) -> Vec<u16> {
+    if constraints.is_empty() {
+        return Vec::new();
+    }
     Layout::horizontal(constraints.iter().copied())
         .spacing(column_spacing)
         .split(Rect {
@@ -1875,8 +1916,9 @@ fn command_column_width(
             width,
             height: 1,
         })
-        .get(column)
-        .map_or(0, |rect| rect.width)
+        .iter()
+        .map(|rect| rect.width)
+        .collect()
 }
 
 /// The columns a cell draws, in table order.
@@ -2363,6 +2405,37 @@ mod tests {
             .map(|x| buffer[(x, y)].symbol())
             .collect();
         line.trim_end().to_string()
+    }
+
+    /// Text drawn inside one solved table column.
+    fn table_column_text(buffer: &Buffer, layout: &TableLayout, column: usize, y: u16) -> String {
+        let position = layout
+            .columns
+            .iter()
+            .position(|candidate| *candidate == column)
+            .expect("the requested test column is visible");
+        let preceding_width: u16 = layout.column_widths[..position]
+            .iter()
+            .copied()
+            .fold(0, u16::saturating_add);
+        let preceding_gaps = u16::try_from(position)
+            .unwrap_or(u16::MAX)
+            .saturating_mul(layout.column_spacing);
+        let start = cell_width(SECTION_ITEM_INDENT)
+            .saturating_add(preceding_width)
+            .saturating_add(preceding_gaps);
+        let end = start.saturating_add(layout.column_widths[position]);
+        (start..end)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    }
+
+    /// Contiguous ASCII digit sequences in `text`.
+    fn digit_runs(text: &str) -> Vec<String> {
+        text.split(|character: char| !character.is_ascii_digit())
+            .filter(|run| !run.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     /// Draw the complete table so measurement assertions include column fitting.
@@ -2943,6 +3016,44 @@ mod tests {
         assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
         assert_eq!(buffer_line(&buffer, 1), "  12445 -zsh");
         assert_eq!(buffer_line(&buffer, 2), "   18581 claude");
+    }
+
+    #[test]
+    fn every_ancestry_width_draws_each_pid_whole_or_leaves_it_out() {
+        let ancestry = vec![ancestor(1_234_567, "zed"), ancestor(7_654_321, "zsh")];
+        for width in 0..=90 {
+            let area = Rect::new(0, 0, width, 16);
+            let mut buffer = Buffer::empty(area);
+            draw_ancestry(
+                &mut buffer,
+                area,
+                &ancestry,
+                0,
+                pane_background(false),
+                AncestryFoot::Other,
+                0,
+            );
+            let digits: Vec<String> = (0..area.height)
+                .flat_map(|y| digit_runs(&buffer_line(&buffer, y)))
+                .collect();
+            assert!(
+                digits
+                    .iter()
+                    .all(|run| run == "1234567" || run == "7654321"),
+                "at width {width}: {digits:?}",
+            );
+            for (level, pid) in ["1234567", "7654321"].into_iter().enumerate() {
+                let indent_width = cell_width(SECTION_HEADER_INDENT).saturating_add(
+                    cell_width(ANCESTRY_LEVEL_INDENT)
+                        .saturating_mul(u16::try_from(level).unwrap_or(u16::MAX)),
+                );
+                assert_eq!(
+                    digits.iter().any(|run| run == pid),
+                    indent_width.saturating_add(cell_width(pid)) <= width,
+                    "level {level} at width {width}: {digits:?}",
+                );
+            }
+        }
     }
 
     /// The foot of the chain is the pid the first row's `parent` cell
@@ -4662,6 +4773,147 @@ mod tests {
         assert!(columns.contains(&MANAGED_COLUMN));
     }
 
+    /// Two rows whose process and parent identifiers have seven digits.
+    fn whole_pid_rows() -> [TrackedRow; 2] {
+        [
+            tight_command_row(1_234_567, 7_654_321, &["build"]),
+            tight_command_row(2_345_678, 8_765_432, &["check"]),
+        ]
+    }
+
+    /// Check every inner width for one table kind.
+    fn assert_whole_table_columns(
+        kind: TableKind,
+        full_width: u16,
+        interior_widths: impl Iterator<Item = u16>,
+    ) {
+        let rows = whole_pid_rows();
+        let row_refs: Vec<&TrackedRow> = rows.iter().collect();
+        let indent = cell_width(SECTION_ITEM_INDENT);
+        let full_columns = visible_columns(&row_refs, kind);
+        for interior_width in interior_widths {
+            let area = Rect::new(0, 0, interior_width + indent, 8);
+            let layout = TableLayout::of(&row_refs, kind, area, Color::Reset, ProcessTree::Long);
+            let mut buffer = Buffer::empty(area);
+            draw_process_table(
+                &mut buffer,
+                area,
+                &row_refs,
+                kind,
+                Color::Reset,
+                PinnedGroup::Unpinned,
+                ProcessTree::Long,
+            );
+
+            if interior_width >= full_width {
+                assert_eq!(layout.columns, full_columns, "{kind:?} at {interior_width}");
+            }
+            for &column in &layout.columns {
+                assert_eq!(
+                    table_column_text(&buffer, &layout, column, 0).trim_end(),
+                    TABLE_HEADERS[column],
+                    "{kind:?} column {column} at {interior_width}",
+                );
+                let expected = match column {
+                    PID_COLUMN => &["1234567", "2345678"][..],
+                    PARENT_COLUMN => &["7654321", "8765432"][..],
+                    _ => continue,
+                };
+                let mut drawn: Vec<String> = (1..area.height)
+                    .flat_map(|y| digit_runs(&table_column_text(&buffer, &layout, column, y)))
+                    .collect();
+                drawn.sort_unstable();
+                drawn.dedup();
+                assert_eq!(
+                    drawn, expected,
+                    "{kind:?} column {column} at {interior_width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_widths_0_to_22_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Command, 61, 0..=22);
+    }
+
+    #[test]
+    fn command_widths_23_to_45_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Command, 61, 23..=45);
+    }
+
+    #[test]
+    fn command_widths_46_to_68_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Command, 61, 46..=68);
+    }
+
+    #[test]
+    fn command_widths_69_to_90_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Command, 61, 69..=90);
+    }
+
+    #[test]
+    fn summary_widths_0_to_22_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Summary, 39, 0..=22);
+    }
+
+    #[test]
+    fn summary_widths_23_to_45_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Summary, 39, 23..=45);
+    }
+
+    #[test]
+    fn summary_widths_46_to_68_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Summary, 39, 46..=68);
+    }
+
+    #[test]
+    fn summary_widths_69_to_90_draw_whole_pids_headers_and_columns() {
+        assert_whole_table_columns(TableKind::Summary, 39, 69..=90);
+    }
+
+    #[test]
+    fn narrow_tables_drop_columns_in_order_and_blank_undersized_pids() {
+        assert_eq!(number_text_if_fits("1234567".to_string(), 6), "");
+        assert_eq!(number_text_if_fits("1234567".to_string(), 7), "1234567");
+
+        let mut blocked_rows = whole_pid_rows();
+        for row in &mut blocked_rows {
+            row.process.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
+        }
+        let blocked_refs: Vec<&TrackedRow> = blocked_rows.iter().collect();
+        let indent = cell_width(SECTION_ITEM_INDENT);
+        let mut prior = visible_columns(&blocked_refs, TableKind::Command);
+        let mut removed = Vec::new();
+        for interior_width in (0..=90).rev() {
+            let layout = TableLayout::of(
+                &blocked_refs,
+                TableKind::Command,
+                Rect::new(0, 0, interior_width + indent, 1),
+                Color::Reset,
+                ProcessTree::Long,
+            );
+            let departed: Vec<usize> = prior
+                .iter()
+                .copied()
+                .filter(|column| !layout.columns.contains(column))
+                .collect();
+            assert!(
+                departed.len() <= 1,
+                "at interior width {interior_width}: {departed:?}"
+            );
+            removed.extend(departed);
+            prior = layout.columns;
+        }
+        assert_eq!(
+            removed,
+            TABLE_COLUMN_DROP_ORDER
+                .into_iter()
+                .chain([COMMAND_COLUMN, PID_COLUMN])
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn a_tight_command_table_keeps_fixed_headers_and_parent_pids_whole() {
         let area = Rect::new(0, 0, 65, 6);
@@ -4736,18 +4988,14 @@ mod tests {
         let columns = visible_columns(&rows, TableKind::Command);
         let constraints = fitted_constraints(&rows, &columns);
 
-        let narrow = command_column_width(
-            65,
-            &constraints,
-            &columns,
-            table_column_spacing(65, &constraints),
-        );
-        let wide = command_column_width(
-            95,
-            &constraints,
-            &columns,
-            table_column_spacing(95, &constraints),
-        );
+        let command_position = columns
+            .iter()
+            .position(|column| *column == COMMAND_COLUMN)
+            .unwrap();
+        let narrow = solved_column_widths(65, &constraints, table_column_spacing(65, &constraints))
+            [command_position];
+        let wide = solved_column_widths(95, &constraints, table_column_spacing(95, &constraints))
+            [command_position];
 
         assert!(narrow > cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
         assert_eq!(wide.saturating_sub(narrow), 30);

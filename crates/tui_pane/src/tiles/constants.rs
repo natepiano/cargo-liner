@@ -38,25 +38,25 @@ pub(super) const TILE_FOOT_LEFT_INSET: u16 = 1;
 /// Kept between a cell's left border and the number it carries, so the
 /// number is not flush against the line.
 pub(super) const TILE_NUMBER_INDENT: &str = " ";
-/// Ahead of what a cell's contents ask for, in the readout along the
-/// foot of every cell.
-pub const TILE_ROWS_CONTENT_LABEL: &str = "content rows: ";
 /// Ahead of the cell's own size in the same readout, written as rows
 /// over columns.
 pub(super) const TILE_ROWS_CELL_LABEL: &str = "  r/c: ";
 /// Between those two numbers.
 pub(super) const TILE_ROWS_CELL_SEPARATOR: &str = "/";
+/// Ahead of what a cell's contents ask for, in the readout along the
+/// foot of every cell.
+pub const TILE_ROWS_CONTENT_LABEL: &str = "content rows: ";
+/// Rows the readout takes: it is one line along the foot of the cell.
+pub(super) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
+/// Kept between that readout and the cell's right border, so it is not
+/// flush against the line.
+pub(super) const TILE_ROWS_RIGHT_INSET: u16 = 1;
 /// Ahead of the width the demand was measured at, which is written only
 /// where it is not the width the cell was drawn at. The two agreeing is
 /// the ordinary case and says nothing; the two disagreeing is the one
 /// way the counts can differ without either being wrong on its own
 /// terms, and is worth the room it takes.
 pub(super) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
-/// Kept between that readout and the cell's right border, so it is not
-/// flush against the line.
-pub(super) const TILE_ROWS_RIGHT_INSET: u16 = 1;
-/// Rows the readout takes: it is one line along the foot of the cell.
-pub(super) const TILE_ROWS_READOUT_HEIGHT: u16 = 1;
 
 // motion
 /// Fixed-point scale a transition's progress is measured on, so the
