@@ -47,7 +47,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
   - `crates/tui_pane/src/bar/status_line.rs` — `render` (162), `status_line_note_spans` (205), `status_line_global_spans` (222), `render_sections` (272). No test module yet.
   - `crates/cargo-tile/src/render.rs` — `draw` layout (238), `Cells` and its `TileCells` impl (312), `summary_width` (438), `sccache_label` (716), `draw_ancestry` (939; truncation at 983), `ancestry_stem` (1130), `ancestry_room` (1144), `ancestry_rows` (1159), `ancestry_lines` (1180), `PathGroup::heading` (1373), `draw_path_group` (1634), `process_row` (1809), `heading_gauge` (2051), `cell_width` (2180), `draw_status_line` (2187), tests from 2247 (`buffer_line` 2421, `narrow_table_buffer` 4833, `buffer_rows` 5542).
   - `crates/cargo-tile/src/wrap.rs` — `Wrap::push` (72), `wrapped` (118), `split_at_cells` (151), tests from 160.
-  - `crates/cargo-tile/src/constants.rs` — `ACCOUNT_HEADING_OPEN`/`CLOSE` (7, 9), `SUMMARY_CELL_TITLE` (149), `ANCESTRY_ELISION` (169), `TABLE_NO_COLUMNS_MARKER` (427).
+  - `crates/cargo-tile/src/constants.rs` — `ACCOUNT_HEADING_OPEN`/`CLOSE` (7, 9), `SUMMARY_CELL_TITLE` (159), `ELISION` (151).
   - `crates/cargo-tile/src/shim_registration/app_scenarios.rs` — whole-frame test helpers `draw` (317), `draw_settled` (594).
   - `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/README.md` — user docs; each changelog has an `## [Unreleased]` section.
   - `.config/nextest.toml` — two priority overrides (100 and 90), group `cargo-tile-readers`, two `slow-timeout` overrides.
@@ -185,159 +185,169 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 ### Phase 5 — A floor for cells, and the summary alone below it  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** cargo-tile never makes a command cell narrower than 40 cells, a window too small for the grid shows the summary alone, filling the window, and what a narrow window still shows (the summary, its border title, its foot readout and the status line) is whole, shortened with `…`, or absent at every width.
-
-**Spec:**
-
-1. **Status line fit** (`tui_pane`, `status_line.rs`, `render` at 162 and `render_sections` at 272). Nothing is measured today: the right block is right-aligned, starts at column 0 when it is wider than the row, and its tail (`? shortcuts`) is cut. New order, whole items only:
-   1. the globals (` ? shortcuts`) are kept while they fit the row with their one trailing cell;
-   2. notes are added in front of the globals from the last note backwards while each fits whole — so the app's name and version, the first note, go first;
-   3. the left segment (uptime, then navigation) is drawn only when it fits whole in the room left of the right block with one cell between; its navigation spans go before the uptime does;
-   4. the centre is drawn only when it fits whole between them.
-
-   Add a test module to `status_line.rs`; build the spans with the file's own helpers.
-2. **A floor where cells stop being useful** (user, 2026-10-08: "cargo tile becomes useless when it is too small"). The framework minimum (`MIN_TILE_WIDTH`, 8) stays as it is, because `cargo-handler` draws its agent cells on the same grid and its narrow cells are its own design. Add `TileGrid::set_min_tile_width(&mut self, width: u16)` in `tui_pane` (it writes `settings.min_tile_width`, never below the framework minimum), and have cargo-tile call it once where it builds its grid (`app.rs:208`) with a new `MIN_CELL_WIDTH = 40`: 38 cells inside hold a whole `[account] project` heading of ordinary length, a pid with a 28-cell command, and the whole foot readout; an 80-column terminal holds two columns. `fits` (`grid.rs:1777`) already refuses to open a cell that would make columns narrower — on `+`, on a command arriving, on `sync` — so in cargo-tile five columns need 196 terminal columns, four 157, three 118, two 79, one 40. A command refused a cell is still counted in the summary, as today.
-3. **Too small shows the summary alone** (user, 2026-10-08: "the only way it is useful at narrow column width is just simply to show the summary table only"). Add `TileGrid::holds_in(&self, area: Rect, growth: TileGrowth) -> bool`, crate-private (`pub(super)`): the `fits` test applied to every arrangement the grid may still draw, which is the one on screen (`slots` at `depth`), the start of the transition in flight (`transition.held`), and each queued step through `target()` (822). The target alone is not enough: `drawing_at` (1149) draws from the transition's start, so a two-column target fits 79 columns while the three-column arrangement it is closing from is still drawn, under 40 a cell. For each it counts every position laid out, cells `+ TABLE_CELL + depth.saturating_sub(1)`, because `Grid::new` adds the summary's depth before it divides the columns; `fits` given the cell count alone accepts a deep-summary grid that does not fit. In `draw_tile_grid` (`draw.rs:144`), after `grid.sync`, when it is false and contents are shown: draw the summary cell alone, its frame on the whole `area`, through the same path a settled summary cell takes in `draw_placements` and `draw_cell` (title, labels, foot, readout, ground and tint as any cell), with no column band and no command cell, and return. The summary's demand and its measured width come from the whole area's inner width in that frame, not from the arrangement's column. There is no motion into or out of this state: the frame after a resize is the summary alone or the settled grid. The grid keeps syncing and keeps its cells, so they stand in their settled rects in the first frame whose area holds them; a command refused a cell while the window was small opens one by the ordinary `sync` rule once there is room. Contents hidden: nothing is drawn, as today. An area too small for a frame with one body row and one body cell draws nothing. The same rule serves `cargo-handler` at its own 8-cell minimum, where today it draws border-only slivers. This replaces the earlier plan's `window too small` notice: no `TILE_GRID_TOO_SMALL` constant and no surface type are added.
-
-   The state is one thing, read by everything: a crate-private `GridDisplay::{Cells, SummaryAlone}` (name the seat's), worked out from `holds_in` over the last area and growth, serves drawing, hit-testing and focus. Today a draw-only branch would leave `cell_at` (1108) dividing the area as the hidden grid and Tab (`cycle_focus`, 1057, through `host.rs:56`) walking cells nobody sees. While the summary is alone: `cell_at` answers the summary for every point in the area; `cycle_focus` and the arrow steps take no step and report the key unspent; the summary is drawn as the focused cell. The focus the grid holds is not changed, so the cell that had it has it again in the first frame that shows the cells.
-4. **The summary reads at every width** (`cargo-tile`, `draw_summary`, `render.rs:611`). Alone in a narrow window the summary is all the user has. Its table already sheds columns (`TABLE_NO_COLUMNS_MARKER`, `narrow_table_buffer` at `render.rs:4833`). Pin it: at every inner width from 6 to 38, each header, each table value and the foot is whole, shortened with `…`, or absent. Fix in `draw_summary` whatever the test finds cut bare, by the plan's first invariant (the end of a path survives; a value is never cut without its mark).
-5. **Border title** (`tui_pane`, `write_overlay`, `frame.rs:661`). A title wider than its row is cut bare (` summar`, `┌ Tar┐`). For `OverlayStyle::Title`, when the text is wider than `row.width`, draw its first `row.width - 1` cells and then `…`; a row one cell wide draws `…` alone. `written_row` already records the drawn width. Labels (`OverlayStyle::Label`) are whole or absent through `clear_run` and do not change. Name the glyph `TITLE_ELISION` in `crates/tui_pane/src/pane/constants.rs`. `a_title_stops_inside_the_corner` now expects `┌ Ta…┐`. Measure with `unicode_width`, as the file does.
-6. **Foot readout** (`tui_pane`, `draw.rs`). `readout_area` clamps the line to the room and the `Paragraph` cuts it (`conten`, `r/c: 22/2`). `rows_readout_line` becomes `rows_readout_lines(inner, rows, measured_at) -> Vec<Line<'static>>`, widest first:
-   1. the whole line as today: `content rows: N[ @ W]  r/c: H/W`;
-   2. `content rows: N @ W` — only when `measured_at != inner.width`;
-   3. `content rows: N`.
-
-   `draw_rows_readout` draws the first candidate whose width is at most `inner.width - TILE_ROWS_RIGHT_INSET`, right-aligned as now, and nothing when none fits. `draw_rows_readout_after_foot` runs the same list against the room left after the summary foot. The readout row stays reserved either way, so no cell changes height. One exception, from Phase 2's last design check: a cell with a single body row drew `content rows: 0  r/c: 1/49` and no label, so it had no name. A cell with one body row gives that row to its contents (its label) and draws no readout; `readout_row` returns `CellTooSmall` there. Today that reservation rests on the clamp: `content_area` (`draw.rs:499`) asks `readout_area(inner, inner.width) -> Option<Rect>` (517), which clamps the width to the room. So separate the two: replace `readout_area` with `readout_row(inner) -> ReadoutRow`, `ReadoutRow::{Reserved(Rect), CellTooSmall}`, the whole last interior row inside the right inset. `content_area` reads only that. The drawing functions pick the first candidate no wider than the reserved row's room and right-align it there; no candidate is ever clamped, and no readout function returns a bare `Option<Rect>`.
-
-Tests, all pure: `status_line.rs` — at every width from 0 to the full row's natural width, each item's text appears whole or not at all, and the globals outlast the notes. `grid.rs`/`draw.rs` — with the minimum set to 40, `fits` holds at 196, 157, 118, 79 and 40 columns and fails one under each; a grid left at the framework minimum still fits three columns in 22; `holds_in_counts_the_headed_summary_depth`; `a_grid_too_wide_for_its_window_draws_the_summary_alone` (three columns opened at 200 columns, drawn at 100: the summary's frame is the whole area, its title on the top row, no column divider and no command cell's text anywhere); `the_cells_stand_settled_in_the_first_frame_that_holds_them` (the same grid drawn again at 200: every cell in its settled rect, nothing in flight); `a_command_refused_in_a_small_window_opens_when_there_is_room` (first synced at 30 columns with two commands, then at 100); `a_hidden_grid_too_small_draws_nothing`; `a_closing_column_in_flight_never_draws_a_cell_under_the_floor` and `a_depth_change_in_flight_never_draws_a_cell_under_the_floor` (every snapshot of the step through `drawing_at`, at a width the target fits and the start does not); `a_click_anywhere_in_the_summary_alone_picks_the_summary`; `tab_takes_no_step_while_the_summary_is_alone` (`host.rs`, beside `tab_walks_the_cells_and_wraps`); `focus_returns_to_its_cell_with_the_cells`. `render.rs` — `the_summary_alone_is_whole_marked_or_absent_at_every_width` (item 4).
-
-- `frame.rs`: the updated `a_title_stops_inside_the_corner`, and `a_title_one_cell_wide_is_the_mark_alone`.
-- `draw.rs`: `the_rows_readout_is_a_whole_candidate_at_every_width` — for each inner width from 0 to 60: the readout row, trimmed, is empty or equals one of the candidates exactly. Update `draw_tile_cell_draws_only_the_readout_on_its_foot_row` (1443; a four-row cell) only if its expected text changes (it should not). `a_cell_with_one_body_row_draws_its_contents_and_no_readout` — one interior row: the row holds the cell's contents and no readout text.
-
-README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentences: command cells are never narrower than 40 cells, and a window too small for them shows the summary alone. Changelogs: Changed lines under `## [Unreleased]`.
+- **Cell floor.** `TileGrid::set_min_tile_width(&mut self, width: u16)` (public, `tui_pane`) writes `settings.min_tile_width`, never below the framework's `MIN_TILE_WIDTH` (8, unchanged; `cargo-handler` keeps it). cargo-tile calls it once where it builds its grid, with `MIN_CELL_WIDTH = 40`. `fits` refuses a cell that would make columns narrower, on `+`, on a command arriving and on `sync`: five columns need 196 terminal columns, four 157, three 118, two 79, one 40. A command refused a cell stays counted in the summary until `sync` opens it.
+- **Summary alone.** `TileGrid::holds_in(&self, area: Rect, growth: TileGrowth) -> bool` (`pub(super)`) applies the `fits` test to every arrangement the grid may still draw: the one on screen, the start of the transition in flight, and each queued step, each at its own summary depth. When it fails, the crate-private `GridDisplay` is `SummaryAlone` and `TileGrid::drawing_at` returns one summary piece on the whole area through `summary_alone_drawing`, so drawing, hit-testing and focus read one answer. The summary's demand and measured width come from the whole area's inner width.
+- **Keys and clicks while the summary is alone.** `cell_at` answers the summary for every point in the area; Tab's `cycle_focus` takes no step and reports the key unspent; arrow keys take no step and report nothing; the summary is drawn as the focused cell. The focus the grid holds is unchanged, so its cell has it again in the first frame that shows the cells.
+- **No motion into or out of the state.** The grid keeps syncing and keeps its cells, which stand in their settled rects in the first frame whose area holds them. Hidden contents draw nothing; an area too small for a frame with one body row and one body cell draws nothing. `cargo-handler` gets the same rule at its 8-cell minimum.
+- **Summary text.** In cargo-tile the summary is alone at inner widths up to 37 (area under 40). At every inner width from 6 to 37 each header, each table value and the foot is whole, shortened with `…`, or absent, through `elide_summary_end` and `elide_summary_start`; the end of a path survives.
+- **Border title.** In `write_overlay`, an `OverlayStyle::Title` wider than its row draws its first `row.width - 1` cells and then `TITLE_ELISION`; a row one cell wide draws the mark alone. `OverlayStyle::Label` stays whole or absent.
+- **Foot readout.** `readout_row(inner) -> ReadoutRow`, `ReadoutRow::{Reserved(Rect), CellTooSmall}`, is the whole last interior row inside the right inset; `content_area` reads only that. `rows_readout_lines(inner, rows, measured_at) -> Vec<Line<'static>>` lists whole candidates, widest first: `content rows: N[ @ W]  r/c: H/W`, then `content rows: N @ W` (only when `measured_at != inner.width`), then `content rows: N`. The first candidate no wider than the reserved row's room is drawn right-aligned, and nothing when none fits; no candidate is clamped. The row stays reserved either way, so no cell changes height. A cell with one body row gives it to its contents and draws no readout (`CellTooSmall`).
+- **Status line.** Whole items only, grouped in the private `StatusLineItems` and fitted by `fitted_right_spans` and `fitted_left_spans`: the globals (` ? shortcuts`) while they fit with their one trailing cell; notes in front of them from the last note backwards; the left block only when it fits whole with one cell between, keeping the uptime and dropping navigation first; the centre only when it fits whole between them.
 
 **Files:**
-- `crates/tui_pane/src/bar/status_line.rs` — fit pass, test module.
-- `crates/tui_pane/src/tiles/grid.rs` — `set_min_tile_width`, `holds_in`, the display state, `cell_at`, `cycle_focus`, tests.
-- `crates/tui_pane/src/tiles/host.rs` — keys and clicks while the summary is alone, tests.
-- `crates/tui_pane/src/tiles/draw.rs` — the summary alone in `draw_tile_grid`, readout candidates, tests.
-- `crates/tui_pane/src/pane/frame.rs` — `write_overlay`, tests.
-- `crates/tui_pane/src/pane/constants.rs` — `TITLE_ELISION`.
-- `crates/tui_pane/CHANGELOG.md` — Changed lines.
-- `crates/cargo-tile/src/render.rs` — `draw_summary`, test.
-- `crates/cargo-tile/src/constants.rs` — `MIN_CELL_WIDTH`.
-- `crates/cargo-tile/src/app.rs` — sets the grid's minimum cell width.
-- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — the floor and the summary alone.
+- `crates/tui_pane/src/tiles/grid.rs` — `set_min_tile_width`, `holds_in`, `GridDisplay`, `summary_alone_drawing`, `cell_at`, `cycle_focus`.
+- `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/host.rs` — readout row and candidates; keys and clicks while the summary is alone.
+- `crates/tui_pane/src/bar/status_line.rs` — whole-item fit and its test module.
+- `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs` — marked border title, `TITLE_ELISION`.
+- `crates/cargo-tile/src/render.rs`, `constants.rs`, `app.rs`, `shim_registration/app_scenarios.rs` — the summary at every width, `MIN_CELL_WIDTH` and `ELISION`, the floor call, two readout tests.
+- `crates/cargo-handler/src/render.rs` — test-only golden for the status line (`OVERLAY_STATUS`).
+- `crates/cargo-tile/README.md` (`[tiles]`), `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — the floor and the summary alone.
 
-**Seats:** 2 writers — the grid and the status line, and everything else.
-- `impl` — `crates/tui_pane/src/bar/status_line.rs`, `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/host.rs`, `crates/tui_pane/CHANGELOG.md`. Its first edit adds `TileGrid::set_min_tile_width` with its final signature and posts it on the board.
-- `test` — opens as impl: `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/pane/constants.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md`. It messages `impl` for its line in the `tui_pane` changelog.
+**Binds later work:** `TileGrid::set_min_tile_width` is public and is the only public item here; `holds_in` is crate-private; `drawing_at` is the one place that answers the summary alone, and `fits` is the one test that opens a cell. cargo-tile's `MIN_CELL_WIDTH = 40` is the width every command cell can count on. cargo-tile has one glyph constant, `ELISION` (`SUMMARY_TEXT_ELISION`, `TABLE_NO_COLUMNS_MARKER` and `ANCESTRY_ELISION` are gone), and directory headings and ancestry in command cells mark with it; `tui_pane` has `TITLE_ELISION`. `elide_summary_end` / `elide_summary_start` are the summary's shorteners. The toast and status line contrast work builds on `StatusLineItems` / `fitted_right_spans` / `fitted_left_spans`. `ReadoutRow::{Reserved, CellTooSmall}` decides whether a cell has a readout row, and no readout function returns a bare `Option<Rect>`. A command refused a cell stays counted in the summary until `sync` opens it; the cell height floor keeps that rule.
 
-**Constraints from prior phases:** Phase 3 made `TileDrawing` hold `pieces: Vec<TilePiece<Id>>` (a `TilePlacement` and its `PieceName::{Shown, OnTheOtherPiece}`) and `column_bands`; `draw_placements` draws a cell's border title or empty-cell number only on the piece whose name is `Shown`, and `piece_name` in `grid.rs` is the one place that decides it. A cell drawn alone has one piece, always `Shown`. Phase 1 added `draw_placements` under `draw_tile_grid` in `draw.rs`; the summary-alone branch goes in `draw_tile_grid` (`draw.rs:144`) after `grid.sync` and before `grid.drawing` and `draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells)`, which stays the owner of the ordinary ground and frame. Phase 2 changed how `grid.rs` places moving pieces and column bands and added `TileGrid::drawing_at`; it changed nothing a settled grid shows. Phase 3 gave each piece in `TileDrawing` a title role: the summary drawn alone shows its title. Phase 4 made `auto` follow the system's appearance. `write_overlay` (`frame.rs:661`) still cuts a title bare and `readout_area` still clamps the readout: items 5 and 6 fix both here, because the summary alone draws both in a narrow window. Phase 4 moved lines in `crates/cargo-tile/src/app.rs` and in `render.rs`'s tests; the references above are current. `set_min_tile_width` is this phase's only new public item. No new `#[allow]` or `#[expect]`: the user reviews every lint suppression, so the summary lists each one this phase adds or moves, with its file and line.
+**Gotchas:**
+- `holds_in` counts every position of each arrangement at its own depth (cells `+ TABLE_CELL + depth.saturating_sub(1)`), because `Grid::new` adds the summary's depth before it divides the columns; `fits` given the cell count alone accepts a deep-summary grid that does not fit.
+- The transition's target alone is not enough: `drawing_at` draws from the transition's start, so a two-column target fits 79 columns while the three-column arrangement it closes from is still drawn under 40 a cell.
+- Two test-only widths sit in cargo-tile's production `constants.rs`.
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
-- Unit director's settled captures beside a real `cargo check`, 50 rows: cells at 200, 126, 90, 64, 48 and 40 columns; the summary alone at 39, 32, 24 and 16 columns; and one window shrunk from 200 to 100 while three columns are open (the summary alone), then grown back to 200 (the cells back). In the summary alone nothing is cut bare. At every width the summary, each border title, each foot readout and the status line are whole or marked, and no command cell is drawn under 40 wide. Directory headings and ancestry inside command cells are Phase 6's and do not fail this gate.
-- A fresh helper's design check of all twelve shots: pass. The notice lists the shots on each side of the switch so the user can judge the width.
+**Ruled out:** a `window too small` notice (no `TILE_GRID_TOO_SMALL` constant, no surface type); raising the framework `MIN_TILE_WIDTH`, since `cargo-handler`'s narrow cells are its own design; a second glyph constant in cargo-tile; an arrow-key "unspent" outcome; a draw-only summary branch in `draw_tile_grid`, which leaves `cell_at` and Tab working on a grid nobody sees; changing the toast action's `Option` type with the toast fix, a public API change reaching another crate.
 
-### Phase 6 — Headings and ancestry are whole or marked  · status: todo
+### Phase 6 — Headings and ancestry are whole or marked  · status: done
+
+#### As-built
+
+- **Headings.** `PathGroup::fitted_heading` draws a directory heading whole or shortened with `…` at its head. It tries, in order: the whole heading; `[account] …/rest` (`component_heading`); `[account] …tail` (`tail_heading`, a tail of at least `HEADING_MIN_TAIL` = 8 cells); the same two without the account; the empty string. `heading_prefix` builds the account part.
+- **Wrapping.** `Wrap::push` in cargo-tile's `wrap.rs` breaks an overlong word after any character of `WRAP_BREAK_AFTER = "/-=_.:,"`, else where it runs out.
+- **Ancestry.** `mark_ancestry_cut` ends a block cut by its row budget in `…`: appended when a cell is free, else in place of the last cell. A level with fewer than `ANCESTRY_MIN_COMMAND_WIDTH` = 8 cells for its command draws its pid alone.
+- **Table gaps.** `table_column_spacing(width, constraints, columns, command_width)` tightens the gaps between columns before a command wraps; `longest_command_width` and `command_line_width` measure the command.
+- **Toasts.** cargo-tile and cargo-handler draw toasts inside their body rectangle, above the status line, by calling `Renderable::render(&mut app.framework.toasts, frame, body, &ToastsRenderCtx { now, pane_focus_state: PaneFocusState::Inactive })`. A card is as tall as its wrapped body (`drawn_line_count` and `drawn_input_line_count` in `toasts/body.rs`, plus an action row), and `render_body_elision` draws `…` at the end of its last visible row when it is cut.
+- **The mark.** `TITLE_ELISION` is now `ELISION` in `pane/constants.rs`, with `pub(crate) const PaneFrame::ELISION` beside it.
+- **Default Light.** The title ink is `Rgb(137, 86, 0)`, 4.51 to 1 on the status line's `Rgb(220, 220, 220)`. `status_line_text_meets_contrast_in_every_built_in_theme` holds every RGB ink to `MIN_STATUS_LINE_TEXT_CONTRAST` = 4.5.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs` — headings, the ancestry mark, table gaps, the toast call
+- `crates/cargo-tile/src/wrap.rs` — boundary breaks
+- `crates/cargo-tile/src/constants.rs` — `HEADING_MIN_TAIL`, `WRAP_BREAK_AFTER`, `ANCESTRY_MIN_COMMAND_WIDTH`, the test-only contrast floor
+- `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/default_light.toml` — the title ink
+- `crates/tui_pane/src/toasts/body.rs`, `crates/tui_pane/src/toasts/toast.rs` — the drawn line count and card height
+- `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs` — the cut mark and its tests
+- `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/overlays/mod.rs`, `crates/tui_pane/src/lib.rs` — no `render_toasts`
+- `crates/tui_pane/src/pane/constants.rs`, `crates/tui_pane/src/pane/frame.rs` — `ELISION`
+- `crates/cargo-handler/src/render.rs` — the toast call
+
+**Binds later work:** The review-repairs phase starts from these names: `fitted_heading`, `tail_heading` and the test `a_directory_heading_keeps_the_most_informative_marked_tail`; `Wrap` and `WRAP_BREAK_AFTER`; `command_line_width`; `Toast::target_height(&ToastSettings)`, `drawn_line_count` and `drawn_input_line_count`; `PaneFrame::ELISION`; the two `Renderable::render` call sites; `status_line_text_meets_contrast_in_every_built_in_theme`. Public `tui_pane::render_toasts` does not exist. The cell phase's cut-row mark is the one `mark_ancestry_cut` draws, and its empty-column rule extends `table_column_spacing`.
+
+**Gotchas:**
+- A card's height is counted at the configured width before `render` has an area, so a card drawn narrower is cut and marked though rows are free.
+- `Wrap::push` takes any boundary, so a flag's dashes can stand alone on a row at narrow widths (`--` / `workspac` / `e`).
+- `tail_heading` caps the tail one cell short of the last component, so a heading that fits exactly loses a letter.
+- The contrast test skips named colours; Default Dark's status line is unmeasured.
+- The toast line count is a copy of ratatui 0.30.2's word wrapper and drifts if that wrapper changes.
+- `elide_summary_start` exists only under `#[cfg(test)]`.
+
+**Ruled out:** counting wide characters as two cells (the crate counts one cell per character throughout); renaming grid.rs's private `Grid`.
+
+### Phase 7 — Review repairs: wrapping, headings and the toast  · status: done
+
+#### As-built
+
+- One boundary-aware wrapper lives in `tui_pane`: public `tui_pane::wrapped(spans, width) -> Text<'static>` collapses whitespace; crate-private `wrapped_preserving_whitespace` keeps whitespace runs for toast bodies, whose columns depend on padded labels. A boundary is taken after a character of `WRAP_BREAK_AFTER = "/-=_.:,"` only when the head it leaves fills at least half a line; a word on a line already holding text moves to a fresh line first, and a broken word's tail shares its continuation line with the words after it. Words carry a `WordSeparator { None, Indentation, BreakPoint }`. cargo-tile's own `wrap.rs` is gone.
+- `command_line_width` measures program and arguments joined by one space, as drawn.
+- `fitted_heading` tries the whole heading, `[account] …/rest`, `…/rest`, `[account] …tail`, `…tail`, then the empty string; `tail_heading` may keep the whole last component. `elide_summary_start` is gone.
+- Ancestry: `ancestry_levels(ancestry, budget)` returns `AncestryLevel::AncestorAfterElision` for the nearest ancestor after a cut, so one row draws `… <nearest>` and two rows draw the elision row and the nearest; `ancestry_fit` keeps first, elision and last. `mark_ancestry_cut` marks a cut line.
+- Toasts: `Toasts` stores `ToastDrawAreaWidth { Unconstrained, Drawn(u16) }`, set from the render area, and derives `card_width()` through `toast_card_width(settings, area_width)`; height, visible lines, entrance and exit timing, and a newly pushed toast's entrance all count at that width. Each explicit body line wraps on its own in its colour. The body has one cell of padding each side; when the area exceeds the card by fewer than `TOAST_FULL_WIDTH_SLACK = 8` cells the card takes the whole width. The card's clear rectangle is clamped to the area.
+- `tui_pane::render_toasts(frame, framework, area)` is public again; cargo-tile and cargo-handler call it with `tui_pane::frame_inner(body)`, so toasts draw inside the tile frame.
+- One `pub(crate) ELISION` in `crates/tui_pane/src/constants.rs`; `PaneFrame::ELISION` is gone.
+- Default Dark's status bar is `Rgb(58, 58, 58)`; Default Light's `active_title` is `Rgb(137, 86, 0)`. `status_line_text_meets_contrast_in_every_built_in_theme` resolves named colours through an xterm table and checks four status inks on every built-in theme.
+
+**Files:**
+- `crates/tui_pane/src/wrap.rs` — the shared wrapper and its tests.
+- `crates/tui_pane/src/constants.rs` — `ELISION`, `WRAP_BREAK_AFTER`, `TOAST_FULL_WIDTH_SLACK`.
+- `crates/tui_pane/src/toasts/manager.rs` — drawn area width, card width.
+- `crates/tui_pane/src/toasts/body.rs`, `toast.rs`, `commands.rs` — height and entrance at the drawn width.
+- `crates/tui_pane/src/toasts/render/card.rs`, `drawing.rs` — padding, full width, clamped clear, buffer tests.
+- `crates/tui_pane/src/overlays/frame_tail.rs`, `lib.rs` — `render_toasts`, `wrapped`.
+- `crates/cargo-tile/src/render.rs` — callers, headings, ancestry levels.
+- `crates/cargo-handler/src/render.rs` — the `render_toasts` call.
+- `crates/cargo-tile/src/theme/builtins.rs`, `themes/default_dark.toml`, `themes/default_light.toml` — status colours and the contrast test.
+
+**Binds later work:** toasts draw inside `frame_inner(body)` through `render_toasts`, and `toast_card_width` is the one place a card's width is decided (the toast gap changes it). `AncestryLevel::AncestorAfterElision` and `mark_ancestry_cut` are the ancestry cut mark that table marks reuse.
+
+**Gotchas:** contrast is measured from the capture's cell colours, never from PNG pixels, where anti-aliasing blends the ink. The moved `#[expect(clippy::expect_used, reason = "tests should panic on unexpected values")]` lives in `crates/tui_pane/src/wrap.rs`.
+
+**Ruled out:** counting wide characters as two cells (one cell per character); renaming `ToastDrawAreaWidth` (it stores the area width it names).
+
+### Phase 8 — A cell shows a process or is not drawn  · status: done
+
+#### As-built
+
+- `pub fn TileGrid::set_min_tile_height(&mut self, height: u16)` writes `settings.min_tile_height`, never below the framework minimum. cargo-tile calls it beside `set_min_tile_width` with `MIN_CELL_HEIGHT = 6`: two frame rows, the column header, a directory heading, one process row and the foot readout. cargo-handler keeps the framework minimum.
+- `shares` divides a column of touching pieces with `apportion_shared_run`, so `fits` and `shares` agree at the exact `shared_run` boundary; the last piece keeps the column's closing row, and no settled piece is drawn under the floor. `summary_share` judges framed height, and `band_piece_dividers` holds resident pieces at the floor through a motion. Entering and leaving pieces stay transition fragments.
+- A command with no cell tall enough is refused through `fits` and counted in the summary until `sync` opens it, on Phase 5's refusal path.
+- cargo-tile `render.rs`: `table_continuation` returns `TableContinuation { FullyDrawn, CommandWasCut, RowsWereOmitted }` per drawn path group, and `mark_table_continuation` places the `…`. A cut value carries it attached; a whole value followed by omitted rows carries it at the command column's far edge; an exactly fitting whole value first moves its last word to a free row below (`move_last_word_to_table_continuation_line`), and with no free row the mark takes its last cell. `mark_cut_line` is shared with ancestry. Column headers never carry the mark. A directory heading is drawn only with its first process row (`PathGroupDraw` carries `height_with_gap` and `continuation`). `visible_columns` drops a `compiler` column whose every row is `CompilerObservation::None` and a `runs` column whose every row reads 0; `Unknown` and `Unavailable` keep theirs.
+- Toasts keep one cleared cell on each side (`TOAST_SIDE_GAP`) inside `frame_inner(body)`. `toast_card_width` subtracts both gaps, so wrapping, height and entrance timing count the drawn width. `join_adjacent_frame_columns` turns a covered frame tee into `│` only on a side whose gap touches the area edge.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs` — the height floor and shared-run apportioning, with their tests.
+- `crates/tui_pane/src/toasts/manager.rs`, `toasts/render/layout.rs`, `toasts/render/card.rs`, `toasts/render/drawing.rs`, `crates/tui_pane/src/constants.rs` — the toast gap and frame joins.
+- `crates/cargo-tile/src/render.rs` — table continuation marks, empty columns, heading admission, render tests.
+- `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/constants.rs` — `MIN_CELL_HEIGHT` and its call.
+- `crates/cargo-tile/README.md`, `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/CHANGELOG.md` — the floor.
+
+**Binds later work:** `TableContinuation` and `mark_table_continuation` are the table cut mark that a cut command filling its column, and a cut cell's trailing gap, extend. Under the framed rule a piece not at the bottom of its column may hold `min_tile_height - 1` raw rows; the summary's framed share builds on it.
+
+**Gotchas:** a one-row header fragment in a capture can be a piece entering mid-transition rather than a settled cell; replay the capture's timing before calling it a defect. cargo-handler's snapshot expectations follow the shared-border rule.
+
+### Phase 9 — A cut command fills its column, and a cut cell fills its rows  · status: todo
 
 #### Work Order
 
-**Goal:** Inside a command cell, a directory heading is drawn whole, shortened with `…`, or left out, and ancestry text breaks at path and word boundaries or ends in `…` — never cut bare.
-
-**Moved here from Phase 5's design check (2026-10-08; shots at 32, 200 and 200-after-regrow columns by 50 rows).** Each is a Spec item of this phase with its own test:
-
-- **A. A command word never breaks mid-word in the summary.** With the summary alone at 32 columns, the command column is 7 cells while the columns before it keep 2 to 3 cell gaps, and `cargo metadata` is drawn `cargo m` / `etadata`. Break only between words; give the command column the spare gap cells first (at 24 columns the gaps are already one cell); a word that still does not fit is shortened with `…`.
-- **B. A two-word command stays on one line when the row has room.** In a 66-cell command cell, `cargo check` wraps to two rows because the command column is 9 cells beside 2-cell gaps and an empty `compiler` column. Size the command column to its longest command before choosing wide gaps, and use 1-cell gaps when that keeps commands on one line.
-- **C. The first-run toast is whole or marked.** At 200 columns its body is cut mid-sentence with no `…` (the row ends `gives`), and it covers the status line. Let it take the rows its text needs or end its last line with `…`, and anchor it above the status line.
-- **D. Status line contrast.** In the dark theme the capture measured the status line's labels at 2.0 to 4.0 to 1 on its grey ground. First measure the real colours in a terminal (the capture tool maps bright black itself); fix only what measures under 4.5 to 1 there.
+**Goal:** A command cut at a cell's foot shows as much of itself as its column holds before the mark, and a cell that hides rows behind the mark leaves no blank row above its foot.
 
 **Spec:**
 
-1. **Directory heading** (`cargo-tile`, `draw_path_group`, `render.rs:1634`). Today `PathGroup::heading()` is one span at natural width in an unwrapped `Paragraph`, cut at the cell edge (`[natep`). Add `PathGroup::fitted_heading(&self, room: u16) -> String` and draw that; `room` is `area.width` less `SECTION_HEADER_INDENT`. It returns the first of these that fits `room` (measured with `cell_width`):
-   1. the whole heading, `[account] path` (or `path` alone for an unqualified group);
-   2. `[account] …/rest`, dropping whole leading path components, keeping as many trailing components as fit;
-   3. `[account] …tail`, the last component cut from its head, while at least `HEADING_MIN_TAIL` (8) cells of it show;
-   4. forms 2 then 3 again without the `[account] ` prefix;
-   5. the empty string.
+Evidence (Phase 8's design check after its second repair round; moved here by the hard landing rule; shots `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/ph8/shots/`, text beside each in its `.txt`). Reproduce each case in a failing buffer test before changing anything.
 
-   A shorter `…tail` form is not built: the floor keeps every command cell at 40 cells or wider, where form 4 always fits.
+The shot line numbers came from a moving workload; the fixtures named in each item are the reproduction.
 
-   The project name is the end of the path, so the end is what survives. `…` is `ANCESTRY_ELISION`'s glyph; name a `HEADING_ELISION` constant for it. `heading_gauge` and `summary_width` keep measuring the whole heading: the gauge already goes before the heading sheds anything, and `widen_summary` asks for the whole width.
-2. **Wrap at boundaries** (`cargo-tile`, `Wrap::push`, `wrap.rs:72`). A word wider than a whole line is cut today at a raw cell count. New rule for that branch: break after a boundary character — any of `WRAP_BREAK_AFTER = "/-=_.:,"` — taking the last boundary that fits the room left on the current line; with none in that room and the line not empty, wrap first and try a whole line; with none in a whole line either, cut at the line's width as today. Words that fit a line are untouched. `wrapped` serves the ancestry chain and the table's command column, and demand and draw both call it, so they stay in step.
-3. **A cut level says so** (`draw_ancestry`, `render.rs:983`). `lines.truncate(budget.max(1))` drops a level's last lines bare. When it drops any, the last kept line ends in `ANCESTRY_ELISION`: appended when the line has a free cell inside `ancestry_room`, otherwise replacing its last cell.
-4. **No room, no command** (`ancestry_stem`, `ancestry_room`, `render.rs:1130`, `1144`). When a level's room for its command is under `ANCESTRY_MIN_COMMAND_WIDTH` (8), the level draws its pid alone on one row; `ancestry_rows` counts it as one row. The pid stays whole or absent as now.
+1. **A cut command fills its column** (cargo-tile `render.rs`). The wrapper breaks at a word, and Phase 8's mark (`mark_table_continuation`) follows the last whole word, so a cut command leaves empty cells before its `…`: at 64, 48 and 40 columns, `cargo…` and `nextest…` stand with 2 to 6 free cells before the mark. `TableContinuation::CommandWasCut` is a unit variant and the mark rebuilds only cells already in the buffer, so it cannot add the omitted characters: give the variant a semantic payload (for example `CommandWasCut { continuation: CutCommandContinuation }`, carrying the styled text that did not fit) rather than a bare `Option<T>`. Rule: when a command's wrapped lines are cut at the foot, the last drawn line holds the value's next characters up to one cell short of the command column's width, then the mark (`cargo next…`, `nextest r…`), so the mark sits at the column's far edge. A whole value followed by omitted rows keeps Phase 8's far-edge mark with its free cells, and an exactly fitting whole value keeps Phase 8's wrap onto a free row. Test: `a_cut_command_fills_its_column_before_the_mark` (an 11-cell command column, `cargo nextest run`, one row for it: `cargo next…`).
+2. **A cell hiding rows leaves no blank row above its foot** (cargo-tile `render.rs`). In the deep 126 by 80 capture, cells given six rows and wanting fourteen draw one process row with the mark and then two blank rows above the foot. Cause as read: `PathGroupDraw::height_with_gap` always counts the one-row gap after a group, so the next group's heading plus first process row (two rows) cannot fit in the two blanks. Rule: at a vertical cut the inter-group gap yields: the next group in order is drawn without the gap before it when that lets its heading and first process row fit; content is never skipped out of order. Keep drawn group height and the trailing gap as separate values rather than an `Option<T>`. The mark moves to the last process line drawn. A heading is still admitted only with its first process row (Phase 8). Test: `a_cell_hiding_rows_leaves_no_blank_row_above_its_foot` — three groups of one one-line process each in a five-row table: the first two fill it with no gap between them, the third stays hidden, and the mark sits on the second group's process row with no blank row below it.
+3. **A command refused for height stays in the summary** (cargo-tile `render.rs`, test only). `a_command_refused_for_height_opens_when_there_is_room` in `tui_pane` checks only placement counts. Add `a_command_refused_for_height_remains_in_the_summary_until_it_opens` through the real `Cells`: in a short area the refused command is listed in the summary and has no cell; after a resize to a tall area its cell opens.
 
-Tests, all pure:
-- `render.rs`: `every_heading_width_is_whole_marked_or_absent` — for each width from 0 to the whole heading's width, for a qualified and an unqualified group: the drawn heading is the whole heading, or contains exactly one `…` and ends with a suffix of the path, or is empty; and it never exceeds the width. One case pins `[natepiano] …/tool-based-ui-frame-time`.
-- `wrap.rs`: a long path breaks only after `/`, a flag after `=` and `-`, a run with no boundary still cuts at the width; update the tests that pin today's cuts (`wrap.rs` 219, 227; `render.rs` 3112, 3140).
-- `render.rs`: a truncated level ends in `…`; a level under the minimum room draws its pid alone; demand equals draw at widths 22 to 60.
+These states last one frame and show only as TUI text, so buffer tests and the captures are their whole surface.
 
 Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs` — `PathGroup::fitted_heading`, `draw_path_group`, `draw_ancestry`, `ancestry_stem`, `ancestry_room`, `ancestry_rows`, `ancestry_lines`, tests.
-- `crates/cargo-tile/src/wrap.rs` — boundary breaks, tests.
-- `crates/cargo-tile/src/constants.rs` — `HEADING_ELISION`, `HEADING_MIN_TAIL`, `WRAP_BREAK_AFTER`, `ANCESTRY_MIN_COMMAND_WIDTH`.
-- `crates/cargo-tile/CHANGELOG.md` — Changed line.
+- `crates/cargo-tile/src/render.rs` — both items and their tests.
+- `crates/cargo-tile/CHANGELOG.md` — the Changed line.
 
-**Seats:** 2 writers — drawing in `render.rs`, wrapping in `wrap.rs`.
-- `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/CHANGELOG.md`. Its first edit adds the four constants and posts their names on the board.
-- `test` — opens as impl: `crates/cargo-tile/src/wrap.rs`.
+**Seats:** 1 writer — both items live in cargo-tile's table drawing in one file.
+- `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/CHANGELOG.md`; runs the one lint and the four suites.
 
-**Constraints from prior phases:** Phases 1 to 4 changed `tui_pane` and no rule for text inside a cargo-tile cell. Phase 5 set cargo-tile's floor (`MIN_CELL_WIDTH = 40`), so every command cell drawn here is 40 cells or wider; it added `TITLE_ELISION` in `tui_pane`, made the foot readout a list of whole candidates, and fixed in `draw_summary` whatever was cut bare. None of that changes here. `wrapped` also serves the summary table's command column, so Phase 5's `the_summary_alone_is_whole_marked_or_absent_at_every_width` passes unchanged. No `tui_pane` change; no new public item. No new `#[allow]` or `#[expect]`: the summary lists each one this phase adds or moves, with its file and line.
+**Constraints from prior phases:** Phase 6 made headings and ancestry whole or marked with the one glyph `ELISION`. Phase 8 made every table cut end in the mark (`mark_cut_line`, `mark_last_drawn_table_line`, `TableContinuation`: a value cut inside itself carries an attached mark, a whole value followed by omitted rows carries it at the command column's far edge, and one that exactly fills its column wraps its last word onto a free row first), admits a directory heading only with its first process row, drops an empty `compiler` or `runs` column, and set cargo-tile's cell floor to `MIN_CELL_HEIGHT` (6). Phase 8's mark tests pass unchanged except where item 1 moves the mark of a cut value, each named in the summary with its old and new text. No new public item. No new `#[allow]` or `#[expect]`.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, then `... test cargo-tile` green; the named tests pass; no test in the run takes a second.
-- Unit director's settled captures beside a real `cargo check`, 50 rows, at 200, 126, 90, 64, 48 and 40 columns: no heading is cut bare, and ancestry breaks only at a boundary or ends in `…`.
-- A fresh helper's design check of those six shots: pass.
+- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test this phase adds or changes takes a second (older slow tests are Phase 11's).
+- Unit director's settled captures beside real cargo commands, Phase 8's set (64, 48, 40 and 200 columns by 50 rows, 126 by 80 deep, the toast at 200, 64 and 40): every cut command's mark at its column's far edge, and no blank row above a foot while the mark says rows are hidden.
+- A fresh helper's design check of those shots: pass.
 
-### Phase 7 — Slow tests start first  · status: todo
-
-#### Work Order
-
-**Goal:** In a full `cargo nextest run`, every test that takes 0.8 s or more on natedev or the Mac starts before any faster test. Ordering only: no test is rewritten (user's words: "for now").
-
-**Spec:**
-
-1. **Measure before.** On each machine run the suite CI runs, `cargo nextest run --all-features --workspace --exclude cargo-mend --tests`, three times with JUnit turned on from outside the repo config: a file `junit.toml` holding `[profile.default.junit]` / `path = "junit.xml"`, passed as `--tool-config-file tile-fixes:<path>/junit.toml`. Each `testcase` then carries its start `timestamp` and `time`. Record the wall time of each run and, per test, its slowest time. On the Mac work in a checkout of this branch outside `/tmp`, reached with `ssh mac`.
-2. **The slow set** is every test at 0.8 s or more in any of the six runs, less the seven reader scenarios the config already orders. Known members to confirm by name with `cargo nextest list`: in `cargo-tile::unit_tests`, `progress::capture::…::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`, eight in `shim_registration::wire::`, two in `hook::`; two each in `cargo-tile::shim_modes` and `cargo-tile::cli_lifecycle`; in `cargo-handler`, `census::codex::…::reads_threads_by_id_whoever_started_them` and `…::reads_interactive_threads_created_in_the_span`; in `tui_pane`, `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw`.
-3. **One override.** Append to `.config/nextest.toml` one `[[profile.default.overrides]]` with `priority = 80` and a `filter` that names each slow test exactly: `binary_id(<id>) & (test(=<name>) | …)` per binary, joined with `|`. No regular expressions, so a test added later is not swept in by accident. A comment above it says what the list is, the threshold, the date measured, and how to re-measure. nextest resolves each setting from the first override that sets it, so the two existing priorities (100, 90), the `cargo-tile-readers` group and both `slow-timeout` entries keep working unchanged; the new override sets `priority` alone and names none of the reader scenarios.
-4. **Measure after**, the same three runs per machine.
-
-**Files:**
-- `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
-
-**Seats:** 1 writer + 1 tester — one configuration owner and one measurement lane.
-- `impl` — `.config/nextest.toml`.
-- `test` — no file; runs the three before and three after measurements on natedev and the Mac, checks every exact filter name, and hands the measured slow set and start order to `impl`.
-
-**Constraints from prior phases:** Phases 1 to 6 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set.
-
-**Acceptance gate:**
-- `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
-- After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
-- The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
-
-### Phase 8 — The summary takes the rows it asks for, not a second position  · status: todo
+### Phase 10 — The summary takes the rows it asks for, not a second position  · status: todo
 
 #### Work Order
 
 **Goal:** The summary takes a further position in its column only when it would use more than half of it, so no rows stand blank in the summary while command cells are short of theirs.
 
-**Moved here from Phase 5's design check (2026-10-08; shots at 40, 48 and 64 columns by 50 rows, `initial_rows = 12`).** A live command cell is drawn two or three rows high, a column heading and a foot with no process row, while the summary above it keeps blank rows. This phase also gives a command cell a height floor (column heading, directory heading, one process row, foot): the summary's spare rows go to the shortest cell first, and a cell that still cannot reach the floor is left out. It has its own test.
-
 **Spec:**
 
 Evidence (Phase 2's design check, 200x50, the tenth command cell opening while the summary asks 12 content rows): the left column settles at 20, 13 and 12 rows where it was 16, 15 and 14; the summary shows seven blank rows; every other column holds four cells of 12 rows.
 
-Cause as read; reproduce it in a failing test before changing anything. `summary_depth` (`grid.rs:1810`) deepens the summary as soon as `summary_share` (1789) at the current depth is under what it asks. `summary_share` calls `shares` (1702), which gives every piece its base share by weight (`apportion`, the summary's weight is its depth) and then serves the summary only from `spare`, the rows its column-mates do not ask for. In a 47-row column of four positions the base share is 11 or 12 rows and the mates want theirs, so a summary asking 13 is one or two rows short. It then takes a whole second position, 23 rows, and gives back only what its two remaining mates ask: 20, 13, 12, with seven rows nobody in that column wants, while the cell it pushed out crowds another column.
+Cause as read; reproduce it in a failing test before changing anything. `summary_depth` (`grid.rs:1932`) deepens the summary as soon as `summary_share` (1912) at the current depth is under what it asks. `summary_share` calls `shares` (1824), which gives every piece its base share by weight (`apportion`, the summary's weight is its depth) and then serves the summary only from `spare`, the rows its column-mates do not ask for. In a 47-row column of four positions the base share is 11 or 12 rows and the mates want theirs, so a summary asking 13 is one or two rows short. It then takes a whole second position, 23 rows, and gives back only what its two remaining mates ask: 20, 13, 12, with seven rows nobody in that column wants, while the cell it pushed out crowds another column.
 
 Rule:
-1. Let `slot` be the summary column's base share for one position at the current depth (`apportion` of equal weights over the column's height). When the summary is short by `slot / 2` rows or fewer, it stays at this depth and takes the shortfall from its mates, the tallest first, one row at a time, never taking a mate under `min_tile_height`. Name the half as a constant in `crates/tui_pane/src/tiles/constants.rs`.
+1. Let `slot` be the summary column's framed share for one position at the current depth, from the same model `shares` now uses (`apportion_shared_run`, with the shared border restored as `summary_share` does), not raw `apportion`. When the summary is short by `slot / 2` rows or fewer, it stays at this depth and takes the shortfall from its mates, the tallest first, one row at a time, never taking a mate under `min_tile_height`. The floor is judged on each mate's final framed rectangle, after `share_borders`, not on its raw share: a piece that is not at the bottom may hold `min_tile_height - 1` raw rows because the shared border supplies its last one (Phase 8's shared-run rule). Name the half as a constant in `crates/tui_pane/src/tiles/constants.rs`.
 2. When it is short by more than that, or its mates cannot give the rows without going under the minimum, `summary_depth` deepens as today.
 3. `summary_depth` stays a non-decreasing function of what the summary asks, with everything else fixed, so a summary growing a row at a time never flips between depths and back.
 4. `queue_with_depth` and the motion code do not change: a depth change is still queued as Phase 2 left it.
@@ -346,7 +356,7 @@ Tests, all pure, on settled grids:
 - `grid.rs`: `a_summary_one_row_short_takes_it_from_its_mates` — the evidence case: eleven positions, the summary at depth 1 with exactly the rows it asks, three mates sharing the rest, none under the minimum.
 - `grid.rs`: `a_summary_far_short_still_takes_a_second_position` — a summary asking a slot and three quarters.
 - `grid.rs`: `summary_depth_never_falls_as_the_summary_asks_for_more` — every demand from 1 row to the column's height, at 6, 9, 10 and 13 command cells.
-- `grid.rs`: `no_mate_goes_under_the_minimum_to_feed_the_summary`.
+- `grid.rs`: `no_mate_goes_under_the_minimum_to_feed_the_summary` — a bottom mate and a mate that is not at the bottom, each measured framed.
 - `draw.rs`: `the_summary_shows_no_blank_row_while_a_cell_in_its_column_is_short` — through `draw_tile_grid` with `StubCells` demands: when any cell in the summary's column has fewer body rows than it asks, the summary has no body row beyond what it asks.
 - Existing tests that pin a depth: change only those the rule changes, and list each in the summary with its old and new expectation.
 
@@ -362,9 +372,37 @@ Changelogs: one Changed line each under `## [Unreleased]`.
 - `impl` — `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/constants.rs`, both changelogs.
 - `test` — `crates/tui_pane/src/tiles/draw.rs`: the render test, failing until `impl` lands the rule.
 
-**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 3 made a column the step removes close as one piece (`BandPieceMotion::ClosingWithColumn`; test `no_piece_in_a_closing_column_changes_height`, with and without a widened summary over the closing column) and gave each piece a name role (`TilePiece`, `PieceName`, `piece_name`); a change to the summary's rows keeps both, and the `a_title_is_on_screen_once_*` and `an_empty_cell_number_is_on_screen_once_*` render tests pass unchanged. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. No new public item. No new `#[allow]` or `#[expect]`: the summary lists each one this phase adds or moves, with its file and line.
+**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 3 made a column the step removes close as one piece (`BandPieceMotion::ClosingWithColumn`; test `no_piece_in_a_closing_column_changes_height`, with and without a widened summary over the closing column) and gave each piece a name role (`TilePiece`, `PieceName`, `piece_name`); a change to the summary's rows keeps both, and the `a_title_is_on_screen_once_*` and `an_empty_cell_number_is_on_screen_once_*` render tests pass unchanged. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. Phase 5 also made the grid answer the summary alone itself (`drawing_at` returns one summary piece when `holds_in` fails), so a grid that does not hold never reaches `shares`. Phase 8 made the height floor true: every piece `shares` returns is at least `min_tile_height` rows once framed, at exact `shared_run` boundaries too, and cargo-tile's floor is `MIN_CELL_HEIGHT` (6) through `TileGrid::set_min_tile_height`; rule 1's "never under `min_tile_height`" rests on that, and Phase 8's floor tests pass unchanged. The `grid.rs` line references above were read before Phase 8: find each function by name (after Phase 8, `shares` is near 1832, `summary_share` near 1925, `summary_depth` near 1946). Phase 8 also made a table cut at its foot end in the mark, the summary included (hidden later rows too); a summary given fewer or more rows here keeps that mark, and Phase 8's mark tests pass unchanged. No new public item. No new `#[allow]` or `#[expect]`: the summary lists each one this phase adds or moves, with its file and line.
 
 **Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test this phase adds or changes takes a second (older slow tests are Phase 11's).
 - Unit director's capture at 200x50 with seven `+` and seven `-` (it reaches ten cells and four columns), transparent off: in every settled frame the summary shows no blank body row while a cell in its column is short of what it asks, and Phase 2's motion measures still read zero.
 - A fresh helper's design check of the settled shots and one motion shot per step, against Phase 2's shots of the same steps: pass.
+
+### Phase 11 — Slow tests start first  · status: todo
+
+#### Work Order
+
+**Goal:** On each machine, every non-reader test observed at 0.8 s or more in any measurement run starts before every faster non-reader test in a full `cargo nextest run`; the seven reader scenarios keep their existing priority and one-at-a-time rules. Ordering only: no test is rewritten (user's words: "for now").
+
+**Spec:**
+
+1. **Measure before.** On each machine run the suite CI runs, `cargo nextest run --all-features --workspace --exclude cargo-mend --tests`, three times with JUnit turned on from outside the repo config: a file `junit.toml` holding `[profile.default.junit]` / `path = "junit.xml"`, passed as `--tool-config-file tile-fixes:<path>/junit.toml`. Each `testcase` then carries its start `timestamp` and `time`. Record the wall time of each run and, per test, its slowest time. On the Mac work in a clone outside `/tmp`, reached with `ssh mac`: `git clone git@github.com:natepiano/cargo-liner.git /Users/natemccoy/rust/cargo-liner-measure` if it is absent, then before every batch of runs `git -C /Users/natemccoy/rust/cargo-liner-measure fetch origin remove-running-section-tile-fixes`, `git -C … checkout --detach FETCH_HEAD`, and confirm `git rev-parse HEAD` equals the phase tip on natedev and `git status --short` is empty. (`/Users/natemccoy/rust/cargo-liner` is the user's checkout on `main`; leave it alone.)
+2. **The slow set** is every test at 0.8 s or more in any of the six runs, less the seven reader scenarios the config already orders. Known members to confirm by name with `cargo nextest list`: in `cargo-tile::unit_tests`, `progress::capture::…::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`, eight in `shim_registration::wire::`, two in `hook::`; two each in `cargo-tile::shim_modes` and `cargo-tile::cli_lifecycle`; in `cargo-handler`, `census::codex::…::reads_threads_by_id_whoever_started_them` and `…::reads_interactive_threads_created_in_the_span`; in `tui_pane`, `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw`.
+3. **One override.** Append to `.config/nextest.toml` one `[[profile.default.overrides]]` with `priority = 80` and a `filter` that names each slow test exactly: `binary_id(<id>) & (test(=<name>) | …)` per binary, joined with `|`. No regular expressions, so a test added later is not swept in by accident. A comment above it says what the list is, the threshold, the date measured, and how to re-measure. nextest resolves each setting from the first override that sets it, so the two existing priorities (100, 90), the `cargo-tile-readers` group and both `slow-timeout` entries keep working unchanged; the new override sets `priority` alone and names none of the reader scenarios.
+4. **Measure after**, the same three runs per machine. A non-reader test that crosses 0.8 s in an after run and is not in the filter joins it, and the three after runs repeat once on both machines; a second newcomer is reported in the summary rather than chased.
+
+**Files:**
+- `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
+
+**Seats:** 1 writer + 1 tester — one configuration owner and two measurement lanes on a byte-identical candidate.
+- `impl` — owns `.config/nextest.toml`, publishes its `sha256sum` on the board after each edit, and runs every natedev before and after run; checks every exact filter name.
+- `test` — no source file; copies the candidate config to the Mac clone (`scp` over `ssh mac` into `/Users/natemccoy/rust/cargo-liner-measure/.config/nextest.toml` after the checkout), verifies the same sha256 before each after-run batch, runs every Mac run, and hands `impl` the JUnit files, the slow set and the start order. The before runs use the clean phase tip.
+
+**Constraints from prior phases:** This phase runs last, after every phase that adds tests or changes shared grid code, so its timings measure the suite the run ships. Phases 1 to 10 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second for its own tests, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set. Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, after the config edit: green.
+- `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
+- After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
+- The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.

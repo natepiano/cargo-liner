@@ -236,7 +236,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             min_interior_lines: spec.min_interior_lines,
             item_linger: spec.item_linger,
         };
-        toast.refresh_entrance_phase(&self.settings);
+        toast.refresh_entrance_phase_at_width(&self.settings, self.card_width());
         self.entries.push(toast);
         self.sync_viewport_len();
         id

@@ -11,7 +11,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- `wrapped` is the shared boundary-aware text wrapper, including comma break points; toast bodies retain their written spacing, and `render_toasts` now takes the body area it draws within.
+- Toast cards grow to the rows their bodies draw at the available card width, wrap each explicit line through `wrapped`, pad the body on both sides, fill widths that leave less than eight cells beside them, and reserve an available action row; when the stack gives a body fewer rows, its last visible row ends in `…`.
 - `TileGrid::set_min_tile_width` lets an app set its own tile floor. When every arrangement the grid may draw does not fit that floor, the summary fills the area while the cells and their focus wait off-screen.
+- `TileGrid::set_min_tile_height` lets an app set its own tile-height floor. Settled tiles and resident pieces in motion keep that height at shared borders, and an arrangement without enough room stays summarized until it fits.
+- Keep one cleared cell on each side of every toast card.
 - Status-line regions draw only while each complete item fits: global shortcuts outlast notes, the scan indicator and uptime precede and outlast navigation, and the centre appears only when it fits between the sides.
 - Tile foot readouts choose the widest complete form that fits; a cell with one interior row gives it to its contents and draws no readout.
 - Border titles that outgrow their row end in `…` instead of being cut without a mark.

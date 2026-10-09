@@ -300,6 +300,8 @@ widen_summary = false
 fade_seconds = 3
 ```
 
+A command cell is never shorter than six rows.
+
 `fade_seconds` is how long a finished invocation stays on screen, greyed, before
 it goes -- and before the cell it was holding closes and the cells after it move
 up. Zero drops it on the scan that notices.

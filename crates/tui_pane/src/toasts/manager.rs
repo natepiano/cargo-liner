@@ -10,6 +10,27 @@ use super::view::ToastHitbox;
 use crate::AppContext;
 use crate::Viewport;
 use crate::constants::FRAME_POLL_MILLIS;
+use crate::constants::TOAST_FULL_WIDTH_SLACK;
+use crate::constants::TOAST_SIDE_GAP;
+
+/// Width constraint established by the most recent toast draw.
+#[derive(Clone, Copy)]
+enum ToastDrawAreaWidth {
+    /// No draw has constrained the configured toast width yet.
+    Unconstrained,
+    /// The most recent draw used an area this many cells wide.
+    Drawn(u16),
+}
+
+pub(super) fn toast_card_width(settings: &ToastSettings, area_width: u16) -> u16 {
+    let configured = settings.width.get();
+    let card_area_width = area_width.saturating_sub(TOAST_SIDE_GAP.saturating_mul(2));
+    if card_area_width.saturating_sub(configured) < TOAST_FULL_WIDTH_SLACK {
+        card_area_width
+    } else {
+        configured.min(card_area_width)
+    }
+}
 
 /// Result of handling a focused toast key.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +102,7 @@ pub struct Toasts<Ctx: AppContext> {
     pub viewport:        Viewport,
     pub(super) hits:     Vec<ToastHitbox>,
     pub(super) settings: ToastSettings,
+    draw_area_width:     ToastDrawAreaWidth,
 }
 
 impl<Ctx: AppContext> Default for Toasts<Ctx> {
@@ -101,6 +123,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             viewport: Viewport::default(),
             hits: Vec::new(),
             settings,
+            draw_area_width: ToastDrawAreaWidth::Unconstrained,
         }
     }
 
@@ -115,8 +138,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     pub fn set_settings(&mut self, settings: ToastSettings) {
         self.settings = settings;
         let item_linger = self.settings.finished_task_visible.get();
+        let card_width = self.card_width();
         for toast in &mut self.entries {
-            toast.refresh_entrance_phase(&self.settings);
+            toast.refresh_entrance_phase_at_width(&self.settings, card_width);
             if matches!(toast.lifetime, ToastLifetime::Task { .. }) {
                 toast.item_linger = item_linger;
             }
@@ -137,7 +161,11 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let earliest_deadline = self.entries.iter().fold(
             ToastVisualDeadline::NoVisualChangeScheduled,
             |deadline, toast| {
-                deadline.earlier(toast.next_visual_change_deadline(now, &self.settings))
+                deadline.earlier(toast.next_visual_change_deadline(
+                    now,
+                    &self.settings,
+                    self.card_width(),
+                ))
             },
         );
         match earliest_deadline {
@@ -157,6 +185,26 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             self.viewport.set_pos(len - 1);
         }
     }
+
+    pub(super) fn set_draw_area_width(&mut self, area_width: u16) {
+        let previous_card_width = self.card_width();
+        self.draw_area_width = ToastDrawAreaWidth::Drawn(area_width);
+        let card_width = self.card_width();
+        if previous_card_width == card_width {
+            return;
+        }
+        for toast in &mut self.entries {
+            toast.refresh_entrance_phase_at_width(&self.settings, card_width);
+        }
+    }
+
+    pub(super) fn card_width(&self) -> u16 {
+        let configured = self.settings.width.get();
+        match self.draw_area_width {
+            ToastDrawAreaWidth::Unconstrained => configured,
+            ToastDrawAreaWidth::Drawn(area_width) => toast_card_width(&self.settings, area_width),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -171,6 +219,7 @@ mod tests {
 
     use crossterm::event::KeyCode;
     use ratatui::style::Color;
+    use toml::Table;
 
     use super::*;
     use crate::ACTIVITY_SPINNER;
@@ -278,6 +327,39 @@ mod tests {
             toasts.active_views(first_repaint_at)[0].desired_height(),
             min_height.saturating_add(1)
         );
+    }
+
+    #[test]
+    fn mutable_settings_keep_toast_creation_in_sync_with_the_drawn_area() {
+        let mut toasts = Toasts::<TestApp>::with_settings({
+            let table: Table = "[toasts]\nwidth = 60\n"
+                .parse()
+                .expect("toast settings TOML should parse");
+            ToastSettings::from_table(&table).expect("toast settings should load")
+        });
+        toasts.set_draw_area_width(67);
+        assert_eq!(toasts.card_width(), 65);
+        let narrower = {
+            let table: Table = "[toasts]\nwidth = 20\n"
+                .parse()
+                .expect("toast settings TOML should parse");
+            ToastSettings::from_table(&table).expect("toast settings should load")
+        };
+
+        toasts.settings_mut().width = narrower.width;
+        let id = toasts.push("notice", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN");
+        let toast = toasts
+            .entries
+            .iter()
+            .find(|toast| toast.id == id)
+            .expect("pushed toast should be stored");
+
+        assert_eq!(toasts.card_width(), 20);
+        assert!(matches!(toast.phase, ToastPhase::Entering { .. }));
+        assert!(matches!(
+            toasts.next_visual_change_deadline(toast.created_at),
+            ToastVisualDeadline::At(_)
+        ));
     }
 
     #[test]

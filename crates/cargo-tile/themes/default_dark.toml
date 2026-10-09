@@ -50,7 +50,7 @@ secondary = "Gray"
 [variants.roles]
 
 [variants.status]
-bar = "DarkGray"
+bar = { r = 58, g = 58, b = 58 }
 
 [variants.finder]
 match_bg = { r = 0, g = 90, b = 100 }

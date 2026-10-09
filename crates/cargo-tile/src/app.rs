@@ -37,6 +37,7 @@ use crate::census::InvocationId;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
+use crate::constants::MIN_CELL_HEIGHT;
 use crate::constants::MIN_CELL_WIDTH;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
@@ -197,6 +198,7 @@ impl App {
         let excluded_commands =
             ExcludedCommands::new(loaded_config.config.commands.excluded.clone());
         let mut tiles = TileGrid::new();
+        tiles.set_min_tile_height(MIN_CELL_HEIGHT);
         tiles.set_min_tile_width(MIN_CELL_WIDTH);
         Ok(Self {
             framework,

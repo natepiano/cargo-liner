@@ -63,6 +63,7 @@ use crate::constants::ACCOUNT_HEADING_CLOSE;
 use crate::constants::ACCOUNT_HEADING_OPEN;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
+use crate::constants::ANCESTRY_MIN_COMMAND_WIDTH;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
 use crate::constants::APP_NAME;
 use crate::constants::APP_VERSION;
@@ -77,6 +78,7 @@ use crate::constants::ELISION;
 use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
+use crate::constants::HEADING_MIN_TAIL;
 use crate::constants::MANAGED_COLUMN;
 use crate::constants::MEMORY_COLUMN;
 use crate::constants::MEMORY_UNIT;
@@ -130,7 +132,6 @@ use crate::theme;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemand;
 use crate::tiles::TileDemands;
-use crate::wrap;
 
 /// A numeric account and its independently resolved display label.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,8 +234,9 @@ impl SummaryMemoryTotal {
     }
 }
 
-/// Draw one frame: panes fill the terminal above the status line, and an
-/// open overlay floats above both.
+/// Draw one frame: panes fill the body above the status line, and toasts
+/// are drawn inside the grid's outer frame. An open overlay floats above
+/// both.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
@@ -259,7 +261,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         draw_panes(frame, app, body, contents);
     });
     draw_status_line(frame, app, keymap, status);
-    tui_pane::render_toasts(frame, &mut app.framework);
+    tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
     app.favorites_overlay.render(frame);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
@@ -402,25 +404,7 @@ fn summary_width(rows: &[&TrackedRow], tree: ProcessTree) -> u16 {
     }
     let kind = TableKind::Summary;
     let columns = visible_columns(rows, kind);
-    let command = rows
-        .iter()
-        .map(|row| {
-            let arguments = match tree {
-                ProcessTree::Long => row.process.command.line(kind.detail()),
-                ProcessTree::Short => row.process.command.named(),
-            };
-            // The words the wrap sets down, one space between each.
-            let words: Vec<&str> = row
-                .process
-                .command
-                .program
-                .split_whitespace()
-                .chain(arguments.split_whitespace())
-                .collect();
-            cell_width(&words.join(" "))
-        })
-        .max()
-        .unwrap_or_default()
+    let command = longest_command_width(rows, kind.detail(), tree)
         .max(cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
     let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
     let table = fitted_constraints(rows, &columns)
@@ -526,6 +510,11 @@ fn table_height(
         return usize::from(TABLE_HEADER_HEIGHT);
     }
     let groups = group_by_path(rows, pinned);
+    grouped_table_height(&groups, &layout)
+}
+
+/// Rows occupied by grouped table content under one solved layout.
+fn grouped_table_height(groups: &[PathGroup<'_>], layout: &TableLayout) -> usize {
     let gaps = groups
         .len()
         .saturating_sub(1)
@@ -536,7 +525,7 @@ fn table_height(
             let lines: usize = group
                 .rows
                 .iter()
-                .map(|row| usize::from(process_row(row, &layout).lines))
+                .map(|row| usize::from(process_row(row, layout).lines))
                 .sum();
             usize::from(GROUP_HEADER_HEIGHT).saturating_add(lines)
         })
@@ -862,11 +851,17 @@ fn drawn_ancestry(
     }
 }
 
-/// One step of a chain with its arguments taken off.
+/// One step of a chain with its omitted arguments marked.
 fn shortened(ancestor: &Ancestor) -> Ancestor {
+    let name = census::command_name(&ancestor.command);
+    let command = if name == ancestor.command {
+        name
+    } else {
+        format!("{name} {ELISION}")
+    };
     Ancestor {
-        pid:            ancestor.pid,
-        command:        census::command_name(&ancestor.command),
+        pid: ancestor.pid,
+        command,
         passes_through: ancestor.passes_through,
     }
 }
@@ -947,15 +942,9 @@ fn draw_ancestry(
     table: usize,
 ) -> u16 {
     let budget = ancestry_budget(area.height, table);
-    let levels = ancestry_fit(
-        ancestry,
-        budget,
-        matches!(
-            foot,
-            AncestryFoot::ColoredCommand(_) | AncestryFoot::PlainCommand
-        ),
-        |levels| ancestry_height(levels, area.width),
-    );
+    let levels = ancestry_fit(ancestry, budget, |levels| {
+        ancestry_height(levels, area.width)
+    });
     if levels.is_empty() {
         return 0;
     }
@@ -981,12 +970,167 @@ fn draw_ancestry(
     // whose command outruns the whole budget on its own. The lines run
     // head first, so what goes is the tail of that command rather than
     // the pid that names it.
-    lines.truncate(budget.max(1));
+    let kept = budget.max(1);
+    if lines.len() > kept {
+        lines.truncate(kept);
+        if let Some(line) = lines.last_mut() {
+            mark_cut_line(line, area.width);
+        }
+    }
     // `u16` because the count came out of a budget measured in rows of
     // this same area.
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     Paragraph::new(lines).render(Rect { height, ..area }, buffer);
     height.saturating_add(ANCESTRY_GAP_HEIGHT)
+}
+
+/// End a line where its remaining content was cut.
+fn mark_cut_line(line: &mut Line<'static>, width: u16) {
+    let room = usize::from(width).saturating_sub(UnicodeWidthStr::width(ELISION));
+    let marker_style = line
+        .spans
+        .iter()
+        .rev()
+        .find(|span| !span.content.is_empty())
+        .map_or_else(Style::default, |span| span.style);
+    let mut kept = Vec::new();
+    let mut used: usize = 0;
+    for span in std::mem::take(&mut line.spans) {
+        let span_width = UnicodeWidthStr::width(span.content.as_ref());
+        if used.saturating_add(span_width) <= room {
+            used = used.saturating_add(span_width);
+            kept.push(span);
+            continue;
+        }
+        let content: String = span
+            .content
+            .chars()
+            .take_while(|character| {
+                let character_width = UnicodeWidthChar::width(*character).unwrap_or_default();
+                let fits = used.saturating_add(character_width) <= room;
+                if fits {
+                    used = used.saturating_add(character_width);
+                }
+                fits
+            })
+            .collect();
+        if !content.is_empty() {
+            kept.push(Span::styled(content, span.style));
+        }
+        break;
+    }
+    line.spans = kept;
+    if UnicodeWidthStr::width(ELISION) <= usize::from(width) {
+        line.spans.push(Span::styled(ELISION, marker_style));
+    }
+}
+
+/// Apply the shared cut mark without making a whole command look shortened.
+fn mark_table_continuation(
+    buffer: &mut Buffer,
+    area: Rect,
+    layout: &TableLayout,
+    continuation: TableContinuation,
+) {
+    let mut command = layout.command_area(area);
+    command.y = command.y.saturating_add(TABLE_HEADER_HEIGHT);
+    command.height = command.height.saturating_sub(TABLE_HEADER_HEIGHT);
+    let Some(y) = (command.top()..command.bottom())
+        .rev()
+        .find(|&y| (command.left()..command.right()).any(|x| buffer[(x, y)].symbol() != " "))
+    else {
+        return;
+    };
+    let Some(right) = (command.left()..command.right())
+        .rev()
+        .find(|&x| buffer[(x, y)].symbol() != " ")
+    else {
+        return;
+    };
+    if continuation == TableContinuation::RowsWereOmitted {
+        if right < command.right() - 1 {
+            let style = buffer[(right, y)].style();
+            buffer[(command.right() - 1, y)]
+                .set_symbol(ELISION)
+                .set_style(style);
+            return;
+        }
+        if move_last_word_to_table_continuation_line(buffer, command, y, right) {
+            return;
+        }
+    }
+    let mut spans = Vec::new();
+    let mut x = command.left();
+    while x <= right {
+        let cell = &buffer[(x, y)];
+        let symbol = cell.symbol();
+        spans.push(Span::styled(symbol.to_owned(), cell.style()));
+        let cells = UnicodeWidthStr::width(symbol).max(1);
+        x = x.saturating_add(u16::try_from(cells).unwrap_or(u16::MAX));
+    }
+    let mut line = Line::from(spans);
+    mark_cut_line(&mut line, command.width);
+    Paragraph::new(line).render(
+        Rect {
+            y,
+            height: 1,
+            ..command
+        },
+        buffer,
+    );
+}
+
+/// Use a blank line below an exact-width command to keep its final word whole.
+fn move_last_word_to_table_continuation_line(
+    buffer: &mut Buffer,
+    command: Rect,
+    y: u16,
+    right: u16,
+) -> bool {
+    let next_y = y.saturating_add(1);
+    if next_y >= command.bottom()
+        || (command.left()..command.right()).any(|x| buffer[(x, next_y)].symbol() != " ")
+    {
+        return false;
+    }
+    let Some(separator) = (command.left()..right).rev().find(|&x| {
+        let symbol = buffer[(x, y)].symbol();
+        !symbol.is_empty() && symbol.chars().all(char::is_whitespace)
+    }) else {
+        return false;
+    };
+    let word_start = separator.saturating_add(1);
+    let mut word = Vec::new();
+    let mut word_width: usize = 0;
+    let mut x = word_start;
+    while x <= right {
+        let cell = &buffer[(x, y)];
+        let symbol = cell.symbol();
+        let cells = UnicodeWidthStr::width(symbol).max(1);
+        word_width = word_width.saturating_add(cells);
+        word.push(Span::styled(symbol.to_owned(), cell.style()));
+        x = x.saturating_add(u16::try_from(cells).unwrap_or(u16::MAX));
+    }
+    if word_width.saturating_add(UnicodeWidthStr::width(ELISION)) > usize::from(command.width) {
+        return false;
+    }
+
+    let marker_style = buffer[(right, y)].style();
+    for x in separator..command.right() {
+        buffer[(x, y)].set_symbol(" ");
+    }
+    Paragraph::new(Line::from(word)).render(
+        Rect {
+            y: next_y,
+            height: 1,
+            ..command
+        },
+        buffer,
+    );
+    buffer[(command.right() - 1, next_y)]
+        .set_symbol(ELISION)
+        .set_style(marker_style);
+    true
 }
 
 /// A drawn ancestor or the marker for a deliberately omitted chain segment.
@@ -996,6 +1140,8 @@ enum AncestryLevel<'a> {
     Ancestor(&'a Ancestor),
     /// The layout omits one or more intervening ancestors.
     Elided,
+    /// Earlier ancestors are omitted, with the cut marked on this row.
+    AncestorAfterElision(&'a Ancestor),
 }
 
 /// Which levels of `ancestry` the block draws once wrapping is counted.
@@ -1019,7 +1165,6 @@ enum AncestryLevel<'a> {
 fn ancestry_fit(
     ancestry: &[Ancestor],
     budget: usize,
-    foot_is_the_command: bool,
     mut height: impl FnMut(&[AncestryLevel<'_>]) -> usize,
 ) -> Vec<AncestryLevel<'_>> {
     // A budget past the chain's length asks for the whole chain however
@@ -1029,7 +1174,20 @@ fn ancestry_fit(
     // made every frame cost seconds.
     let mut asked = budget.min(ancestry.len());
     loop {
-        let levels = ancestry_levels(ancestry, asked, foot_is_the_command);
+        let levels = if budget >= ANCESTRY_MIN_ELIDED_ROWS
+            && asked == ANCESTRY_MIN_ELIDED_ROWS.saturating_sub(1)
+            && ancestry.len() > asked
+        {
+            ancestry
+                .first()
+                .map(AncestryLevel::Ancestor)
+                .into_iter()
+                .chain(std::iter::once(AncestryLevel::Elided))
+                .chain(ancestry.last().map(AncestryLevel::Ancestor))
+                .collect()
+        } else {
+            ancestry_levels(ancestry, asked)
+        };
         if levels.len() <= 1 || height(&levels) <= budget {
             return levels;
         }
@@ -1065,23 +1223,12 @@ fn ancestry_budget(height: u16, table: usize) -> usize {
 /// A chain that fits is drawn whole. One that does not keeps both ends:
 /// the top-level parent, and the levels nearest the command, which are
 /// what say how it was actually started. Below
-/// [`ANCESTRY_MIN_ELIDED_ROWS`] there is no room for two ends and an
-/// elision between them, and the head is what stays: it is the one step
-/// that says where the command came from. The foot of a hand-typed
-/// command is the shell it was typed into, which every command in a
-/// terminal has -- a cell squeezed to one row that spends it on `-zsh`
-/// has said nothing, where the same row spent on `zed` has said the
-/// whole thing.
-///
-/// `foot_is_the_command` turns that around, because there the foot is
-/// not a step above the command but the command itself -- see
-/// [`crate::roster::TrackedGroup::leads_as_ancestor`] -- and it is
-/// where that cargo's pid is written for the table below to point at.
-fn ancestry_levels(
-    ancestry: &[Ancestor],
-    budget: usize,
-    foot_is_the_command: bool,
-) -> Vec<AncestryLevel<'_>> {
+/// [`ANCESTRY_MIN_ELIDED_ROWS`] there is no room for both ends and a
+/// separate elision between them. Two rows therefore keep the elision
+/// and the nearest ancestor. One row combines those two, so even the
+/// smallest visible fragment says both that the chain was cut and what
+/// stood nearest the command.
+fn ancestry_levels(ancestry: &[Ancestor], budget: usize) -> Vec<AncestryLevel<'_>> {
     if budget == 0 {
         return Vec::new();
     }
@@ -1089,23 +1236,13 @@ fn ancestry_levels(
         return ancestry.iter().map(AncestryLevel::Ancestor).collect();
     }
     if budget < ANCESTRY_MIN_ELIDED_ROWS {
-        if foot_is_the_command {
-            return ancestry[ancestry.len() - budget..]
-                .iter()
-                .map(AncestryLevel::Ancestor)
-                .collect();
+        let Some(nearest) = ancestry.last() else {
+            return Vec::new();
+        };
+        if budget == 1 {
+            return vec![AncestryLevel::AncestorAfterElision(nearest)];
         }
-        let tail = budget - 1;
-        return ancestry
-            .first()
-            .map(AncestryLevel::Ancestor)
-            .into_iter()
-            .chain(
-                ancestry[ancestry.len() - tail..]
-                    .iter()
-                    .map(AncestryLevel::Ancestor),
-            )
-            .collect();
+        return vec![AncestryLevel::Elided, AncestryLevel::Ancestor(nearest)];
     }
     let tail = budget - 2;
     ancestry
@@ -1144,12 +1281,25 @@ fn ancestry_stem(ancestor: &Ancestor, level: usize, width: u16) -> (String, Stri
 /// Cells `level`'s command has to itself at `width`.
 fn ancestry_room(ancestor: &Ancestor, level: usize, width: u16) -> u16 {
     let (indent, label) = ancestry_stem(ancestor, level, width);
-    let stem = indent
-        .chars()
-        .count()
-        .saturating_add(label.chars().count())
-        .saturating_add(usize::from(!label.is_empty()));
-    u16::try_from(usize::from(width).saturating_sub(stem)).unwrap_or(u16::MAX)
+    width
+        .saturating_sub(cell_width(&indent))
+        .saturating_sub(cell_width(&label))
+        .saturating_sub(u16::from(!label.is_empty()))
+}
+
+/// Cells a nearest ancestor has after an inline mark for an omitted head.
+fn ancestry_room_after_elision(ancestor: &Ancestor, width: u16) -> u16 {
+    let indent = format!("{SECTION_HEADER_INDENT}{ELISION} ");
+    let label = ancestor.pid.to_string();
+    let label = if cell_width(&indent).saturating_add(cell_width(&label)) <= width {
+        label
+    } else {
+        String::new()
+    };
+    width
+        .saturating_sub(cell_width(&indent))
+        .saturating_sub(cell_width(&label))
+        .saturating_sub(u16::from(!label.is_empty()))
 }
 
 /// Rows `ancestor` takes at `width` once its command has wrapped: one
@@ -1158,22 +1308,31 @@ fn ancestry_room(ancestor: &Ancestor, level: usize, width: u16) -> u16 {
 ///
 /// An elided level is a single character and never wraps.
 fn ancestry_rows(ancestor: AncestryLevel<'_>, level: usize, width: u16) -> usize {
-    let AncestryLevel::Ancestor(ancestor) = ancestor else {
-        return 1;
+    let follows_elision = matches!(ancestor, AncestryLevel::AncestorAfterElision(_));
+    let ancestor = match ancestor {
+        AncestryLevel::Ancestor(ancestor) | AncestryLevel::AncestorAfterElision(ancestor) => {
+            ancestor
+        },
+        AncestryLevel::Elided => return 1,
     };
-    wrap::wrapped(
-        vec![Span::raw(ancestor.command.clone())],
-        ancestry_room(ancestor, level, width),
-    )
-    .height()
-    .max(1)
+    let room = if follows_elision {
+        ancestry_room_after_elision(ancestor, width)
+    } else {
+        ancestry_room(ancestor, level, width)
+    };
+    if room < ANCESTRY_MIN_COMMAND_WIDTH {
+        return 1;
+    }
+    tui_pane::wrapped(vec![Span::raw(ancestor.command.clone())], room)
+        .height()
+        .max(1)
 }
 
 /// One level of the ancestry block: its pid and what the process is,
 /// set one space further in than the level above it.
 ///
 /// A command too long for the cell wraps rather than being cut at the
-/// edge, breaking at whitespace through [`wrap::wrapped`] -- the same
+/// edge, breaking at whitespace through [`tui_pane::wrapped`] -- the same
 /// break a command's own row in the table below takes -- and falling
 /// back to breaking mid-word only where no whitespace will do. Every
 /// line after the first is set to the column the command started at, so
@@ -1185,17 +1344,41 @@ fn ancestry_lines(
     pid: Color,
     command: Color,
 ) -> Vec<Line<'static>> {
-    let AncestryLevel::Ancestor(ancestor) = ancestor else {
-        let indent = format!(
-            "{SECTION_HEADER_INDENT}{}",
-            ANCESTRY_LEVEL_INDENT.repeat(level)
-        );
+    let (ancestor, indent) = match ancestor {
+        AncestryLevel::Ancestor(ancestor) => {
+            let (indent, _) = ancestry_stem(ancestor, level, width);
+            (ancestor, indent)
+        },
+        AncestryLevel::AncestorAfterElision(ancestor) => {
+            (ancestor, format!("{SECTION_HEADER_INDENT}{ELISION} "))
+        },
+        AncestryLevel::Elided => {
+            let indent = format!(
+                "{SECTION_HEADER_INDENT}{}",
+                ANCESTRY_LEVEL_INDENT.repeat(level)
+            );
+            return vec![Line::from(vec![
+                Span::raw(indent),
+                Span::styled(ELISION, Style::default().fg(pid)),
+            ])];
+        },
+    };
+    let label = ancestor.pid.to_string();
+    let label = if cell_width(&indent).saturating_add(cell_width(&label)) <= width {
+        label
+    } else {
+        String::new()
+    };
+    let room = width
+        .saturating_sub(cell_width(&indent))
+        .saturating_sub(cell_width(&label))
+        .saturating_sub(u16::from(!label.is_empty()));
+    if room < ANCESTRY_MIN_COMMAND_WIDTH {
         return vec![Line::from(vec![
             Span::raw(indent),
-            Span::styled(ELISION, Style::default().fg(pid)),
+            Span::styled(label, Style::default().fg(pid)),
         ])];
-    };
-    let (indent, label) = ancestry_stem(ancestor, level, width);
+    }
     let separator = if label.is_empty() { "" } else { " " };
     let hanging = " ".repeat(
         indent
@@ -1204,12 +1387,12 @@ fn ancestry_lines(
             .saturating_add(label.chars().count())
             .saturating_add(separator.len()),
     );
-    let wrapped = wrap::wrapped(
+    let wrapped = tui_pane::wrapped(
         vec![Span::styled(
             ancestor.command.clone(),
             Style::default().fg(command),
         )],
-        ancestry_room(ancestor, level, width),
+        room,
     );
     wrapped
         .lines
@@ -1368,12 +1551,10 @@ struct PathGroup<'a> {
 }
 
 impl PathGroup<'_> {
-    /// Qualify the heading once; unresolved account names retain their numeric uid.
-    /// Every member names the group's uid, and a name any member resolved labels
-    /// it, so the text does not depend on which member sorts first.
-    fn heading(&self) -> String {
+    /// Account qualifier for the heading, including its trailing separator.
+    fn heading_prefix(&self) -> String {
         let uid = match self.identity.qualification {
-            GroupQualification::Unqualified => return self.path.to_string(),
+            GroupQualification::Unqualified => return String::new(),
             GroupQualification::Owner { uid } | GroupQualification::Captured { uid, .. } => uid,
         };
         let account = self
@@ -1389,10 +1570,90 @@ impl PathGroup<'_> {
                 RowProvenance::Uncaptured(ProcessOwner::Unavailable) => None,
             })
             .unwrap_or_else(|| uid.to_string());
-        format!(
-            "{ACCOUNT_HEADING_OPEN}{account}{ACCOUNT_HEADING_CLOSE}{}",
-            self.path
-        )
+        format!("{ACCOUNT_HEADING_OPEN}{account}{ACCOUNT_HEADING_CLOSE}")
+    }
+
+    /// Qualify the heading once; unresolved account names retain their numeric uid.
+    /// Every member names the group's uid, and a name any member resolved labels
+    /// it, so the text does not depend on which member sorts first.
+    fn heading(&self) -> String { format!("{}{}", self.heading_prefix(), self.path) }
+
+    /// The most informative whole or marked directory heading that fits `room`.
+    fn fitted_heading(&self, room: u16) -> String {
+        let whole = self.heading();
+        if cell_width(&whole) <= room {
+            return whole;
+        }
+        let qualified = self.heading_prefix();
+        if !qualified.is_empty() {
+            let qualified_components = self.component_heading(&qualified, room);
+            if !qualified_components.is_empty() {
+                return qualified_components;
+            }
+        }
+        let components = self.component_heading("", room);
+        if !components.is_empty() {
+            return components;
+        }
+        if !qualified.is_empty() {
+            let qualified_tail = self.tail_heading(&qualified, room);
+            if !qualified_tail.is_empty() {
+                return qualified_tail;
+            }
+        }
+        let tail = self.tail_heading("", room);
+        if !tail.is_empty() {
+            return tail;
+        }
+        String::new()
+    }
+
+    /// A marked heading retaining the greatest number of whole trailing components.
+    fn component_heading(&self, prefix: &str, room: u16) -> String {
+        let components: Vec<&str> = self
+            .path
+            .rsplit(std::path::MAIN_SEPARATOR)
+            .filter(|component| !component.is_empty())
+            .collect();
+        let retained = components.len().saturating_sub(usize::from(
+            !self.path.starts_with(std::path::MAIN_SEPARATOR),
+        ));
+        for count in (1..=retained).rev() {
+            let suffix = components[..count]
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<&str>>()
+                .join(std::path::MAIN_SEPARATOR_STR);
+            let candidate = format!("{prefix}{ELISION}{}{suffix}", std::path::MAIN_SEPARATOR);
+            if cell_width(&candidate) <= room {
+                return candidate;
+            }
+        }
+        String::new()
+    }
+
+    /// A marked heading retaining the tail of the final component.
+    fn tail_heading(&self, prefix: &str, room: u16) -> String {
+        let component = self
+            .path
+            .rsplit(std::path::MAIN_SEPARATOR)
+            .find(|component| !component.is_empty())
+            .unwrap_or_default();
+        let tail_room = room
+            .saturating_sub(cell_width(prefix))
+            .saturating_sub(cell_width(ELISION))
+            .min(cell_width(component));
+        if tail_room < HEADING_MIN_TAIL {
+            return String::new();
+        }
+        let mut tail: Vec<char> = component
+            .chars()
+            .rev()
+            .take(usize::from(tail_room))
+            .collect();
+        tail.reverse();
+        format!("{prefix}{ELISION}{}", tail.into_iter().collect::<String>())
     }
 }
 
@@ -1402,8 +1663,6 @@ impl PathGroup<'_> {
 /// the tables lined up down the cell instead of each one fitting itself
 /// and the columns stepping in and out as the eye moves between them.
 struct TableLayout {
-    /// Which cell owns the table.
-    kind:           TableKind,
     /// Column widths, in table order.
     constraints:    Vec<Constraint>,
     /// The columns this cell draws, in table order.
@@ -1451,10 +1710,11 @@ impl TableLayout {
         if !table_constraints_fit(table_width, &constraints) {
             remove_column(PID_COLUMN, &mut columns, &mut constraints);
         }
-        let column_spacing = table_column_spacing(table_width, &constraints);
+        let command_width = longest_command_width(rows, kind.detail(), tree);
+        let column_spacing =
+            table_column_spacing(table_width, &constraints, &columns, command_width);
         let column_widths = solved_column_widths(table_width, &constraints, column_spacing);
         Self {
-            kind,
             constraints,
             columns,
             column_widths,
@@ -1471,6 +1731,34 @@ impl TableLayout {
             .iter()
             .position(|candidate| *candidate == column)
             .map_or(0, |position| self.column_widths[position])
+    }
+
+    /// The command column inside one table area, or an empty rectangle
+    /// where the table left that column out.
+    fn command_area(&self, area: Rect) -> Rect {
+        let table = indented(area);
+        let Some(position) = self
+            .columns
+            .iter()
+            .position(|candidate| *candidate == COMMAND_COLUMN)
+        else {
+            return Rect { width: 0, ..table };
+        };
+        let preceding_width = self.column_widths[..position]
+            .iter()
+            .copied()
+            .fold(0, u16::saturating_add);
+        let preceding_gaps = u16::try_from(position)
+            .unwrap_or(u16::MAX)
+            .saturating_mul(self.column_spacing);
+        Rect {
+            x: table
+                .x
+                .saturating_add(preceding_width)
+                .saturating_add(preceding_gaps),
+            width: self.column_widths[position],
+            ..table
+        }
     }
 
     /// `color` as something `faded` of the way out draws it: carried
@@ -1543,16 +1831,30 @@ fn draw_process_table(
         .column_spacing(layout.column_spacing)
         .render(header_area, buffer);
 
+    let groups = group_by_path(rows, pinned);
+    let mut continuation = TableContinuation::FullyDrawn;
+    let mut drew_process_value = false;
     let mut remaining = area;
     remaining.y = remaining.y.saturating_add(TABLE_HEADER_HEIGHT);
     remaining.height = remaining.height.saturating_sub(TABLE_HEADER_HEIGHT);
-    for group in group_by_path(rows, pinned) {
-        if remaining.height == 0 {
+    for group in &groups {
+        if remaining.height <= GROUP_HEADER_HEIGHT {
+            if drew_process_value {
+                continuation = TableContinuation::RowsWereOmitted;
+            }
             break;
         }
-        let used = draw_path_group(buffer, remaining, &group, &layout);
-        remaining.y = remaining.y.saturating_add(used);
-        remaining.height = remaining.height.saturating_sub(used);
+        let drawn = draw_path_group(buffer, remaining, group, &layout);
+        drew_process_value = true;
+        continuation = drawn.continuation;
+        remaining.y = remaining.y.saturating_add(drawn.height_with_gap);
+        remaining.height = remaining.height.saturating_sub(drawn.height_with_gap);
+        if continuation != TableContinuation::FullyDrawn {
+            break;
+        }
+    }
+    if continuation != TableContinuation::FullyDrawn {
+        mark_table_continuation(buffer, area, &layout, continuation);
     }
 }
 
@@ -1635,20 +1937,53 @@ fn group_by_path<'a>(rows: &[&'a TrackedRow], pinned: PinnedGroup<'_>) -> Vec<Pa
     groups
 }
 
-/// Draw one working directory's header and table into the top of `area`,
-/// answering how many rows that took including the blank row below it.
+/// Result of drawing one working-directory group into its remaining table area.
+struct PathGroupDraw {
+    /// Rows consumed, including the blank row after the group.
+    height_with_gap: u16,
+    /// What, if anything, was left below the group's visible table lines.
+    continuation:    TableContinuation,
+}
+
+/// How a table continues below the lines that reached the buffer.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TableContinuation {
+    /// Every value was drawn in full.
+    FullyDrawn,
+    /// The final visible command continues onto lines that did not fit.
+    CommandWasCut,
+    /// The final visible command is whole, but later process rows did not fit.
+    RowsWereOmitted,
+}
+
+/// Classify a vertical cut through rows whose commands occupy `line_counts` lines.
+fn table_continuation(
+    line_counts: impl IntoIterator<Item = u16>,
+    visible_lines: u16,
+) -> TableContinuation {
+    let mut used = 0u16;
+    for line_count in line_counts {
+        if used >= visible_lines {
+            return TableContinuation::RowsWereOmitted;
+        }
+        if used.saturating_add(line_count) > visible_lines {
+            return TableContinuation::CommandWasCut;
+        }
+        used = used.saturating_add(line_count);
+    }
+    TableContinuation::FullyDrawn
+}
+
+/// Draw one working directory's header and table into the top of `area`.
 fn draw_path_group(
     buffer: &mut Buffer,
     area: Rect,
     group: &PathGroup<'_>,
     layout: &TableLayout,
-) -> u16 {
+) -> PathGroupDraw {
     let faded = heading_fade(&group.rows);
     let heading_room = area.width.saturating_sub(cell_width(SECTION_HEADER_INDENT));
-    let heading_text = match layout.kind {
-        TableKind::Summary => elide_summary_start(&group.heading(), heading_room),
-        TableKind::Command => group.heading(),
-    };
+    let heading_text = group.fitted_heading(heading_room);
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(
@@ -1679,6 +2014,7 @@ fn draw_path_group(
         .map(|drawn| drawn.lines)
         .fold(0, u16::saturating_add);
     let table_height = area.height.saturating_sub(GROUP_HEADER_HEIGHT).min(lines);
+    let continuation = table_continuation(rows.iter().map(|drawn| drawn.lines), table_height);
     Table::new(
         rows.into_iter().map(|drawn| drawn.row),
         layout.constraints.iter().copied(),
@@ -1693,9 +2029,12 @@ fn draw_path_group(
         buffer,
     );
 
-    GROUP_HEADER_HEIGHT
-        .saturating_add(table_height)
-        .saturating_add(GROUP_GAP_HEIGHT)
+    PathGroupDraw {
+        height_with_gap: GROUP_HEADER_HEIGHT
+            .saturating_add(table_height)
+            .saturating_add(GROUP_GAP_HEIGHT),
+        continuation,
+    }
 }
 
 /// Keep the start of summary text and mark a missing tail.
@@ -1725,38 +2064,6 @@ fn elide_summary_end(text: &str, width: u16) -> String {
         return String::new();
     }
     format!("{prefix}{ELISION}")
-}
-
-/// Keep the end of a summary path and mark its missing head.
-fn elide_summary_start(text: &str, width: u16) -> String {
-    if UnicodeWidthStr::width(text) <= usize::from(width) {
-        return text.to_string();
-    }
-    let marker_width = UnicodeWidthStr::width(ELISION);
-    if marker_width > usize::from(width) {
-        return String::new();
-    }
-    let room = usize::from(width).saturating_sub(marker_width);
-    let mut used: usize = 0;
-    let mut suffix: Vec<char> = text
-        .chars()
-        .rev()
-        .take_while(|character| {
-            let character_width = UnicodeWidthChar::width(*character).unwrap_or_default();
-            let fits = used.saturating_add(character_width) <= room;
-            if fits {
-                used = used.saturating_add(character_width);
-            }
-            fits
-        })
-        .collect();
-    suffix.reverse();
-    let suffix: String = suffix.into_iter().collect();
-    let suffix = suffix.trim_start();
-    if suffix.is_empty() {
-        return String::new();
-    }
-    format!("{ELISION}{suffix}")
 }
 
 /// Column widths fitted to the widest cell across every row.
@@ -1805,13 +2112,52 @@ fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint
         .collect()
 }
 
-/// Gap that keeps every fitted column at its requested width when possible.
-fn table_column_spacing(width: u16, constraints: &[Constraint]) -> u16 {
-    if table_width_with_spacing(constraints, TABLE_COLUMN_SPACING) <= width {
+/// Gap that keeps a whole command on one line before spreading columns apart.
+fn table_column_spacing(
+    width: u16,
+    constraints: &[Constraint],
+    columns: &[usize],
+    command_width: u16,
+) -> u16 {
+    if table_width_with_spacing(constraints, TABLE_COLUMN_SPACING) > width {
+        return TIGHT_TABLE_COLUMN_SPACING;
+    }
+    let Some(command_position) = columns.iter().position(|column| *column == COMMAND_COLUMN) else {
+        return TABLE_COLUMN_SPACING;
+    };
+    let solved = solved_column_widths(width, constraints, TABLE_COLUMN_SPACING);
+    if solved[command_position] >= command_width {
         TABLE_COLUMN_SPACING
     } else {
         TIGHT_TABLE_COLUMN_SPACING
     }
+}
+
+/// Width of the widest command line as this table spells it.
+fn longest_command_width(rows: &[&TrackedRow], detail: SummaryDetail, tree: ProcessTree) -> u16 {
+    rows.iter()
+        .map(|row| command_line_width(row, detail, tree))
+        .max()
+        .unwrap_or_default()
+}
+
+/// Cells one displayed command takes before wrapping.
+fn command_line_width(row: &TrackedRow, detail: SummaryDetail, tree: ProcessTree) -> u16 {
+    let arguments = match tree {
+        ProcessTree::Long => row.process.command.line(detail),
+        ProcessTree::Short => row.process.command.named(),
+    };
+    row.process
+        .command
+        .program
+        .split_whitespace()
+        .chain(arguments.split_whitespace())
+        .enumerate()
+        .fold(0, |width, (index, word)| {
+            width
+                .saturating_add(u16::from(index > 0))
+                .saturating_add(cell_width(word))
+        })
 }
 
 /// Whether every requested width and one-cell gap fits in `width`.
@@ -1896,7 +2242,7 @@ fn process_row(row: &TrackedRow, layout: &TableLayout) -> DrawnRow {
     let command = if command_width == 0 {
         Text::default()
     } else {
-        wrap::wrapped(
+        tui_pane::wrapped(
             vec![
                 Span::styled(process.command.program.clone(), program),
                 Span::styled(
@@ -2028,13 +2374,22 @@ fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
     (0..TABLE_HEADERS.len())
         .filter(|column| *column != STATE_COLUMN || carries_state)
         .filter(|column| {
-            kind.shows_invocation_detail()
-                || !SUMMARY_HIDDEN_COLUMNS.contains(column)
-                || rows.iter().any(|row| match *column {
-                    COMPILER_COLUMN => matches!(row.process.compiler, CompilerObservation::Unknown),
-                    MANAGED_COLUMN => matches!(row.process.managed, Measurement::Unavailable(_)),
-                    _ => false,
-                })
+            if !SUMMARY_HIDDEN_COLUMNS.contains(column) {
+                return true;
+            }
+            rows.iter().any(|row| match *column {
+                PARENT_COLUMN => kind.shows_invocation_detail(),
+                COMPILER_COLUMN => match &row.process.compiler {
+                    CompilerObservation::Unknown => true,
+                    CompilerObservation::Running(_) => kind.shows_invocation_detail(),
+                    CompilerObservation::None => false,
+                },
+                MANAGED_COLUMN => match &row.process.managed {
+                    Measurement::Unavailable(_) => true,
+                    Measurement::Reading(count) => kind.shows_invocation_detail() && *count > 0,
+                },
+                _ => false,
+            })
         })
         .collect()
 }
@@ -2337,6 +2692,9 @@ mod tests {
     use tui_pane::BackdropNotice;
     use tui_pane::FavoritesFileState;
     use tui_pane::GlobalAction;
+    use tui_pane::TileFill;
+    use tui_pane::TileGrid;
+    use tui_pane::TileGrowth;
     use tui_pane::ToastStyle;
     use tui_pane::draw_backdrop_notice;
     use tui_pane::fade_to_background;
@@ -2865,7 +3223,7 @@ mod tests {
         assert_eq!(
             draw(TableKind::Command),
             [
-                " pid    parent  start  dur    cpu  mem    command                 compiler  runs",
+                " pid    parent  start  dur    cpu  mem    command",
                 " 41233          11:04  00:18  12%  0.3G   cargo build",
                 " 41234          11:05  00:08  5%   12.4G  cargo test",
             ]
@@ -3017,7 +3375,8 @@ mod tests {
         levels
             .iter()
             .map(|level| match level {
-                AncestryLevel::Ancestor(ancestor) => Some(ancestor.pid),
+                AncestryLevel::Ancestor(ancestor)
+                | AncestryLevel::AncestorAfterElision(ancestor) => Some(ancestor.pid),
                 AncestryLevel::Elided => None,
             })
             .collect()
@@ -3027,7 +3386,7 @@ mod tests {
     fn a_chain_that_fits_is_drawn_whole() {
         let ancestry = chain(3);
         assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 4, false)),
+            drawn(&ancestry_levels(&ancestry, 4)),
             vec![Some(0), Some(1), Some(2)],
         );
     }
@@ -3039,37 +3398,43 @@ mod tests {
     fn a_chain_too_long_for_the_cell_keeps_both_ends() {
         let ancestry = chain(6);
         assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 4, false)),
+            drawn(&ancestry_levels(&ancestry, 4)),
             vec![Some(0), None, Some(4), Some(5)],
         );
     }
 
-    /// Under three rows there is no room for two ends and an elision
-    /// between them, and the head is the end that survives: the foot of
-    /// a hand-typed command is the shell it was typed into, which every
-    /// command in a terminal has, while the head is what says whether an
-    /// editor or an agent was behind it.
+    /// Under three rows there is no room for two ends and a separate
+    /// elision between them, so the cut and the nearest ancestor survive.
     #[test]
-    fn a_block_too_short_for_an_elision_keeps_the_head_of_the_chain() {
+    fn a_short_ancestry_keeps_its_cut_mark_and_nearest_ancestor() {
         let ancestry = chain(6);
-        assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 2, false)),
-            vec![Some(0), Some(5)]
-        );
-        assert_eq!(drawn(&ancestry_levels(&ancestry, 1, false)), vec![Some(0)]);
+        assert_eq!(drawn(&ancestry_levels(&ancestry, 2)), vec![None, Some(5)]);
+        assert_eq!(drawn(&ancestry_levels(&ancestry, 1)), vec![Some(5)]);
     }
 
-    /// A driver's cell turns that around: the foot there is not a step
-    /// above the command but the command itself, and it is where that
-    /// cargo's pid is written for the rows below to point at.
+    /// One available ancestry row combines the cut mark with the nearest
+    /// ancestor rather than showing a bare root and dropping the leaf.
     #[test]
-    fn a_driver_squeezed_to_one_row_keeps_its_own_step() {
-        let ancestry = chain(6);
-        assert_eq!(drawn(&ancestry_levels(&ancestry, 1, true)), vec![Some(5)]);
-        assert_eq!(
-            drawn(&ancestry_levels(&ancestry, 2, true)),
-            vec![Some(4), Some(5)]
+    fn one_ancestry_row_draws_the_marked_nearest_ancestor() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 3));
+        let area = buffer.area;
+        let ancestry = vec![
+            ancestor(3334, "/run/current-system/systemd"),
+            ancestor(3_577_444, "sh"),
+        ];
+
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            AncestryFoot::Other,
+            1,
         );
+
+        assert_eq!(used, 2, "the marked row and its blank gap");
+        assert_eq!(buffer_line(&buffer, 0), format!(" {ELISION} 3577444 sh"));
     }
 
     /// Half a cell, with the blank row under the block taken out of
@@ -3087,7 +3452,7 @@ mod tests {
     /// leaves the table every row it had.
     #[test]
     fn a_cell_too_short_for_the_block_spends_nothing_on_it() {
-        assert!(ancestry_levels(&chain(3), ancestry_budget(2, 1), false).is_empty());
+        assert!(ancestry_levels(&chain(3), ancestry_budget(2, 1)).is_empty());
     }
 
     /// A command whose parents could not be read costs the table
@@ -3136,6 +3501,67 @@ mod tests {
         assert_eq!(buffer_line(&buffer, 0), " 6218 zed");
         assert_eq!(buffer_line(&buffer, 1), "  12445 -zsh");
         assert_eq!(buffer_line(&buffer, 2), "   18581 claude");
+    }
+
+    #[test]
+    fn a_level_without_command_room_draws_its_pid_alone() {
+        let ancestor = ancestor(6218, "cargo nextest run");
+        let width = 13;
+        let lines = ancestry_lines(
+            AncestryLevel::Ancestor(&ancestor),
+            0,
+            width,
+            Color::White,
+            Color::Gray,
+        );
+        let text: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(ancestry_room(&ancestor, 0, width), 7);
+        assert_eq!(
+            ancestry_rows(AncestryLevel::Ancestor(&ancestor), 0, width),
+            1
+        );
+        assert_eq!(text, " 6218");
+    }
+
+    #[test]
+    fn a_cut_ancestry_level_ends_in_the_mark() {
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buffer = Buffer::empty(area);
+        let ancestry = [ancestor(
+            6218,
+            "cargo nextest run --workspace --all-features",
+        )];
+
+        draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            AncestryFoot::Other,
+            1,
+        );
+
+        assert!(buffer_line(&buffer, 0).ends_with(ELISION));
+    }
+
+    #[test]
+    fn an_ancestry_cut_appends_or_replaces_inside_its_width() {
+        for (text, width, retained) in [("short", 6, "short"), ("abcdef", 6, "abcde")] {
+            let mut line = Line::from(text);
+            mark_cut_line(&mut line, width);
+            let marked: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(marked, format!("{retained}{ELISION}"));
+        }
     }
 
     #[test]
@@ -3237,11 +3663,10 @@ mod tests {
         assert_eq!(used, 3, "both rows, and the blank one under them");
     }
 
-    /// The break falls at whitespace wherever whitespace will do, and
-    /// mid-word only where no whitespace does -- the same wrap a
-    /// command's own row in the table below takes.
+    /// An overlong path breaks after the last punctuation boundary that
+    /// fits, the same wrap a command's own row in the table below takes.
     #[test]
-    fn a_word_no_wrap_could_break_carries_on_mid_word() {
+    fn an_overlong_ancestry_path_breaks_after_boundaries() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 12));
         let area = buffer.area;
         let ancestry = vec![ancestor(6218, "node ~/.claude/local/claude")];
@@ -3258,10 +3683,11 @@ mod tests {
 
         assert_eq!(
             buffer_line(&buffer, 0),
-            " 6218 node ~/.claude",
-            "the word that fits nowhere finishes the line it started on"
+            " 6218 node",
+            "the program stays whole on the pid line"
         );
-        assert_eq!(buffer_line(&buffer, 1), "      /local/claude");
+        assert_eq!(buffer_line(&buffer, 1), "      ~/.claude/");
+        assert_eq!(buffer_line(&buffer, 2), "      local/claude");
     }
 
     /// A command wide enough to outrun the whole budget on its own is
@@ -3287,7 +3713,11 @@ mod tests {
         );
 
         assert_eq!(used, 3, "the two rows the budget bought, and the gap");
-        assert_eq!(buffer_line(&buffer, 0), " 6218 node ~/.claude");
+        assert_eq!(buffer_line(&buffer, 0), " 6218 node");
+        assert_eq!(
+            buffer_line(&buffer, 1),
+            format!("      ~/.claude/{ELISION}")
+        );
         assert_eq!(buffer_line(&buffer, 2), "", "and nothing past the budget");
     }
 
@@ -3639,9 +4069,7 @@ mod tests {
         // block is left once the table has taken its rows.
         let height = u16::try_from(asked + table).expect("a test cell should fit a u16");
         let budget = ancestry_budget(height, table);
-        let levels = ancestry_fit(&ancestry, budget, false, |levels| {
-            ancestry_height(levels, width)
-        });
+        let levels = ancestry_fit(&ancestry, budget, |levels| ancestry_height(levels, width));
 
         assert_eq!(
             levels.len(),
@@ -3679,21 +4107,46 @@ mod tests {
         );
 
         let mut measured = 0;
-        let levels = ancestry_fit(&ancestry, budget, false, |levels| {
+        let levels = ancestry_fit(&ancestry, budget, |levels| {
             measured += 1;
             ancestry_height(levels, width)
         });
 
         assert_eq!(
             drawn(&levels),
-            vec![Some(6218), Some(24101)],
-            "the long middle step is the one given up",
+            vec![Some(6218), None, Some(24101)],
+            "the long middle step is replaced by its cut mark",
         );
         assert!(
             measured <= ancestry.len(),
             "measured {measured} candidate blocks for a chain of {} levels",
             ancestry.len(),
         );
+    }
+
+    /// A discarded wrapping level cannot consume the budget invisibly:
+    /// the row it frees becomes the cut mark above the nearest ancestor.
+    #[test]
+    fn a_deep_ancestry_uses_its_row_budget_and_marks_the_cut() {
+        let mut ancestry = chain(24);
+        ancestry[22].command = format!("python3 {}", "nested.py ".repeat(12));
+        ancestry[23].command = "uv run".to_string();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 32, 4));
+        let area = buffer.area;
+
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            AncestryFoot::PlainCommand,
+            1,
+        );
+
+        assert_eq!(used, 3, "both ancestry rows and their blank gap");
+        assert_eq!(buffer_line(&buffer, 0), format!(" {ELISION}"));
+        assert_eq!(buffer_line(&buffer, 1), "  23 uv run");
     }
 
     /// A command typed by hand has a shell at the foot of its chain and
@@ -3800,6 +4253,29 @@ mod tests {
             !drawn.contains("--setting") && !drawn.contains("--package"),
             "and none of them should carry arguments: {drawn}",
         );
+    }
+
+    #[test]
+    fn a_short_ancestry_entry_marks_its_dropped_wrapped_arguments() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buffer = Buffer::empty(area);
+        let ancestry = vec![ancestor(
+            596_633,
+            "sh /tmp/mac-test-phase8/companion.sh check check",
+        )];
+        let roster = roster_with_ancestry(invocation(4100, &["check"]), Vec::new(), ancestry);
+
+        draw_group(
+            &mut buffer,
+            &roster,
+            &InvocationId::for_test(4100),
+            area,
+            Color::Reset,
+            &hidden_when_idle(),
+            ProcessTree::Short,
+        );
+
+        assert_eq!(buffer_line(&buffer, 0), format!(" 596633 sh {ELISION}"));
     }
 
     /// A row names what runs and stops there. `cargo build` is the
@@ -4330,6 +4806,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_directory_heading_keeps_the_most_informative_marked_tail() {
+        let mut row = row_at("/very-long-parent/component", None);
+        row.process.provenance = RowProvenance::Direct(capture_context());
+        let rows = [&row];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        let group = &groups[0];
+        let whole = "[runner-one] /very-long-parent/component";
+
+        assert_eq!(group.fitted_heading(cell_width(whole)), whole);
+        assert_eq!(
+            group.fitted_heading(24),
+            format!("[runner-one] {ELISION}/component")
+        );
+        assert_eq!(group.fitted_heading(22), format!("{ELISION}/component"));
+        assert_eq!(group.fitted_heading(11), format!("{ELISION}/component"));
+        assert_eq!(group.fitted_heading(9), format!("{ELISION}omponent"));
+        assert_eq!(group.fitted_heading(8), "");
+
+        let mut row = row_at("/very-long-parent/tool-based-ui-frame-time", None);
+        row.process.provenance = RowProvenance::Direct(capture_context());
+        let rows = [&row];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        assert_eq!(
+            groups[0].fitted_heading(25),
+            format!("[runner-one] {ELISION}-frame-time")
+        );
+
+        let row = row_at("/very-long-parent/tool-based-ui-frame-time", None);
+        let rows = [&row];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        assert_eq!(
+            groups[0].fitted_heading(25),
+            format!("{ELISION}tool-based-ui-frame-time")
+        );
+    }
+
     /// Enclosing capture qualifies only the heading; nested fields remain the row's own.
     #[test]
     fn enclosing_and_uncaptured_rows_keep_their_own_directory_and_command() {
@@ -4804,7 +5317,7 @@ mod tests {
             TableKind::Command,
         );
         assert!(!columns.contains(&STATE_COLUMN));
-        assert_eq!(columns.len(), TABLE_HEADERS.len() - 1);
+        assert_eq!(columns.len(), TABLE_HEADERS.len() - 3);
     }
 
     /// The heading over the row is ruling the reading, so the column
@@ -4817,7 +5330,7 @@ mod tests {
             TableKind::Command,
         );
         assert!(!columns.contains(&STATE_COLUMN));
-        assert_eq!(columns.len(), TABLE_HEADERS.len() - 1);
+        assert_eq!(columns.len(), TABLE_HEADERS.len() - 3);
     }
 
     /// Two commands in one directory are never both reporting: the
@@ -4876,12 +5389,16 @@ mod tests {
         assert!(columns.contains(&COMMAND_COLUMN));
     }
 
-    /// A command's own cell is where those belong: its rows are the
-    /// invocations they describe, and the cargo above each one is in
-    /// the same table to be found.
+    /// A command's own cell keeps invocation detail when a row has a value for it.
     #[test]
     fn a_commands_own_cell_keeps_them() {
-        let rows = [row(None)];
+        let mut row = row(None);
+        row.process.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 1,
+        });
+        row.process.managed = Measurement::Reading(1);
+        let rows = [row];
 
         let columns = visible_columns(
             &rows.iter().collect::<Vec<&TrackedRow>>(),
@@ -4891,6 +5408,43 @@ mod tests {
         assert!(columns.contains(&PARENT_COLUMN));
         assert!(columns.contains(&COMPILER_COLUMN));
         assert!(columns.contains(&MANAGED_COLUMN));
+    }
+
+    #[test]
+    fn an_empty_column_yields_its_cells_to_the_command() {
+        let mut row = row(None);
+        row.process.command = CommandText::of("cargo", &["check"]);
+        let rows = [&row];
+        let area = Rect::new(0, 0, 62, 4);
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+        let mut buffer = Buffer::empty(area);
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        assert!(!layout.columns.contains(&COMPILER_COLUMN));
+        assert!(!layout.columns.contains(&MANAGED_COLUMN));
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim(),
+            "cargo check"
+        );
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 3).trim(),
+            ""
+        );
     }
 
     /// Two rows whose process and parent identifiers have seven digits.
@@ -5088,9 +5642,6 @@ mod tests {
         assert_eq!(elide_summary_end(" abc", 2), "");
         assert_eq!(elide_summary_end(" abc", 3), format!(" a{ELISION}"));
         assert_eq!(elide_summary_end("abc def", 5), format!("abc{ELISION}"));
-        assert_eq!(elide_summary_start("abc ", 2), "");
-        assert_eq!(elide_summary_start("abc ", 3), format!("{ELISION}c "));
-        assert_eq!(elide_summary_start("abc def", 5), format!("{ELISION}def"));
     }
 
     /// Draw the production grid at a chosen summary interior width.
@@ -5126,6 +5677,143 @@ mod tests {
             &cells,
         );
         buffer
+    }
+
+    /// Draw a settled production grid for the command-cell content checks.
+    fn settled_cells_buffer(roster: &Roster, area: Rect) -> (TileGrid<InvocationId>, Buffer) {
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let mut grid = tui_pane::TileGrid::new();
+        grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
+        grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
+        let sccache = SccacheStats::new();
+        let hidden_when_idle = hidden_when_idle();
+        let cells = Cells {
+            roster,
+            hidden_when_idle: &hidden_when_idle,
+            tree: ProcessTree::Long,
+            sccache: &sccache,
+        };
+        let mut buffer = Buffer::empty(area);
+        tui_pane::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        buffer = Buffer::empty(area);
+        tui_pane::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        (grid, buffer)
+    }
+
+    /// A roster with one independently tiled command per requested cell.
+    fn tiled_roster(commands: u32, ancestry: &[Ancestor]) -> Roster {
+        let groups = (0..commands)
+            .map(|offset| {
+                let mut lead = invocation(4100_u32.saturating_add(offset), &[]);
+                let directory = offset.min(2);
+                lead.path = format!("~/rust/cargo-liner-{directory}");
+                lead.directory_identity = WorkingDirectoryIdentity::Absolute(
+                    format!("/test-home/rust/cargo-liner-{directory}").into(),
+                );
+                CargoGroup {
+                    lead,
+                    rest: Vec::new(),
+                    ancestry: ancestry.to_vec(),
+                }
+            })
+            .collect();
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        roster
+    }
+
+    #[test]
+    fn every_command_cell_shows_a_process() {
+        let cases = [
+            (Rect::new(0, 0, 40, 50), 6, Vec::new(), Some(12)),
+            (Rect::new(0, 0, 48, 50), 6, Vec::new(), Some(12)),
+            (Rect::new(0, 0, 64, 50), 6, Vec::new(), Some(12)),
+            (Rect::new(0, 0, 200, 50), 10, Vec::new(), None),
+            (Rect::new(0, 0, 126, 80), 6, long_chain(), None),
+        ];
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+
+        for (area, command_count, ancestry, expected_summary_rows) in cases {
+            let roster = tiled_roster(command_count, &ancestry);
+            let (grid, buffer) = settled_cells_buffer(&roster, area);
+            let placements = grid.placements(area, growth);
+            if let Some(expected) = expected_summary_rows {
+                let widths: Vec<_> = placements
+                    .iter()
+                    .map(|placement| (placement.content.clone(), placement.frame.inner().width))
+                    .collect();
+                let demands =
+                    tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+                assert_eq!(demands.summary, expected, "{area:?}");
+            }
+            let commands: Vec<_> = placements
+                .iter()
+                .filter(|placement| matches!(&placement.content, TileContent::Group(_)))
+                .collect();
+            assert!(!commands.is_empty());
+
+            for placement in commands {
+                let TileContent::Group(id) = &placement.content else {
+                    continue;
+                };
+                let group = roster
+                    .groups()
+                    .iter()
+                    .find(|group| &group.id == id)
+                    .unwrap();
+                let pid = group.lead.process.pid.to_string();
+                let inner = placement.frame.inner();
+                let lines: Vec<String> = (inner.top()..inner.bottom())
+                    .map(|y| {
+                        (inner.left()..inner.right())
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect()
+                    })
+                    .collect();
+                let header = lines
+                    .iter()
+                    .position(|line| {
+                        line.contains(TABLE_HEADERS[PID_COLUMN])
+                            && line.contains(TABLE_HEADERS[COMMAND_COLUMN])
+                    })
+                    .unwrap();
+                assert!(
+                    lines[header + 1].contains("cargo-liner"),
+                    "{area:?}: {lines:#?}"
+                );
+                assert!(lines[header + 2].contains(&pid), "{area:?}: {lines:#?}");
+                assert!(lines[header + 2].contains("cargo"), "{area:?}: {lines:#?}");
+                assert!(
+                    lines
+                        .last()
+                        .is_some_and(|line| line.contains("content rows:")),
+                    "{area:?}: {lines:#?}"
+                );
+            }
+        }
     }
 
     /// Whether one drawn word is complete or carries the summary's cut mark.
@@ -5367,6 +6055,84 @@ mod tests {
         assert!(buffer_line(&buffer, 2).contains(&format!("{}×1", COMPILER_PROCESS_NAMES[0])));
     }
 
+    #[test]
+    fn a_summary_command_word_is_not_broken_while_gaps_can_give_cells() {
+        let mut row = row(None);
+        row.process.pid = 359_829;
+        row.process.invocation_id = InvocationId::for_test(359_829);
+        row.process.duration = "18s".to_string();
+        row.process.command = CommandText::of("cargo", &["metadata"]);
+        let rows = [&row];
+        let interior_width: u16 = 30;
+        let area = Rect::new(
+            0,
+            0,
+            interior_width.saturating_add(cell_width(SECTION_ITEM_INDENT)),
+            6,
+        );
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Summary,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+        let buffer = narrow_table_buffer(&rows, TableKind::Summary, interior_width, area.height);
+        let command_lines: Vec<String> = (2..area.height)
+            .map(|y| table_column_text(&buffer, &layout, COMMAND_COLUMN, y))
+            .map(|line| line.trim().to_string())
+            .take_while(|line| !line.is_empty())
+            .collect();
+
+        assert_eq!(command_lines, ["cargo", "metadata"]);
+    }
+
+    #[test]
+    fn a_two_word_command_stays_on_one_line_when_the_row_has_room() {
+        let lead = invocation(4100, &["check"]);
+        let rest = ["test", "build", "doc"]
+            .into_iter()
+            .enumerate()
+            .map(|(offset, command)| {
+                invocation(
+                    4200_u32.saturating_add(u32::try_from(offset).unwrap()),
+                    &[command],
+                )
+            })
+            .collect();
+        let roster = roster_with_ancestry(lead, rest, Vec::new());
+        let group = roster.groups().first().unwrap();
+        let inner_width = 64;
+        let content_rows = group_height(group, inner_width, &[], ProcessTree::Long);
+        let inner = Rect::new(
+            0,
+            0,
+            inner_width,
+            u16::try_from(content_rows).unwrap().saturating_add(1),
+        );
+        let mut buffer = Buffer::empty(inner);
+
+        draw_cell_for_test(
+            &mut buffer,
+            &roster,
+            &TileContent::Group(group.id.clone()),
+            inner,
+            content_rows,
+        );
+
+        let rows = buffer_rows(&buffer);
+        for command in ["cargo check", "cargo test", "cargo build", "cargo doc"] {
+            assert!(
+                rows.iter().any(|row| row.contains(command)),
+                "{command}: {rows:#?}"
+            );
+        }
+        assert!(
+            rows.last().is_some_and(|row| row.contains("content rows:")),
+            "{rows:#?}"
+        );
+    }
+
     /// The `command` column is the one that absorbs the slack, so what
     /// it is worth has to come off the solved layout rather than off the
     /// `Min` it is declared with.
@@ -5374,6 +6140,11 @@ mod tests {
     fn the_command_column_is_measured_at_the_width_it_absorbs() {
         let mut row = long_row();
         row.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 124 / 10);
+        row.process.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 1,
+        });
+        row.process.managed = Measurement::Reading(1);
         let rows = [row];
         let rows: Vec<&TrackedRow> = rows.iter().collect();
         let columns = visible_columns(&rows, TableKind::Command);
@@ -5383,13 +6154,26 @@ mod tests {
             .iter()
             .position(|column| *column == COMMAND_COLUMN)
             .unwrap();
-        let narrow = solved_column_widths(65, &constraints, table_column_spacing(65, &constraints))
-            [command_position];
-        let wide = solved_column_widths(95, &constraints, table_column_spacing(95, &constraints))
-            [command_position];
+        let command_width =
+            longest_command_width(&rows, TableKind::Command.detail(), ProcessTree::Long);
+        let narrow_spacing = table_column_spacing(65, &constraints, &columns, command_width);
+        let wide_spacing = table_column_spacing(95, &constraints, &columns, command_width);
+        let narrow = solved_column_widths(65, &constraints, narrow_spacing)[command_position];
+        let wide = solved_column_widths(95, &constraints, wide_spacing)[command_position];
 
         assert!(narrow > cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
         assert_eq!(wide.saturating_sub(narrow), 30);
+    }
+
+    #[test]
+    fn command_width_joins_displayed_words_with_one_space() {
+        let mut row = row(None);
+        row.process.command = CommandText::of(" cargo ", &["build  ", "", "--workspace"]);
+
+        assert_eq!(
+            command_line_width(&row, SummaryDetail::Full, ProcessTree::Long),
+            cell_width("cargo build --workspace")
+        );
     }
 
     /// A command that outruns its column carries on down the rows of
@@ -5447,6 +6231,339 @@ mod tests {
             command_lines.join(" "),
             "cargo build --features one,two --all"
         );
+    }
+
+    #[test]
+    fn a_cut_command_row_ends_in_the_mark() {
+        let area = Rect::new(0, 0, 65, 3);
+        let mut buffer = Buffer::empty(area);
+        let rows = [long_row()];
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows.iter().collect::<Vec<&TrackedRow>>(),
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        assert!(buffer_line(&buffer, 2).ends_with(ELISION));
+    }
+
+    #[test]
+    fn a_cut_command_marks_the_command_and_leaves_runs_whole() {
+        let area = Rect::new(0, 0, 64, 3);
+        let mut buffer = Buffer::empty(area);
+        let mut row = long_row();
+        row.process.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 1,
+        });
+        row.process.managed = Measurement::Reading(1);
+        let rows = [&row];
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        assert!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2)
+                .trim_end()
+                .ends_with(ELISION)
+        );
+        assert_eq!(
+            table_column_text(&buffer, &layout, MANAGED_COLUMN, 2).trim(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn a_cut_command_keeps_text_after_a_wide_glyph_in_place() {
+        let area = Rect::new(0, 0, 56, 3);
+        let mut buffer = Buffer::empty(area);
+        let mut row = row(None);
+        row.process.command = CommandText::of("cargo", &["界", "alpha", "beta", "gamma", "delta"]);
+        let rows = [&row];
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        let command = layout.command_area(area);
+        let text = table_column_text(&buffer, &layout, COMMAND_COLUMN, 2);
+        assert_eq!(buffer[(command.x.saturating_add(6), 2)].symbol(), "界");
+        assert_eq!(buffer[(command.x.saturating_add(9), 2)].symbol(), "a");
+        assert!(text.trim_end().ends_with(ELISION), "{text:?}");
+    }
+
+    #[test]
+    fn a_whole_command_keeps_its_free_cells_before_a_table_continuation_mark() {
+        let area = Rect::new(0, 0, 198, 6);
+        let mut buffer = Buffer::empty(area);
+        let mut lead = same_second("/workspace/project", 1_881_177);
+        lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
+        lead.process.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 15,
+        });
+        lead.process.managed = Measurement::Reading(5);
+        let mut child = same_second("/workspace/project", 1_881_284);
+        child.process.command = CommandText::of("cargo", &[]);
+        child.process.managed = Measurement::Reading(2);
+        let mut later = same_second("/workspace/later", 1_881_300);
+        later.process.command = CommandText::of("cargo", &["check"]);
+        let rows = [&lead, &child, &later];
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Lead(GroupingIdentity::from(&lead.process)),
+            ProcessTree::Long,
+        );
+
+        let command = table_column_text(&buffer, &layout, COMMAND_COLUMN, 3);
+        assert!(command.starts_with("cargo "), "{command:?}");
+        assert!(command.ends_with(ELISION), "{command:?}");
+        assert!(
+            command["cargo ".len()..command.len() - ELISION.len()]
+                .chars()
+                .all(|character| character == ' ')
+        );
+        assert_eq!(buffer_line(&buffer, 4), "");
+        assert_eq!(buffer_line(&buffer, 5), "");
+    }
+
+    #[test]
+    fn a_whole_exact_width_command_uses_a_free_row_before_marking_later_rows() {
+        let area = Rect::new(0, 0, 62, 4);
+        let mut buffer = Buffer::empty(area);
+        let mut lead = same_second("/workspace/project", 2_398_793);
+        lead.process.parent = VisibleParent::Ancestor(2_398_735);
+        lead.process.cpu = Measurement::Reading("1192%".to_string());
+        lead.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 98 / 10);
+        lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
+        lead.process.managed = Measurement::Reading(2);
+        let later = same_second("/workspace/later", 2_614_582);
+        let rows = [&lead, &later];
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Lead(GroupingIdentity::from(&lead.process)),
+            ProcessTree::Long,
+        );
+
+        assert_eq!(
+            layout.column_width(COMMAND_COLUMN),
+            cell_width("cargo nextest run")
+        );
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim_end(),
+            "cargo nextest"
+        );
+        let continuation = table_column_text(&buffer, &layout, COMMAND_COLUMN, 3);
+        assert!(continuation.starts_with("run"), "{continuation:?}");
+        assert!(continuation.ends_with(ELISION), "{continuation:?}");
+        assert!(
+            continuation["run".len()..continuation.len() - ELISION.len()]
+                .chars()
+                .all(|character| character == ' ')
+        );
+    }
+
+    #[test]
+    fn a_whole_exact_width_command_yields_its_last_cell_when_no_row_is_free() {
+        let area = Rect::new(0, 0, 62, 3);
+        let mut buffer = Buffer::empty(area);
+        let mut lead = same_second("/workspace/project", 2_398_793);
+        lead.process.parent = VisibleParent::Ancestor(2_398_735);
+        lead.process.cpu = Measurement::Reading("1192%".to_string());
+        lead.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 98 / 10);
+        lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
+        lead.process.managed = Measurement::Reading(2);
+        let later = same_second("/workspace/later", 2_614_582);
+        let rows = [&lead, &later];
+        let layout = TableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Lead(GroupingIdentity::from(&lead.process)),
+            ProcessTree::Long,
+        );
+
+        assert_eq!(
+            layout.column_width(COMMAND_COLUMN),
+            cell_width("cargo nextest run")
+        );
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 2),
+            format!("cargo nextest ru{ELISION}")
+        );
+    }
+
+    #[test]
+    fn a_column_header_never_carries_the_cut_mark() {
+        let area = Rect::new(0, 0, 198, 1);
+        let mut buffer = Buffer::empty(area);
+        let row = row(None);
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &[&row],
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        let header = buffer_line(&buffer, 0);
+        assert!(header.contains(TABLE_HEADERS[COMMAND_COLUMN]), "{header:?}");
+        assert!(!header.contains(ELISION), "{header:?}");
+    }
+
+    #[test]
+    fn a_summary_with_hidden_rows_ends_in_the_mark() {
+        let rows: Vec<TrackedRow> = (0..8)
+            .map(|offset| {
+                let mut row = row(None);
+                let pid = 4100_u32.saturating_add(offset);
+                row.process.pid = pid;
+                row.process.invocation_id = InvocationId::for_test(pid);
+                row.process.command = CommandText::of("cargo", &["build"]);
+                row
+            })
+            .collect();
+        let rows: Vec<&TrackedRow> = rows.iter().collect();
+        let area = Rect::new(0, 0, 80, 7);
+        let mut buffer = Buffer::empty(area);
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Summary,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        assert!(buffer_line(&buffer, 6).ends_with(ELISION));
+    }
+
+    #[test]
+    fn a_summary_drops_a_heading_that_has_no_process_row() {
+        let mut rows: Vec<TrackedRow> = (0..3)
+            .map(|offset| {
+                let path = format!("/workspace/project-{offset}");
+                let mut row = row_at(&path, None);
+                let pid = 4100_u32.saturating_add(offset);
+                row.process.pid = pid;
+                row.process.invocation_id = InvocationId::for_test(pid);
+                row.process.directory_identity = WorkingDirectoryIdentity::Absolute(path.into());
+                row
+            })
+            .collect();
+        rows[0].process.command = CommandText::of("cargo", &["build"]);
+        let rows: Vec<&TrackedRow> = rows.iter().collect();
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buffer = Buffer::empty(area);
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Summary,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        let last = buffer_line(&buffer, 5);
+        assert!(!last.contains("project-2"), "{last:?}");
+        assert!(last.ends_with(ELISION), "{last:?}");
+    }
+
+    #[test]
+    fn a_wrapped_summary_command_cut_at_the_foot_ends_in_the_mark() {
+        let mut row = row(None);
+        row.process.pid = 1_359_829;
+        row.process.invocation_id = InvocationId::for_test(1_359_829);
+        row.process.command = CommandText::of("cargo", &["clippy"]);
+        let rows = [&row];
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buffer = Buffer::empty(area);
+
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Summary,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+
+        let last = buffer_line(&buffer, 2);
+        assert!(last.ends_with(&format!("cargo{ELISION}")), "{last:?}");
     }
 
     /// The rows below a wrapped one are pushed down by it rather than
@@ -5594,18 +6711,18 @@ mod tests {
             [
                 "┌ summary──────────────────────────────────────────────────┐",
                 "│                                                          │",
-                "│ no cargo processes running                               │",
-                "│                                                          │",
-                "┌ toast title ─────────────────────────────────────────[x]─┐",
-                "│t┌ Favorites -- 0 saved -- ● matches the current paramet┐ │",
+                "│ ┌ toast title ─────────────────────────────────────[x]─┐ │",
+                "│ │ the toast's body                                     │ │",
+                "│ │                                                      │ │",
+                "│ ┌ Favorites -- 0 saved -- ● matches the current paramet┐ │",
                 "│ │No favorites saved -- press Esc, then ⌃s while the att│ │",
                 "│ │Esc close                                             │ │",
                 "│ └──────────────────────────────────────────────────────┘ │",
-                "│                                                          │",
-                "│                                                          │",
-                "│                                                          │",
-                "│                                                          │",
+                "│ │                                                      │ │",
+                "│ │                                                      │ │",
+                "│ └──────────────────────────────────────────────────────┘ │",
                 "└──────────────────────────────────────────────────────────┘",
+                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
             ],
         ),
         (
@@ -5634,16 +6751,16 @@ mod tests {
                 "│ ┌ Keymap ──────────────────────────────────────────────┐ │",
                 "│ │                                                      │ │",
                 "│ │ Global Navigation:                                   │ │",
-                "┌ │ ▸ Next pane                                     tab  │─┐",
-                "│t│   Previous pane                                 shift│ │",
+                "│ │ ▸ Next pane                                     tab  │ │",
+                "│ │   Previous pane                                 shift│ │",
                 "│ │ Global Shortcuts:                                    │ │",
                 "│ │   Add a tile                                    +    │ │",
                 "│ │   Dismiss overlay / output                      x    │ │",
                 "│ │   Focus the tile above                          up   │ │",
                 "│ │   Focus the tile below                          down │ │",
                 "│ └──────────────────────1 of 11 ▼───────────────────────┘ │",
-                "│                                                          │",
                 "└──────────────────────────────────────────────────────────┘",
+                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
             ],
         ),
         (
@@ -5651,25 +6768,98 @@ mod tests {
             [
                 "┌ summary──────────────────────────────────────────────────┐",
                 "│    ┌ Global Shortcuts ─────────────────────────────┐     │",
-                "│ no │                                               │     │",
-                "│    │ Global Navigation:                            │     │",
-                "┌ toa│ ▸ Next pane                         tab       │─[x]─┐",
-                "│the │   Previous pane                     shift-tab │     │",
-                "│    │ Global Shortcuts:                             │     │",
-                "│    │   Add a tile                        +         │     │",
-                "│    │   Focus the tile above              up        │     │",
-                "│    │   Focus the tile below              down      │     │",
-                "│    │   Focus the tile to the left        left      │     │",
-                "│    │   Focus the tile to the right       right     │     │",
-                "│    └───────────────────1 of 3 ▼────────────────────┘     │",
-                "└──────────────────────────────────────────────────────────┘",
+                "│ ┌ t│                                               │x]─┐ │",
+                "│ │ t│ Global Navigation:                            │   │ │",
+                "│ │  │ ▸ Next pane                         tab       │   │ │",
+                "│ │  │   Previous pane                     shift-tab │   │ │",
+                "│ │  │ Global Shortcuts:                             │   │ │",
+                "│ │  │   Add a tile                        +         │   │ │",
+                "│ │  │   Focus the tile above              up        │   │ │",
+                "│ │  │   Focus the tile below              down      │   │ │",
+                "│ │  │   Focus the tile to the left        left      │   │ │",
+                "│ └──│   Focus the tile to the right       right     │───┘ │",
+                "└────└───────────────────1 of 3 ▼────────────────────┘─────┘",
+                " Uptime: 0s              cargo-tile <version>  ? shortcuts ",
             ],
         ),
     ];
 
-    /// What follows the status line in a frame: the toasts over the
-    /// whole frame, the favorites overlay over them, and whichever
-    /// framework overlay is open over everything.
+    #[test]
+    fn a_toast_never_covers_the_status_line() {
+        let mut app = App::new_for_test().expect("test app should build");
+        app.started = Instant::now();
+        app.framework.toasts.push_persistent(
+            "toast title",
+            "the toast's body",
+            ToastStyle::Normal,
+            None,
+            8,
+        );
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(FRAME_TAIL_WIDTH, FRAME_TAIL_HEIGHT))
+            .expect("the test terminal opens");
+
+        terminal
+            .draw(|frame| draw(frame, &mut app, &keymap))
+            .expect("the test terminal draws");
+
+        let status = buffer_line(
+            terminal.backend().buffer(),
+            FRAME_TAIL_HEIGHT.saturating_sub(1),
+        );
+        assert!(
+            status.contains(&format!("cargo-tile {APP_VERSION}")),
+            "{status:?}"
+        );
+        assert!(status.contains("? shortcuts"), "{status:?}");
+    }
+
+    /// Toasts float over cell contents, not over the outer frame that
+    /// separates the grid from the terminal edge and status line.
+    #[test]
+    fn a_toast_stays_inside_the_grid_right_and_bottom_borders() {
+        let mut app = App::new_for_test().expect("test app should build");
+        app.started = Instant::now();
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut terminal = Terminal::new(TestBackend::new(FRAME_TAIL_WIDTH, FRAME_TAIL_HEIGHT))
+            .expect("the test terminal opens");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &keymap))
+            .expect("the frame without a toast draws");
+        let bare = terminal.backend().buffer().clone();
+
+        app.framework.toasts.push_persistent(
+            "toast title",
+            "the toast's body",
+            ToastStyle::Normal,
+            None,
+            8,
+        );
+        terminal
+            .draw(|frame| draw(frame, &mut app, &keymap))
+            .expect("the frame with a toast draws");
+        let with_toast = terminal.backend().buffer();
+        let border_right = FRAME_TAIL_WIDTH.saturating_sub(1);
+        let border_bottom = FRAME_TAIL_HEIGHT.saturating_sub(2);
+
+        for row in 0..=border_bottom {
+            assert_eq!(
+                with_toast[(border_right, row)].symbol(),
+                bare[(border_right, row)].symbol(),
+                "right border row {row}",
+            );
+        }
+        for column in 0..FRAME_TAIL_WIDTH {
+            assert_eq!(
+                with_toast[(column, border_bottom)].symbol(),
+                bare[(column, border_bottom)].symbol(),
+                "bottom border column {column}",
+            );
+        }
+    }
+
+    /// What follows the grid in a frame: body-bound toasts, then the
+    /// favorites overlay, then whichever framework overlay is open.
     #[test]
     fn the_frame_ends_with_toasts_then_favorites_then_the_framework_overlay() {
         // Tall enough to reach up under every popup, so the frame shows
@@ -5701,11 +6891,11 @@ mod tests {
                 .draw(|frame| draw(frame, &mut app, &keymap))
                 .expect("the test terminal draws");
 
-            assert_eq!(
-                buffer_rows(terminal.backend().buffer()),
-                expected,
-                "{opener:?}"
-            );
+            let actual: Vec<String> = buffer_rows(terminal.backend().buffer())
+                .into_iter()
+                .map(|row| row.replace(APP_VERSION, "<version>"))
+                .collect();
+            assert_eq!(actual, expected, "{opener:?}");
         }
     }
 

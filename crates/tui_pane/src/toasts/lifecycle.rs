@@ -40,10 +40,11 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Return renderable toast views at `now`.
     #[must_use]
     pub fn active_views(&self, now: Instant) -> Vec<ToastView> {
+        let card_width = self.card_width();
         self.entries
             .iter()
-            .filter(|toast| toast.is_renderable(now, self.settings()))
-            .map(|toast| toast.view(now, self.settings()))
+            .filter(|toast| toast.is_renderable(now, self.settings(), card_width))
+            .map(|toast| toast.view(now, self.settings(), card_width))
             .collect()
     }
 
@@ -113,11 +114,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Replace the body text for a task toast.
     pub fn update_task_body(&mut self, task_id: ToastTaskId, body: impl Into<String>) -> bool {
         let settings = self.settings.clone();
+        let card_width = self.card_width();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
         toast.body = ToastBody::from(body.into());
-        toast.refresh_entrance_phase(&settings);
+        toast.refresh_entrance_phase_at_width(&settings, card_width);
         true
     }
 
@@ -129,11 +131,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         colors: Vec<Color>,
     ) -> bool {
         let settings = self.settings.clone();
+        let card_width = self.card_width();
         let Some(toast) = self.toast_for_colored_mut(id) else {
             return false;
         };
         toast.body = ToastBody::Colored { lines, colors };
-        toast.refresh_entrance_phase(&settings);
+        toast.refresh_entrance_phase_at_width(&settings, card_width);
         true
     }
 
@@ -156,13 +159,14 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// previously-finished toast back to running.
     pub fn set_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) -> bool {
         let settings = self.settings.clone();
+        let card_width = self.card_width();
         let linger = settings.finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
         toast.tracked_items = items.to_vec();
         toast.item_linger = linger;
-        toast.refresh_entrance_phase(&settings);
+        toast.refresh_entrance_phase_at_width(&settings, card_width);
         self.recompute_task_status(task_id);
         true
     }
@@ -230,6 +234,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// countdown re-anchors when the new items complete.
     pub fn add_new_tracked_items(&mut self, task_id: ToastTaskId, items: &[TrackedItem]) -> bool {
         let settings = self.settings.clone();
+        let card_width = self.card_width();
         let item_linger = settings.finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
@@ -248,7 +253,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         }
         toast.item_linger = item_linger;
         if changed {
-            toast.refresh_entrance_phase(&settings);
+            toast.refresh_entrance_phase_at_width(&settings, card_width);
             self.recompute_task_status(task_id);
         }
         changed
@@ -354,8 +359,9 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             }
         }
         let settings = &self.settings;
+        let card_width = self.card_width();
         self.entries
-            .retain(|toast| toast.is_renderable(now, settings));
+            .retain(|toast| toast.is_renderable(now, settings, card_width));
         self.sync_viewport_len();
     }
 

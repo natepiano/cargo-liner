@@ -7,6 +7,8 @@ use std::time::Duration;
 pub(crate) const ACCOUNT_HEADING_CLOSE: &str = "] ";
 /// Open the account qualifier once per working-directory heading.
 pub(crate) const ACCOUNT_HEADING_OPEN: &str = "[";
+/// Fewest cells retained from a shortened directory's last component.
+pub(crate) const HEADING_MIN_TAIL: u16 = 8;
 
 // configuration
 /// Directory under the OS config root holding `config.toml`,
@@ -106,6 +108,9 @@ pub(crate) const NOTICE_TOAST_MIN_INTERIOR_LINES: usize = 1;
 pub(crate) const NOTICE_TOAST_VISIBLE: Duration = Duration::from_secs(5);
 /// Rows the status line occupies along the bottom of the terminal.
 pub(crate) const STATUS_LINE_HEIGHT: u16 = 1;
+/// Lowest accepted contrast for built-in status-line RGB pairs.
+#[cfg(test)]
+pub(crate) const MIN_STATUS_LINE_TEXT_CONTRAST: f64 = 4.5;
 
 // test harness
 /// Enables reader-harness timestamp output for a requested timing run.
@@ -116,6 +121,8 @@ pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
 /// `tiles.widen_summary` when `config.toml` says nothing: the summary
 /// stays in its own column.
 pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = false;
+/// Shortest useful height for one command cell, including its frame.
+pub(crate) const MIN_CELL_HEIGHT: u16 = 6;
 /// Narrowest useful width for one command cell, including its frame.
 pub(crate) const MIN_CELL_WIDTH: u16 = 40;
 /// Width at which a summary memory foot leaves room for the content-rows readout only.
@@ -179,6 +186,8 @@ pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
 /// Added to a cell's indent once per level of the ancestry block, so
 /// the chain reads as a staircase down to the command.
 pub(crate) const ANCESTRY_LEVEL_INDENT: &str = " ";
+/// Fewest cells in which an ancestry command is shown.
+pub(crate) const ANCESTRY_MIN_COMMAND_WIDTH: u16 = 8;
 /// Rows the ancestry block needs before it can drop levels out of the
 /// middle rather than off the end: one for the top-level parent, one
 /// for the elision, and one for the level nearest the command.

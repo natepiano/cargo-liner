@@ -1,10 +1,9 @@
-//! The last layers of a frame: the toasts, then whichever framework
-//! overlay is open. An app draws its own modal, if it has one, between
-//! the two.
+//! The framework overlays drawn after an app's panes.
 
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 use super::global_shortcuts;
 use super::keymap_ui;
@@ -19,10 +18,14 @@ use crate::SettingsRows;
 use crate::ToastsRenderCtx;
 use crate::draw_settings;
 
-/// Draw the toasts over the whole frame, with no toast focused.
-pub fn render_toasts<Ctx: AppContext>(frame: &mut Frame, framework: &mut Framework<Ctx>) {
-    let area = frame.area();
-    framework.toasts.render(
+/// Draw the framework's toasts inside `area`.
+pub fn render_toasts<Ctx: AppContext>(
+    frame: &mut Frame,
+    framework: &mut Framework<Ctx>,
+    area: Rect,
+) {
+    Renderable::render(
+        &mut framework.toasts,
         frame,
         area,
         &ToastsRenderCtx {

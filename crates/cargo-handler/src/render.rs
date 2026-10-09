@@ -41,9 +41,9 @@ use crate::tiles::AgentCell;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
 
-/// Draw one frame: the grid fills the terminal above the status line,
-/// and the toasts, the favorites modal and any framework overlay float
-/// above both.
+/// Draw one frame: the grid fills the body above the status line, and
+/// toasts are drawn inside the grid's outer frame. The favorites modal
+/// and any framework overlay float above both.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
@@ -68,7 +68,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         |frame, app, contents| draw_panes(frame, app, body, contents),
     );
     draw_status_line(frame, app, keymap, status);
-    tui_pane::render_toasts(frame, &mut app.framework);
+    tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
     app.favorites_overlay.render(frame);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
@@ -317,14 +317,14 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 7/78 │",
+        "│                                                   content rows: 0  r/c: 6/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 3                                                                            │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 5/78 │",
+        "│                                                                              │",
+        "│                                                   content rows: 0  r/c: 6/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -340,8 +340,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 11/78 │",
+        "│                                                  content rows: 1  r/c: 10/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -351,7 +350,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 9/78 │",
+        "│                                                                              │",
+        "│                                                  content rows: 0  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -481,8 +481,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                  content rows: 3  r/c: 11/78 │",
+        "│                                                  content rows: 3  r/c: 10/78 │",
         "├ boss of bosses───────────────────────────────────────────────────────────────┤",
         "│ pid 1579022 · claude · idle · 21h · natedev · —                              │",
         "│ ~/rust/hana_catalyst/docs/hana                                               │",
@@ -492,7 +491,8 @@ fraying = "leading"
         "│ 2407001    shell     codex    app-server                              12m    │",
         "│ —            thread  codex    tool-based-ui-geometry-material-impl    12m    │",
         "│ —        subagent    claude   Survey the tile grid                    5m 3s  │",
-        "│                                                   content rows: 8  r/c: 9/78 │",
+        "│                                                                              │",
+        "│                                                  content rows: 8  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -564,6 +564,19 @@ fraying = "leading"
         let mut app = App::new_for_test().expect("test app should build");
 
         assert_eq!(drawn_rows(&mut app, 1), frame(&FIRST_FRAME, GRID_STATUS));
+    }
+
+    #[test]
+    fn a_toast_never_covers_the_status_line() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let _ = app.framework.toasts.push(
+            "notice",
+            "This toast occupies the bottom of the body while the status line stays visible.",
+        );
+
+        let rows = drawn_rows(&mut app, 1);
+
+        assert_eq!(rows.last(), Some(&status_row(GRID_STATUS, None)));
     }
 
     #[test]
@@ -764,8 +777,8 @@ fraying = "leading"
         let red = Color::Rgb(255, 95, 95);
         assert_eq!(buffer[(19, 3)].symbol(), "b");
         assert_eq!(buffer[(19, 3)].fg, red, "the summary's name");
-        assert_eq!(buffer[(2, 12)].symbol(), "b");
-        assert_eq!(buffer[(2, 12)].fg, red, "the cell's title");
+        assert_eq!(buffer[(2, 11)].symbol(), "b");
+        assert_eq!(buffer[(2, 11)].fg, red, "the cell's title");
     }
 
     /// Each agent's cell asks for the rows it takes at the width its

@@ -97,7 +97,7 @@ const fn default_dark() -> Theme {
             bg_focus:  StyleSpec::from_color(Color::Black),
         },
         status:      StatusTheme {
-            bar: StyleSpec::from_color(Color::DarkGray),
+            bar: StyleSpec::from_color(Color::Rgb(58, 58, 58)),
         },
         finder:      FinderTheme {
             match_bg: StyleSpec::from_color(Color::Rgb(0, 90, 100)),
@@ -121,7 +121,7 @@ const fn default_light() -> Theme {
             // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-            active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(137, 86, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -272,11 +272,30 @@ mod tests {
     use tui_pane::ThemeVariantFile;
 
     use super::*;
+    use crate::constants::MIN_STATUS_LINE_TEXT_CONTRAST;
 
     const DARK_TEMPLATE: &str = include_str!("../../themes/default_dark.toml");
     const HC_TEMPLATE: &str = include_str!("../../themes/high_contrast.toml");
     const LIGHT_TEMPLATE: &str = include_str!("../../themes/default_light.toml");
     const STARTER_TEMPLATE: &str = include_str!("../../themes/starter.toml");
+    const XTERM_ANSI_COLORS: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
 
     /// Parse one template and return its variants, asserting the schema
     /// version and the expected variant count.
@@ -346,5 +365,98 @@ mod tests {
                 DEFAULT_HC_LIGHT_THEME,
             ]
         );
+    }
+
+    fn linear_channel(channel: u8) -> f64 {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
+        0.2126f64.mul_add(
+            linear_channel(red),
+            0.7152f64.mul_add(linear_channel(green), 0.0722 * linear_channel(blue)),
+        )
+    }
+
+    fn xterm_rgb(color: Color) -> (u8, u8, u8) {
+        let named = match color {
+            Color::Black | Color::Reset => 0,
+            Color::Red => 1,
+            Color::Green => 2,
+            Color::Yellow => 3,
+            Color::Blue => 4,
+            Color::Magenta => 5,
+            Color::Cyan => 6,
+            Color::Gray => 7,
+            Color::DarkGray => 8,
+            Color::LightRed => 9,
+            Color::LightGreen => 10,
+            Color::LightYellow => 11,
+            Color::LightBlue => 12,
+            Color::LightMagenta => 13,
+            Color::LightCyan => 14,
+            Color::White => 15,
+            Color::Rgb(red, green, blue) => return (red, green, blue),
+            Color::Indexed(index) => return xterm_indexed_rgb(index),
+        };
+        XTERM_ANSI_COLORS[named]
+    }
+
+    fn xterm_indexed_rgb(index: u8) -> (u8, u8, u8) {
+        if let Some(rgb) = XTERM_ANSI_COLORS.get(usize::from(index)) {
+            return *rgb;
+        }
+        if index < 232 {
+            const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+            let offset = index - 16;
+            return (
+                LEVELS[usize::from(offset / 36)],
+                LEVELS[usize::from((offset % 36) / 6)],
+                LEVELS[usize::from(offset % 6)],
+            );
+        }
+        let gray = 8 + 10 * (index - 232);
+        (gray, gray, gray)
+    }
+
+    fn contrast_ratio(foreground: Color, background: Color) -> f64 {
+        let (foreground_red, foreground_green, foreground_blue) = xterm_rgb(foreground);
+        let (background_red, background_green, background_blue) = xterm_rgb(background);
+        let foreground = relative_luminance(foreground_red, foreground_green, foreground_blue);
+        let background = relative_luminance(background_red, background_green, background_blue);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
+    #[test]
+    fn status_line_text_meets_contrast_in_every_built_in_theme() {
+        for variant in builtins() {
+            let theme = &variant.theme;
+            let background = theme.status.bar.color;
+            // These are exactly the lookups in `BarPalette::themed`:
+            // fill and values, labels, activity/enabled keys, then
+            // disabled keys and labels.
+            let inks = [
+                ("status fill and value", theme.text.default.color),
+                ("status label", theme.pane_chrome.active_title.color),
+                (
+                    "status activity and enabled key",
+                    theme.semantic.accent.color,
+                ),
+                ("status disabled key and label", theme.text.secondary.color),
+            ];
+            for (name, ink) in inks {
+                let contrast = contrast_ratio(ink, background);
+                assert!(
+                    contrast >= MIN_STATUS_LINE_TEXT_CONTRAST,
+                    "{} {name} contrast is {contrast:.2}:1",
+                    variant.id.as_str()
+                );
+            }
+        }
     }
 }

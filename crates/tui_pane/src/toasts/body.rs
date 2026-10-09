@@ -1,6 +1,12 @@
 use ratatui::style::Color;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
 
+use crate::BLOCK_BORDER_WIDTH;
 use crate::ToastSettings;
+use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
+use crate::wrap;
 
 /// Structured toast body text.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,13 +43,26 @@ impl ToastBody {
     }
 
     pub(super) fn wrapped_line_count(&self, width: usize) -> usize {
-        let width = width.max(1);
-        self.as_text()
-            .lines()
-            .map(|line| (line.chars().count().max(1).saturating_sub(1) / width) + 1)
-            .sum::<usize>()
-            .max(1)
+        let width = u16::try_from(width.max(1)).unwrap_or(u16::MAX);
+        wrapped_body_lines(&self.as_text(), width, |_, line| {
+            Line::from(Span::styled(line.to_owned(), Style::default()))
+        })
+        .len()
+        .max(1)
     }
+}
+
+pub(super) fn wrapped_body_lines(
+    body: &str,
+    width: u16,
+    mut styled_line: impl FnMut(usize, &str) -> Line<'static>,
+) -> Vec<Line<'static>> {
+    body.split('\n')
+        .enumerate()
+        .flat_map(|(index, line)| {
+            wrap::wrapped_preserving_whitespace(styled_line(index, line).spans, width).lines
+        })
+        .collect()
 }
 
 impl From<String> for ToastBody {
@@ -62,6 +81,11 @@ impl From<&str> for ToastBody {
 
 /// Interior body width available inside toast cards for the current settings.
 #[must_use]
-pub fn toast_body_width(settings: &ToastSettings) -> usize {
-    usize::from(settings.width.get().saturating_sub(2))
+pub fn toast_body_width(settings: &ToastSettings) -> usize { card_body_width(settings.width.get()) }
+
+pub(super) fn card_body_width(card_width: u16) -> usize {
+    usize::from(card_width).saturating_sub(
+        BLOCK_BORDER_WIDTH
+            .saturating_add(usize::from(TOAST_BODY_HORIZONTAL_PADDING).saturating_mul(2)),
+    )
 }

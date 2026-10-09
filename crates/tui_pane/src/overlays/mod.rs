@@ -16,8 +16,8 @@
 //! / [`FrameworkFocusId`](crate::FrameworkFocusId) instead. The bar
 //! renderer and input dispatcher special-case framework panes.
 //!
-//! [`render_toasts`] and [`draw_framework_overlay`] draw the last
-//! layers of a frame: the toasts, then whichever overlay is open.
+//! [`draw_framework_overlay`] draws whichever framework overlay is open
+//! after the app's panes, toasts and modal.
 
 mod constants;
 mod frame_tail;

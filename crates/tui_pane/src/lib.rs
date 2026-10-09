@@ -34,6 +34,7 @@ mod theme;
 mod tiles;
 mod toasts;
 mod watched_file;
+mod wrap;
 
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
 // reference these types via `$crate::*` paths, which requires them at
@@ -532,3 +533,4 @@ pub use toasts::TrackedItemKey;
 pub use toasts::format_toast_items;
 pub use toasts::toast_body_width;
 pub use watched_file::WatchedFile;
+pub use wrap::wrapped;

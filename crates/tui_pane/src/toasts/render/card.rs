@@ -2,19 +2,22 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::symbols::line;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::Wrap;
 use unicode_width::UnicodeWidthStr;
 
 use super::fallback_toast_palette;
 use super::format;
 use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
+use crate::constants::ELISION;
+use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
+use crate::constants::TOAST_SIDE_GAP;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
 use crate::title_color;
@@ -23,6 +26,7 @@ use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
 use crate::toasts::TrackedItemActivity;
 use crate::toasts::TrackedItemView;
+use crate::toasts::body;
 
 pub(super) fn render_toast(
     frame: &mut Frame,
@@ -33,16 +37,8 @@ pub(super) fn render_toast(
     focused_toast_id: Option<ToastId>,
 ) -> Rect {
     let palette = fallback_toast_palette();
-    let clear_rect = Rect {
-        x:      card.x.saturating_sub(1),
-        y:      card.y,
-        width:  card
-            .width
-            .saturating_add(2)
-            .min(area.x + area.width - card.x.saturating_sub(1)),
-        height: card.height,
-    };
-    frame.render_widget(Clear, clear_rect);
+    let card = card.intersection(area);
+    clear_toast_surroundings(frame, area, card);
 
     let focused =
         matches!(pane_focus, ToastPaneFocus::Focused) && focused_toast_id == Some(toast.id());
@@ -133,10 +129,68 @@ pub(super) fn render_toast(
 
     if inner.height > 0 {
         let alloc_interior = card.height.saturating_sub(2);
-        render_toast_body(frame, toast, body_style, inner, alloc_interior);
+        render_toast_body(
+            frame,
+            toast,
+            body_style,
+            toast_body_area(inner),
+            alloc_interior,
+        );
     }
 
     close_rect
+}
+
+/// Clear the card and its gaps, then close the frame columns beside them.
+fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
+    let clear_left = card.x.saturating_sub(TOAST_SIDE_GAP).max(area.x);
+    let clear_right = card
+        .right()
+        .saturating_add(TOAST_SIDE_GAP)
+        .min(area.right());
+    frame.render_widget(
+        Clear,
+        Rect {
+            x:      clear_left,
+            y:      card.y,
+            width:  clear_right.saturating_sub(clear_left),
+            height: card.height,
+        },
+    );
+    join_adjacent_frame_columns(frame, area, card);
+}
+
+/// Remove divider stubs that point into a toast's cleared side gaps.
+fn join_adjacent_frame_columns(frame: &mut Frame, area: Rect, card: Rect) {
+    let frame_area = frame.area();
+    for y in card.top()..card.bottom() {
+        if card.left().saturating_sub(TOAST_SIDE_GAP) == area.left()
+            && area.left() > frame_area.left()
+        {
+            let cell = &mut frame.buffer_mut()[(area.left() - 1, y)];
+            if cell.symbol() == line::VERTICAL_RIGHT {
+                cell.set_symbol(line::VERTICAL);
+            }
+        }
+        if card.right().saturating_add(TOAST_SIDE_GAP) == area.right()
+            && area.right() < frame_area.right()
+        {
+            let cell = &mut frame.buffer_mut()[(area.right(), y)];
+            if cell.symbol() == line::VERTICAL_LEFT {
+                cell.set_symbol(line::VERTICAL);
+            }
+        }
+    }
+}
+
+const fn toast_body_area(inner: Rect) -> Rect {
+    Rect {
+        x: inner.x.saturating_add(TOAST_BODY_HORIZONTAL_PADDING),
+        width: inner
+            .width
+            .saturating_sub(TOAST_BODY_HORIZONTAL_PADDING.saturating_mul(2)),
+        ..inner
+    }
 }
 
 fn render_toast_body(
@@ -154,14 +208,17 @@ fn render_toast_body(
     } else {
         alloc_body
     };
-    let lines = if toast.tracked_items().is_empty() {
-        body_lines_plain(toast, body_style, lines_for_body)
+    let (lines, body_was_cut) = if toast.tracked_items().is_empty() {
+        body_lines_plain(toast, body_style, lines_for_body, body_area.width)
     } else {
-        body_lines_tracked(
-            toast.tracked_items(),
-            body_style,
-            lines_for_body,
-            usize::from(body_area.width),
+        (
+            body_lines_tracked(
+                toast.tracked_items(),
+                body_style,
+                lines_for_body,
+                usize::from(body_area.width),
+            ),
+            false,
         )
     };
 
@@ -170,12 +227,7 @@ fn render_toast_body(
             height: body_area.height.saturating_sub(1),
             ..body_area
         };
-        frame.render_widget(
-            Paragraph::new(lines)
-                .style(body_style)
-                .wrap(Wrap { trim: false }),
-            text_area,
-        );
+        frame.render_widget(Paragraph::new(lines).style(body_style), text_area);
         let hint_area = Rect {
             y: body_area.y + body_area.height.saturating_sub(1),
             height: 1,
@@ -191,63 +243,59 @@ fn render_toast_body(
             hint_area,
         );
     } else {
-        frame.render_widget(
-            Paragraph::new(lines)
-                .style(body_style)
-                .wrap(Wrap { trim: false }),
-            body_area,
-        );
+        frame.render_widget(Paragraph::new(lines).style(body_style), body_area);
     }
+    if body_was_cut {
+        render_body_elision(frame, toast, body_style, body_area, lines_for_body);
+    }
+}
+
+fn render_body_elision(
+    frame: &mut Frame,
+    toast: &ToastView,
+    body_style: Style,
+    body_area: Rect,
+    lines_for_body: usize,
+) {
+    if lines_for_body == 0 || body_area.width == 0 {
+        return;
+    }
+    let row = u16::try_from(lines_for_body.saturating_sub(1)).unwrap_or(u16::MAX);
+    let style = toast.linger_progress().map_or(body_style, |progress| {
+        format::fade_to_style(f64::from(progress))
+    });
+    frame.render_widget(
+        Paragraph::new(ELISION).style(style),
+        Rect {
+            x:      body_area.right().saturating_sub(1),
+            y:      body_area.y.saturating_add(row),
+            width:  1,
+            height: 1,
+        },
+    );
 }
 
 fn body_lines_plain(
     toast: &ToastView,
     body_style: Style,
     lines_for_body: usize,
-) -> Vec<Line<'static>> {
-    let body_lines = toast.body().lines().collect::<Vec<_>>();
-    let total_body = body_lines.len();
-    let needs_truncation = total_body > lines_for_body;
-    let (visible_body, overflow_line) = if needs_truncation && lines_for_body >= 1 {
-        let show = lines_for_body.saturating_sub(1);
-        let remaining = total_body.saturating_sub(show);
-        (
-            body_lines[..show].join("\n"),
-            Some(format!("(+{remaining} more)")),
-        )
-    } else {
-        (toast.body().to_owned(), None)
-    };
-
+    width: u16,
+) -> (Vec<Line<'static>>, bool) {
     let line_colors = toast.body_line_colors();
-    let mut result = visible_body
-        .lines()
-        .enumerate()
-        .map(|(idx, line)| {
-            toast.linger_progress().map_or_else(
-                || {
-                    // No linger: use the per-line color when present, else the
-                    // uniform body style.
-                    let style = line_colors
-                        .and_then(|colors| colors.get(idx).copied())
-                        .map_or(body_style, |color| Style::default().fg(color));
-                    Line::from(Span::styled(line.to_owned(), style))
-                },
-                // A finishing toast fades to grey regardless of per-line color.
-                |progress| format::fade_to_color(line, f64::from(progress)),
-            )
-        })
-        .collect::<Vec<_>>();
-    if let Some(overflow) = overflow_line {
-        let overflow_style = Style::default()
-            .fg(fallback_toast_palette().label)
-            .add_modifier(Modifier::ITALIC);
-        result.push(toast.linger_progress().map_or_else(
-            || Line::from(Span::styled(overflow.clone(), overflow_style)),
-            |progress| format::fade_to_color(&overflow, f64::from(progress)),
-        ));
-    }
-    result
+    let mut lines = body::wrapped_body_lines(toast.body(), width, |index, line| {
+        toast.linger_progress().map_or_else(
+            || {
+                let style = line_colors
+                    .and_then(|colors| colors.get(index).copied())
+                    .map_or(body_style, |color| Style::default().fg(color));
+                Line::from(Span::styled(line.to_owned(), style))
+            },
+            |progress| format::fade_to_color(line, f64::from(progress)),
+        )
+    });
+    let body_was_cut = lines.len() > lines_for_body;
+    lines.truncate(lines_for_body);
+    (lines, body_was_cut)
 }
 
 pub(super) fn body_lines_tracked(
