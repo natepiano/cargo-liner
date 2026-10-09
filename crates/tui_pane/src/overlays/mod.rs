@@ -16,8 +16,8 @@
 //! / [`FrameworkFocusId`](crate::FrameworkFocusId) instead. The bar
 //! renderer and input dispatcher special-case framework panes.
 //!
-//! [`render_toasts`] and [`draw_framework_overlay`] draw the last
-//! layers of a frame: the toasts, then whichever overlay is open.
+//! [`draw_framework_overlay`] draws whichever framework overlay is open
+//! after the app's panes, toasts and modal.
 
 mod constants;
 mod frame_tail;
@@ -58,7 +58,6 @@ pub use constants::KEYMAP_POPUP_MAX_HEIGHT;
 pub(crate) use constants::POPUP_BORDER_HEIGHT;
 pub(crate) use constants::POPUP_BORDER_WIDTH;
 pub use frame_tail::draw_framework_overlay;
-pub use frame_tail::render_toasts;
 pub use global_shortcuts::GlobalShortcutsPane;
 pub use global_shortcuts::draw_global_shortcuts_overlay;
 pub use keymap::KeymapCaptureCommand;

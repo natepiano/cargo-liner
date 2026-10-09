@@ -121,7 +121,7 @@ const fn default_light() -> Theme {
             // focus, the focused tile's border takes the focused title's.
             active_border:   None,
             inactive_border: StyleSpec::from_color(Color::Rgb(140, 140, 140)),
-            active_title:    StyleSpec::bold(Color::Rgb(160, 100, 0)),
+            active_title:    StyleSpec::bold(Color::Rgb(137, 86, 0)),
             inactive_title:  StyleSpec::from_color(Color::Black),
         },
         focus:       FocusTheme {
@@ -272,6 +272,7 @@ mod tests {
     use tui_pane::ThemeVariantFile;
 
     use super::*;
+    use crate::constants::MIN_STATUS_LINE_TEXT_CONTRAST;
 
     const DARK_TEMPLATE: &str = include_str!("../../themes/default_dark.toml");
     const HC_TEMPLATE: &str = include_str!("../../themes/high_contrast.toml");
@@ -346,5 +347,56 @@ mod tests {
                 DEFAULT_HC_LIGHT_THEME,
             ]
         );
+    }
+
+    fn linear_channel(channel: u8) -> f64 {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
+        0.2126f64.mul_add(
+            linear_channel(red),
+            0.7152f64.mul_add(linear_channel(green), 0.0722 * linear_channel(blue)),
+        )
+    }
+
+    fn contrast_ratio(foreground: Color, background: Color) -> Option<f64> {
+        let Color::Rgb(foreground_red, foreground_green, foreground_blue) = foreground else {
+            return None;
+        };
+        let Color::Rgb(background_red, background_green, background_blue) = background else {
+            return None;
+        };
+        let foreground = relative_luminance(foreground_red, foreground_green, foreground_blue);
+        let background = relative_luminance(background_red, background_green, background_blue);
+        Some((foreground.max(background) + 0.05) / (foreground.min(background) + 0.05))
+    }
+
+    #[test]
+    fn status_line_text_meets_contrast_in_every_built_in_theme() {
+        for variant in builtins() {
+            let theme = &variant.theme;
+            let background = theme.status.bar.color;
+            let inks = [
+                ("default text", theme.text.default.color),
+                ("title", theme.pane_chrome.active_title.color),
+                ("accent", theme.semantic.accent.color),
+            ];
+            for (name, ink) in inks {
+                let Some(contrast) = contrast_ratio(ink, background) else {
+                    continue;
+                };
+                assert!(
+                    contrast >= MIN_STATUS_LINE_TEXT_CONTRAST,
+                    "{} {name} contrast is {contrast:.2}:1",
+                    variant.id.as_str()
+                );
+            }
+        }
     }
 }

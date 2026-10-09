@@ -373,7 +373,6 @@ pub use overlays::edit_selected_global_shortcut;
 pub use overlays::handle_keymap_capture_command;
 pub use overlays::handle_keymap_navigation_key;
 pub use overlays::keymap_toml;
-pub use overlays::render_toasts;
 pub use overlays::save_keymap_to_disk;
 pub use pane::FocusedPane;
 pub use pane::FrameworkFocusId;

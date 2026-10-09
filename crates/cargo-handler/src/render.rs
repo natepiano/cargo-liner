@@ -1,6 +1,8 @@
 //! Frame rendering: the tile grid, the framework status line along the
 //! bottom, and whichever overlay is open above them.
 
+use std::time::Instant;
+
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -11,6 +13,8 @@ use ratatui::text::Span;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::Keymap;
+use tui_pane::PaneFocusState;
+use tui_pane::Renderable;
 use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
@@ -18,6 +22,7 @@ use tui_pane::StatusLineNote;
 use tui_pane::TileCells;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
+use tui_pane::ToastsRenderCtx;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
 use tui_pane::render_status_line;
@@ -68,7 +73,15 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         |frame, app, contents| draw_panes(frame, app, body, contents),
     );
     draw_status_line(frame, app, keymap, status);
-    tui_pane::render_toasts(frame, &mut app.framework);
+    Renderable::render(
+        &mut app.framework.toasts,
+        frame,
+        body,
+        &ToastsRenderCtx {
+            now:              Instant::now(),
+            pane_focus_state: PaneFocusState::Inactive,
+        },
+    );
     app.favorites_overlay.render(frame);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
@@ -564,6 +577,19 @@ fraying = "leading"
         let mut app = App::new_for_test().expect("test app should build");
 
         assert_eq!(drawn_rows(&mut app, 1), frame(&FIRST_FRAME, GRID_STATUS));
+    }
+
+    #[test]
+    fn a_toast_never_covers_the_status_line() {
+        let mut app = App::new_for_test().expect("test app should build");
+        let _ = app.framework.toasts.push(
+            "notice",
+            "This toast occupies the bottom of the body while the status line stays visible.",
+        );
+
+        let rows = drawn_rows(&mut app, 1);
+
+        assert_eq!(rows.last(), Some(&status_row(GRID_STATUS, None)));
     }
 
     #[test]

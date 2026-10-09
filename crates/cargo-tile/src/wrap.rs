@@ -13,6 +13,8 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 
+use crate::constants::WRAP_BREAK_AFTER;
+
 /// One word of the line being wrapped, carrying the style of the span it
 /// came out of so a line broken between two spans keeps both.
 struct Word {
@@ -82,9 +84,29 @@ impl Wrap {
             if self.room() == 0 {
                 self.wrap();
             }
-            let (head, tail) = split_at_cells(rest, self.room());
+            let room = self.room();
+            let candidate = split_at_cells(rest, room).0;
+            let boundary = candidate
+                .char_indices()
+                .rev()
+                .find(|(_, character)| WRAP_BREAK_AFTER.contains(*character))
+                .map(|(index, character)| index.saturating_add(character.len_utf8()));
+            let Some(boundary) = boundary else {
+                if !self.spans.is_empty() {
+                    self.wrap();
+                    continue;
+                }
+                let (head, tail) = split_at_cells(rest, room);
+                self.write(head, word.style);
+                rest = tail;
+                continue;
+            };
+            let (head, tail) = rest.split_at(boundary);
             self.write(head, word.style);
             rest = tail;
+            if !rest.is_empty() {
+                self.wrap();
+            }
         }
     }
 
@@ -218,16 +240,32 @@ mod tests {
     #[test]
     fn a_word_no_line_could_hold_breaks_where_it_runs_out() {
         assert_eq!(
-            lines(&wrapped(spans("--features=aaaaaaaaaa"), 8)),
-            vec!["--featur", "es=aaaaa", "aaaaa"]
+            lines(&wrapped(spans("abcdefghijklmnopqrst"), 8)),
+            vec!["abcdefgh", "ijklmnop", "qrst"]
         );
     }
 
     #[test]
-    fn a_word_too_long_finishes_the_line_it_started_on() {
+    fn an_overlong_word_breaks_after_the_last_boundary_that_fits() {
+        assert_eq!(
+            lines(&wrapped(spans("src/long-file_name.rs"), 10)),
+            vec!["src/long-", "file_name.", "rs"]
+        );
+    }
+
+    #[test]
+    fn an_overlong_word_waits_for_a_whole_line_to_reach_a_boundary() {
+        assert_eq!(
+            lines(&wrapped(spans("run abcdef/ghij"), 8)),
+            vec!["run", "abcdef/", "ghij"]
+        );
+    }
+
+    #[test]
+    fn an_overlong_word_without_a_boundary_waits_for_a_whole_line() {
         assert_eq!(
             lines(&wrapped(spans("run aaaaaaaaaaaa"), 8)),
-            vec!["run aaaa", "aaaaaaaa"]
+            vec!["run", "aaaaaaaa", "aaaa"]
         );
     }
 

@@ -15,6 +15,7 @@ use super::fallback_toast_palette;
 use super::format;
 use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
+use crate::PaneFrame;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
 use crate::title_color;
@@ -23,6 +24,7 @@ use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
 use crate::toasts::TrackedItemActivity;
 use crate::toasts::TrackedItemView;
+use crate::toasts::body;
 
 pub(super) fn render_toast(
     frame: &mut Frame,
@@ -198,6 +200,36 @@ fn render_toast_body(
             body_area,
         );
     }
+    render_body_elision(frame, toast, body_style, body_area, lines_for_body);
+}
+
+fn render_body_elision(
+    frame: &mut Frame,
+    toast: &ToastView,
+    body_style: Style,
+    body_area: Rect,
+    lines_for_body: usize,
+) {
+    if !toast.tracked_items().is_empty()
+        || lines_for_body == 0
+        || body_area.width == 0
+        || body::drawn_line_count(toast.body(), usize::from(body_area.width)) <= lines_for_body
+    {
+        return;
+    }
+    let row = u16::try_from(lines_for_body.saturating_sub(1)).unwrap_or(u16::MAX);
+    let style = toast.linger_progress().map_or(body_style, |progress| {
+        format::fade_to_style(f64::from(progress))
+    });
+    frame.render_widget(
+        Paragraph::new(PaneFrame::ELISION).style(style),
+        Rect {
+            x:      body_area.right().saturating_sub(1),
+            y:      body_area.y.saturating_add(row),
+            width:  1,
+            height: 1,
+        },
+    );
 }
 
 fn body_lines_plain(

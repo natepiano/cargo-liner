@@ -153,8 +153,8 @@ mod tests {
     use crate::ACTIVITY_SPINNER;
     use crate::AppContext;
     use crate::Framework;
-    use crate::NoToastAction;
     use crate::PaneFocusState;
+    use crate::PaneFrame;
     use crate::Toasts;
     use crate::TrackedItem;
     use crate::TrackedItemActivity;
@@ -165,9 +165,15 @@ mod tests {
         framework: Framework<Self>,
     }
 
+    #[derive(Clone, Copy)]
+    enum TestToastAction {
+        Absent,
+        Open,
+    }
+
     impl AppContext for TestApp {
         type AppPaneId = ();
-        type ToastAction = NoToastAction;
+        type ToastAction = TestToastAction;
 
         fn framework(&self) -> &Framework<Self> { &self.framework }
 
@@ -179,6 +185,82 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    fn rendered_plain_toast(action: TestToastAction, height: u16) -> (u16, Vec<String>) {
+        let table: Table = "[toasts]\nwidth = 12\n"
+            .parse()
+            .expect("toast settings TOML should parse");
+        let settings = ToastSettings::from_table(&table).expect("toast settings should load");
+        let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
+        match action {
+            TestToastAction::Absent => {
+                let _ = toasts.push("notice", "abcdef ghijkl mnopqr");
+            },
+            TestToastAction::Open => {
+                let _ = toasts.push_with_action(
+                    "notice",
+                    "abcdef ghijkl mnopqr",
+                    TestToastAction::Open,
+                );
+            },
+        }
+        let views = toasts.active_views(Instant::now() + Duration::from_secs(1));
+        let backend = TestBackend::new(12, height);
+        let mut terminal =
+            Terminal::new(backend).expect("toast render test terminal should initialize");
+        let mut result = None;
+
+        terminal
+            .draw(|frame| {
+                result = Some(render_toasts(
+                    frame,
+                    frame.area(),
+                    &views,
+                    &settings,
+                    PaneFocusState::Inactive,
+                    None,
+                ));
+            })
+            .expect("toast render test draw should complete");
+
+        let card_height = result
+            .expect("toast render should return hitboxes")
+            .hitboxes[0]
+            .card_rect
+            .height;
+        let buffer = terminal.backend().buffer();
+        let rows = (buffer.area.top()..buffer.area.bottom())
+            .map(|row| {
+                (buffer.area.left()..buffer.area.right())
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect()
+            })
+            .collect();
+        (card_height, rows)
+    }
+
+    #[test]
+    fn a_toast_is_as_tall_as_its_drawn_body() {
+        let (plain_height, plain_rows) = rendered_plain_toast(TestToastAction::Absent, 20);
+        assert_eq!(plain_height, 5);
+        for word in ["abcdef", "ghijkl", "mnopqr"] {
+            assert!(plain_rows.iter().any(|row| row.contains(word)));
+        }
+
+        let (action_height, action_rows) = rendered_plain_toast(TestToastAction::Open, 20);
+        assert_eq!(action_height, 6);
+        for text in ["abcdef", "ghijkl", "mnopqr", "Enter open"] {
+            assert!(action_rows.iter().any(|row| row.contains(text)));
+        }
+    }
+
+    #[test]
+    fn a_toast_body_without_room_ends_in_the_mark() {
+        let (_, rows) = rendered_plain_toast(TestToastAction::Absent, 4);
+        let last_body_row = rows[2].chars().skip(1).take(10).collect::<String>();
+
+        assert!(last_body_row.trim_end().ends_with(PaneFrame::ELISION));
     }
 
     #[test]

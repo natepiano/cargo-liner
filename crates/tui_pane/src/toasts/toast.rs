@@ -475,7 +475,10 @@ impl<Ctx: AppContext> Toast<Ctx> {
         } else {
             self.tracked_items.len()
         };
-        let interior = self.min_interior_lines.max(item_lines);
+        let action_lines = usize::from(self.action.is_some());
+        let interior = self
+            .min_interior_lines
+            .max(item_lines.saturating_add(action_lines));
         (interior + 2).try_into().unwrap_or(u16::MAX)
     }
 

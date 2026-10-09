@@ -214,7 +214,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** a `window too small` notice (no `TILE_GRID_TOO_SMALL` constant, no surface type); raising the framework `MIN_TILE_WIDTH`, since `cargo-handler`'s narrow cells are its own design; a second glyph constant in cargo-tile; an arrow-key "unspent" outcome; a draw-only summary branch in `draw_tile_grid`, which leaves `cell_at` and Tab working on a grid nobody sees; changing the toast action's `Option` type with the toast fix, a public API change reaching another crate.
 
-### Phase 6 — Headings and ancestry are whole or marked  · status: todo
+### Phase 6 — Headings and ancestry are whole or marked  · status: done
 
 #### Work Order
 
@@ -276,7 +276,60 @@ Changelogs: Changed lines under `## [Unreleased]` in `crates/cargo-tile/CHANGELO
 - Unit director's settled captures beside a real `cargo check`, 50 rows, at 200, 126, 90, 64, 48 and 40 columns, the summary alone at 32, and the first-run toast at 200: no heading is cut bare, ancestry breaks only at a boundary or ends in `…`, no command word is broken while gaps could give it cells, a two-word command is on one row in a wide cell, and the toast is whole or marked with the status line visible under it.
 - A fresh helper's design check of those eight shots: pass.
 
-### Phase 7 — Slow tests start first  · status: todo
+### Phase 7 — Review repairs: wrapping, headings and the toast  · status: todo
+
+#### Work Order
+
+**Goal:** Every finding phase 6's two reviewers, the unit director's read and the design check raised against its change is repaired: text wraps at one shared, boundary-aware wrapper that strands no punctuation, a heading keeps the project name before the account, and a toast is as tall as the body it draws at the width it is drawn, padded, and wrapped like a command.
+
+**Spec:**
+
+1. **One wrapper, in `tui_pane`.** Move cargo-tile's `wrap` module to `crates/tui_pane/src/wrap.rs` with its tests and `WRAP_BREAK_AFTER`, and export `tui_pane::wrapped(spans, width) -> Text<'static>` (the phase's one new public item); cargo-tile calls it and deletes `crates/cargo-tile/src/wrap.rs`.
+2. **No stranded punctuation.** A boundary is taken only when the head it leaves fills at least half of a whole line. Otherwise a word on a line that already holds text moves to a fresh line and is tried again, and a word on a fresh line breaks where it runs out. Tests in `wrap.rs`: `--workspace` at 8 gives `--worksp` / `ace`; `--features=aaaaaaaaaa` at 8 gives `--featur` / `es=aaaaa` / `aaaaa`; `src/long-file_name.rs` at 10 still gives `src/long-` / `file_name.` / `rs`. In cargo-tile, `node ~/.claude/local/claude` under pid 6218 at 20 cells draws ` 6218 node` / `      ~/.claude/` / `      local/claude`.
+3. **Command width as drawn.** `command_line_width` measures the words the wrap sets down, joined by one space (`split_whitespace` over program and arguments), as `summary_width` did before phase 6.
+4. **Heading.** `tail_heading` may keep the whole last component (`…tool-based-ui-frame-time` when it fits exactly). `fitted_heading` tries, in order: the whole heading; `[account] …/rest`; `…/rest` without the account; `[account] …tail`; `…tail`; the empty string. Update `a_directory_heading_keeps_the_most_informative_marked_tail` to that order.
+5. **Dead code.** Delete `elide_summary_start` and its tests from cargo-tile `render.rs`.
+6. **Toast height at the drawn width.** A card's height counts its body lines at the width the card is drawn at (the area's width when that is less than the configured width), using the shared wrapper for both the count and the draw; delete `drawn_input_line_count`. Test in `toasts/render/drawing.rs`: configured width 60, area 30 by 20, a body that fits 58 cells and wraps at 28 draws whole.
+7. **Toast body.** One cell of padding left and right of the body, as the title has. When the area is wider than the card by fewer than 8 cells, the card takes the whole width. Tests read the drawn buffer.
+8. **One mark constant.** `ELISION` is one `pub(crate)` constant in `pane/constants.rs`; delete `PaneFrame::ELISION`.
+9. **`render_toasts`.** Restore `tui_pane::render_toasts(frame, framework, area)` (an area parameter added to the item phase 6 removed) and call it from cargo-tile and cargo-handler in place of their two copies of the `Renderable::render` call.
+10. **Default Dark status line.** The bar becomes `Color::Rgb(58, 58, 58)` in `builtins.rs` and `default_dark.toml`. `status_line_text_meets_contrast_in_every_built_in_theme` resolves a named colour through the xterm palette (a table in the test module) and skips none.
+11. **Comments and changelogs.** The `draw` doc comments in `crates/cargo-handler/src/render.rs` and `crates/cargo-tile/src/render.rs` say toasts are drawn in the body, above the status line. Changed lines in both changelogs; `tui_pane`'s names `wrapped` and `render_toasts`' area parameter.
+
+**Files:**
+- `crates/tui_pane/src/wrap.rs` — new: the wrapper and its tests.
+- `crates/tui_pane/src/lib.rs` — the module, `wrapped`, `render_toasts`.
+- `crates/tui_pane/src/overlays/frame_tail.rs` — `render_toasts` with its area.
+- `crates/tui_pane/src/overlays/mod.rs` — its re-export.
+- `crates/tui_pane/src/pane/constants.rs` — `ELISION`, `WRAP_BREAK_AFTER`.
+- `crates/tui_pane/src/pane/frame.rs` — the associated constant removed.
+- `crates/tui_pane/src/toasts/body.rs` — the line count.
+- `crates/tui_pane/src/toasts/toast.rs` — height at the drawn width.
+- `crates/tui_pane/src/toasts/render/card.rs` — the wrap, the padding.
+- `crates/tui_pane/src/toasts/render/drawing.rs` — card width, tests.
+- `crates/tui_pane/CHANGELOG.md` — Changed lines.
+- `crates/cargo-handler/src/render.rs` — the call and the comment.
+- `crates/cargo-tile/src/wrap.rs` — deleted.
+- `crates/cargo-tile/src/main.rs` — the module line.
+- `crates/cargo-tile/src/render.rs` — items 2 to 5, 9, 11.
+- `crates/cargo-tile/src/constants.rs` — `WRAP_BREAK_AFTER` removed.
+- `crates/cargo-tile/src/theme/builtins.rs` — item 10.
+- `crates/cargo-tile/themes/default_dark.toml` — item 10.
+- `crates/cargo-tile/CHANGELOG.md` — Changed lines.
+
+**Seats:** 2 writers — the wrapper, the toast and `render_toasts` are one crate, the callers another.
+- `impl` — `crates/tui_pane/src/wrap.rs`, `crates/tui_pane/src/lib.rs`, `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/overlays/mod.rs`, `crates/tui_pane/src/pane/constants.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/tui_pane/src/toasts/body.rs`, `crates/tui_pane/src/toasts/toast.rs`, `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs`, `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/src/render.rs`. Its first edits add `wrapped` and `render_toasts` with their final signatures and post them on the board. It runs the phase's one lint and the four suites after both seats have posted `done`.
+- `test` — opens as impl: `crates/cargo-tile/src/wrap.rs`, `crates/cargo-tile/src/main.rs`, `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/default_dark.toml`, `crates/cargo-tile/CHANGELOG.md`.
+
+**Constraints from prior phases:** Phase 6 drew toasts in the body rectangle through `Renderable::render` and removed the public `render_toasts`; this phase puts the item back with an area. A cargo-port or cargo-handler test that changes only because a toast is padded or wider is in scope for that change, named in the summary. No new `#[allow]` or `#[expect]`. Wide characters stay out of scope: the crate counts one cell per character.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, after the last edit: green.
+- `bash ~/.claude/scripts/delegate/verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`, each once after lint: green, and no test this phase adds or changes takes a second.
+- Captures on the unit's build: phase 6's ten (200, 126, 90, 64, 48, 40 and 32 columns by 50 rows beside a real `cargo check`; the first-run toast at 200, 64 and 40), plus Default Light's status line at 126, a 126 by 80 window whose cell draws an ancestry block cut by its row budget, and a cell running a command with a long path argument. A level showing its pid alone and a heading without its account cannot occur at 40 columns or wider; their tests stand for them.
+- A fresh helper's design check on exactly those captures: pass.
+
+### Phase 8 — Slow tests start first  · status: todo
 
 #### Work Order
 
@@ -304,7 +357,7 @@ Changelogs: Changed lines under `## [Unreleased]` in `crates/cargo-tile/CHANGELO
 - After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 
-### Phase 8 — A cell shows a process or is not drawn  · status: todo
+### Phase 9 — A cell shows a process or is not drawn  · status: todo
 
 #### Work Order
 
@@ -317,6 +370,8 @@ Evidence (Phase 5's design check, 50-row shots at 40, 48 and 64 columns, cargo-t
 1. **The floor is true at the boundary** (`tui_pane`, `grid.rs`). `fits` (1899) accepts a column of `shared_run(2, 3) == 5` rows, but `shares` (1824) can return `[3, 2]` unchanged (1882 to 1884) and `share_borders` (`crates/tui_pane/src/pane/frame.rs:156` to 166) gives the shared border's row only to the piece that is not at the bottom, so the bottom piece is two rows high, under `TileSettings::min_tile_height` (`tiles/settings.rs:18`, default 3 at 42). Rule: every piece a settled or moving arrangement draws is at least `min_tile_height` rows high with its frame; make `fits` and `shares` agree on what a column of touching pieces needs, at the exact boundary, with a widened summary, and in every snapshot of a step through `drawing_at`.
 2. **cargo-tile sets its own floor.** No path reaches `min_tile_height` from an app: the one setter is `TileGrid::set_min_tile_width` (`grid.rs:497`), called at `crates/cargo-tile/src/app.rs:200`. Add `pub fn set_min_tile_height(&mut self, height: u16)` beside it (it writes `settings.min_tile_height`, never below the framework minimum) and call it beside line 200 with a new `MIN_CELL_HEIGHT = 6` in `crates/cargo-tile/src/constants.rs`: two frame rows, the table header (`crates/cargo-tile/src/render.rs:1528`), a directory heading (1640, 1662), one process row (1681), and the foot readout's row (`crates/tui_pane/src/tiles/draw.rs:616`). `cargo-handler` keeps the framework minimum.
 3. **A command without a cell.** A cell `fits` refuses for height is not opened, as with the width floor: its command is counted in the summary and opens a cell by the ordinary `sync` rule once there is room. Reuse Phase 5's `holds_in`, the summary alone and that refusal path; add no second refusal state.
+4. **A cut row is marked** (cargo-tile `render.rs`; phase 6's design check). When a table's last visible row loses wrapped command lines at the cell's foot, the last line drawn ends in `ELISION` (`cargo…`). Test: a cell one row short of its table draws the mark on its last command line.
+5. **An empty column yields** (cargo-tile `render.rs`; phase 6's design check). A column with no value in any row of the cell (`compiler`, `runs`) is not drawn, and `command` takes its cells before any command wraps. Test: at 62 inner cells with no compiler value, `cargo check` stays on one line.
 
 Tests, all pure:
 - `grid.rs`: `a_column_at_the_exact_floor_draws_no_piece_under_it` (two and three touching pieces at `shared_run` exactly, and one row over); `a_widened_summary_leaves_no_piece_under_the_floor`; `no_piece_in_flight_is_under_the_floor` (every snapshot of an opening and a closing step); `fits_holds_at_the_height_floor_and_fails_one_row_under` with the floor set to 6.
@@ -335,7 +390,7 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains one sentenc
 
 **Seats:** 1 writer + 1 tester — the floor is one hand in `grid.rs`; the render tests are written from this Spec.
 - `impl` — `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/pane/frame.rs`, `crates/cargo-tile/src/app.rs`, `crates/cargo-tile/src/constants.rs`, the README and both changelogs. Its first edit adds `TileGrid::set_min_tile_height` with its final signature and posts it on the board.
-- `test` — `crates/tui_pane/src/tiles/draw.rs`, `crates/cargo-tile/src/render.rs`: the render tests, failing until `impl` lands the rules.
+- `test` — `crates/tui_pane/src/tiles/draw.rs`, `crates/cargo-tile/src/render.rs`: the render tests, failing until `impl` lands the rules. It also writes items 4 and 5 in `crates/cargo-tile/src/render.rs`.
 
 **Constraints from prior phases:** Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, made the grid answer the summary alone itself (`drawing_at` returns one summary piece when `holds_in` fails), and left a command refused a cell counted in the summary until `sync` opens it; this phase reuses all three and their tests pass unchanged. Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion; Phase 3 made a closing column close as one piece (`no_piece_in_a_closing_column_changes_height`) and gave each piece a name role; neither changes. Phase 6 changed text inside cells and the toast, nothing in the grid. `cargo-handler` draws on the same grid at the framework minimum, so rule 1 fixes its two-row pieces too; a test of its that fails only because of rule 1 is updated for that change only and named in the summary. `set_min_tile_height` is this phase's only new public item. No new `#[allow]` or `#[expect]`: the summary lists each one this phase adds or moves, with its file and line.
 
@@ -344,7 +399,7 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains one sentenc
 - Unit director's settled captures beside real cargo commands, 50 rows, at 64, 48 and 40 columns with `initial_rows = 12`, and at 200 columns: every command cell drawn shows a process row, and a command without a cell is counted in the summary.
 - A fresh helper's design check of those four shots: pass.
 
-### Phase 9 — The summary takes the rows it asks for, not a second position  · status: todo
+### Phase 10 — The summary takes the rows it asks for, not a second position  · status: todo
 
 #### Work Order
 
@@ -382,7 +437,7 @@ Changelogs: one Changed line each under `## [Unreleased]`.
 - `impl` — `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/constants.rs`, both changelogs.
 - `test` — `crates/tui_pane/src/tiles/draw.rs`: the render test, failing until `impl` lands the rule.
 
-**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 3 made a column the step removes close as one piece (`BandPieceMotion::ClosingWithColumn`; test `no_piece_in_a_closing_column_changes_height`, with and without a widened summary over the closing column) and gave each piece a name role (`TilePiece`, `PieceName`, `piece_name`); a change to the summary's rows keeps both, and the `a_title_is_on_screen_once_*` and `an_empty_cell_number_is_on_screen_once_*` render tests pass unchanged. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. Phase 5 also made the grid answer the summary alone itself (`drawing_at` returns one summary piece when `holds_in` fails), so a grid that does not hold never reaches `shares`. Phase 8 made the height floor true: every piece `shares` returns is at least `min_tile_height` rows once framed, at exact `shared_run` boundaries too, and cargo-tile's floor is `MIN_CELL_HEIGHT` (6) through `TileGrid::set_min_tile_height`; rule 1's "never under `min_tile_height`" rests on that, and Phase 8's floor tests pass unchanged. The `grid.rs` line references above were read before Phase 8: find each function by name. No new public item. No new `#[allow]` or `#[expect]`: the summary lists each one this phase adds or moves, with its file and line.
+**Constraints from prior phases:** Phase 2 made `TileGrid::drawing_at(area, growth, raw)` the pure entry to a motion and made `queue_with_depth` keep every surviving cell in a column it starts or ends the queue in; neither changes here. Phase 3 made a column the step removes close as one piece (`BandPieceMotion::ClosingWithColumn`; test `no_piece_in_a_closing_column_changes_height`, with and without a widened summary over the closing column) and gave each piece a name role (`TilePiece`, `PieceName`, `piece_name`); a change to the summary's rows keeps both, and the `a_title_is_on_screen_once_*` and `an_empty_cell_number_is_on_screen_once_*` render tests pass unchanged. Phase 5 added `TileGrid::set_min_tile_width` and the crate-private `holds_in`, which checks every arrangement still to be drawn, each at its own depth: a summary that stays shallower lets a grid hold in a smaller window, it must never let a wider arrangement still in flight be drawn under the floor, and `holds_in`'s tests pass unchanged. `cargo-handler` draws on the same grid, so its summary follows the same rule. Phase 5 also made the grid answer the summary alone itself (`drawing_at` returns one summary piece when `holds_in` fails), so a grid that does not hold never reaches `shares`. Phase 9 made the height floor true: every piece `shares` returns is at least `min_tile_height` rows once framed, at exact `shared_run` boundaries too, and cargo-tile's floor is `MIN_CELL_HEIGHT` (6) through `TileGrid::set_min_tile_height`; rule 1's "never under `min_tile_height`" rests on that, and Phase 9's floor tests pass unchanged. The `grid.rs` line references above were read before Phase 9: find each function by name. No new public item. No new `#[allow]` or `#[expect]`: the summary lists each one this phase adds or moves, with its file and line.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.

@@ -50,5 +50,5 @@ pub(super) const PANE_TINT_LIGHT_OVERLAY: (u8, u8, u8) = (100, 100, 145);
 // shared pane frame
 /// Cells one border line occupies, on one side of a pane.
 pub(super) const BORDER_LINE_WIDTH: u16 = 1;
-/// Marks a border title cut to the cells its frame leaves for it.
-pub(super) const TITLE_ELISION: &str = "…";
+/// Marks text cut to the cells its drawing area leaves for it.
+pub(super) const ELISION: &str = "…";
