@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report test progress as well as build progress: `cargo nextest run` counts tests the way cargo counts units, and the heading says which count is on screen. Runs with no terminal read the count from nextest's per-test lines.
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
+### Changed
+- Command cells have a 40-cell floor; a window too narrow for the grid shows the summary alone until the cells fit again.
+- A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
+
 ### Fixed
 - `appearance.mode = "auto"` follows the system's light or dark setting from the first frame and while cargo-tile runs, so the summary's memory total and the rest of the light theme stay readable on a light terminal with transparency on or off.
 - Cells moving between columns no longer leave an unpainted ring, flash an interior row back to the screen ground, open a blank arrival slot or write their contents over a column border when the background is opaque. Touching cells and columns keep one shared separator throughout every grid motion. A closing column keeps every cell at its starting height while it narrows, including below a widened summary, and every moving cell keeps exactly one title visible.

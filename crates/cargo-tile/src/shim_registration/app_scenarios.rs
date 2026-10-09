@@ -45,6 +45,8 @@ use crate::census::scan::ProcessObservations;
 use crate::constants::BYTES_PER_GIBIBYTE;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::NOTICE_TOAST_VISIBLE;
+use crate::constants::SUMMARY_WITH_SHORT_ROWS_READOUT_WIDTH;
+use crate::constants::SUMMARY_WITHOUT_ROWS_READOUT_WIDTH;
 use crate::constants::SUPPORTED_REGISTRATION_VERSION;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::hook;
@@ -556,13 +558,37 @@ fn summary_memory_foot_reaches_the_grid_readout_row() {
 #[test]
 fn narrow_summary_keeps_memory_total_and_omits_rows_readout() {
     let mut app = app_with_summary_memory();
-    let mut terminal = Terminal::new(TestBackend::new(64, 20)).expect("narrow summary terminal");
+    let mut terminal = Terminal::new(TestBackend::new(SUMMARY_WITHOUT_ROWS_READOUT_WIDTH, 20))
+        .expect("narrow summary terminal");
 
     let rendered = draw_settled(&mut terminal, &mut app);
     let interior = summary_memory_foot_row(&rendered).trim_end();
 
     assert!(interior.trim_start().starts_with("mem 2.5G"), "{rendered}");
     assert!(!interior.contains(TILE_ROWS_CONTENT_LABEL), "{rendered}");
+}
+
+#[test]
+fn a_summary_short_of_room_draws_the_shorter_rows_readout() {
+    let mut app = app_with_summary_memory();
+    let mut terminal = Terminal::new(TestBackend::new(SUMMARY_WITH_SHORT_ROWS_READOUT_WIDTH, 20))
+        .expect("short summary terminal");
+
+    let rendered = draw_settled(&mut terminal, &mut app);
+    let interior = summary_memory_foot_row(&rendered).trim_end();
+
+    assert!(interior.trim_start().starts_with("mem 2.5G"), "{rendered}");
+    let readout = interior
+        .find(TILE_ROWS_CONTENT_LABEL)
+        .expect("short summary rows readout");
+    let rows = interior[readout..]
+        .strip_prefix(TILE_ROWS_CONTENT_LABEL)
+        .expect("content-rows candidate");
+    assert!(
+        !rows.is_empty() && rows.chars().all(|character| character.is_ascii_digit()),
+        "{rendered}"
+    );
+    assert!(!interior[readout..].contains("  r/c: "), "{rendered}");
 }
 
 /// Three running commands whose cells divide the frame into two columns.

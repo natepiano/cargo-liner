@@ -183,7 +183,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** A lock around the remembered appearance: two lint suppressions for no protection. Tests at the resolver alone: they stay green with the remembered value unread. Changing any ink: the memory total reads at 13.4:1 or better in all six captures.
 
-### Phase 5 — A floor for cells, and the summary alone below it  · status: todo
+### Phase 5 — A floor for cells, and the summary alone below it  · status: done
 
 #### Work Order
 
@@ -247,6 +247,13 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains two sentenc
 #### Work Order
 
 **Goal:** Inside a command cell, a directory heading is drawn whole, shortened with `…`, or left out, and ancestry text breaks at path and word boundaries or ends in `…` — never cut bare.
+
+**Moved here from Phase 5's design check (2026-10-08; shots at 32, 200 and 200-after-regrow columns by 50 rows).** Each is a Spec item of this phase with its own test:
+
+- **A. A command word never breaks mid-word in the summary.** With the summary alone at 32 columns, the command column is 7 cells while the columns before it keep 2 to 3 cell gaps, and `cargo metadata` is drawn `cargo m` / `etadata`. Break only between words; give the command column the spare gap cells first (at 24 columns the gaps are already one cell); a word that still does not fit is shortened with `…`.
+- **B. A two-word command stays on one line when the row has room.** In a 66-cell command cell, `cargo check` wraps to two rows because the command column is 9 cells beside 2-cell gaps and an empty `compiler` column. Size the command column to its longest command before choosing wide gaps, and use 1-cell gaps when that keeps commands on one line.
+- **C. The first-run toast is whole or marked.** At 200 columns its body is cut mid-sentence with no `…` (the row ends `gives`), and it covers the status line. Let it take the rows its text needs or end its last line with `…`, and anchor it above the status line.
+- **D. Status line contrast.** In the dark theme the capture measured the status line's labels at 2.0 to 4.0 to 1 on its grey ground. First measure the real colours in a terminal (the capture tool maps bright black itself); fix only what measures under 4.5 to 1 there.
 
 **Spec:**
 
@@ -320,6 +327,8 @@ Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGE
 #### Work Order
 
 **Goal:** The summary takes a further position in its column only when it would use more than half of it, so no rows stand blank in the summary while command cells are short of theirs.
+
+**Moved here from Phase 5's design check (2026-10-08; shots at 40, 48 and 64 columns by 50 rows, `initial_rows = 12`).** A live command cell is drawn two or three rows high, a column heading and a foot with no process row, while the summary above it keeps blank rows. This phase also gives a command cell a height floor (column heading, directory heading, one process row, foot): the summary's spare rows go to the shortest cell first, and a cell that still cannot reach the floor is left out. It has its own test.
 
 **Spec:**
 

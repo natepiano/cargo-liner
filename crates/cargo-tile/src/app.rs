@@ -37,6 +37,7 @@ use crate::census::InvocationId;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
 use crate::constants::KEYMAP_TOML_HEADER;
+use crate::constants::MIN_CELL_WIDTH;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::probe::FrameLog;
@@ -195,6 +196,8 @@ impl App {
         let keymap = keymap::build_keymap(&mut framework, keymap_path)?;
         let excluded_commands =
             ExcludedCommands::new(loaded_config.config.commands.excluded.clone());
+        let mut tiles = TileGrid::new();
+        tiles.set_min_tile_width(MIN_CELL_WIDTH);
         Ok(Self {
             framework,
             keymap: Rc::new(keymap),
@@ -205,7 +208,7 @@ impl App {
             root_status: Vec::new(),
             shared_directory: SharedCaptureDirectory::default(),
             roster: Roster::new(),
-            tiles: TileGrid::new(),
+            tiles,
             sccache: SccacheStats::new(),
             inline_error: None,
             started: Instant::now(),

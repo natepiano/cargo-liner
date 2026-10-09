@@ -116,6 +116,14 @@ pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
 /// `tiles.widen_summary` when `config.toml` says nothing: the summary
 /// stays in its own column.
 pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = false;
+/// Narrowest useful width for one command cell, including its frame.
+pub(crate) const MIN_CELL_WIDTH: u16 = 40;
+/// Width at which a summary memory foot leaves room for the content-rows readout only.
+#[cfg(test)]
+pub(crate) const SUMMARY_WITH_SHORT_ROWS_READOUT_WIDTH: u16 = 30;
+/// Width at which a summary memory foot leaves no room for a rows readout.
+#[cfg(test)]
+pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 /// Seconds a finished row stays on screen, greyed, before it goes, when
 /// `config.toml` says nothing.
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
@@ -139,6 +147,8 @@ pub(crate) const PROBE_THRESHOLD: Duration = Duration::from_millis(33);
 /// than promising a recording an ordinary run never makes.
 pub(crate) const ATTRACT_BACKDROP_UNAVAILABLE_NOTICE: &str =
     "attract: desktop capture unavailable -- set CARGO_TILE_FRAME_LOG to record why";
+/// Marks anything shortened or shed for lack of room.
+pub(crate) const ELISION: &str = "\u{2026}";
 /// Written on the summary cell's top border, so the one cell listing
 /// every command is named rather than told apart by its contents. A
 /// manager's own cell reads much like the summary -- one row per cargo
@@ -164,9 +174,6 @@ pub(crate) const CARGO_MESSAGE_FORMAT_JSON_PREFIX: &str = "--message-format=json
 pub(crate) const CARGO_QUIET_FLAGS: [&str; 2] = ["--quiet", "-q"];
 
 // running-cargo table
-/// What stands in the ancestry block for the levels a short cell has no
-/// room to draw.
-pub(crate) const ANCESTRY_ELISION: &str = "\u{2026}";
 /// Blank rows between the ancestry block and the table under it.
 pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
 /// Added to a cell's indent once per level of the ancestry block, so
@@ -423,8 +430,6 @@ pub(crate) const TABLE_HEADERS: [&str; 10] = [
 /// Rows the column-label row at the top of the pane occupies. There is
 /// one for the whole table, not one per working-directory group.
 pub(crate) const TABLE_HEADER_HEIGHT: u16 = 1;
-/// Stands for a table that has rows and no room for a column.
-pub(crate) const TABLE_NO_COLUMNS_MARKER: &str = "\u{2026}";
 /// Blank cells between columns when their fitted widths do not fit with
 /// [`TABLE_COLUMN_SPACING`].
 pub(crate) const TIGHT_TABLE_COLUMN_SPACING: u16 = 1;

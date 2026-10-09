@@ -44,6 +44,7 @@ use unicode_width::UnicodeWidthStr;
 use super::chrome;
 use super::chrome::PaneChrome;
 use super::constants::BORDER_LINE_WIDTH;
+use super::constants::TITLE_ELISION;
 
 /// Where one pane's box sits for a single frame.
 ///
@@ -663,6 +664,27 @@ impl GridLines {
             OverlayStyle::Title(patch) => chrome.title_style(overlay.frame.focused).patch(patch),
             OverlayStyle::Label(style) => style,
         };
+        if matches!(overlay.style, OverlayStyle::Title(_))
+            && overlay.text.width() > row.width.into()
+        {
+            let text_width = row.width.saturating_sub(1);
+            Line::from(Span::styled(overlay.text.as_str(), style)).render(
+                Rect {
+                    width: text_width,
+                    ..row
+                },
+                buffer,
+            );
+            Line::from(Span::styled(TITLE_ELISION, style)).render(
+                Rect {
+                    x: row.x.saturating_add(text_width),
+                    width: 1,
+                    ..row
+                },
+                buffer,
+            );
+            return;
+        }
         Line::from(Span::styled(overlay.text.as_str(), style)).render(row, buffer);
     }
 
@@ -1065,12 +1087,20 @@ mod tests {
         assert_eq!(titled(area, PaneFrame::new(area), " Git ")[0], "┌ Git ─┐");
     }
 
-    /// A title wider than the pane is cut off inside the corner rather
+    /// A title wider than the pane is marked inside the corner rather
     /// than writing over it.
     #[test]
     fn a_title_stops_inside_the_corner() {
         let area = Rect::new(0, 0, 6, 3);
-        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌ Tar┐");
+        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌ Ta…┐");
+    }
+
+    /// The mark itself is the useful part when that is all the border
+    /// has room to show.
+    #[test]
+    fn a_title_one_cell_wide_is_the_mark_alone() {
+        let area = Rect::new(0, 0, 3, 3);
+        assert_eq!(titled(area, PaneFrame::new(area), " Targets ")[0], "┌…┐");
     }
 
     /// A title travels with the pane it belongs to, landing on whichever

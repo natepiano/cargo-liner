@@ -269,6 +269,9 @@ fourth column, the whole height of the grid, and cells added between one
 rearrangement and the next move nothing already on the screen. The number of
 columns is the same under both.
 
+Command cells are never narrower than 40 cells. A window too small to hold them
+shows the summary alone.
+
 A summary with more rows than its cell gets -- once every cell in its column
 has handed over the rows it is not using -- takes the next cell of its column
 as well, then the one after, as many as it needs, and every cell after it moves

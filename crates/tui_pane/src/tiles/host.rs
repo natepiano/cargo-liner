@@ -358,4 +358,18 @@ mod tests {
         assert!(step(&mut app, CycleDirection::Prev));
         assert_eq!(focused(&app), TileContent::Empty(TABLE_CELL + 1));
     }
+
+    #[test]
+    fn tab_takes_no_step_while_the_summary_is_alone() {
+        let mut app = two_cell_app();
+        app.grid.set_min_tile_width(WIDTH / 2);
+        app.grid.focus_cell(TABLE_CELL + 1);
+        app.grid
+            .set_layout(Rect::new(0, 0, WIDTH / 2 - 1, HEIGHT), GROWTH);
+        let step = <TileGridPane<TestApp> as Pane<TestApp>>::cycle_step()
+            .expect("the grid pane takes Tab");
+
+        assert!(!step(&mut app, CycleDirection::Next));
+        assert_eq!(focused(&app), TileContent::Empty(TABLE_CELL + 1));
+    }
 }
