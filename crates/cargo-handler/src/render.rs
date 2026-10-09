@@ -254,9 +254,9 @@ mod tests {
 
     /// The status line's left end over the grid: the uptime alone.
     const GRID_STATUS: &str = " Uptime: 0s";
-    /// The status line's left end while a framework overlay is open:
-    /// the uptime, then the overlay's own keys.
-    const OVERLAY_STATUS: &str = " Uptime: 0s  ↑/↓ nav   tab pane enter edit";
+    /// An overlay status line draws uptime before navigation and omits the
+    /// centre action when it has no whole space before the right-side notes.
+    const OVERLAY_STATUS: &str = " Uptime: 0s  ↑/↓ nav   tab pane";
 
     /// One favorite, saved in a past year: a timestamp from any year
     /// but the current one is drawn with its year, so the row reads the

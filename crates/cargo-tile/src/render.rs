@@ -44,6 +44,8 @@ use tui_pane::secondary_text_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::warning_color;
+use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 use crate::app::ProcessTree;
@@ -59,7 +61,6 @@ use crate::census::RunStart;
 use crate::census::VisibleParent;
 use crate::constants::ACCOUNT_HEADING_CLOSE;
 use crate::constants::ACCOUNT_HEADING_OPEN;
-use crate::constants::ANCESTRY_ELISION;
 use crate::constants::ANCESTRY_GAP_HEIGHT;
 use crate::constants::ANCESTRY_LEVEL_INDENT;
 use crate::constants::ANCESTRY_MIN_ELIDED_ROWS;
@@ -72,6 +73,7 @@ use crate::constants::COMPILER_COLUMN;
 use crate::constants::COMPILER_SEPARATOR_WIDTH;
 use crate::constants::CPU_COLUMN;
 use crate::constants::DURATION_COLUMN;
+use crate::constants::ELISION;
 use crate::constants::FROZEN_NOTE_LABEL;
 use crate::constants::GROUP_GAP_HEIGHT;
 use crate::constants::GROUP_HEADER_HEIGHT;
@@ -104,7 +106,6 @@ use crate::constants::TABLE_COLUMN_DROP_ORDER;
 use crate::constants::TABLE_COLUMN_SPACING;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
-use crate::constants::TABLE_NO_COLUMNS_MARKER;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
 use crate::constants::UNAVAILABLE_MEASUREMENT;
 use crate::globals::AppGlobalAction;
@@ -1191,7 +1192,7 @@ fn ancestry_lines(
         );
         return vec![Line::from(vec![
             Span::raw(indent),
-            Span::styled(ANCESTRY_ELISION, Style::default().fg(pid)),
+            Span::styled(ELISION, Style::default().fg(pid)),
         ])];
     };
     let (indent, label) = ancestry_stem(ancestor, level, width);
@@ -1401,6 +1402,8 @@ impl PathGroup<'_> {
 /// the tables lined up down the cell instead of each one fitting itself
 /// and the columns stepping in and out as the eye moves between them.
 struct TableLayout {
+    /// Which cell owns the table.
+    kind:           TableKind,
     /// Column widths, in table order.
     constraints:    Vec<Constraint>,
     /// The columns this cell draws, in table order.
@@ -1451,6 +1454,7 @@ impl TableLayout {
         let column_spacing = table_column_spacing(table_width, &constraints);
         let column_widths = solved_column_widths(table_width, &constraints, column_spacing);
         Self {
+            kind,
             constraints,
             columns,
             column_widths,
@@ -1504,12 +1508,14 @@ fn draw_process_table(
     tree: ProcessTree,
 ) {
     if rows.is_empty() {
+        let text = format!("{SECTION_HEADER_INDENT}{NO_PROCESSES_NOTE}");
+        let text = match kind {
+            TableKind::Summary => elide_summary_end(&text, area.width),
+            TableKind::Command => text,
+        };
         Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled(
-                format!("{SECTION_HEADER_INDENT}{NO_PROCESSES_NOTE}"),
-                Style::default().fg(label_color()),
-            )),
+            Line::from(Span::styled(text, Style::default().fg(label_color()))),
         ])
         .render(area, buffer);
         return;
@@ -1526,7 +1532,7 @@ fn draw_process_table(
     let faded = heading_fade(rows);
     if layout.columns.is_empty() {
         Paragraph::new(Line::from(Span::styled(
-            TABLE_NO_COLUMNS_MARKER,
+            ELISION,
             column_header_style(&layout, faded),
         )))
         .render(header_area, buffer);
@@ -1638,10 +1644,15 @@ fn draw_path_group(
     layout: &TableLayout,
 ) -> u16 {
     let faded = heading_fade(&group.rows);
+    let heading_room = area.width.saturating_sub(cell_width(SECTION_HEADER_INDENT));
+    let heading_text = match layout.kind {
+        TableKind::Summary => elide_summary_start(&group.heading(), heading_room),
+        TableKind::Command => group.heading(),
+    };
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
         Span::styled(
-            group.heading(),
+            heading_text,
             Style::default().fg(layout.ink(accent_color(), faded)),
         ),
     ];
@@ -1685,6 +1696,67 @@ fn draw_path_group(
     GROUP_HEADER_HEIGHT
         .saturating_add(table_height)
         .saturating_add(GROUP_GAP_HEIGHT)
+}
+
+/// Keep the start of summary text and mark a missing tail.
+fn elide_summary_end(text: &str, width: u16) -> String {
+    if UnicodeWidthStr::width(text) <= usize::from(width) {
+        return text.to_string();
+    }
+    let marker_width = UnicodeWidthStr::width(ELISION);
+    if marker_width > usize::from(width) {
+        return String::new();
+    }
+    let room = usize::from(width).saturating_sub(marker_width);
+    let mut used: usize = 0;
+    let prefix: String = text
+        .chars()
+        .take_while(|character| {
+            let character_width = UnicodeWidthChar::width(*character).unwrap_or_default();
+            let fits = used.saturating_add(character_width) <= room;
+            if fits {
+                used = used.saturating_add(character_width);
+            }
+            fits
+        })
+        .collect();
+    let prefix = prefix.trim_end();
+    if prefix.is_empty() {
+        return String::new();
+    }
+    format!("{prefix}{ELISION}")
+}
+
+/// Keep the end of a summary path and mark its missing head.
+fn elide_summary_start(text: &str, width: u16) -> String {
+    if UnicodeWidthStr::width(text) <= usize::from(width) {
+        return text.to_string();
+    }
+    let marker_width = UnicodeWidthStr::width(ELISION);
+    if marker_width > usize::from(width) {
+        return String::new();
+    }
+    let room = usize::from(width).saturating_sub(marker_width);
+    let mut used: usize = 0;
+    let mut suffix: Vec<char> = text
+        .chars()
+        .rev()
+        .take_while(|character| {
+            let character_width = UnicodeWidthChar::width(*character).unwrap_or_default();
+            let fits = used.saturating_add(character_width) <= room;
+            if fits {
+                used = used.saturating_add(character_width);
+            }
+            fits
+        })
+        .collect();
+    suffix.reverse();
+    let suffix: String = suffix.into_iter().collect();
+    let suffix = suffix.trim_start();
+    if suffix.is_empty() {
+        return String::new();
+    }
+    format!("{ELISION}{suffix}")
 }
 
 /// Column widths fitted to the widest cell across every row.
@@ -4872,7 +4944,7 @@ mod tests {
                     narrow_table_buffer(&row_refs, kind, interior_width, TABLE_HEADER_HEIGHT);
                 let line = buffer_line(&buffer, 0);
 
-                assert_eq!(line.trim(), TABLE_NO_COLUMNS_MARKER);
+                assert_eq!(line.trim(), ELISION);
                 assert_eq!(digit_runs(&line), Vec::<String>::new());
                 assert_eq!(filled_rows(&buffer), usize::from(TABLE_HEADER_HEIGHT));
                 assert_eq!(buffer[(marker_column, 0)].fg, label_color());
@@ -4909,7 +4981,7 @@ mod tests {
                 assert!(
                     buffer_rows(&buffer)
                         .iter()
-                        .all(|line| !line.contains(TABLE_NO_COLUMNS_MARKER))
+                        .all(|line| line.trim() != ELISION)
                 );
             }
         }
@@ -4940,11 +5012,7 @@ mod tests {
             );
 
             if layout.columns.is_empty() {
-                let expected = if interior_width == 0 {
-                    ""
-                } else {
-                    TABLE_NO_COLUMNS_MARKER
-                };
+                let expected = if interior_width == 0 { "" } else { ELISION };
                 assert_eq!(buffer_line(&buffer, 0).trim(), expected);
             }
 
@@ -5013,6 +5081,186 @@ mod tests {
     #[test]
     fn summary_widths_69_to_90_draw_whole_pids_headers_and_columns() {
         assert_whole_table_columns(TableKind::Summary, 69..=90);
+    }
+
+    #[test]
+    fn shortened_summary_text_keeps_a_non_space_character_beside_its_mark() {
+        assert_eq!(elide_summary_end(" abc", 2), "");
+        assert_eq!(elide_summary_end(" abc", 3), format!(" a{ELISION}"));
+        assert_eq!(elide_summary_end("abc def", 5), format!("abc{ELISION}"));
+        assert_eq!(elide_summary_start("abc ", 2), "");
+        assert_eq!(elide_summary_start("abc ", 3), format!("{ELISION}c "));
+        assert_eq!(elide_summary_start("abc def", 5), format!("{ELISION}def"));
+    }
+
+    /// Draw the production grid at a chosen summary interior width.
+    fn summary_alone_buffer(roster: &Roster, inner_width: u16) -> Buffer {
+        let area = Rect::new(0, 0, inner_width.saturating_add(2), 8);
+        let mut buffer = Buffer::empty(area);
+        let mut grid = tui_pane::TileGrid::new();
+        grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
+        let sccache = SccacheStats::new();
+        let hidden_when_idle = hidden_when_idle();
+        let cells = Cells {
+            roster,
+            hidden_when_idle: &hidden_when_idle,
+            tree: ProcessTree::Long,
+            sccache: &sccache,
+        };
+        tui_pane::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            tui_pane::TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        buffer = Buffer::empty(area);
+        tui_pane::draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            tui_pane::TileGrowth::default(),
+            TileGridContents::Shown,
+            &cells,
+        );
+        buffer
+    }
+
+    /// Whether one drawn word is complete or carries the summary's cut mark.
+    fn whole_or_marked_summary_word(word: &str, values: &[&str]) -> bool {
+        if values.contains(&word) {
+            return true;
+        }
+        if let Some(prefix) = word.strip_suffix(ELISION) {
+            return !prefix.is_empty() && values.iter().any(|value| value.starts_with(prefix));
+        }
+        if let Some(suffix) = word.strip_prefix(ELISION) {
+            return !suffix.is_empty() && values.iter().any(|value| value.ends_with(suffix));
+        }
+        false
+    }
+
+    /// Every word above the summary's foot must be complete or carry its cut mark.
+    fn assert_summary_words(buffer: &Buffer, values: &[&str], inner_width: u16) {
+        for y in 1..buffer.area.height.saturating_sub(2) {
+            let text: String = (1..=inner_width).map(|x| buffer[(x, y)].symbol()).collect();
+            for word in text.split_whitespace() {
+                if word == ELISION {
+                    assert_eq!(y, 1, "bare summary mark at inner width {inner_width}");
+                    continue;
+                }
+                assert!(
+                    whole_or_marked_summary_word(word, values),
+                    "bare summary word {word:?} at inner width {inner_width}: {text:?}",
+                );
+            }
+        }
+    }
+
+    /// The summary frame occupies the area and no group-only text appears inside it.
+    fn assert_summary_alone(buffer: &Buffer, inner_width: u16) {
+        let area = buffer.area;
+        assert_eq!(area.width, inner_width.saturating_add(2));
+        assert_eq!(buffer[(area.left(), area.top())].symbol(), "┌");
+        assert_eq!(buffer[(area.right() - 1, area.top())].symbol(), "┐");
+        assert_eq!(buffer[(area.left(), area.bottom() - 1)].symbol(), "└");
+        assert_eq!(buffer[(area.right() - 1, area.bottom() - 1)].symbol(), "┘");
+        for y in area.top() + 1..area.bottom() - 1 {
+            assert_eq!(buffer[(area.left(), y)].symbol(), "│");
+            assert_eq!(buffer[(area.right() - 1, y)].symbol(), "│");
+            for x in area.left() + 1..area.right() - 1 {
+                assert!(
+                    !matches!(
+                        buffer[(x, y)].symbol(),
+                        "┌" | "┐" | "└" | "┘" | "├" | "┤" | "┬" | "┴" | "┼" | "│"
+                    ),
+                    "interior frame glyph at ({x}, {y}) for inner width {inner_width}",
+                );
+            }
+        }
+        assert!(
+            buffer_rows(buffer).iter().all(|line| !line.contains("zed")),
+            "group-only ancestry at inner width {inner_width}",
+        );
+    }
+
+    /// Text in the cells reserved for the summary foot, with padding removed.
+    fn drawn_summary_foot_text(buffer: &Buffer, whole_foot: &str) -> String {
+        let y = buffer.area.bottom().saturating_sub(2);
+        let start = buffer.area.left().saturating_add(2);
+        let end = start
+            .saturating_add(cell_width(whole_foot))
+            .min(buffer.area.right().saturating_sub(1));
+        (start..end)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn the_summary_alone_is_whole_marked_or_absent_at_every_width() {
+        let mut lead = invocation(4100, &["build"]);
+        lead.memory = Measurement::Reading(BYTES_PER_GIBIBYTE);
+        let roster = roster_of(lead, Vec::new());
+        let occupied_values = [
+            "~/rust/cargo-liner",
+            "4100",
+            "11:04",
+            "00:18",
+            "12%",
+            "1.0G",
+            "cargo",
+            "build",
+            TABLE_HEADERS[PID_COLUMN],
+            TABLE_HEADERS[START_COLUMN],
+            TABLE_HEADERS[DURATION_COLUMN],
+            TABLE_HEADERS[CPU_COLUMN],
+            TABLE_HEADERS[MEMORY_COLUMN],
+            TABLE_HEADERS[COMMAND_COLUMN],
+        ];
+        let empty_values = ["no", "cargo", "processes", "running"];
+        let whole_foot = "mem 1.0G";
+
+        let last_summary_only_inner_width = crate::constants::MIN_CELL_WIDTH.saturating_sub(3);
+        for inner_width in 6..=last_summary_only_inner_width {
+            let occupied = summary_alone_buffer(&roster, inner_width);
+            assert_summary_alone(&occupied, inner_width);
+            assert_summary_words(&occupied, &occupied_values, inner_width);
+            let foot = drawn_summary_foot_text(&occupied, whole_foot);
+            assert!(
+                foot.is_empty() || foot == whole_foot,
+                "bare summary foot at inner width {inner_width}: {foot:?}",
+            );
+
+            let empty = summary_alone_buffer(&Roster::new(), inner_width);
+            assert_summary_alone(&empty, inner_width);
+            assert_summary_words(&empty, &empty_values, inner_width);
+            let empty_note: String = (1..=inner_width)
+                .map(|x| empty[(x, 2)].symbol())
+                .collect::<String>()
+                .trim()
+                .to_string();
+            let marked_note = empty_note.strip_suffix(ELISION).is_some_and(|prefix| {
+                !prefix.trim().is_empty() && NO_PROCESSES_NOTE.starts_with(prefix)
+            });
+            assert!(
+                empty_note == NO_PROCESSES_NOTE || marked_note || empty_note.is_empty(),
+                "bare empty-summary note at inner width {inner_width}: {empty_note:?}",
+            );
+        }
+
+        let floor_inner_width = crate::constants::MIN_CELL_WIDTH.saturating_sub(2);
+        let floor = summary_alone_buffer(&roster, floor_inner_width);
+        let right = floor.area.right().saturating_sub(1);
+        assert!(
+            (floor.area.top() + 1..floor.area.bottom() - 1).any(|y| {
+                floor[(floor.area.left(), y)].symbol() == "├" && floor[(right, y)].symbol() == "┤"
+            }),
+            "a command cell is not drawn at the cell-width floor",
+        );
     }
 
     #[test]

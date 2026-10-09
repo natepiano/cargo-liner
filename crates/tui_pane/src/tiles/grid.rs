@@ -365,6 +365,15 @@ enum GridMotion<Id> {
     Moving(Transition<Id>),
 }
 
+/// Which view of the grid the last laid-out area can show readably.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GridDisplay {
+    /// Every held cell fits at the configured floor.
+    Cells,
+    /// The summary fills the area while the held cells wait off-screen.
+    SummaryAlone,
+}
+
 /// What one arrangement is drawn at: the rows every cell is holding
 /// and which of them has the focus ring.
 ///
@@ -482,6 +491,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             focus:     Focus::Summary,
             settings:  TileSettings::default(),
         }
+    }
+
+    /// Sets the narrowest width a tile may occupy, including its frame.
+    pub fn set_min_tile_width(&mut self, width: u16) {
+        self.settings.min_tile_width = width.max(super::constants::MIN_TILE_WIDTH);
     }
 
     /// What the grid is drawn at, worked out fresh whenever no settled
@@ -1047,6 +1061,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// and a sideways step from it goes on to the first column it does
     /// not cover.
     fn focus_step(&mut self, direction: Direction, growth: TileGrowth) {
+        if self.display() == GridDisplay::SummaryAlone {
+            return;
+        }
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return;
         };
@@ -1091,6 +1108,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// the framework knows the key was spent here rather than on the
     /// pane cycle.
     pub fn cycle_focus(&mut self, direction: CycleDirection) -> bool {
+        if self.display() == GridDisplay::SummaryAlone {
+            return false;
+        }
         let last = self.count();
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return false;
@@ -1131,6 +1151,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Put focus on cell `index`, leaving it where it is when the grid
     /// has no such cell.
     pub fn focus_cell(&mut self, index: usize) {
+        if self.display() == GridDisplay::SummaryAlone {
+            return;
+        }
         self.focus = self.focus_at(index);
         self.resize_for_focus();
     }
@@ -1142,6 +1165,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// transition in flight: a cell mid-travel is a transient, and
     /// clicking one is asking for where it is going.
     pub fn cell_at(&self, pos: Position) -> Option<usize> {
+        if self.display() == GridDisplay::SummaryAlone {
+            return self.area.contains(pos).then_some(TABLE_CELL);
+        }
         let grid = Grid::new(self.area, &self.drawn_held(), self.growth, &self.settings);
         grid.resolved
             .panes
@@ -1154,6 +1180,37 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// draw in the rect the last frame used.
     fn fits(&self, count: usize, growth: TileGrowth) -> bool {
         fits(self.area, count, growth, &self.settings)
+    }
+
+    /// Whether every arrangement that may still be drawn fits in `area`.
+    pub(super) fn holds_in(&self, area: Rect, growth: TileGrowth) -> bool {
+        let arrangement_fits = |slots: &[Slot<Id>], depth: usize| {
+            let positions = slots
+                .len()
+                .saturating_add(TABLE_CELL)
+                .saturating_add(depth.saturating_sub(1));
+            fits(area, positions, growth, &self.settings)
+        };
+        arrangement_fits(&self.slots, self.depth)
+            && match &self.motion {
+                GridMotion::Settled => true,
+                GridMotion::Moving(transition) => {
+                    arrangement_fits(&transition.from, transition.held.summary_depth)
+                },
+            }
+            && self
+                .pending
+                .iter()
+                .all(|step| arrangement_fits(&step.slots, step.depth))
+    }
+
+    /// The one display state shared by drawing, hit-testing and focus movement.
+    pub(super) fn display(&self) -> GridDisplay {
+        if self.holds_in(self.area, self.growth) {
+            GridDisplay::Cells
+        } else {
+            GridDisplay::SummaryAlone
+        }
     }
 
     /// How far through the current transition the grid is, on the
@@ -1185,28 +1242,50 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.drawing_at(area, growth, self.progress())
     }
 
+    /// The summary filling an area whose cells do not fit.
+    fn summary_alone_drawing(area: Rect) -> TileDrawing<Id> {
+        TileDrawing {
+            pieces:       vec![TilePiece {
+                placement: TilePlacement {
+                    content: TileContent::Summary,
+                    frame:   PaneFrame::new(area).with_focus(true),
+                },
+                name:      PieceName::Shown,
+            }],
+            column_bands: Vec::new(),
+        }
+    }
+
+    /// The grid's pieces after its current arrangement has settled.
+    fn settled_drawing(&self, settled: Grid) -> TileDrawing<Id> {
+        let focused = self.focused_cell();
+        let pieces = cells(&self.slots)
+            .into_iter()
+            .filter_map(|(content, index)| {
+                Some(TilePiece {
+                    placement: TilePlacement {
+                        content,
+                        frame: PaneFrame::new(settled.cell(index)?)
+                            .with_focus(focused == FocusLocation::Cell(index)),
+                    },
+                    name:      PieceName::Shown,
+                })
+            })
+            .collect();
+        TileDrawing {
+            pieces,
+            column_bands: settled.columns,
+        }
+    }
+
     /// Every piece and column frame at an exact point in the transition.
     pub(super) fn drawing_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id> {
+        if !self.holds_in(area, growth) {
+            return Self::summary_alone_drawing(area);
+        }
         let settled = Grid::new(area, &self.drawn_held(), growth, &self.settings);
-        let focused = self.focused_cell();
         let GridMotion::Moving(transition) = &self.motion else {
-            let pieces = cells(&self.slots)
-                .into_iter()
-                .filter_map(|(content, index)| {
-                    Some(TilePiece {
-                        placement: TilePlacement {
-                            content,
-                            frame: PaneFrame::new(settled.cell(index)?)
-                                .with_focus(focused == FocusLocation::Cell(index)),
-                        },
-                        name:      PieceName::Shown,
-                    })
-                })
-                .collect();
-            return TileDrawing {
-                pieces,
-                column_bands: settled.columns,
-            };
+            return self.settled_drawing(settled);
         };
 
         let progress = eased(raw);
@@ -2644,6 +2723,8 @@ mod tests {
     const TEST_WIDTH: u16 = 80;
     /// Height of the rect the placement tests lay their grids out in.
     const TEST_HEIGHT: u16 = 40;
+    /// App-level floor used by the tile-width tests.
+    const TEST_TILE_WIDTH: u16 = 40;
 
     /// The rect the placement tests lay their grids out in.
     const fn test_area() -> Rect { Rect::new(0, 0, TEST_WIDTH, TEST_HEIGHT) }
@@ -2720,6 +2801,106 @@ mod tests {
             widen_summary: true,
             ..redistribute(initial_rows)
         }
+    }
+
+    #[test]
+    fn the_configured_tile_floor_fits_each_column_count_at_its_shared_width() {
+        let growth = redistribute(1);
+        let settings = TileSettings {
+            min_tile_width: TEST_TILE_WIDTH,
+            ..TileSettings::default()
+        };
+        for (count, width) in [(25, 196), (16, 157), (9, 118), (4, 79), (1, 40)] {
+            let area = Rect::new(0, 0, width, u16::MAX);
+            assert!(fits(area, count, growth, &settings), "{count} at {width}");
+            assert!(
+                !fits(
+                    Rect {
+                        width: width - 1,
+                        ..area
+                    },
+                    count,
+                    growth,
+                    &settings,
+                ),
+                "{count} below {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_framework_floor_still_fits_three_columns_in_twenty_two() {
+        let area = Rect::new(0, 0, 22, u16::MAX);
+        assert!(fits(area, 9, redistribute(1), &TileSettings::default()));
+    }
+
+    #[test]
+    fn holds_in_counts_the_headed_summary_depth() {
+        let growth = redistribute(1);
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.slots = vec![
+            Slot::Empty(0),
+            Slot::Empty(1),
+            Slot::Empty(2),
+            Slot::Empty(3),
+            Slot::Empty(4),
+        ];
+        grid.depth = 2;
+        let area = Rect::new(0, 0, 79, u16::MAX);
+
+        assert!(fits(area, grid.count(), growth, &grid.settings));
+        assert!(!grid.holds_in(area, growth));
+    }
+
+    #[test]
+    fn a_click_anywhere_in_the_summary_alone_picks_the_summary() {
+        let growth = redistribute(4);
+        let mut grid = seeded_grid();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.sync(&quiet(&[7]), growth);
+        grid.settle_for_test();
+        grid.focus_cell(TABLE_CELL + 1);
+        let held_focus = grid.focus.clone();
+        grid.set_layout(Rect::new(0, 0, TEST_TILE_WIDTH - 1, TEST_HEIGHT), growth);
+
+        for point in [
+            Position::new(0, 0),
+            Position::new(TEST_TILE_WIDTH - 2, TEST_HEIGHT - 1),
+        ] {
+            assert_eq!(grid.cell_at(point), Some(TABLE_CELL));
+            grid.focus_cell(TABLE_CELL);
+            assert_eq!(grid.focus, held_focus);
+        }
+    }
+
+    #[test]
+    fn focus_returns_to_its_cell_with_the_cells() {
+        let growth = redistribute(4);
+        let mut grid = seeded_grid();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.sync(&quiet(&[7]), growth);
+        grid.settle_for_test();
+        grid.focus_cell(TABLE_CELL + 1);
+        let held_focus = grid.focus.clone();
+        grid.set_layout(Rect::new(0, 0, TEST_TILE_WIDTH - 1, TEST_HEIGHT), growth);
+
+        assert!(!grid.cycle_focus(CycleDirection::Next));
+        grid.focus_step(Direction::Up, growth);
+        assert_eq!(grid.focus, held_focus);
+
+        grid.set_layout(Rect::new(0, 0, TEST_WIDTH, TEST_HEIGHT), growth);
+        let focused = grid
+            .drawing_at(
+                Rect::new(0, 0, TEST_WIDTH, TEST_HEIGHT),
+                growth,
+                PROGRESS_SCALE,
+            )
+            .pieces
+            .into_iter()
+            .find(|piece| piece.placement.frame.is_focused())
+            .map(|piece| piece.placement.content);
+        assert_eq!(focused, Some(TileContent::Group(7)));
     }
 
     /// A scan of `groups` quiet cells whose summary asks for `width`
@@ -3435,6 +3616,27 @@ mod tests {
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].content, TileContent::Summary);
         assert_eq!(placements[0].frame.rect(), test_area());
+    }
+
+    #[test]
+    fn placements_are_the_summary_alone_while_the_cells_are_hidden() {
+        let growth = redistribute(4);
+        let wide_area = Rect::new(0, 0, 200, TEST_HEIGHT);
+        let narrow_area = Rect::new(0, 0, 100, TEST_HEIGHT);
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_layout(wide_area, growth);
+        grid.sync(&quiet(&[1, 2, 3, 4, 5, 6]), growth);
+        grid.settle_for_test();
+        assert_eq!(grid.drawing(wide_area, growth).column_bands.len(), 3);
+        assert_eq!(grid.drawing(narrow_area, growth).column_bands, Vec::new());
+
+        let placements = grid.placements(narrow_area, growth);
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].content, TileContent::Summary);
+        assert_eq!(placements[0].frame.rect(), narrow_area);
+        assert_eq!(placements[0].frame.clip(), narrow_area);
+        assert!(placements[0].frame.is_focused());
     }
 
     #[test]

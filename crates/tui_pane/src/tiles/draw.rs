@@ -26,6 +26,7 @@ use super::constants::TILE_ROWS_CONTENT_LABEL;
 use super::constants::TILE_ROWS_READOUT_HEIGHT;
 use super::constants::TILE_ROWS_RIGHT_INSET;
 use super::constants::TILE_ROWS_WIDTH_LABEL;
+use super::grid::GridDisplay;
 use super::grid::PieceName;
 use super::grid::TileContent;
 use super::grid::TileDemands;
@@ -76,6 +77,15 @@ pub enum SummaryFoot {
 enum SummaryFootDrawOutcome {
     NotDrawn,
     DrawnWhole { width: u16 },
+}
+
+/// Whether a cell has a distinct row for its foot readout.
+enum ReadoutRow {
+    /// The last interior row, held inside the right inset.
+    Reserved(Rect),
+    /// The cell has one interior row, or is too narrow for a readout, so
+    /// every row belongs to its contents.
+    CellTooSmall,
 }
 
 /// What an app draws inside the cells of a [`TileGrid`].
@@ -151,12 +161,39 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     cells: &impl TileCells<Id>,
 ) {
     grid.set_layout(area, growth);
-    let widths = grid.content_widths(area, growth);
+    let measured_display = grid.display();
+    let mut widths = measurement_widths(grid, area, growth, measured_display);
     let mut demands = cells.demands(&widths);
     add_readout_rows(&mut demands, &widths);
     grid.sync(&demands, growth);
+    let display = grid.display();
+    if display != measured_display {
+        widths = measurement_widths(grid, area, growth, display);
+        demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+    }
+    if display == GridDisplay::SummaryAlone
+        && (contents == TileGridContents::Hidden || frame_inner(area).is_empty())
+    {
+        return;
+    }
     let drawing = grid.drawing(area, growth);
     draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells);
+}
+
+/// Widths used to measure the display that will be drawn this frame.
+fn measurement_widths<Id: Clone + Eq + Debug>(
+    grid: &TileGrid<Id>,
+    area: Rect,
+    growth: TileGrowth,
+    display: GridDisplay,
+) -> Vec<(TileContent<Id>, u16)> {
+    match display {
+        GridDisplay::Cells => grid.content_widths(area, growth),
+        GridDisplay::SummaryAlone => {
+            vec![(TileContent::Summary, frame_inner(area).width)]
+        },
+    }
 }
 
 /// Draw one grid snapshot: fixed column frames, then the cell pieces
@@ -435,8 +472,15 @@ fn measured_width<Id: Eq>(widths: &[(TileContent<Id>, u16)], content: &TileConte
 /// cell asking against the wrong ruler, and is written red where it
 /// appears.
 fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize, measured_at: u16) {
-    let line = rows_readout_line(inner, rows, measured_at);
-    draw_rows_readout_line(buffer, inner, line);
+    let ReadoutRow::Reserved(readout) = readout_row(inner) else {
+        return;
+    };
+    if let Some(line) = rows_readout_lines(inner, rows, measured_at)
+        .into_iter()
+        .find(|line| line.width() <= usize::from(readout.width))
+    {
+        draw_rows_readout_line(buffer, readout, line);
+    }
 }
 
 /// Draw the rows readout only when its whole line fits after the summary foot.
@@ -447,41 +491,45 @@ fn draw_rows_readout_after_foot(
     measured_at: u16,
     foot_width: u16,
 ) {
-    let line = rows_readout_line(inner, rows, measured_at);
-    let line_width = u16::try_from(line.width()).unwrap_or(u16::MAX);
-    let room = inner
+    let ReadoutRow::Reserved(readout) = readout_row(inner) else {
+        return;
+    };
+    let room = readout
         .width
-        .saturating_sub(TILE_ROWS_RIGHT_INSET)
         .saturating_sub(TILE_FOOT_LEFT_INSET)
         .saturating_sub(foot_width)
         .saturating_sub(TILE_FOOT_GAP);
-    if line_width <= room {
-        draw_rows_readout_line(buffer, inner, line);
+    if let Some(line) = rows_readout_lines(inner, rows, measured_at)
+        .into_iter()
+        .find(|line| line.width() <= usize::from(room))
+    {
+        draw_rows_readout_line(buffer, readout, line);
     }
 }
 
-/// Build the styled readout that reports content and cell dimensions.
-fn rows_readout_line(inner: Rect, rows: usize, measured_at: u16) -> Line<'static> {
+/// Build the styled readouts that fit progressively narrower cells.
+fn rows_readout_lines(inner: Rect, rows: usize, measured_at: u16) -> Vec<Line<'static>> {
     let reading = if rows <= usize::from(content_area(inner).height) {
         success_color()
     } else {
         error_color()
     };
-    let mut spans = vec![
+    let content = vec![
         Span::styled(TILE_ROWS_CONTENT_LABEL, Style::default().fg(label_color())),
         Span::styled(rows.to_string(), Style::default().fg(reading)),
     ];
+    let mut whole = content.clone();
     if measured_at != inner.width {
-        spans.push(Span::styled(
+        whole.push(Span::styled(
             TILE_ROWS_WIDTH_LABEL,
             Style::default().fg(label_color()),
         ));
-        spans.push(Span::styled(
+        whole.push(Span::styled(
             measured_at.to_string(),
             Style::default().fg(error_color()),
         ));
     }
-    spans.extend([
+    whole.extend([
         Span::styled(TILE_ROWS_CELL_LABEL, Style::default().fg(label_color())),
         Span::styled(
             inner.height.to_string(),
@@ -490,15 +538,33 @@ fn rows_readout_line(inner: Rect, rows: usize, measured_at: u16) -> Line<'static
         Span::styled(TILE_ROWS_CELL_SEPARATOR, Style::default().fg(label_color())),
         Span::styled(inner.width.to_string(), Style::default().fg(text_default())),
     ]);
-    Line::from(spans)
+    let mut lines = vec![Line::from(whole)];
+    if measured_at != inner.width {
+        let mut measured = content.clone();
+        measured.extend([
+            Span::styled(TILE_ROWS_WIDTH_LABEL, Style::default().fg(label_color())),
+            Span::styled(measured_at.to_string(), Style::default().fg(error_color())),
+        ]);
+        lines.push(Line::from(measured));
+    }
+    lines.push(Line::from(content));
+    lines
 }
 
-/// Right-align one rows readout, clipping it to the cell when needed.
-fn draw_rows_readout_line(buffer: &mut Buffer, inner: Rect, line: Line<'static>) {
-    let Some(area) = readout_area(inner, u16::try_from(line.width()).unwrap_or(u16::MAX)) else {
+/// Right-align one rows readout that already fits its reserved row.
+fn draw_rows_readout_line(buffer: &mut Buffer, readout: Rect, line: Line<'static>) {
+    let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
+    if width > readout.width {
         return;
-    };
-    Paragraph::new(line).render(area, buffer);
+    }
+    Paragraph::new(line).render(
+        Rect {
+            x: readout.right().saturating_sub(width),
+            width,
+            ..readout
+        },
+        buffer,
+    );
 }
 
 /// Draw the app's whole text at the left end of the readout row, or nothing.
@@ -507,10 +573,9 @@ fn draw_summary_foot(
     inner: Rect,
     line: &Line<'static>,
 ) -> SummaryFootDrawOutcome {
-    let height = rows_readout_height(inner.width);
-    if height == 0 || inner.height < TILE_ROWS_READOUT_HEIGHT {
+    let ReadoutRow::Reserved(readout) = readout_row(inner) else {
         return SummaryFootDrawOutcome::NotDrawn;
-    }
+    };
     let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
     if width > inner.width.saturating_sub(TILE_FOOT_LEFT_INSET) {
         return SummaryFootDrawOutcome::NotDrawn;
@@ -518,9 +583,9 @@ fn draw_summary_foot(
     Paragraph::new(line.clone()).render(
         Rect {
             x: inner.x.saturating_add(TILE_FOOT_LEFT_INSET),
-            y: inner.bottom().saturating_sub(TILE_ROWS_READOUT_HEIGHT),
+            y: readout.y,
             width,
-            height,
+            height: readout.height,
         },
         buffer,
     );
@@ -528,11 +593,14 @@ fn draw_summary_foot(
 }
 
 /// The cell interior above the readout, or the whole interior when it cannot show one.
-fn content_area(inner: Rect) -> Rect {
-    readout_area(inner, inner.width).map_or(inner, |readout| Rect {
-        height: readout.y.saturating_sub(inner.y),
-        ..inner
-    })
+const fn content_area(inner: Rect) -> Rect {
+    match readout_row(inner) {
+        ReadoutRow::Reserved(readout) => Rect {
+            height: readout.y.saturating_sub(inner.y),
+            ..inner
+        },
+        ReadoutRow::CellTooSmall => inner,
+    }
 }
 
 /// Rows reserved for the readout at a width that can display it.
@@ -544,20 +612,15 @@ const fn rows_readout_height(width: u16) -> u16 {
     }
 }
 
-/// The last row of a cell's interior, right-aligned and held off the
-/// border, or `None` when the cell has no room for the readout at all.
-fn readout_area(inner: Rect, width: u16) -> Option<Rect> {
-    let room = inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET);
+/// The last interior row inside the right inset, when a content row remains.
+const fn readout_row(inner: Rect) -> ReadoutRow {
+    let width = inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET);
     let height = rows_readout_height(inner.width);
-    if height == 0 || inner.height < height {
-        return None;
+    if height == 0 || inner.height <= height {
+        return ReadoutRow::CellTooSmall;
     }
-    let width = width.min(room);
-    Some(Rect {
-        x: inner
-            .right()
-            .saturating_sub(TILE_ROWS_RIGHT_INSET)
-            .saturating_sub(width),
+    ReadoutRow::Reserved(Rect {
+        x: inner.x,
         y: inner.bottom().saturating_sub(height),
         width,
         height,
@@ -592,6 +655,7 @@ mod tests {
         b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     const MOTION_SNAPSHOTS: u32 = 24;
     const TITLE_AREA: Rect = Rect::new(0, 0, 200, 50);
+    const TEST_TILE_WIDTH: u16 = 40;
     const CLOSING_GROWTH: TileGrowth = TileGrowth {
         initial_rows:  3,
         fill:          TileFill::AddNew,
@@ -646,6 +710,20 @@ mod tests {
             .map(|x| buffer[(x, y)].symbol())
             .collect();
         line.trim_end().to_string()
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| buffer_line(buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     /// The text inside `area`, one buffer row at a time.
@@ -1003,18 +1081,26 @@ mod tests {
                 .clone()
                 .flat_map(|y| (inner.left()..inner.right()).map(move |x| buffer[(x, y)].symbol()))
                 .collect::<String>();
-            let (nearest, visible_width) = if placement.frame.shift() < 0 {
-                (
-                    TILE_ROWS_CONTENT_LABEL,
-                    inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET),
-                )
+            let visible_width = if placement.frame.shift() < 0 {
+                inner.width.saturating_sub(TILE_ROWS_RIGHT_INSET)
             } else {
-                ("group body", inner.width)
+                inner.width
             };
-            let visible_nearest = nearest
-                .chars()
-                .take(usize::from(visible_width))
-                .collect::<String>();
+            let visible_nearest = if placement.frame.shift() < 0 {
+                let cell_inner = placement.frame.inner();
+                let Some(line) = rows_readout_lines(cell_inner, 0, 64)
+                    .into_iter()
+                    .find(|line| line.width() <= usize::from(visible_width))
+                else {
+                    continue;
+                };
+                line_text(&line)
+            } else {
+                "group body"
+                    .chars()
+                    .take(usize::from(visible_width))
+                    .collect::<String>()
+            };
             if !text.contains(&visible_nearest) {
                 return Some(format!(
                     "{motion} at raw {raw} omits {visible_nearest:?} from {:?}; rect={:?}, shift={}, \
@@ -1886,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_foot_wins_when_readout_does_not_fit() {
+    fn summary_foot_shares_with_the_short_readout_candidate() {
         let inner = Rect::new(0, 0, 30, 3);
         let mut buffer = Buffer::empty(inner);
         draw_cell(
@@ -1900,7 +1986,8 @@ mod tests {
 
         let row = buffer_line(&buffer, inner.bottom() - TILE_ROWS_READOUT_HEIGHT);
         assert!(row.contains(FOOT_TEXT));
-        assert!(!row.contains(TILE_ROWS_CONTENT_LABEL));
+        assert!(row.contains(TILE_ROWS_CONTENT_LABEL));
+        assert!(!row.contains(TILE_ROWS_CELL_LABEL));
     }
 
     #[test]
@@ -1908,8 +1995,11 @@ mod tests {
         let foot_width = u16::try_from(Line::raw(FOOT_TEXT).width()).unwrap_or(u16::MAX);
         let lines_fit_side_by_side = |width| {
             let inner = Rect::new(0, 0, width, 3);
-            let readout_width =
-                u16::try_from(rows_readout_line(inner, 1, width).width()).unwrap_or(u16::MAX);
+            let readout_width = rows_readout_lines(inner, 1, width)
+                .last()
+                .map_or(u16::MAX, |line| {
+                    u16::try_from(line.width()).unwrap_or(u16::MAX)
+                });
             foot_width
                 .saturating_add(TILE_FOOT_LEFT_INSET)
                 .saturating_add(TILE_FOOT_GAP)
@@ -2002,6 +2092,310 @@ mod tests {
     }
 
     #[test]
+    fn the_rows_readout_is_a_whole_candidate_at_every_width() {
+        let measured_at = 17;
+        for width in 0..=60 {
+            let inner = Rect::new(0, 0, width, 4);
+            let candidates = rows_readout_lines(inner, 22, measured_at)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>();
+            let mut buffer = Buffer::empty(inner);
+            draw_rows_readout(&mut buffer, inner, 22, measured_at);
+            let row = buffer_line(&buffer, inner.bottom() - 1);
+            let shown = row.trim();
+            assert!(
+                shown.is_empty() || candidates.iter().any(|candidate| candidate == shown),
+                "width {width} drew {shown:?}; candidates={candidates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_with_one_body_row_draws_its_contents_and_no_readout() {
+        let inner = Rect::new(0, 0, 50, 1);
+        let mut buffer = Buffer::empty(inner);
+        draw_tile_cell(
+            &mut buffer,
+            &TileContent::<u32>::Summary,
+            inner,
+            1,
+            inner.width,
+            |buffer, area| Paragraph::new("body").render(area, buffer),
+        );
+
+        assert_eq!(buffer_line(&buffer, 0), "body");
+        assert!(!buffer_line(&buffer, 0).contains(TILE_ROWS_CONTENT_LABEL));
+        assert!(matches!(readout_row(inner), ReadoutRow::CellTooSmall));
+    }
+
+    #[test]
+    fn a_grid_too_wide_for_its_window_draws_the_summary_alone() {
+        let growth = TileGrowth {
+            initial_rows:  1,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       (1..=8).collect(),
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let mut wide = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut wide,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+
+        let area = Rect::new(0, 0, 100, TITLE_AREA.height);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+
+        let text = buffer_text(&buffer);
+        assert!(buffer_line(&buffer, 0).contains("summary"));
+        assert!(text.contains("table body"));
+        assert!(!text.contains("group body"));
+        for y in 1..area.bottom() - 1 {
+            for x in 1..area.right() - 1 {
+                assert!(
+                    !is_lattice_glyph(buffer[(x, y)].symbol()),
+                    "summary-only frame has an interior divider at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cells_stand_settled_in_the_first_frame_that_holds_them() {
+        let growth = TileGrowth {
+            initial_rows:  1,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       (1..=8).collect(),
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let mut buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        let narrow = Rect::new(0, 0, 100, TITLE_AREA.height);
+        buffer = Buffer::empty(narrow);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            narrow,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+
+        buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        let start = grid.drawing_at(TITLE_AREA, growth, 0);
+        let finish = grid.drawing_at(TITLE_AREA, growth, PROGRESS_SCALE);
+        let frames = |drawing: TileDrawing<u32>| {
+            drawing
+                .pieces
+                .into_iter()
+                .map(|piece| {
+                    (
+                        piece.placement.content,
+                        piece.placement.frame.rect(),
+                        piece.placement.frame.clip(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(frames(start), frames(finish));
+        assert!(buffer_text(&buffer).contains("group body"));
+    }
+
+    #[test]
+    fn a_command_refused_in_a_small_window_opens_when_there_is_room() {
+        let growth = TileGrowth::default();
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       vec![1, 2],
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let small = Rect::new(0, 0, 30, TITLE_AREA.height);
+        let mut buffer = Buffer::empty(small);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            small,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        assert_eq!(grid.placements(small, growth).len(), 1);
+
+        let large = Rect::new(0, 0, 100, TITLE_AREA.height);
+        buffer = Buffer::empty(large);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            large,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        assert_eq!(grid.placements(large, growth).len(), 3);
+    }
+
+    #[test]
+    fn a_hidden_grid_too_small_draws_nothing() {
+        let area = Rect::new(0, 0, TEST_TILE_WIDTH - 1, TITLE_AREA.height);
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            groups:       vec![1],
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            TileGrowth::default(),
+            TileGridContents::Hidden,
+            &cells,
+        );
+
+        assert_eq!(buffer_text(&buffer).trim(), "");
+    }
+
+    #[test]
+    fn a_closing_column_in_flight_never_draws_a_cell_under_the_floor() {
+        let growth = TileGrowth {
+            initial_rows:  1,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let before = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       (1..=8).collect(),
+        };
+        let after = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       (1..=3).collect(),
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let mut buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &before,
+        );
+        grid.settle_for_test();
+        grid.collapse_queued_changes_for_test();
+        let area = Rect::new(0, 0, 79, TITLE_AREA.height);
+        buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &after,
+        );
+
+        for raw in motion_snapshots() {
+            assert!(!grid.drawing_at(area, growth, raw).pieces.is_empty());
+            assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+        }
+        assert!(!buffer_text(&buffer).contains("group body"));
+    }
+
+    #[test]
+    fn a_depth_change_in_flight_never_draws_a_cell_under_the_floor() {
+        let growth = TileGrowth {
+            initial_rows:  1,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_layout(TITLE_AREA, growth);
+        grid.sync(
+            &TileDemands {
+                summary:       200,
+                summary_width: 0,
+                groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
+            },
+            growth,
+        );
+        grid.settle_for_test();
+        grid.collapse_queued_changes_for_test();
+        let area = Rect::new(0, 0, 79, TITLE_AREA.height);
+        grid.set_layout(area, growth);
+        grid.sync(
+            &TileDemands {
+                summary:       1,
+                summary_width: 0,
+                groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
+            },
+            growth,
+        );
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       (1..=5).collect(),
+        };
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+
+        for raw in motion_snapshots() {
+            assert!(!grid.drawing_at(area, growth, raw).pieces.is_empty());
+            assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+        }
+        assert!(!buffer_text(&buffer).contains("group body"));
+    }
+
+    #[test]
     fn hidden_grid_draws_no_summary_foot() {
         let area = Rect::new(0, 0, 80, 8);
         let cells = StubCells {
@@ -2027,7 +2421,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_tile_number_needs_a_row_above_the_readout() {
+    fn an_empty_tile_number_uses_the_only_body_row_before_the_readout() {
         let number = 42;
         for height in [TILE_ROWS_READOUT_HEIGHT, TILE_ROWS_READOUT_HEIGHT + 1] {
             let inner = Rect::new(0, 0, 80, height);
@@ -2041,14 +2435,15 @@ mod tests {
                 |_, _| {},
             );
 
-            assert!(
-                buffer_line(&buffer, height - 1).contains(TILE_ROWS_CONTENT_LABEL),
-                "the readout occupies the last interior row"
-            );
+            let sole_row = height == TILE_ROWS_READOUT_HEIGHT;
             assert_eq!(
+                buffer_line(&buffer, height - 1).contains(TILE_ROWS_CONTENT_LABEL),
+                !sole_row,
+                "the readout needs a separate row"
+            );
+            assert!(
                 buffer_line(&buffer, 0).contains(&number.to_string()),
-                height > TILE_ROWS_READOUT_HEIGHT,
-                "the tile number draws only when the readout leaves a content row"
+                "the tile number keeps the first body row"
             );
         }
     }
