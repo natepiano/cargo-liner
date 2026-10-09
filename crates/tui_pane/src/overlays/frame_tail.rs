@@ -1,14 +1,39 @@
-//! The framework overlay drawn after an app's panes, toasts and modal.
+//! The framework overlays drawn after an app's panes.
+
+use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 use super::global_shortcuts;
 use super::keymap_ui;
 use super::keymap_ui::KeymapUiContext;
+use crate::AppContext;
+use crate::Framework;
 use crate::FrameworkOverlayId;
 use crate::Keymap;
+use crate::PaneFocusState;
+use crate::Renderable;
 use crate::SettingsRows;
+use crate::ToastsRenderCtx;
 use crate::draw_settings;
+
+/// Draw the framework's toasts inside `area`.
+pub fn render_toasts<Ctx: AppContext>(
+    frame: &mut Frame,
+    framework: &mut Framework<Ctx>,
+    area: Rect,
+) {
+    Renderable::render(
+        &mut framework.toasts,
+        frame,
+        area,
+        &ToastsRenderCtx {
+            now:              Instant::now(),
+            pane_focus_state: PaneFocusState::Inactive,
+        },
+    );
+}
 
 /// Draw whichever framework overlay is open: settings with the app's
 /// rows, the keymap overlay, or the `?` popup.

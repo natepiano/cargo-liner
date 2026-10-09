@@ -7,9 +7,9 @@ use super::ToastTaskId;
 use super::ToastView;
 use super::TrackedItem;
 use super::TrackedItemView;
+use super::body;
 use super::manager::ToastVisualDeadline;
 use super::render;
-use super::toast_body_width;
 use super::view::ToastActionState;
 use crate::ACTIVITY_SPINNER;
 use crate::AppContext;
@@ -176,7 +176,12 @@ impl<Ctx: AppContext> Toast<Ctx> {
             && !self.should_exit(now)
     }
 
-    pub(super) fn is_renderable(&self, now: Instant, settings: &ToastSettings) -> bool {
+    pub(super) fn is_renderable(
+        &self,
+        now: Instant,
+        settings: &ToastSettings,
+        card_width: u16,
+    ) -> bool {
         match self.phase {
             ToastPhase::Entering { .. } | ToastPhase::Static => !self.should_exit(now),
             // Task toasts skip the post-countdown exit animation:
@@ -193,7 +198,9 @@ impl<Ctx: AppContext> Toast<Ctx> {
             ToastPhase::Exiting { .. } if matches!(self.lifetime, ToastLifetime::Task { .. }) => {
                 false
             },
-            ToastPhase::Exiting { started_at } => self.exit_lines(now, settings, started_at) > 0,
+            ToastPhase::Exiting { started_at } => {
+                self.exit_lines(now, settings, started_at, card_width) > 0
+            },
         }
     }
 
@@ -220,6 +227,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
         &self,
         now: Instant,
         settings: &ToastSettings,
+        card_width: u16,
     ) -> ToastVisualDeadline {
         let rendered_content = self.next_rendered_content_deadline(now);
         match self.phase {
@@ -236,14 +244,21 @@ impl<Ctx: AppContext> Toast<Ctx> {
                 ToastVisualDeadline::NoVisualChangeScheduled
             },
             ToastPhase::Exiting { started_at } => {
-                self.next_exit_visual_change_deadline(now, settings, started_at)
+                self.next_exit_visual_change_deadline(now, settings, started_at, card_width)
             },
         }
     }
 
-    pub(super) fn view(&self, now: Instant, settings: &ToastSettings) -> ToastView {
+    pub(super) fn view(
+        &self,
+        now: Instant,
+        settings: &ToastSettings,
+        card_width: u16,
+    ) -> ToastView {
         let min_height = self.min_height();
-        let desired_height = self.current_visible_lines(now, settings).max(min_height);
+        let desired_height = self
+            .current_visible_lines(now, settings, card_width)
+            .max(min_height);
         ToastView {
             id: self.id,
             title: self.title.clone(),
@@ -284,18 +299,24 @@ impl<Ctx: AppContext> Toast<Ctx> {
 
     fn min_height(&self) -> u16 { (self.min_interior_lines + 2).try_into().unwrap_or(u16::MAX) }
 
-    /// Refresh a non-exiting toast's entrance phase from its wrapped target
-    /// height.
-    pub(super) fn refresh_entrance_phase(&mut self, settings: &ToastSettings) {
+    pub(super) fn refresh_entrance_phase_at_width(
+        &mut self,
+        settings: &ToastSettings,
+        card_width: u16,
+    ) {
         if matches!(self.phase, ToastPhase::Exiting { .. }) {
             return;
         }
-        self.phase = ToastPhase::from(self.entrance_schedule(settings));
+        self.phase = ToastPhase::from(self.entrance_schedule(settings, card_width));
     }
 
-    fn entrance_schedule(&self, settings: &ToastSettings) -> ToastEntranceSchedule {
+    fn entrance_schedule(
+        &self,
+        settings: &ToastSettings,
+        card_width: u16,
+    ) -> ToastEntranceSchedule {
         let min_height = self.min_height();
-        let target_height = self.target_height(settings);
+        let target_height = self.target_height(card_width);
         let entrance_duration = settings.animation.entrance_duration.get();
         if target_height <= min_height || entrance_duration.is_zero() {
             return ToastEntranceSchedule::Absent;
@@ -308,8 +329,13 @@ impl<Ctx: AppContext> Toast<Ctx> {
         }
     }
 
-    fn current_visible_lines(&self, now: Instant, settings: &ToastSettings) -> u16 {
-        let target = self.target_height(settings);
+    fn current_visible_lines(
+        &self,
+        now: Instant,
+        settings: &ToastSettings,
+        card_width: u16,
+    ) -> u16 {
+        let target = self.target_height(card_width);
         match self.phase {
             ToastPhase::Entering { .. } => {
                 let elapsed = now.saturating_duration_since(self.created_at);
@@ -322,12 +348,20 @@ impl<Ctx: AppContext> Toast<Ctx> {
                     .max(self.min_height())
             },
             ToastPhase::Static => target,
-            ToastPhase::Exiting { started_at } => self.exit_lines(now, settings, started_at),
+            ToastPhase::Exiting { started_at } => {
+                self.exit_lines(now, settings, started_at, card_width)
+            },
         }
     }
 
-    fn exit_lines(&self, now: Instant, settings: &ToastSettings, started_at: Instant) -> u16 {
-        let target = self.target_height(settings);
+    fn exit_lines(
+        &self,
+        now: Instant,
+        settings: &ToastSettings,
+        started_at: Instant,
+        card_width: u16,
+    ) -> u16 {
+        let target = self.target_height(card_width);
         let elapsed = now.saturating_duration_since(started_at);
         let line_ms = animation_line_duration(settings.animation.exit_duration.get()).as_millis();
         let hidden = u16::try_from(elapsed.as_millis() / line_ms).unwrap_or(u16::MAX);
@@ -339,9 +373,10 @@ impl<Ctx: AppContext> Toast<Ctx> {
         now: Instant,
         settings: &ToastSettings,
         started_at: Instant,
+        card_width: u16,
     ) -> ToastVisualDeadline {
         let line_duration = animation_line_duration(settings.animation.exit_duration.get());
-        let target_height = self.target_height(settings);
+        let target_height = self.target_height(card_width);
         next_line_height_boundary(
             now,
             started_at + line_duration,
@@ -467,8 +502,8 @@ impl<Ctx: AppContext> Toast<Ctx> {
         )
     }
 
-    fn target_height(&self, settings: &ToastSettings) -> u16 {
-        let width = toast_body_width(settings);
+    fn target_height(&self, card_width: u16) -> u16 {
+        let width = body::card_body_width(card_width);
         let body_lines = self.body.wrapped_line_count(width);
         let item_lines = if self.tracked_items.is_empty() {
             body_lines

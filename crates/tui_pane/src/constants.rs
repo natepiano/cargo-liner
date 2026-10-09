@@ -35,6 +35,15 @@ pub(crate) const TOAST_ANIMATION_MILLIS: u64 = 150;
 pub(crate) const TOAST_ELAPSED_MINUTE_MILLIS: u128 = 60_000;
 /// Elapsed time threshold where toast labels switch from milliseconds to seconds.
 pub(crate) const TOAST_ELAPSED_SECONDS_MILLIS: u128 = 10_000;
+/// Marks text cut to the cells its drawing area leaves for it.
+pub(crate) const ELISION: &str = "…";
+/// Horizontal body padding inside each toast border.
+pub(crate) const TOAST_BODY_HORIZONTAL_PADDING: u16 = 1;
+/// Remaining horizontal room below which a toast fills its area.
+pub(crate) const TOAST_FULL_WIDTH_SLACK: u16 = 8;
+
+/// Characters after which an overlong word may wrap.
+pub(crate) const WRAP_BREAK_AFTER: &str = "/-=_.:,";
 
 /// Indent for a popup section header, and for anything else standing at
 /// the same level -- the working-directory headings over cargo-tile's

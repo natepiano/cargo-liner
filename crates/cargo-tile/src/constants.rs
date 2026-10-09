@@ -194,8 +194,6 @@ pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
 /// Those arguments are the other program's, so the summary passes them
 /// through untouched however they are spelled.
 pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
-/// Characters after which an overlong command may wrap.
-pub(crate) const WRAP_BREAK_AFTER: &str = "/-=_.:,";
 /// What the status line says while the attract screen is being shown
 /// because it was asked for. Stands alone for the same reason
 /// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the

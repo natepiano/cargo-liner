@@ -53,5 +53,3 @@ mod terminal;
 mod theme;
 #[path = "../src/tiles.rs"]
 mod tiles;
-#[path = "../src/wrap.rs"]
-mod wrap;

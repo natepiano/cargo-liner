@@ -28,7 +28,6 @@ mod settings;
 mod terminal;
 mod theme;
 mod tiles;
-mod wrap;
 
 use std::process::ExitCode;
 

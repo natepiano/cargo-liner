@@ -58,6 +58,7 @@ pub use constants::KEYMAP_POPUP_MAX_HEIGHT;
 pub(crate) use constants::POPUP_BORDER_HEIGHT;
 pub(crate) use constants::POPUP_BORDER_WIDTH;
 pub use frame_tail::draw_framework_overlay;
+pub use frame_tail::render_toasts;
 pub use global_shortcuts::GlobalShortcutsPane;
 pub use global_shortcuts::draw_global_shortcuts_overlay;
 pub use keymap::KeymapCaptureCommand;

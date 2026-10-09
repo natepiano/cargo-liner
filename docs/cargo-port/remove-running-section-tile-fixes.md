@@ -249,7 +249,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** counting wide characters as two cells (the crate counts one cell per character throughout); renaming grid.rs's private `Grid`.
 
-### Phase 7 — Review repairs: wrapping, headings and the toast  · status: todo
+### Phase 7 — Review repairs: wrapping, headings and the toast  · status: done
 
 #### Work Order
 
@@ -329,6 +329,10 @@ Tests, all pure:
 
 README: the `[tiles]` section of `crates/cargo-tile/README.md` gains one sentence: a command cell is never shorter than six rows. Changelogs: one Changed line each under `## [Unreleased]`.
 
+**Carried from phase 7's design check** (shots `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/ph7/shots/w200.png`, `w126.png`, `w48.png`, `deep126x80.png`): a cell given three rows draws only its column header, heading and readout; the bottom cell given two rows loses its heading; at 200 columns three 10-cell columns show empty boxes and pid-only fragments; over-budget cells in deep126x80 leave a blank row above the readout. Each is a cell that should show a process or not be drawn.
+
+**Toast spacing** (showrunner's call from the UX guide, 2026-10-09): a toast keeps one cleared cell on each side, left and right, so its spacing is even; today it clears one cell on its left (breaking the cell divider it covers) and its right border sits against the frame line (shots `toast200.png`, `toast64.png`, `toast40.png`).
+
 **Files:**
 - `crates/tui_pane/src/tiles/grid.rs` — `shares`, `fits`, `set_min_tile_height`, tests.
 - `crates/tui_pane/src/pane/frame.rs` — `share_borders`, only if the rule belongs there.
@@ -375,6 +379,8 @@ Tests, all pure, on settled grids:
 - Existing tests that pin a depth: change only those the rule changes, and list each in the summary with its old and new expectation.
 
 Changelogs: one Changed line each under `## [Unreleased]`.
+
+**Carried from phase 7's design check** (shots `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/ph7/shots/w48.png`, `w40.png`, `toast40.png`, `toast64.png`, `w126.png`): the summary lists 4 to 6 of 8 running builds with nothing saying the rest are hidden; at 40 columns a summary entry's command wraps to `cargo` / `clippy` and the row budget drops the second line unmarked.
 
 **Files:**
 - `crates/tui_pane/src/tiles/grid.rs` — `shares`, `summary_share`, `summary_depth`, tests.

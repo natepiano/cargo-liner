@@ -44,7 +44,7 @@ use unicode_width::UnicodeWidthStr;
 use super::chrome;
 use super::chrome::PaneChrome;
 use super::constants::BORDER_LINE_WIDTH;
-use super::constants::ELISION;
+use crate::constants::ELISION;
 
 /// Where one pane's box sits for a single frame.
 ///
@@ -78,8 +78,6 @@ pub struct PaneFrame {
 }
 
 impl PaneFrame {
-    pub(crate) const ELISION: &'static str = ELISION;
-
     /// A pane standing still at `rect`, clipped to nothing beyond it.
     #[must_use]
     pub const fn new(rect: Rect) -> Self {

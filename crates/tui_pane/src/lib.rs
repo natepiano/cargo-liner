@@ -34,6 +34,7 @@ mod theme;
 mod tiles;
 mod toasts;
 mod watched_file;
+mod wrap;
 
 // Crate-root re-exports. The `action_enum!` and `bindings!` macros
 // reference these types via `$crate::*` paths, which requires them at
@@ -373,6 +374,7 @@ pub use overlays::edit_selected_global_shortcut;
 pub use overlays::handle_keymap_capture_command;
 pub use overlays::handle_keymap_navigation_key;
 pub use overlays::keymap_toml;
+pub use overlays::render_toasts;
 pub use overlays::save_keymap_to_disk;
 pub use pane::FocusedPane;
 pub use pane::FrameworkFocusId;
@@ -531,3 +533,4 @@ pub use toasts::TrackedItemKey;
 pub use toasts::format_toast_items;
 pub use toasts::toast_body_width;
 pub use watched_file::WatchedFile;
+pub use wrap::wrapped;

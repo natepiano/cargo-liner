@@ -1,8 +1,6 @@
 //! Frame rendering: the tile grid, the framework status line along the
 //! bottom, and whichever overlay is open above them.
 
-use std::time::Instant;
-
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
@@ -13,8 +11,6 @@ use ratatui::text::Span;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
 use tui_pane::Keymap;
-use tui_pane::PaneFocusState;
-use tui_pane::Renderable;
 use tui_pane::ScanIndicator;
 use tui_pane::StatusLine;
 use tui_pane::StatusLineGlobal;
@@ -22,7 +18,6 @@ use tui_pane::StatusLineNote;
 use tui_pane::TileCells;
 use tui_pane::TileDemand;
 use tui_pane::TileGridContents;
-use tui_pane::ToastsRenderCtx;
 use tui_pane::Updates;
 use tui_pane::draw_attract_layers;
 use tui_pane::render_status_line;
@@ -46,9 +41,9 @@ use crate::tiles::AgentCell;
 use crate::tiles::TileContent;
 use crate::tiles::TileDemands;
 
-/// Draw one frame: the grid fills the terminal above the status line,
-/// and the toasts, the favorites modal and any framework overlay float
-/// above both.
+/// Draw one frame: the grid fills the body above the status line, and
+/// toasts are drawn inside the grid's outer frame. The favorites modal
+/// and any framework overlay float above both.
 pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(STATUS_LINE_HEIGHT)])
@@ -73,15 +68,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
         |frame, app, contents| draw_panes(frame, app, body, contents),
     );
     draw_status_line(frame, app, keymap, status);
-    Renderable::render(
-        &mut app.framework.toasts,
-        frame,
-        body,
-        &ToastsRenderCtx {
-            now:              Instant::now(),
-            pane_focus_state: PaneFocusState::Inactive,
-        },
-    );
+    tui_pane::render_toasts(frame, &mut app.framework, tui_pane::frame_inner(body));
     app.favorites_overlay.render(frame);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
 }
