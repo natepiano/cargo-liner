@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+- Vertically cut tables fill the last command line before its `…`, and use an inter-directory blank row for the next heading and process when those rows would otherwise be hidden.
 - Toasts stay inside the tile frame, and shortened ancestry always marks its cut and uses the rows available to it.
 - Directory headings keep the project end of the path before its account when both do not fit, retain a whole final component when its marked tail fits exactly, and use `…` whenever text is left out.
 - Ancestry and command text use `tui_pane`'s shared boundary-aware wrapper, keeping path and flag punctuation with useful text; a height cut ends in `…`, and an ancestry level too narrow for its command shows its pid alone.
@@ -70,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+- Vertically constrained tables either keep every directory gap or yield them all, leaving any spare rows together above the foot.
 - A whole command that exactly fills its column keeps its last letter when later table rows do not fit; when a row is free below it, the last word and continuation mark move there.
 - `appearance.mode = "auto"` follows the system's light or dark setting from the first frame and while cargo-tile runs, so the summary's memory total and the rest of the light theme stay readable on a light terminal with transparency on or off.
 - Cells moving between columns no longer leave an unpainted ring, flash an interior row back to the screen ground, open a blank arrival slot or write their contents over a column border when the background is opaque. Touching cells and columns keep one shared separator throughout every grid motion. A closing column keeps every cell at its starting height while it narrows, including below a widened summary, and every moving cell keeps exactly one title visible.
