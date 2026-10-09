@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
+use ratatui::symbols::line;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
@@ -16,6 +17,7 @@ use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
 use crate::constants::ELISION;
 use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
+use crate::constants::TOAST_SIDE_GAP;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
 use crate::title_color;
@@ -36,15 +38,7 @@ pub(super) fn render_toast(
 ) -> Rect {
     let palette = fallback_toast_palette();
     let card = card.intersection(area);
-    let clear_left = card.x.saturating_sub(1).max(area.x);
-    let clear_right = card.right().saturating_add(1).min(area.right());
-    let clear_rect = Rect {
-        x:      clear_left,
-        y:      card.y,
-        width:  clear_right.saturating_sub(clear_left),
-        height: card.height,
-    };
-    frame.render_widget(Clear, clear_rect);
+    clear_toast_surroundings(frame, area, card);
 
     let focused =
         matches!(pane_focus, ToastPaneFocus::Focused) && focused_toast_id == Some(toast.id());
@@ -145,6 +139,48 @@ pub(super) fn render_toast(
     }
 
     close_rect
+}
+
+/// Clear the card and its gaps, then close the frame columns beside them.
+fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
+    let clear_left = card.x.saturating_sub(TOAST_SIDE_GAP).max(area.x);
+    let clear_right = card
+        .right()
+        .saturating_add(TOAST_SIDE_GAP)
+        .min(area.right());
+    frame.render_widget(
+        Clear,
+        Rect {
+            x:      clear_left,
+            y:      card.y,
+            width:  clear_right.saturating_sub(clear_left),
+            height: card.height,
+        },
+    );
+    join_adjacent_frame_columns(frame, area, card);
+}
+
+/// Remove divider stubs that point into a toast's cleared side gaps.
+fn join_adjacent_frame_columns(frame: &mut Frame, area: Rect, card: Rect) {
+    let frame_area = frame.area();
+    for y in card.top()..card.bottom() {
+        if card.left().saturating_sub(TOAST_SIDE_GAP) == area.left()
+            && area.left() > frame_area.left()
+        {
+            let cell = &mut frame.buffer_mut()[(area.left() - 1, y)];
+            if cell.symbol() == line::VERTICAL_RIGHT {
+                cell.set_symbol(line::VERTICAL);
+            }
+        }
+        if card.right().saturating_add(TOAST_SIDE_GAP) == area.right()
+            && area.right() < frame_area.right()
+        {
+            let cell = &mut frame.buffer_mut()[(area.right(), y)];
+            if cell.symbol() == line::VERTICAL_LEFT {
+                cell.set_symbol(line::VERTICAL);
+            }
+        }
+    }
 }
 
 const fn toast_body_area(inner: Rect) -> Rect {

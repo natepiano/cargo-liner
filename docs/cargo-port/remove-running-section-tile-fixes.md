@@ -279,7 +279,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** counting wide characters as two cells (one cell per character); renaming `ToastDrawAreaWidth` (it stores the area width it names).
 
-### Phase 8 — A cell shows a process or is not drawn  · status: todo
+### Phase 8 — A cell shows a process or is not drawn  · status: done
 
 #### Work Order
 
@@ -325,7 +325,36 @@ README: the `[tiles]` section of `crates/cargo-tile/README.md` gains one sentenc
 - Unit director's settled captures beside real cargo commands, 50 rows, at 64, 48 and 40 columns with `initial_rows = 12`, and at 200 columns, plus 126 by 80 with a deep ancestry chain: every command cell drawn shows a process row, a command without a cell is counted in the summary, and a cut table ends in the mark. The first-run toast at 200, 64 and 40 columns, 50 rows: one cleared cell on each side of the card.
 - A fresh helper's design check of those eight shots: pass.
 
-### Phase 9 — The summary takes the rows it asks for, not a second position  · status: todo
+### Phase 9 — A cut command fills its column, and a cut cell fills its rows  · status: todo
+
+#### Work Order
+
+**Goal:** A command cut at a cell's foot shows as much of itself as its column holds before the mark, and a cell that hides rows behind the mark leaves no blank row above its foot.
+
+**Spec:**
+
+Evidence (Phase 8's design check after its second repair round; moved here by the hard landing rule; shots `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/ph8/shots/`, text beside each in its `.txt`). Reproduce each case in a failing buffer test before changing anything.
+
+1. **A cut command fills its column** (cargo-tile `render.rs`). The wrapper breaks at a word, and Phase 8's mark follows the last whole word, so a cut command leaves empty cells before its `…`: w64 lines 37 and 42 draw `cargo…` with 4 free cells; w48 line 81 with 5, lines 86 and 91 with 2; w40 line 119 `nextest…` with 2, lines 135 and 140 with 3 and 6; toast40 lines 32 and 37 with 3 and 6. Rule: when a command's wrapped lines are cut at the foot, the last drawn line holds the value's next characters up to one cell short of the command column's width, then the mark (`cargo next…`, `nextest r…`), so the mark sits at the column's far edge. A whole value followed by omitted rows keeps Phase 8's far-edge mark with its free cells, and an exactly fitting whole value keeps Phase 8's wrap onto a free row. Test: `a_cut_command_fills_its_column_before_the_mark` (an 11-cell command column, `cargo nextest run`, one row for it: `cargo next…`).
+2. **A cell hiding rows leaves no blank row above its foot** (cargo-tile `render.rs`). deep126x80 lines 29 to 31 and 36 to 38: the `hana-linux-1` and `hana-linux-2` cells, six rows given and fourteen wanted, draw one process row with the mark and then two blank rows above the foot. Find what the hidden content is and why it does not fit (the next directory group needs its gap, its heading and its first process row), and fill the free rows with the next hidden content that fits whole, moving the mark to the last line drawn. A heading is still admitted only with its first process row (Phase 8). Name the cause in the summary. Test: `a_cell_hiding_rows_leaves_no_blank_row_above_its_foot`, the deep126x80 cell at 124 inner cells and six rows.
+
+Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs` — both items and their tests.
+- `crates/cargo-tile/CHANGELOG.md` — the Changed line.
+
+**Seats:** 1 writer — both items live in cargo-tile's table drawing in one file.
+- `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/CHANGELOG.md`; runs the one lint and the four suites.
+
+**Constraints from prior phases:** Phase 6 made headings and ancestry whole or marked with the one glyph `ELISION`. Phase 8 made every table cut end in the mark (`mark_cut_line`, `mark_last_drawn_table_line`, `TableContinuation`: a value cut inside itself carries an attached mark, a whole value followed by omitted rows carries it at the command column's far edge, and one that exactly fills its column wraps its last word onto a free row first), admits a directory heading only with its first process row, drops an empty `compiler` or `runs` column, and set cargo-tile's cell floor to `MIN_CELL_HEIGHT` (6). Phase 8's mark tests pass unchanged except where item 1 moves the mark of a cut value, each named in the summary with its old and new text. No new public item. No new `#[allow]` or `#[expect]`.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test in the run takes a second.
+- Unit director's settled captures beside real cargo commands, Phase 8's set (64, 48, 40 and 200 columns by 50 rows, 126 by 80 deep, the toast at 200, 64 and 40): every cut command's mark at its column's far edge, and no blank row above a foot while the mark says rows are hidden.
+- A fresh helper's design check of those shots: pass.
+
+### Phase 10 — The summary takes the rows it asks for, not a second position  · status: todo
 
 #### Work Order
 
@@ -370,7 +399,7 @@ Changelogs: one Changed line each under `## [Unreleased]`.
 - Unit director's capture at 200x50 with seven `+` and seven `-` (it reaches ten cells and four columns), transparent off: in every settled frame the summary shows no blank body row while a cell in its column is short of what it asks, and Phase 2's motion measures still read zero.
 - A fresh helper's design check of the settled shots and one motion shot per step, against Phase 2's shots of the same steps: pass.
 
-### Phase 10 — Slow tests start first  · status: todo
+### Phase 11 — Slow tests start first  · status: todo
 
 #### Work Order
 

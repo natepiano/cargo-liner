@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 
 use super::card;
 use crate::PaneFocusState;
+use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastId;
 use crate::toasts::ToastView;
@@ -49,7 +50,10 @@ pub(super) fn render_top_down(
         {
             break;
         }
-        let x = area.x + area.width.saturating_sub(layout.width);
+        let x = area
+            .right()
+            .saturating_sub(TOAST_SIDE_GAP)
+            .saturating_sub(layout.width);
         let card = Rect {
             x,
             y: cursor_y,
@@ -95,7 +99,10 @@ pub(super) fn render_bottom_up(
         if cursor_y < area.y {
             break;
         }
-        let x = area.x + area.width.saturating_sub(layout.width);
+        let x = area
+            .right()
+            .saturating_sub(TOAST_SIDE_GAP)
+            .saturating_sub(layout.width);
         let card = Rect {
             x,
             y: cursor_y,

@@ -41,6 +41,8 @@ pub(crate) const ELISION: &str = "…";
 pub(crate) const TOAST_BODY_HORIZONTAL_PADDING: u16 = 1;
 /// Remaining horizontal room below which a toast fills its area.
 pub(crate) const TOAST_FULL_WIDTH_SLACK: u16 = 8;
+/// Cleared cells between a toast card and each horizontal edge of its draw area.
+pub(crate) const TOAST_SIDE_GAP: u16 = 1;
 
 /// Characters after which an overlong word may wrap.
 pub(crate) const WRAP_BREAK_AFTER: &str = "/-=_.:,";

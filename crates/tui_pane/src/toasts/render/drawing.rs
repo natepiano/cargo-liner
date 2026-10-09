@@ -150,6 +150,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Style;
+    use ratatui::symbols::line;
     use ratatui::text::Line;
     use ratatui::widgets::Paragraph;
     use toml::Table;
@@ -263,7 +264,7 @@ mod tests {
             },
         }
         let views = toasts.active_views(Instant::now() + Duration::from_secs(1));
-        let backend = TestBackend::new(14, height);
+        let backend = TestBackend::new(16, height);
         let mut terminal =
             Terminal::new(backend).expect("toast render test terminal should initialize");
         let mut result = None;
@@ -377,7 +378,7 @@ mod tests {
         let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
 
         assert_eq!(draw_at(&mut toasts, 30, 20, settled_at).card.height, 5);
-        assert_eq!(draw_at(&mut toasts, 60, 20, settled_at).card.height, 3);
+        assert_eq!(draw_at(&mut toasts, 62, 20, settled_at).card.height, 3);
     }
 
     #[test]
@@ -417,7 +418,7 @@ mod tests {
         let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(16));
         let id = toasts.push("notice", format!("{first}\n{second}"));
         let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
-        let rendered = draw_at(&mut toasts, 16, 10, settled_at);
+        let rendered = draw_at(&mut toasts, 18, 10, settled_at);
         let body_row = |row| {
             (rendered.card.x + 2..rendered.card.right() - 2)
                 .map(|column| rendered.buffer[(column, row)].symbol())
@@ -433,7 +434,7 @@ mod tests {
         let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(12));
         let id = toasts.push("notice", "abcdefgh");
         let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
-        let rendered = draw_at(&mut toasts, 12, 10, settled_at);
+        let rendered = draw_at(&mut toasts, 14, 10, settled_at);
         let row = rendered.card.y + 1;
 
         assert_eq!(rendered.buffer[(rendered.card.x + 1, row)].symbol(), " ");
@@ -455,10 +456,10 @@ mod tests {
         let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
         let id = toasts.push("notice", "body");
         let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
-        let rendered = draw_at(&mut toasts, 67, 10, settled_at);
+        let rendered = draw_at(&mut toasts, 69, 10, settled_at);
 
         assert_eq!(rendered.card.width, 67);
-        assert_eq!(rendered.card.x, 0);
+        assert_eq!(rendered.card.x, 1);
     }
 
     #[test]
@@ -466,10 +467,10 @@ mod tests {
         let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
         let id = toasts.push("notice", "body");
         let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
-        let rendered = draw_at(&mut toasts, 68, 10, settled_at);
+        let rendered = draw_at(&mut toasts, 70, 10, settled_at);
 
         assert_eq!(rendered.card.width, 60);
-        assert_eq!(rendered.card.x, 8);
+        assert_eq!(rendered.card.x, 9);
     }
 
     #[test]
@@ -502,13 +503,146 @@ mod tests {
             terminal.backend().buffer()[(guard.x, guard.y)].symbol(),
             "G"
         );
-        assert_eq!(toasts.hits[0].card_rect, Rect::new(5, 8, 12, 3));
+        assert_eq!(toasts.hits[0].card_rect, Rect::new(6, 8, 10, 3));
+    }
+
+    #[test]
+    fn a_toast_keeps_one_cleared_cell_on_each_side() {
+        for (configured_width, area_width, expected_card_width) in [(12, 30, 12), (60, 20, 18)] {
+            let area = Rect::new(5, 1, area_width, 10);
+            let mut toasts =
+                Toasts::<TestApp>::with_settings(settings_with_width(configured_width));
+            let id = toasts.push("notice", "body");
+            let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
+            let backend = TestBackend::new(40, 12);
+            let mut terminal =
+                Terminal::new(backend).expect("toast render test terminal should initialize");
+
+            terminal
+                .draw(|frame| {
+                    let painted = vec![Line::from("G".repeat(40)); 12];
+                    frame.render_widget(Paragraph::new(painted), frame.area());
+                    Renderable::render(
+                        &mut toasts,
+                        frame,
+                        area,
+                        &ToastsRenderCtx {
+                            now:              settled_at,
+                            pane_focus_state: PaneFocusState::Inactive,
+                        },
+                    );
+                })
+                .expect("offset toast render should complete");
+
+            let card = toasts.hits[0].card_rect;
+            let row = card.y.saturating_add(1);
+            assert_eq!(card.width, expected_card_width);
+            assert!(card.x > area.x);
+            assert!(card.right() < area.right());
+            assert_eq!(terminal.backend().buffer()[(card.x - 1, row)].symbol(), " ");
+            assert_eq!(
+                terminal.backend().buffer()[(card.right(), row)].symbol(),
+                " "
+            );
+            assert_eq!(terminal.backend().buffer()[(area.x - 1, row)].symbol(), "G");
+            assert_eq!(
+                terminal.backend().buffer()[(area.right(), row)].symbol(),
+                "G"
+            );
+        }
+    }
+
+    #[test]
+    fn a_toast_joins_frame_columns_across_its_cleared_gaps() {
+        let area = Rect::new(5, 1, 20, 10);
+        let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(60));
+        let id = toasts.push("notice", "body");
+        let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
+        let backend = TestBackend::new(30, 12);
+        let mut terminal =
+            Terminal::new(backend).expect("toast render test terminal should initialize");
+
+        terminal
+            .draw(|frame| {
+                for row in area.top()..area.bottom() {
+                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(line::VERTICAL_RIGHT);
+                    frame.buffer_mut()[(area.right(), row)].set_symbol(line::VERTICAL_LEFT);
+                }
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    area,
+                    &ToastsRenderCtx {
+                        now:              settled_at,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })
+            .expect("toast over frame columns should render");
+
+        let card = toasts.hits[0].card_rect;
+        let buffer = terminal.backend().buffer();
+        for row in card.top()..card.bottom() {
+            assert_eq!(buffer[(area.left() - 1, row)].symbol(), line::VERTICAL);
+            assert_eq!(buffer[(area.right(), row)].symbol(), line::VERTICAL);
+            assert_eq!(buffer[(card.left() - 1, row)].symbol(), " ");
+            assert_eq!(buffer[(card.right(), row)].symbol(), " ");
+        }
+        assert_eq!(
+            buffer[(area.left() - 1, card.top() - 1)].symbol(),
+            line::VERTICAL_RIGHT
+        );
+        assert_eq!(
+            buffer[(area.right(), card.top() - 1)].symbol(),
+            line::VERTICAL_LEFT
+        );
+    }
+
+    #[test]
+    fn a_narrow_right_aligned_toast_keeps_the_far_frame_tee() {
+        let area = Rect::new(5, 1, 30, 10);
+        let mut toasts = Toasts::<TestApp>::with_settings(settings_with_width(12));
+        let id = toasts.push("notice", "body");
+        let settled_at = created_at(&toasts, id) + Duration::from_secs(1);
+        let backend = TestBackend::new(40, 12);
+        let mut terminal =
+            Terminal::new(backend).expect("toast render test terminal should initialize");
+
+        terminal
+            .draw(|frame| {
+                for row in area.top()..area.bottom() {
+                    frame.buffer_mut()[(area.left() - 1, row)].set_symbol(line::VERTICAL_RIGHT);
+                    frame.buffer_mut()[(area.right(), row)].set_symbol(line::VERTICAL_LEFT);
+                }
+                Renderable::render(
+                    &mut toasts,
+                    frame,
+                    area,
+                    &ToastsRenderCtx {
+                        now:              settled_at,
+                        pane_focus_state: PaneFocusState::Inactive,
+                    },
+                );
+            })
+            .expect("narrow toast over frame columns should render");
+
+        let card = toasts.hits[0].card_rect;
+        let buffer = terminal.backend().buffer();
+        for row in card.top()..card.bottom() {
+            assert_eq!(
+                buffer[(area.left() - 1, row)].symbol(),
+                line::VERTICAL_RIGHT
+            );
+            assert_eq!(buffer[(area.right(), row)].symbol(), line::VERTICAL);
+            assert_eq!(buffer[(card.left() - 1, row)].symbol(), " ");
+            assert_eq!(buffer[(card.right(), row)].symbol(), " ");
+        }
     }
 
     #[test]
     fn a_toast_body_without_room_ends_in_the_mark() {
         let (_, rows) = rendered_plain_toast(TestToastAction::Absent, 4);
-        let last_body_row = rows[2].chars().skip(1).take(12).collect::<String>();
+        let last_body_row = rows[2].chars().skip(2).take(12).collect::<String>();
 
         assert!(last_body_row.trim_end().ends_with(ELISION));
     }

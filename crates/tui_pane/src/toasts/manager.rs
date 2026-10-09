@@ -11,6 +11,7 @@ use crate::AppContext;
 use crate::Viewport;
 use crate::constants::FRAME_POLL_MILLIS;
 use crate::constants::TOAST_FULL_WIDTH_SLACK;
+use crate::constants::TOAST_SIDE_GAP;
 
 /// Width constraint established by the most recent toast draw.
 #[derive(Clone, Copy)]
@@ -23,10 +24,11 @@ enum ToastDrawAreaWidth {
 
 pub(super) fn toast_card_width(settings: &ToastSettings, area_width: u16) -> u16 {
     let configured = settings.width.get();
-    if area_width.saturating_sub(configured) < TOAST_FULL_WIDTH_SLACK {
-        area_width
+    let card_area_width = area_width.saturating_sub(TOAST_SIDE_GAP.saturating_mul(2));
+    if card_area_width.saturating_sub(configured) < TOAST_FULL_WIDTH_SLACK {
+        card_area_width
     } else {
-        configured.min(area_width)
+        configured.min(card_area_width)
     }
 }
 
@@ -336,6 +338,7 @@ mod tests {
             ToastSettings::from_table(&table).expect("toast settings should load")
         });
         toasts.set_draw_area_width(67);
+        assert_eq!(toasts.card_width(), 65);
         let narrower = {
             let table: Table = "[toasts]\nwidth = 20\n"
                 .parse()

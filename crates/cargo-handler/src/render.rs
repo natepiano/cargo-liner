@@ -317,14 +317,14 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 7/78 │",
+        "│                                                   content rows: 0  r/c: 6/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 3                                                                            │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 5/78 │",
+        "│                                                                              │",
+        "│                                                   content rows: 0  r/c: 6/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -340,8 +340,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                  content rows: 1  r/c: 11/78 │",
+        "│                                                  content rows: 1  r/c: 10/78 │",
         "├──────────────────────────────────────────────────────────────────────────────┤",
         "│ 2                                                                            │",
         "│                                                                              │",
@@ -351,7 +350,8 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                   content rows: 0  r/c: 9/78 │",
+        "│                                                                              │",
+        "│                                                  content rows: 0  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -481,8 +481,7 @@ fraying = "leading"
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",
-        "│                                                                              │",
-        "│                                                  content rows: 3  r/c: 11/78 │",
+        "│                                                  content rows: 3  r/c: 10/78 │",
         "├ boss of bosses───────────────────────────────────────────────────────────────┤",
         "│ pid 1579022 · claude · idle · 21h · natedev · —                              │",
         "│ ~/rust/hana_catalyst/docs/hana                                               │",
@@ -492,7 +491,8 @@ fraying = "leading"
         "│ 2407001    shell     codex    app-server                              12m    │",
         "│ —            thread  codex    tool-based-ui-geometry-material-impl    12m    │",
         "│ —        subagent    claude   Survey the tile grid                    5m 3s  │",
-        "│                                                   content rows: 8  r/c: 9/78 │",
+        "│                                                                              │",
+        "│                                                  content rows: 8  r/c: 10/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];
 
@@ -777,8 +777,8 @@ fraying = "leading"
         let red = Color::Rgb(255, 95, 95);
         assert_eq!(buffer[(19, 3)].symbol(), "b");
         assert_eq!(buffer[(19, 3)].fg, red, "the summary's name");
-        assert_eq!(buffer[(2, 12)].symbol(), "b");
-        assert_eq!(buffer[(2, 12)].fg, red, "the cell's title");
+        assert_eq!(buffer[(2, 11)].symbol(), "b");
+        assert_eq!(buffer[(2, 11)].fg, red, "the cell's title");
     }
 
     /// Each agent's cell asks for the rows it takes at the width its

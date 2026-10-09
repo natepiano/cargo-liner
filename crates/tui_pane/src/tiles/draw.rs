@@ -646,6 +646,7 @@ mod tests {
     use super::*;
     use crate::TileDemand;
     use crate::TileFill;
+    use crate::tiles::constants::MIN_TILE_HEIGHT;
     use crate::tiles::constants::PROGRESS_SCALE;
     use crate::tiles::grid::TilePiece;
     use crate::tiles::grid::TilePlacement;
@@ -2274,6 +2275,49 @@ mod tests {
         );
         grid.settle_for_test();
         assert_eq!(grid.placements(large, growth).len(), 3);
+    }
+
+    #[test]
+    fn a_command_refused_for_height_opens_when_there_is_room() {
+        let growth = TileGrowth::default();
+        let cells = StubCells {
+            summary_foot: SummaryFoot::Empty,
+            groups:       vec![1, 2],
+        };
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let floor = MIN_TILE_HEIGHT.saturating_add(MIN_TILE_HEIGHT);
+        grid.set_min_tile_height(floor);
+        let short = Rect::new(0, 0, 100, floor);
+        let mut buffer = Buffer::empty(short);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            short,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        assert_eq!(grid.placements(short, growth).len(), 1);
+
+        let cell_count = u16::try_from(cells.groups.len().saturating_add(1)).unwrap_or(u16::MAX);
+        let shared_borders = cell_count.saturating_sub(1);
+        let tall_height = floor
+            .saturating_mul(cell_count)
+            .saturating_sub(shared_borders);
+        let tall = Rect::new(0, 0, 100, tall_height);
+        buffer = Buffer::empty(tall);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            tall,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        assert_eq!(grid.placements(tall, growth).len(), 3);
     }
 
     #[test]

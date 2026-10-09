@@ -65,9 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default Dark uses an RGB status-bar ground on which its default, title, accent and secondary xterm inks all meet 4.5:1 contrast.
 - Default Light uses a darker title ink so status-line text meets 4.5:1 contrast wherever the built-in theme supplies both RGB colours.
 - Command cells have a 40-cell floor; a window too narrow for the grid shows the summary alone until the cells fit again.
+- Command cells have a six-row floor; commands without room for a full cell stay in the summary until one fits.
+- Mark tables when rows or wrapped command lines are cut, and give command text the cells left by empty compiler and runs columns.
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+- A whole command that exactly fills its column keeps its last letter when later table rows do not fit; when a row is free below it, the last word and continuation mark move there.
 - `appearance.mode = "auto"` follows the system's light or dark setting from the first frame and while cargo-tile runs, so the summary's memory total and the rest of the light theme stay readable on a light terminal with transparency on or off.
 - Cells moving between columns no longer leave an unpainted ring, flash an interior row back to the screen ground, open a blank arrival slot or write their contents over a column border when the background is opaque. Touching cells and columns keep one shared separator throughout every grid motion. A closing column keeps every cell at its starting height while it narrows, including below a widened summary, and every moving cell keeps exactly one title visible.
 - With `p` spelling command lines out, a cell whose chain holds a very long command line -- a `python3 -c` script, say -- no longer takes seconds a frame, which held up every key until the frame finished. Fitting the chain to its cell measured the whole chain again once per spare row; it now measures at most once per step of the chain.

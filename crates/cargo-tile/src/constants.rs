@@ -121,6 +121,8 @@ pub(crate) const READER_TIMESTAMPS_ENV: &str = "CARGO_TILE_READER_TIMESTAMPS";
 /// `tiles.widen_summary` when `config.toml` says nothing: the summary
 /// stays in its own column.
 pub(crate) const DEFAULT_WIDEN_SUMMARY: bool = false;
+/// Shortest useful height for one command cell, including its frame.
+pub(crate) const MIN_CELL_HEIGHT: u16 = 6;
 /// Narrowest useful width for one command cell, including its frame.
 pub(crate) const MIN_CELL_WIDTH: u16 = 40;
 /// Width at which a summary memory foot leaves room for the content-rows readout only.
