@@ -9,6 +9,40 @@ use super::constants::TILE_ANIMATION_MILLIS;
 use super::constants::TILE_BORDER_ROWS;
 use super::constants::TILE_DEMAND_STEP;
 
+/// The framed rows a cell uses now and the stepped demand that controls
+/// layout motion.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct CellRowDemand {
+    /// Rows the current content and frame use.
+    exact_framed:   u16,
+    /// Rows after content demand is rounded to a layout step.
+    stepped_framed: u16,
+}
+
+impl CellRowDemand {
+    /// A test or retained layout demand whose exact and stepped rows agree.
+    pub(super) const fn uniform(framed: u16) -> Self {
+        Self {
+            exact_framed:   framed,
+            stepped_framed: framed,
+        }
+    }
+
+    /// Rows the current content and frame use.
+    pub(super) const fn exact_framed(self) -> u16 { self.exact_framed }
+
+    /// Rows that control layout depth and motion.
+    pub(super) const fn stepped_framed(self) -> u16 { self.stepped_framed }
+
+    /// Keep this layout step while accepting a new exact demand.
+    pub(super) const fn with_exact_from(self, current: Self) -> Self {
+        Self {
+            exact_framed: current.exact_framed,
+            ..self
+        }
+    }
+}
+
 /// The sizes and timings a [`super::TileGrid`] lays its cells out and
 /// animates them with. Every grid runs on [`Self::default`], which
 /// reads the constants in [`super::constants`].
@@ -52,15 +86,21 @@ impl Default for TileSettings {
 }
 
 impl TileSettings {
-    /// The rows a cell drawing `rows` of content asks its column for:
-    /// the content rounded up to a whole [`Self::demand_step`], plus the
-    /// rows its own border costs.
-    pub(super) fn demanded_rows(&self, rows: usize) -> u16 {
+    /// The exact framed rows for `rows` of content and the layout demand after
+    /// rounding that content up to a whole [`Self::demand_step`].
+    pub(super) fn demanded_rows(&self, rows: usize) -> CellRowDemand {
+        let exact = u16::try_from(rows)
+            .unwrap_or(u16::MAX)
+            .saturating_add(self.border_rows);
         let stepped = rows
             .div_ceil(self.demand_step)
             .saturating_mul(self.demand_step);
-        u16::try_from(stepped)
+        let stepped = u16::try_from(stepped)
             .unwrap_or(u16::MAX)
-            .saturating_add(self.border_rows)
+            .saturating_add(self.border_rows);
+        CellRowDemand {
+            exact_framed:   exact,
+            stepped_framed: stepped,
+        }
     }
 }

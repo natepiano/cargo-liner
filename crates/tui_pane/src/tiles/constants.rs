@@ -29,6 +29,9 @@ pub(super) const TILE_BORDER_ROWS: u16 = 2;
 /// re-divides on the move from a quiet cell to a busy one rather than
 /// on every scan that added a row or rewrapped a command line.
 pub(super) const TILE_DEMAND_STEP: usize = 3;
+/// Divisor that makes half of one summary position the largest shortfall
+/// the summary may take from its column mates without adding a position.
+pub(super) const SUMMARY_SLOT_SHORTFALL_DIVISOR: u16 = 2;
 
 // cell readout
 /// Kept between the summary foot and the rows readout.

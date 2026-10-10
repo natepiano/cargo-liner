@@ -322,6 +322,10 @@ impl TileCells<InvocationId> for Cells<'_> {
         tile_demands(self.roster, widths, self.hidden_when_idle, self.tree)
     }
 
+    fn rows_drawn(&self, content: &TileContent, area: Rect) -> u16 {
+        content_rows_drawn(self.roster, content, area, self.hidden_when_idle, self.tree)
+    }
+
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
         draw_contents(
             buffer,
@@ -337,6 +341,61 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> {
         sccache_label(self.sccache, rect)
     }
+}
+
+/// Rows one cell occupies inside the area above its readout.
+fn content_rows_drawn(
+    roster: &Roster,
+    content: &TileContent,
+    area: Rect,
+    hidden_when_idle: &[String],
+    tree: ProcessTree,
+) -> u16 {
+    match content {
+        TileContent::Summary => {
+            let rows = summary_rows(roster, hidden_when_idle);
+            let rows: Vec<&TrackedRow> = rows.iter().map(AsRef::as_ref).collect();
+            process_table_rows_drawn(&rows, TableKind::Summary, area, PinnedGroup::Unpinned, tree)
+        },
+        TileContent::Group(id) => group_rows_drawn(roster, id, area, hidden_when_idle, tree),
+        TileContent::Empty(_) => 0,
+    }
+}
+
+/// Rows one command cell occupies across its ancestry and process table.
+fn group_rows_drawn(
+    roster: &Roster,
+    id: &InvocationId,
+    area: Rect,
+    hidden_when_idle: &[String],
+    tree: ProcessTree,
+) -> u16 {
+    let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
+        return 0;
+    };
+    let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
+    let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
+    let ancestry = drawn_ancestry(group, leads_as_ancestor, tree);
+    let table_demand = table_height(
+        &rows,
+        TableKind::Command,
+        area.width,
+        PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
+        tree,
+    );
+    let ancestry_rows = ancestry_rows_drawn(&ancestry, area, table_demand);
+    let table_area = Rect {
+        y: area.y.saturating_add(ancestry_rows),
+        height: area.height.saturating_sub(ancestry_rows),
+        ..area
+    };
+    ancestry_rows.saturating_add(process_table_rows_drawn(
+        &rows,
+        TableKind::Command,
+        table_area,
+        PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
+        tree,
+    ))
 }
 
 /// What every cell is asking for, each measured at the width it will be
@@ -1254,6 +1313,21 @@ fn ancestry_budget(height: u16, table: usize) -> usize {
         .saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
+/// Rows a fitted ancestry block occupies, including its lower gap.
+fn ancestry_rows_drawn(ancestry: &[Ancestor], area: Rect, table: usize) -> u16 {
+    let budget = ancestry_budget(area.height, table);
+    let levels = ancestry_fit(ancestry, budget, |levels| {
+        ancestry_height(levels, area.width)
+    });
+    if levels.is_empty() {
+        return 0;
+    }
+    let rows = ancestry_height(&levels, area.width).min(budget.max(1));
+    u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(ANCESTRY_GAP_HEIGHT)
+}
+
 /// Which ancestors a block of `budget` rows carries and which segment it elides.
 ///
 /// A chain that fits is drawn whole. One that does not keeps both ends:
@@ -1822,6 +1896,38 @@ fn heading_fade(rows: &[&TrackedRow]) -> u8 {
 /// and push the command being watched off the bottom of its own cell.
 /// The summary pins nothing: every row there leads a command of its
 /// own, so there is no one directory the cell is about.
+fn process_table_rows_drawn(
+    rows: &[&TrackedRow],
+    kind: TableKind,
+    area: Rect,
+    pinned: PinnedGroup<'_>,
+    tree: ProcessTree,
+) -> u16 {
+    if rows.is_empty() {
+        let empty_table_rows = TABLE_HEADER_HEIGHT.saturating_add(GROUP_HEADER_HEIGHT);
+        return area.height.min(empty_table_rows);
+    }
+    let layout = TableLayout::of(rows, kind, area, pane_background(false), tree);
+    if layout.columns.is_empty() {
+        return area.height.min(TABLE_HEADER_HEIGHT);
+    }
+    let groups = group_by_path(rows, pinned);
+    let drawn_groups: Vec<Vec<DrawnRow<'_>>> = groups
+        .iter()
+        .map(|group| {
+            group
+                .rows
+                .iter()
+                .map(|row| process_row(row, &layout))
+                .collect()
+        })
+        .collect();
+    let header_rows = area.height.min(TABLE_HEADER_HEIGHT);
+    let available_height = area.height.saturating_sub(header_rows);
+    let plan = process_table_plan(&drawn_groups, available_height);
+    header_rows.saturating_add(plan.rows_drawn(&drawn_groups, available_height))
+}
+
 fn draw_process_table(
     buffer: &mut Buffer,
     area: Rect,
@@ -1924,6 +2030,38 @@ struct ProcessTablePlan {
     keep_gaps:           bool,
     /// Groups with room for both their heading and first process line.
     visible_group_count: usize,
+}
+
+impl ProcessTablePlan {
+    /// Rows occupied by the groups selected for this height.
+    fn rows_drawn(&self, groups: &[Vec<DrawnRow<'_>>], available_height: u16) -> u16 {
+        let mut remaining = available_height;
+        let mut drawn = 0u16;
+        for (index, rows) in groups.iter().take(self.visible_group_count).enumerate() {
+            let gap = if index == 0 || !self.keep_gaps {
+                0
+            } else {
+                GROUP_GAP_HEIGHT
+            };
+            let gap = gap.min(remaining);
+            remaining = remaining.saturating_sub(gap);
+            drawn = drawn.saturating_add(gap);
+
+            let process_rows = rows
+                .iter()
+                .map(|row| row.lines)
+                .fold(0, u16::saturating_add);
+            let heading = GROUP_HEADER_HEIGHT.min(remaining);
+            let processes = remaining.saturating_sub(heading).min(process_rows);
+            let group_rows = heading.saturating_add(processes);
+            remaining = remaining.saturating_sub(group_rows);
+            drawn = drawn.saturating_add(group_rows);
+            if processes < process_rows {
+                break;
+            }
+        }
+        drawn
+    }
 }
 
 /// Choose all inter-directory gaps before drawing any table content.
@@ -2866,6 +3004,7 @@ mod tests {
     use tui_pane::TileFill;
     use tui_pane::TileGrid;
     use tui_pane::TileGrowth;
+    use tui_pane::TilePlacement;
     use tui_pane::ToastStyle;
     use tui_pane::draw_backdrop_notice;
     use tui_pane::fade_to_background;
@@ -5850,8 +5989,11 @@ mod tests {
         buffer
     }
 
-    /// Draw a settled production grid for the command-cell content checks.
-    fn settled_cells_buffer(roster: &Roster, area: Rect) -> (TileGrid<InvocationId>, Buffer) {
+    /// Draw a settled grid using one cell-content implementation.
+    fn settled_buffer_with_cells(
+        cells: &impl TileCells<InvocationId>,
+        area: Rect,
+    ) -> (TileGrid<InvocationId>, Buffer) {
         let growth = TileGrowth {
             initial_rows:  12,
             fill:          TileFill::Redistribute,
@@ -5860,14 +6002,6 @@ mod tests {
         let mut grid = tui_pane::TileGrid::new();
         grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
         grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
-        let sccache = SccacheStats::new();
-        let hidden_when_idle = hidden_when_idle();
-        let cells = Cells {
-            roster,
-            hidden_when_idle: &hidden_when_idle,
-            tree: ProcessTree::Long,
-            sccache: &sccache,
-        };
         let mut buffer = Buffer::empty(area);
         tui_pane::draw_tile_grid(
             &mut buffer,
@@ -5875,7 +6009,7 @@ mod tests {
             area,
             growth,
             TileGridContents::Shown,
-            &cells,
+            cells,
         );
         grid.settle_for_test();
         buffer = Buffer::empty(area);
@@ -5885,9 +6019,39 @@ mod tests {
             area,
             growth,
             TileGridContents::Shown,
-            &cells,
+            cells,
         );
         (grid, buffer)
+    }
+
+    /// Draw a settled production grid for the command-cell content checks.
+    fn settled_cells_buffer(roster: &Roster, area: Rect) -> (TileGrid<InvocationId>, Buffer) {
+        let sccache = SccacheStats::new();
+        let hidden_when_idle = hidden_when_idle();
+        let cells = Cells {
+            roster,
+            hidden_when_idle: &hidden_when_idle,
+            tree: ProcessTree::Long,
+            sccache: &sccache,
+        };
+        settled_buffer_with_cells(&cells, area)
+    }
+
+    /// Production cells with the trait's every-row default retained.
+    struct CellsWithoutRowReport<'a>(Cells<'a>);
+
+    impl TileCells<InvocationId> for CellsWithoutRowReport<'_> {
+        fn summary_title(&self) -> &str { self.0.summary_title() }
+
+        fn summary_foot(&self) -> SummaryFoot { self.0.summary_foot() }
+
+        fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands { self.0.demands(widths) }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
+            self.0.draw(buffer, content, inner, ground);
+        }
+
+        fn summary_labels(&self, rect: Rect) -> Vec<PaneFrameLabel> { self.0.summary_labels(rect) }
     }
 
     /// A roster with one independently tiled command per requested cell.
@@ -5910,6 +6074,257 @@ mod tests {
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         roster
+    }
+
+    /// A roster whose command cells span the requested directory counts.
+    fn directory_rich_roster(directory_counts: &[u32]) -> Roster {
+        let groups = directory_counts
+            .iter()
+            .enumerate()
+            .map(|(group_index, &directory_count)| {
+                let group_index = u32::try_from(group_index).unwrap_or(u32::MAX);
+                let first_pid = 4100_u32.saturating_add(group_index.saturating_mul(100));
+                let mut processes: Vec<CargoProcess> = (0..directory_count)
+                    .map(|directory_index| {
+                        let pid = first_pid.saturating_add(directory_index);
+                        let mut process = invocation(pid, &["build"]);
+                        process.path = format!("~/work-{group_index}/dir-{directory_index}");
+                        process.directory_identity = WorkingDirectoryIdentity::Absolute(
+                            format!("/test-home/work-{group_index}/dir-{directory_index}").into(),
+                        );
+                        process.started = RunStart::Known(u64::from(directory_index));
+                        process
+                    })
+                    .collect();
+                let lead = processes.remove(0);
+                CargoGroup {
+                    lead,
+                    rest: processes,
+                    ancestry: Vec::new(),
+                }
+            })
+            .collect();
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        roster
+    }
+
+    /// Draw the same roster with and without the production row report.
+    fn row_report_comparison(
+        roster: &Roster,
+        area: Rect,
+    ) -> (
+        (TileGrid<InvocationId>, Buffer),
+        (TileGrid<InvocationId>, Buffer),
+    ) {
+        let sccache = SccacheStats::new();
+        let hidden_when_idle = hidden_when_idle();
+        let production = Cells {
+            roster,
+            hidden_when_idle: &hidden_when_idle,
+            tree: ProcessTree::Long,
+            sccache: &sccache,
+        };
+        let without_report = CellsWithoutRowReport(Cells {
+            roster,
+            hidden_when_idle: &hidden_when_idle,
+            tree: ProcessTree::Long,
+            sccache: &sccache,
+        });
+        (
+            settled_buffer_with_cells(&production, area),
+            settled_buffer_with_cells(&without_report, area),
+        )
+    }
+
+    /// Content demand for one placement.
+    fn placement_demand(demands: &TileDemands, content: &TileContent) -> usize {
+        match content {
+            TileContent::Summary => demands.summary,
+            TileContent::Group(id) => demands
+                .groups
+                .iter()
+                .find(|demand| &demand.id == id)
+                .map_or(0, |demand| demand.rows),
+            TileContent::Empty(_) => 0,
+        }
+    }
+
+    /// Rows above the readout inside one settled placement.
+    fn placement_content_rows(placement: &TilePlacement<InvocationId>) -> u16 {
+        placement.frame.inner().height.saturating_sub(1)
+    }
+
+    /// Whether the row immediately above a placement's readout has no text.
+    fn has_blank_row_above_foot(buffer: &Buffer, placement: &TilePlacement<InvocationId>) -> bool {
+        let inner = placement.frame.inner();
+        if inner.height < 2 {
+            return false;
+        }
+        let y = inner.bottom().saturating_sub(2);
+        (inner.left()..inner.right()).all(|x| buffer[(x, y)].symbol().trim().is_empty())
+    }
+
+    /// Blank content rows inside one placement, excluding its readout.
+    fn blank_content_row_count(buffer: &Buffer, placement: &TilePlacement<InvocationId>) -> usize {
+        let inner = placement.frame.inner();
+        let foot = inner.bottom().saturating_sub(1);
+        (inner.top()..foot)
+            .filter(|&y| {
+                (inner.left()..inner.right()).all(|x| buffer[(x, y)].symbol().trim().is_empty())
+            })
+            .count()
+    }
+
+    /// Placements that retain a blank row while a column mate is short.
+    fn blank_rows_beside_hidden_content(
+        roster: &Roster,
+        grid: &TileGrid<InvocationId>,
+        buffer: &Buffer,
+        area: Rect,
+    ) -> Vec<TileContent> {
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let placements = grid.placements(area, growth);
+        let widths: Vec<_> = placements
+            .iter()
+            .map(|placement| (placement.content.clone(), placement.frame.inner().width))
+            .collect();
+        let demands = tile_demands(roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+        placements
+            .iter()
+            .filter(|placement| {
+                let frame = placement.frame.rect();
+                let has_short_mate = placements.iter().any(|mate| {
+                    let mate_frame = mate.frame.rect();
+                    mate.content != placement.content
+                        && mate_frame.x == frame.x
+                        && mate_frame.width == frame.width
+                        && placement_demand(&demands, &mate.content)
+                            > usize::from(placement_content_rows(mate))
+                });
+                has_short_mate && has_blank_row_above_foot(buffer, placement)
+            })
+            .map(|placement| placement.content.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_near_full_summary_takes_rows_and_keeps_its_directory_gaps() {
+        let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
+        let area = Rect::new(0, 0, 200, 57);
+        let (grid, buffer) = settled_cells_buffer(&roster, area);
+        let placements = grid.placements(
+            area,
+            TileGrowth {
+                initial_rows:  12,
+                fill:          TileFill::Redistribute,
+                widen_summary: false,
+            },
+        );
+        let summary = placements
+            .into_iter()
+            .find(|placement| placement.content == TileContent::Summary)
+            .expect("the summary is placed");
+        let widths = [(TileContent::Summary, summary.frame.inner().width)];
+        let demands = tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+
+        assert_eq!(
+            usize::from(placement_content_rows(&summary)),
+            demands.summary
+        );
+        assert_eq!(
+            blank_content_row_count(&buffer, &summary),
+            roster.groups().len().saturating_sub(1)
+        );
+        assert!(!has_blank_row_above_foot(&buffer, &summary));
+    }
+
+    #[test]
+    fn a_summary_hiding_a_directory_leaves_no_blank_row_above_its_foot() {
+        let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
+        let area = Rect::new(0, 0, 64, 49);
+        let (production, without_report) = row_report_comparison(&roster, area);
+        let former =
+            blank_rows_beside_hidden_content(&roster, &without_report.0, &without_report.1, area);
+        let repaired =
+            blank_rows_beside_hidden_content(&roster, &production.0, &production.1, area);
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let placements = production.0.placements(area, growth);
+        let summary = placements
+            .iter()
+            .find(|placement| placement.content == TileContent::Summary)
+            .expect("the summary is placed");
+        let widths: Vec<_> = placements
+            .iter()
+            .map(|placement| (placement.content.clone(), placement.frame.inner().width))
+            .collect();
+        let demands = tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+
+        assert!(former.contains(&TileContent::Summary));
+        assert!(!repaired.contains(&TileContent::Summary));
+        assert!(demands.summary > usize::from(placement_content_rows(summary)));
+    }
+
+    #[test]
+    fn a_summary_hiding_rows_has_no_blank_foot_row_beside_a_hidden_directory() {
+        let roster = directory_rich_roster(&[2, 3, 2, 3]);
+        let area = Rect::new(0, 0, 200, 30);
+        let (grid, buffer) = settled_cells_buffer(&roster, area);
+        let blank = blank_rows_beside_hidden_content(&roster, &grid, &buffer, area);
+
+        assert!(!blank.contains(&TileContent::Summary), "{blank:?}");
+    }
+
+    #[test]
+    fn a_command_cell_leaves_no_spare_row_while_a_column_mate_is_short() {
+        let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
+        let area = Rect::new(0, 0, 200, 50);
+        let target = TileContent::Group(roster.groups()[0].id.clone());
+        let (production, without_report) = row_report_comparison(&roster, area);
+        let former =
+            blank_rows_beside_hidden_content(&roster, &without_report.0, &without_report.1, area);
+        let repaired =
+            blank_rows_beside_hidden_content(&roster, &production.0, &production.1, area);
+
+        assert!(former.contains(&target));
+        assert!(!repaired.contains(&target));
+    }
+
+    #[test]
+    fn a_command_hiding_rows_has_no_blank_foot_row_beside_hidden_ancestry() {
+        let ancestry = [ancestor(4001, "cargo"), ancestor(4002, "cargo")];
+        let roster = tiled_roster(4, &ancestry);
+        let area = Rect::new(0, 0, 200, 30);
+        let (grid, buffer) = settled_cells_buffer(&roster, area);
+        let blank = blank_rows_beside_hidden_content(&roster, &grid, &buffer, area);
+
+        assert!(
+            blank.iter().all(|content| *content == TileContent::Summary),
+            "{blank:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_command_cell_takes_the_row_its_column_mate_cannot_use() {
+        let roster = directory_rich_roster(&[2, 4, 6, 3, 5, 4]);
+        let area = Rect::new(0, 0, 126, 79);
+        let target = TileContent::Group(roster.groups()[1].id.clone());
+        let (production, without_report) = row_report_comparison(&roster, area);
+        let former =
+            blank_rows_beside_hidden_content(&roster, &without_report.0, &without_report.1, area);
+        let repaired =
+            blank_rows_beside_hidden_content(&roster, &production.0, &production.1, area);
+
+        assert!(former.contains(&target));
+        assert!(!repaired.contains(&target));
     }
 
     #[test]

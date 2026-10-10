@@ -111,6 +111,13 @@ pub trait TileCells<Id> {
     /// will have once the grid has opened a cell for it.
     fn demands(&self, widths: &[(TileContent<Id>, u16)]) -> TileDemands<Id>;
 
+    /// Rows the cell's content draws when `area` is the room available.
+    ///
+    /// The grid gives any rows below that count to a column mate that is
+    /// still short of its exact demand. Content that can use every row
+    /// keeps the default.
+    fn rows_drawn(&self, _content: &TileContent<Id>, area: Rect) -> u16 { area.height }
+
     /// Draw `content` into `inner`, the part of its cell above the
     /// readout. `ground` is the colour the cell is painted on.
     ///
@@ -177,6 +184,9 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     {
         return;
     }
+    grid.measure_row_steps(area, growth, |content, area| {
+        cells.rows_drawn(content, area)
+    });
     let drawing = grid.drawing(area, growth);
     draw_placements(buffer, area, &drawing, &demands, &widths, contents, cells);
 }
@@ -593,7 +603,7 @@ fn draw_summary_foot(
 }
 
 /// The cell interior above the readout, or the whole interior when it cannot show one.
-const fn content_area(inner: Rect) -> Rect {
+pub(super) const fn content_area(inner: Rect) -> Rect {
     match readout_row(inner) {
         ReadoutRow::Reserved(readout) => Rect {
             height: readout.y.saturating_sub(inner.y),
@@ -670,7 +680,44 @@ mod tests {
 
     struct StubCells {
         summary_foot: SummaryFoot,
-        groups:       Vec<u32>,
+        demands:      TileDemands<u32>,
+        row_counts:   Vec<StubRowCount>,
+    }
+
+    struct StubRowCount {
+        content: TileContent<u32>,
+        count:   u16,
+    }
+
+    impl StubCells {
+        fn new(groups: impl IntoIterator<Item = u32>) -> Self {
+            Self::demanding(1, groups.into_iter().map(|id| (id, 1)))
+        }
+
+        fn demanding(summary: usize, groups: impl IntoIterator<Item = (u32, usize)>) -> Self {
+            Self {
+                summary_foot: SummaryFoot::Empty,
+                demands:      TileDemands {
+                    summary,
+                    summary_width: 0,
+                    groups: groups
+                        .into_iter()
+                        .map(|(id, rows)| TileDemand { id, rows })
+                        .collect(),
+                },
+                row_counts:   Vec::new(),
+            }
+        }
+
+        fn with_summary_foot(mut self, summary_foot: SummaryFoot) -> Self {
+            self.summary_foot = summary_foot;
+            self
+        }
+
+        fn with_rows_drawn(mut self, content: TileContent<u32>, count: u16) -> Self {
+            self.row_counts.push(StubRowCount { content, count });
+            self
+        }
     }
 
     impl TileCells<u32> for StubCells {
@@ -683,15 +730,14 @@ mod tests {
         }
 
         fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
-            TileDemands {
-                summary:       1,
-                summary_width: 0,
-                groups:        self
-                    .groups
-                    .iter()
-                    .map(|&id| TileDemand { id, rows: 1 })
-                    .collect(),
-            }
+            self.demands.clone()
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            self.row_counts
+                .iter()
+                .find(|count| &count.content == content)
+                .map_or(area.height, |count| count.count.min(area.height))
         }
 
         fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
@@ -808,10 +854,7 @@ mod tests {
             .iter()
             .map(|&id| (TileContent::Group(id), measured))
             .collect::<Vec<_>>();
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups,
-        };
+        let cells = StubCells::new(groups);
         let mut buffer = Buffer::empty(area);
         draw_placements(
             &mut buffer,
@@ -1143,6 +1186,78 @@ mod tests {
     }
 
     #[test]
+    fn the_summary_shows_no_blank_row_while_a_cell_in_its_column_is_short() {
+        let area = Rect::new(0, 0, 200, 50);
+        let asked = 12;
+        let cells = StubCells::demanding(asked, (1..=10).map(|id| (id, asked)));
+        let (grid, _buffer) = settled_grid(area, &cells);
+        let placements = grid.placements(area, TileGrowth::default());
+        let summary = &placements[0];
+        let summary_frame = summary.frame.rect();
+
+        assert_eq!(summary.content, TileContent::Summary);
+        assert!(placements.iter().skip(1).any(|placement| {
+            let frame = placement.frame.rect();
+            frame.x == summary_frame.x
+                && frame.width == summary_frame.width
+                && usize::from(content_area(placement.frame.inner()).height) < asked
+        }));
+        assert_eq!(
+            usize::from(content_area(summary.frame.inner()).height),
+            asked
+        );
+    }
+
+    #[test]
+    fn a_cell_draws_no_spare_row_while_a_column_mate_hides_rows() {
+        let area = Rect::new(0, 0, 200, 50);
+        let short_ask = 1;
+        let long_ask = 50;
+        let cells = StubCells::demanding(
+            1,
+            [
+                (1, 12),
+                (2, 12),
+                (3, short_ask),
+                (4, long_ask),
+                (5, 12),
+                (6, 12),
+                (7, 12),
+                (8, 12),
+            ],
+        );
+        let (grid, _buffer) = settled_grid(area, &cells);
+        let placements = grid.placements(area, TileGrowth::default());
+        let short = &placements[3];
+        let long = &placements[4];
+
+        assert_eq!(short.content, TileContent::Group(3));
+        assert_eq!(long.content, TileContent::Group(4));
+        assert_eq!(short.frame.rect().x, long.frame.rect().x);
+        assert!(usize::from(content_area(long.frame.inner()).height) < long_ask);
+        assert_eq!(
+            usize::from(content_area(short.frame.inner()).height),
+            short_ask
+        );
+    }
+
+    #[test]
+    fn reported_unused_rows_go_to_the_most_short_column_mate() {
+        let area = Rect::new(0, 0, 80, 40);
+        let cells =
+            StubCells::demanding(1, [(1, 100), (2, 12)]).with_rows_drawn(TileContent::Group(2), 10);
+        let (grid, _buffer) = settled_grid(area, &cells);
+        let placements = grid.placements(area, TileGrowth::default());
+        let first = &placements[1];
+        let donor = &placements[2];
+
+        assert_eq!(first.content, TileContent::Group(1));
+        assert_eq!(donor.content, TileContent::Group(2));
+        assert_eq!(content_area(donor.frame.inner()).height, 10);
+        assert_eq!(first.frame.rect().bottom(), donor.frame.rect().top() + 1);
+    }
+
+    #[test]
     fn a_piece_in_flight_leaves_no_cell_unpainted() {
         crate::set_transparent_background(false);
         let area = Rect::new(0, 0, 60, 12);
@@ -1174,10 +1289,7 @@ mod tests {
             groups:        vec![TileDemand { id: 7, rows: 2 }],
         };
         let widths = [(TileContent::Summary, 19), (TileContent::Group(7), 19)];
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       vec![7],
-        };
+        let cells = StubCells::new([7]);
         let mut buffer = Buffer::empty(area);
 
         draw_placements(
@@ -1226,10 +1338,7 @@ mod tests {
             groups:        vec![TileDemand { id: 7, rows: 2 }, TileDemand { id: 8, rows: 2 }],
         };
         let widths = [(TileContent::Group(7), 18), (TileContent::Group(8), 18)];
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       vec![7, 8],
-        };
+        let cells = StubCells::new([7, 8]);
         let draw = |contents| {
             let mut buffer = Buffer::empty(area);
             draw_placements(
@@ -1921,10 +2030,7 @@ mod tests {
     #[test]
     fn summary_foot_is_written_only_on_summary_readout_row() {
         let area = Rect::new(0, 0, 80, 16);
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Text(Line::raw(FOOT_TEXT)),
-            groups:       vec![7],
-        };
+        let cells = StubCells::new([7]).with_summary_foot(SummaryFoot::Text(Line::raw(FOOT_TEXT)));
         let (grid, buffer) = settled_grid(area, &cells);
         let placements = grid.placements(area, TileGrowth::default());
         assert_eq!(placements.len(), 2);
@@ -2137,10 +2243,7 @@ mod tests {
             fill:          TileFill::Redistribute,
             widen_summary: false,
         };
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       (1..=8).collect(),
-        };
+        let cells = StubCells::new(1..=8);
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         let mut wide = Buffer::empty(TITLE_AREA);
@@ -2186,10 +2289,7 @@ mod tests {
             fill:          TileFill::Redistribute,
             widen_summary: false,
         };
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       (1..=8).collect(),
-        };
+        let cells = StubCells::new(1..=8);
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         let mut buffer = Buffer::empty(TITLE_AREA);
@@ -2244,10 +2344,7 @@ mod tests {
     #[test]
     fn a_command_refused_in_a_small_window_opens_when_there_is_room() {
         let growth = TileGrowth::default();
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       vec![1, 2],
-        };
+        let cells = StubCells::new([1, 2]);
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         let small = Rect::new(0, 0, 30, TITLE_AREA.height);
@@ -2280,10 +2377,7 @@ mod tests {
     #[test]
     fn a_command_refused_for_height_opens_when_there_is_room() {
         let growth = TileGrowth::default();
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       vec![1, 2],
-        };
+        let cells = StubCells::new([1, 2]);
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         let floor = MIN_TILE_HEIGHT.saturating_add(MIN_TILE_HEIGHT);
@@ -2301,7 +2395,8 @@ mod tests {
         grid.settle_for_test();
         assert_eq!(grid.placements(short, growth).len(), 1);
 
-        let cell_count = u16::try_from(cells.groups.len().saturating_add(1)).unwrap_or(u16::MAX);
+        let cell_count =
+            u16::try_from(cells.demands.groups.len().saturating_add(1)).unwrap_or(u16::MAX);
         let shared_borders = cell_count.saturating_sub(1);
         let tall_height = floor
             .saturating_mul(cell_count)
@@ -2323,10 +2418,7 @@ mod tests {
     #[test]
     fn a_hidden_grid_too_small_draws_nothing() {
         let area = Rect::new(0, 0, TEST_TILE_WIDTH - 1, TITLE_AREA.height);
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Text(Line::raw(FOOT_TEXT)),
-            groups:       vec![1],
-        };
+        let cells = StubCells::new([1]).with_summary_foot(SummaryFoot::Text(Line::raw(FOOT_TEXT)));
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         let mut buffer = Buffer::empty(area);
@@ -2349,14 +2441,8 @@ mod tests {
             fill:          TileFill::Redistribute,
             widen_summary: false,
         };
-        let before = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       (1..=8).collect(),
-        };
-        let after = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       (1..=3).collect(),
-        };
+        let before = StubCells::new(1..=8);
+        let after = StubCells::new(1..=3);
         let mut grid = TileGrid::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         let mut buffer = Buffer::empty(TITLE_AREA);
@@ -2418,10 +2504,7 @@ mod tests {
             },
             growth,
         );
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Empty,
-            groups:       (1..=5).collect(),
-        };
+        let cells = StubCells::new(1..=5);
         let mut buffer = Buffer::empty(area);
         draw_tile_grid(
             &mut buffer,
@@ -2442,10 +2525,7 @@ mod tests {
     #[test]
     fn hidden_grid_draws_no_summary_foot() {
         let area = Rect::new(0, 0, 80, 8);
-        let cells = StubCells {
-            summary_foot: SummaryFoot::Text(Line::raw(FOOT_TEXT)),
-            groups:       Vec::new(),
-        };
+        let cells = StubCells::new([]).with_summary_foot(SummaryFoot::Text(Line::raw(FOOT_TEXT)));
         let mut grid = TileGrid::new();
         let mut buffer = Buffer::empty(area);
         draw_tile_grid(
