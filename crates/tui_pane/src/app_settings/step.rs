@@ -11,6 +11,7 @@ use crate::AppearanceConfig;
 use crate::InitialRows;
 use crate::LoadedConfig;
 use crate::TileFill;
+use crate::TileView;
 use crate::app_config;
 use crate::registry;
 use crate::set_active_theme;
@@ -38,6 +39,8 @@ pub enum FrameworkSetting {
     InitialRows,
     /// `tiles.fill`: `add_new`, `redistribute`.
     TileFill,
+    /// `tiles.view`: `auto`, `summary`, `cells`.
+    TileView,
     /// `tiles.widen_summary`: `true`, `false`.
     WidenSummary,
     /// `appearance.transparent`: `true`, `false`.
@@ -63,6 +66,9 @@ pub trait AppConfig: Default + DeserializeOwned + Serialize {
 
     /// `tiles.fill`, for its stepper to edit.
     fn tile_fill_mut(&mut self) -> &mut TileFill;
+
+    /// `tiles.view`, for its stepper to edit.
+    fn tile_view_mut(&mut self) -> &mut TileView;
 
     /// `tiles.widen_summary`, for its stepper to edit.
     fn widen_summary_mut(&mut self) -> &mut bool;
@@ -119,6 +125,7 @@ pub fn step_framework_setting<C: AppConfig>(
         },
         FrameworkSetting::InitialRows => config.initial_rows_mut().step(step),
         FrameworkSetting::TileFill => config.tile_fill_mut().step(step),
+        FrameworkSetting::TileView => config.tile_view_mut().step(step),
         // Two values, so a step either way lands on the other one.
         FrameworkSetting::WidenSummary => {
             let widen = config.widen_summary_mut();
@@ -188,6 +195,7 @@ mod tests {
         appearance:    AppearanceConfig<TestApp>,
         initial_rows:  InitialRows,
         tile_fill:     TileFill,
+        tile_view:     TileView,
         widen_summary: bool,
     }
 
@@ -203,6 +211,8 @@ mod tests {
         fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.initial_rows }
 
         fn tile_fill_mut(&mut self) -> &mut TileFill { &mut self.tile_fill }
+
+        fn tile_view_mut(&mut self) -> &mut TileView { &mut self.tile_view }
 
         fn widen_summary_mut(&mut self) -> &mut bool { &mut self.widen_summary }
     }
@@ -252,6 +262,35 @@ mod tests {
     #[test]
     fn no_values_leaves_the_current_one() {
         assert_eq!(stepped(&[], "z", SettingStep::Next), "z");
+    }
+
+    #[test]
+    fn the_view_row_steps_through_auto_summary_and_cells() {
+        install_test_state();
+        let mut loaded = loaded_config();
+        let mut notice = None;
+
+        step_framework_setting(
+            FrameworkSetting::TileView,
+            SettingStep::Next,
+            &mut loaded,
+            &mut notice,
+        );
+        assert_eq!(loaded.config.tile_view, TileView::Summary);
+        step_framework_setting(
+            FrameworkSetting::TileView,
+            SettingStep::Next,
+            &mut loaded,
+            &mut notice,
+        );
+        assert_eq!(loaded.config.tile_view, TileView::Cells);
+        step_framework_setting(
+            FrameworkSetting::TileView,
+            SettingStep::Next,
+            &mut loaded,
+            &mut notice,
+        );
+        assert_eq!(loaded.config.tile_view, TileView::Auto);
     }
 
     #[test]

@@ -8,9 +8,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- `TileView` configures `tiles.view` as `auto`, `summary` or `cells`; `TileGrid::set_view`, `FrameworkSetting::TileView`, `AppConfig::tile_view_mut` and `SettingsRows::tile_view` connect it to each app and its settings overlay.
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- The tile grid's automatic view shows command cells only when the summary draws at least as many content rows beside them as it draws alone. The choice changes on settled frames, retains a three-row margin when returning to cells, and stays fixed through grid motion.
 - Tile columns give available rows first to cells below their exact framed demand. A summary no more than half a position short borrows the difference from its tallest mates without taking any tile below its height floor.
 - `wrapped` is the shared boundary-aware text wrapper, including comma break points; toast bodies retain their written spacing, and `render_toasts` now takes the body area it draws within.
 - Toast cards grow to the rows their bodies draw at the available card width, wrap each explicit line through `wrapped`, pad the body on both sides, fill widths that leave less than eight cells beside them, and reserve an available action row; when the stack gives a body fewer rows, its last visible row ends in `…`.

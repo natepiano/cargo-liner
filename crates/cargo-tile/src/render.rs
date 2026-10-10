@@ -288,6 +288,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
         tree:             app.tree,
         sccache:          &app.sccache,
     };
+    app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
@@ -3005,6 +3006,7 @@ mod tests {
     use tui_pane::TileGrid;
     use tui_pane::TileGrowth;
     use tui_pane::TilePlacement;
+    use tui_pane::TileView;
     use tui_pane::ToastStyle;
     use tui_pane::draw_backdrop_notice;
     use tui_pane::fade_to_background;
@@ -6002,6 +6004,7 @@ mod tests {
         let mut grid = tui_pane::TileGrid::new();
         grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
         grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
+        grid.set_view(TileView::Cells);
         let mut buffer = Buffer::empty(area);
         tui_pane::draw_tile_grid(
             &mut buffer,
@@ -7647,10 +7650,10 @@ mod tests {
                 "│ Tiles:                                                   │",
                 "│   initial rows      < 4 >                                │",
                 "│   fill              < redistribute >                     │",
+                "│   view              < auto >                             │",
                 "│   widen summary     < false >                            │",
                 "│   fade seconds      < 3 >                                │",
                 "│ Capture:                                                 │",
-                "│   auto install      true                                 │",
                 "└──────────────────────────────────────────────────────────┘",
             ],
         ),

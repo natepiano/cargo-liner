@@ -17,6 +17,7 @@ use super::constants::NOTICES_SECTION;
 use super::constants::STEPPER_DECORATION_WIDTH;
 use super::constants::THEMES_LABEL;
 use super::constants::TILE_FILL_LABEL;
+use super::constants::TILE_VIEW_LABEL;
 use super::constants::TRANSPARENT_LABEL;
 use super::constants::UNRESOLVED_PATH;
 use super::constants::WIDEN_SUMMARY_LABEL;
@@ -27,6 +28,7 @@ use crate::InitialRows;
 use crate::SECTION_ITEM_INDENT;
 use crate::SettingsRow;
 use crate::TileFill;
+use crate::TileView;
 
 /// What the pane's nth selectable row edits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +186,17 @@ impl<S: Copy> SettingsRows<S> {
         );
     }
 
+    /// Push the `view` stepper, which walks `auto`, `summary` and
+    /// `cells`. No section: the app places it under a section of its
+    /// own.
+    pub fn tile_view(&mut self, view: TileView) {
+        self.push_stepper(
+            SettingTarget::Framework(FrameworkSetting::TileView),
+            TILE_VIEW_LABEL,
+            view.as_str(),
+        );
+    }
+
     /// Push the `widen summary` stepper, which walks `true` and
     /// `false`. No section: the app places it under a section of its
     /// own.
@@ -256,6 +269,7 @@ mod tests {
     use super::SettingsRows;
     use crate::SettingsRowIdentity;
     use crate::TileFill;
+    use crate::TileView;
     use crate::app_settings::FrameworkSetting;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,6 +300,7 @@ mod tests {
         rows.section("Top");
         rows.initial_rows(crate::InitialRows::default());
         rows.tile_fill(crate::TileFill::default());
+        rows.tile_view(crate::TileView::default());
         rows.widen_summary(false);
         rows.stepper(TestSetting::Speed, "speed", "3");
         rows.text(TestSetting::Names, "names", "a, b".to_string());
@@ -304,13 +319,14 @@ mod tests {
             [
                 SettingTarget::Framework(FrameworkSetting::InitialRows),
                 SettingTarget::Framework(FrameworkSetting::TileFill),
+                SettingTarget::Framework(FrameworkSetting::TileView),
                 SettingTarget::Framework(FrameworkSetting::WidenSummary),
                 SettingTarget::App(TestSetting::Speed),
                 SettingTarget::AppText(TestSetting::Names),
                 SettingTarget::ReadOnly,
             ]
         );
-        assert_eq!(rows.target(6), None);
+        assert_eq!(rows.target(7), None);
     }
 
     /// The `fill` row shows the value the way `config.toml` spells it.
@@ -325,6 +341,24 @@ mod tests {
             .map(|row| (row.label.as_str(), row.value.as_str()))
             .collect();
         assert_eq!(shown, [("fill", "add_new"), ("fill", "redistribute")]);
+    }
+
+    /// The `view` row shows the value the way `config.toml` spells it.
+    #[test]
+    fn the_view_row_shows_the_file_spelling() {
+        let mut rows = SettingsRows::<TestSetting>::new();
+        rows.tile_view(TileView::Auto);
+        rows.tile_view(TileView::Summary);
+        rows.tile_view(TileView::Cells);
+        let shown: Vec<_> = rows
+            .rows()
+            .iter()
+            .map(|row| (row.label.as_str(), row.value.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [("view", "auto"), ("view", "summary"), ("view", "cells")]
+        );
     }
 
     /// The `widen summary` row shows the value the way `config.toml`

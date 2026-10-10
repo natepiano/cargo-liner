@@ -13,6 +13,7 @@ use tui_pane::AppearanceConfig;
 use tui_pane::InitialRows;
 use tui_pane::TileFill;
 use tui_pane::TileGrowth;
+use tui_pane::TileView;
 
 use crate::constants::BINARY_NAME;
 use crate::constants::CONFIG_DIRNAME;
@@ -74,7 +75,7 @@ impl Default for CommandsConfig {
     }
 }
 
-/// How the tile grid grows.
+/// Tile grid arrangement and view settings.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct TilesConfig {
@@ -85,6 +86,9 @@ pub(crate) struct TilesConfig {
     /// How the cells spread over the columns once there is more than
     /// one: `add_new` or `redistribute`.
     pub(crate) fill:          TileFill,
+    /// Whether the grid chooses its view, always shows the summary, or
+    /// shows cells whenever they fit.
+    pub(crate) view:          TileView,
     /// Whether the summary widens over the next columns when its widest
     /// line does not fit its own; see [`TileGrowth::widen_summary`].
     pub(crate) widen_summary: bool,
@@ -99,6 +103,7 @@ impl Default for TilesConfig {
         Self {
             initial_rows:  InitialRows::default(),
             fill:          TileFill::default(),
+            view:          TileView::default(),
             widen_summary: DEFAULT_WIDEN_SUMMARY,
             fade_seconds:  DEFAULT_FADE_SECONDS,
         }
@@ -157,7 +162,7 @@ pub(crate) struct Config {
     pub(crate) capture:    CaptureConfig,
     /// `[commands]` — which commands the grid holds back while idle.
     pub(crate) commands:   CommandsConfig,
-    /// `[tiles]` — how the tile grid grows.
+    /// `[tiles]` — how the tile grid is arranged and viewed.
     pub(crate) tiles:      TilesConfig,
 }
 
@@ -171,6 +176,8 @@ impl AppConfig for Config {
     fn initial_rows_mut(&mut self) -> &mut InitialRows { &mut self.tiles.initial_rows }
 
     fn tile_fill_mut(&mut self) -> &mut TileFill { &mut self.tiles.fill }
+
+    fn tile_view_mut(&mut self) -> &mut TileView { &mut self.tiles.view }
 
     fn widen_summary_mut(&mut self) -> &mut bool { &mut self.tiles.widen_summary }
 }
@@ -202,6 +209,13 @@ mod tests {
         let complete =
             toml::to_string_pretty(&Config::default()).expect("a config should serialize");
         assert_eq!(round_trip(&complete), complete);
+    }
+
+    #[test]
+    fn summary_tile_view_round_trips() {
+        let restated = round_trip("[tiles]\nview = \"summary\"\n");
+        assert!(restated.contains("view = \"summary\""));
+        assert_eq!(round_trip(&restated), restated);
     }
 
     /// The case the write exists for: a file written before a section
@@ -243,6 +257,7 @@ hidden_when_idle = [\n    \"port\",\n    \"handler\",\n]
 [tiles]
 initial_rows = 4
 fill = \"redistribute\"
+view = \"auto\"
 widen_summary = false
 fade_seconds = 3
 ";

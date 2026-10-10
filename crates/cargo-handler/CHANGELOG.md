@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `appearance.mode = "auto"` selects the light or dark theme from the system before the first frame and follows changes while cargo-handler runs.
 
 ### Added
+- `[tiles] view`, stepped under Tiles in the settings overlay, selects `auto`, `summary` or `cells`; `auto` is the default.
 - The agents summary, when too long for its cell, takes the next cells of its column, pushing agent cells on, and gives them back once it fits; at the fit limit it is clipped as before. The summary also widens over the columns its depth opens, with `widen_summary` on by default.
 - A shell row whose subtree ends in one `sleep` and nothing else is a timer: its `runs` reads `timer`, in the shell color, and its name a pie and the time left, such as `◔ 3:48`, in place of the Bash call's description. The pie fills by the quarter of the `sleep` gone -- `○`, `◔`, `◑`, `◕` -- and reads `●` at its deadline; the time left reads `m:ss` under an hour, `h:mm:ss` from an hour up, and `0:00` once past. The `sleep`'s arguments add up as GNU `sleep` reads them, each a number with an optional `s`, `m`, `h` or `d`; a `sleep` with an argument that does not read, such as `infinity`, leaves the row a command. The countdown moves with the ages, redrawn each second. The probe's children carry `timer` with the `sleep`'s `started` and `deadline`, still at schema version 3.
 - Each Codex agent's service tier: the summary's `agent` column, the cell header's program and a Codex row's `runs` read `codex fast` for the fast tier it asked for and `codex --` for any other -- the last `thread_settings_applied` event in its rollout, else `-c service_tier=` on its command line, else the codex-pacer's history at the time the thread began -- and `codex` where no source names one. Each rollout is read only as far as it has grown since the last scan. The probe's rows and children carry `service_tier`, still at schema version 3.
@@ -37,3 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The framework overlays: `s` settings (appearance, initial rows, remote machines, file paths, notices), ctrl-k keymap editor, `?` shortcuts.
 - `config.toml`, `keymap.toml` and `themes/` under `<os config dir>/cargo-handler/`, with four built-in themes mirrored as TOML under `themes/`.
 - On KDE Plasma the attract screen draws the windows behind the terminal once `assets/cargo-handler.desktop.in` is installed: `scripts/install-desktop-entry.sh --crate cargo-handler`, or the script given a binary named `cargo-handler`. `KWin` grants window capture by executable path, so without the entry the backdrop is the wallpaper.
+
+### Changed
+- In `auto`, the grid shows only the summary when cells would show fewer of its rows than the summary alone; `summary` always shows it alone, and `cells` uses cells whenever they meet their size floor.

@@ -45,6 +45,7 @@ pub use app_config::AppearanceConfig;
 pub use app_config::InitialRows;
 pub use app_config::LoadedConfig;
 pub use app_config::TileFill;
+pub use app_config::TileView;
 pub use app_config::install_theme;
 pub use app_context::AppContext;
 pub use app_context::NoToastAction;

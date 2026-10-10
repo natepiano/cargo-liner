@@ -36,6 +36,8 @@ pub(super) const TRANSPARENT_LABEL: &str = "transparent";
 pub(super) const INITIAL_ROWS_LABEL: &str = "initial rows";
 /// Label of the `tiles.fill` stepper.
 pub(super) const TILE_FILL_LABEL: &str = "fill";
+/// Label of the `tiles.view` stepper.
+pub(super) const TILE_VIEW_LABEL: &str = "view";
 /// Label of the `tiles.widen_summary` stepper.
 pub(super) const WIDEN_SUMMARY_LABEL: &str = "widen summary";
 /// Section listing where the app's files live.
