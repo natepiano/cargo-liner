@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+- Grid motion no longer leaves an empty row above a cell's foot while that cell hides content.
 - Vertically constrained tables either keep every directory gap or yield them all, leaving any spare rows together above the foot.
 - A whole command that exactly fills its column keeps its last letter when later table rows do not fit; when a row is free below it, the last word and continuation mark move there.
 - `appearance.mode = "auto"` follows the system's light or dark setting from the first frame and while cargo-tile runs, so the summary's memory total and the rest of the light theme stay readable on a light terminal with transparency on or off.

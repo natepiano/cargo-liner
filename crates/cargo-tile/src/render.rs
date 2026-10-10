@@ -2,6 +2,7 @@
 //! bottom, and whichever framework overlay is open above them.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::path::Path;
 
 use ratatui::Frame;
@@ -282,12 +283,12 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
 /// arriving or leaving.
 fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridContents) {
     let growth = app.loaded_config.config.tiles.growth();
-    let cells = Cells {
-        roster:           &app.roster,
-        hidden_when_idle: &app.loaded_config.config.commands.hidden_when_idle,
-        tree:             app.tree,
-        sccache:          &app.sccache,
-    };
+    let cells = Cells::new(
+        &app.roster,
+        &app.loaded_config.config.commands.hidden_when_idle,
+        app.tree,
+        &app.sccache,
+    );
     app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
@@ -312,6 +313,47 @@ struct Cells<'a> {
     tree:             ProcessTree,
     /// What sccache reports, written along the summary cell's top border.
     sccache:          &'a SccacheStats,
+    /// Content-row answers already computed during this draw.
+    row_uses:         RefCell<Vec<MeasuredCellRowUse>>,
+}
+
+impl<'a> Cells<'a> {
+    /// Cell provider with an empty cache for this draw.
+    const fn new(
+        roster: &'a Roster,
+        hidden_when_idle: &'a [String],
+        tree: ProcessTree,
+        sccache: &'a SccacheStats,
+    ) -> Self {
+        Self {
+            roster,
+            hidden_when_idle,
+            tree,
+            sccache,
+            row_uses: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Painted and retained rows for one allocation, computed once per draw.
+    fn row_use(&self, content: &TileContent, area: Rect) -> GroupRowUse {
+        if let Some(use_rows) = self
+            .row_uses
+            .borrow()
+            .iter()
+            .find(|measured| measured.content == *content && measured.area == area)
+            .map(|measured| measured.use_rows)
+        {
+            return use_rows;
+        }
+        let use_rows =
+            content_row_use(self.roster, content, area, self.hidden_when_idle, self.tree);
+        self.row_uses.borrow_mut().push(MeasuredCellRowUse {
+            content: content.clone(),
+            area,
+            use_rows,
+        });
+        use_rows
+    }
 }
 
 impl TileCells<InvocationId> for Cells<'_> {
@@ -324,7 +366,11 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn rows_drawn(&self, content: &TileContent, area: Rect) -> u16 {
-        content_rows_drawn(self.roster, content, area, self.hidden_when_idle, self.tree)
+        self.row_use(content, area).drawn
+    }
+
+    fn rows_kept(&self, content: &TileContent, area: Rect) -> u16 {
+        self.row_use(content, area).kept
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
@@ -344,7 +390,18 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 }
 
-/// Rows one cell occupies inside the area above its readout.
+/// One content-row answer cached during a draw.
+struct MeasuredCellRowUse {
+    /// Cell whose content supplied the answer.
+    content:  TileContent,
+    /// Allocation at which the answer was measured.
+    area:     Rect,
+    /// Painted and retained rows at that allocation.
+    use_rows: GroupRowUse,
+}
+
+/// Rows one cell paints inside the area above its readout.
+#[cfg(test)]
 fn content_rows_drawn(
     roster: &Roster,
     content: &TileContent,
@@ -352,27 +409,76 @@ fn content_rows_drawn(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) -> u16 {
+    content_row_use(roster, content, area, hidden_when_idle, tree).drawn
+}
+
+/// Painted and retained rows for one cell allocation.
+fn content_row_use(
+    roster: &Roster,
+    content: &TileContent,
+    area: Rect,
+    hidden_when_idle: &[String],
+    tree: ProcessTree,
+) -> GroupRowUse {
     match content {
         TileContent::Summary => {
             let rows = summary_rows(roster, hidden_when_idle);
             let rows: Vec<&TrackedRow> = rows.iter().map(AsRef::as_ref).collect();
-            process_table_rows_drawn(&rows, TableKind::Summary, area, PinnedGroup::Unpinned, tree)
+            let drawn = process_table_rows_drawn(
+                &rows,
+                TableKind::Summary,
+                area,
+                PinnedGroup::Unpinned,
+                tree,
+            );
+            GroupRowUse { drawn, kept: drawn }
         },
-        TileContent::Group(id) => group_rows_drawn(roster, id, area, hidden_when_idle, tree),
-        TileContent::Empty(_) => 0,
+        TileContent::Group(id) => group_row_use(roster, id, area, hidden_when_idle, tree),
+        TileContent::Empty(_) => GroupRowUse { drawn: 0, kept: 0 },
     }
 }
 
-/// Rows one command cell occupies across its ancestry and process table.
-fn group_rows_drawn(
+/// Rows one cell retains before lending to a column mate.
+#[cfg(test)]
+fn content_rows_kept(
+    roster: &Roster,
+    content: &TileContent,
+    area: Rect,
+    hidden_when_idle: &[String],
+    tree: ProcessTree,
+) -> u16 {
+    content_row_use(roster, content, area, hidden_when_idle, tree).kept
+}
+
+/// Painted and retained rows across one command cell's two sections.
+#[derive(Clone, Copy)]
+struct GroupRowUse {
+    /// Rows the cell paints at this allocation.
+    drawn: u16,
+    /// Rows it retains before lending to a mate.
+    kept:  u16,
+}
+
+impl GroupRowUse {
+    /// Combine one ancestry allocation with the table below it.
+    const fn with_ancestry(ancestry: &AncestryRowUse, table_rows: u16) -> Self {
+        Self {
+            drawn: ancestry.drawn.saturating_add(table_rows),
+            kept:  ancestry.required.saturating_add(table_rows),
+        }
+    }
+}
+
+/// How one command cell uses its ancestry and process-table allocation.
+fn group_row_use(
     roster: &Roster,
     id: &InvocationId,
     area: Rect,
     hidden_when_idle: &[String],
     tree: ProcessTree,
-) -> u16 {
+) -> GroupRowUse {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
-        return 0;
+        return GroupRowUse { drawn: 0, kept: 0 };
     };
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
@@ -384,19 +490,20 @@ fn group_rows_drawn(
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
         tree,
     );
-    let ancestry_rows = ancestry_rows_drawn(&ancestry, area, table_demand);
+    let ancestry_rows = ancestry_row_use(&ancestry, area, table_demand);
     let table_area = Rect {
-        y: area.y.saturating_add(ancestry_rows),
-        height: area.height.saturating_sub(ancestry_rows),
+        y: area.y.saturating_add(ancestry_rows.drawn),
+        height: area.height.saturating_sub(ancestry_rows.drawn),
         ..area
     };
-    ancestry_rows.saturating_add(process_table_rows_drawn(
+    let table_rows = process_table_rows_drawn(
         &rows,
         TableKind::Command,
         table_area,
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
         tree,
-    ))
+    );
+    GroupRowUse::with_ancestry(&ancestry_rows, table_rows)
 }
 
 /// What every cell is asking for, each measured at the width it will be
@@ -523,7 +630,7 @@ fn group_height(
 /// blank row under it.
 ///
 /// The ask is exactly what [`draw_ancestry`] draws when the cell is
-/// given it, because [`ancestry_budget`] hands the block whatever the
+/// given it, because [`ancestry_allocation`] hands the block whatever the
 /// table does not need. Elision is then the answer to a cell that got
 /// less than it asked for, never to a cell that got what it asked for --
 /// which is what keeps the count the readout writes out equal to the
@@ -1002,7 +1109,8 @@ fn draw_ancestry(
     foot: AncestryFoot,
     table: usize,
 ) -> u16 {
-    let budget = ancestry_budget(area.height, table);
+    let allocation = ancestry_allocation(area.height, table);
+    let budget = allocation.content_rows;
     let levels = ancestry_fit(ancestry, budget, |levels| {
         ancestry_height(levels, area.width)
     });
@@ -1042,7 +1150,7 @@ fn draw_ancestry(
     // this same area.
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     Paragraph::new(lines).render(Rect { height, ..area }, buffer);
-    height.saturating_add(ANCESTRY_GAP_HEIGHT)
+    height.saturating_add(allocation.gap_rows)
 }
 
 /// End a line where its remaining content was cut.
@@ -1303,30 +1411,73 @@ fn ancestry_height(levels: &[AncestryLevel<'_>], width: u16) -> usize {
 /// Rows the ancestry block may take at a cell of `height` standing over
 /// a table of `table` rows.
 ///
-/// What the table needs comes off the top, then the blank row under the
-/// block: the table is what the cell is for, and the chain gets what is
-/// left. A cell granted its [`ancestry_demand`] has exactly the whole
-/// chain left over, so it draws the chain whole; a cell given less
-/// elides, and by exactly the shortfall.
+/// What the table needs comes off the top. Two or more remaining rows
+/// reserve the last for the gap below the block; one remaining row draws
+/// ancestry text without a gap. A cell granted its [`ancestry_demand`]
+/// has exactly the whole chain left over, so it draws the chain whole; a
+/// cell given less elides by the shortfall.
+#[cfg(test)]
 fn ancestry_budget(height: u16, table: usize) -> usize {
-    usize::from(height)
-        .saturating_sub(table)
-        .saturating_sub(usize::from(ANCESTRY_GAP_HEIGHT))
+    ancestry_allocation(height, table).content_rows
 }
 
-/// Rows a fitted ancestry block occupies, including its lower gap.
-fn ancestry_rows_drawn(ancestry: &[Ancestor], area: Rect, table: usize) -> u16 {
-    let budget = ancestry_budget(area.height, table);
+/// Rows available to ancestry content and to its separation from the table.
+struct AncestryAllocation {
+    /// Rows in which ancestry text may be drawn.
+    content_rows: usize,
+    /// Blank rows retained below ancestry text.
+    gap_rows:     u16,
+}
+
+/// Give a lone row to ancestry text, adding its lower gap when room remains.
+fn ancestry_allocation(height: u16, table: usize) -> AncestryAllocation {
+    let available = usize::from(height).saturating_sub(table);
+    let full_gap = usize::from(ANCESTRY_GAP_HEIGHT);
+    let gap_rows = if available > full_gap {
+        ANCESTRY_GAP_HEIGHT
+    } else {
+        0
+    };
+    AncestryAllocation {
+        content_rows: available.saturating_sub(usize::from(gap_rows)),
+        gap_rows,
+    }
+}
+
+/// Rows a fitted ancestry block draws and requires, including its lower gap.
+///
+/// One ancestry row beyond a nonempty table is optional: the grid may
+/// give it to a mate that completes a content step. If no mate can use
+/// it, the allocation stays here and [`draw_ancestry`] draws the line.
+struct AncestryRowUse {
+    /// Rows the block draws when it keeps this allocation.
+    drawn:    u16,
+    /// Rows the grid must retain before considering a transfer.
+    required: u16,
+}
+
+fn ancestry_row_use(ancestry: &[Ancestor], area: Rect, table: usize) -> AncestryRowUse {
+    let allocation = ancestry_allocation(area.height, table);
+    let budget = allocation.content_rows;
     let levels = ancestry_fit(ancestry, budget, |levels| {
         ancestry_height(levels, area.width)
     });
     if levels.is_empty() {
-        return 0;
+        return AncestryRowUse {
+            drawn:    0,
+            required: 0,
+        };
     }
     let rows = ancestry_height(&levels, area.width).min(budget.max(1));
-    u16::try_from(rows)
+    let drawn = u16::try_from(rows)
         .unwrap_or(u16::MAX)
-        .saturating_add(ANCESTRY_GAP_HEIGHT)
+        .saturating_add(allocation.gap_rows);
+    let required = if table > 0 && allocation.content_rows == 1 && allocation.gap_rows == 0 {
+        0
+    } else {
+        drawn
+    };
+    AncestryRowUse { drawn, required }
 }
 
 /// Which ancestors a block of `budget` rows carries and which segment it elides.
@@ -3749,22 +3900,62 @@ mod tests {
         assert_eq!(buffer_line(&buffer, 0), format!(" {ELISION} 3577444 sh"));
     }
 
-    /// Half a cell, with the blank row under the block taken out of
-    /// that half: whatever the chain says, the table is what the cell
-    /// is for.
+    /// The table receives its rows first. A second remaining row permits
+    /// the gap; a lone remaining row carries ancestry text itself.
     #[test]
     fn the_block_never_takes_more_than_half_the_cell() {
         assert_eq!(ancestry_budget(12, 6), 5);
         assert_eq!(ancestry_budget(4, 2), 1);
-        assert_eq!(ancestry_budget(2, 1), 0);
+        assert_eq!(ancestry_budget(2, 1), 1);
         assert_eq!(ancestry_budget(0, 0), 0);
     }
 
-    /// A cell with no room for the block at all draws none of it, and
-    /// leaves the table every row it had.
+    /// A cell with no row beyond the table draws no ancestry.
     #[test]
     fn a_cell_too_short_for_the_block_spends_nothing_on_it() {
-        assert!(ancestry_levels(&chain(3), ancestry_budget(2, 1)).is_empty());
+        assert!(ancestry_levels(&chain(3), ancestry_budget(1, 1)).is_empty());
+    }
+
+    #[test]
+    fn one_spare_row_draws_ancestry_without_a_gap() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 24, 2));
+        let area = buffer.area;
+        let ancestry = vec![ancestor(3334, "systemd"), ancestor(4445, "sh")];
+
+        let used = draw_ancestry(
+            &mut buffer,
+            area,
+            &ancestry,
+            0,
+            pane_background(false),
+            AncestryFoot::Other,
+            1,
+        );
+
+        assert_eq!(used, 1);
+        assert_eq!(buffer_line(&buffer, 0), format!(" {ELISION} 4445 sh"));
+    }
+
+    #[test]
+    fn one_spare_ancestry_row_does_not_have_to_be_kept() {
+        let area = Rect::new(0, 0, 24, 2);
+        let ancestry = vec![ancestor(3334, "systemd"), ancestor(4445, "sh")];
+        let row_use = ancestry_row_use(&ancestry, area, 1);
+
+        assert_eq!((row_use.drawn, row_use.required), (1, 0));
+    }
+
+    #[test]
+    fn one_table_row_and_one_ancestry_row_report_two_painted_rows() {
+        let use_rows = GroupRowUse::with_ancestry(
+            &AncestryRowUse {
+                drawn:    1,
+                required: 0,
+            },
+            1,
+        );
+
+        assert_eq!((use_rows.drawn, use_rows.kept), (2, 1));
     }
 
     /// A command whose parents could not be read costs the table
@@ -5964,12 +6155,7 @@ mod tests {
         grid.set_min_tile_width(crate::constants::MIN_CELL_WIDTH);
         let sccache = SccacheStats::new();
         let hidden_when_idle = hidden_when_idle();
-        let cells = Cells {
-            roster,
-            hidden_when_idle: &hidden_when_idle,
-            tree: ProcessTree::Long,
-            sccache: &sccache,
-        };
+        let cells = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
         tui_pane::draw_tile_grid(
             &mut buffer,
             &mut grid,
@@ -6031,12 +6217,7 @@ mod tests {
     fn settled_cells_buffer(roster: &Roster, area: Rect) -> (TileGrid<InvocationId>, Buffer) {
         let sccache = SccacheStats::new();
         let hidden_when_idle = hidden_when_idle();
-        let cells = Cells {
-            roster,
-            hidden_when_idle: &hidden_when_idle,
-            tree: ProcessTree::Long,
-            sccache: &sccache,
-        };
+        let cells = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
         settled_buffer_with_cells(&cells, area)
     }
 
@@ -6074,6 +6255,72 @@ mod tests {
                 }
             })
             .collect();
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        roster
+    }
+
+    /// One independently tiled command and one companion row per cell.
+    fn paired_tiled_roster(commands: u32, ancestry: &[Ancestor]) -> Roster {
+        let groups = (0..commands)
+            .map(|offset| {
+                let pid = 6100_u32.saturating_add(offset.saturating_mul(2));
+                let directory = offset.min(2);
+                let path = format!("~/rust/cargo-liner-{directory}");
+                let identity = WorkingDirectoryIdentity::Absolute(
+                    format!("/test-home/rust/cargo-liner-{directory}").into(),
+                );
+                let mut lead = invocation(pid, &["check"]);
+                lead.path.clone_from(&path);
+                lead.directory_identity.clone_from(&identity);
+                let mut companion = invocation(pid.saturating_add(1), &["check"]);
+                companion.path = path;
+                companion.directory_identity = identity;
+                CargoGroup {
+                    lead,
+                    rest: vec![companion],
+                    ancestry: ancestry.to_vec(),
+                }
+            })
+            .collect();
+        let mut roster = Roster::new();
+        roster.observe(groups, Instant::now());
+        roster
+    }
+
+    /// One optional ancestry row beside a command with `companions` extra rows.
+    fn ancestry_transfer_roster(companions: u32) -> Roster {
+        let mut donor = invocation(7100, &["check"]);
+        donor.path = "~/rust/transfer".to_string();
+        donor.directory_identity =
+            WorkingDirectoryIdentity::Absolute("/test-home/rust/transfer".into());
+        let mut recipient = invocation(7200, &["check"]);
+        recipient.path.clone_from(&donor.path);
+        recipient
+            .directory_identity
+            .clone_from(&donor.directory_identity);
+        let rest = (1..=companions)
+            .map(|offset| {
+                let mut companion = invocation(7200_u32.saturating_add(offset), &["check"]);
+                companion.path.clone_from(&donor.path);
+                companion
+                    .directory_identity
+                    .clone_from(&donor.directory_identity);
+                companion
+            })
+            .collect();
+        let groups = vec![
+            CargoGroup {
+                lead:     donor,
+                rest:     Vec::new(),
+                ancestry: vec![ancestor(7000, "cargo")],
+            },
+            CargoGroup {
+                lead: recipient,
+                rest,
+                ancestry: Vec::new(),
+            },
+        ];
         let mut roster = Roster::new();
         roster.observe(groups, Instant::now());
         roster
@@ -6122,18 +6369,13 @@ mod tests {
     ) {
         let sccache = SccacheStats::new();
         let hidden_when_idle = hidden_when_idle();
-        let production = Cells {
+        let production = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
+        let without_report = CellsWithoutRowReport(Cells::new(
             roster,
-            hidden_when_idle: &hidden_when_idle,
-            tree: ProcessTree::Long,
-            sccache: &sccache,
-        };
-        let without_report = CellsWithoutRowReport(Cells {
-            roster,
-            hidden_when_idle: &hidden_when_idle,
-            tree: ProcessTree::Long,
-            sccache: &sccache,
-        });
+            &hidden_when_idle,
+            ProcessTree::Long,
+            &sccache,
+        ));
         (
             settled_buffer_with_cells(&production, area),
             settled_buffer_with_cells(&without_report, area),
@@ -6177,6 +6419,19 @@ mod tests {
                 (inner.left()..inner.right()).all(|x| buffer[(x, y)].symbol().trim().is_empty())
             })
             .count()
+    }
+
+    /// Text inside one tile placement.
+    fn placement_text(buffer: &Buffer, placement: &TilePlacement<InvocationId>) -> String {
+        let inner = placement.frame.inner();
+        (inner.top()..inner.bottom())
+            .map(|y| {
+                (inner.left()..inner.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Placements that retain a blank row while a column mate is short.
@@ -6316,6 +6571,136 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_ancestry_row_goes_to_a_mates_next_process_step() {
+        let roster = ancestry_transfer_roster(2);
+        let area = Rect::new(0, 0, 80, 19);
+        let (grid, buffer) = settled_cells_buffer(&roster, area);
+        let placements = grid.placements(
+            area,
+            TileGrowth {
+                initial_rows:  12,
+                fill:          TileFill::Redistribute,
+                widen_summary: false,
+            },
+        );
+        let donor = placements
+            .iter()
+            .find(|placement| {
+                placement.content == TileContent::Group(roster.groups()[0].id.clone())
+            })
+            .expect("the ancestry donor is placed");
+        let recipient = placements
+            .iter()
+            .find(|placement| {
+                placement.content == TileContent::Group(roster.groups()[1].id.clone())
+            })
+            .expect("the process-row recipient is placed");
+
+        assert_eq!(placement_content_rows(donor), 3);
+        assert_eq!(placement_content_rows(recipient), 5);
+        assert!(!placement_text(&buffer, donor).contains("7000"));
+        assert!(placement_text(&buffer, recipient).contains("7202"));
+    }
+
+    #[test]
+    fn an_unusable_lone_row_draws_ancestry_without_a_blank_foot_row() {
+        let roster = ancestry_transfer_roster(1);
+        let area = Rect::new(0, 0, 80, 19);
+        let (grid, buffer) = settled_cells_buffer(&roster, area);
+        let donor = grid
+            .placements(
+                area,
+                TileGrowth {
+                    initial_rows:  12,
+                    fill:          TileFill::Redistribute,
+                    widen_summary: false,
+                },
+            )
+            .into_iter()
+            .find(|placement| {
+                placement.content == TileContent::Group(roster.groups()[0].id.clone())
+            })
+            .expect("the ancestry cell is placed");
+
+        assert_eq!(placement_content_rows(&donor), 4);
+        let content_area = Rect {
+            height: placement_content_rows(&donor),
+            ..donor.frame.inner()
+        };
+        let content = &donor.content;
+        let hidden = hidden_when_idle();
+        assert_eq!(
+            (
+                content_rows_drawn(&roster, content, content_area, &hidden, ProcessTree::Long),
+                content_rows_kept(&roster, content, content_area, &hidden, ProcessTree::Long),
+            ),
+            (4, 3)
+        );
+        assert!(placement_text(&buffer, &donor).contains("7000"));
+        assert!(!has_blank_row_above_foot(&buffer, &donor));
+    }
+
+    #[test]
+    fn painted_and_retained_rows_share_one_measurement() {
+        let roster = ancestry_transfer_roster(1);
+        let hidden = hidden_when_idle();
+        let sccache = SccacheStats::new();
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        let content = TileContent::Group(roster.groups()[0].id.clone());
+        let area = Rect::new(0, 0, 24, 2);
+
+        let drawn = cells.rows_drawn(&content, area);
+        let kept = cells.rows_kept(&content, area);
+
+        assert_eq!(
+            (drawn, kept),
+            (
+                content_rows_drawn(&roster, &content, area, &hidden, ProcessTree::Long),
+                content_rows_kept(&roster, &content, area, &hidden, ProcessTree::Long),
+            )
+        );
+        assert_eq!(cells.row_uses.borrow().len(), 1);
+    }
+
+    #[test]
+    fn seven_short_cells_leave_no_blank_row_above_their_foot() {
+        let ancestry = [
+            ancestor(4001, "cargo"),
+            ancestor(4002, "cargo"),
+            ancestor(4003, "cargo"),
+        ];
+        let roster = paired_tiled_roster(7, &ancestry);
+        let area = Rect::new(0, 0, 200, 50);
+        let (grid, buffer) = settled_cells_buffer(&roster, area);
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let placements = grid.placements(area, growth);
+        let widths: Vec<_> = placements
+            .iter()
+            .map(|placement| (placement.content.clone(), placement.frame.inner().width))
+            .collect();
+        let demands = tile_demands(&roster, &widths, &hidden_when_idle(), ProcessTree::Long);
+        let hidden = placements
+            .iter()
+            .filter(|placement| {
+                placement_demand(&demands, &placement.content)
+                    > usize::from(placement_content_rows(placement))
+            })
+            .collect::<Vec<_>>();
+        assert!(!hidden.is_empty(), "the fixture must hide content");
+        let blank = hidden
+            .into_iter()
+            .filter(|placement| has_blank_row_above_foot(&buffer, placement))
+            .map(|placement| placement.content.clone())
+            .collect::<Vec<_>>();
+
+        assert!(blank.is_empty(), "blank rows above the foot: {blank:?}");
+    }
+
+    #[test]
     fn a_short_command_cell_takes_the_row_its_column_mate_cannot_use() {
         let roster = directory_rich_roster(&[2, 4, 6, 3, 5, 4]);
         let area = Rect::new(0, 0, 126, 79);
@@ -6343,12 +6728,7 @@ mod tests {
         grid.set_min_tile_height(crate::constants::MIN_CELL_HEIGHT);
         let sccache = SccacheStats::new();
         let hidden_when_idle = hidden_when_idle();
-        let cells = Cells {
-            roster:           &roster,
-            hidden_when_idle: &hidden_when_idle,
-            tree:             ProcessTree::Long,
-            sccache:          &sccache,
-        };
+        let cells = Cells::new(&roster, &hidden_when_idle, ProcessTree::Long, &sccache);
         let short = Rect::new(0, 0, 40, 6);
         let mut buffer = Buffer::empty(short);
         tui_pane::draw_tile_grid(

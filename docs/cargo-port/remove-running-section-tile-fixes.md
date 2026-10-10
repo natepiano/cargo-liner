@@ -364,7 +364,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Gotchas:** under the default `auto`, a fixture with a tall summary beside cells collapses to the summary alone; render fixtures that assert cell layout must call `set_view(TileView::Cells)`.
 
-### Phase 12 — A moving piece is drawn only at heights its content fills  · status: todo
+### Phase 12 — A moving piece is drawn only at heights its content fills  · status: done
 
 #### Work Order
 
