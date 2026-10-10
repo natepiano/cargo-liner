@@ -343,7 +343,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** a content-side fix dropping gaps one at a time — it reverses the all-gaps-together look; the grid snap is the fix.
 
-### Phase 11 — The summary shows alone when it shows more there, and a view setting picks the rule  · status: todo
+### Phase 11 — The summary shows alone when it shows more there, and a view setting picks the rule  · status: done
 
 #### Work Order
 

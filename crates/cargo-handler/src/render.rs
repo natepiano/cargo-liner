@@ -86,6 +86,7 @@ fn draw_panes(frame: &mut Frame, app: &mut App, area: Rect, contents: TileGridCo
             .machines(&app.loaded_config.config.machines.remote),
         census::unix_now(),
     );
+    app.tiles.set_view(app.loaded_config.config.tiles.view);
     tui_pane::draw_tile_grid(
         frame.buffer_mut(),
         &mut app.tiles,
@@ -370,6 +371,7 @@ fraying = "leading"
         "│       │ Tiles:                                                       │       │",
         "│       │   initial rows   < 4 >                                       │       │",
         "│       │   fill           < redistribute >                            │       │",
+        "│       │   view           < auto >                                    │       │",
         "│       │   widen summary  < true >                                    │       │",
         "│       │ Machines:                                                    │       │",
         "│       │   remote         none                                        │       │",
@@ -378,7 +380,6 @@ fraying = "leading"
         "│       │   themes         /<config>/cargo-handler/themes              │       │",
         "│       │   keymap         /<config>/cargo-handler/keymap.toml         │       │",
         "│       └──────────────────────────────────────────────────────────────┘       │",
-        "│                                                                              │",
         "│                                                  content rows: 1  r/c: 21/78 │",
         "└──────────────────────────────────────────────────────────────────────────────┘",
     ];

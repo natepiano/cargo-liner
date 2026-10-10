@@ -8,6 +8,7 @@ use super::constants::MIN_TILE_WIDTH;
 use super::constants::TILE_ANIMATION_MILLIS;
 use super::constants::TILE_BORDER_ROWS;
 use super::constants::TILE_DEMAND_STEP;
+use crate::TileView;
 
 /// The framed rows a cell uses now and the stepped demand that controls
 /// layout motion.
@@ -48,6 +49,8 @@ impl CellRowDemand {
 /// reads the constants in [`super::constants`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct TileSettings {
+    /// Which rule selects command cells or the summary alone.
+    pub(super) view:                   TileView,
     /// Rows one cell standing alone needs; see [`MIN_TILE_HEIGHT`].
     pub(super) min_tile_height:        u16,
     /// Columns one cell standing alone needs; see [`MIN_TILE_WIDTH`].
@@ -73,6 +76,7 @@ pub(super) struct TileSettings {
 impl Default for TileSettings {
     fn default() -> Self {
         Self {
+            view:                   TileView::Auto,
             min_tile_height:        MIN_TILE_HEIGHT,
             min_tile_width:         MIN_TILE_WIDTH,
             border_rows:            TILE_BORDER_ROWS,

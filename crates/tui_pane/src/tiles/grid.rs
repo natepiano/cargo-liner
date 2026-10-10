@@ -55,6 +55,7 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use super::action::TileAction;
+use super::constants::AUTO_VIEW_RETURN_MARGIN;
 use super::constants::MIN_INITIAL_ROWS;
 use super::constants::PROGRESS_SCALE;
 use super::constants::SUMMARY_SLOT_SHORTFALL_DIVISOR;
@@ -69,6 +70,7 @@ use crate::PaneFrame;
 use crate::ResolvedPane;
 use crate::ResolvedPaneLayout;
 use crate::TileFill;
+use crate::TileView;
 use crate::constraints_for_sizes;
 use crate::frame_inner;
 use crate::share_borders;
@@ -396,6 +398,24 @@ pub(super) enum GridDisplay {
     SummaryAlone,
 }
 
+/// The summary's content-row demand at each width compared by `auto` view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SummaryProbeDemands {
+    /// Its demand at the width it receives beside command cells.
+    beside_cells: usize,
+    /// Its demand when it fills the grid area.
+    alone:        usize,
+}
+
+impl SummaryProbeDemands {
+    pub(super) const fn new(beside_cells: usize, alone: usize) -> Self {
+        Self {
+            beside_cells,
+            alone,
+        }
+    }
+}
+
 /// What one arrangement is drawn at: the rows every cell is holding
 /// and which of them has the focus ring.
 ///
@@ -494,6 +514,9 @@ pub struct TileGrid<Id> {
     /// mouse click can resolve the same geometry the frame drew without
     /// the caller carrying the settings to every hit test.
     growth:        TileGrowth,
+    /// The view drawing, hit-testing and focus movement share until a
+    /// settled frame commits another one.
+    held_display:  GridDisplay,
     /// Identity for the next cell opened or emptied.
     next_slot:     u64,
     /// The cell the focus ring is on.
@@ -526,6 +549,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             motion:        GridMotion::Settled,
             area:          Rect::ZERO,
             growth:        TileGrowth::default(),
+            held_display:  GridDisplay::Cells,
             next_slot:     0,
             focus:         Focus::Summary,
             settings:      TileSettings::default(),
@@ -538,6 +562,23 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.settings.min_tile_width = width.max(super::constants::MIN_TILE_WIDTH);
     }
 
+    /// Sets the rule that chooses command cells or the summary alone.
+    ///
+    /// A motion retains the view it began with. A settled grid applies
+    /// an explicit view at once; `auto` is committed after the frame has
+    /// probed both summary allocations.
+    pub const fn set_view(&mut self, view: TileView) {
+        self.settings.view = view;
+        if !matches!(self.motion, GridMotion::Settled) {
+            return;
+        }
+        match view {
+            TileView::Auto => {},
+            TileView::Summary => self.held_display = GridDisplay::SummaryAlone,
+            TileView::Cells => self.held_display = GridDisplay::Cells,
+        }
+    }
+
     /// Sets the shortest height a tile may occupy, including its frame.
     pub fn set_min_tile_height(&mut self, height: u16) {
         self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
@@ -548,10 +589,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         &mut self,
         area: Rect,
         growth: TileGrowth,
+        summary_demands: SummaryProbeDemands,
         mut rows_drawn: impl FnMut(&TileContent<Id>, Rect) -> u16,
     ) {
         self.measured_rows.clear();
         if !self.holds_in(area, growth) {
+            if matches!(self.motion, GridMotion::Settled) {
+                self.held_display = GridDisplay::SummaryAlone;
+            }
             return;
         }
         let contents: Vec<TileContent<Id>> = cells(&self.slots)
@@ -588,7 +633,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             }
             drawn
         };
-        let _ = Grid::with_rows_drawn(
+        let cells_grid = Grid::with_rows_drawn(
             area,
             &self.drawn_held(),
             growth,
@@ -599,7 +644,47 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     .map_or(area.height, |content| measure(content, area))
             },
         );
+        let summary = TileContent::Summary;
+        let cells_area = cells_grid
+            .cell(TABLE_CELL)
+            .map_or(Rect::ZERO, |cell| draw::content_area(frame_inner(cell)));
+        let cells_rows = measure(&summary, cells_area);
+        let alone_area = draw::content_area(frame_inner(area));
+        let alone_rows = measure(&summary, alone_area);
         self.measured_rows = measured_rows;
+        self.commit_display(cells_area, cells_rows, alone_rows, summary_demands);
+    }
+
+    /// Commit the view chosen by one settled frame's two summary probes.
+    fn commit_display(
+        &mut self,
+        cells_area: Rect,
+        cells_rows: u16,
+        alone_rows: u16,
+        summary_demands: SummaryProbeDemands,
+    ) {
+        if !matches!(self.motion, GridMotion::Settled) {
+            return;
+        }
+        let cells_ask = u16::try_from(summary_demands.beside_cells).unwrap_or(u16::MAX);
+        let alone_ask = u16::try_from(summary_demands.alone).unwrap_or(u16::MAX);
+        let cells_rows = cells_rows.min(cells_ask);
+        let alone_rows = alone_rows.min(alone_ask);
+        self.held_display = match self.settings.view {
+            TileView::Summary => GridDisplay::SummaryAlone,
+            TileView::Cells => GridDisplay::Cells,
+            TileView::Auto if cells_rows < alone_rows => GridDisplay::SummaryAlone,
+            TileView::Auto if self.held_display == GridDisplay::Cells => GridDisplay::Cells,
+            TileView::Auto => {
+                let whole_ask = usize::from(cells_rows) >= summary_demands.beside_cells;
+                let spare = cells_area.height.saturating_sub(cells_rows);
+                if whole_ask || spare >= AUTO_VIEW_RETURN_MARGIN {
+                    GridDisplay::Cells
+                } else {
+                    GridDisplay::SummaryAlone
+                }
+            },
+        };
     }
 
     /// The stored answer for one destination size, or every row when unmeasured.
@@ -1353,7 +1438,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// The one display state shared by drawing, hit-testing and focus movement.
     pub(super) fn display(&self) -> GridDisplay {
         if self.holds_in(self.area, self.growth) {
-            GridDisplay::Cells
+            self.held_display
         } else {
             GridDisplay::SummaryAlone
         }
@@ -1426,7 +1511,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// Every piece and column frame at an exact point in the transition.
     pub(super) fn drawing_at(&self, area: Rect, growth: TileGrowth, raw: u32) -> TileDrawing<Id> {
-        if !self.holds_in(area, growth) {
+        if self.held_display == GridDisplay::SummaryAlone || !self.holds_in(area, growth) {
             return Self::summary_alone_drawing(area);
         }
         let settled = self.resolved_grid(area, &self.drawn_held(), growth);
@@ -3141,9 +3226,12 @@ fn eased(progress: u32) -> u32 {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use ratatui::buffer::Buffer;
     use ratatui::layout::Margin;
+    use ratatui::style::Color;
 
     use super::*;
+    use crate::TileGridContents;
     use crate::tiles::constants::MIN_TILE_HEIGHT;
     use crate::tiles::constants::TILE_BORDER_ROWS;
     use crate::tiles::constants::TILE_DEMAND_STEP;
@@ -3511,6 +3599,156 @@ mod tests {
 
         assert!(fits(area, grid.count(), growth, &grid.settings));
         assert!(!grid.holds_in(area, growth));
+    }
+
+    struct ViewProbeCells {
+        summary_demand: usize,
+        summary_drawn:  u16,
+        group_demand:   usize,
+        group_drawn:    u16,
+    }
+
+    impl crate::TileCells<u32> for ViewProbeCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       self.summary_demand,
+                summary_width: 0,
+                groups:        vec![TileDemand {
+                    id:   1,
+                    rows: self.group_demand,
+                }],
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary => self.summary_drawn.min(area.height),
+                TileContent::Group(_) => self.group_drawn.min(area.height),
+                TileContent::Empty(_) => 0,
+            }
+        }
+
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    struct SameFrameSummaryCells {
+        alone_rows: usize,
+    }
+
+    impl crate::TileCells<u32> for SameFrameSummaryCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            let summary_width = widths
+                .iter()
+                .find_map(|(content, width)| (*content == TileContent::Summary).then_some(*width))
+                .unwrap_or_default();
+            let summary = if summary_width < TEST_TILE_WIDTH {
+                5
+            } else {
+                self.alone_rows
+            };
+            TileDemands {
+                summary,
+                summary_width: 0,
+                groups: (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary if area.width < TEST_TILE_WIDTH => 5,
+                TileContent::Summary => u16::try_from(self.alone_rows)
+                    .unwrap_or(u16::MAX)
+                    .min(area.height),
+                TileContent::Group(_) | TileContent::Empty(_) => area.height,
+            }
+        }
+
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    fn draw_view_frame(
+        grid: &mut TileGrid<u32>,
+        cells: &impl crate::TileCells<u32>,
+        area: Rect,
+        growth: TileGrowth,
+    ) {
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        crate::draw_tile_grid(
+            &mut buffer,
+            grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            cells,
+        );
+    }
+
+    fn summary_cells_area(grid: &TileGrid<u32>, area: Rect, growth: TileGrowth) -> Rect {
+        let resolved = grid.resolved_grid(area, &grid.drawn_held(), growth);
+        resolved
+            .cell(TABLE_CELL)
+            .map(|cell| draw::content_area(frame_inner(cell)))
+            .expect("the cells view places the summary")
+    }
+
+    #[test]
+    fn a_demand_change_in_one_frame_decides_the_view_from_that_frames_rows() {
+        let area = Rect::new(0, 0, TEST_TILE_WIDTH.saturating_mul(2), 20);
+        let growth = TileGrowth::default();
+        let mut cells = SameFrameSummaryCells { alone_rows: 5 };
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(grid.display(), GridDisplay::Cells);
+
+        cells.alone_rows = 8;
+        draw_view_frame(&mut grid, &cells, area, growth);
+
+        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+    }
+
+    #[test]
+    fn a_one_row_change_in_the_summarys_ask_does_not_flip_the_view() {
+        let area = Rect::new(0, 0, TEST_WIDTH, 18);
+        let growth = TileGrowth::default();
+        let mut cells = ViewProbeCells {
+            summary_demand: 11,
+            summary_drawn:  6,
+            group_demand:   11,
+            group_drawn:    6,
+        };
+        let mut grid = TileGrid::<u32>::new();
+        grid.set_view(TileView::Summary);
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.set_view(TileView::Auto);
+        draw_view_frame(&mut grid, &cells, area, growth);
+        let cells_area = summary_cells_area(&grid, area, growth);
+        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+
+        cells.summary_demand = 10;
+        draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(summary_cells_area(&grid, area, growth), cells_area);
+        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+
+        cells.summary_demand = 9;
+        cells.summary_drawn = 4;
+        draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(summary_cells_area(&grid, area, growth), cells_area);
+        assert_eq!(grid.display(), GridDisplay::Cells);
+
+        cells.summary_demand = 10;
+        cells.summary_drawn = 6;
+        draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(summary_cells_area(&grid, area, growth), cells_area);
+        assert_eq!(grid.display(), GridDisplay::Cells);
     }
 
     #[test]
@@ -5074,10 +5312,15 @@ mod tests {
             .cell(TABLE_CELL)
             .expect("the source places the summary");
 
-        grid.measure_row_steps(area, growth, |content, area| match content {
-            TileContent::Group(3) => area.height.saturating_sub(1),
-            TileContent::Summary | TileContent::Group(_) | TileContent::Empty(_) => area.height,
-        });
+        grid.measure_row_steps(
+            area,
+            growth,
+            SummaryProbeDemands::new(100, 100),
+            |content, area| match content {
+                TileContent::Group(3) => area.height.saturating_sub(1),
+                TileContent::Summary | TileContent::Group(_) | TileContent::Empty(_) => area.height,
+            },
+        );
 
         let destination = grid
             .resolved_grid(area, &grid.drawn_held(), growth)

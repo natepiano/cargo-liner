@@ -2,10 +2,10 @@
 //! stepping that edits them.
 //!
 //! The framework owns the `[appearance]` steppers, `initial rows`,
-//! `fill`, `widen summary`, the Files paths and the Notices section;
-//! this module places them and adds cargo-tile's own `fade seconds`
-//! stepper and its Capture and Commands rows. Every stepper walks its
-//! allowed values on Left/Right/Enter, writes `config.toml`, and swaps
+//! `fill`, `view`, `widen summary`, the Files paths and the Notices
+//! section; this module places them and adds cargo-tile's own `fade
+//! seconds` stepper and its Capture and Commands rows. Every stepper
+//! walks its allowed values on Left/Right/Enter, writes `config.toml`, and swaps
 //! the active theme in place. The two Commands lists are typed in:
 //! Enter opens the list as comma-separated text, and Enter again writes
 //! it and applies it. Every other row reports state and is inert.
@@ -152,6 +152,7 @@ pub(crate) fn rows(app: &App) -> SettingsRows<AppSetting> {
     out.section("Tiles");
     out.initial_rows(config.tiles.initial_rows);
     out.tile_fill(config.tiles.fill);
+    out.tile_view(config.tiles.view);
     out.widen_summary(config.tiles.widen_summary);
     out.stepper(
         AppSetting::FadeSeconds,
@@ -1255,7 +1256,7 @@ mod layout_tests {
     }
 
     /// Rows shared by both layouts: everything above Notices.
-    const BODY: [&str; 20] = [
+    const BODY: [&str; 21] = [
         "[Appearance]",
         "0 Stepper mode = auto",
         "1 Stepper light theme = Default Light",
@@ -1264,18 +1265,19 @@ mod layout_tests {
         "[Tiles]",
         "4 Stepper initial rows = 4",
         "5 Stepper fill = redistribute",
-        "6 Stepper widen summary = false",
-        "7 Stepper fade seconds = 3",
+        "6 Stepper view = auto",
+        "7 Stepper widen summary = false",
+        "8 Stepper fade seconds = 3",
         "[Capture]",
-        "8 Value auto install = true",
-        "9 Value shared directory = <shared directory>",
+        "9 Value auto install = true",
+        "10 Value shared directory = <shared directory>",
         "[Commands]",
-        "10 Value excluded = berth",
-        "11 Value hidden when idle = port, handler",
+        "11 Value excluded = berth",
+        "12 Value hidden when idle = port, handler",
         "[Files]",
-        "12 Value config = <config path>",
-        "13 Value themes = <themes dir>",
-        "14 Value keymap = <keymap path>",
+        "13 Value config = <config path>",
+        "14 Value themes = <themes dir>",
+        "15 Value keymap = <keymap path>",
     ];
 
     /// Order, section headers, labels, values, row kinds and selectable
@@ -1295,10 +1297,10 @@ mod layout_tests {
         let mut expected = BODY.to_vec();
         expected.extend([
             "[Notices]",
-            "15 Value theme = theme note",
-            "16 Value capture = kept note",
-            "17 Value capture = failure note",
-            "18 Value config = config error",
+            "16 Value theme = theme note",
+            "17 Value capture = kept note",
+            "18 Value capture = failure note",
+            "19 Value config = config error",
         ]);
         assert_eq!(layout(&app), expected);
     }
