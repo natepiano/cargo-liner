@@ -68,6 +68,17 @@ pub(super) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(super) const PROGRESS_SCALE: u32 = 1000;
+/// One row beyond an interpolated height, used to find the next content step.
+pub(super) const MOVING_HEIGHT_PROBE_STEP: u16 = 1;
+/// Row-use calls made by the seven-cell moving-frame regression.
+#[cfg(test)]
+pub(super) const SEVEN_CELL_MOVING_ROW_PROBE_COUNT: usize = 18;
+/// Painted-row calls made by one changed seven-cell settled frame.
+#[cfg(test)]
+pub(super) const SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT: usize = 8;
+/// Retained-row calls made by one changed seven-cell settled frame.
+#[cfg(test)]
+pub(super) const SEVEN_CELL_SETTLED_KEPT_PROBE_COUNT: usize = 7;
 /// How long one change to the grid takes, however many single-cell
 /// steps it propagates through: one step takes all of it, and a longer
 /// ripple divides it up between them.

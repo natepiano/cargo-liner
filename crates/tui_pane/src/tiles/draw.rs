@@ -112,12 +112,21 @@ pub trait TileCells<Id> {
     /// will have once the grid has opened a cell for it.
     fn demands(&self, widths: &[(TileContent<Id>, u16)]) -> TileDemands<Id>;
 
-    /// Rows the cell's content draws when `area` is the room available.
+    /// Rows the cell's content paints when `area` is the room available.
     ///
-    /// The grid gives any rows below that count to a column mate that is
-    /// still short of its exact demand. Content that can use every row
-    /// keeps the default.
+    /// The grid reads this answer when checking whether a moving piece
+    /// fills its allocation. Content that can paint every row keeps the
+    /// default.
     fn rows_drawn(&self, _content: &TileContent<Id>, area: Rect) -> u16 { area.height }
+
+    /// Rows the grid must leave with the cell before its column mates may
+    /// take the rest.
+    ///
+    /// Most content retains every row it paints. Content with an optional
+    /// part may return less here so a mate can complete its next row step.
+    fn rows_kept(&self, content: &TileContent<Id>, area: Rect) -> u16 {
+        self.rows_drawn(content, area)
+    }
 
     /// Draw `content` into `inner`, the part of its cell above the
     /// readout. `ground` is the colour the cell is painted on.
@@ -168,7 +177,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     contents: TileGridContents,
     cells: &impl TileCells<Id>,
 ) {
-    grid.set_layout(area, growth);
+    grid.set_draw_layout(area, growth);
     let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
     let mut cells_demands = cells.demands(&cells_widths);
     let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
@@ -177,9 +186,15 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     add_readout_rows(&mut cells_demands, &cells_widths);
     add_readout_rows(&mut alone_demands, &alone_widths);
     grid.sync(&cells_demands, growth);
-    grid.measure_row_steps(area, growth, summary_demands, |content, area| {
-        cells.rows_drawn(content, area)
-    });
+    let progress = grid.progress();
+    grid.measure_row_steps(
+        area,
+        growth,
+        progress,
+        summary_demands,
+        |content, area| cells.rows_drawn(content, area),
+        |content, area| cells.rows_kept(content, area),
+    );
     let display = grid.display();
     if display == GridDisplay::SummaryAlone
         && (contents == TileGridContents::Hidden || frame_inner(area).is_empty())
@@ -190,7 +205,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         GridDisplay::Cells => (&cells_widths, &cells_demands),
         GridDisplay::SummaryAlone => (&alone_widths, &alone_demands),
     };
-    let drawing = grid.drawing(area, growth);
+    let drawing = grid.drawing_at(area, growth, progress);
     draw_placements(buffer, area, &drawing, demands, widths, contents, cells);
 }
 
@@ -662,6 +677,7 @@ mod tests {
     use crate::TileView;
     use crate::tiles::constants::MIN_TILE_HEIGHT;
     use crate::tiles::constants::PROGRESS_SCALE;
+    use crate::tiles::grid::PieceHeightSnap;
     use crate::tiles::grid::TilePiece;
     use crate::tiles::grid::TilePlacement;
 
@@ -779,6 +795,81 @@ mod tests {
         fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
     }
 
+    struct Toast64MotionCells {
+        groups:       u32,
+        summary_rows: usize,
+    }
+
+    impl TileCells<u32> for Toast64MotionCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       self.summary_rows,
+                summary_width: 0,
+                groups:        (1..=self.groups)
+                    .map(|id| TileDemand { id, rows: 18 })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary if area.width >= 80 => 13.min(area.height),
+                TileContent::Summary if area.height == u16::MAX => 18,
+                TileContent::Summary if area.height >= 18 => 18,
+                TileContent::Summary if area.height >= 14 => 13,
+                TileContent::Summary if area.height >= 10 => 9,
+                TileContent::Summary if area.height >= 6 => 5,
+                TileContent::Summary | TileContent::Group(_) => area.height,
+                TileContent::Empty(_) => 0,
+            }
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    struct GrowingSummaryCells {
+        summary_rows: usize,
+    }
+
+    impl TileCells<u32> for GrowingSummaryCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       self.summary_rows,
+                summary_width: 0,
+                groups:        (1..=4).map(|id| TileDemand { id, rows: 1 }).collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary if self.summary_rows <= 6 => 6.min(area.height),
+                TileContent::Summary if area.height >= 12 => 12,
+                TileContent::Summary if area.height >= 7 => 6,
+                TileContent::Summary | TileContent::Group(_) => area.height,
+                TileContent::Empty(_) => 0,
+            }
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    fn draw_stub_rows(buffer: &mut Buffer, area: Rect, rows: u16) {
+        if area.width == 0 {
+            return;
+        }
+        for y in area.top()..area.top().saturating_add(rows.min(area.height)) {
+            buffer[(area.x, y)].set_symbol("x");
+        }
+    }
+
     /// One row of `buffer` as text, with the blanks to the right of it
     /// trimmed off.
     fn buffer_line(buffer: &Buffer, y: u16) -> String {
@@ -861,6 +952,7 @@ mod tests {
         TilePiece {
             placement: TilePlacement { content, frame },
             name,
+            height_snap: PieceHeightSnap::Settled,
         }
     }
 
@@ -1245,6 +1337,142 @@ mod tests {
             cells,
         );
         (grid, buffer)
+    }
+
+    /// Resolve one exact motion point through the production measurement path.
+    fn fixed_motion_drawing(
+        grid: &mut TileGrid<u32>,
+        cells: &impl TileCells<u32>,
+        area: Rect,
+        growth: TileGrowth,
+        raw: u32,
+    ) -> TileDrawing<u32> {
+        grid.set_layout(area, growth);
+        let cells_widths = measurement_widths(grid, area, growth, GridDisplay::Cells);
+        let mut cells_demands = cells.demands(&cells_widths);
+        let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
+        let mut alone_demands = cells.demands(&alone_widths);
+        let summary_demands =
+            SummaryProbeDemands::new(cells_demands.summary, alone_demands.summary);
+        add_readout_rows(&mut cells_demands, &cells_widths);
+        add_readout_rows(&mut alone_demands, &alone_widths);
+        grid.sync(&cells_demands, growth);
+        grid.measure_row_steps(
+            area,
+            growth,
+            raw,
+            summary_demands,
+            |content, area| cells.rows_drawn(content, area),
+            |content, area| cells.rows_kept(content, area),
+        );
+        grid.drawing_at(area, growth, raw)
+    }
+
+    /// Whether one placement uses all its rows or shows its whole value.
+    fn placement_fits(cells: &impl TileCells<u32>, placement: &TilePlacement<u32>) -> bool {
+        let area = content_area(placement.frame.inner());
+        let drawn = cells.rows_drawn(&placement.content, area);
+        let whole = cells.rows_drawn(
+            &placement.content,
+            Rect {
+                height: u16::MAX,
+                ..area
+            },
+        );
+        drawn == area.height || drawn >= whole
+    }
+
+    #[test]
+    fn a_toast_width_summary_never_draws_compact_with_room_above_its_foot() {
+        let area = Rect::new(0, 0, 64, 50);
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let before = Toast64MotionCells {
+            groups:       5,
+            summary_rows: 13,
+        };
+        let after = Toast64MotionCells {
+            groups:       6,
+            summary_rows: 18,
+        };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(40);
+        grid.set_min_tile_height(6);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &before,
+        );
+        grid.settle_for_test();
+        grid.collapse_queued_changes_for_test();
+
+        let mut mates_hide_rows = false;
+        for raw in 0..=PROGRESS_SCALE {
+            let drawing = fixed_motion_drawing(&mut grid, &after, area, growth, raw);
+            let summary = drawing
+                .placements()
+                .find(|placement| placement.content == TileContent::Summary);
+            assert!(summary.is_some(), "the motion keeps the summary");
+            let Some(summary) = summary else {
+                continue;
+            };
+            mates_hide_rows |= drawing.placements().any(|placement| {
+                matches!(placement.content, TileContent::Group(_))
+                    && content_area(placement.frame.inner()).height < 18
+            });
+            assert!(
+                placement_fits(&after, summary),
+                "summary leaves a row at {raw}"
+            );
+        }
+        assert!(mates_hide_rows, "the motion hides rows from a command cell");
+    }
+
+    #[test]
+    fn a_turn_that_grows_content_and_height_draws_no_blank_row() {
+        let area = Rect::new(0, 0, 64, 29);
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let before = GrowingSummaryCells { summary_rows: 6 };
+        let after = GrowingSummaryCells { summary_rows: 12 };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        let mut buffer = Buffer::empty(area);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            area,
+            growth,
+            TileGridContents::Shown,
+            &before,
+        );
+        grid.settle_for_test();
+
+        for raw in 1..PROGRESS_SCALE {
+            let drawing = fixed_motion_drawing(&mut grid, &after, area, growth, raw);
+            let summary = drawing
+                .placements()
+                .find(|placement| placement.content == TileContent::Summary);
+            assert!(summary.is_some(), "the motion keeps the summary");
+            let Some(summary) = summary else {
+                continue;
+            };
+            assert!(
+                placement_fits(&after, summary),
+                "summary leaves a row at {raw}"
+            );
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- `TileCells::rows_kept` separates the rows a cell retains before lending room to its column mates from the rows its content paints.
 - `TileView` configures `tiles.view` as `auto`, `summary` or `cells`; `TileGrid::set_view`, `FrameworkSetting::TileView`, `AppConfig::tile_view_mut` and `SettingsRows::tile_view` connect it to each app and its settings overlay.
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
@@ -25,6 +26,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
 
 ### Fixed
+- Moving tile pieces begin at the exact geometry the last settled frame drew and use the nearest shared dividers whose content areas are filled, while closing-column heights stay unchanged. Each resident height stays between its recorded source and destination even when cumulative dividers pass both endpoint positions, and a pane resized during motion draws the destination wholly inside its new area.
+- Every settled tile frame refreshes its row answers, with painted and retained rows measured together once per cell size.
 - `appearance.mode = "auto"` selects the theme for the system's remembered light or dark setting at startup and after a change; before the system supplies a setting it selects dark as before.
 - A pane moving between tile-grid columns carries the screen ground under its border ring and keeps its contents off the column's frame. Its nearest content row arrives with the first visible row of its slot, and no interior row falls back to the screen ground as the pane closes. The frame stays whole while columns and cells move, without outward stubs or a second line from a piece whose body is not yet visible. Touching cells and columns keep one shared line throughout openings, closings, row changes and column crossings. A closing column keeps every cell at its starting height while it narrows, including below a widened summary, and every moving cell keeps exactly one title visible.
 
