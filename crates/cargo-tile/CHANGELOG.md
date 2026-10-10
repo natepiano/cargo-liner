@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+- The summary stays at its current grid depth when it is no more than half a position short, and cells hiding rows receive available column height before a shorter cell gains a blank trailing row.
 - Vertically cut tables fill the last command line before its `…`, and use an inter-directory blank row for the next heading and process when those rows would otherwise be hidden.
 - Toasts stay inside the tile frame, and shortened ancestry always marks its cut and uses the rows available to it.
 - Directory headings keep the project end of the path before its account when both do not fit, retain a whole final component when its marked tail fits exactly, and use `…` whenever text is left out.

@@ -57,9 +57,11 @@ use ratatui::layout::Rect;
 use super::action::TileAction;
 use super::constants::MIN_INITIAL_ROWS;
 use super::constants::PROGRESS_SCALE;
+use super::constants::SUMMARY_SLOT_SHORTFALL_DIVISOR;
 use super::constants::TABLE_CELL;
 use super::draw;
 use super::growth::TileGrowth;
+use super::settings::CellRowDemand;
 use super::settings::TileSettings;
 use crate::CycleDirection;
 use crate::PaneAxisSize;
@@ -187,6 +189,26 @@ pub(super) struct TileDrawing<Id> {
     pub(super) pieces:       Vec<TilePiece<Id>>,
     /// Each column's band at the same point in the transition.
     pub(super) column_bands: Vec<Rect>,
+}
+
+/// One answer from a cell at a content-area size considered this frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ContentRowMeasurement {
+    /// Width of the content area inspected.
+    width:  u16,
+    /// Height of the content area inspected.
+    height: u16,
+    /// Rows the content draws there.
+    drawn:  u16,
+}
+
+/// Step probes for one cell in the destination arrangement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CellRowMeasurements<Id> {
+    /// The content whose allocations were inspected.
+    content: TileContent<Id>,
+    /// Answers at only the sizes redistribution considered.
+    rows:    Vec<ContentRowMeasurement>,
 }
 
 impl<Id> TileDrawing<Id> {
@@ -387,8 +409,8 @@ pub(super) enum GridDisplay {
 /// a pure function of what it is handed.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct HeldCellLayout {
-    /// Rows each cell holds, in cell order and the summary's first.
-    rows:          Vec<u16>,
+    /// Row demands each cell holds, in cell order and the summary's first.
+    rows:          Vec<CellRowDemand>,
     /// Which cell holds the ring, or whether that slot is outside the layout.
     focused:       FocusLocation,
     /// Columns the summary asks to reach across, its own included; see
@@ -397,6 +419,21 @@ struct HeldCellLayout {
     summary_span:  usize,
     /// Positions occupied by the summary, including its first.
     summary_depth: usize,
+}
+
+impl HeldCellLayout {
+    /// Whether changing from `other` needs the grid's resize motion.
+    fn needs_motion_from(&self, other: &Self) -> bool {
+        self.focused != other.focused
+            || self.summary_span != other.summary_span
+            || self.summary_depth != other.summary_depth
+            || self.rows.len() != other.rows.len()
+            || self
+                .rows
+                .iter()
+                .zip(&other.rows)
+                .any(|(current, held)| current.stepped_framed() != held.stepped_framed())
+    }
 }
 
 /// The arrangement a transition is moving away from.
@@ -435,34 +472,36 @@ struct Step<Id> {
 pub struct TileGrid<Id> {
     /// Cells after the summary, in cell order. The summary is cell one
     /// and is not held here, so the grid never falls below one cell.
-    slots:     Vec<Slot<Id>>,
+    slots:         Vec<Slot<Id>>,
     /// Summary depth of `slots`.
-    depth:     usize,
+    depth:         usize,
     /// Arrangements waiting their turn, each one cell's move from the
     /// one before it. Only ever one of them is in flight, which is what
     /// makes a change propagate through the grid instead of happening
     /// to every cell at once.
-    pending:   VecDeque<Step<Id>>,
+    pending:       VecDeque<Step<Id>>,
     /// What each cell is currently drawn at, which is what a change
     /// animates away from. Empty until the first scan settles it.
-    held:      HeldCellLayout,
+    held:          HeldCellLayout,
     /// What every cell is asking for, as the last scan left it.
-    demands:   TileDemands<Id>,
+    demands:       TileDemands<Id>,
     /// Whether the geometry is settled or playing a timed move.
-    motion:    GridMotion<Id>,
+    motion:        GridMotion<Id>,
     /// The rect the last frame laid out, so [`Self::add`] can tell
     /// whether the cells it would create still fit on screen.
-    area:      Rect,
+    area:          Rect,
     /// How the grid grows, as the last frame had it. Retained so a
     /// mouse click can resolve the same geometry the frame drew without
     /// the caller carrying the settings to every hit test.
-    growth:    TileGrowth,
+    growth:        TileGrowth,
     /// Identity for the next cell opened or emptied.
-    next_slot: u64,
+    next_slot:     u64,
     /// The cell the focus ring is on.
-    focus:     Focus<Id>,
+    focus:         Focus<Id>,
     /// The sizes and timings the grid is laid out and animated with.
-    settings:  TileSettings,
+    settings:      TileSettings,
+    /// Destination sizes the content answered for during the last frame.
+    measured_rows: Vec<CellRowMeasurements<Id>>,
 }
 
 impl<Id: Clone + Eq + Debug> Default for TileGrid<Id> {
@@ -474,22 +513,23 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            slots:     Vec::new(),
-            depth:     1,
-            pending:   VecDeque::new(),
-            held:      HeldCellLayout {
+            slots:         Vec::new(),
+            depth:         1,
+            pending:       VecDeque::new(),
+            held:          HeldCellLayout {
                 rows:          Vec::new(),
                 focused:       FocusLocation::Departing,
                 summary_span:  1,
                 summary_depth: 1,
             },
-            demands:   TileDemands::default(),
-            motion:    GridMotion::Settled,
-            area:      Rect::ZERO,
-            growth:    TileGrowth::default(),
-            next_slot: 0,
-            focus:     Focus::Summary,
-            settings:  TileSettings::default(),
+            demands:       TileDemands::default(),
+            motion:        GridMotion::Settled,
+            area:          Rect::ZERO,
+            growth:        TileGrowth::default(),
+            next_slot:     0,
+            focus:         Focus::Summary,
+            settings:      TileSettings::default(),
+            measured_rows: Vec::new(),
         }
     }
 
@@ -501,6 +541,91 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Sets the shortest height a tile may occupy, including its frame.
     pub fn set_min_tile_height(&mut self, height: u16) {
         self.settings.min_tile_height = height.max(super::constants::MIN_TILE_HEIGHT);
+    }
+
+    /// Ask for only the destination sizes redistribution considers this frame.
+    pub(super) fn measure_row_steps(
+        &mut self,
+        area: Rect,
+        growth: TileGrowth,
+        mut rows_drawn: impl FnMut(&TileContent<Id>, Rect) -> u16,
+    ) {
+        self.measured_rows.clear();
+        if !self.holds_in(area, growth) {
+            return;
+        }
+        let contents: Vec<TileContent<Id>> = cells(&self.slots)
+            .into_iter()
+            .map(|(content, _)| content)
+            .collect();
+        let mut measured_rows = Vec::<CellRowMeasurements<Id>>::new();
+        let mut measure = |content: &TileContent<Id>, area: Rect| {
+            let cell = measured_rows
+                .iter()
+                .position(|cell| &cell.content == content);
+            if let Some(drawn) = cell.and_then(|cell| {
+                measured_rows[cell]
+                    .rows
+                    .iter()
+                    .find(|rows| rows.width == area.width && rows.height == area.height)
+                    .map(|rows| rows.drawn)
+            }) {
+                return drawn;
+            }
+            let drawn = rows_drawn(content, area).min(area.height);
+            let measurement = ContentRowMeasurement {
+                width: area.width,
+                height: area.height,
+                drawn,
+            };
+            if let Some(cell) = cell {
+                measured_rows[cell].rows.push(measurement);
+            } else {
+                measured_rows.push(CellRowMeasurements {
+                    content: content.clone(),
+                    rows:    vec![measurement],
+                });
+            }
+            drawn
+        };
+        let _ = Grid::with_rows_drawn(
+            area,
+            &self.drawn_held(),
+            growth,
+            &self.settings,
+            &mut |index, area| {
+                contents
+                    .get(index)
+                    .map_or(area.height, |content| measure(content, area))
+            },
+        );
+        self.measured_rows = measured_rows;
+    }
+
+    /// The stored answer for one destination size, or every row when unmeasured.
+    fn measured_rows_drawn(&self, content: &TileContent<Id>, area: Rect) -> u16 {
+        self.measured_rows
+            .iter()
+            .find(|cell| &cell.content == content)
+            .and_then(|cell| {
+                cell.rows
+                    .iter()
+                    .find(|rows| rows.width == area.width && rows.height == area.height)
+            })
+            .map_or(area.height, |rows| rows.drawn)
+    }
+
+    /// Resolve the destination with the step probes gathered for it.
+    fn resolved_grid(&self, area: Rect, held: &HeldCellLayout, growth: TileGrowth) -> Grid {
+        let contents: Vec<TileContent<Id>> = cells(&self.slots)
+            .into_iter()
+            .map(|(content, _)| content)
+            .collect();
+        Grid::with_rows_drawn(area, held, growth, &self.settings, &mut |index, area| {
+            contents.get(index).map_or(area.height, |content| {
+                self.measured_rows_drawn(content, area)
+            })
+        })
     }
 
     /// What the grid is drawn at, worked out fresh whenever no settled
@@ -536,7 +661,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             || wants
                 .iter()
                 .zip(&self.held.rows)
-                .any(|(want, held)| want > held)
+                .any(|(want, held)| want.stepped_framed() > held.stepped_framed())
         {
             return HeldCellLayout {
                 rows: wants,
@@ -545,8 +670,15 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 summary_depth: self.depth,
             };
         }
+        let rows = self
+            .held
+            .rows
+            .iter()
+            .zip(wants)
+            .map(|(&held, current)| held.with_exact_from(current))
+            .collect();
         HeldCellLayout {
-            rows: self.held.rows.clone(),
+            rows,
             focused,
             summary_span,
             summary_depth: self.depth,
@@ -601,7 +733,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         }
         // The summary alone can reach past its own column, which only
         // the laid-out grid knows.
-        let summary = Grid::new(area, &self.drawn_held(), growth, &self.settings)
+        let summary = self
+            .resolved_grid(area, &self.drawn_held(), growth)
             .cell(TABLE_CELL)
             .map(|rect| frame_inner(rect).width);
         cells(&self.slots)
@@ -752,12 +885,18 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             growth,
             &self.settings,
         );
+        let settled = self.settled_held();
         if steps.is_empty()
             && wanted_depth == self.target_depth()
             && matches!(self.motion, GridMotion::Settled)
-            && self.settled_held() != self.held
+            && settled.needs_motion_from(&self.held)
         {
             steps.push(self.slots.clone());
+        } else if steps.is_empty()
+            && wanted_depth == self.target_depth()
+            && matches!(self.motion, GridMotion::Settled)
+        {
+            self.held = settled;
         }
         self.queue_with_depth(steps, wanted_depth);
     }
@@ -1072,7 +1211,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let FocusLocation::Cell(cell) = self.focused_cell() else {
             return;
         };
-        let lanes = Grid::new(self.area, &self.drawn_held(), growth, &self.settings).lanes();
+        let lanes = self
+            .resolved_grid(self.area, &self.drawn_held(), growth)
+            .lanes();
         let Some((column, row)) = lanes.iter().enumerate().find_map(|(column, lane)| {
             lane.iter()
                 .position(|&held| held == cell)
@@ -1173,7 +1314,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if self.display() == GridDisplay::SummaryAlone {
             return self.area.contains(pos).then_some(TABLE_CELL);
         }
-        let grid = Grid::new(self.area, &self.drawn_held(), self.growth, &self.settings);
+        let grid = self.resolved_grid(self.area, &self.drawn_held(), self.growth);
         grid.resolved
             .panes
             .iter()
@@ -1288,7 +1429,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         if !self.holds_in(area, growth) {
             return Self::summary_alone_drawing(area);
         }
-        let settled = Grid::new(area, &self.drawn_held(), growth, &self.settings);
+        let settled = self.resolved_grid(area, &self.drawn_held(), growth);
         let GridMotion::Moving(transition) = &self.motion else {
             return self.settled_drawing(settled);
         };
@@ -1499,6 +1640,47 @@ struct Grid {
     min_tile_height: u16,
 }
 
+/// Geometry needed to turn one proposed share into its content area.
+struct RowProbeLayout<'a> {
+    area:         Rect,
+    band:         Rect,
+    first_cell:   usize,
+    cells:        usize,
+    opened:       &'a [Rect],
+    widths:       &'a [usize],
+    summary_span: usize,
+    settings:     &'a TileSettings,
+}
+
+impl RowProbeLayout<'_> {
+    /// The content area a row would receive at this disjoint height.
+    fn content_area(&self, row: usize, rows: u16) -> Rect {
+        let last = row.saturating_add(1) == self.cells;
+        let y = if last {
+            self.band.bottom().saturating_sub(rows)
+        } else {
+            self.band.y
+        };
+        let mut cell = Rect {
+            x: self.band.x,
+            y,
+            width: self.band.width,
+            height: rows,
+        };
+        if self.first_cell.saturating_add(row) == TABLE_CELL {
+            let reached = reach(
+                self.opened,
+                self.widths,
+                cell,
+                self.summary_span,
+                self.settings,
+            );
+            cell = widened(cell, self.opened.get(reached.saturating_sub(1)).copied());
+        }
+        draw::content_area(frame_inner(share_borders(cell, self.area)))
+    }
+}
+
 /// Columns and summary depth that account for exactly the logical cells.
 struct ColumnLayout {
     widths:        Vec<usize>,
@@ -1529,6 +1711,17 @@ impl Grid {
     /// as `held` asks and [`reach`] allows, each of which then divides
     /// only what is left below it.
     fn new(area: Rect, held: &HeldCellLayout, growth: TileGrowth, settings: &TileSettings) -> Self {
+        Self::with_rows_drawn(area, held, growth, settings, &mut |_, area| area.height)
+    }
+
+    /// Resolve cells while moving room only in steps their contents can draw.
+    fn with_rows_drawn(
+        area: Rect,
+        held: &HeldCellLayout,
+        growth: TileGrowth,
+        settings: &TileSettings,
+        rows_drawn: &mut impl FnMut(usize, Rect) -> u16,
+    ) -> Self {
         let count = held.rows.len();
         let ColumnLayout {
             widths,
@@ -1559,27 +1752,38 @@ impl Grid {
             // The ring is held against the whole grid; a column divides
             // itself, so it is told only about the one cell of its own
             // that carries it.
-            let focused = match held.focused {
-                FocusLocation::Cell(cell) => cell
-                    .checked_sub(first_cell)
-                    .filter(|at| *at < pieces)
-                    .map_or(ColumnFocus::Outside, ColumnFocus::Row),
-                FocusLocation::Departing => ColumnFocus::Outside,
-            };
+            let focused = column_focus(held.focused, first_cell, pieces);
             position = ends_at;
             let Some(&band) = bands.get(column) else {
                 continue;
             };
-            for (row, &cell) in Layout::vertical(constraints_for_sizes(&shares(
+            let probe = RowProbeLayout {
+                area,
+                band,
+                first_cell,
+                cells: wants.len(),
+                opened: &opened,
+                widths: &widths,
+                summary_span: held.summary_span,
+                settings,
+            };
+            let mut unused_rows = |row: usize, rows: u16| {
+                let available = probe.content_area(row, rows);
+                let drawn = rows_drawn(first.saturating_add(row), available).min(available.height);
+                available.height.saturating_sub(drawn)
+            };
+            let shares = shares_with_row_usage(
                 wants,
                 band.height,
                 column_head,
                 focused,
                 settings.min_tile_height,
-            )))
-            .split(band)
-            .iter()
-            .enumerate()
+                &mut unused_rows,
+            );
+            for (row, &cell) in Layout::vertical(constraints_for_sizes(&shares))
+                .split(band)
+                .iter()
+                .enumerate()
             {
                 let index = first_cell + row;
                 let cell = if index == TABLE_CELL {
@@ -1800,6 +2004,17 @@ enum ColumnHead {
     Cell,
 }
 
+/// The focus ring's row within one column.
+fn column_focus(focused: FocusLocation, first_cell: usize, pieces: usize) -> ColumnFocus {
+    match focused {
+        FocusLocation::Cell(cell) => cell
+            .checked_sub(first_cell)
+            .filter(|at| *at < pieces)
+            .map_or(ColumnFocus::Outside, ColumnFocus::Row),
+        FocusLocation::Departing => ColumnFocus::Outside,
+    }
+}
+
 /// One column's cells as axis lengths: the even division, then room
 /// moved off the cells that are not using theirs and onto the cells
 /// that have run out of it.
@@ -1830,11 +2045,23 @@ enum ColumnHead {
 /// it where there is not: the cell being watched gets what it asked for
 /// and the others divide what is left.
 fn shares(
-    wants: &[u16],
+    wants: &[CellRowDemand],
     height: u16,
     head: ColumnHead,
     focused: ColumnFocus,
     floor: u16,
+) -> Vec<PaneAxisSize> {
+    shares_with_row_usage(wants, height, head, focused, floor, &mut |_, _| 0)
+}
+
+/// Divide one column with its content use answered at each considered height.
+fn shares_with_row_usage(
+    wants: &[CellRowDemand],
+    height: u16,
+    head: ColumnHead,
+    focused: ColumnFocus,
+    floor: u16,
+    unused_rows: &mut impl FnMut(usize, u16) -> u16,
 ) -> Vec<PaneAxisSize> {
     let count = wants.len();
     if count == 0 {
@@ -1845,15 +2072,17 @@ fn shares(
         weights[0] = u16::try_from(depth).unwrap_or(u16::MAX);
     }
     let base = apportion_shared_run(&weights, height);
-    let mut want: Vec<u16> = wants
-        .iter()
-        .map(|&asked| asked.max(floor).min(height).saturating_sub(1))
-        .collect();
-    if height > 0
-        && let Some(last) = want.last_mut()
-    {
-        *last = last.saturating_add(1);
-    }
+    let want = disjoint_demands(
+        wants.iter().map(|demand| demand.stepped_framed()),
+        height,
+        floor,
+    );
+    let exact = disjoint_demands(
+        wants.iter().map(|demand| demand.exact_framed()),
+        height,
+        floor,
+    );
+    let minimum = disjoint_demands(std::iter::repeat_n(floor, count), height, floor);
 
     let mut short: Vec<u16> = want
         .iter()
@@ -1893,19 +2122,187 @@ fn shares(
     }
 
     let moved = taken.iter().copied().fold(0, u16::saturating_add);
-    if moved == 0 {
-        return base.into_iter().map(PaneAxisSize::Fixed).collect();
-    }
     let given = apportion(&spare, moved);
-    base.into_iter()
+    let mut settled: Vec<u16> = base
+        .into_iter()
         .enumerate()
         .map(|(index, share)| {
-            let settled = share
+            share
                 .saturating_add(taken.get(index).copied().unwrap_or_default())
-                .saturating_sub(given.get(index).copied().unwrap_or_default());
-            PaneAxisSize::Fixed(settled)
+                .saturating_sub(given.get(index).copied().unwrap_or_default())
         })
-        .collect()
+        .collect();
+    if let ColumnHead::Summary(depth) = head {
+        let positions = count.saturating_add(depth.saturating_sub(1));
+        lend_to_summary(&mut settled, &exact, height, positions, &minimum);
+    }
+    serve_exact_shortfalls(&mut settled, &exact, &minimum, unused_rows);
+    settled.into_iter().map(PaneAxisSize::Fixed).collect()
+}
+
+/// Convert framed demands into disjoint layout rows. Every piece except the
+/// last receives its closing frame row from [`share_borders`].
+fn disjoint_demands(framed: impl IntoIterator<Item = u16>, height: u16, floor: u16) -> Vec<u16> {
+    let mut rows: Vec<u16> = framed
+        .into_iter()
+        .map(|asked| asked.max(floor).min(height).saturating_sub(1))
+        .collect();
+    if height > 0
+        && let Some(last) = rows.last_mut()
+    {
+        *last = last.saturating_add(1);
+    }
+    rows
+}
+
+/// Give a nearby summary shortfall rows from its tallest eligible mate.
+fn lend_to_summary(
+    settled: &mut [u16],
+    wants: &[u16],
+    height: u16,
+    positions: usize,
+    floors: &[u16],
+) {
+    let Some((&held, &asked)) = settled.first().zip(wants.first()) else {
+        return;
+    };
+    let short = asked.saturating_sub(held);
+    let framed_slot = apportion_shared_run(&vec![1; positions], height)
+        .first()
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(u16::from(height > 0 && settled.len() > 1));
+    let available = settled
+        .iter()
+        .zip(floors)
+        .skip(1)
+        .map(|(rows, floor)| rows.saturating_sub(*floor))
+        .fold(0, u16::saturating_add);
+    if short == 0 || short > framed_slot / SUMMARY_SLOT_SHORTFALL_DIVISOR || available < short {
+        return;
+    }
+    for _ in 0..short {
+        let Some(donor) = (1..settled.len())
+            .filter(|&index| settled[index] > floors[index])
+            .max_by_key(|&index| {
+                settled[index].saturating_add(u16::from(index + 1 < settled.len()))
+            })
+        else {
+            return;
+        };
+        settled[0] = settled[0].saturating_add(1);
+        settled[donor] = settled[donor].saturating_sub(1);
+    }
+}
+
+/// Move available rows in the smallest units that let a recipient draw more.
+fn serve_exact_shortfalls(
+    settled: &mut [u16],
+    exact: &[u16],
+    minimum: &[u16],
+    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+) {
+    loop {
+        let mut recipients: Vec<usize> = (0..settled.len())
+            .filter(|&index| settled[index] < exact[index])
+            .collect();
+        recipients
+            .sort_by_key(|&index| Reverse((exact[index].saturating_sub(settled[index]), index)));
+        let mut moved = false;
+        for recipient in recipients {
+            let free = (0..settled.len())
+                .filter(|&index| index != recipient)
+                .map(|index| spare_rows(index, settled, exact, minimum, unused_rows))
+                .fold(0, u16::saturating_add);
+            if let UsefulRowStep::Fits(step) =
+                next_useful_step(recipient, settled, exact, free, unused_rows)
+            {
+                moved = move_useful_step(recipient, step, settled, exact, minimum, unused_rows)
+                    == UsefulStepTransfer::Completed;
+            }
+            if moved {
+                break;
+            }
+        }
+        if !moved {
+            return;
+        }
+    }
+}
+
+/// Rows one cell can surrender at its current allocation.
+fn spare_rows(
+    index: usize,
+    settled: &[u16],
+    exact: &[u16],
+    minimum: &[u16],
+    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+) -> u16 {
+    let rows = settled[index];
+    let drawn = rows.saturating_sub(unused_rows(index, rows));
+    let retained = exact[index].min(drawn).max(minimum[index]);
+    rows.saturating_sub(retained)
+}
+
+/// Whether a recipient has a complete drawable step within the rows free.
+enum UsefulRowStep {
+    /// The number of rows that complete the next drawable step.
+    Fits(u16),
+    /// No drawable step fits the rows currently free.
+    NoFit,
+}
+
+/// Fewest additional rows that make one short cell draw more.
+fn next_useful_step(
+    recipient: usize,
+    settled: &[u16],
+    exact: &[u16],
+    free: u16,
+    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+) -> UsefulRowStep {
+    let held = settled[recipient];
+    let drawn = held.saturating_sub(unused_rows(recipient, held));
+    let limit = exact[recipient].saturating_sub(held).min(free);
+    (1..=limit)
+        .find(|&step| {
+            let rows = held.saturating_add(step);
+            rows.saturating_sub(unused_rows(recipient, rows)) > drawn
+        })
+        .map_or(UsefulRowStep::NoFit, UsefulRowStep::Fits)
+}
+
+/// Result of gathering every row for one complete useful step.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum UsefulStepTransfer {
+    /// Every row moved as one unit.
+    Completed,
+    /// Remeasurement left too few spare rows to complete the unit.
+    InsufficientSpare,
+}
+
+/// Transfer one complete useful step from the tallest available donors.
+fn move_useful_step(
+    recipient: usize,
+    step: u16,
+    settled: &mut [u16],
+    exact: &[u16],
+    minimum: &[u16],
+    unused_rows: &mut impl FnMut(usize, u16) -> u16,
+) -> UsefulStepTransfer {
+    let mut next = settled.to_vec();
+    for _ in 0..step {
+        let Some(donor) = (0..next.len())
+            .filter(|&index| index != recipient)
+            .filter(|&index| spare_rows(index, &next, exact, minimum, unused_rows) > 0)
+            .max_by_key(|&index| next[index].saturating_add(u16::from(index + 1 < next.len())))
+        else {
+            return UsefulStepTransfer::InsufficientSpare;
+        };
+        next[donor] = next[donor].saturating_sub(1);
+    }
+    next[recipient] = next[recipient].saturating_add(step);
+    settled.copy_from_slice(&next);
+    UsefulStepTransfer::Completed
 }
 
 /// Whether the positions of a grid retain a readable minimum size.
@@ -1922,7 +2319,13 @@ fn fits(area: Rect, count: usize, growth: TileGrowth, settings: &TileSettings) -
 }
 
 /// Rows the first column allocates to a summary of `depth` positions.
-fn summary_share(wants: &[u16], height: u16, depth: usize, growth: TileGrowth, floor: u16) -> u16 {
+fn summary_share(
+    wants: &[CellRowDemand],
+    height: u16,
+    depth: usize,
+    growth: TileGrowth,
+    floor: u16,
+) -> u16 {
     let Some(&positions) = columns(wants.len() + depth - 1, growth).first() else {
         return 0;
     };
@@ -1943,13 +2346,29 @@ fn summary_share(wants: &[u16], height: u16, depth: usize, growth: TileGrowth, f
 }
 
 /// Fewest summary positions that hold its current demand within the fit limit.
-fn summary_depth(area: Rect, wants: &[u16], growth: TileGrowth, settings: &TileSettings) -> usize {
-    let Some(&asked) = wants.first() else {
+fn summary_depth(
+    area: Rect,
+    wants: &[CellRowDemand],
+    growth: TileGrowth,
+    settings: &TileSettings,
+) -> usize {
+    let Some(asked) = wants.first().map(|demand| demand.stepped_framed()) else {
         return 1;
     };
+    let stepped: Vec<CellRowDemand> = wants
+        .iter()
+        .map(|demand| CellRowDemand::uniform(demand.stepped_framed()))
+        .collect();
     let mut depth = 1;
     loop {
-        if summary_share(wants, area.height, depth, growth, settings.min_tile_height) >= asked {
+        if summary_share(
+            &stepped,
+            area.height,
+            depth,
+            growth,
+            settings.min_tile_height,
+        ) >= asked
+        {
             return depth;
         }
         let next = depth + 1;
@@ -2009,17 +2428,14 @@ fn apportion_shared_run(weights: &[u16], total: u16) -> Vec<u16> {
     shares
 }
 
-/// The rows every cell is asking for, the summary's first.
-///
-/// What a cell asks for is its contents rounded up to a whole
-/// [`TileSettings::demand_step`], plus the rows its own border costs.
-/// An empty cell asks for nothing beyond its border, which [`shares`]
+/// The exact and stepped framed-row demands for every cell, the summary's
+/// first. An empty cell asks for nothing beyond its border, which [`shares`]
 /// takes as a cell with room to spare rather than one to shrink.
 fn cell_wants<Id: Clone + Eq + Debug>(
     demands: &TileDemands<Id>,
     slots: &[Slot<Id>],
     settings: &TileSettings,
-) -> Vec<u16> {
+) -> Vec<CellRowDemand> {
     let mut wants = Vec::with_capacity(slots.len() + TABLE_CELL);
     wants.push(settings.demanded_rows(demands.summary));
     wants.extend(slots.iter().map(|slot| match slot {
@@ -2787,13 +3203,23 @@ mod tests {
 
     /// The rows a cell drawing `rows` of content asks for under the
     /// default settings.
-    fn demanded_rows(rows: usize) -> u16 { TileSettings::default().demanded_rows(rows) }
+    fn demanded_rows(rows: usize) -> u16 {
+        TileSettings::default().demanded_rows(rows).stepped_framed()
+    }
+
+    /// One demand whose exact and stepped framed rows agree.
+    const fn row_demand(framed: u16) -> CellRowDemand { CellRowDemand::uniform(framed) }
+
+    /// Demands whose exact and stepped framed rows agree.
+    fn row_demands(framed: &[u16]) -> Vec<CellRowDemand> {
+        framed.iter().copied().map(row_demand).collect()
+    }
 
     /// `count` cells with nothing to show, which every column divides
     /// evenly -- the geometry and motion tests are written against it.
     fn even(count: usize) -> HeldCellLayout {
         HeldCellLayout {
-            rows:          vec![demanded_rows(0); count],
+            rows:          vec![row_demand(demanded_rows(0)); count],
             focused:       FocusLocation::Departing,
             summary_span:  1,
             summary_depth: 1,
@@ -3009,7 +3435,7 @@ mod tests {
             Slot::Group(4),
         ];
         let before = HeldCellLayout {
-            rows:          vec![11, 6, 6, 6, 6],
+            rows:          row_demands(&[11, 6, 6, 6, 6]),
             focused:       FocusLocation::Departing,
             summary_span:  1,
             summary_depth: 1,
@@ -3019,7 +3445,7 @@ mod tests {
         grid.set_layout(area, growth);
         grid.slots = slots.clone();
         grid.held = HeldCellLayout {
-            rows:          vec![6, 6, 10, 6, 6],
+            rows:          row_demands(&[6, 6, 10, 6, 6]),
             focused:       FocusLocation::Departing,
             summary_span:  2,
             summary_depth: 1,
@@ -3205,7 +3631,7 @@ mod tests {
             Grid::new(test_area(), &held, widening(3), &settings).span,
             2
         );
-        held.rows[0] = TEST_HEIGHT;
+        held.rows[0] = row_demand(TEST_HEIGHT);
         assert_eq!(
             Grid::new(test_area(), &held, widening(3), &settings).span,
             1
@@ -3514,8 +3940,9 @@ mod tests {
     /// cells share a border line, so the rects overlap by one and no
     /// longer add up to the column.
     fn column_rows(wants: &[u16], focused: ColumnFocus) -> Vec<u16> {
+        let wants = row_demands(wants);
         shares(
-            wants,
+            &wants,
             TEST_HEIGHT,
             ColumnHead::Cell,
             focused,
@@ -3622,6 +4049,179 @@ mod tests {
         );
     }
 
+    #[test]
+    fn no_piece_gets_a_row_past_its_ask_while_a_column_mate_is_short() {
+        let settings = TileSettings::default();
+        let wants = [
+            settings.demanded_rows(1),
+            settings.demanded_rows(100),
+            settings.demanded_rows(12),
+        ];
+        let mut rows: Vec<u16> = shares(
+            &wants,
+            TEST_HEIGHT,
+            ColumnHead::Cell,
+            ColumnFocus::Outside,
+            settings.min_tile_height,
+        )
+        .into_iter()
+        .map(|size| match size {
+            PaneAxisSize::Fixed(rows) => rows,
+            PaneAxisSize::Fill(weight) => weight,
+        })
+        .collect();
+        let shared = rows.len().saturating_sub(1);
+        for rows in rows.iter_mut().take(shared) {
+            *rows = rows.saturating_add(1);
+        }
+
+        assert_eq!(rows, vec![3, 25, 14]);
+    }
+
+    #[test]
+    fn an_unusable_row_moves_when_its_cell_is_furthest_below_demand() {
+        let wants = row_demands(&[100, 20, 20]);
+        let rows = shares_with_row_usage(
+            &wants,
+            TEST_HEIGHT,
+            ColumnHead::Cell,
+            ColumnFocus::Outside,
+            MIN_TILE_HEIGHT,
+            &mut |index, rows| u16::from(index == 0 && rows == 13),
+        );
+
+        assert_eq!(
+            rows,
+            vec![
+                PaneAxisSize::Fixed(12),
+                PaneAxisSize::Fixed(13),
+                PaneAxisSize::Fixed(15),
+            ]
+        );
+    }
+
+    /// Unused rows from the measured five-cell column at each considered height.
+    const fn measured_column_unused(index: usize, rows: u16) -> u16 {
+        match (index, rows) {
+            (0 | 2 | 3, 6) => 1,
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn a_freed_row_goes_to_a_mate_whose_next_step_it_completes() {
+        let mut settled = [6, 6, 6, 5, 6];
+        let exact = [17, 11, 15, 15, 12];
+        let minimum = [5, 5, 5, 5, 6];
+
+        serve_exact_shortfalls(&mut settled, &exact, &minimum, &mut measured_column_unused);
+
+        assert_eq!(settled, [7, 6, 5, 5, 6]);
+    }
+
+    #[test]
+    fn a_cell_made_whole_gives_no_row_away() {
+        let mut settled = [6, 6, 6, 5, 6];
+        let exact = [17, 11, 15, 15, 12];
+        let minimum = [5, 5, 5, 5, 6];
+
+        serve_exact_shortfalls(&mut settled, &exact, &minimum, &mut measured_column_unused);
+
+        assert_eq!(settled[0], 7);
+    }
+
+    #[test]
+    fn a_freed_row_stays_when_no_mates_next_step_fits() {
+        let mut settled = [6, 5, 5];
+        let exact = [12, 12, 12];
+        let minimum = [5, 5, 5];
+        let mut unused = |index, rows| match (index, rows) {
+            (0..=2, 6) => 1,
+            _ => 0,
+        };
+
+        serve_exact_shortfalls(&mut settled, &exact, &minimum, &mut unused);
+
+        assert_eq!(settled, [6, 5, 5]);
+    }
+
+    #[test]
+    fn an_exact_demand_change_redivides_without_motion() {
+        let growth = add_new(3);
+        let demands = |small| TileDemands {
+            summary:       small,
+            summary_width: 0,
+            groups:        vec![
+                TileDemand { id: 1, rows: 100 },
+                TileDemand { id: 2, rows: 12 },
+            ],
+        };
+        let mut grid = TileGrid::new();
+        grid.set_layout(test_area(), growth);
+        grid.sync(&demands(1), growth);
+        grid.settle_for_test();
+        let before = Grid::new(test_area(), &grid.held, growth, &grid.settings)
+            .cell(TABLE_CELL)
+            .expect("the summary is placed")
+            .height;
+
+        grid.sync(&demands(2), growth);
+
+        assert!(matches!(grid.motion, GridMotion::Settled));
+        let after = Grid::new(test_area(), &grid.held, growth, &grid.settings)
+            .cell(TABLE_CELL)
+            .expect("the summary is placed")
+            .height;
+        assert_eq!((before, after), (3, 4));
+    }
+
+    #[test]
+    fn a_shrinking_cell_updates_its_exact_demand_across_a_step_boundary() {
+        let growth = add_new(3);
+        let demands = |last| TileDemands {
+            summary:       1,
+            summary_width: 0,
+            groups:        vec![
+                TileDemand { id: 1, rows: 100 },
+                TileDemand {
+                    id:   2,
+                    rows: last,
+                },
+            ],
+        };
+        let mut grid = TileGrid::new();
+        grid.set_layout(test_area(), growth);
+        grid.sync(&demands(4), growth);
+        grid.settle_for_test();
+        let heights = |grid: &TileGrid<u32>| {
+            let resolved = Grid::new(test_area(), &grid.held, growth, &grid.settings);
+            (TABLE_CELL..=TABLE_CELL + 2)
+                .map(|cell| {
+                    resolved
+                        .cell(cell)
+                        .expect("the column holds the cell")
+                        .height
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(heights(&grid), vec![3, 33, 6]);
+        grid.sync(&demands(3), growth);
+        grid.settle_for_test();
+
+        assert_eq!(heights(&grid), vec![3, 34, 5]);
+        assert_eq!(
+            grid.held.rows[2].stepped_framed(),
+            demanded_rows(4),
+            "the held layout retains the earlier step"
+        );
+        assert_eq!(
+            grid.held.rows[2].exact_framed(),
+            TileSettings::default().demanded_rows(3).exact_framed(),
+            "the held layout accepts the current exact demand"
+        );
+    }
+
     /// Demand is quantised, so a cell has to gain a whole
     /// [`TILE_DEMAND_STEP`] before it asks for anything more.
     #[test]
@@ -3664,16 +4264,17 @@ mod tests {
     fn focus_changes_nothing_while_there_is_room_to_go_round() {
         let share = TEST_HEIGHT / 4;
         for asked in [vec![demanded_rows(0); 4], vec![0, share + 1, share + 1, 0]] {
+            let demands = row_demands(&asked);
             assert_eq!(
                 shares(
-                    &asked,
+                    &demands,
                     TEST_HEIGHT,
                     ColumnHead::Cell,
                     ColumnFocus::Row(1),
                     MIN_TILE_HEIGHT
                 ),
                 shares(
-                    &asked,
+                    &demands,
                     TEST_HEIGHT,
                     ColumnHead::Cell,
                     ColumnFocus::Outside,
@@ -3689,16 +4290,17 @@ mod tests {
     #[test]
     fn focus_takes_nothing_from_a_column_that_has_no_room_to_spare() {
         let asked = vec![u16::MAX; 3];
+        let demands = row_demands(&asked);
         assert_eq!(
             shares(
-                &asked,
+                &demands,
                 TEST_HEIGHT,
                 ColumnHead::Cell,
                 ColumnFocus::Row(1),
                 MIN_TILE_HEIGHT
             ),
             shares(
-                &asked,
+                &demands,
                 TEST_HEIGHT,
                 ColumnHead::Cell,
                 ColumnFocus::Outside,
@@ -3716,13 +4318,23 @@ mod tests {
         let mut grid = seeded_grid();
         grid.sync(&busy(&[(7, usize::from(TEST_HEIGHT))]), redistribute(4));
         grid.settle_for_test();
-        let grown = grid.held.clone();
+        let grown: Vec<u16> = grid
+            .held
+            .rows
+            .iter()
+            .map(|demand| demand.stepped_framed())
+            .collect();
 
         grid.sync(&quiet(&[7]), redistribute(4));
         grid.settle_for_test();
 
         assert_eq!(
-            grid.held, grown,
+            grid.held
+                .rows
+                .iter()
+                .map(|demand| demand.stepped_framed())
+                .collect::<Vec<_>>(),
+            grown,
             "its rows went away and it stands where it grew to"
         );
     }
@@ -3749,7 +4361,7 @@ mod tests {
             "the cell arriving is the encroachment the grid re-divides on"
         );
         assert_eq!(
-            grid.held.rows[1],
+            grid.held.rows[1].stepped_framed(),
             demanded_rows(0),
             "and the cell that had grown is back to what it is showing"
         );
@@ -3800,9 +4412,9 @@ mod tests {
             demanded_rows(share * 2),
         ];
         let held = HeldCellLayout {
-            rows,
-            focused: FocusLocation::Cell(2 + TABLE_CELL),
-            summary_span: 1,
+            rows:          row_demands(&rows),
+            focused:       FocusLocation::Cell(2 + TABLE_CELL),
+            summary_span:  1,
             summary_depth: 1,
         };
         let grid = Grid::new(
@@ -4204,7 +4816,7 @@ mod tests {
 
         grid.apply(TileAction::Add, growth);
         assert_eq!(grid.target().len() + TABLE_CELL, 10);
-        assert_eq!(grid.target_depth(), 2);
+        assert_eq!(grid.target_depth(), 1);
 
         let mut steps = 0;
         while let GridMotion::Moving(transition) = &grid.motion {
@@ -4432,6 +5044,56 @@ mod tests {
         let crossing_growth = redistribute(3);
         let crossing = synced_motion(&[7, 8], &[7, 8, 9], crossing_growth);
         assert_settled_motion_endpoints("column crossing", &crossing, crossing_growth);
+    }
+
+    #[test]
+    fn a_motion_frame_applies_unused_rows_to_its_own_arrangement() {
+        let area = Rect::new(0, 0, TEST_WIDTH, 40);
+        let growth = redistribute(4);
+        let demands = |groups: &[u32]| TileDemands {
+            summary:       100,
+            summary_width: 0,
+            groups:        groups
+                .iter()
+                .map(|&id| TileDemand { id, rows: 100 })
+                .collect(),
+        };
+        let mut grid = TileGrid::new();
+        grid.set_layout(area, growth);
+        grid.sync(&demands(&[1, 2, 3]), growth);
+        grid.settle_for_test();
+        grid.sync(&demands(&[1, 3]), growth);
+        let GridMotion::Moving(transition) = &grid.motion else {
+            assert!(
+                matches!(&grid.motion, GridMotion::Moving(_)),
+                "the removed cell starts one motion"
+            );
+            return;
+        };
+        let source = Grid::new(area, &transition.held, growth, &grid.settings)
+            .cell(TABLE_CELL)
+            .expect("the source places the summary");
+
+        grid.measure_row_steps(area, growth, |content, area| match content {
+            TileContent::Group(3) => area.height.saturating_sub(1),
+            TileContent::Summary | TileContent::Group(_) | TileContent::Empty(_) => area.height,
+        });
+
+        let destination = grid
+            .resolved_grid(area, &grid.drawn_held(), growth)
+            .cell(TABLE_CELL)
+            .expect("the destination places the summary");
+        let summary_at = |raw| {
+            grid.drawing_at(area, growth, raw)
+                .pieces
+                .into_iter()
+                .find(|piece| piece.placement.content == TileContent::Summary)
+                .map(|piece| piece.placement.frame.rect())
+                .expect("the frame places the summary")
+        };
+
+        assert_eq!(summary_at(0), source);
+        assert_eq!(summary_at(PROGRESS_SCALE), destination);
     }
 
     #[test]
@@ -5174,9 +5836,9 @@ mod tests {
     mod summary_depth {
         use super::*;
 
-        fn held_at_depth(rows: Vec<u16>, summary_depth: usize) -> HeldCellLayout {
+        fn held_at_depth(rows: &[u16], summary_depth: usize) -> HeldCellLayout {
             HeldCellLayout {
-                rows,
+                rows: row_demands(rows),
                 focused: FocusLocation::Cell(TABLE_CELL),
                 summary_span: 1,
                 summary_depth,
@@ -5186,10 +5848,116 @@ mod tests {
         fn deep_grid() -> TileGrid<u32> {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-            demands.summary = 12;
+            demands.summary = 15;
             grid.sync(&demands, redistribute(4));
             grid.settle_for_test();
             grid
+        }
+
+        fn evidence_grid(summary: usize) -> TileGrid<u32> {
+            let growth = redistribute(4);
+            let area = Rect {
+                height: 47,
+                ..test_area()
+            };
+            let demands = TileDemands {
+                summary,
+                summary_width: 0,
+                groups: (1..=10).map(|id| TileDemand { id, rows: 10 }).collect(),
+            };
+            let mut grid = TileGrid::new();
+            grid.set_min_tile_height(6);
+            grid.set_layout(area, growth);
+            grid.sync(&demands, growth);
+            grid.settle_for_test();
+            grid
+        }
+
+        #[test]
+        fn a_summary_one_row_short_takes_it_from_its_mates() {
+            let grid = evidence_grid(12);
+            let area = Rect {
+                height: 47,
+                ..test_area()
+            };
+            let settled = Grid::new(area, &grid.held, redistribute(4), &grid.settings);
+            let rows: Vec<u16> = (TABLE_CELL..=TABLE_CELL + 3)
+                .map(|cell| {
+                    settled
+                        .cell(cell)
+                        .expect("the first column holds four pieces")
+                        .height
+                })
+                .collect();
+
+            assert_eq!(grid.depth, 1);
+            assert_eq!(rows, vec![14, 12, 12, 12]);
+            assert!(
+                rows.iter()
+                    .all(|&height| height >= grid.settings.min_tile_height)
+            );
+        }
+
+        #[test]
+        fn a_summary_far_short_still_takes_a_second_position() {
+            let grid = evidence_grid(20);
+            let slot = apportion_shared_run(&[1; 4], 47)[0].saturating_add(1);
+            let asked = grid.held.rows[0].exact_framed();
+
+            assert_eq!(asked, slot.saturating_add(slot.saturating_mul(3) / 4));
+            assert_eq!(grid.depth, 2);
+        }
+
+        #[test]
+        fn summary_depth_never_falls_as_the_summary_asks_for_more() {
+            let growth = redistribute(4);
+            for command_count in [6, 9, 10, 13] {
+                let mut previous = 1;
+                let mut grid = TileGrid::new();
+                grid.set_layout(test_area(), growth);
+                for summary in 1..=usize::from(TEST_HEIGHT) {
+                    let demands = TileDemands {
+                        summary,
+                        summary_width: 0,
+                        groups: (1..=command_count)
+                            .map(|id| TileDemand { id, rows: 10 })
+                            .collect(),
+                    };
+                    grid.sync(&demands, growth);
+                    grid.settle_for_test();
+                    assert!(
+                        grid.depth >= previous,
+                        "{command_count} commands fell from {previous} to {} at {summary}",
+                        grid.depth
+                    );
+                    previous = grid.depth;
+                }
+            }
+        }
+
+        #[test]
+        fn no_mate_goes_under_the_minimum_to_feed_the_summary() {
+            let floor = 6;
+            let settings = TileSettings {
+                min_tile_height: floor,
+                ..TileSettings::default()
+            };
+            let held = held_at_depth(&[8, u16::MAX, u16::MAX], 1);
+            for (height, expected) in [(18, [8, 6, 6]), (19, [8, 7, 6])] {
+                let area = Rect::new(0, 0, TEST_WIDTH, height);
+                let grid = Grid::new(area, &held, add_new(3), &settings);
+                let rows: Vec<u16> = (TABLE_CELL..=TABLE_CELL + 2)
+                    .map(|cell| {
+                        grid.cell(cell)
+                            .expect("the column holds three pieces")
+                            .height
+                    })
+                    .collect();
+
+                assert_eq!(rows, expected);
+                assert!(rows[1] >= floor, "the shared-border mate is {rows:?}");
+                assert!(rows[2] >= floor, "the bottom mate is {rows:?}");
+            }
         }
 
         #[test]
@@ -5197,12 +5965,12 @@ mod tests {
             let settings = TileSettings::default();
             for (asked, depth, rows) in [
                 (9, 1, 11),
-                (14, 2, 27),
+                (14, 1, 14),
                 (30, 2, 30),
-                (35, 3, 40),
+                (35, 2, 35),
                 (45, 3, 40),
             ] {
-                let wants = [asked, 10, 10, 10];
+                let wants = row_demands(&[asked, 10, 10, 10]);
                 assert_eq!(
                     summary_depth(test_area(), &wants, redistribute(4), &settings),
                     depth
@@ -5213,7 +5981,7 @@ mod tests {
                 );
             }
 
-            let idle = [30, 3, 3, 3];
+            let idle = row_demands(&[30, 3, 3, 3]);
             assert_eq!(
                 summary_depth(test_area(), &idle, redistribute(4), &settings),
                 1,
@@ -5225,7 +5993,7 @@ mod tests {
         fn the_summary_gives_a_cell_back_once_it_fits_in_fewer() {
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-            demands.summary = 33;
+            demands.summary = 36;
             grid.sync(&demands, redistribute(4));
             grid.settle_for_test();
             assert_eq!(grid.depth, 3);
@@ -5243,7 +6011,7 @@ mod tests {
             let settings = TileSettings::default();
             let growth = redistribute(4);
             for (depth, widths) in [(1, vec![4]), (2, vec![3, 2]), (3, vec![3, 3])] {
-                let held = held_at_depth(vec![10; 4], depth);
+                let held = held_at_depth(&[10; 4], depth);
                 let grid = Grid::new(test_area(), &held, growth, &settings);
                 assert_eq!(grid.widths, widths);
                 assert_eq!(grid.column_of(1), Some(0));
@@ -5260,7 +6028,7 @@ mod tests {
 
         #[test]
         fn a_deeper_summary_tiles_its_column() {
-            let held = held_at_depth(vec![30, 10, 10, 10], 2);
+            let held = held_at_depth(&[30, 10, 10, 10], 2);
             let grid = Grid::new(
                 test_area(),
                 &held,
@@ -5289,7 +6057,7 @@ mod tests {
 
         #[test]
         fn a_capped_summary_places_every_cell_without_an_empty_column() {
-            let held = held_at_depth(vec![30, 10, 10, 10], 7);
+            let held = held_at_depth(&[30, 10, 10, 10], 7);
             let grid = Grid::new(
                 test_area(),
                 &held,
@@ -5357,16 +6125,19 @@ mod tests {
             let area = Rect::new(0, 0, TEST_WIDTH, 5);
             let growth = redistribute(4);
             let settings = TileSettings::default();
-            let wants = [u16::MAX, MIN_TILE_HEIGHT];
+            let wants = row_demands(&[u16::MAX, MIN_TILE_HEIGHT]);
             assert!(fits(area, 2, growth, &settings));
             assert!(!fits(area, 3, growth, &settings));
             assert_eq!(summary_depth(area, &wants, growth, &settings), 1);
-            assert!(summary_share(&wants, area.height, 1, growth, MIN_TILE_HEIGHT) < wants[0]);
+            assert!(
+                summary_share(&wants, area.height, 1, growth, MIN_TILE_HEIGHT)
+                    < wants[0].stepped_framed()
+            );
         }
 
         #[test]
         fn the_summary_is_served_before_the_focus_ring() {
-            let wants = [26, 35, 0];
+            let wants = row_demands(&[26, 35, 0]);
             let outside = shares(
                 &wants,
                 TEST_HEIGHT,
@@ -5472,7 +6243,7 @@ mod tests {
             assert_eq!(grid.depth, 1);
             let before = shown(&grid);
             assert_eq!(before[2], TileContent::Empty(4));
-            demands.summary = 33;
+            demands.summary = 36;
             grid.sync(&demands, redistribute(4));
             grid.settle_for_test();
             assert_eq!(grid.depth, 3);
@@ -5494,13 +6265,13 @@ mod tests {
             let settings = TileSettings::default();
             let before = Grid::new(
                 area,
-                &held_at_depth(vec![10; 4], 1),
+                &held_at_depth(&[10; 4], 1),
                 redistribute(4),
                 &settings,
             );
             let after = Grid::new(
                 area,
-                &held_at_depth(vec![30, 10, 10, 10], 2),
+                &held_at_depth(&[30, 10, 10, 10], 2),
                 redistribute(4),
                 &settings,
             );
@@ -5552,7 +6323,7 @@ mod tests {
             for (growth, span) in [(redistribute(4), 1), (widening(4), 2)] {
                 let mut grid = seeded_grid();
                 let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-                demands.summary = 12;
+                demands.summary = 15;
                 demands.summary_width = u16::MAX;
                 grid.sync(&demands, growth);
                 grid.settle_for_test();
@@ -5571,7 +6342,7 @@ mod tests {
             let growth = widening(4);
             let mut grid = seeded_grid();
             let mut demands = busy(&[(7, 7), (8, 7), (9, 7)]);
-            demands.summary = 12;
+            demands.summary = 15;
             demands.summary_width = u16::MAX;
             grid.sync(&demands, growth);
             grid.settle_for_test();
@@ -5582,7 +6353,7 @@ mod tests {
             assert_eq!(grid.held.summary_span, 2);
             assert_eq!(layout.span, 2);
 
-            demands.summary = 33;
+            demands.summary = 36;
             grid.sync(&demands, growth);
             grid.settle_for_test();
             let layout = Grid::new(test_area(), &grid.held, growth, &grid.settings);
