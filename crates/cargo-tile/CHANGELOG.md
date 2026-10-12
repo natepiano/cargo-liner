@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The grid puts the capture shim in front of cargo as it opens, so progress bars work from the first launch and come back after `rustup update`. `[capture] auto_install = false` leaves the shim to the subcommands; removing it is never automatic.
 - The shim is written beside `cargo` and renamed across, never over the file already there, so a run part way through keeps the script it opened.
 - A saved favorite matching the running attract screen is marked `●`, and the popup's title says how many rows are saved and what the mark means.
-- commands.excluded names cargo subcommands the scan drops entirely, defaulting to ["berth"]. The capture shim separately skips berth and the workspace terminal UIs; it does not read custom exclusions.
+- `commands.excluded` names cargo subcommands the scan drops entirely, defaulting to `["berth"]`, whose hook fires several times a second. The capture shim separately skips `berth` and the workspace terminal UIs; it does not read custom exclusions.
 - `u` restores the full attract configuration displaced by the latest random draw or favorite load.
 - `r` draws a fresh attract mode and all of its parameters at random.
 - `m` loads a random saved favorite; unusable ones open the diagnostic overlay instead.
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay moves on the rebindable navigation keys rather than hard-wired arrows, so `[navigation]` in `keymap.toml` says what walks the list.
 - Steer the attract band while it is shown: arrows send it, `>`/`<` (or `.`/`,`) change speed, `+`/`-` (or `=`) widen and thin it, further per press while held. The keys live under `[attract_moving_band]` so a later animation binds the same keys to its own meanings, and are live when the screen is fully shown or was asked for with `a`.
 - `a` shows the attract screen on demand, replacing the grid rather than drawing over it, with `attract` in the status line; the panes come back once the strip has faded out.
-- On macOS, an idle attract screen draws the desktop behind the window, excluding the emulator windows and following window movement, once Screen Recording is allowed. KDE Plasma capture is described by its separate Added bullet.
+- On macOS, an idle attract screen draws the desktop behind the window, excluding the emulator windows and following window movement, once Screen Recording is allowed.
 - When a cell ancestry block is squeezed below three rows, keep the nearest ancestor and mark the omitted prefix; with more room retain its outer head and nearest tail around an elision. A driver remains at its own chain foot.
 - Rows tied on start time read by pid, so a cargo draws above the cargo it launched.
 - A pid with no family is drawn in the ordinary text colour rather than the column headers' own, where it disappeared.
@@ -144,7 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The attract screens ask for thirty frames a second rather than one per poll; a frame is every cell of the window, parsed by the terminal.
 - The drifting screen's fast and slow runs travel along the field at half a line a second rather than standing where they were dealt.
 - The attract screen's fade takes about twice as long, so `a` reads as the screen changing hands rather than a cut.
-- When requested to replace the grid, the attract screen arrives and leaves over bare panes: frames remain, contents hide for the fade. Automatic OverGrid presentation retains the panes and contents.
+- An attract screen requested to replace the grid arrives and leaves over bare panes: the grid keeps its frames and loses its contents for the length of the fade, so the band has a background to settle into.
 - `initial_rows` says how tall the grid grows in a single column before arranging itself into a square, rather than how many rows a column fills before the next opens.
 - Draw every reading on the working-directory heading and nowhere else; the `state` column now says one thing, `blocked`, and joins the table only when a row is waiting.
 - Tab and Shift-Tab walk the tile grid cell by cell in the grid's own order, wrapping at either end, where the arrows read rows and columns.
@@ -163,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Give a heading's reading a tenth of a percent past a hundred units, where a whole number would sit still for several units at a time.
 - Rename the `sub` column to `runs`.
 - Put `command` ahead of `compiler` and `runs` in a command's own cell, so the command line starts in the same column as in the summary.
-- Leave observed compiler and runs counts out of the summary, where a row stands for a whole command; retain their columns when the measurements are unavailable.
+- Leave observed `compiler` and `runs` counts out of the summary, where a row stands for a whole command; retain their columns when the measurements are unavailable.
 - Start the working-directory headings and their rows one space in from the cell border rather than two and four.
 - Reject arguments that are not a subcommand; 0.1.0 parsed no command line at all.
 - Head a command's own cell with the directory the command itself runs in, so a test run's per-case temporary directories no longer push the run being watched below the fold.
