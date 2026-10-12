@@ -57,6 +57,7 @@ use ratatui::layout::Rect;
 use super::action::TileAction;
 use super::constants::AUTO_VIEW_RETURN_MARGIN;
 use super::constants::MIN_INITIAL_ROWS;
+use super::constants::MIN_TILE_HEIGHT;
 use super::constants::MOVING_HEIGHT_PROBE_STEP;
 use super::constants::PROGRESS_SCALE;
 use super::constants::SUMMARY_SLOT_SHORTFALL_DIVISOR;
@@ -278,13 +279,45 @@ enum PieceHeightPath<'a> {
 }
 
 impl<Id: Eq> HeightSnap<'_, Id> {
-    /// Whether `piece` fills `rect` or is whole inside it.
-    fn accepts(&self, piece: &BandPiece<Id>, rect: Rect) -> bool {
+    /// Whether a measured content step cannot give up a single row.
+    fn has_content_step_gap(&self, content: &TileContent<Id>) -> bool {
         let Self::Frame { row_usage, .. } = self else {
-            return true;
+            return false;
+        };
+        row_usage.iter().any(|cell| {
+            &cell.content == content
+                && cell
+                    .rows
+                    .iter()
+                    .any(|rows| rows.fit == FrameHeightFit::LeavesGap)
+        })
+    }
+
+    /// How `piece` uses the content rows inside `rect`.
+    fn fit(&self, piece: &BandPiece<Id>, rect: Rect) -> FrameHeightFit {
+        let Self::Frame { row_usage, .. } = self else {
+            return FrameHeightFit::Filled;
         };
         let area = draw::content_area(frame_inner(rect));
-        frame_height_fit(row_usage, &piece.drawn.content, area) != FrameHeightFit::LeavesGap
+        frame_height_fit(row_usage, &piece.drawn.content, area)
+    }
+
+    /// Whether `piece` fills `rect` or is whole inside it.
+    #[cfg(test)]
+    fn accepts(&self, piece: &BandPiece<Id>, rect: Rect) -> bool {
+        self.fit(piece, rect) != FrameHeightFit::LeavesGap
+    }
+
+    /// Rows a whole piece can hand to a cutting mate.
+    fn spare_rows(&self, piece: &BandPiece<Id>, rect: Rect) -> u16 {
+        let Self::Frame { row_usage, .. } = self else {
+            return 0;
+        };
+        let area = draw::content_area(frame_inner(rect));
+        match frame_retained_rows(row_usage, &piece.drawn.content, area) {
+            RetainedRows::Unmeasured => 0,
+            RetainedRows::Measured(kept) => area.height.saturating_sub(kept),
+        }
     }
 
     /// The preceding frame's height for this ordered piece.
@@ -357,6 +390,40 @@ fn frame_height_fit<Id: Eq>(
                 .find(|rows| rows.width == area.width && rows.height == area.height)
         })
         .map_or(FrameHeightFit::LeavesGap, |rows| rows.fit)
+}
+
+/// The retained-row answer for one measured content allocation.
+fn frame_retained_rows<Id: Eq>(
+    frame_row_usage: &[FrameCellRowUsage<Id>],
+    content: &TileContent<Id>,
+    area: Rect,
+) -> RetainedRows {
+    frame_row_usage
+        .iter()
+        .find(|cell| &cell.content == content)
+        .and_then(|cell| {
+            cell.rows
+                .iter()
+                .find(|rows| rows.width == area.width && rows.height == area.height)
+        })
+        .map_or(RetainedRows::Unmeasured, |rows| rows.retained)
+}
+
+/// Painted rows at one recorded allocation, keeping unmeasured rows in place.
+fn frame_painted_rows<Id: Eq>(
+    frame_row_usage: &[FrameCellRowUsage<Id>],
+    content: &TileContent<Id>,
+    area: Rect,
+) -> u16 {
+    frame_row_usage
+        .iter()
+        .find(|cell| &cell.content == content)
+        .and_then(|cell| {
+            cell.rows
+                .iter()
+                .find(|rows| rows.width == area.width && rows.height == area.height)
+        })
+        .map_or(area.height, |rows| rows.drawn)
 }
 
 /// Record one content-area answer, reusing an answer already gathered this frame.
@@ -647,6 +714,24 @@ enum GridMotion<Id> {
     Moving(Transition<Id>),
 }
 
+/// Whether a step's depth has seen the widths its destination draws at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DestinationDepthStatus {
+    /// The depth came from demands measured for this arrangement.
+    Resolved,
+    /// A key used the preceding frame's demands and awaits its first render.
+    AwaitingMeasuredWidths,
+}
+
+/// Whether one demand sync belongs to the frame being drawn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DemandSync {
+    /// A scan independent of the current render.
+    Independent,
+    /// Demands measured at the widths this render will draw.
+    CurrentRender,
+}
+
 /// Which view of the grid the last laid-out area can show readably.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GridDisplay {
@@ -717,29 +802,33 @@ impl HeldCellLayout {
 /// The arrangement a transition is moving away from.
 struct Transition<Id> {
     /// The cells as they stood before the change.
-    from:    Vec<Slot<Id>>,
+    from:         Vec<Slot<Id>>,
     /// What those cells were drawn at. Snapshotted rather than
     /// recomputed, because by the time a transition starts the demands
     /// it is moving away from have already been replaced by the ones it
     /// is moving toward.
-    held:    HeldCellLayout,
+    held:         HeldCellLayout,
     /// Exact cell geometry drawn before the motion began.
-    source:  Box<Grid>,
+    source:       Box<Grid>,
     /// When the motion began.
-    started: Instant,
+    started:      Instant,
     /// How long this one step runs for.
-    millis:  u64,
+    millis:       u64,
+    /// Whether the destination depth has seen its drawn widths.
+    depth_status: DestinationDepthStatus,
 }
 
 /// One arrangement waiting its turn, and how long the move into it
 /// takes once it comes up.
 struct Step<Id> {
     /// The cells as this step leaves them.
-    slots:  Vec<Slot<Id>>,
+    slots:        Vec<Slot<Id>>,
     /// Summary depth at the end of this step.
-    depth:  usize,
+    depth:        usize,
     /// How long the move into `slots` runs for.
-    millis: u64,
+    millis:       u64,
+    /// Whether the destination depth has seen its drawn widths.
+    depth_status: DestinationDepthStatus,
 }
 
 /// The grid's cells and the transition it is playing, if any.
@@ -873,12 +962,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .map(|(content, _)| content)
             .collect();
         let mut frame_row_usage = Vec::<FrameCellRowUsage<Id>>::new();
-        let cells_grid = Grid::with_rows_kept(
-            area,
-            &self.drawn_held(),
-            growth,
-            &self.settings,
-            &mut |index, area| {
+        let held = self.drawn_held();
+        let cells_grid =
+            Grid::with_rows_kept(area, &held, growth, &self.settings, &mut |index, area| {
                 contents.get(index).map_or(area.height, |content| {
                     measure_frame_row_use(
                         &mut frame_row_usage,
@@ -888,8 +974,28 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                         &mut rows_kept,
                     )
                 })
-            },
-        );
+            });
+        let cells_grid =
+            if cells_grid.has_content_gap_beside_cut(&held, &contents, &frame_row_usage) {
+                Grid::with_rows_kept(area, &held, growth, &self.settings, &mut |index, area| {
+                    contents.get(index).map_or(area.height, |content| {
+                        let kept = measure_frame_row_use(
+                            &mut frame_row_usage,
+                            content,
+                            area,
+                            &mut rows_drawn,
+                            &mut rows_kept,
+                        );
+                        if cells_grid.grows_content(index, area) {
+                            frame_painted_rows(&frame_row_usage, content, area)
+                        } else {
+                            kept
+                        }
+                    })
+                })
+            } else {
+                cells_grid
+            };
         let summary = TileContent::Summary;
         let cells_area = cells_grid
             .cell(TABLE_CELL)
@@ -921,7 +1027,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             self.motion_heights = MotionHeightPath::default();
             return;
         }
-        self.measure_moving_height_rows(area, growth, progress, &mut rows_drawn);
+        self.measure_moving_height_rows(area, growth, progress, &mut rows_drawn, &mut rows_kept);
     }
 
     /// Probe the one-way candidates used to place this moving frame.
@@ -931,6 +1037,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         growth: TileGrowth,
         progress: u32,
         rows_drawn: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
+        rows_kept: &mut impl FnMut(&TileContent<Id>, Rect) -> u16,
     ) {
         let drawing = self.drawing_at_with_height_snap(area, growth, progress, &HeightSnap::Off);
         if self.motion_heights.area != area
@@ -966,17 +1073,40 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             let lower = previous.min(end);
             let upper = previous.max(end);
             let interpolated = rect.height.clamp(lower, upper);
-            let toward_end = match interpolated.cmp(&end) {
-                Ordering::Less => interpolated.saturating_add(MOVING_HEIGHT_PROBE_STEP),
-                Ordering::Equal => interpolated,
-                Ordering::Greater => interpolated.saturating_sub(MOVING_HEIGHT_PROBE_STEP),
+            let previous_area = draw::content_area(frame_inner(Rect {
+                height: previous,
+                ..rect
+            }));
+            measure_frame_row_use(
+                &mut frame_row_usage,
+                &content,
+                previous_area,
+                rows_drawn,
+                rows_kept,
+            );
+            let probe_from = if frame_height_fit(&frame_row_usage, &content, previous_area)
+                == FrameHeightFit::Whole
+            {
+                previous
+            } else {
+                interpolated
+            };
+            let toward_end = match probe_from.cmp(&end) {
+                Ordering::Less => probe_from.saturating_add(MOVING_HEIGHT_PROBE_STEP),
+                Ordering::Equal => probe_from,
+                Ordering::Greater => probe_from.saturating_sub(MOVING_HEIGHT_PROBE_STEP),
             }
             .clamp(lower, upper);
             for height in [interpolated, previous, toward_end, end] {
                 let area = draw::content_area(frame_inner(Rect { height, ..rect }));
-                let drawn =
-                    measure_frame_row_usage(&mut frame_row_usage, &content, area, rows_drawn);
-                if frame_height_fit(&frame_row_usage, &content, area) != FrameHeightFit::LeavesGap {
+                let drawn = measure_frame_row_use(
+                    &mut frame_row_usage,
+                    &content,
+                    area,
+                    rows_drawn,
+                    rows_kept,
+                );
+                if frame_height_fit(&frame_row_usage, &content, area) == FrameHeightFit::Filled {
                     continue;
                 }
                 let frame_rows = height.saturating_sub(area.height);
@@ -985,10 +1115,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                     height: filled_height,
                     ..rect
                 }));
-                measure_frame_row_usage(&mut frame_row_usage, &content, filled_area, rows_drawn);
+                measure_frame_row_use(
+                    &mut frame_row_usage,
+                    &content,
+                    filled_area,
+                    rows_drawn,
+                    rows_kept,
+                );
             }
         }
         self.frame_row_usage = frame_row_usage;
+        self.select_moving_heights(area, growth, progress);
+    }
+
+    /// Select and retain heights for this measured motion frame.
+    fn select_moving_heights(&mut self, area: Rect, growth: TileGrowth, progress: u32) {
         let previous_heights = self.motion_heights.piece_heights.clone();
         let height_snap = HeightSnap::Frame {
             row_usage: &self.frame_row_usage,
@@ -1041,19 +1182,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
 
     /// The stored retained-row answer, or every row when unmeasured.
     fn frame_rows_kept(&self, content: &TileContent<Id>, area: Rect) -> u16 {
-        self.frame_row_usage
-            .iter()
-            .find(|cell| &cell.content == content)
-            .and_then(|cell| {
-                cell.rows
-                    .iter()
-                    .find(|rows| rows.width == area.width && rows.height == area.height)
-            })
-            .and_then(|rows| match rows.retained {
-                RetainedRows::Unmeasured => None,
-                RetainedRows::Measured(kept) => Some(kept),
-            })
-            .unwrap_or(area.height)
+        match frame_retained_rows(&self.frame_row_usage, content, area) {
+            RetainedRows::Unmeasured => area.height,
+            RetainedRows::Measured(kept) => kept,
+        }
     }
 
     /// Resolve the destination with the step probes gathered for it.
@@ -1073,10 +1205,22 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .into_iter()
             .map(|(content, _)| content)
             .collect();
-        Grid::with_rows_kept(area, held, growth, &self.settings, &mut |index, area| {
+        let grid = Grid::with_rows_kept(area, held, growth, &self.settings, &mut |index, area| {
             contents
                 .get(index)
                 .map_or(area.height, |content| self.frame_rows_kept(content, area))
+        });
+        if !grid.has_content_gap_beside_cut(held, &contents, &self.frame_row_usage) {
+            return grid;
+        }
+        Grid::with_rows_kept(area, held, growth, &self.settings, &mut |index, area| {
+            contents.get(index).map_or(area.height, |content| {
+                if grid.grows_content(index, area) {
+                    frame_painted_rows(&self.frame_row_usage, content, area)
+                } else {
+                    self.frame_rows_kept(content, area)
+                }
+            })
         })
     }
 
@@ -1166,15 +1310,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         growth: TileGrowth,
     ) -> Vec<(TileContent<Id>, u16)> {
+        let held = self.demand_measurement_held();
         let ColumnLayout {
-            widths: held,
+            widths: column_heights,
             summary_depth: depth,
-        } = column_layout(self.count(), self.drawn_held().summary_depth, growth);
-        let opened: Vec<Rect> = Layout::horizontal(constraints_for_sizes(&fills(held.len())))
-            .split(area)
-            .to_vec();
+        } = column_layout(self.count(), held.summary_depth, growth);
+        let opened: Vec<Rect> =
+            Layout::horizontal(constraints_for_sizes(&fills(column_heights.len())))
+                .split(area)
+                .to_vec();
         let mut widths = Vec::with_capacity(self.count());
-        for (column, &cells_here) in held.iter().enumerate() {
+        for (column, &cells_here) in column_heights.iter().enumerate() {
             let inner = opened
                 .get(column)
                 .map_or(0, |&rect| frame_inner(share_borders(rect, area)).width);
@@ -1186,7 +1332,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         // The summary alone can reach past its own column, which only
         // the laid-out grid knows.
         let summary = self
-            .resolved_grid(area, &self.drawn_held(), growth)
+            .resolved_grid(area, &held, growth)
             .cell(TABLE_CELL)
             .map(|rect| frame_inner(rect).width);
         cells(&self.slots)
@@ -1200,6 +1346,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
                 (content, width)
             })
             .collect()
+    }
+
+    /// Destination state used to ask cells for their wrapped row demands.
+    fn demand_measurement_held(&self) -> HeldCellLayout {
+        let mut held = self.drawn_held();
+        if matches!(
+            self.motion,
+            GridMotion::Moving(Transition {
+                depth_status: DestinationDepthStatus::AwaitingMeasuredWidths,
+                ..
+            })
+        ) {
+            held.summary_depth = 1;
+        }
+        held
     }
 
     /// Record the geometry the pane just laid out.
@@ -1263,6 +1424,21 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// that has taken on enough new invocations to want another unit of
     /// its column travels there the same way a cell opening does.
     pub fn sync(&mut self, demands: &TileDemands<Id>, growth: TileGrowth) {
+        self.sync_demands(demands, growth, DemandSync::Independent);
+    }
+
+    /// Fold demands measured by the current render into its destination.
+    pub(super) fn sync_rendered_demands(&mut self, demands: &TileDemands<Id>, growth: TileGrowth) {
+        self.sync_demands(demands, growth, DemandSync::CurrentRender);
+    }
+
+    /// Reconcile one demand observation with the headed arrangement.
+    fn sync_demands(
+        &mut self,
+        demands: &TileDemands<Id>,
+        growth: TileGrowth,
+        demand_sync: DemandSync,
+    ) {
         self.demands = demands.clone();
         self.growth = growth;
         let mut arrangement = self.target();
@@ -1346,6 +1522,12 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             growth,
             &self.settings,
         );
+        if steps.is_empty()
+            && demand_sync == DemandSync::CurrentRender
+            && self.resolve_key_destination_depth(wanted_depth)
+        {
+            return;
+        }
         let settled = self.settled_held();
         if steps.is_empty()
             && wanted_depth == self.target_depth()
@@ -1359,7 +1541,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         {
             self.held = settled;
         }
-        self.queue_with_depth(steps, wanted_depth);
+        self.queue_with_depth(steps, wanted_depth, DestinationDepthStatus::Resolved);
     }
 
     /// Which of `live` the grid can actually give a cell to: the ones
@@ -1492,28 +1674,60 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         let final_slots = steps.last().cloned().unwrap_or_else(|| self.target());
         let wants = cell_wants(&self.demands, &final_slots, &self.settings);
         let wanted = summary_depth(self.area, &wants, self.growth, &self.settings);
-        self.queue_with_depth(steps, wanted);
+        self.queue_with_depth(
+            steps,
+            wanted,
+            DestinationDepthStatus::AwaitingMeasuredWidths,
+        );
     }
 
-    /// Queue arrangements using the summary depth already chosen for their end.
-    fn queue_with_depth(&mut self, steps: Vec<Vec<Slot<Id>>>, wanted: usize) {
+    /// Queue arrangements with the summary depth each one ends at.
+    ///
+    /// A slot move and its depth change share one step. With no slot move,
+    /// each depth unit remains its own step.
+    fn queue_with_depth(
+        &mut self,
+        steps: Vec<Vec<Slot<Id>>>,
+        wanted: usize,
+        final_depth_status: DestinationDepthStatus,
+    ) {
         let start_slots = self.target();
         let final_slots = steps.last().cloned().unwrap_or_else(|| self.target());
         let headed = self.target_depth();
         let mut depth = headed;
         let mut moves = Vec::new();
-        while depth > wanted {
-            depth -= 1;
-            moves.push((start_slots.clone(), depth));
+        if steps.is_empty() {
+            while depth != wanted {
+                if depth > wanted {
+                    depth -= 1;
+                } else {
+                    depth += 1;
+                }
+                moves.push((start_slots.clone(), depth, DestinationDepthStatus::Resolved));
+            }
+        } else {
+            let step_count = steps.len();
+            for (index, slots) in steps.into_iter().enumerate() {
+                let final_step = index + 1 == step_count;
+                depth = if final_step {
+                    wanted
+                } else {
+                    summary_depth(
+                        self.area,
+                        &cell_wants(&self.demands, &slots, &self.settings),
+                        self.growth,
+                        &self.settings,
+                    )
+                };
+                let depth_status = if final_step {
+                    final_depth_status
+                } else {
+                    DestinationDepthStatus::Resolved
+                };
+                moves.push((slots, depth, depth_status));
+            }
         }
-        for slots in steps {
-            moves.push((slots, depth));
-        }
-        while depth < wanted {
-            depth += 1;
-            moves.push((final_slots.clone(), depth));
-        }
-        moves.retain(|(slots, depth)| {
+        moves.retain(|(slots, depth, _)| {
             queued_cells_keep_endpoint_columns(
                 &start_slots,
                 headed,
@@ -1527,8 +1741,31 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.queue_steps(moves);
     }
 
+    /// Replace a key's provisional destination with its first rendered demands.
+    fn resolve_key_destination_depth(&mut self, wanted: usize) -> bool {
+        if !self.pending.is_empty()
+            || !matches!(
+                self.motion,
+                GridMotion::Moving(Transition {
+                    depth_status: DestinationDepthStatus::AwaitingMeasuredWidths,
+                    ..
+                })
+            )
+        {
+            return false;
+        }
+        let GridMotion::Moving(transition) = &mut self.motion else {
+            return false;
+        };
+        transition.depth_status = DestinationDepthStatus::Resolved;
+        self.depth = wanted;
+        self.held = self.settled_held();
+        self.motion_heights = MotionHeightPath::default();
+        true
+    }
+
     /// Queue arrangements paired with their summary depth.
-    fn queue_steps(&mut self, steps: Vec<(Vec<Slot<Id>>, usize)>) {
+    fn queue_steps(&mut self, steps: Vec<(Vec<Slot<Id>>, usize, DestinationDepthStatus)>) {
         if steps.is_empty() {
             return;
         }
@@ -1538,10 +1775,11 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .unwrap_or(self.settings.animation_millis)
             .max(self.settings.min_step_millis);
         self.pending
-            .extend(steps.into_iter().map(|(slots, depth)| Step {
+            .extend(steps.into_iter().map(|(slots, depth, depth_status)| Step {
                 slots,
                 depth,
                 millis,
+                depth_status,
             }));
         if self.pending.len() > self.settings.max_pending_steps
             && let Some(last) = self.pending.pop_back()
@@ -1565,9 +1803,9 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// the units it was drawn at, and the one arriving takes whatever
     /// the current demands and focus come to.
     fn advance(&mut self) {
-        self.motion_heights = MotionHeightPath::default();
         let drawn_held = self.drawn_held();
         let Some(step) = self.pending.pop_front() else {
+            self.motion_heights = MotionHeightPath::default();
             self.motion = GridMotion::Settled;
             self.held = drawn_held;
             self.last_settled_geometry = LastSettledCellGeometry::NoCellsFrame;
@@ -1583,17 +1821,73 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             },
             _ => self.resolved_grid(self.area, &drawn_held, self.growth),
         };
+        let source = self.last_drawn_motion_source(source, &step.slots);
+        self.motion_heights = MotionHeightPath::default();
         let previous = std::mem::replace(&mut self.slots, step.slots);
         self.depth = step.depth;
         self.settle_focus(&previous);
         self.held = self.settled_held();
         self.motion = GridMotion::Moving(Transition {
-            from:    previous,
-            held:    drawn_held,
-            source:  Box::new(source),
-            started: Instant::now(),
-            millis:  step.millis,
+            from:         previous,
+            held:         drawn_held,
+            source:       Box::new(source),
+            started:      Instant::now(),
+            millis:       step.millis,
+            depth_status: step.depth_status,
         });
+    }
+
+    /// Keep the drawn heights when a queued key follows a column's motion.
+    fn last_drawn_motion_source(&self, mut source: Grid, next_slots: &[Slot<Id>]) -> Grid {
+        if self.motion_heights.piece_heights.is_empty()
+            || self.motion_heights.area != self.area
+            || self.motion_heights.growth != self.growth
+        {
+            return source;
+        }
+        let drawing = self.drawing_at(self.area, self.growth, self.motion_heights.progress);
+        if drawing.column_bands != source.columns {
+            return source;
+        }
+        let contents = cells(&self.slots);
+        let mut panes = Vec::with_capacity(contents.len());
+        for (content, pane) in &contents {
+            let mut pieces = drawing
+                .pieces
+                .iter()
+                .filter(|piece| &piece.placement.content == content);
+            let Some(piece) = pieces.next() else {
+                return source;
+            };
+            let frame = piece.placement.frame;
+            let survives = pane
+                .checked_sub(TABLE_CELL + 1)
+                .and_then(|index| self.slots.get(index))
+                .is_none_or(|slot| next_slots.contains(slot));
+            if pieces.next().is_some()
+                || frame.shift() != 0
+                || (survives && frame.clip().height < source.min_tile_height)
+                || source.cell(*pane).is_none_or(|endpoint| {
+                    frame.clip().x != endpoint.x || frame.clip().width != endpoint.width
+                })
+            {
+                return source;
+            }
+            panes.push(ResolvedPane {
+                pane: *pane,
+                area: frame.clip(),
+            });
+        }
+        if drawing.pieces.iter().any(|piece| {
+            !contents
+                .iter()
+                .any(|(content, _)| content == &piece.placement.content)
+                && draw::has_visible_body_row(piece.placement.frame)
+        }) {
+            return source;
+        }
+        source.resolved = ResolvedPaneLayout::new(panes);
+        source
     }
 
     /// Re-divide the column focus just landed in or left, when the
@@ -1608,9 +1902,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return;
         }
         self.pending.push_back(Step {
-            slots:  self.slots.clone(),
-            depth:  self.depth,
-            millis: self.settings.focus_animation_millis,
+            slots:        self.slots.clone(),
+            depth:        self.depth,
+            millis:       self.settings.focus_animation_millis,
+            depth_status: DestinationDepthStatus::Resolved,
         });
         self.advance();
     }
@@ -1668,6 +1963,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     pub(super) const fn collapse_queued_changes_for_test(&mut self) {
         self.settings.max_pending_steps = 1;
     }
+
+    /// Complete only the active motion so tests can inspect each queued arrival.
+    #[cfg(test)]
+    pub(super) fn finish_motion_for_test(&mut self) { self.advance(); }
 
     /// Move focus one cell in `direction`, staying put at the edges.
     ///
@@ -2208,6 +2507,44 @@ fn column_layout(count: usize, held_depth: usize, growth: TileGrowth) -> ColumnL
 }
 
 impl Grid {
+    /// Whether a measured incomplete piece holds an unused row beside a cut mate.
+    fn has_content_gap_beside_cut<Id: Eq>(
+        &self,
+        held: &HeldCellLayout,
+        contents: &[TileContent<Id>],
+        row_usage: &[FrameCellRowUsage<Id>],
+    ) -> bool {
+        self.resolved.panes.iter().any(|pane| {
+            let Some(content) = contents.get(pane.pane.saturating_sub(TABLE_CELL)) else {
+                return false;
+            };
+            let area = draw::content_area(frame_inner(pane.area));
+            let leaves_gap = row_usage.iter().any(|cell| {
+                &cell.content == content
+                    && cell.rows.iter().any(|rows| {
+                        rows.width == area.width
+                            && rows.height == area.height
+                            && rows.fit == FrameHeightFit::LeavesGap
+                    })
+            });
+            leaves_gap
+                && self.resolved.panes.iter().any(|mate| {
+                    mate.pane != pane.pane
+                        && self.column_of(mate.pane) == self.column_of(pane.pane)
+                        && held
+                            .rows
+                            .get(mate.pane.saturating_sub(TABLE_CELL))
+                            .is_some_and(|demand| mate.area.height < demand.exact_framed())
+                })
+        })
+    }
+
+    /// Whether this allocation gives the cell more content rows than it holds.
+    fn grows_content(&self, index: usize, area: Rect) -> bool {
+        self.cell(index.saturating_add(TABLE_CELL))
+            .is_some_and(|cell| area.height > draw::content_area(frame_inner(cell)).height)
+    }
+
     /// Resolve the cells `held` describes against `area`.
     ///
     /// The first column is divided before the rest, because the summary
@@ -3533,11 +3870,12 @@ fn ordered_height_changes(before: &[u16], after: &[u16], growing: bool) -> Vec<P
 }
 
 /// Shared dividers whose piece heights advance through one fixed path.
-fn monotone_band_dividers<Id>(
+fn monotone_band_dividers<Id: Eq>(
     pieces: &[BandPiece<Id>],
     in_band: &[usize],
     before: &[u16],
     after: &[u16],
+    height_snap: &HeightSnap<'_, Id>,
 ) -> Vec<u16> {
     let before_spans = before
         .windows(2)
@@ -3549,23 +3887,39 @@ fn monotone_band_dividers<Id>(
         .collect::<Vec<_>>();
     let growing = ordered_height_changes(&before_spans, &after_spans, true);
     let shrinking = ordered_height_changes(&before_spans, &after_spans, false);
+    // Keep the probe pass's candidate sizes; combine fractional rows only
+    // after those probes show that the content steps have no gaps.
+    let round_each_piece = matches!(height_snap, HeightSnap::Off)
+        || in_band
+            .iter()
+            .any(|&index| height_snap.has_content_step_gap(&pieces[index].drawn.content));
     let grown = before_spans
         .iter()
         .zip(&after_spans)
         .zip(in_band)
         .map(|((&before, &after), &index)| {
-            lerp(0, after.saturating_sub(before), pieces[index].progress)
+            let change = after.saturating_sub(before);
+            if round_each_piece {
+                u32::from(lerp(0, change, pieces[index].progress)).saturating_mul(PROGRESS_SCALE)
+            } else {
+                u32::from(change).saturating_mul(pieces[index].progress)
+            }
         })
-        .fold(0_u16, u16::saturating_add);
+        .fold(0_u32, u32::saturating_add);
     let shrunk = before_spans
         .iter()
         .zip(&after_spans)
         .zip(in_band)
         .map(|((&before, &after), &index)| {
-            lerp(0, before.saturating_sub(after), pieces[index].progress)
+            let change = before.saturating_sub(after);
+            if round_each_piece {
+                u32::from(lerp(0, change, pieces[index].progress)).saturating_mul(PROGRESS_SCALE)
+            } else {
+                u32::from(change).saturating_mul(pieces[index].progress)
+            }
         })
-        .fold(0_u16, u16::saturating_add);
-    let transfers = usize::from(grown.min(shrunk));
+        .fold(0_u32, u32::saturating_add);
+    let transfers = usize::try_from(grown.min(shrunk) / PROGRESS_SCALE).unwrap_or(usize::MAX);
     let mut spans = before_spans;
     for change in growing.iter().take(transfers) {
         spans[change.position] = spans[change.position].saturating_add(1);
@@ -3613,7 +3967,7 @@ fn band_piece_dividers<Id: Eq>(
     let same_band = from_band.top() == to_band.top()
         && from_band.bottom().saturating_sub(1) == to_band.bottom().saturating_sub(1);
     let mut dividers = if same_band {
-        monotone_band_dividers(pieces, in_band, &before, &after)
+        monotone_band_dividers(pieces, in_band, &before, &after, search.height_snap)
     } else {
         let mut dividers = vec![band.top()];
         for (position, &index) in in_band.iter().enumerate() {
@@ -3694,8 +4048,71 @@ struct BandDividerCandidate {
     dividers:        Vec<u16>,
     /// Pieces whose measured content leaves a gap.
     unfilled_pieces: usize,
+    /// Pieces whose content reaches their last available row.
+    filled_pieces:   usize,
+    /// Rows whole pieces can hand to another piece in their band.
+    whole_spare:     u16,
     /// Total distance from the independently interpolated dividers.
     distance:        u32,
+}
+
+impl BandDividerCandidate {
+    /// The spare-row relationship represented by this partial candidate.
+    const fn spare_state(&self) -> CandidateSpareState {
+        match (self.filled_pieces > 0, self.whole_spare > 0) {
+            (false, false) => CandidateSpareState::Neutral,
+            (true, false) => CandidateSpareState::CuttingMate,
+            (false, true) => CandidateSpareState::WholeSpare,
+            (true, true) => CandidateSpareState::StrandedSpare,
+        }
+    }
+
+    /// Add one piece's semantic fit to this candidate.
+    fn record(&mut self, fit: PieceCandidateFit) {
+        self.unfilled_pieces = self.unfilled_pieces.saturating_add(fit.gap_count());
+        self.filled_pieces = self.filled_pieces.saturating_add(fit.filled_count());
+        self.whole_spare = self.whole_spare.saturating_add(fit.whole_spare());
+    }
+}
+
+/// Whether a partial divider candidate can still give every spare row away.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CandidateSpareState {
+    /// No cutting mate or spare whole piece has appeared yet.
+    Neutral,
+    /// A cutting mate has appeared without a whole piece holding spare rows.
+    CuttingMate,
+    /// A whole piece has spare rows, with no cutting mate yet.
+    WholeSpare,
+    /// A whole piece holds spare rows beside a cutting mate.
+    StrandedSpare,
+}
+
+/// How a divider search ranks transferable rows.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SpareRowPreference<'a> {
+    /// Keep candidates that give every whole piece's spare rows to cutting mates.
+    GiveToCuttingMate {
+        /// Keep opening and closing spans at the nearest filled allocation.
+        motion_dividers: &'a [u16],
+    },
+    /// Retain the prior nearest-candidate behavior.
+    Nearest,
+}
+
+impl SpareRowPreference<'_> {
+    /// Whether this partial candidate can remain in the search.
+    fn accepts(self, candidate: &BandDividerCandidate) -> bool {
+        self == Self::Nearest || candidate.spare_state() != CandidateSpareState::StrandedSpare
+    }
+
+    /// State that must remain distinct while candidates share an ending divider.
+    const fn selection_state(self, candidate: &BandDividerCandidate) -> CandidateSpareState {
+        match self {
+            Self::GiveToCuttingMate { .. } => candidate.spare_state(),
+            Self::Nearest => CandidateSpareState::Neutral,
+        }
+    }
 }
 
 /// How a divider search treats measured content gaps.
@@ -3711,7 +4128,7 @@ impl ContentFitPolicy {
     /// Whether a piece may remain in this search.
     fn accepts(self, fit: PieceCandidateFit) -> bool {
         fit != PieceCandidateFit::InvalidGeometry
-            && (self == Self::Preferred || fit == PieceCandidateFit::ContentFits)
+            && (self == Self::Preferred || fit.meets_required_fit())
     }
 }
 
@@ -3720,15 +4137,31 @@ impl ContentFitPolicy {
 enum PieceCandidateFit {
     /// The divider pair is outside the piece's one-way geometry.
     InvalidGeometry,
-    /// The measured content fills the proposed allocation.
-    ContentFits,
+    /// The measured content reaches the proposed allocation's last row.
+    Filled,
+    /// The whole value fits, with rows it does not retain for itself.
+    Whole { spare_rows: u16 },
     /// The measured content leaves a gap in the proposed allocation.
-    ContentLeavesGap,
+    LeavesGap,
 }
 
 impl PieceCandidateFit {
     /// One gap added to a preferred candidate's primary score.
-    fn gap_count(self) -> usize { usize::from(matches!(self, Self::ContentLeavesGap)) }
+    fn gap_count(self) -> usize { usize::from(matches!(self, Self::LeavesGap)) }
+
+    /// One cutting piece added to the candidate's spare-row state.
+    fn filled_count(self) -> usize { usize::from(matches!(self, Self::Filled)) }
+
+    /// Spare rows held by a whole piece.
+    const fn whole_spare(self) -> u16 {
+        match self {
+            Self::Whole { spare_rows } => spare_rows,
+            Self::InvalidGeometry | Self::Filled | Self::LeavesGap => 0,
+        }
+    }
+
+    /// Whether this fit meets the motion snap's content rule.
+    const fn meets_required_fit(self) -> bool { matches!(self, Self::Filled | Self::Whole { .. }) }
 }
 
 /// Pick the nearest jointly valid set of shared dividers in one band.
@@ -3738,23 +4171,41 @@ fn snapped_band_piece_dividers<Id: Eq>(
     after: &[u16],
     interpolated: &[u16],
 ) -> Vec<u16> {
+    let Some(nearest) = nearest_band_piece_dividers(
+        search,
+        before,
+        after,
+        interpolated,
+        ContentFitPolicy::Required,
+        SpareRowPreference::Nearest,
+    ) else {
+        return nearest_band_piece_dividers(
+            search,
+            before,
+            after,
+            interpolated,
+            ContentFitPolicy::Preferred,
+            SpareRowPreference::Nearest,
+        )
+        .unwrap_or_else(|| interpolated.to_vec());
+    };
+    if !search.in_band.iter().any(|&index| {
+        let progress = search.pieces[index].progress;
+        progress > 0 && progress < PROGRESS_SCALE
+    }) {
+        return nearest;
+    }
     nearest_band_piece_dividers(
         search,
         before,
         after,
         interpolated,
         ContentFitPolicy::Required,
+        SpareRowPreference::GiveToCuttingMate {
+            motion_dividers: &nearest,
+        },
     )
-    .or_else(|| {
-        nearest_band_piece_dividers(
-            search,
-            before,
-            after,
-            interpolated,
-            ContentFitPolicy::Preferred,
-        )
-    })
-    .unwrap_or_else(|| interpolated.to_vec())
+    .unwrap_or(nearest)
 }
 
 /// Find the nearest shared dividers within every piece's remaining path.
@@ -3764,17 +4215,21 @@ fn nearest_band_piece_dividers<Id: Eq>(
     after: &[u16],
     interpolated: &[u16],
     content_fit: ContentFitPolicy,
+    spare_rows: SpareRowPreference<'_>,
 ) -> Option<Vec<u16>> {
     let in_band = search.in_band;
     let &top = interpolated.first()?;
     let mut candidates = vec![BandDividerCandidate {
         dividers:        vec![top],
         unfilled_pieces: 0,
+        filled_pieces:   0,
+        whole_spare:     0,
         distance:        0,
     }];
     for position in 1..in_band.len() {
         let (lower, upper) = (0..position).try_fold((top, top), |(lower, upper), piece| {
-            let (piece_lower, piece_upper) = piece_span_bounds(search, before, after, piece)?;
+            let (piece_lower, piece_upper) =
+                piece_span_bounds(search, before, after, piece, spare_rows)?;
             Some((
                 lower.saturating_add(piece_lower),
                 upper.saturating_add(piece_upper),
@@ -3784,35 +4239,45 @@ fn nearest_band_piece_dividers<Id: Eq>(
         let upper = upper.min(*interpolated.last()?);
         let mut next = Vec::new();
         for divider in lower..=upper {
-            let best = candidates
-                .iter()
-                .filter_map(|candidate| {
-                    let fit = snapped_piece_fit(
-                        search,
-                        before,
-                        after,
-                        position - 1,
-                        *candidate.dividers.last().unwrap_or(&top),
-                        divider,
-                    );
-                    content_fit.accepts(fit).then_some((candidate, fit))
-                })
-                .min_by_key(|(candidate, fit)| {
-                    (
-                        candidate.unfilled_pieces.saturating_add(fit.gap_count()),
-                        candidate.distance,
-                    )
-                });
-            let Some((best, fit)) = best else {
-                continue;
-            };
-            let mut candidate = best.clone();
-            candidate.dividers.push(divider);
-            candidate.unfilled_pieces = candidate.unfilled_pieces.saturating_add(fit.gap_count());
-            candidate.distance = candidate
-                .distance
-                .saturating_add(u32::from(divider.abs_diff(interpolated[position])));
-            next.push(candidate);
+            let mut at_divider = Vec::new();
+            for candidate in &candidates {
+                let fit = snapped_piece_fit(
+                    search,
+                    before,
+                    after,
+                    position - 1,
+                    *candidate.dividers.last().unwrap_or(&top),
+                    divider,
+                    spare_rows,
+                );
+                if !content_fit.accepts(fit) {
+                    continue;
+                }
+                let mut candidate = candidate.clone();
+                candidate.dividers.push(divider);
+                candidate.record(fit);
+                if !spare_rows.accepts(&candidate) {
+                    continue;
+                }
+                candidate.distance = candidate
+                    .distance
+                    .saturating_add(u32::from(divider.abs_diff(interpolated[position])));
+                let state = spare_rows.selection_state(&candidate);
+                let replace = at_divider
+                    .iter()
+                    .position(|held: &BandDividerCandidate| {
+                        spare_rows.selection_state(held) == state
+                    })
+                    .is_none_or(|held| {
+                        (candidate.unfilled_pieces, candidate.distance)
+                            < (at_divider[held].unfilled_pieces, at_divider[held].distance)
+                    });
+                if replace {
+                    at_divider.retain(|held| spare_rows.selection_state(held) != state);
+                    at_divider.push(candidate);
+                }
+            }
+            next.extend(at_divider);
         }
         if next.is_empty() {
             return None;
@@ -3830,12 +4295,13 @@ fn nearest_band_piece_dividers<Id: Eq>(
                 in_band.len().saturating_sub(1),
                 *candidate.dividers.last().unwrap_or(&top),
                 bottom,
+                spare_rows,
             );
             if !content_fit.accepts(fit) {
                 return None;
             }
-            candidate.unfilled_pieces = candidate.unfilled_pieces.saturating_add(fit.gap_count());
-            Some(candidate)
+            candidate.record(fit);
+            spare_rows.accepts(&candidate).then_some(candidate)
         })
         .min_by_key(|candidate| (candidate.unfilled_pieces, candidate.distance))
         .map(|mut candidate| {
@@ -3850,6 +4316,7 @@ fn piece_span_bounds<Id: Eq>(
     before: &[u16],
     after: &[u16],
     position: usize,
+    spare_rows: SpareRowPreference<'_>,
 ) -> Option<(u16, u16)> {
     let &index = search.in_band.get(position)?;
     let piece = &search.pieces[index];
@@ -3872,6 +4339,17 @@ fn piece_span_bounds<Id: Eq>(
         lower = lower.max(selected);
         upper = upper.min(selected);
     }
+    if matches!(
+        piece.motion,
+        BandPieceMotion::Entering { .. } | BandPieceMotion::Leaving { .. }
+    ) && let SpareRowPreference::GiveToCuttingMate { motion_dividers } = spare_rows
+    {
+        let span = motion_dividers
+            .get(position + 1)?
+            .saturating_sub(*motion_dividers.get(position)?);
+        lower = lower.max(span);
+        upper = upper.min(span);
+    }
     match piece.motion {
         BandPieceMotion::Resident { .. } => {
             lower = lower.max(search.min_tile_height.saturating_sub(1));
@@ -3893,16 +4371,23 @@ fn snapped_piece_fit<Id: Eq>(
     position: usize,
     top: u16,
     bottom: u16,
+    spare_rows: SpareRowPreference<'_>,
 ) -> PieceCandidateFit {
     let Some(&index) = search.in_band.get(position) else {
         return PieceCandidateFit::InvalidGeometry;
     };
     let piece = &search.pieces[index];
     let span = bottom.saturating_sub(top);
-    let Some((lower, upper)) = piece_span_bounds(search, before, after, position) else {
+    let Some((lower, upper)) = piece_span_bounds(search, before, after, position, spare_rows)
+    else {
         return PieceCandidateFit::InvalidGeometry;
     };
     if bottom < top || span < lower || span > upper {
+        return PieceCandidateFit::InvalidGeometry;
+    }
+    // A collapsed piece shares one divider with its neighbour. Taking any
+    // rows requires room for a body row between the two edges.
+    if span > 0 && span.saturating_add(1) < MIN_TILE_HEIGHT {
         return PieceCandidateFit::InvalidGeometry;
     }
     let rect = band_piece_rect(
@@ -3913,10 +4398,15 @@ fn snapped_piece_fit<Id: Eq>(
         top,
         bottom,
     );
-    if search.height_snap.accepts(piece, rect) {
-        PieceCandidateFit::ContentFits
-    } else {
-        PieceCandidateFit::ContentLeavesGap
+    match search.height_snap.fit(piece, rect) {
+        FrameHeightFit::Filled => PieceCandidateFit::Filled,
+        FrameHeightFit::Whole => PieceCandidateFit::Whole {
+            spare_rows: search
+                .height_snap
+                .spare_rows(piece, rect)
+                .min(span.saturating_sub(lower)),
+        },
+        FrameHeightFit::LeavesGap => PieceCandidateFit::LeavesGap,
     }
 }
 
@@ -4367,11 +4857,12 @@ mod tests {
         };
         let source = Grid::new(area, &before, growth, &grid.settings);
         grid.motion = GridMotion::Moving(Transition {
-            from:    slots,
-            held:    before,
-            source:  Box::new(source),
-            started: Instant::now(),
-            millis:  1,
+            from:         slots,
+            held:         before,
+            source:       Box::new(source),
+            started:      Instant::now(),
+            millis:       1,
+            depth_status: DestinationDepthStatus::Resolved,
         });
 
         for raw in motion_steps().chain([PROGRESS_SCALE / 2]) {
@@ -4493,6 +4984,39 @@ mod tests {
                     .unwrap_or(u16::MAX)
                     .min(area.height),
                 TileContent::Group(_) | TileContent::Empty(_) => area.height,
+            }
+        }
+
+        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
+    }
+
+    struct WidthDependentSummaryCells;
+
+    impl crate::TileCells<u32> for WidthDependentSummaryCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            let summary_width = widths
+                .iter()
+                .find_map(|(content, width)| (*content == TileContent::Summary).then_some(*width))
+                .unwrap_or_default();
+            TileDemands {
+                summary:       if summary_width < TEST_TILE_WIDTH {
+                    30
+                } else {
+                    5
+                },
+                summary_width: 0,
+                groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary if area.width < TEST_TILE_WIDTH => 30.min(area.height),
+                TileContent::Summary => 5.min(area.height),
+                TileContent::Group(_) => 1.min(area.height),
+                TileContent::Empty(_) => 0,
             }
         }
 
@@ -5962,6 +6486,174 @@ mod tests {
         (0..24).map(|step| step * PROGRESS_SCALE / 23)
     }
 
+    /// A key fixture whose summary needs two positions before `+` and one
+    /// after it. The command remains short of its exact row demand throughout.
+    fn depth_changing_key_grid() -> (TileGrid<u32>, Rect, TileGrowth) {
+        let area = test_area();
+        let growth = add_new(4);
+        let demands = TileDemands {
+            summary:       usize::from(TEST_HEIGHT) * 3 / 4,
+            summary_width: 0,
+            groups:        vec![TileDemand {
+                id:   1,
+                rows: usize::from(TEST_HEIGHT),
+            }],
+        };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_layout(area, growth);
+        grid.sync(&demands, growth);
+        grid.settle_for_test();
+        assert_eq!(grid.depth, 2);
+        (grid, area, growth)
+    }
+
+    #[test]
+    fn a_key_that_changes_slots_and_depth_queues_one_step() {
+        let (mut grid, _, growth) = depth_changing_key_grid();
+        for (action, final_depth) in [(TileAction::Add, 1), (TileAction::Remove, 2)] {
+            assert!(matches!(grid.motion, GridMotion::Settled));
+            grid.apply(action, growth);
+            assert!(matches!(grid.motion, GridMotion::Moving(_)));
+            assert_eq!(grid.depth, final_depth);
+            assert!(grid.pending.is_empty());
+            grid.advance();
+        }
+    }
+
+    /// Apply one key and inspect every point of every step it queues.
+    fn assert_key_keeps_unchanged_heights_one_way(
+        grid: &mut TileGrid<u32>,
+        area: Rect,
+        growth: TileGrowth,
+        action: TileAction,
+    ) {
+        let contents = [TileContent::Summary, TileContent::Group(1)];
+        let mut paths = vec![Vec::new(); contents.len()];
+        grid.apply(action, growth);
+        while matches!(grid.motion, GridMotion::Moving(_)) {
+            for raw in 0..=PROGRESS_SCALE {
+                let drawing = grid.drawing_at(area, growth, raw);
+                for (content, path) in contents.iter().zip(&mut paths) {
+                    let mut pieces = drawing
+                        .placements()
+                        .filter(|placement| &placement.content == content);
+                    let piece = pieces.next().expect("the unchanged cell remains visible");
+                    assert!(
+                        pieces.next().is_none(),
+                        "the unchanged cell stays in its band"
+                    );
+                    path.push(piece.frame.clip().height);
+                }
+            }
+            grid.advance();
+        }
+        for (content, heights) in contents.iter().zip(paths) {
+            let (&start, &end) = heights
+                .first()
+                .zip(heights.last())
+                .expect("the key queues a moving frame");
+            let one_way = if start <= end {
+                heights.windows(2).all(|pair| pair[0] <= pair[1])
+            } else {
+                heights.windows(2).all(|pair| pair[0] >= pair[1])
+            };
+            assert!(one_way, "{content:?} reverses through {heights:?}");
+        }
+    }
+
+    #[test]
+    fn no_unchanged_cell_reverses_height_across_one_key() {
+        let (mut grid, area, growth) = depth_changing_key_grid();
+        assert_key_keeps_unchanged_heights_one_way(&mut grid, area, growth, TileAction::Add);
+        assert_key_keeps_unchanged_heights_one_way(&mut grid, area, growth, TileAction::Remove);
+    }
+
+    /// Render the new widths, then inspect the one motion the key started.
+    fn assert_width_changing_key_moves_once(
+        grid: &mut TileGrid<u32>,
+        cells: &WidthDependentSummaryCells,
+        area: Rect,
+        growth: TileGrowth,
+        action: TileAction,
+        expected_depth: usize,
+    ) {
+        grid.apply(action, growth);
+        assert!(matches!(grid.motion, GridMotion::Moving(_)));
+        draw_view_frame(grid, cells, area, growth);
+        assert!(grid.pending.is_empty(), "the key has no second motion");
+        assert_eq!(grid.depth, expected_depth);
+
+        let contents = [TileContent::Summary, TileContent::Group(1)];
+        let mut paths = vec![Vec::new(); contents.len()];
+        let beside_summary =
+            crate::TileCells::demands(cells, &grid.content_widths(area, growth)).summary;
+        let alone_summary =
+            crate::TileCells::demands(cells, &[(TileContent::Summary, frame_inner(area).width)])
+                .summary;
+        for raw in 0..=PROGRESS_SCALE {
+            grid.measure_row_steps(
+                area,
+                growth,
+                raw,
+                SummaryProbeDemands::new(beside_summary, alone_summary),
+                |content, area| crate::TileCells::rows_drawn(cells, content, area),
+                |content, area| crate::TileCells::rows_kept(cells, content, area),
+            );
+            let drawing = grid.drawing_at(area, growth, raw);
+            for (content, path) in contents.iter().zip(&mut paths) {
+                let height = drawing
+                    .placements()
+                    .find(|placement| &placement.content == content)
+                    .map(|placement| placement.frame.clip().height)
+                    .expect("the unchanged cell remains visible");
+                path.push(height);
+            }
+        }
+        for (content, heights) in contents.iter().zip(paths) {
+            let (&start, &end) = heights
+                .first()
+                .zip(heights.last())
+                .expect("the key draws one motion");
+            let one_way = if start <= end {
+                heights.windows(2).all(|pair| pair[0] <= pair[1])
+            } else {
+                heights.windows(2).all(|pair| pair[0] >= pair[1])
+            };
+            assert!(one_way, "{content:?} reverses through {heights:?}");
+        }
+
+        grid.advance();
+        assert!(matches!(grid.motion, GridMotion::Settled));
+        assert_eq!(grid.depth, expected_depth);
+        draw_view_frame(grid, cells, area, growth);
+    }
+
+    #[test]
+    fn a_key_whose_new_widths_change_demands_still_moves_once() {
+        let area = Rect::new(0, 0, TEST_TILE_WIDTH.saturating_mul(3), TEST_HEIGHT);
+        let growth = TileGrowth::default();
+        let cells = WidthDependentSummaryCells;
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(6);
+        draw_view_frame(&mut grid, &cells, area, growth);
+        grid.settle_for_test();
+        draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(grid.count(), 6);
+        assert_eq!(grid.depth, 1);
+
+        assert_width_changing_key_moves_once(&mut grid, &cells, area, growth, TileAction::Add, 2);
+        assert_width_changing_key_moves_once(
+            &mut grid,
+            &cells,
+            area,
+            growth,
+            TileAction::Remove,
+            1,
+        );
+    }
+
     /// Demands that keep every stepped fixture's content incomplete.
     fn tall_demands(ids: &[u32]) -> TileDemands<u32> {
         let rows = usize::from(TEST_HEIGHT).saturating_mul(2);
@@ -6025,11 +6717,12 @@ mod tests {
         };
         let source = Grid::new(area, &before, growth, &grid.settings);
         grid.motion = GridMotion::Moving(Transition {
-            from:    slots,
-            held:    before,
-            source:  Box::new(source),
-            started: Instant::now(),
-            millis:  1,
+            from:         slots,
+            held:         before,
+            source:       Box::new(source),
+            started:      Instant::now(),
+            millis:       1,
+            depth_status: DestinationDepthStatus::Resolved,
         });
         (grid, area, growth)
     }
@@ -6075,11 +6768,12 @@ mod tests {
         grid.slots = after_slots;
         grid.held = destination_held;
         grid.motion = GridMotion::Moving(Transition {
-            from:    before_slots,
-            held:    source_held,
-            source:  Box::new(source),
-            started: Instant::now(),
-            millis:  1,
+            from:         before_slots,
+            held:         source_held,
+            source:       Box::new(source),
+            started:      Instant::now(),
+            millis:       1,
+            depth_status: DestinationDepthStatus::Resolved,
         });
         (grid, area, growth)
     }
@@ -6627,11 +7321,12 @@ mod tests {
         grid.slots = slots.clone();
         grid.held = destination_held;
         grid.motion = GridMotion::Moving(Transition {
-            from:    slots,
-            held:    source_held,
-            source:  Box::new(source),
-            started: Instant::now(),
-            millis:  1,
+            from:         slots,
+            held:         source_held,
+            source:       Box::new(source),
+            started:      Instant::now(),
+            millis:       1,
+            depth_status: DestinationDepthStatus::Resolved,
         });
         let _ = filled_height_drawing(
             &mut grid,
@@ -6941,6 +7636,61 @@ mod tests {
                     placement.frame.clip()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_whole_moving_piece_gives_spare_rows_to_a_cutting_mate() {
+        let compact_height = MIN_TILE_HEIGHT.saturating_mul(2);
+        let expanded_height = compact_height.saturating_add(4);
+        let (grid, area, growth) = exact_height_motion(
+            &[compact_height, expanded_height],
+            &[expanded_height, compact_height],
+        );
+        let whole_rows = draw::content_area(frame_inner(Rect {
+            height: compact_height,
+            ..area
+        }))
+        .height;
+
+        for raw in 1..PROGRESS_SCALE {
+            let unsnapped = grid.drawing_at_with_height_snap(area, growth, raw, &HeightSnap::Off);
+            let mut row_usage = Vec::new();
+            for piece in &unsnapped.pieces {
+                for height in compact_height..=expanded_height {
+                    let content_area = draw::content_area(frame_inner(Rect {
+                        height,
+                        ..piece.placement.frame.clip()
+                    }));
+                    measure_frame_row_use(
+                        &mut row_usage,
+                        &piece.placement.content,
+                        content_area,
+                        &mut |content, area| match content {
+                            TileContent::Summary => whole_rows.min(area.height),
+                            TileContent::Group(_) | TileContent::Empty(_) => area.height,
+                        },
+                        &mut |content, area| match content {
+                            TileContent::Summary => whole_rows.min(area.height),
+                            TileContent::Group(_) | TileContent::Empty(_) => area.height,
+                        },
+                    );
+                }
+            }
+            let height_snap = HeightSnap::Frame {
+                row_usage: &row_usage,
+                path:      PieceHeightPath::AdvanceFrom(&[]),
+            };
+            let drawing = grid.drawing_at_with_height_snap(area, growth, raw, &height_snap);
+            let summary = drawing
+                .placements()
+                .find(|placement| placement.content == TileContent::Summary)
+                .expect("the summary remains in the band");
+            let summary_area = draw::content_area(frame_inner(summary.frame.clip()));
+            assert_eq!(
+                summary_area.height, whole_rows,
+                "the summary keeps a spare row while its mate cuts at {raw}"
+            );
         }
     }
 
@@ -7266,7 +8016,8 @@ mod tests {
                 (piece.placement.content, area.width, area.height)
             })
             .collect::<Vec<_>>();
-        let mut calls = 0;
+        let mut drawn_calls = 0_usize;
+        let mut kept_calls = 0_usize;
         let raw = PROGRESS_SCALE / 2;
         grid.measure_row_steps(
             area,
@@ -7274,21 +8025,33 @@ mod tests {
             raw,
             SummaryProbeDemands::new(100, 100),
             |content, area| {
-                calls += 1;
-                if area.height == u16::MAX
-                    || endpoint_areas.iter().any(|(endpoint, width, height)| {
-                        endpoint == content && *width == area.width && *height == area.height
-                    })
-                {
+                drawn_calls += 1;
+                if area.height == u16::MAX {
+                    return match content {
+                        TileContent::Summary => MIN_TILE_HEIGHT
+                            .saturating_sub(TILE_BORDER_ROWS)
+                            .saturating_sub(TILE_ROWS_READOUT_HEIGHT),
+                        TileContent::Group(_) | TileContent::Empty(_) => area.height,
+                    };
+                }
+                if endpoint_areas.iter().any(|(endpoint, width, height)| {
+                    endpoint == content && *width == area.width && *height == area.height
+                }) {
                     area.height
                 } else {
                     area.height.saturating_sub(1)
                 }
             },
-            |_, area| area.height,
+            |_, area| {
+                kept_calls += 1;
+                area.height
+            },
         );
         let _ = grid.drawing_at(area, growth, raw);
-        assert_eq!(calls, SEVEN_CELL_MOVING_ROW_PROBE_COUNT);
+        assert_eq!(
+            drawn_calls.saturating_add(kept_calls),
+            SEVEN_CELL_MOVING_ROW_PROBE_COUNT
+        );
     }
 
     #[test]
@@ -8786,6 +9549,7 @@ mod tests {
             grid.sync(&demands, redistribute(8));
             grid.settle_for_test();
             assert_eq!(grid.depth, 7);
+            let starting_depth = grid.depth;
 
             let growth = redistribute(4);
             grid.apply(TileAction::Add, growth);
@@ -8795,7 +9559,8 @@ mod tests {
                 growth,
                 &grid.settings,
             );
-            assert!(expected < grid.depth);
+            assert!(expected < starting_depth);
+            assert_eq!(grid.depth, expected);
             assert_eq!(grid.target_depth(), expected);
         }
 

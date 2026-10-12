@@ -70,11 +70,13 @@ So the summary deepens only when it is still short after every spare row in colu
 
 `queue(steps)` is used by `+` and `-` (`add`, `remove`). It works out the wanted depth from the final arrangement with `self.growth`. `apply` records `self.growth = growth` before acting, so `+` under a changed growth queues the depth that growth allows.
 
-`queue_with_depth` starts from `headed = target_depth()` and queues one step per cell of depth change:
+`queue_with_depth` joins a slot move to the depth it ends at:
 
-1. while above `wanted`, a step on the current target arrangement one depth lower (the summary gives a cell back);
-2. each arrangement step, at `min(headed, wanted)`;
-3. while below `wanted`, a step on the final arrangement one depth higher (the summary takes a cell).
+1. each intermediate slot arrangement carries the `summary_depth` worked out from that arrangement's asks;
+2. the last slot arrangement carries `wanted`;
+3. only when no slot moves, it queues one depth-only step for each unit between `headed` and `wanted`.
+
+A `+` or `-` destination first measures asks at that arrangement's depth-1 widths, the same starting point `summary_depth` uses. The current render's `sync` replaces the active key destination with the depth those asks need, so a width-driven depth change stays inside the key's motion. A separate scan still joins the queue.
 
 `queue_steps` spreads the scan's `TILE_ANIMATION_MILLIS` over all of them. `advance` sets `self.depth = step.depth` and holds `settled_held()`. `settled_held` re-divides every cell back to its ask when the depth differs from the held one, as it already does when the cell count changes or a cell asks for more than it holds.
 
@@ -90,7 +92,7 @@ So the summary deepens only when it is still short after every spare row in colu
 
 `Grid::column_of` maps cell `n` to the column of position `n + d - 1` (the summary maps to position 1). `Grid::lanes` lists cell 1 for every position up to `d`.
 
-Pushed cells use the travel the grid already had. `moving_cell` compares `column_of` before and after, so a cell pushed over a column boundary wraps the way it does when a cell closes.
+Pushed cells use the travel the grid already had. `moving_cell` compares `column_of` before and after, so a cell pushed over a column boundary wraps the way it does when a cell closes. An entering or leaving piece with no body row has both shared dividers on the same row; its neighbour keeps the rows to the column edge. Content-aware height snapping retains this rule. Row transfers without measured content-step gaps add their fractional progress before rounding the column total, so the last rows can move before the final frame. Columns with incomplete content steps keep the prior per-piece transfer count. Opening and closing pieces take their nearest filled or whole height before spare rows are shared, and that sharing keeps their assigned heights. A whole resident piece lends only rows its start and destination heights let it give up. If an endpoint leaves an unused content row beside a cutting mate, a larger receiving allocation is checked by the rows it paints; a donor still keeps the rows it requires. The motion and the settled frame use that same endpoint. A queued key keeps the preceding frame's heights when the column bounds match, surviving cells have their minimum height, and each cell draws as one unshifted piece; the cell the key removes may be shorter.
 
 ### Focus and clicks
 
@@ -134,14 +136,14 @@ Giving back runs the chain in reverse. Depth is bounded by column 0 and `fits`, 
 - The apps' drawing knows nothing of depth. The summary draws into whatever rect it gets, and each app measures at the widths `content_widths` hands it.
 - Every reader of the laid-out columns resolves depth through `column_layout`: `Grid::new`, `content_widths` and `wanted_span`.
 - Span and depth describe the same grid: the held `summary_span` comes from `wanted_span`, which counts `column_layout`'s columns.
-- One queued step per cell of depth change: give-backs come before the arrangement steps, takes come after, and the arrangement steps run at `min(headed, wanted)`.
+- A slot move and its depth change share one queued step. Depth-only changes use one step per unit only when no slot moves.
 - A steady summary queues nothing: the bare re-divide is queued only when `settled_held() != self.held`.
 
 ## Calibration and gotchas
 
 - `TILE_DEMAND_STEP` = 3 and `TILE_BORDER_ROWS` = 2 (`crates/tui_pane/src/tiles/constants.rs`). `demanded_rows` rounds content up to a multiple of 3 and adds 2, so depth moves on whole demand steps, not on each wrapped row.
 - `MIN_TILE_HEIGHT` = 3 is three floors: on every ask in `shares`, on each position in `fits`, and on each cell `reach` checks below a widened summary.
-- `TILE_ANIMATION_MILLIS` = 720 is one scan's change, depth steps included, spread over its steps. `MIN_STEP_MILLIS` = 60 is the per-step floor, and past `MAX_PENDING_STEPS` = 64 the rest settle in one move. A frame counts as settled only after 720 ms without change.
+- `TILE_ANIMATION_MILLIS` = 720 is one key or scan change, spread over its steps; a key's folded depth adds no step. `MIN_STEP_MILLIS` = 60 is the per-step floor, and past `MAX_PENDING_STEPS` = 64 the rest settle in one move. A frame counts as settled only after 720 ms without change.
 - `initial_rows` defaults to 4. Depth adds positions, so deepening can cross `initial_rows` and rearrange the whole grid. Four cells under `redistribute(4)` lay out as `[4]` at `k = 1`, `[3, 2]` at `k = 2` and `[3, 3]` at `k = 3`.
 - A step can carry a depth its column 0 no longer holds, when the growth changed between steps. Every reader therefore resolves depth through `column_layout` instead of reading `Step::depth` or `HeldCellLayout::summary_depth` as given.
 - `HeldCellLayout::summary_span` is the span the summary asks for, but `reach` in `Grid::new` clamps the drawn span, so the two can differ. At 80 by 40 with four cells under `widening(4)`, depth 3 holds span 2 and draws span 1.

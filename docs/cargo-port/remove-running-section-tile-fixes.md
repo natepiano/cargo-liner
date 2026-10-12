@@ -392,7 +392,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 **Ruled out:** a settled-frame early return cached on a key without content state — it served stale row answers after content changed; re-solving the motion source with current callbacks — the motion then starts from geometry that was never drawn; one `rows_drawn` answer for both fit and donors — painted rows and retained rows differ for optional ancestry.
 
-### Phase 13 — One key's change moves in one motion  · status: todo
+### Phase 13 — One key's change moves in one motion  · status: done
 
 #### Work Order
 
@@ -441,23 +441,39 @@ Evidence: shots in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes
 4. **Columns from the rows actually drawn** (`visible_columns` ~2828 decides from every row, so a `runs` header stands over an empty column when its only value is in a row hidden behind `…`: w200 L30–L32, toast64 L122–L125). Rule: an optional column (`state`, `compiler`, `runs`) keeps its slot in the frame grid when any command row in the frame holds a value; a cell draws its header and values only when one of its drawn rows holds a value, and otherwise leaves the slot blank. Positions never move for it. Today `draw_process_table` draws the header before it plans the rows, and `ProcessTablePlan` records only a group count and the gap policy, so plan the viewport first: the plan names the rows that receive at least one visible line, it is computed before the header, and the header reads it. Slot presence (the frame grid's, from every command row in the frame) and header-and-value visibility (each cell's, from its drawn rows) are two separate fields, never one flag. Test: `a_column_whose_only_value_is_hidden_draws_no_header` — a cell whose only `runs` value is in the row the cut hides: no `runs` header in that cell.
 5. **One drop rule, before the command name wraps** (`TableLayout::of` ~1959–1974 drops `TABLE_COLUMN_DROP_ORDER` columns only until the constraints fit, so commands wrap to `cargo` / `clippy` while `start` and `dur` stay: w40 L4–L5, w48 L56–L57 and L72–L73). Rule, for summary and command cells alike through one function: while a row's command name (program plus its Short-view name, `named()`) would wrap, drop the next column in `TABLE_COLUMN_DROP_ORDER`; argument lists beyond the name still wrap down the column. Test: `columns_drop_before_a_command_name_wraps` — `cargo clippy` in a summary and a command cell at inner widths 38 and 46: one line each, with the same columns gone from both.
 6. **A whole command never carries the hidden-rows mark after its last letter** (`mark_table_continuation`, `mark_cut_line`: when the last drawn row's command is whole and rows are hidden below it, the `…` lands right after its last letter, `cargo check…` at w40 L14 and toast40 L14, which reads as a cut command). Rule: the hidden-rows mark of a whole command stands at the command column's far edge (one cell in, item 3), the same place as a cut command's mark, with at least one blank cell between it and the command's last letter. Test: `a_whole_command_keeps_a_blank_cell_before_the_hidden_rows_mark` — a cell at inner width 38 hiding rows below a whole `cargo check`: the row reads `cargo check`, then blanks, then `…` at the column's far edge.
+7. **A content change leaves no blank row behind it** (`crates/tui_pane/src/tiles/grid.rs`: the key motion's queue, `queue_with_depth`, and the moving-height snap, `measure_moving_height_rows`). Placed here by the showrunner from Phase 13's live check (2026-10-11). Evidence, from the controlled workload that starts and stops projects on the same key as a `+` or `-` (200x50, cells view, one column under the summary): when a project arrives in the summary during a key's window, the summary's content grows by 3 rows at a height that then holds 1 or 2 rows it cannot fill, and it draws them blank above its foot until its depth steps. The Phase 12 build did this too (18 frames in 2 episodes, the depth stepping 0.02 to 0.16 s after the arrival). Since Phase 13 folded a key's depth change into its one motion, the depth waits for the key's slide to end: 56 frames in 3 episodes, up to 0.49 s. Example, `-` key at 14.008 s, summary first (h is the span, N the content rows, R the rows drawn):
+   ```
+   +0.107s 0-12(h12,N9/R11) 12-16(h4,N0) 16-27(h11,N9/R10) 27-38(h11,N9/R10) 38-43(h5,N0) 43-48(h5,N0)
+   +0.155s 0-12(h12,N12/R11, 1 blank) rest as above        <- project arrives
+   +0.648s 0-14(h14,N12/R13) 14-27(h13,N9/R12) 27-39(h12,N9/R11) 39-44(h5,N0) 44-48(h4,N0)   <- depth step
+   ```
+   Rule: when a piece's content changes while a key's motion runs, every frame from the next one on draws that piece at a height its new content fills or is whole at, as Phase 12 requires of a moving piece. The motion in flight takes the new content's destination and stays one motion with no reversal, as Phase 13 requires. Two more content-driven observations from the same captures belong to this item; find each cause before changing anything, and say in the summary what each was:
+   - the summary gave up a row in the frame its content grew from 12 to 15 rows (span 14 to 13, `+` key, +1.028 s) while it was already cutting content;
+   - the piece count dropped from 7 to 6 in one frame (`+` key, +0.081 s) as a command filled a cell: an empty cell left with no slide. The capture tool matches pieces by position, so first confirm it in a render test.
 
-Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`.
+   Test: `a_content_change_mid_motion_leaves_no_blank_row` — the render path (`fixed_motion_drawing` with the production row measurement), a top piece whose filled heights skip rows beside cells that cut content, a `-` key, and the top piece's demand growing by one entry partway through the motion: at every sample after the change no piece draws a blank row above its foot, no unchanged piece reverses, and the last sample equals the settled layout.
+
+Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`, and one Fixed line in `crates/tui_pane/CHANGELOG.md` for item 7.
 
 **Files:**
 - `crates/cargo-tile/src/render.rs` — the frame grid, column placement, right inset, column visibility, drop rule, the whole command's mark, and their tests.
 - `crates/cargo-tile/src/constants.rs` — the right inset.
 - `crates/cargo-tile/CHANGELOG.md` — the Changed line.
+- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs` — item 7 and its render test.
+- `crates/tui_pane/CHANGELOG.md` — item 7's Fixed line.
 
-**Seats:** 1 writer — every item is cargo-tile's table layout in one file, and its tests live in that file's test module.
+**Seats:** 2 writers — items 1 to 6 are cargo-tile's table layout in one file, with tests in that file's test module; item 7 is the tile grid's motion in `tui_pane`, a file set the first seat never touches.
 - `impl` — `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/CHANGELOG.md`; runs the one lint and the four suites.
+- `test` — item 7: `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs`, `crates/tui_pane/CHANGELOG.md`; runs `test tui_pane`.
 
 **Constraints from prior phases:** Phase 5 set `MIN_CELL_WIDTH = 40`, and the summary is alone at inner widths up to 37; every header, value and foot is whole, marked with `ELISION`, or absent. Phase 6 added `table_column_spacing` and `command_line_width`. Phase 8 added `TableContinuation`, `mark_table_continuation` and `mark_cut_line`, admits a heading only with its first process row, and made `visible_columns` drop an all-`None` compiler and an all-zero runs column. Phase 9 gives `TableContinuation::CommandWasCut` a `CutCommandContinuation` payload built only for the cut row (`DrawnRow::cut_command_continuation`), puts a cut command's mark at its column's far edge, and plans each table before drawing (`ProcessTablePlan` from `process_table_plan`): a table keeps every gap between directories when all of them fit, and otherwise yields every gap, with spare rows once above the foot. Item 1's staged pipeline ends in that plan and keeps it; `a_table_that_yields_one_gap_yields_them_all_before_its_foot` and `a_fully_drawn_table_keeps_every_inter_group_gap` pass unchanged. Items 2 and 3 move that far edge, and Phase 9's mark tests change only where it moves, each named in the summary with old and new text. Phase 10's repair has `Cells` report the rows its table draws at a given height, read from `process_table_plan`; item 1's pipeline keeps that answer and reads it from the same grids. Phase 12 snaps each moving piece's height to one its content fills, measured through that answer; item 1's pipeline serves those measurements too. The frame grid owns only frame-wide inputs: each column's intrinsic width, which optional slots are present, and the longest command; each cell's `CellTableLayout`, built at that cell's inner width, derives its own drops and spacing from them, since cells in one frame differ in width. One immutable frame snapshot serves `tile_demands`, drawing, `rows_drawn`, `rows_kept` and Phase 12's motion probes, so all five read the same layout; today `Cells::row_use` computes the drawn and kept answers together (`MeasuredCellRowUse`), and the snapshot keeps that single measurement, renamed `FrameCellRowUse` for its lifetime. `ProcessTablePlan` records the visible rows' identities in a named `PlannedVisibleRows` state (item 4 needs them), from which `rows_drawn` is read, rather than a second row-count path. `painted_and_retained_rows_share_one_measurement`, `a_settled_frame_measures_each_cell_size_once_and_requests_no_frame` and `changed_retained_rows_update_the_next_settled_transfer` pass unchanged. Phase 10's `a_freed_row_goes_to_a_mate_whose_next_step_it_completes` and `a_freed_row_stays_when_no_mates_next_step_fits` pass unchanged. Phase 11 touches it only in `config.rs` and `settings.rs`, and its render fixtures that pin cell layout select `TileView::Cells`. Phase 11's `draw_tile_grid` asks `cells.demands` twice each frame, at the cells widths and at the summary-alone width (`SummaryProbeDemands`); the frame snapshot serves both. No new public item. No new `#[allow]` or `#[expect]`.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test takes a second or more.
+- Shot coverage, from phase 13's design check: capture `v77_auto` and `deep200x30` under the controlled workload (three or more projects in the summary), so `v77_auto` shows the summary alone under `auto` and `deep200x30` shows a short summary hiding whole projects behind `…`. Both showed a whole summary in phase 13's set, so neither state had a settled shot.
 - Unit director's captures beside real cargo commands, the eight shots (w200, w64, w48, w40, toast200, toast64, toast40, deep126x80): shared columns line up across stacked cells, compiler and runs stand after command, no row touches the right frame, no header stands over an empty column, no command name wraps while a droppable column is drawn, and no whole command has `…` right after its last letter.
 - Phase 12's and Phase 13's motion tests pass unchanged, and the unit director's frame probe over toast64 and w200 in motion reads 0 moving pieces with a blank row above their foot while their content hides rows.
+- Item 7: the unit director's capture under the controlled workload reads 0 summary frames with a blank row above the foot after the frame a project arrives in, with no reversal on any key and speed within 1 ms of the Phase 13 build in paired runs.
 - A fresh helper's design check of those shots: pass.
 
 ### Phase 15 — One reading per command, one ancestry form, and a titled summary  · status: todo
@@ -482,6 +498,7 @@ Evidence: shots in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes
    Write the failing test from the shot's chain first. Tests: `the_short_ancestry_is_the_nearest_session_runner` (the shot's chain `Runner.Listener` → `Runner.Worker spawnclient 166 175` → `bash` → `cargo` gives one row `1556662 Runner.Worker …`; `claude` → `bash` → `cargo` gives `claude`; `ghostty` → `zsh` → `cargo` gives `ghostty`; `env` and `nohup` between them are skipped too); `a_short_view_program_is_named_by_its_file_name` (an ancestry row and a table row whose program is a `/nix/store/…` path); `the_long_ancestry_keeps_every_level` (the shot's chain in Long view, unchanged).
 6. **A cell's own command comes first** (phase 10 design check, toast200 L42: the hana_catalyst-lfo cell, cut to one row, shows a child `909889 909862 … cargo` that started 0 s ago, while its own `909862 cargo nextest run`, the row the summary names and the cell's first row in deep126x80 L45 and toast64 L37, hides behind `…`). Rule: in a command cell, the cell's own command row (the lead) is drawn first and its children follow, so a cell cut to one row shows its own command (author's call). Test: `a_cell_cut_to_one_row_shows_its_own_command`.
 7. **One way to cut a directory heading** (phase 10 design check, w40 L3 `[natepiano] …/tool-based-ui-trunk` against L7 `…/rust/tool-based-ui-frame-time`, which is 31 cells and fits a 36-cell line whole; toast40 L3 against L11). Rule: a heading drops its `[account]` tag first and shows the path whole when it fits; only a path that does not fit alone loses leading segments behind `…` (author's call). Test: `a_heading_drops_its_tag_before_cutting_its_path` — at inner width 38: `~/rust/tool-based-ui-frame-time` whole, `…/tool-based-ui-geometry-material` cut.
+8. **A chain cut by the walk limit shows its cut** (phase 13 design check, deep126x80 rows 30–55: one cell's ancestry starts at `1914627 uv run …` at indent 0, while the cells above and below show the same `uv run` as the fourth level under `3334 systemd`, `27285 tmux` and `2273637 claude`. Three root levels are gone with no `…`, while the cell keeps 2 blank rows above its foot and its count reads whole. Cause read in code: the parent walk stops at `PARENT_WALK_LIMIT = 32`, `crates/cargo-tile/src/constants.rs` ~341; confirm it in a failing test first.) Rule: a chain the walk limit cuts opens with the same `…` row a row-budget cut draws, in the one ancestry form item 2 sets, and its rows count as cut, not whole. Test: `a_chain_cut_by_the_walk_limit_opens_with_the_cut_mark` — a chain one level deeper than the limit: the first ancestry row is the `…` mark, and a chain exactly at the limit draws none.
 
 Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`.
 
@@ -587,7 +604,29 @@ Changelogs: one Changed line each under `## [Unreleased]` in `crates/cargo-tile/
 - Unit director's captures, the eight shots, on both themes, transparent off and on: every measured ink at its floor from cell colours, and a fading cell's foot as dim as its contents.
 - A fresh helper's design check of those shots: pass.
 
-### Phase 18 — Slow tests start first  · status: todo
+### Phase 18 — Toast timing and group titles are named states  · status: todo
+
+#### Work Order
+
+**Goal:** Two public `tui_pane` APIs stop handing callers a bare `Option` for a domain state: a toast's timing reads as a named state, and a cell's group title reads as a named title. What the screen shows does not change.
+
+**Spec:**
+- **Toast timing.** `ToastView::linger_progress`, `ToastView::remaining_secs` and `TrackedItemView`'s linger and elapsed getters in `crates/tui_pane/src/toasts` return named types: `ToastLingerState`, `ToastCountdownState` and `TrackedItemTiming`, or names like them. Each says what the absent case means. Any `Option` getter that stays exists only to convert at the boundary. Callers in cargo-port and cargo-tile move to the new types.
+- **Group title.** `TileCells::group_title(&Id) -> Option<Span>` becomes a semantic title such as `TileGroupTitle::{Untitled, Titled(..)}`. Every implementor moves to it: cargo-tile and cargo-handler.
+- Apply the Type Design Contract and the user's style guide. No behavior change, no new `#[allow]` or `#[expect]`.
+
+**Files:** `crates/tui_pane/src/toasts/` (view, manager, tracked items), `crates/tui_pane/src/tiles/` (`TileCells`), their callers in `crates/cargo-port`, `crates/cargo-tile` and `crates/cargo-handler`, and `crates/tui_pane/CHANGELOG.md`.
+
+**Seats:** 1 writer.
+
+**Constraints from prior phases:** Phase 16 left the toast timing getters as they were, outside its items. Phase 17 kept `group_title`'s signature. These two changes are the public signature changes those phases deferred. The user approved them from the Phase 12 review.
+
+**Acceptance gate:**
+- No public getter named above returns a bare `Option` for its domain state.
+- lint and the tui_pane, cargo-tile, cargo-handler and cargo-port suites pass, with no test at a second or more.
+- Rendered output is unchanged: the existing toast and tile render tests pass without edits to what they assert.
+
+### Phase 19 — Slow tests start first  · status: todo
 
 #### Work Order
 
@@ -607,7 +646,7 @@ Changelogs: one Changed line each under `## [Unreleased]` in `crates/cargo-tile/
 - `impl` — owns `.config/nextest.toml`, publishes its `sha256sum` on the board after each edit, and runs every natedev before and after run; checks every exact filter name.
 - `test` — no source file; copies the candidate config to the Mac clone (`scp` over `ssh mac` into `/Users/natemccoy/rust/cargo-liner-measure/.config/nextest.toml` after the checkout), verifies the same sha256 before each after-run batch, runs every Mac run, and hands `impl` the named JUnit files, the slow set and the start order. The before runs use the clean phase tip.
 
-**Constraints from prior phases:** This phase runs last, after every phase that adds tests or changes shared grid code, so its timings measure the suite the run ships. Phases 1 to 17 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second for its own tests, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set. Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios.
+**Constraints from prior phases:** This phase runs last, after every phase that adds tests or changes shared grid code, so its timings measure the suite the run ships. Phases 1 to 18 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second for its own tests, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set. Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, after the config edit: green.

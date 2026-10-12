@@ -26,6 +26,11 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
 
 ### Fixed
+- An incomplete tile gives unused content rows to column mates that can paint them, including optional ancestry rows. The motion ends at the same filled allocation the settled frame uses.
+- Cells added or removed within a column slide through intermediate heights. Spare-row sharing keeps opening and closing allocations at their nearest filled height, and transfers without content-step gaps round once per column so fractional steps do not wait until the final frame.
+- A queued tile key keeps the preceding frame's cell heights in unchanged column bounds. Whole moving pieces lend only rows their endpoint heights permit, so an unchanged cell never lends a row and takes it back within that key.
+- Arriving and departing tile pieces take no edge row from their neighbours until they have a body row, including when moving heights are snapped to content steps.
+- One tile-grid key moves slot and summary-depth changes together, an arriving piece waits for its first body row before drawing a line, and a whole moving piece lends spare rows to a cutting column mate.
 - Moving tile pieces begin at the exact geometry the last settled frame drew and use the nearest shared dividers whose content areas are filled, while closing-column heights stay unchanged. Each resident height stays between its recorded source and destination even when cumulative dividers pass both endpoint positions, and a pane resized during motion draws the destination wholly inside its new area.
 - Every settled tile frame refreshes its row answers, with painted and retained rows measured together once per cell size.
 - `appearance.mode = "auto"` selects the theme for the system's remembered light or dark setting at startup and after a change; before the system supplies a setting it selects dark as before.

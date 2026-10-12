@@ -185,7 +185,7 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     let summary_demands = SummaryProbeDemands::new(cells_demands.summary, alone_demands.summary);
     add_readout_rows(&mut cells_demands, &cells_widths);
     add_readout_rows(&mut alone_demands, &alone_widths);
-    grid.sync(&cells_demands, growth);
+    grid.sync_rendered_demands(&cells_demands, growth);
     let progress = grid.progress();
     grid.measure_row_steps(
         area,
@@ -256,64 +256,60 @@ fn draw_placements<Id: Clone + Eq + Debug>(
     }
     for piece in &drawing.pieces {
         let placement = &piece.placement;
-        let visible_body = has_visible_body_row(placement.frame);
-        let draws_name = piece.name == PieceName::Shown;
-        if !visible_body && !draws_name {
+        if !has_visible_body_row(placement.frame) {
             continue;
         }
+        let draws_name = piece.name == PieceName::Shown;
         // Contents retain the pane's own motion; its clip is the shared
         // topology the border lattice follows.
         let line_frame =
             PaneFrame::new(placement.frame.clip()).with_focus(placement.frame.is_focused());
-        if visible_body {
-            // The ground a fading row is carried toward is the one its
-            // own cell is painted on, which focus moves.
-            let ground = pane_background(placement.frame.is_focused());
-            let cell_rows = match &placement.content {
-                TileContent::Summary => demands.summary,
-                TileContent::Group(id) => demands.rows_for(id),
-                TileContent::Empty(_) => 0,
+        // The ground a fading row is carried toward is the one its
+        // own cell is painted on, which focus moves.
+        let ground = pane_background(placement.frame.is_focused());
+        let cell_rows = match &placement.content {
+            TileContent::Summary => demands.summary,
+            TileContent::Group(id) => demands.rows_for(id),
+            TileContent::Empty(_) => 0,
+        };
+        // The width the demand above was measured at, which is read
+        // off the layout as it stood before `sync` -- the readout
+        // carries it beside the cell's own so a cell measured at one
+        // width and drawn at another says so.
+        let demand_width = measured_width(widths, &placement.content);
+        let content_rows = cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
+        if contents == TileGridContents::Shown {
+            let summary_foot = match &placement.content {
+                TileContent::Summary => cells.summary_foot(),
+                TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
             };
-            // The width the demand above was measured at, which is read
-            // off the layout as it stood before `sync` -- the readout
-            // carries it beside the cell's own so a cell measured at one
-            // width and drawn at another says so.
-            let demand_width = measured_width(widths, &placement.content);
-            let content_rows =
-                cell_rows.saturating_sub(usize::from(rows_readout_height(demand_width)));
-            if contents == TileGridContents::Shown {
-                let summary_foot = match &placement.content {
-                    TileContent::Summary => cells.summary_foot(),
-                    TileContent::Group(_) | TileContent::Empty(_) => SummaryFoot::Empty,
-                };
-                draw_clipped(buffer, placement.frame, |buffer, inner| {
-                    draw_cell(
-                        buffer,
-                        inner,
-                        content_rows,
-                        demand_width,
-                        &summary_foot,
-                        |buffer, inner| match &placement.content {
-                            TileContent::Empty(number) if draws_name => {
-                                draw_number(buffer, *number, inner);
-                            },
-                            TileContent::Empty(_) => {},
-                            TileContent::Summary | TileContent::Group(_) => {
-                                cells.draw(buffer, &placement.content, inner, ground);
-                            },
+            draw_clipped(buffer, placement.frame, |buffer, inner| {
+                draw_cell(
+                    buffer,
+                    inner,
+                    content_rows,
+                    demand_width,
+                    &summary_foot,
+                    |buffer, inner| match &placement.content {
+                        TileContent::Empty(number) if draws_name => {
+                            draw_number(buffer, *number, inner);
                         },
-                    );
-                });
-            }
+                        TileContent::Empty(_) => {},
+                        TileContent::Summary | TileContent::Group(_) => {
+                            cells.draw(buffer, &placement.content, inner, ground);
+                        },
+                    },
+                );
+            });
         }
         match &placement.content {
             TileContent::Summary => {
                 if draws_name {
                     grid_lines.add_titled(line_frame, cells.summary_title());
-                } else if visible_body {
+                } else {
                     grid_lines.add(line_frame);
                 }
-                if visible_body && contents == TileGridContents::Shown {
+                if contents == TileGridContents::Shown {
                     for label in cells.summary_labels(line_frame.rect()) {
                         grid_lines.add_label(line_frame, label);
                     }
@@ -326,13 +322,9 @@ fn draw_placements<Id: Clone + Eq + Debug>(
                 .filter(|_| draws_name && contents == TileGridContents::Shown)
             {
                 Some(title) => grid_lines.add_titled(line_frame, title),
-                None if visible_body => grid_lines.add(line_frame),
-                None => {},
+                None => grid_lines.add(line_frame),
             },
-            TileContent::Empty(_) if visible_body => {
-                grid_lines.add(line_frame);
-            },
-            TileContent::Empty(_) => {},
+            TileContent::Empty(_) => grid_lines.add(line_frame),
         }
     }
     // Neighbouring tiles meet on one line, so no cell belongs to a
@@ -349,7 +341,7 @@ fn draw_placements<Id: Clone + Eq + Debug>(
 
 /// Whether a placement has a pane-interior row visible between its
 /// clip's frame rows.
-fn has_visible_body_row(frame: PaneFrame) -> bool {
+pub(super) fn has_visible_body_row(frame: PaneFrame) -> bool {
     let body = frame.inner();
     let clip_body = frame_inner(frame.clip());
     if body.is_empty() || clip_body.is_empty() {
@@ -672,11 +664,35 @@ mod tests {
     use ratatui::symbols::line;
 
     use super::*;
+    use crate::TileAction;
     use crate::TileDemand;
     use crate::TileFill;
     use crate::TileView;
+    use crate::tiles::constants::COLUMN_FOOT_TEST_AREA;
+    use crate::tiles::constants::COLUMN_FOOT_TEST_BODY_STEP;
+    use crate::tiles::constants::COLUMN_FOOT_TEST_GROUP_COUNT;
+    use crate::tiles::constants::COLUMN_FOOT_TEST_KEY_SUMMARY_ROWS;
+    use crate::tiles::constants::COLUMN_FOOT_TEST_MIN_HEIGHT;
+    use crate::tiles::constants::COLUMN_FOOT_TEST_SUMMARY_ROWS;
+    use crate::tiles::constants::LENDING_TEST_CUT_GROUP;
+    use crate::tiles::constants::LENDING_TEST_DEMANDS;
+    use crate::tiles::constants::LENDING_TEST_DRAWN;
+    use crate::tiles::constants::LENDING_TEST_ENDPOINT_HEIGHTS;
+    use crate::tiles::constants::LENDING_TEST_GAP_HEIGHT;
+    use crate::tiles::constants::LENDING_TEST_INITIAL_ROWS;
+    use crate::tiles::constants::LENDING_TEST_SUMMARY_TITLE;
+    use crate::tiles::constants::LENDING_TEST_WHOLE_GROUP;
     use crate::tiles::constants::MIN_TILE_HEIGHT;
     use crate::tiles::constants::PROGRESS_SCALE;
+    use crate::tiles::constants::SLIDING_TEST_INITIAL_ROWS;
+    use crate::tiles::constants::SLIDING_TEST_INTERVALS;
+    use crate::tiles::constants::SLIDING_TEST_MIN_CHANGES;
+    use crate::tiles::constants::SLIDING_TEST_ROWS;
+    use crate::tiles::constants::SUMMARY_STEP_TEST_ENTRY_ROWS;
+    use crate::tiles::constants::SUMMARY_STEP_TEST_HEADER_ROWS;
+    use crate::tiles::constants::SUMMARY_STEP_TEST_OPTIONAL_HEIGHTS;
+    use crate::tiles::constants::SUMMARY_STEP_TEST_PIECES;
+    use crate::tiles::constants::SUMMARY_STEP_TEST_ROWS;
     use crate::tiles::grid::PieceHeightSnap;
     use crate::tiles::grid::TilePiece;
     use crate::tiles::grid::TilePlacement;
@@ -1356,7 +1372,7 @@ mod tests {
             SummaryProbeDemands::new(cells_demands.summary, alone_demands.summary);
         add_readout_rows(&mut cells_demands, &cells_widths);
         add_readout_rows(&mut alone_demands, &alone_widths);
-        grid.sync(&cells_demands, growth);
+        grid.sync_rendered_demands(&cells_demands, growth);
         grid.measure_row_steps(
             area,
             growth,
@@ -1366,6 +1382,172 @@ mod tests {
             |content, area| cells.rows_kept(content, area),
         );
         grid.drawing_at(area, growth, raw)
+    }
+
+    /// One whole command with spare rows beside a command that is still cut.
+    struct SpareRowMotionCells;
+
+    impl TileCells<u32> for SpareRowMotionCells {
+        fn summary_title(&self) -> &'static str { LENDING_TEST_SUMMARY_TITLE }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       usize::from(LENDING_TEST_DEMANDS[0]),
+                summary_width: 0,
+                groups:        LENDING_TEST_DEMANDS
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .map(|(index, &rows)| TileDemand {
+                        id:   u32::try_from(index).unwrap_or(u32::MAX),
+                        rows: usize::from(rows),
+                    })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            let index = match content {
+                TileContent::Summary => 0,
+                TileContent::Group(id) => usize::try_from(*id).unwrap_or(usize::MAX),
+                TileContent::Empty(_) => return 0,
+            };
+            let rows = LENDING_TEST_DRAWN[index].min(area.height);
+            if *content == TileContent::Group(LENDING_TEST_WHOLE_GROUP)
+                && area.height == LENDING_TEST_GAP_HEIGHT
+            {
+                rows.saturating_sub(1)
+            } else {
+                rows
+            }
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    /// Confirm that the fixture reaches the spare-row search's donor and mate case.
+    fn assert_a_whole_piece_stands_above_a_cutting_mate(
+        cells: &SpareRowMotionCells,
+        drawing: &TileDrawing<u32>,
+    ) {
+        let whole = drawing
+            .placements()
+            .find(|placement| placement.content == TileContent::Group(LENDING_TEST_WHOLE_GROUP));
+        assert!(
+            whole.is_some(),
+            "the whole command is above its cutting mate"
+        );
+        let Some(whole) = whole else {
+            return;
+        };
+        let cut = drawing
+            .placements()
+            .find(|placement| placement.content == TileContent::Group(LENDING_TEST_CUT_GROUP));
+        assert!(cut.is_some(), "the cutting mate is above the foot cell");
+        let Some(cut) = cut else {
+            return;
+        };
+        let whole_area = content_area(whole.frame.inner());
+        let cut_area = content_area(cut.frame.inner());
+        assert!(whole_area.height > cells.rows_kept(&whole.content, whole_area));
+        assert!(
+            cells.rows_drawn(&cut.content, cut_area)
+                < cells.rows_drawn(
+                    &cut.content,
+                    Rect {
+                        height: u16::MAX,
+                        ..cut_area
+                    },
+                )
+        );
+        assert!(whole_area.y < cut_area.y);
+    }
+
+    #[test]
+    fn a_cell_lends_no_row_it_must_take_back_within_one_key() {
+        let cells = SpareRowMotionCells;
+        let growth = TileGrowth {
+            initial_rows:  LENDING_TEST_INITIAL_ROWS,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let area = COLUMN_FOOT_TEST_AREA;
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        grid.settle_for_test();
+        fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        grid.apply(TileAction::Add, growth);
+        for raw in motion_snapshots().filter(|&raw| raw < PROGRESS_SCALE) {
+            fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+        }
+        let before = fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            area,
+            growth,
+            PROGRESS_SCALE.saturating_sub(1),
+        );
+        assert_eq!(before.column_bands.len(), 1);
+        assert_a_whole_piece_stands_above_a_cutting_mate(&cells, &before);
+
+        grid.apply(TileAction::Remove, growth);
+        grid.finish_motion_for_test();
+        let mut paths = before
+            .placements()
+            .filter(|placement| !matches!(placement.content, TileContent::Empty(_)))
+            .map(|placement| {
+                (
+                    placement.content.clone(),
+                    vec![placement.frame.clip().height],
+                )
+            })
+            .collect::<Vec<_>>();
+        for raw in 0..=PROGRESS_SCALE {
+            let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+            for (content, path) in &mut paths {
+                let placement = drawing
+                    .placements()
+                    .find(|placement| &placement.content == content);
+                assert!(
+                    placement.is_some(),
+                    "each unchanged cell remains in the column"
+                );
+                let Some(placement) = placement else {
+                    continue;
+                };
+                assert!(
+                    placement_fits(&cells, placement),
+                    "{content:?} leaves a gap at {raw}"
+                );
+                path.push(placement.frame.clip().height);
+            }
+        }
+        for (content, mut path) in paths {
+            path.dedup();
+            let start = path[0];
+            let end = path[path.len().saturating_sub(1)];
+            if content == TileContent::Group(LENDING_TEST_WHOLE_GROUP) {
+                assert_eq!([start, end], LENDING_TEST_ENDPOINT_HEIGHTS);
+            }
+            assert!(
+                path.iter()
+                    .all(|height| (start.min(end)..=start.max(end)).contains(height)),
+                "{content:?} leaves {start}..={end}: {path:?}"
+            );
+            assert!(
+                path.windows(2).all(|pair| if start <= end {
+                    pair[0] <= pair[1]
+                } else {
+                    pair[0] >= pair[1]
+                }),
+                "{content:?} reverses within one key: {path:?}"
+            );
+        }
     }
 
     /// Whether one placement uses all its rows or shows its whole value.
@@ -1872,6 +2054,651 @@ mod tests {
         assert_eq!(
             area_lines(&buffer, area),
             ["┌────┐", "│    │", "│    │", "│    │", "└────┘"]
+        );
+    }
+
+    #[test]
+    fn an_arriving_piece_draws_no_line_until_it_has_a_row() {
+        let area = Rect::new(0, 0, 6, 5);
+        let rect = Rect::new(0, 0, 6, 3);
+        let start_shift = i64::from(frame_inner(area).bottom())
+            .saturating_sub(i64::from(frame_inner(rect).top()));
+        let title = group_title(7);
+        let mut saw_edge_only = false;
+        let mut saw_body = false;
+
+        for raw in 0..=PROGRESS_SCALE {
+            let shift = start_shift.saturating_sub(
+                start_shift.saturating_mul(i64::from(raw)) / i64::from(PROGRESS_SCALE),
+            );
+            let frame = PaneFrame::shifted(rect, i32::try_from(shift).unwrap_or(i32::MAX), area);
+            let drawing = TileDrawing {
+                pieces:       vec![tile_piece(TileContent::Group(7), frame, PieceName::Shown)],
+                column_bands: vec![area],
+            };
+
+            let buffer = draw_motion_fixture(area, &drawing);
+            let has_body = has_visible_body_row(frame);
+            saw_edge_only |= !has_body;
+            saw_body |= has_body;
+            assert_eq!(
+                buffer_text(&buffer).contains(&title),
+                has_body,
+                "arrival title visibility at raw {raw}; frame={frame:?}"
+            );
+            assert_eq!(
+                doubled_line_failure(&buffer, area, "arrival", raw),
+                None,
+                "frame={frame:?}"
+            );
+        }
+
+        assert!(saw_edge_only, "the arrival begins before its body enters");
+        assert!(saw_body, "the arrival ends with a visible body row");
+    }
+
+    struct ColumnFootCells;
+
+    impl TileCells<u32> for ColumnFootCells {
+        fn summary_title(&self) -> &'static str { "summary" }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       usize::from(COLUMN_FOOT_TEST_SUMMARY_ROWS),
+                summary_width: 0,
+                groups:        (1..=COLUMN_FOOT_TEST_GROUP_COUNT)
+                    .map(|id| TileDemand {
+                        id,
+                        rows: usize::from(COLUMN_FOOT_TEST_SUMMARY_ROWS),
+                    })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Empty(_) => 0,
+                TileContent::Group(_) if area.height < COLUMN_FOOT_TEST_BODY_STEP => 0,
+                TileContent::Summary | TileContent::Group(_) => {
+                    area.height.min(COLUMN_FOOT_TEST_SUMMARY_ROWS)
+                },
+            }
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    /// Draw every sampled frame with the row probes used by the renderer.
+    fn assert_column_foot_has_no_doubled_line(
+        grid: &mut TileGrid<u32>,
+        cells: &impl TileCells<u32>,
+        growth: TileGrowth,
+    ) {
+        for raw in motion_snapshots() {
+            let drawing = fixed_motion_drawing(grid, cells, COLUMN_FOOT_TEST_AREA, growth, raw);
+            let widths =
+                measurement_widths(grid, COLUMN_FOOT_TEST_AREA, growth, GridDisplay::Cells);
+            let mut demands = cells.demands(&widths);
+            add_readout_rows(&mut demands, &widths);
+            let mut buffer = Buffer::empty(COLUMN_FOOT_TEST_AREA);
+            draw_placements(
+                &mut buffer,
+                COLUMN_FOOT_TEST_AREA,
+                &drawing,
+                &demands,
+                &widths,
+                TileGridContents::Shown,
+                cells,
+            );
+            assert_eq!(
+                doubled_line_failure(&buffer, COLUMN_FOOT_TEST_AREA, "column foot", raw),
+                None,
+                "frames={:?}",
+                drawing
+                    .placements()
+                    .map(|placement| (&placement.content, placement.frame))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row() {
+        let growth = TileGrowth::default();
+        let cells = Toast64MotionCells {
+            groups:       COLUMN_FOOT_TEST_GROUP_COUNT,
+            summary_rows: COLUMN_FOOT_TEST_KEY_SUMMARY_ROWS,
+        };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            growth,
+            PROGRESS_SCALE,
+        );
+        grid.settle_for_test();
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            growth,
+            PROGRESS_SCALE,
+        );
+
+        for action in [
+            TileAction::Add,
+            TileAction::Add,
+            TileAction::Remove,
+            TileAction::Remove,
+        ] {
+            grid.apply(action, growth);
+            let destination = grid.drawing_at(COLUMN_FOOT_TEST_AREA, growth, PROGRESS_SCALE);
+            let foot_cell = destination.pieces.last();
+            assert!(foot_cell.is_some(), "the key keeps its foot cell");
+            let Some(foot_cell) = foot_cell else {
+                continue;
+            };
+            let foot_cell = foot_cell.placement.frame;
+            assert_eq!(foot_cell.clip().bottom(), COLUMN_FOOT_TEST_AREA.bottom());
+            assert!(
+                destination.pieces.iter().any(|piece| {
+                    let clip = piece.placement.frame.clip();
+                    clip.x == foot_cell.clip().x && clip.bottom() == foot_cell.clip().top() + 1
+                }),
+                "the foot cell sits under an existing cell"
+            );
+            assert_column_foot_has_no_doubled_line(&mut grid, &cells, growth);
+            grid.finish_motion_for_test();
+            fixed_motion_drawing(
+                &mut grid,
+                &cells,
+                COLUMN_FOOT_TEST_AREA,
+                growth,
+                PROGRESS_SCALE,
+            );
+        }
+    }
+
+    /// Whole command cells beside commands whose content is still cut.
+    struct SlidingColumnCells;
+
+    impl TileCells<u32> for SlidingColumnCells {
+        fn summary_title(&self) -> &'static str { LENDING_TEST_SUMMARY_TITLE }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       usize::from(SLIDING_TEST_ROWS[0]),
+                summary_width: 0,
+                groups:        SLIDING_TEST_ROWS
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .map(|(index, &rows)| TileDemand {
+                        id:   u32::try_from(index).unwrap_or(u32::MAX),
+                        rows: usize::from(rows),
+                    })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            let index = match content {
+                TileContent::Summary => 0,
+                TileContent::Group(id) => usize::try_from(*id).unwrap_or(usize::MAX),
+                TileContent::Empty(_) => return 0,
+            };
+            SLIDING_TEST_ROWS
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                .min(area.height)
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    /// A summary with complete two-row entries beside three cut commands.
+    struct PairedEntrySummaryCells;
+
+    impl TileCells<u32> for PairedEntrySummaryCells {
+        fn summary_title(&self) -> &'static str { LENDING_TEST_SUMMARY_TITLE }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       usize::from(SUMMARY_STEP_TEST_ROWS[0]),
+                summary_width: 0,
+                groups:        SUMMARY_STEP_TEST_ROWS
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .map(|(index, &rows)| TileDemand {
+                        id:   u32::try_from(index).unwrap_or(u32::MAX),
+                        rows: usize::from(rows),
+                    })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary if area.height < SUMMARY_STEP_TEST_ROWS[0] => {
+                    let header = area.height.min(SUMMARY_STEP_TEST_HEADER_ROWS);
+                    header.saturating_add(
+                        area.height.saturating_sub(header) / SUMMARY_STEP_TEST_ENTRY_ROWS
+                            * SUMMARY_STEP_TEST_ENTRY_ROWS,
+                    )
+                },
+                TileContent::Summary => SUMMARY_STEP_TEST_ROWS[0],
+                TileContent::Group(id) => SUMMARY_STEP_TEST_ROWS
+                    .get(usize::try_from(*id).unwrap_or(usize::MAX))
+                    .copied()
+                    .unwrap_or_default()
+                    .min(area.height),
+                TileContent::Empty(_) => 0,
+            }
+        }
+
+        fn rows_kept(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            let drawn = self.rows_drawn(content, area);
+            if let TileContent::Group(id) = content
+                && SUMMARY_STEP_TEST_OPTIONAL_HEIGHTS
+                    .get(usize::try_from(id.saturating_sub(1)).unwrap_or(usize::MAX))
+                    == Some(&area.height)
+            {
+                drawn.saturating_sub(1)
+            } else {
+                drawn
+            }
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    /// No incomplete piece leaves an unused row beside a cut column mate.
+    fn assert_no_unusable_row(
+        cells: &impl TileCells<u32>,
+        drawing: &TileDrawing<u32>,
+        key: usize,
+        raw: u32,
+    ) {
+        for placement in drawing.placements() {
+            let area = content_area(placement.frame.inner());
+            let drawn = cells.rows_drawn(&placement.content, area);
+            let whole = cells.rows_drawn(
+                &placement.content,
+                Rect {
+                    height: u16::MAX,
+                    ..area
+                },
+            );
+            assert!(
+                drawn == area.height || drawn >= whole,
+                "key {key} at {raw}: {:?} holds span {} but draws {drawn}/{} of {whole}; column {:?}",
+                placement.content,
+                placement.frame.clip().height.saturating_sub(1),
+                area.height,
+                column_geometry(drawing),
+            );
+        }
+    }
+
+    #[test]
+    fn no_piece_rests_on_a_row_it_cannot_fill_while_a_mate_cuts_content() {
+        let cells = PairedEntrySummaryCells;
+        let area = COLUMN_FOOT_TEST_AREA;
+        let growth = TileGrowth {
+            initial_rows:  SLIDING_TEST_INITIAL_ROWS,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        grid.settle_for_test();
+        for key in SUMMARY_STEP_TEST_ROWS.len()..SUMMARY_STEP_TEST_PIECES {
+            let before = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+            assert_no_unusable_row(&cells, &before, key, PROGRESS_SCALE);
+            grid.apply(TileAction::Add, growth);
+            fixed_motion_drawing(&mut grid, &cells, area, growth, 0);
+            let after = grid.drawing_at(area, growth, PROGRESS_SCALE);
+            let mut previous = before
+                .placements()
+                .map(|placement| (placement.content.clone(), placement.frame.clip().height))
+                .collect::<Vec<_>>();
+            let mut last_geometry = Vec::new();
+            for raw in (0..SLIDING_TEST_INTERVALS)
+                .map(|sample| sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS)
+                .chain([PROGRESS_SCALE.saturating_sub(1), PROGRESS_SCALE])
+            {
+                let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+                assert_no_unusable_row(&cells, &drawing, key, raw);
+                assert_key_frame_keeps_height_rules(
+                    &cells,
+                    &before,
+                    &after,
+                    &drawing,
+                    &mut previous,
+                );
+                last_geometry = column_geometry(&drawing);
+            }
+            grid.finish_motion_for_test();
+            let settled = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+            assert_eq!(settled.pieces.len(), key.saturating_add(1));
+            assert_eq!(settled.column_bands.len(), 1);
+            assert_no_unusable_row(&cells, &settled, key, PROGRESS_SCALE);
+            assert_eq!(
+                last_geometry,
+                column_geometry(&settled),
+                "key {key} ends where it rests"
+            );
+        }
+    }
+
+    /// Cell identities and their visible frames in column order.
+    fn column_geometry(drawing: &TileDrawing<u32>) -> Vec<(TileContent<u32>, Rect)> {
+        drawing
+            .placements()
+            .filter(|placement| has_visible_body_row(placement.frame))
+            .map(|placement| (placement.content.clone(), placement.frame.clip()))
+            .collect()
+    }
+
+    /// A key uses intermediate heights while its unchanged cells move one way.
+    fn assert_key_slides_column(
+        grid: &mut TileGrid<u32>,
+        cells: &impl TileCells<u32>,
+        growth: TileGrowth,
+        action: TileAction,
+    ) {
+        let area = COLUMN_FOOT_TEST_AREA;
+        let before = fixed_motion_drawing(grid, cells, area, growth, PROGRESS_SCALE);
+        grid.apply(action, growth);
+        fixed_motion_drawing(grid, cells, area, growth, 0);
+        let after = grid.drawing_at(area, growth, PROGRESS_SCALE);
+        assert_eq!(after.column_bands.len(), 1);
+        let changing = if action == TileAction::Add {
+            &after
+        } else {
+            &before
+        };
+        let foot = changing.pieces.last();
+        assert!(foot.is_some(), "the changed column has a foot cell");
+        let Some(foot) = foot else {
+            return;
+        };
+        let full_span = foot.placement.frame.clip().height.saturating_sub(1);
+        let mut previous = before
+            .placements()
+            .map(|placement| (placement.content.clone(), placement.frame.clip().height))
+            .collect::<Vec<_>>();
+        let mut geometries = Vec::new();
+        let mut spans = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            let drawing = fixed_motion_drawing(grid, cells, area, growth, raw);
+            let geometry = column_geometry(&drawing);
+            if raw < PROGRESS_SCALE && geometries.last() != Some(&geometry) {
+                geometries.push(geometry);
+            }
+            let span = drawing
+                .placements()
+                .find(|placement| placement.content == foot.placement.content)
+                .map_or(0, |placement| {
+                    placement.frame.clip().height.saturating_sub(1)
+                });
+            spans.push(span);
+            assert_key_frame_keeps_height_rules(cells, &before, &after, &drawing, &mut previous);
+        }
+        assert_key_has_visible_height_steps(
+            action,
+            full_span,
+            &spans,
+            geometries.len().saturating_sub(1),
+        );
+        grid.finish_motion_for_test();
+        let settled = fixed_motion_drawing(grid, cells, area, growth, PROGRESS_SCALE);
+        assert_eq!(
+            column_geometry(&settled),
+            column_geometry(&after),
+            "one key finishes without another motion"
+        );
+    }
+
+    /// A visible cell starts with one body row and uses several moving heights.
+    fn assert_key_has_visible_height_steps(
+        action: TileAction,
+        full_span: u16,
+        spans: &[u16],
+        changes: usize,
+    ) {
+        assert!(
+            spans.iter().any(|&span| span > 0 && span < full_span),
+            "{action:?} skips every intermediate height: {spans:?}"
+        );
+        assert!(
+            spans.windows(2).all(|pair| if action == TileAction::Add {
+                pair[0] <= pair[1]
+            } else {
+                pair[0] >= pair[1]
+            }),
+            "{action:?} reverses its changing cell: {spans:?}"
+        );
+        if action == TileAction::Add {
+            assert_eq!(
+                spans.iter().find(|&&span| span > 0),
+                Some(&MIN_TILE_HEIGHT.saturating_sub(1)),
+                "the first visible arrival has one body row"
+            );
+        }
+        assert!(
+            changes >= SLIDING_TEST_MIN_CHANGES,
+            "{action:?} changes fewer than three times before finishing: {spans:?}"
+        );
+    }
+
+    /// Check each sampled frame's body rows and the unchanged cells' paths.
+    fn assert_key_frame_keeps_height_rules(
+        cells: &impl TileCells<u32>,
+        before: &TileDrawing<u32>,
+        after: &TileDrawing<u32>,
+        drawing: &TileDrawing<u32>,
+        previous: &mut [(TileContent<u32>, u16)],
+    ) {
+        let visible = drawing
+            .placements()
+            .filter(|placement| has_visible_body_row(placement.frame))
+            .map(|placement| placement.frame.clip())
+            .collect::<Vec<_>>();
+        for pair in visible.windows(2) {
+            assert_eq!(
+                pair[0].bottom().saturating_sub(1),
+                pair[1].top(),
+                "neighbours share one edge"
+            );
+        }
+        assert_eq!(
+            visible.last().map(|frame| frame.bottom()),
+            Some(COLUMN_FOOT_TEST_AREA.bottom())
+        );
+        for placement in drawing.placements() {
+            let height = placement.frame.clip().height;
+            assert!(
+                height == 1 || height >= MIN_TILE_HEIGHT,
+                "a piece takes no edge without a body"
+            );
+            assert!(
+                placement_fits(cells, placement),
+                "a piece fills its rows or is whole"
+            );
+            let start = before
+                .placements()
+                .find(|held| held.content == placement.content);
+            let end = after
+                .placements()
+                .find(|held| held.content == placement.content);
+            let (Some(start), Some(end)) = (start, end) else {
+                continue;
+            };
+            let (start, end) = (start.frame.clip(), end.frame.clip());
+            assert!(
+                (start.height.min(end.height)..=start.height.max(end.height)).contains(&height),
+                "{:?} leaves its endpoint heights",
+                placement.content
+            );
+            assert!(placement.frame.clip().x == start.x || placement.frame.clip().x == end.x);
+            if let Some((_, preceding)) = previous
+                .iter_mut()
+                .find(|(content, _)| *content == placement.content)
+            {
+                assert!(if start.height <= end.height {
+                    height >= *preceding
+                } else {
+                    height <= *preceding
+                });
+                *preceding = height;
+            }
+        }
+    }
+
+    #[test]
+    fn a_key_that_adds_or_removes_a_cell_slides_its_column() {
+        let cells = SlidingColumnCells;
+        let growth = TileGrowth {
+            initial_rows:  SLIDING_TEST_INITIAL_ROWS,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            growth,
+            PROGRESS_SCALE,
+        );
+        grid.settle_for_test();
+        for action in [
+            TileAction::Add,
+            TileAction::Add,
+            TileAction::Remove,
+            TileAction::Remove,
+        ] {
+            assert_key_slides_column(&mut grid, &cells, growth, action);
+        }
+    }
+
+    #[test]
+    fn the_first_cell_below_a_summary_slides_in_and_out() {
+        let cells = Toast64MotionCells {
+            groups:       0,
+            summary_rows: COLUMN_FOOT_TEST_KEY_SUMMARY_ROWS,
+        };
+        let growth = TileGrowth::default();
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            growth,
+            PROGRESS_SCALE,
+        );
+        grid.settle_for_test();
+        for action in [TileAction::Add, TileAction::Remove] {
+            assert_key_slides_column(&mut grid, &cells, growth, action);
+        }
+    }
+
+    #[test]
+    fn the_last_cell_leaves_in_steps_with_its_narrowing_column() {
+        let cells = Toast64MotionCells {
+            groups:       0,
+            summary_rows: COLUMN_FOOT_TEST_KEY_SUMMARY_ROWS,
+        };
+        let growth = TileGrowth {
+            initial_rows: 1,
+            ..TileGrowth::default()
+        };
+        let area = COLUMN_FOOT_TEST_AREA;
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        grid.settle_for_test();
+        for _ in 0..2 {
+            grid.apply(TileAction::Add, growth);
+            grid.settle_for_test();
+        }
+        let before = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        assert_eq!(before.column_bands.len(), 2);
+        let foot = before.pieces.last();
+        assert!(foot.is_some(), "the closing column holds its last cell");
+        let Some(foot) = foot else {
+            return;
+        };
+        let full = foot.placement.frame.clip();
+        grid.apply(TileAction::Remove, growth);
+        let mut widths = Vec::new();
+        for sample in 0..SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+            if let Some(placement) = drawing
+                .placements()
+                .find(|placement| placement.content == foot.placement.content)
+            {
+                let clip = placement.frame.clip();
+                assert_eq!(
+                    clip.height, full.height,
+                    "a closing column keeps its cell heights"
+                );
+                widths.push(clip.width);
+            }
+        }
+        widths.dedup();
+        assert!(widths.iter().any(|&width| width > 0 && width < full.width));
+        assert!(widths.len().saturating_sub(1) >= SLIDING_TEST_MIN_CHANGES);
+        assert!(widths.windows(2).all(|pair| pair[0] >= pair[1]));
+    }
+
+    #[test]
+    fn startup_cells_leave_no_line_before_their_first_row() {
+        let growth = TileGrowth::default();
+        let cells = ColumnFootCells;
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+
+        for _ in 0..COLUMN_FOOT_TEST_GROUP_COUNT {
+            assert_column_foot_has_no_doubled_line(&mut grid, &cells, growth);
+            grid.finish_motion_for_test();
+        }
+        assert_eq!(
+            u32::try_from(
+                grid.drawing_at(COLUMN_FOOT_TEST_AREA, growth, PROGRESS_SCALE)
+                    .pieces
+                    .len()
+            ),
+            Ok(COLUMN_FOOT_TEST_GROUP_COUNT + 1),
+            "startup draws every admitted cell"
         );
     }
 
