@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A third attract screen on `3`: the desktop drawn as itself with a band of coarseness sweeping across it, taking the picture to blocks and giving it back. Arrows point the sweep, `>`/`<` pace it, `+`/`-` size the blocks, `[`/`]` narrow and widen the band, `v` cycles how a block hands its cells back, `t` draws cells solid or shaded.
 - The drifting attract screen fills its cells with bars, and `t` swaps between those and characters. Bars draw part way into a cell, so slow lines travel rather than step, and turning carries the field over instead of dealing it afresh.
 - `p` toggles how much of each command a cell spells out: short names every step of the process tree and nothing more, full spells the lines out, with `tree` in the status line while it does.
-- A second attract screen on `2`, and the one the app opens with: the window filled with characters in the colours of the desktop behind them, every line drifting on its own. Arrows point the drift, `<`/`>` change speed, `v` lets the lines come apart, `[`/`]` draw their speeds together or apart, dealt in lanes so neighbouring lines travel together.
+- A second attract screen on `2`, and the one the app opens with: the window filled with bars or characters in the colours of the desktop behind them, every line drifting on its own. Arrows point the drift, `<`/`>` change speed, `v` lets the lines come apart, `[`/`]` draw their speeds together or apart, dealt in lanes so neighbouring lines travel together.
 - The attract band sets off left to right with both edges fraying, so everything the animation does is on screen before a key is pressed. `v` cycles which edges fray and `[`/`]` change how fast.
 - The settings overlay moves on the rebindable navigation keys rather than hard-wired arrows, so `[navigation]` in `keymap.toml` says what walks the list.
 - Steer the attract band while it is shown: arrows send it, `>`/`<` (or `.`/`,`) change speed, `+`/`-` (or `=`) widen and thin it, further per press while held. The keys live under `[attract_moving_band]` so a later animation binds the same keys to its own meanings, and are live when the screen is fully shown or was asked for with `a`.
@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - In `auto`, the grid shows only the summary when cells would show fewer of its rows than the summary alone; `summary` always shows it alone, and `cells` uses cells whenever they meet their size floor.
-- The summary stays at its current grid depth when it is no more than half a position short, and cells hiding rows receive available column height before a shorter cell gains a blank trailing row.
+- The summary stays at its current grid depth when it is no more than half a position short and the cells in its column can spare the rows, and cells hiding rows receive available column height before a shorter cell gains a blank trailing row.
 - Vertically cut tables fill the last command line before its `…`, and use an inter-directory blank row for the next heading and process when those rows would otherwise be hidden.
 - Toasts stay inside the tile frame, and shortened ancestry always marks its cut and uses the rows available to it.
 - Directory headings keep the project end of the path before its account when both do not fit, retain a whole final component when its marked tail fits exactly, and use `…` whenever text is left out.
