@@ -244,10 +244,8 @@ pub(crate) const CENSUS_TEST_CPU_REPORT_MILLIS: u64 = 50;
 /// The CPU smoothing window in PTY tests, in milliseconds.
 #[cfg(test)]
 pub(crate) const CENSUS_TEST_CPU_SMOOTHING_MILLIS: u64 = 100;
-/// Index of the `command` column in [`TABLE_HEADERS`]. It absorbs
-/// whatever width the fitted columns leave, wherever it stands among
-/// them, so it comes ahead of the two that describe an invocation
-/// rather than after them.
+/// Index of the `command` column in [`TABLE_HEADERS`], ahead of the
+/// compiler and run counts that describe an invocation.
 pub(crate) const COMMAND_COLUMN: usize = 7;
 /// Index of the `compiler` column in [`TABLE_HEADERS`].
 pub(crate) const COMPILER_COLUMN: usize = 8;
@@ -255,8 +253,6 @@ pub(crate) const COMPILER_COLUMN: usize = 8;
 /// reporting priority order: with a wrapper in use every `rustc` is a
 /// child of one, so `sccache` wins to avoid counting a compile twice.
 pub(crate) const COMPILER_PROCESS_NAMES: [&str; 2] = [SCCACHE_BINARY, RUSTC_BINARY];
-/// Cells the `\u{d7}` separator occupies in a `compiler` cell.
-pub(crate) const COMPILER_SEPARATOR_WIDTH: usize = 1;
 /// The ELF auxiliary-vector tag `AT_CLKTCK` supplies stat ticks per second.
 #[cfg(target_os = "linux")]
 pub(crate) const CPU_AUXV_CLOCK_TICKS: usize = 17;
@@ -266,6 +262,8 @@ pub(crate) const CPU_AUXV_ENTRY_WORDS: usize = 2;
 /// Linux publishes its clock frequency in the scanner's auxiliary vector.
 #[cfg(target_os = "linux")]
 pub(crate) const CPU_AUXV_PATH: &str = "/proc/self/auxv";
+/// Blank cells between content and the right frame.
+pub(crate) const CONTENT_RIGHT_INSET: u16 = 1;
 /// Index of the `cpu` column in [`TABLE_HEADERS`], which carries the
 /// share of a core the invocation and everything under it are using. It
 /// stands beside `dur` because the two answer the same question from
@@ -430,6 +428,8 @@ pub(crate) const TABLE_COLUMN_DROP_ORDER: [usize; 8] = [
 ];
 /// Blank cells between table columns.
 pub(crate) const TABLE_COLUMN_SPACING: u16 = 2;
+/// Cells after a whole command reserved for a blank and a continuation mark.
+pub(crate) const TABLE_CONTINUATION_CLEARANCE: u16 = 2;
 /// Column headers, in table order. The working directory is not among
 /// them: it heads the group of invocations that share it rather than
 /// repeating on every row.

@@ -231,7 +231,7 @@ fn measurement_widths<Id: Clone + Eq + Debug>(
 /// piece contributes contents and lines only while at least one row of
 /// its body is visible between its clip's frame rows, so an edge alone
 /// cannot add a second line beside the column frame.
-fn draw_placements<Id: Clone + Eq + Debug>(
+pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
     buffer: &mut Buffer,
     area: Rect,
     drawing: &TileDrawing<Id>,
@@ -674,6 +674,19 @@ mod tests {
     use crate::tiles::constants::COLUMN_FOOT_TEST_KEY_SUMMARY_ROWS;
     use crate::tiles::constants::COLUMN_FOOT_TEST_MIN_HEIGHT;
     use crate::tiles::constants::COLUMN_FOOT_TEST_SUMMARY_ROWS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_COLUMN_ENTRIES;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_COLUMN_ROWS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_COMMAND_ROWS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_EMPTY_CELLS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_ENTRIES;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_GROUPS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_PROGRESS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_PROJECT_ROWS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_ROW;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_SOURCE_SPANS;
+    use crate::tiles::constants::CONTENT_CHANGE_TEST_SPARE_SPANS;
+    use crate::tiles::constants::DEPARTED_ENTRY_TEST_SPANS;
+    use crate::tiles::constants::EMPTY_DONOR_TEST_SPANS;
     use crate::tiles::constants::LENDING_TEST_CUT_GROUP;
     use crate::tiles::constants::LENDING_TEST_DEMANDS;
     use crate::tiles::constants::LENDING_TEST_DRAWN;
@@ -684,10 +697,12 @@ mod tests {
     use crate::tiles::constants::LENDING_TEST_WHOLE_GROUP;
     use crate::tiles::constants::MIN_TILE_HEIGHT;
     use crate::tiles::constants::PROGRESS_SCALE;
+    use crate::tiles::constants::SETTLED_SPARE_TEST_HEIGHTS;
     use crate::tiles::constants::SLIDING_TEST_INITIAL_ROWS;
     use crate::tiles::constants::SLIDING_TEST_INTERVALS;
     use crate::tiles::constants::SLIDING_TEST_MIN_CHANGES;
     use crate::tiles::constants::SLIDING_TEST_ROWS;
+    use crate::tiles::constants::SUMMARY_DONOR_TEST_SPANS;
     use crate::tiles::constants::SUMMARY_STEP_TEST_ENTRY_ROWS;
     use crate::tiles::constants::SUMMARY_STEP_TEST_HEADER_ROWS;
     use crate::tiles::constants::SUMMARY_STEP_TEST_OPTIONAL_HEIGHTS;
@@ -2321,6 +2336,1068 @@ mod tests {
 
         fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
             draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    /// A summary whose compact entries omit separators while commands stay whole.
+    #[derive(Clone, Copy)]
+    struct ChangingSummaryCells {
+        entries: u16,
+        groups:  u32,
+    }
+
+    impl TileCells<u32> for ChangingSummaryCells {
+        fn summary_title(&self) -> &'static str { LENDING_TEST_SUMMARY_TITLE }
+
+        fn demands(&self, _: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary:       usize::from(self.entries * CONTENT_CHANGE_TEST_PROJECT_ROWS),
+                summary_width: 0,
+                groups:        (1..=self.groups)
+                    .map(|id| TileDemand {
+                        id,
+                        rows: usize::from(CONTENT_CHANGE_TEST_COMMAND_ROWS),
+                    })
+                    .collect(),
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            match content {
+                TileContent::Summary => {
+                    let whole = self.entries * CONTENT_CHANGE_TEST_PROJECT_ROWS;
+                    if area.height >= whole {
+                        whole
+                    } else {
+                        let header = area.height.min(SUMMARY_STEP_TEST_HEADER_ROWS);
+                        header
+                            + (area.height.saturating_sub(header) / SUMMARY_STEP_TEST_ENTRY_ROWS)
+                                .min(self.entries)
+                                * SUMMARY_STEP_TEST_ENTRY_ROWS
+                    }
+                },
+                TileContent::Group(_) => CONTENT_CHANGE_TEST_COMMAND_ROWS.min(area.height),
+                TileContent::Empty(_) => 0,
+            }
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, inner: Rect, _: Color) {
+            draw_stub_rows(buffer, inner, self.rows_drawn(content, inner));
+        }
+    }
+
+    /// Begin from a drawn settled column with the requested empty cells.
+    fn changing_summary_grid(cells: ChangingSummaryCells, empties: usize) -> TileGrid<u32> {
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        let growth = changing_summary_growth();
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            growth,
+            PROGRESS_SCALE,
+        );
+        grid.settle_for_test();
+        for _ in 0..empties {
+            fixed_motion_drawing(
+                &mut grid,
+                &cells,
+                COLUMN_FOOT_TEST_AREA,
+                growth,
+                PROGRESS_SCALE,
+            );
+            grid.apply(TileAction::Add, growth);
+            grid.settle_for_test();
+        }
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            growth,
+            PROGRESS_SCALE,
+        );
+        grid
+    }
+
+    fn changing_summary_growth() -> TileGrowth {
+        TileGrowth {
+            initial_rows:  SLIDING_TEST_INITIAL_ROWS,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        }
+    }
+
+    /// Read the painted content back after measuring the exact motion frame.
+    fn assert_motion_content_is_filled(
+        grid: &mut TileGrid<u32>,
+        cells: ChangingSummaryCells,
+        raw: u32,
+    ) -> TileDrawing<u32> {
+        let area = COLUMN_FOOT_TEST_AREA;
+        let drawing = fixed_motion_drawing(grid, &cells, area, changing_summary_growth(), raw);
+        let mut buffer = Buffer::empty(area);
+        let widths = measurement_widths(grid, area, changing_summary_growth(), GridDisplay::Cells);
+        draw_placements(
+            &mut buffer,
+            area,
+            &drawing,
+            &cells.demands(&widths),
+            &widths,
+            TileGridContents::Shown,
+            &cells,
+        );
+        assert_no_unusable_row(&cells, &drawing, 0, raw);
+        for placement in drawing.placements() {
+            let content = content_area(placement.frame.inner());
+            let whole = cells.rows_drawn(
+                &placement.content,
+                Rect {
+                    height: u16::MAX,
+                    ..content
+                },
+            );
+            if cells.rows_drawn(&placement.content, content) < whole && content.height > 0 {
+                let row = buffer_line(&buffer, content.bottom().saturating_sub(1));
+                assert!(row.contains(CONTENT_CHANGE_TEST_ROW), "{raw}: {row}");
+            }
+        }
+        drawing
+    }
+
+    #[test]
+    fn a_content_change_mid_motion_leaves_no_blank_row() {
+        for changed_at in CONTENT_CHANGE_TEST_PROGRESS {
+            let mut cells = ChangingSummaryCells {
+                entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+                groups:  CONTENT_CHANGE_TEST_GROUPS,
+            };
+            let mut grid = changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS);
+            grid.record_settled_spans_for_test(&CONTENT_CHANGE_TEST_SOURCE_SPANS);
+            grid.apply(TileAction::Remove, changing_summary_growth());
+            let clock = grid.motion_timing_for_test();
+            let mut paths = vec![Vec::new(); usize::try_from(cells.groups).unwrap_or_default()];
+            let mut last = Vec::new();
+            for raw in (0..=SLIDING_TEST_INTERVALS)
+                .map(|sample| sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS)
+            {
+                if raw >= changed_at {
+                    cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+                }
+                let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+                assert_eq!(clock, grid.motion_timing_for_test());
+                for (index, path) in paths.iter_mut().enumerate() {
+                    let id = u32::try_from(index.saturating_add(1)).unwrap_or_default();
+                    let height = drawing
+                        .placements()
+                        .find(|placement| placement.content == TileContent::Group(id))
+                        .map(|placement| placement.frame.clip().height);
+                    assert!(height.is_some(), "command {id} stays visible at {raw}");
+                    path.extend(height);
+                }
+                last = column_geometry(&drawing);
+            }
+            for mut path in paths {
+                path.dedup();
+                assert!(
+                    path.windows(3)
+                        .all(|heights| { (heights[0] < heights[1]) == (heights[1] < heights[2]) }),
+                    "an unchanged command reverses: {path:?}"
+                );
+            }
+            grid.finish_motion_for_test();
+            let settled = assert_motion_content_is_filled(&mut grid, cells, PROGRESS_SCALE);
+            assert_eq!(
+                last,
+                column_geometry(&settled),
+                "the key ends where it rests"
+            );
+            assert!(!grid.tick(), "the content change adds no later motion");
+        }
+    }
+
+    #[test]
+    fn a_departed_summary_entry_gives_its_spare_rows_to_cutting_mates_at_once() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[1].saturating_add(1),
+            groups:  CONTENT_CHANGE_TEST_GROUPS.saturating_add(1),
+        };
+        let mut grid = changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS);
+        grid.record_settled_spans_for_test(&DEPARTED_ENTRY_TEST_SPANS);
+        cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+        grid.apply(TileAction::Add, changing_summary_growth());
+        assert_key_gives_spare_rows(&mut grid, cells);
+    }
+
+    #[test]
+    fn a_summary_losing_content_during_a_key_gives_its_spare_rows_at_once() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[1].saturating_add(1),
+            groups:  CONTENT_CHANGE_TEST_GROUPS.saturating_add(1),
+        };
+        let mut grid = changing_summary_grid(cells, 0);
+        grid.record_settled_spans_for_test(&SUMMARY_DONOR_TEST_SPANS);
+        grid.apply(TileAction::Add, changing_summary_growth());
+        assert_motion_content_is_filled(&mut grid, cells, CONTENT_CHANGE_TEST_PROGRESS[0]);
+        cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+        let clock = grid.motion_timing_for_test();
+        let mut last = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if raw < CONTENT_CHANGE_TEST_PROGRESS[0] {
+                continue;
+            }
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+            let endpoint = grid.drawing_at(
+                COLUMN_FOOT_TEST_AREA,
+                changing_summary_growth(),
+                PROGRESS_SCALE,
+            );
+            assert_no_givable_spare_row(&cells, &drawing, &endpoint, raw);
+            assert_eq!(clock, grid.motion_timing_for_test());
+            last = column_geometry(&drawing);
+        }
+        grid.finish_motion_for_test();
+        let settled = assert_motion_content_is_filled(&mut grid, cells, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+        assert_no_givable_spare_row(&cells, &settled, &settled, PROGRESS_SCALE);
+        assert!(!grid.tick());
+    }
+
+    #[test]
+    fn an_empty_departing_cell_gives_rows_along_its_slide() {
+        let cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[1],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut grid = changing_summary_grid(cells, 1);
+        grid.record_settled_spans_for_test(&EMPTY_DONOR_TEST_SPANS);
+        grid.apply(TileAction::Remove, changing_summary_growth());
+        let first = assert_motion_content_is_filled(&mut grid, cells, 0);
+        assert_eq!(
+            first
+                .placements()
+                .find(|piece| matches!(piece.content, TileContent::Empty(_)))
+                .map(|piece| piece.frame.clip().height),
+            EMPTY_DONOR_TEST_SPANS.last().map(|span| span + 1)
+        );
+        assert_key_gives_spare_rows(&mut grid, cells);
+    }
+
+    fn assert_key_gives_spare_rows(grid: &mut TileGrid<u32>, cells: ChangingSummaryCells) {
+        let clock = grid.motion_timing_for_test();
+        let mut last = Vec::new();
+        let mut paths = Vec::<(TileContent<u32>, Vec<u16>)>::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            let drawing = assert_motion_content_is_filled(grid, cells, raw);
+            let endpoint = grid.drawing_at(
+                COLUMN_FOOT_TEST_AREA,
+                changing_summary_growth(),
+                PROGRESS_SCALE,
+            );
+            assert_eq!(clock, grid.motion_timing_for_test());
+            assert_drawing_tiles_bands(&drawing, raw);
+            assert_no_givable_spare_row(&cells, &drawing, &endpoint, raw);
+            for piece in drawing.placements() {
+                if let Some((_, heights)) = paths
+                    .iter_mut()
+                    .find(|(content, _)| *content == piece.content)
+                {
+                    heights.push(piece.frame.clip().height);
+                } else {
+                    paths.push((piece.content.clone(), vec![piece.frame.clip().height]));
+                }
+            }
+            last = column_geometry(&drawing);
+        }
+        for (content, mut heights) in paths {
+            heights.dedup();
+            assert!(
+                heights.windows(3).all(|h| (h[0] < h[1]) == (h[1] < h[2])),
+                "{content:?} reverses: {heights:?}"
+            );
+        }
+        grid.finish_motion_for_test();
+        let settled = assert_motion_content_is_filled(grid, cells, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+        assert_no_givable_spare_row(&cells, &settled, &settled, PROGRESS_SCALE);
+        assert!(!grid.tick());
+    }
+
+    #[test]
+    fn a_command_growing_before_a_key_keeps_its_drawn_rows() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  1,
+        };
+        let growth = changing_summary_growth();
+        let area = COLUMN_FOOT_TEST_AREA;
+        let raw = CONTENT_CHANGE_TEST_PROGRESS[0];
+        let mut grid = changing_summary_grid(cells, 0);
+        cells.groups = cells.groups.saturating_add(1);
+        let before = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+        let clock = grid.motion_timing_for_test();
+        let command = TileContent::Group(cells.groups);
+        let start = before
+            .placements()
+            .find(|piece| piece.content == command)
+            .map_or(0, |piece| piece.frame.clip().height);
+        cells.groups = cells.groups.saturating_add(1);
+        let widths = measurement_widths(&grid, area, growth, GridDisplay::Cells);
+        let mut demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+        grid.sync(&demands, growth);
+        grid.apply(TileAction::Add, growth);
+        let mut heights = vec![start];
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let progress = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if progress < raw {
+                continue;
+            }
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, progress);
+            assert_eq!(clock, grid.motion_timing_for_test());
+            heights.push(
+                drawing
+                    .placements()
+                    .find(|piece| piece.content == command)
+                    .map_or(0, |piece| piece.frame.clip().height),
+            );
+        }
+        for _ in 0..CONTENT_CHANGE_TEST_EMPTY_CELLS {
+            grid.finish_motion_for_test();
+            if !grid.tick() {
+                break;
+            }
+            for sample in 0..=SLIDING_TEST_INTERVALS {
+                let progress = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+                let drawing = assert_motion_content_is_filled(&mut grid, cells, progress);
+                heights.push(
+                    drawing
+                        .placements()
+                        .find(|piece| piece.content == command)
+                        .map_or(0, |piece| piece.frame.clip().height),
+                );
+            }
+        }
+        assert!(
+            heights.windows(2).all(|h| h[0] <= h[1]),
+            "the arriving command gives rows back: {heights:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_claimed_by_a_waiting_command_brings_no_second_empty_piece() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  1,
+        };
+        let growth = changing_summary_growth();
+        let area = COLUMN_FOOT_TEST_AREA;
+        let mut grid = changing_summary_grid(cells, 0);
+        cells.groups = cells.groups.saturating_add(1);
+        fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            area,
+            growth,
+            CONTENT_CHANGE_TEST_PROGRESS[0],
+        );
+        cells.groups = cells.groups.saturating_add(1);
+        let widths = measurement_widths(&grid, area, growth, GridDisplay::Cells);
+        let mut demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+        grid.sync(&demands, growth);
+        grid.apply(TileAction::Add, growth);
+        let clock = grid.motion_timing_for_test();
+        let mut last = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+            assert_eq!(clock, grid.motion_timing_for_test());
+            assert_drawing_tiles_bands(&drawing, raw);
+            last = column_geometry(&drawing);
+        }
+        grid.finish_motion_for_test();
+        let settled = assert_motion_content_is_filled(&mut grid, cells, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+        assert!(
+            !grid.tick(),
+            "a claimed key leaves no second opening behind it"
+        );
+        assert_eq!(
+            settled.placements().count(),
+            usize::try_from(cells.groups).unwrap_or_default() + 1
+        );
+    }
+
+    #[test]
+    fn no_cell_cuts_a_row_while_a_mate_holds_a_spare_row_it_could_give() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut grid = changing_summary_grid(cells, 0);
+        grid.record_settled_spans_for_test(&CONTENT_CHANGE_TEST_SPARE_SPANS);
+        grid.apply(TileAction::Add, changing_summary_growth());
+        cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if raw >= CONTENT_CHANGE_TEST_PROGRESS[0] {
+                cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+            }
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+            let endpoint = grid.drawing_at(
+                COLUMN_FOOT_TEST_AREA,
+                changing_summary_growth(),
+                PROGRESS_SCALE,
+            );
+            assert_no_givable_spare_row(&cells, &drawing, &endpoint, raw);
+        }
+        grid.finish_motion_for_test();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+            let endpoint = grid.drawing_at(
+                COLUMN_FOOT_TEST_AREA,
+                changing_summary_growth(),
+                PROGRESS_SCALE,
+            );
+            assert_no_givable_spare_row(&cells, &drawing, &endpoint, raw);
+        }
+    }
+
+    #[test]
+    fn a_content_change_keeps_the_motion_clock_with_a_key_waiting() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut grid = changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS);
+        grid.record_settled_spans_for_test(&CONTENT_CHANGE_TEST_SOURCE_SPANS);
+        grid.apply(TileAction::Remove, changing_summary_growth());
+        grid.apply(TileAction::Add, changing_summary_growth());
+        let clock = grid.motion_timing_for_test();
+        let demand = grid.destination_summary_demand_for_test();
+        let mut last = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if raw >= CONTENT_CHANGE_TEST_PROGRESS[1] {
+                cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+            }
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+            if raw >= CONTENT_CHANGE_TEST_PROGRESS[1] {
+                assert_ne!(
+                    demand,
+                    grid.destination_summary_demand_for_test(),
+                    "the active key receives the new demand"
+                );
+            }
+            assert_eq!(clock, grid.motion_timing_for_test());
+            last = column_geometry(&drawing);
+        }
+        grid.finish_motion_for_test();
+        let next = assert_motion_content_is_filled(&mut grid, cells, 0);
+        assert_eq!(
+            last,
+            column_geometry(&next),
+            "the queued key begins at the preceding endpoint"
+        );
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            last = column_geometry(&assert_motion_content_is_filled(&mut grid, cells, raw));
+        }
+        grid.finish_motion_for_test();
+        let settled = assert_motion_content_is_filled(&mut grid, cells, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+        assert!(!grid.tick(), "only the two keys move");
+    }
+
+    #[test]
+    fn an_arriving_cell_keeps_advancing_when_content_retargets_its_key() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut grid = changing_summary_grid(cells, 0);
+        grid.apply(TileAction::Add, changing_summary_growth());
+        let mut spans = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if raw >= CONTENT_CHANGE_TEST_PROGRESS[0] {
+                cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+            }
+            let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+            if raw < PROGRESS_SCALE {
+                let span = drawing
+                    .placements()
+                    .find(|piece| matches!(piece.content, TileContent::Empty(_)))
+                    .map_or(0, |piece| piece.frame.clip().height.saturating_sub(1));
+                if span > 0 && spans.last() != Some(&span) {
+                    spans.push(span);
+                }
+            }
+        }
+        assert!(
+            spans.len() >= SLIDING_TEST_MIN_CHANGES,
+            "the arrival advances through filled heights: {spans:?}"
+        );
+        assert!(spans.windows(2).all(|pair| pair[0] < pair[1]));
+        grid.finish_motion_for_test();
+        assert!(!grid.tick(), "the arrival ends within the key's motion");
+    }
+
+    #[test]
+    fn a_resize_ends_a_content_retarget_for_good() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let growth = changing_summary_growth();
+        let mut grid = changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS);
+        grid.record_settled_spans_for_test(&CONTENT_CHANGE_TEST_SOURCE_SPANS);
+        grid.apply(TileAction::Remove, growth);
+        for sample in 0..SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if raw >= CONTENT_CHANGE_TEST_PROGRESS[2] {
+                cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+            }
+            assert_motion_content_is_filled(&mut grid, cells, raw);
+        }
+        let area = COLUMN_FOOT_TEST_AREA;
+        let resized = Rect {
+            width: TEST_TILE_WIDTH.saturating_mul(2),
+            ..area
+        };
+        grid.set_draw_layout(resized, growth);
+        fixed_motion_drawing(&mut grid, &cells, resized, growth, PROGRESS_SCALE);
+        assert!(!grid.tick());
+        grid.set_draw_layout(area, growth);
+        let returned = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        let mut fresh =
+            changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS.saturating_sub(1));
+        let expected = fixed_motion_drawing(&mut fresh, &cells, area, growth, PROGRESS_SCALE);
+        for piece in expected
+            .placements()
+            .filter(|piece| !matches!(piece.content, TileContent::Empty(_)))
+        {
+            assert_eq!(
+                returned
+                    .placements()
+                    .find(|other| other.content == piece.content)
+                    .map(|other| other.frame.clip()),
+                Some(piece.frame.clip())
+            );
+        }
+        assert!(!grid.tick());
+    }
+
+    #[test]
+    fn a_content_retarget_that_changes_columns_keeps_its_clock_and_filled_rows() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut growth = changing_summary_growth();
+        growth.initial_rows = CONTENT_CHANGE_TEST_COLUMN_ROWS;
+        let area = COLUMN_FOOT_TEST_AREA;
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        grid.settle_for_test();
+        for _ in 0..CONTENT_CHANGE_TEST_EMPTY_CELLS {
+            fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+            grid.apply(TileAction::Add, growth);
+            grid.settle_for_test();
+        }
+        let before = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        grid.apply(TileAction::Remove, growth);
+        let clock = grid.motion_timing_for_test();
+        let mut last = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let raw = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if raw >= CONTENT_CHANGE_TEST_PROGRESS[0] {
+                cells.entries = CONTENT_CHANGE_TEST_COLUMN_ENTRIES;
+            }
+            let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+            assert_no_unusable_row(&cells, &drawing, 0, raw);
+            assert_eq!(clock, grid.motion_timing_for_test());
+            assert!(
+                drawing
+                    .placements()
+                    .all(|piece| area.intersection(piece.frame.clip()) == piece.frame.clip())
+            );
+            last = column_geometry(&drawing);
+        }
+        assert!(
+            last.iter().any(|(content, rect)| before
+                .placements()
+                .find(|piece| &piece.content == content)
+                .is_some_and(|piece| piece.frame.clip().x != rect.x)),
+            "content changed the column membership"
+        );
+        grid.finish_motion_for_test();
+        let settled = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+        assert!(!grid.tick());
+    }
+
+    struct WideningSummaryCells {
+        content: ChangingSummaryCells,
+        width:   u16,
+    }
+
+    impl TileCells<u32> for WideningSummaryCells {
+        fn summary_title(&self) -> &'static str { LENDING_TEST_SUMMARY_TITLE }
+
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            TileDemands {
+                summary_width: self.width,
+                ..self.content.demands(widths)
+            }
+        }
+
+        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
+            self.content.rows_drawn(content, area)
+        }
+
+        fn draw(&self, buffer: &mut Buffer, content: &TileContent<u32>, area: Rect, color: Color) {
+            self.content.draw(buffer, content, area, color);
+        }
+    }
+
+    /// A running removal with a measured destination retained across frames.
+    fn cached_widening_summary_grid(
+        cells: &WideningSummaryCells,
+        growth: TileGrowth,
+    ) -> TileGrid<u32> {
+        let area = COLUMN_FOOT_TEST_AREA;
+        let mut grid = TileGrid::new();
+        grid.set_view(TileView::Cells);
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        grid.set_min_tile_height(COLUMN_FOOT_TEST_MIN_HEIGHT);
+        fixed_motion_drawing(&mut grid, cells, area, growth, PROGRESS_SCALE);
+        grid.settle_for_test();
+        for _ in 0..CONTENT_CHANGE_TEST_EMPTY_CELLS {
+            fixed_motion_drawing(&mut grid, cells, area, growth, PROGRESS_SCALE);
+            grid.apply(TileAction::Add, growth);
+            grid.settle_for_test();
+        }
+        fixed_motion_drawing(&mut grid, cells, area, growth, PROGRESS_SCALE);
+        grid.apply(TileAction::Remove, growth);
+        let raw = CONTENT_CHANGE_TEST_PROGRESS[0];
+        fixed_motion_drawing(&mut grid, cells, area, growth, raw);
+        grid.retain_measured_destination_for_test();
+        fixed_motion_drawing(&mut grid, cells, area, growth, raw);
+        assert!(grid.has_retargeted_destination_for_test());
+        grid
+    }
+
+    #[test]
+    fn a_widening_summary_keeps_every_piece_inside_its_moving_band() {
+        assert_width_retarget_tiles_bands(false);
+    }
+
+    #[test]
+    fn a_narrowing_summary_keeps_every_piece_inside_its_moving_band() {
+        assert_width_retarget_tiles_bands(true);
+    }
+
+    fn assert_width_retarget_tiles_bands(narrowing: bool) {
+        let area = COLUMN_FOOT_TEST_AREA;
+        let mut cells = WideningSummaryCells {
+            content: ChangingSummaryCells {
+                entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+                groups:  CONTENT_CHANGE_TEST_GROUPS,
+            },
+            width:   if narrowing { area.width } else { 0 },
+        };
+        let growth = TileGrowth {
+            initial_rows: CONTENT_CHANGE_TEST_COLUMN_ROWS,
+            widen_summary: true,
+            ..changing_summary_growth()
+        };
+        let mut grid = cached_widening_summary_grid(&cells, growth);
+        let clock = grid.motion_timing_for_test();
+        cells.width = if narrowing { 0 } else { area.width };
+        let mut last = Vec::new();
+        for raw in std::iter::once(CONTENT_CHANGE_TEST_PROGRESS[0]).chain(
+            (0..=SLIDING_TEST_INTERVALS)
+                .map(|sample| sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS)
+                .filter(|&progress| progress > CONTENT_CHANGE_TEST_PROGRESS[0]),
+        ) {
+            let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+            assert_eq!(clock, grid.motion_timing_for_test());
+            assert_drawing_tiles_bands(&drawing, raw);
+            assert_no_unusable_row(&cells, &drawing, 0, raw);
+            let mut buffer = Buffer::empty(area);
+            let widths = measurement_widths(&grid, area, growth, GridDisplay::Cells);
+            draw_placements(
+                &mut buffer,
+                area,
+                &drawing,
+                &cells.demands(&widths),
+                &widths,
+                TileGridContents::Shown,
+                &cells,
+            );
+            assert!(
+                (area.top()..area.bottom())
+                    .any(|y| buffer_line(&buffer, y).contains(CONTENT_CHANGE_TEST_ROW))
+            );
+            last = column_geometry(&drawing);
+        }
+        grid.finish_motion_for_test();
+        let settled = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        assert_drawing_tiles_bands(&settled, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+        assert!(!grid.tick());
+    }
+
+    fn assert_drawing_tiles_bands(drawing: &TileDrawing<u32>, raw: u32) {
+        for placement in drawing.placements() {
+            let clip = placement.frame.clip();
+            if placement.content != TileContent::Summary {
+                assert!(
+                    drawing
+                        .column_bands
+                        .iter()
+                        .any(|band| band.intersection(clip) == clip),
+                    "{raw}: {:?} {clip:?} leaves {:?}",
+                    placement.content,
+                    drawing.column_bands
+                );
+            }
+        }
+        for band in &drawing.column_bands {
+            let mut pieces = drawing
+                .placements()
+                .filter_map(|piece| {
+                    let clip = piece.frame.clip();
+                    if (clip.x == band.x && clip.width == band.width)
+                        || (piece.content == TileContent::Summary
+                            && clip.top() == band.top()
+                            && clip.x == band.x)
+                    {
+                        Some(clip)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            pieces.sort_by_key(|rect| rect.top());
+            assert_eq!(
+                pieces.first().map(|rect| rect.top()),
+                Some(band.top()),
+                "{raw}: {pieces:?}, {band:?}"
+            );
+            assert_eq!(
+                pieces.last().map(|rect| rect.bottom()),
+                Some(band.bottom()),
+                "{raw}: {pieces:?}, {band:?}"
+            );
+            for pair in pieces.windows(2) {
+                assert_eq!(
+                    pair[0].bottom().saturating_sub(1),
+                    pair[1].top(),
+                    "{raw}: {pair:?}"
+                );
+            }
+        }
+        let summary = drawing
+            .placements()
+            .find(|piece| piece.content == TileContent::Summary);
+        for command in drawing
+            .placements()
+            .filter(|piece| piece.content != TileContent::Summary)
+        {
+            if let Some(summary) = &summary {
+                let overlap = summary.frame.clip().intersection(command.frame.clip());
+                assert!(
+                    overlap.height <= 1 || overlap.width <= 1,
+                    "{raw}: summary {:?} overlaps {:?} in {overlap:?}",
+                    summary.frame.clip(),
+                    command.frame.clip()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wider_summary_discards_a_destination_from_different_columns() {
+        let mut cells = WideningSummaryCells {
+            content: ChangingSummaryCells {
+                entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+                groups:  CONTENT_CHANGE_TEST_GROUPS,
+            },
+            width:   0,
+        };
+        let growth = TileGrowth {
+            initial_rows: CONTENT_CHANGE_TEST_COLUMN_ROWS,
+            widen_summary: true,
+            ..changing_summary_growth()
+        };
+        let area = COLUMN_FOOT_TEST_AREA;
+        let raw = CONTENT_CHANGE_TEST_PROGRESS[0];
+        let mut grid = cached_widening_summary_grid(&cells, growth);
+        let clock = grid.motion_timing_for_test();
+        let rows = cells.demands(&[]);
+        cells.width = area.width;
+        let changed = cells.demands(&[]);
+        assert_eq!(rows.summary, changed.summary);
+        assert_eq!(rows.groups, changed.groups);
+        let widths = measurement_widths(&grid, area, growth, GridDisplay::Cells);
+        let mut demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+        grid.sync_rendered_demands(&demands, growth);
+        let endpoint = grid.drawing_at(area, growth, PROGRESS_SCALE);
+        assert_eq!(
+            endpoint
+                .placements()
+                .find(|piece| piece.content == TileContent::Summary)
+                .map(|piece| piece.frame.clip().width),
+            Some(area.width)
+        );
+        let next = fixed_motion_drawing(&mut grid, &cells, area, growth, raw);
+        assert!(!grid.has_retargeted_destination_for_test());
+        for piece in next
+            .placements()
+            .filter(|piece| piece.content != TileContent::Summary)
+        {
+            let clip = piece.frame.clip();
+            assert!(
+                next.column_bands
+                    .iter()
+                    .any(|band| band.intersection(clip) == clip),
+                "{raw}: {clip:?} leaves {:?}",
+                next.column_bands
+            );
+        }
+        let mut last = Vec::new();
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let progress = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if progress < raw {
+                continue;
+            }
+            let drawing = fixed_motion_drawing(&mut grid, &cells, area, growth, progress);
+            assert!(!grid.has_retargeted_destination_for_test());
+            assert_eq!(clock, grid.motion_timing_for_test());
+            last = column_geometry(&drawing);
+        }
+        assert_eq!(
+            last.iter()
+                .find(|(content, _)| *content == TileContent::Summary)
+                .map(|(_, rect)| rect.width),
+            Some(area.width)
+        );
+        grid.finish_motion_for_test();
+        let settled = fixed_motion_drawing(&mut grid, &cells, area, growth, PROGRESS_SCALE);
+        assert_eq!(last, column_geometry(&settled));
+    }
+
+    #[test]
+    fn a_settled_spare_row_check_rejects_a_donor_beside_a_cutting_mate() {
+        let cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let [donor_height, recipient_height] = SETTLED_SPARE_TEST_HEIGHTS;
+        let area = COLUMN_FOOT_TEST_AREA;
+        let drawing = TileDrawing {
+            pieces:       vec![
+                tile_piece(
+                    TileContent::Group(1),
+                    PaneFrame::new(Rect {
+                        height: donor_height,
+                        ..area
+                    }),
+                    PieceName::Shown,
+                ),
+                tile_piece(
+                    TileContent::Group(2),
+                    PaneFrame::new(Rect {
+                        y: donor_height - 1,
+                        height: recipient_height,
+                        ..area
+                    }),
+                    PieceName::Shown,
+                ),
+            ],
+            column_bands: vec![area],
+        };
+        let rejected = std::panic::catch_unwind(|| {
+            assert_no_givable_spare_row(&cells, &drawing, &drawing, PROGRESS_SCALE);
+        });
+        assert!(
+            rejected.is_err(),
+            "settled spare rows receive no take-back exemption"
+        );
+    }
+
+    #[test]
+    fn a_command_claims_its_empty_cell_without_hiding_a_departing_mate() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut grid = changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS);
+        grid.apply(TileAction::Remove, changing_summary_growth());
+        let raw = CONTENT_CHANGE_TEST_PROGRESS[0];
+        let before = fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            changing_summary_growth(),
+            raw,
+        );
+        cells.groups = cells.groups.saturating_add(1);
+        cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+        let after = fixed_motion_drawing(
+            &mut grid,
+            &cells,
+            COLUMN_FOOT_TEST_AREA,
+            changing_summary_growth(),
+            raw,
+        );
+        assert!(
+            after
+                .placements()
+                .any(|piece| piece.content == TileContent::Group(cells.groups)),
+            "the arriving command draws in its claimed cell on this frame"
+        );
+        assert_eq!(
+            column_geometry(&before).len(),
+            column_geometry(&after).len(),
+            "claiming an empty cell preserves every visible piece"
+        );
+        assert!(
+            after
+                .placements()
+                .filter(|piece| has_visible_body_row(piece.frame)
+                    && matches!(piece.content, TileContent::Empty(_)))
+                .count()
+                > 0,
+            "the unclaimed cell still slides out"
+        );
+    }
+
+    #[test]
+    fn a_rendered_claim_joins_the_motion_after_an_independent_scan() {
+        let mut cells = ChangingSummaryCells {
+            entries: CONTENT_CHANGE_TEST_ENTRIES[0],
+            groups:  CONTENT_CHANGE_TEST_GROUPS,
+        };
+        let mut grid = changing_summary_grid(cells, CONTENT_CHANGE_TEST_EMPTY_CELLS);
+        let growth = changing_summary_growth();
+        grid.apply(TileAction::Remove, growth);
+        let raw = CONTENT_CHANGE_TEST_PROGRESS[0];
+        assert_motion_content_is_filled(&mut grid, cells, raw);
+        let clock = grid.motion_timing_for_test();
+        cells.entries = CONTENT_CHANGE_TEST_ENTRIES[1];
+        cells.groups = cells.groups.saturating_add(1);
+        let widths = measurement_widths(&grid, COLUMN_FOOT_TEST_AREA, growth, GridDisplay::Cells);
+        let mut demands = cells.demands(&widths);
+        add_readout_rows(&mut demands, &widths);
+        grid.sync(&demands, growth);
+        let drawing = assert_motion_content_is_filled(&mut grid, cells, raw);
+        assert_eq!(clock, grid.motion_timing_for_test());
+        assert!(
+            drawing
+                .placements()
+                .any(|piece| piece.content == TileContent::Group(cells.groups))
+        );
+        for sample in 0..=SLIDING_TEST_INTERVALS {
+            let progress = sample * PROGRESS_SCALE / SLIDING_TEST_INTERVALS;
+            if progress >= raw {
+                assert_motion_content_is_filled(&mut grid, cells, progress);
+            }
+        }
+        grid.finish_motion_for_test();
+        assert!(!grid.tick(), "the measured claim leaves no queued handover");
+    }
+
+    fn assert_no_givable_spare_row(
+        cells: &impl TileCells<u32>,
+        drawing: &TileDrawing<u32>,
+        endpoint: &TileDrawing<u32>,
+        raw: u32,
+    ) {
+        for piece in &drawing.pieces {
+            if raw < PROGRESS_SCALE
+                && matches!(
+                    piece.height_snap,
+                    PieceHeightSnap::Search { start: 1, .. }
+                        | PieceHeightSnap::Search { end: 1, .. }
+                )
+            {
+                continue;
+            }
+            let donor = &piece.placement;
+            let area = content_area(donor.frame.inner());
+            let kept = cells.rows_kept(&donor.content, area);
+            let end = endpoint
+                .placements()
+                .find(|piece| piece.content == donor.content);
+            let end_height = end.map_or(0, |piece| piece.frame.clip().height);
+            let needs_row_at_endpoint = piece.height_snap != PieceHeightSnap::Settled
+                && donor.frame.clip().height <= end_height;
+            if kept >= area.height
+                || donor.frame.clip().height <= COLUMN_FOOT_TEST_MIN_HEIGHT
+                || needs_row_at_endpoint
+            {
+                continue;
+            }
+            for recipient in drawing
+                .pieces
+                .iter()
+                .filter(|piece| {
+                    raw >= PROGRESS_SCALE
+                        || !matches!(
+                            piece.height_snap,
+                            PieceHeightSnap::Search { start: 1, .. }
+                                | PieceHeightSnap::Search { end: 1, .. }
+                        )
+                })
+                .map(|piece| &piece.placement)
+            {
+                let recipient_area = content_area(recipient.frame.inner());
+                if donor.content == recipient.content
+                    || donor.frame.clip().x != recipient.frame.clip().x
+                {
+                    continue;
+                }
+                if raw < PROGRESS_SCALE
+                    && endpoint
+                        .placements()
+                        .find(|piece| piece.content == recipient.content)
+                        .is_some_and(|end| {
+                            recipient.frame.clip().height.saturating_add(1)
+                                > end.frame.clip().height
+                        })
+                {
+                    continue;
+                }
+                let rows = cells.rows_drawn(&recipient.content, recipient_area);
+                let next_rows = cells.rows_drawn(
+                    &recipient.content,
+                    Rect {
+                        height: recipient_area.height.saturating_add(1),
+                        ..recipient_area
+                    },
+                );
+                assert!(
+                    next_rows <= rows,
+                    "{raw}: {:?} keeps {kept}/{} beside {:?} drawing {rows}/{next_rows}; {:?}",
+                    donor.content,
+                    area.height,
+                    recipient.content,
+                    column_geometry(drawing)
+                );
+            }
         }
     }
 

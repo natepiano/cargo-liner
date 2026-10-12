@@ -8,6 +8,7 @@ use std::path::Path;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
+use ratatui::layout::Flex;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -21,8 +22,6 @@ use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
-use tui_pane::ColumnSpec;
-use tui_pane::ColumnWidths;
 use tui_pane::Keymap;
 use tui_pane::PaneFrameLabel;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -45,7 +44,6 @@ use tui_pane::secondary_text_color;
 use tui_pane::success_color;
 use tui_pane::text_default;
 use tui_pane::warning_color;
-use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
@@ -73,7 +71,7 @@ use crate::constants::ATTRACT_NOTE_LABEL;
 use crate::constants::BYTES_PER_GIBIBYTE;
 use crate::constants::COMMAND_COLUMN;
 use crate::constants::COMPILER_COLUMN;
-use crate::constants::COMPILER_SEPARATOR_WIDTH;
+use crate::constants::CONTENT_RIGHT_INSET;
 use crate::constants::CPU_COLUMN;
 use crate::constants::DURATION_COLUMN;
 use crate::constants::ELISION;
@@ -108,6 +106,7 @@ use crate::constants::SUMMARY_LABEL_RIGHT_INSET;
 use crate::constants::SUMMARY_MEMORY_LABEL;
 use crate::constants::TABLE_COLUMN_DROP_ORDER;
 use crate::constants::TABLE_COLUMN_SPACING;
+use crate::constants::TABLE_CONTINUATION_CLEARANCE;
 use crate::constants::TABLE_HEADER_HEIGHT;
 use crate::constants::TABLE_HEADERS;
 use crate::constants::TIGHT_TABLE_COLUMN_SPACING;
@@ -309,17 +308,17 @@ struct Cells<'a> {
     /// `commands.hidden_when_idle`, which settles whether a driver draws
     /// as a row or as the last step of its chain.
     hidden_when_idle: &'a [String],
-    /// How much of what stands above a command goes over its table.
-    tree:             ProcessTree,
     /// What sccache reports, written along the summary cell's top border.
     sccache:          &'a SccacheStats,
     /// Content-row answers already computed during this draw.
-    row_uses:         RefCell<Vec<MeasuredCellRowUse>>,
+    row_uses:         RefCell<Vec<FrameCellRowUse>>,
+    /// Intrinsic column inputs shared by every allocation in this frame.
+    grids:            FrameColumnGrids,
 }
 
 impl<'a> Cells<'a> {
     /// Cell provider with an empty cache for this draw.
-    const fn new(
+    fn new(
         roster: &'a Roster,
         hidden_when_idle: &'a [String],
         tree: ProcessTree,
@@ -328,9 +327,9 @@ impl<'a> Cells<'a> {
         Self {
             roster,
             hidden_when_idle,
-            tree,
             sccache,
             row_uses: RefCell::new(Vec::new()),
+            grids: FrameColumnGrids::new(roster, hidden_when_idle, tree),
         }
     }
 
@@ -345,9 +344,14 @@ impl<'a> Cells<'a> {
         {
             return use_rows;
         }
-        let use_rows =
-            content_row_use(self.roster, content, area, self.hidden_when_idle, self.tree);
-        self.row_uses.borrow_mut().push(MeasuredCellRowUse {
+        let use_rows = frame_content_row_use(
+            self.roster,
+            content,
+            area,
+            self.hidden_when_idle,
+            &self.grids,
+        );
+        self.row_uses.borrow_mut().push(FrameCellRowUse {
             content: content.clone(),
             area,
             use_rows,
@@ -362,7 +366,7 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn summary_foot(&self) -> SummaryFoot { memory_total(self.roster).foot() }
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
-        tile_demands(self.roster, widths, self.hidden_when_idle, self.tree)
+        frame_tile_demands(self.roster, widths, self.hidden_when_idle, &self.grids)
     }
 
     fn rows_drawn(&self, content: &TileContent, area: Rect) -> u16 {
@@ -374,14 +378,14 @@ impl TileCells<InvocationId> for Cells<'_> {
     }
 
     fn draw(&self, buffer: &mut Buffer, content: &TileContent, inner: Rect, ground: Color) {
-        draw_contents(
+        frame_draw_contents(
             buffer,
             self.roster,
             content,
             inner,
             ground,
             self.hidden_when_idle,
-            self.tree,
+            &self.grids,
         );
     }
 
@@ -391,7 +395,7 @@ impl TileCells<InvocationId> for Cells<'_> {
 }
 
 /// One content-row answer cached during a draw.
-struct MeasuredCellRowUse {
+struct FrameCellRowUse {
     /// Cell whose content supplied the answer.
     content:  TileContent,
     /// Allocation at which the answer was measured.
@@ -413,6 +417,7 @@ fn content_rows_drawn(
 }
 
 /// Painted and retained rows for one cell allocation.
+#[cfg(test)]
 fn content_row_use(
     roster: &Roster,
     content: &TileContent,
@@ -420,20 +425,37 @@ fn content_row_use(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) -> GroupRowUse {
+    frame_content_row_use(
+        roster,
+        content,
+        area,
+        hidden_when_idle,
+        &FrameColumnGrids::new(roster, hidden_when_idle, tree),
+    )
+}
+
+fn frame_content_row_use(
+    roster: &Roster,
+    content: &TileContent,
+    area: Rect,
+    hidden_when_idle: &[String],
+    grids: &FrameColumnGrids,
+) -> GroupRowUse {
     match content {
         TileContent::Summary => {
             let rows = summary_rows(roster, hidden_when_idle);
             let rows: Vec<&TrackedRow> = rows.iter().map(AsRef::as_ref).collect();
-            let drawn = process_table_rows_drawn(
+            let drawn = frame_process_table_rows_drawn(
                 &rows,
-                TableKind::Summary,
                 area,
                 PinnedGroup::Unpinned,
-                tree,
+                &grids.summary.0,
             );
             GroupRowUse { drawn, kept: drawn }
         },
-        TileContent::Group(id) => group_row_use(roster, id, area, hidden_when_idle, tree),
+        TileContent::Group(id) => {
+            group_row_use(roster, id, area, hidden_when_idle, &grids.commands.0)
+        },
         TileContent::Empty(_) => GroupRowUse { drawn: 0, kept: 0 },
     }
 }
@@ -475,20 +497,19 @@ fn group_row_use(
     id: &InvocationId,
     area: Rect,
     hidden_when_idle: &[String],
-    tree: ProcessTree,
+    grid: &FrameTableColumnGrid,
 ) -> GroupRowUse {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
         return GroupRowUse { drawn: 0, kept: 0 };
     };
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    let ancestry = drawn_ancestry(group, leads_as_ancestor, tree);
-    let table_demand = table_height(
+    let ancestry = drawn_ancestry(group, leads_as_ancestor, grid.tree);
+    let table_demand = frame_table_height(
         &rows,
-        TableKind::Command,
         area.width,
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
-        tree,
+        grid,
     );
     let ancestry_rows = ancestry_row_use(&ancestry, area, table_demand);
     let table_area = Rect {
@@ -496,12 +517,11 @@ fn group_row_use(
         height: area.height.saturating_sub(ancestry_rows.drawn),
         ..area
     };
-    let table_rows = process_table_rows_drawn(
+    let table_rows = frame_process_table_rows_drawn(
         &rows,
-        TableKind::Command,
         table_area,
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
-        tree,
+        grid,
     );
     GroupRowUse::with_ancestry(&ancestry_rows, table_rows)
 }
@@ -518,11 +538,26 @@ fn group_row_use(
 /// A group that has no cell yet -- a command first seen on this scan --
 /// is measured at the narrowest cell on screen, which is the width it
 /// will have once the grid has opened one for it.
+#[cfg(test)]
 fn tile_demands(
     roster: &Roster,
     widths: &[(TileContent, u16)],
     hidden_when_idle: &[String],
     tree: ProcessTree,
+) -> TileDemands {
+    frame_tile_demands(
+        roster,
+        widths,
+        hidden_when_idle,
+        &FrameColumnGrids::new(roster, hidden_when_idle, tree),
+    )
+}
+
+fn frame_tile_demands(
+    roster: &Roster,
+    widths: &[(TileContent, u16)],
+    hidden_when_idle: &[String],
+    grids: &FrameColumnGrids,
 ) -> TileDemands {
     let narrowest = widths
         .iter()
@@ -538,14 +573,13 @@ fn tile_demands(
     let summary = summary_rows(roster, hidden_when_idle);
     let summary: Vec<&TrackedRow> = summary.iter().map(AsRef::as_ref).collect();
     TileDemands {
-        summary:       table_height(
+        summary:       frame_table_height(
             &summary,
-            TableKind::Summary,
             width_of(TileContent::Summary),
             PinnedGroup::Unpinned,
-            tree,
+            &grids.summary.0,
         ),
-        summary_width: summary_width(&summary, tree),
+        summary_width: frame_summary_width(&summary, &grids.summary.0),
         groups:        roster
             .tiled_ids(hidden_when_idle)
             .into_iter()
@@ -554,7 +588,7 @@ fn tile_demands(
                 let width = width_of(TileContent::Group(group.id.clone()));
                 TileDemand {
                     id:   group.id.clone(),
-                    rows: group_height(group, width, hidden_when_idle, tree),
+                    rows: frame_group_height(group, width, hidden_when_idle, &grids.commands.0),
                 }
             })
             .collect(),
@@ -566,18 +600,19 @@ fn tile_demands(
 ///
 /// What the summary asks the grid for across, read only under
 /// `tiles.widen_summary`.
-fn summary_width(rows: &[&TrackedRow], tree: ProcessTree) -> u16 {
+fn frame_summary_width(rows: &[&TrackedRow], grid: &FrameTableColumnGrid) -> u16 {
     if rows.is_empty() {
-        return cell_width(SECTION_HEADER_INDENT).saturating_add(cell_width(NO_PROCESSES_NOTE));
+        return cell_width(SECTION_HEADER_INDENT)
+            .saturating_add(cell_width(NO_PROCESSES_NOTE))
+            .saturating_add(CONTENT_RIGHT_INSET);
     }
-    let kind = TableKind::Summary;
-    let columns = visible_columns(rows, kind);
-    let command = longest_command_width(rows, kind.detail(), tree)
-        .max(cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
+    let columns = &grid.slots;
+    let command = grid.command_width();
     let gaps = u16::try_from(columns.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let table = fitted_constraints(rows, &columns)
+    let table = grid
+        .constraints(columns)
         .iter()
-        .zip(&columns)
+        .zip(columns)
         .map(|(constraint, &column)| match constraint {
             _ if column == COMMAND_COLUMN => command,
             Constraint::Length(width) | Constraint::Min(width) => *width,
@@ -585,6 +620,7 @@ fn summary_width(rows: &[&TrackedRow], tree: ProcessTree) -> u16 {
         })
         .fold(
             cell_width(SECTION_ITEM_INDENT)
+                .saturating_add(CONTENT_RIGHT_INSET)
                 .saturating_add(TABLE_COLUMN_SPACING.saturating_mul(gaps)),
             u16::saturating_add,
         );
@@ -593,7 +629,7 @@ fn summary_width(rows: &[&TrackedRow], tree: ProcessTree) -> u16 {
         .map(|group| cell_width(SECTION_HEADER_INDENT).saturating_add(cell_width(&group.heading())))
         .max()
         .unwrap_or_default();
-    table.max(headings)
+    table.max(headings.saturating_add(CONTENT_RIGHT_INSET))
 }
 
 /// Rows one command's cell lays out with all the room it could want: the
@@ -602,26 +638,40 @@ fn summary_width(rows: &[&TrackedRow], tree: ProcessTree) -> u16 {
 /// The whole chain counts, not the levels a cell of some particular
 /// height has room for -- the ask is what the cell wants, and what it is
 /// given is the answer. A lead drawn as the foot of its own chain is
-/// left out of the table, the same as [`draw_group`] leaves it out.
+/// left out of the table, the same as [`frame_draw_group`] leaves it out.
+#[cfg(test)]
 fn group_height(
     group: &TrackedGroup,
     width: u16,
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) -> usize {
+    let rows: Vec<_> = group
+        .rows()
+        .skip(usize::from(group.leads_as_ancestor(hidden_when_idle)))
+        .collect();
+    let grid = FrameTableColumnGrid::of(&rows, TableKind::Command, tree, rows.len() > 1);
+    frame_group_height(group, width, hidden_when_idle, &grid)
+}
+
+fn frame_group_height(
+    group: &TrackedGroup,
+    width: u16,
+    hidden_when_idle: &[String],
+    grid: &FrameTableColumnGrid,
+) -> usize {
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    // The same steps [`draw_group`] draws, measured the same way: a
+    // The same steps [`frame_draw_group`] draws, measured the same way: a
     // command wrapping down the cell wants the rows it wraps onto, and
     // asking for one row a level would leave the block short of what it
     // would have drawn with the room.
-    let ancestry = drawn_ancestry(group, leads_as_ancestor, tree);
-    let table = table_height(
+    let ancestry = drawn_ancestry(group, leads_as_ancestor, grid.tree);
+    let table = frame_table_height(
         &rows,
-        TableKind::Command,
         width,
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
-        tree,
+        grid,
     );
     ancestry_demand(&ancestry, width).saturating_add(table)
 }
@@ -640,7 +690,8 @@ fn ancestry_demand(ancestry: &[Ancestor], width: u16) -> usize {
         return 0;
     }
     let whole: Vec<AncestryLevel<'_>> = ancestry.iter().map(AncestryLevel::Ancestor).collect();
-    ancestry_height(&whole, width).saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
+    ancestry_height(&whole, width.saturating_sub(CONTENT_RIGHT_INSET))
+        .saturating_add(usize::from(ANCESTRY_GAP_HEIGHT))
 }
 
 /// Rows a table of `rows` lays out at `width`: the one column-label row
@@ -649,7 +700,7 @@ fn ancestry_demand(ancestry: &[Ancestor], width: u16) -> usize {
 /// and the next.
 ///
 /// A row is as tall as its command line wraps to, which is why this goes
-/// through the same [`TableLayout`] and the same [`process_row`] the
+/// through the same [`CellTableLayout`] and the same [`process_row`] the
 /// draw does -- counting a row as one line is what had a cell ask for a
 /// third of the rows it went on to lay out. The ground passed to the
 /// layout only settles what colour a faded row is written in, so any of
@@ -657,12 +708,11 @@ fn ancestry_demand(ancestry: &[Ancestor], width: u16) -> usize {
 ///
 /// Only the gaps between directories count: [`draw_path_group`] advances
 /// past one after the last directory too, but nothing follows it there.
-fn table_height(
+fn frame_table_height(
     rows: &[&TrackedRow],
-    kind: TableKind,
     width: u16,
     pinned: PinnedGroup<'_>,
-    tree: ProcessTree,
+    grid: &FrameTableColumnGrid,
 ) -> usize {
     if rows.is_empty() {
         return 0;
@@ -673,7 +723,7 @@ fn table_height(
         width,
         height: TABLE_HEADER_HEIGHT,
     };
-    let layout = TableLayout::of(rows, kind, area, pane_background(false), tree);
+    let layout = CellTableLayout::from_grid(grid, area, pane_background(false));
     if layout.columns.is_empty() {
         return usize::from(TABLE_HEADER_HEIGHT);
     }
@@ -682,7 +732,7 @@ fn table_height(
 }
 
 /// Rows occupied by grouped table content under one solved layout.
-fn grouped_table_height(groups: &[PathGroup<'_>], layout: &TableLayout) -> usize {
+fn grouped_table_height(groups: &[PathGroup<'_>], layout: &CellTableLayout) -> usize {
     let gaps = groups
         .len()
         .saturating_sub(1)
@@ -739,6 +789,7 @@ pub(crate) fn draw_cell_for_test(
 /// much of what stands above the command goes over the table; the
 /// summary cell has no such block, so it never reads it. An empty cell
 /// holds only its number, which [`tui_pane::draw_tile_cell`] draws.
+#[cfg(test)]
 fn draw_contents(
     buffer: &mut Buffer,
     roster: &Roster,
@@ -748,10 +799,45 @@ fn draw_contents(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) {
+    frame_draw_contents(
+        buffer,
+        roster,
+        content,
+        inner,
+        ground,
+        hidden_when_idle,
+        &FrameColumnGrids::new(roster, hidden_when_idle, tree),
+    );
+}
+
+fn frame_draw_contents(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    content: &TileContent,
+    inner: Rect,
+    ground: Color,
+    hidden_when_idle: &[String],
+    grids: &FrameColumnGrids,
+) {
     match content {
-        TileContent::Summary => draw_summary(buffer, roster, inner, ground, hidden_when_idle, tree),
+        TileContent::Summary => frame_draw_summary(
+            buffer,
+            roster,
+            inner,
+            ground,
+            hidden_when_idle,
+            &grids.summary.0,
+        ),
         TileContent::Group(id) => {
-            draw_group(buffer, roster, id, inner, ground, hidden_when_idle, tree);
+            frame_draw_group(
+                buffer,
+                roster,
+                id,
+                inner,
+                ground,
+                hidden_when_idle,
+                &grids.commands.0,
+            );
         },
         TileContent::Empty(_) => {},
     }
@@ -766,6 +852,7 @@ fn draw_contents(
 /// it -- so heading them together says which path is backed up and by
 /// what, whoever started them. The same lock read off the cells would
 /// mean reading across them.
+#[cfg(test)]
 fn draw_summary(
     buffer: &mut Buffer,
     roster: &Roster,
@@ -774,15 +861,34 @@ fn draw_summary(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) {
+    frame_draw_summary(
+        buffer,
+        roster,
+        inner,
+        ground,
+        hidden_when_idle,
+        &FrameColumnGrids::new(roster, hidden_when_idle, tree)
+            .summary
+            .0,
+    );
+}
+
+fn frame_draw_summary(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    inner: Rect,
+    ground: Color,
+    hidden_when_idle: &[String],
+    grid: &FrameTableColumnGrid,
+) {
     let rows = summary_rows(roster, hidden_when_idle);
-    draw_process_table(
+    frame_draw_process_table(
         buffer,
         inner,
         &rows.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
-        TableKind::Summary,
         ground,
         PinnedGroup::Unpinned,
-        tree,
+        grid,
     );
 }
 
@@ -803,7 +909,7 @@ fn draw_summary(
 /// worth reading. The lead carries the reading either way, since a row
 /// takes the state of the nearest capture at or above it.
 ///
-/// Read by [`draw_summary`] and by [`tile_demands`] both, so the cell is
+/// Read by [`frame_draw_summary`] and by [`frame_tile_demands`] both, so the cell is
 /// measured over exactly the rows it goes on to lay out.
 ///
 /// Promoted copies read the worker's subtree total while the roster retains
@@ -927,6 +1033,7 @@ fn run_color(kind: LabelRunKind) -> Color {
 /// that `commands.hidden_when_idle` names is the exception -- see
 /// [`crate::roster::TrackedGroup::leads_as_ancestor`] -- and closes the chain instead,
 /// leaving the table to the invocations the cell was opened for.
+#[cfg(test)]
 fn draw_group(
     buffer: &mut Buffer,
     roster: &Roster,
@@ -936,12 +1043,34 @@ fn draw_group(
     hidden_when_idle: &[String],
     tree: ProcessTree,
 ) {
+    frame_draw_group(
+        buffer,
+        roster,
+        id,
+        inner,
+        ground,
+        hidden_when_idle,
+        &FrameColumnGrids::new(roster, hidden_when_idle, tree)
+            .commands
+            .0,
+    );
+}
+
+fn frame_draw_group(
+    buffer: &mut Buffer,
+    roster: &Roster,
+    id: &InvocationId,
+    inner: Rect,
+    ground: Color,
+    hidden_when_idle: &[String],
+    grid: &FrameTableColumnGrid,
+) {
     let Some(group) = roster.groups().iter().find(|group| &group.id == id) else {
         return;
     };
     let leads_as_ancestor = group.leads_as_ancestor(hidden_when_idle);
     let rows: Vec<&TrackedRow> = group.rows().skip(usize::from(leads_as_ancestor)).collect();
-    let ancestry = drawn_ancestry(group, leads_as_ancestor, tree);
+    let ancestry = drawn_ancestry(group, leads_as_ancestor, grid.tree);
     // Where the driver stands at the foot of its own chain, that is
     // where its pid is written, and the rows pointing at it in the
     // table below need it in the colour they are pointing with.
@@ -957,15 +1086,14 @@ fn draw_group(
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
     let faded = heading_fade(&rows).min(group.lead.faded());
-    // The same measurement [`group_height`] made when the cell
+    // The same measurement [`frame_group_height`] made when the cell
     // asked for its room, so the block is given back exactly what the
     // ask left it.
-    let table_rows = table_height(
+    let table_rows = frame_table_height(
         &rows,
-        TableKind::Command,
         inner.width,
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
-        tree,
+        grid,
     );
     let used = draw_ancestry(buffer, inner, &ancestry, faded, ground, foot, table_rows);
     let table = Rect {
@@ -976,14 +1104,13 @@ fn draw_group(
     // The directory pinned to the top of the cell is the command's own,
     // drawn as a row there or not: the invocations under a driver run
     // wherever the work is, and none of those is what the cell is about.
-    draw_process_table(
+    frame_draw_process_table(
         buffer,
         table,
         &rows,
-        TableKind::Command,
         ground,
         PinnedGroup::Lead(GroupingIdentity::from(&group.lead.process)),
-        tree,
+        grid,
     );
 }
 
@@ -1109,6 +1236,7 @@ fn draw_ancestry(
     foot: AncestryFoot,
     table: usize,
 ) -> u16 {
+    let area = cleared(area);
     let allocation = ancestry_allocation(area.height, table);
     let budget = allocation.content_rows;
     let levels = ancestry_fit(ancestry, budget, |levels| {
@@ -1172,21 +1300,24 @@ fn mark_cut_line(line: &mut Line<'static>, width: u16) {
             continue;
         }
         let content: String = span
-            .content
-            .chars()
-            .take_while(|character| {
-                let character_width = UnicodeWidthChar::width(*character).unwrap_or_default();
-                let fits = used.saturating_add(character_width) <= room;
+            .styled_graphemes(Style::default())
+            .take_while(|grapheme| {
+                let grapheme_width = UnicodeWidthStr::width(grapheme.symbol);
+                let fits = used.saturating_add(grapheme_width) <= room;
                 if fits {
-                    used = used.saturating_add(character_width);
+                    used = used.saturating_add(grapheme_width);
                 }
                 fits
             })
+            .map(|grapheme| grapheme.symbol)
             .collect();
         if !content.is_empty() {
             kept.push(Span::styled(content, span.style));
         }
         break;
+    }
+    if used < room {
+        kept.push(Span::styled(" ".repeat(room - used), marker_style));
     }
     line.spans = kept;
     if UnicodeWidthStr::width(ELISION) <= usize::from(width) {
@@ -1198,7 +1329,7 @@ fn mark_cut_line(line: &mut Line<'static>, width: u16) {
 fn mark_table_continuation(
     buffer: &mut Buffer,
     area: Rect,
-    layout: &TableLayout,
+    layout: &CellTableLayout,
     continuation: TableContinuation,
 ) {
     let mut command = layout.command_area(area);
@@ -1217,7 +1348,7 @@ fn mark_table_continuation(
         return;
     };
     if matches!(continuation, TableContinuation::RowsWereOmitted) {
-        if right < command.right() - 1 {
+        if right.saturating_add(TABLE_CONTINUATION_CLEARANCE) < command.right() {
             let style = buffer[(right, y)].style();
             buffer[(command.right() - 1, y)]
                 .set_symbol(ELISION)
@@ -1457,6 +1588,7 @@ struct AncestryRowUse {
 }
 
 fn ancestry_row_use(ancestry: &[Ancestor], area: Rect, table: usize) -> AncestryRowUse {
+    let area = cleared(area);
     let allocation = ancestry_allocation(area.height, table);
     let budget = allocation.content_rows;
     let levels = ancestry_fit(ancestry, budget, |levels| {
@@ -1909,14 +2041,251 @@ impl PathGroup<'_> {
         if tail_room < HEADING_MIN_TAIL {
             return String::new();
         }
-        let mut tail: Vec<char> = component
-            .chars()
-            .rev()
-            .take(usize::from(tail_room))
+        let span = Span::raw(component);
+        let graphemes: Vec<_> = span.styled_graphemes(Style::default()).collect();
+        let mut used = 0u16;
+        let mut first = graphemes.len();
+        for (index, grapheme) in graphemes.iter().enumerate().rev() {
+            let next = used.saturating_add(cell_width(grapheme.symbol));
+            if next > tail_room {
+                break;
+            }
+            used = next;
+            first = index;
+        }
+        if used < HEADING_MIN_TAIL {
+            return String::new();
+        }
+        let tail: String = graphemes[first..]
+            .iter()
+            .map(|grapheme| grapheme.symbol)
             .collect();
-        tail.reverse();
-        format!("{prefix}{ELISION}{}", tail.into_iter().collect::<String>())
+        format!("{prefix}{ELISION}{tail}")
     }
+}
+
+/// Text and command-name demand before any cell width is assigned.
+struct ProcessRowValues<'a> {
+    /// Invocation supplying styles, grouping and cut-command provenance.
+    source:             &'a TrackedRow,
+    /// Complete values in canonical column order.
+    cells:              [String; TABLE_HEADERS.len()],
+    /// Command arguments in the frame's detail and tree mode.
+    arguments:          String,
+    /// Width that keeps the program and its short name on one line.
+    command_name_width: u16,
+}
+
+impl<'a> ProcessRowValues<'a> {
+    /// Read every value independently of the eventual viewport.
+    fn of(source: &'a TrackedRow, detail: SummaryDetail, tree: ProcessTree) -> Self {
+        let process = &source.process;
+        let arguments = match tree {
+            ProcessTree::Long => process.command.line(detail),
+            ProcessTree::Short => process.command.named(),
+        };
+        let command = process
+            .command
+            .program
+            .split_whitespace()
+            .chain(arguments.split_whitespace())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let compiler = match &process.compiler {
+            CompilerObservation::Unknown => UNAVAILABLE_MEASUREMENT.to_string(),
+            CompilerObservation::None => String::new(),
+            CompilerObservation::Running(compiler) => {
+                format!("{}\u{d7}{}", compiler.name, compiler.count)
+            },
+        };
+        let state = if state_width(&process.state) > 0 {
+            STATE_BLOCKED.to_string()
+        } else {
+            String::new()
+        };
+        Self {
+            source,
+            cells: [
+                process.pid.to_string(),
+                parent_text(process),
+                process.start.clone(),
+                process.duration.clone(),
+                process.cpu.to_string(),
+                process.memory.map(memory_label).to_string(),
+                state,
+                command,
+                compiler,
+                managed_text(process),
+            ],
+            arguments,
+            command_name_width: command_line_width(source, detail, ProcessTree::Short),
+        }
+    }
+}
+
+/// Intrinsic inputs for the command tables of one immutable frame.
+struct FrameCommandColumnGrid(FrameTableColumnGrid);
+
+/// Intrinsic inputs for the summary's distinct column set in one frame.
+struct FrameSummaryColumnGrid(FrameTableColumnGrid);
+
+/// The two independent grids read by demands, drawing and row probes.
+struct FrameColumnGrids {
+    /// Every row belonging to a command cell participates in this grid.
+    commands: FrameCommandColumnGrid,
+    /// Only promoted summary rows participate in this grid.
+    summary:  FrameSummaryColumnGrid,
+}
+
+impl FrameColumnGrids {
+    /// Fit intrinsic widths once over each frame-wide row set.
+    fn new(roster: &Roster, hidden_when_idle: &[String], tree: ProcessTree) -> Self {
+        let mut command_rows = Vec::new();
+        let mut following_command_rows = false;
+        let tiled_ids = roster.tiled_ids(hidden_when_idle);
+        for group in roster.groups() {
+            if !tiled_ids.contains(&group.id) {
+                continue;
+            }
+            let rows: Vec<_> = group
+                .rows()
+                .skip(usize::from(group.leads_as_ancestor(hidden_when_idle)))
+                .collect();
+            following_command_rows |= rows.len() > 1;
+            command_rows.extend(rows);
+        }
+        let summary = summary_rows(roster, hidden_when_idle);
+        let summary: Vec<_> = summary.iter().map(AsRef::as_ref).collect();
+        Self {
+            commands: FrameCommandColumnGrid(FrameTableColumnGrid::of(
+                &command_rows,
+                TableKind::Command,
+                tree,
+                following_command_rows,
+            )),
+            summary:  FrameSummaryColumnGrid(FrameTableColumnGrid::of(
+                &summary,
+                TableKind::Summary,
+                tree,
+                summary.len() > 1,
+            )),
+        }
+    }
+}
+
+/// Complete column slots and intrinsic widths before a cell drops or spaces them.
+struct FrameTableColumnGrid {
+    /// The frame-wide presence of optional slots, independent of visible rows.
+    slots:                      Vec<usize>,
+    /// Invocation slots used to budget the same ordered drops for either table kind.
+    command_name_slots:         Vec<usize>,
+    /// Widths large enough for each whole metadata value and its header.
+    intrinsic_widths:           [u16; TABLE_HEADERS.len()],
+    /// The widest displayed command over the whole frame's row set.
+    longest_command_width:      u16,
+    /// Program plus its short name, before any arguments wrap.
+    longest_command_name_width: u16,
+    /// Whole rows keep room to distinguish a later-row mark from a cut command.
+    continuation_clearance:     u16,
+    /// Summary and command cells use separate grids.
+    kind:                       TableKind,
+    /// Detail used to read the row texts that fitted this grid.
+    tree:                       ProcessTree,
+}
+
+impl FrameTableColumnGrid {
+    /// Fit all intrinsic values without depending on a cell's width or height.
+    fn of(rows: &[&TrackedRow], kind: TableKind, tree: ProcessTree, following_rows: bool) -> Self {
+        let values: Vec<_> = rows
+            .iter()
+            .map(|row| ProcessRowValues::of(row, kind.detail(), tree))
+            .collect();
+        let mut intrinsic_widths = TABLE_HEADERS.map(cell_width);
+        let mut longest_command_name_width = 0;
+        for row in &values {
+            for (width, value) in intrinsic_widths.iter_mut().zip(&row.cells) {
+                *width = (*width).max(cell_width(value));
+            }
+            longest_command_name_width = longest_command_name_width.max(row.command_name_width);
+        }
+        Self {
+            slots: frame_slot_columns(&values, kind),
+            command_name_slots: frame_slot_columns(&values, TableKind::Command),
+            intrinsic_widths,
+            longest_command_width: longest_command_width(&values),
+            longest_command_name_width,
+            continuation_clearance: if following_rows {
+                TABLE_CONTINUATION_CLEARANCE
+            } else {
+                0
+            },
+            kind,
+            tree,
+        }
+    }
+
+    /// Requested command width, with the clearance needed for later rows.
+    fn command_width(&self) -> u16 {
+        self.longest_command_width
+            .saturating_add(self.continuation_clearance)
+            .max(cell_width(TABLE_HEADERS[COMMAND_COLUMN]))
+    }
+
+    /// Fixed metadata and the minimum width that keeps a command name whole.
+    fn constraints(&self, columns: &[usize]) -> Vec<Constraint> {
+        columns
+            .iter()
+            .map(|&column| {
+                if column == COMMAND_COLUMN {
+                    Constraint::Min(
+                        self.longest_command_name_width
+                            .saturating_add(self.continuation_clearance)
+                            .max(cell_width(TABLE_HEADERS[COMMAND_COLUMN])),
+                    )
+                } else {
+                    Constraint::Length(self.intrinsic_widths[column])
+                }
+            })
+            .collect()
+    }
+
+    /// Drawn slots after both table kinds apply the invocation's command-name budget.
+    fn columns_for_command_name(&self, width: u16) -> Vec<usize> {
+        let mut budget_columns = self.command_name_slots.clone();
+        let mut constraints = self.constraints(&budget_columns);
+        for column in TABLE_COLUMN_DROP_ORDER {
+            if table_constraints_fit(width, &constraints) {
+                break;
+            }
+            remove_column(column, &mut budget_columns, &mut constraints);
+        }
+        self.slots
+            .iter()
+            .copied()
+            .filter(|column| budget_columns.contains(column))
+            .collect()
+    }
+}
+
+/// Optional slots present anywhere in the frame's complete row set.
+fn frame_slot_columns(values: &[ProcessRowValues<'_>], kind: TableKind) -> Vec<usize> {
+    (0..TABLE_HEADERS.len())
+        .filter(|&column| {
+            if !SUMMARY_HIDDEN_COLUMNS.contains(&column) && column != STATE_COLUMN {
+                return true;
+            }
+            match column {
+                STATE_COLUMN => values.iter().any(|row| !row.cells[column].is_empty()),
+                PARENT_COLUMN => kind.shows_invocation_detail(),
+                COMPILER_COLUMN | MANAGED_COLUMN => values.iter().any(|row| {
+                    !row.cells[column].is_empty()
+                        && (kind.shows_invocation_detail()
+                            || row.cells[column] == UNAVAILABLE_MEASUREMENT)
+                }),
+                _ => true,
+            }
+        })
+        .collect()
 }
 
 /// How one cell's tables are laid out, settled once for the whole cell.
@@ -1924,28 +2293,31 @@ impl PathGroup<'_> {
 /// Every group in the cell is drawn against this, which is what keeps
 /// the tables lined up down the cell instead of each one fitting itself
 /// and the columns stepping in and out as the eye moves between them.
-struct TableLayout {
+struct CellTableLayout {
     /// Column widths, in table order.
-    constraints:    Vec<Constraint>,
+    constraints:            Vec<Constraint>,
     /// The columns this cell draws, in table order.
-    columns:        Vec<usize>,
+    columns:                Vec<usize>,
     /// Solved widths for `columns`, in the same order.
-    column_widths:  Vec<u16>,
+    column_widths:          Vec<u16>,
     /// Blank cells between adjacent columns.
-    column_spacing: u16,
+    column_spacing:         u16,
+    /// Cells reserved after a whole command for a later-row mark.
+    continuation_clearance: u16,
     /// How much of each row's command line the cell prints.
-    detail:         SummaryDetail,
+    detail:                 SummaryDetail,
     /// Whether a row spells out its whole command line or only the
     /// name of what runs.
-    tree:           ProcessTree,
+    tree:                   ProcessTree,
     /// The colour the cell is painted on, which a finished row's text
     /// is carried toward as it fades.
-    ground:         Color,
+    ground:                 Color,
 }
 
-impl TableLayout {
+impl CellTableLayout {
     /// The layout for a cell of `kind` drawing `rows` into `area`, over
     /// a cell painted `ground`.
+    #[cfg(test)]
     fn of(
         rows: &[&TrackedRow],
         kind: TableKind,
@@ -1953,18 +2325,22 @@ impl TableLayout {
         ground: Color,
         tree: ProcessTree,
     ) -> Self {
-        let mut columns = visible_columns(rows, kind);
-        let mut constraints = fitted_constraints(rows, &columns);
+        Self::from_grid(
+            &FrameTableColumnGrid::of(rows, kind, tree, rows.len() > 1),
+            area,
+            ground,
+        )
+    }
+
+    /// Lay out one frame grid at this cell's actual inner width.
+    fn from_grid(grid: &FrameTableColumnGrid, area: Rect, ground: Color) -> Self {
         let table_width = indented(area).width;
-        for column in TABLE_COLUMN_DROP_ORDER {
-            let Some(position) = columns.iter().position(|candidate| *candidate == column) else {
-                continue;
-            };
-            if table_constraints_fit(table_width, &constraints) {
-                break;
-            }
-            columns.remove(position);
-            constraints.remove(position);
+        let mut columns = grid.columns_for_command_name(table_width);
+        let mut constraints = grid.constraints(&columns);
+        if !table_constraints_fit(table_width, &constraints)
+            && let Some(position) = columns.iter().position(|&column| column == COMMAND_COLUMN)
+        {
+            constraints[position] = Constraint::Min(cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
         }
         if !table_constraints_fit(table_width, &constraints) {
             remove_column(COMMAND_COLUMN, &mut columns, &mut constraints);
@@ -1972,17 +2348,35 @@ impl TableLayout {
         if !table_constraints_fit(table_width, &constraints) {
             remove_column(PID_COLUMN, &mut columns, &mut constraints);
         }
-        let command_width = longest_command_width(rows, kind.detail(), tree);
         let column_spacing =
-            table_column_spacing(table_width, &constraints, &columns, command_width);
+            table_column_spacing(table_width, &constraints, &columns, grid.command_width());
+        if let Some(position) = columns.iter().position(|&column| column == COMMAND_COLUMN) {
+            let other_width = constraints
+                .iter()
+                .enumerate()
+                .filter(|&(index, _)| index != position)
+                .map(|(_, constraint)| match constraint {
+                    Constraint::Length(width) => *width,
+                    _ => 0,
+                })
+                .fold(0, u16::saturating_add);
+            let gaps = u16::try_from(columns.len().saturating_sub(1))
+                .unwrap_or(u16::MAX)
+                .saturating_mul(column_spacing);
+            constraints[position] = Constraint::Length(
+                grid.command_width()
+                    .min(table_width.saturating_sub(other_width).saturating_sub(gaps)),
+            );
+        }
         let column_widths = solved_column_widths(table_width, &constraints, column_spacing);
         Self {
             constraints,
             columns,
             column_widths,
             column_spacing,
-            detail: kind.detail(),
-            tree,
+            continuation_clearance: grid.continuation_clearance,
+            detail: grid.kind.detail(),
+            tree: grid.tree,
             ground,
         }
     }
@@ -2048,23 +2442,22 @@ fn heading_fade(rows: &[&TrackedRow]) -> u8 {
 /// and push the command being watched off the bottom of its own cell.
 /// The summary pins nothing: every row there leads a command of its
 /// own, so there is no one directory the cell is about.
-fn process_table_rows_drawn(
+fn frame_process_table_rows_drawn(
     rows: &[&TrackedRow],
-    kind: TableKind,
     area: Rect,
     pinned: PinnedGroup<'_>,
-    tree: ProcessTree,
+    grid: &FrameTableColumnGrid,
 ) -> u16 {
     if rows.is_empty() {
         let empty_table_rows = TABLE_HEADER_HEIGHT.saturating_add(GROUP_HEADER_HEIGHT);
         return area.height.min(empty_table_rows);
     }
-    let layout = TableLayout::of(rows, kind, area, pane_background(false), tree);
+    let layout = CellTableLayout::from_grid(grid, area, pane_background(false));
     if layout.columns.is_empty() {
         return area.height.min(TABLE_HEADER_HEIGHT);
     }
     let groups = group_by_path(rows, pinned);
-    let drawn_groups: Vec<Vec<DrawnRow<'_>>> = groups
+    let drawn_groups: Vec<Vec<LaidOutProcessRow<'_>>> = groups
         .iter()
         .map(|group| {
             group
@@ -2077,9 +2470,10 @@ fn process_table_rows_drawn(
     let header_rows = area.height.min(TABLE_HEADER_HEIGHT);
     let available_height = area.height.saturating_sub(header_rows);
     let plan = process_table_plan(&drawn_groups, available_height);
-    header_rows.saturating_add(plan.rows_drawn(&drawn_groups, available_height))
+    header_rows.saturating_add(plan.rows_drawn())
 }
 
+#[cfg(test)]
 fn draw_process_table(
     buffer: &mut Buffer,
     area: Rect,
@@ -2089,24 +2483,42 @@ fn draw_process_table(
     pinned: PinnedGroup<'_>,
     tree: ProcessTree,
 ) {
+    frame_draw_process_table(
+        buffer,
+        area,
+        rows,
+        ground,
+        pinned,
+        &FrameTableColumnGrid::of(rows, kind, tree, rows.len() > 1),
+    );
+}
+
+fn frame_draw_process_table(
+    buffer: &mut Buffer,
+    area: Rect,
+    rows: &[&TrackedRow],
+    ground: Color,
+    pinned: PinnedGroup<'_>,
+    grid: &FrameTableColumnGrid,
+) {
     if rows.is_empty() {
         let text = format!("{SECTION_HEADER_INDENT}{NO_PROCESSES_NOTE}");
-        let text = match kind {
-            TableKind::Summary => elide_summary_end(&text, area.width),
+        let text = match grid.kind {
+            TableKind::Summary => elide_summary_end(&text, cleared(area).width),
             TableKind::Command => text,
         };
         Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(text, Style::default().fg(label_color()))),
         ])
-        .render(area, buffer);
+        .render(cleared(area), buffer);
         return;
     }
 
     // One column-label row for the whole cell. Every group's table is
     // laid out with the same constraints and the same indent, so the
     // labels stay over their columns without costing a row per group.
-    let layout = TableLayout::of(rows, kind, area, ground, tree);
+    let layout = CellTableLayout::from_grid(grid, area, ground);
     let header_area = Rect {
         height: TABLE_HEADER_HEIGHT.min(area.height),
         ..indented(area)
@@ -2120,13 +2532,8 @@ fn draw_process_table(
         .render(header_area, buffer);
         return;
     }
-    Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
-        .header(column_header(&layout, faded))
-        .column_spacing(layout.column_spacing)
-        .render(header_area, buffer);
-
     let groups = group_by_path(rows, pinned);
-    let drawn_groups: Vec<Vec<DrawnRow<'_>>> = groups
+    let drawn_groups: Vec<Vec<LaidOutProcessRow<'_>>> = groups
         .iter()
         .map(|group| {
             group
@@ -2138,6 +2545,10 @@ fn draw_process_table(
         .collect();
     let available_height = area.height.saturating_sub(TABLE_HEADER_HEIGHT);
     let plan = process_table_plan(&drawn_groups, available_height);
+    Table::new(Vec::<Row>::new(), layout.constraints.iter().copied())
+        .header(column_header(&layout, faded, &plan))
+        .column_spacing(layout.column_spacing)
+        .render(header_area, buffer);
     let mut continuation = TableContinuation::FullyDrawn;
     let mut drew_process_value = false;
     let mut remaining = area;
@@ -2176,49 +2587,58 @@ fn draw_process_table(
     }
 }
 
-/// Which directory groups fit, with one uniform separator policy between them.
-struct ProcessTablePlan {
-    /// Whether every drawn pair of adjacent groups keeps its blank row.
-    keep_gaps:           bool,
-    /// Groups with room for both their heading and first process line.
-    visible_group_count: usize,
+/// Process identities receiving at least one visible line in this viewport.
+enum PlannedVisibleRows<'a> {
+    /// The area admits no process value.
+    NoProcessRows,
+    /// Every entry identifies a drawn row, including a partially drawn command.
+    ProcessRows(Vec<&'a TrackedRow>),
 }
 
-impl ProcessTablePlan {
-    /// Rows occupied by the groups selected for this height.
-    fn rows_drawn(&self, groups: &[Vec<DrawnRow<'_>>], available_height: u16) -> u16 {
-        let mut remaining = available_height;
-        let mut drawn = 0u16;
-        for (index, rows) in groups.iter().take(self.visible_group_count).enumerate() {
-            let gap = if index == 0 || !self.keep_gaps {
-                0
-            } else {
-                GROUP_GAP_HEIGHT
-            };
-            let gap = gap.min(remaining);
-            remaining = remaining.saturating_sub(gap);
-            drawn = drawn.saturating_add(gap);
+/// Which directory groups and values fit, with one separator policy.
+struct ProcessTablePlan<'a> {
+    /// Whether every drawn pair of adjacent groups keeps its blank row.
+    keep_gaps:                   bool,
+    /// Groups with room for both their heading and first process line.
+    visible_group_count:         usize,
+    /// Identities from which row usage and optional-column labels are read.
+    visible_rows:                PlannedVisibleRows<'a>,
+    /// Heading, process and separator rows occupied by these identities.
+    body_rows_drawn:             u16,
+    /// Optional headers and values shown here; slots remain in the frame grid.
+    header_and_value_visibility: [bool; TABLE_HEADERS.len()],
+}
 
-            let process_rows = rows
-                .iter()
-                .map(|row| row.lines)
-                .fold(0, u16::saturating_add);
-            let heading = GROUP_HEADER_HEIGHT.min(remaining);
-            let processes = remaining.saturating_sub(heading).min(process_rows);
-            let group_rows = heading.saturating_add(processes);
-            remaining = remaining.saturating_sub(group_rows);
-            drawn = drawn.saturating_add(group_rows);
-            if processes < process_rows {
-                break;
-            }
+impl ProcessTablePlan<'_> {
+    /// Rows occupied by the selected identities and their headings and gaps.
+    const fn rows_drawn(&self) -> u16 {
+        match self.visible_rows {
+            PlannedVisibleRows::NoProcessRows => 0,
+            PlannedVisibleRows::ProcessRows(_) => self.body_rows_drawn,
         }
-        drawn
+    }
+
+    /// A present slot labels itself only when a drawn row supplies its value.
+    const fn labels_column(&self, column: usize) -> bool {
+        if matches!(column, STATE_COLUMN | COMPILER_COLUMN | MANAGED_COLUMN) {
+            match &self.visible_rows {
+                PlannedVisibleRows::NoProcessRows => false,
+                PlannedVisibleRows::ProcessRows(rows) => {
+                    !rows.is_empty() && self.header_and_value_visibility[column]
+                },
+            }
+        } else {
+            true
+        }
     }
 }
 
-/// Choose all inter-directory gaps before drawing any table content.
-fn process_table_plan(groups: &[Vec<DrawnRow<'_>>], available_height: u16) -> ProcessTablePlan {
-    let group_heights: Vec<u16> = groups
+/// Choose visible row identities and all inter-directory gaps before drawing.
+fn process_table_plan<'a>(
+    groups: &[Vec<LaidOutProcessRow<'a>>],
+    available_height: u16,
+) -> ProcessTablePlan<'a> {
+    let all_groups_height = groups
         .iter()
         .map(|rows| {
             GROUP_HEADER_HEIGHT.saturating_add(
@@ -2227,36 +2647,52 @@ fn process_table_plan(groups: &[Vec<DrawnRow<'_>>], available_height: u16) -> Pr
                     .fold(0, u16::saturating_add),
             )
         })
-        .collect();
-    let all_groups_height = group_heights.iter().copied().fold(0, u16::saturating_add);
+        .fold(0, u16::saturating_add);
     let all_gaps_height = u16::try_from(groups.len().saturating_sub(1))
         .unwrap_or(u16::MAX)
         .saturating_mul(GROUP_GAP_HEIGHT);
     let keep_gaps = all_groups_height.saturating_add(all_gaps_height) <= available_height;
-    if keep_gaps {
-        return ProcessTablePlan {
-            keep_gaps,
-            visible_group_count: groups.len(),
+    let mut remaining = available_height;
+    let mut visible_group_count = 0;
+    let mut visible_rows = Vec::new();
+    let mut header_and_value_visibility = [false; TABLE_HEADERS.len()];
+    for (index, rows) in groups.iter().enumerate() {
+        let gap = if index > 0 && keep_gaps {
+            GROUP_GAP_HEIGHT
+        } else {
+            0
         };
-    }
-
-    let minimum_group_height = GROUP_HEADER_HEIGHT.saturating_add(1);
-    let mut full_groups_height = 0u16;
-    let mut visible_group_count = 0usize;
-
-    for group_height in group_heights {
-        let minimum_end = full_groups_height.saturating_add(minimum_group_height);
-        if minimum_end > available_height {
+        if remaining < gap.saturating_add(GROUP_HEADER_HEIGHT).saturating_add(1) {
             break;
         }
-
-        visible_group_count = visible_group_count.saturating_add(1);
-        full_groups_height = full_groups_height.saturating_add(group_height);
+        visible_group_count += 1;
+        remaining = remaining
+            .saturating_sub(gap)
+            .saturating_sub(GROUP_HEADER_HEIGHT);
+        for row in rows {
+            if remaining == 0 {
+                break;
+            }
+            visible_rows.push(row.source);
+            for column in [STATE_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
+                header_and_value_visibility[column] |= row.cells[column]
+                    .lines
+                    .iter()
+                    .any(|line| line.spans.iter().any(|span| !span.content.is_empty()));
+            }
+            remaining = remaining.saturating_sub(row.lines);
+        }
     }
-
     ProcessTablePlan {
         keep_gaps,
         visible_group_count,
+        visible_rows: if visible_rows.is_empty() {
+            PlannedVisibleRows::NoProcessRows
+        } else {
+            PlannedVisibleRows::ProcessRows(visible_rows)
+        },
+        body_rows_drawn: available_height.saturating_sub(remaining),
+        header_and_value_visibility,
     }
 }
 
@@ -2361,7 +2797,7 @@ enum TableContinuation {
 }
 
 /// Classify a vertical cut through drawn rows and retain a cut command's next line.
-fn table_continuation(rows: &[DrawnRow<'_>], visible_lines: u16) -> TableContinuation {
+fn table_continuation(rows: &[LaidOutProcessRow<'_>], visible_lines: u16) -> TableContinuation {
     let mut used = 0u16;
     for row in rows {
         if used >= visible_lines {
@@ -2383,11 +2819,14 @@ fn draw_path_group(
     buffer: &mut Buffer,
     area: Rect,
     group: &PathGroup<'_>,
-    layout: &TableLayout,
-    rows: Vec<DrawnRow<'_>>,
+    layout: &CellTableLayout,
+    rows: Vec<LaidOutProcessRow<'_>>,
 ) -> PathGroupDraw {
     let faded = heading_fade(&group.rows);
-    let heading_room = area.width.saturating_sub(cell_width(SECTION_HEADER_INDENT));
+    let heading_area = cleared(area);
+    let heading_room = heading_area
+        .width
+        .saturating_sub(cell_width(SECTION_HEADER_INDENT));
     let heading_text = group.fitted_heading(heading_room);
     let mut heading = vec![
         Span::raw(SECTION_HEADER_INDENT),
@@ -2396,11 +2835,11 @@ fn draw_path_group(
             Style::default().fg(layout.ink(accent_color(), faded)),
         ),
     ];
-    heading.extend(heading_gauge(group, area.width, layout));
+    heading.extend(heading_gauge(group, heading_area.width, layout));
     Paragraph::new(Line::from(heading)).render(
         Rect {
             height: GROUP_HEADER_HEIGHT.min(area.height),
-            ..area
+            ..heading_area
         },
         buffer,
     );
@@ -2446,68 +2885,24 @@ fn elide_summary_end(text: &str, width: u16) -> String {
     }
     let room = usize::from(width).saturating_sub(marker_width);
     let mut used: usize = 0;
-    let prefix: String = text
-        .chars()
-        .take_while(|character| {
-            let character_width = UnicodeWidthChar::width(*character).unwrap_or_default();
-            let fits = used.saturating_add(character_width) <= room;
+    let span = Span::raw(text);
+    let prefix: String = span
+        .styled_graphemes(Style::default())
+        .take_while(|grapheme| {
+            let grapheme_width = UnicodeWidthStr::width(grapheme.symbol);
+            let fits = used.saturating_add(grapheme_width) <= room;
             if fits {
-                used = used.saturating_add(character_width);
+                used = used.saturating_add(grapheme_width);
             }
             fits
         })
+        .map(|grapheme| grapheme.symbol)
         .collect();
     let prefix = prefix.trim_end();
     if prefix.is_empty() {
         return String::new();
     }
     format!("{prefix}{ELISION}")
-}
-
-/// Column widths fitted to the widest cell across every row.
-///
-/// `command` is left out of the fitting and takes whatever the other
-/// columns leave, so a long argument list wraps down the column instead
-/// of pushing the columns that identify the invocation off the edge.
-fn fitted_constraints(rows: &[&TrackedRow], columns: &[usize]) -> Vec<Constraint> {
-    let mut widths = ColumnWidths::new(
-        TABLE_HEADERS
-            .iter()
-            .map(|header| ColumnSpec::fit(cell_width(header)))
-            .collect(),
-    );
-    for row in rows {
-        let process = &row.process;
-        widths.observe_cell_usize(PID_COLUMN, process.pid.to_string().chars().count());
-        widths.observe_cell_usize(PARENT_COLUMN, parent_text(process).chars().count());
-        widths.observe_cell_usize(START_COLUMN, process.start.chars().count());
-        widths.observe_cell_usize(DURATION_COLUMN, process.duration.chars().count());
-        widths.observe_cell_usize(CPU_COLUMN, process.cpu.to_string().chars().count());
-        widths.observe_cell_usize(
-            MEMORY_COLUMN,
-            process.memory.map(memory_label).to_string().chars().count(),
-        );
-        widths.observe_cell_usize(STATE_COLUMN, state_width(&process.state));
-        widths.observe_cell_usize(COMPILER_COLUMN, compiler_width(process));
-        widths.observe_cell_usize(MANAGED_COLUMN, managed_text(process).chars().count());
-    }
-
-    // The command absorbs whatever the fitted columns leave, which is
-    // why it alone is a `Min`. It is no longer the last column, so the
-    // slack has to follow the column rather than the position.
-    widths
-        .to_constraints()
-        .into_iter()
-        .enumerate()
-        .filter(|(column, _)| columns.contains(column))
-        .map(|(column, constraint)| {
-            if column == COMMAND_COLUMN {
-                Constraint::Min(cell_width(TABLE_HEADERS[COMMAND_COLUMN]))
-            } else {
-                constraint
-            }
-        })
-        .collect()
 }
 
 /// Gap that keeps a whole command on one line before spreading columns apart.
@@ -2532,9 +2927,9 @@ fn table_column_spacing(
 }
 
 /// Width of the widest command line as this table spells it.
-fn longest_command_width(rows: &[&TrackedRow], detail: SummaryDetail, tree: ProcessTree) -> u16 {
+fn longest_command_width(rows: &[ProcessRowValues<'_>]) -> u16 {
     rows.iter()
-        .map(|row| command_line_width(row, detail, tree))
+        .map(|row| cell_width(&row.cells[COMMAND_COLUMN]))
         .max()
         .unwrap_or_default()
 }
@@ -2587,26 +2982,37 @@ fn remove_column(column: usize, columns: &mut Vec<usize>, constraints: &mut Vec<
 
 /// The cell's one column-label row, drawn above the first group and
 /// aligned with every group's rows by [`indented`].
-fn column_header(layout: &TableLayout, faded: u8) -> Row<'static> {
+fn column_header(layout: &CellTableLayout, faded: u8, plan: &ProcessTablePlan<'_>) -> Row<'static> {
     let style = column_header_style(layout, faded);
     Row::new(
         TABLE_HEADERS
             .iter()
             .enumerate()
             .filter(|(column, _)| layout.columns.contains(column))
-            .map(|(_, label)| Span::styled((*label).to_string(), style)),
+            .map(|(column, label)| {
+                Span::styled(
+                    if plan.labels_column(column) {
+                        (*label).to_string()
+                    } else {
+                        String::new()
+                    },
+                    style,
+                )
+            }),
     )
 }
 
 /// Style shared by the column labels and their no-room stand-in.
-fn column_header_style(layout: &TableLayout, faded: u8) -> Style {
+fn column_header_style(layout: &CellTableLayout, faded: u8) -> Style {
     Style::default().fg(layout.ink(label_color(), faded))
 }
 
 /// One process row prepared for measurement and table rendering.
-struct DrawnRow<'a> {
+struct LaidOutProcessRow<'a> {
     /// Cells in canonical column order, filtered only when the table takes them.
     cells:   [Text<'static>; TABLE_HEADERS.len()],
+    /// Stable invocation identity for viewport planning.
+    source:  &'a TrackedRow,
     /// Lines the row occupies. The command is the one cell that ever
     /// asks for more than one, and it asks for as many as its line
     /// wrapped to.
@@ -2619,9 +3025,9 @@ struct DrawnRow<'a> {
     tree:    ProcessTree,
 }
 
-impl DrawnRow<'_> {
+impl LaidOutProcessRow<'_> {
     /// Turn the prepared cells into the columns selected for this table.
-    fn into_table_row(self, layout: &TableLayout) -> Row<'static> {
+    fn into_table_row(self, layout: &CellTableLayout) -> Row<'static> {
         Row::new(
             self.cells
                 .into_iter()
@@ -2656,8 +3062,9 @@ impl DrawnRow<'_> {
 /// The command line is wrapped to the column's width rather than
 /// truncated at it: an argument list that outruns the column carries on
 /// down the rows of that column, and the row grows to hold it.
-fn process_row<'a>(row: &'a TrackedRow, layout: &TableLayout) -> DrawnRow<'a> {
-    let process = &row.process;
+fn process_row<'a>(row: &'a TrackedRow, layout: &CellTableLayout) -> LaidOutProcessRow<'a> {
+    let values = ProcessRowValues::of(row, layout.detail, layout.tree);
+    let process = &values.source.process;
     let faded = row.faded();
     let muted = Style::default().fg(layout.ink(label_color(), faded));
     let program = if row.is_ended() {
@@ -2671,42 +3078,44 @@ fn process_row<'a>(row: &'a TrackedRow, layout: &TableLayout) -> DrawnRow<'a> {
         Style::default().fg(success_color())
     };
     let command_width = layout.column_width(COMMAND_COLUMN);
-    let arguments_text = match layout.tree {
-        ProcessTree::Long => process.command.line(layout.detail),
-        ProcessTree::Short => process.command.named(),
-    };
     let command = if command_width == 0 {
         Text::default()
     } else {
         tui_pane::wrapped(
             vec![
                 Span::styled(process.command.program.clone(), program),
-                Span::styled(arguments_text, arguments),
+                Span::styled(values.arguments, arguments),
             ],
-            command_width,
+            command_width
+                .saturating_sub(layout.continuation_clearance)
+                .max(1),
         )
     };
     let lines = u16::try_from(command.height()).unwrap_or(u16::MAX).max(1);
-    let pid = number_text_if_fits(process.pid.to_string(), layout.column_width(PID_COLUMN));
-    let parent = number_text_if_fits(parent_text(process), layout.column_width(PARENT_COLUMN));
+    let pid = number_text_if_fits(
+        values.cells[PID_COLUMN].clone(),
+        layout.column_width(PID_COLUMN),
+    );
+    let parent = number_text_if_fits(
+        values.cells[PARENT_COLUMN].clone(),
+        layout.column_width(PARENT_COLUMN),
+    );
     let cells = [
         Text::from(Span::styled(pid, pid_style(row, layout))),
         Text::from(Span::styled(parent, parent_style(row, layout))),
-        Text::from(Span::styled(process.start.clone(), muted)),
-        Text::from(Span::styled(process.duration.clone(), muted)),
-        Text::from(Span::styled(process.cpu.to_string(), muted)),
-        Text::from(Span::styled(
-            process.memory.map(memory_label).to_string(),
-            muted,
-        )),
+        Text::from(Span::styled(values.cells[START_COLUMN].clone(), muted)),
+        Text::from(Span::styled(values.cells[DURATION_COLUMN].clone(), muted)),
+        Text::from(Span::styled(values.cells[CPU_COLUMN].clone(), muted)),
+        Text::from(Span::styled(values.cells[MEMORY_COLUMN].clone(), muted)),
         Text::from(state_cell(row, layout)),
         command,
         Text::from(compiler_cell(row, layout)),
-        Text::from(Span::styled(managed_text(process), muted)),
+        Text::from(Span::styled(values.cells[MANAGED_COLUMN].clone(), muted)),
     ];
-    DrawnRow {
+    LaidOutProcessRow {
         cells,
         lines,
+        source: row,
         command: &process.command,
         detail: layout.detail,
         tree: layout.tree,
@@ -2779,7 +3188,7 @@ fn number_text_if_fits(text: String, width: u16) -> String {
 /// headers. A pid written in the header's own colour disappears into
 /// the header, and a pid is the one number on this screen that is read
 /// by being searched for.
-fn pid_style(row: &TrackedRow, layout: &TableLayout) -> Style {
+fn pid_style(row: &TrackedRow, layout: &CellTableLayout) -> Style {
     let color = match row.family() {
         FamilyHead::Heads(family) => theme::family_color(family),
         FamilyHead::NoChildren => text_default(),
@@ -2790,7 +3199,7 @@ fn pid_style(row: &TrackedRow, layout: &TableLayout) -> Style {
 /// The `parent` cell's style: the family colour of the cargo named,
 /// which is the colour that cargo's own `pid` cell carries, and plain
 /// text where the pid names something that heads no family.
-fn parent_style(row: &TrackedRow, layout: &TableLayout) -> Style {
+fn parent_style(row: &TrackedRow, layout: &CellTableLayout) -> Style {
     let color = match row.parent_family() {
         ParentFamily::Member(family) => theme::family_color(family),
         ParentFamily::NoFamily => text_default(),
@@ -2804,6 +3213,7 @@ fn solved_column_widths(width: u16, constraints: &[Constraint], column_spacing: 
         return Vec::new();
     }
     Layout::horizontal(constraints.iter().copied())
+        .flex(Flex::Start)
         .spacing(column_spacing)
         .split(Rect {
             x: 0,
@@ -2825,36 +3235,10 @@ fn solved_column_widths(width: u16, constraints: &[Constraint], column_spacing: 
 /// reading never brings it in -- the heading over the row is already
 /// ruling that -- and an empty column costs a narrow tile the width its
 /// command line needs while reporting nothing.
+#[cfg(test)]
 fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
-    let carries_state = rows.iter().any(|row| {
-        matches!(
-            row.process.state,
-            CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked))
-        )
-    });
-    (0..TABLE_HEADERS.len())
-        .filter(|column| *column != STATE_COLUMN || carries_state)
-        .filter(|column| {
-            if !SUMMARY_HIDDEN_COLUMNS.contains(column) {
-                return true;
-            }
-            rows.iter().any(|row| match *column {
-                PARENT_COLUMN => kind.shows_invocation_detail(),
-                COMPILER_COLUMN => match &row.process.compiler {
-                    CompilerObservation::Unknown => true,
-                    CompilerObservation::Running(_) => kind.shows_invocation_detail(),
-                    CompilerObservation::None => false,
-                },
-                MANAGED_COLUMN => match &row.process.managed {
-                    Measurement::Unavailable(_) => true,
-                    Measurement::Reading(count) => kind.shows_invocation_detail() && *count > 0,
-                },
-                _ => false,
-            })
-        })
-        .collect()
+    FrameTableColumnGrid::of(rows, kind, ProcessTree::Long, rows.len() > 1).slots
 }
-
 /// The `state` cell: the word for a row waiting on a lock, and an empty
 /// cell for every other row.
 ///
@@ -2868,7 +3252,7 @@ fn visible_columns(rows: &[&TrackedRow], kind: TableKind) -> Vec<usize> {
 /// reading, and nothing in a Rust build gets past the build-directory
 /// lock, so two commands in one directory are never both reporting at
 /// once -- the heading has room for the one that is.
-fn state_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
+fn state_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
     let CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked)) = row.process.state
     else {
         return Line::default();
@@ -2936,7 +3320,11 @@ fn percent_reading(progress: Progress) -> String {
 /// first on its way there: a run counts two different things over its
 /// life -- units, then tests -- so naming which is a reading of what,
 /// but a cell too narrow to carry both still says how far along it is.
-fn heading_gauge(group: &PathGroup<'_>, width: u16, layout: &TableLayout) -> Vec<Span<'static>> {
+fn heading_gauge(
+    group: &PathGroup<'_>,
+    width: u16,
+    layout: &CellTableLayout,
+) -> Vec<Span<'static>> {
     let Some((row, (phase, progress))) =
         group
             .rows
@@ -3020,7 +3408,7 @@ fn memory_label(bytes: u64) -> String {
 /// The `compiler` cell: driver name in the active color, its count muted
 /// beside it, a marker when observation is unknown, and nothing when no
 /// compile is in flight.
-fn compiler_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
+fn compiler_cell(row: &TrackedRow, layout: &CellTableLayout) -> Line<'static> {
     let faded = row.faded();
     let driver = if row.is_ended() {
         label_color()
@@ -3039,19 +3427,6 @@ fn compiler_cell(row: &TrackedRow, layout: &TableLayout) -> Line<'static> {
     }
 }
 
-/// Cells the `compiler` column needs for one row.
-fn compiler_width(process: &CargoProcess) -> usize {
-    match &process.compiler {
-        CompilerObservation::Unknown => UNAVAILABLE_MEASUREMENT.chars().count(),
-        CompilerObservation::None => 0,
-        CompilerObservation::Running(compiler) => {
-            compiler.name.chars().count()
-                + COMPILER_SEPARATOR_WIDTH
-                + compiler.count.to_string().chars().count()
-        },
-    }
-}
-
 /// `area` indented one level, where the column labels and every group's
 /// rows both sit — the same two-level hierarchy the framework overlays
 /// use, with the working directory heading each group at the outer level.
@@ -3059,13 +3434,24 @@ fn indented(area: Rect) -> Rect {
     let indent = cell_width(SECTION_ITEM_INDENT);
     Rect {
         x: area.x.saturating_add(indent),
-        width: area.width.saturating_sub(indent),
+        width: area
+            .width
+            .saturating_sub(indent)
+            .saturating_sub(CONTENT_RIGHT_INSET),
+        ..area
+    }
+}
+
+/// Content width with the cell next to the right frame kept clear.
+const fn cleared(area: Rect) -> Rect {
+    Rect {
+        width: area.width.saturating_sub(CONTENT_RIGHT_INSET),
         ..area
     }
 }
 
 /// A string's width in cells, clamped into the column-width type.
-fn cell_width(text: &str) -> u16 { u16::try_from(text.chars().count()).unwrap_or(u16::MAX) }
+fn cell_width(text: &str) -> u16 { u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX) }
 
 /// Draw the framework status line.
 ///
@@ -3232,7 +3618,7 @@ mod tests {
             width,
             height: 1,
         };
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -3309,6 +3695,347 @@ mod tests {
         row
     }
 
+    #[test]
+    fn stacked_command_cells_share_one_column_grid() {
+        let mut narrow = invocation(41, &["check", "--features", "one,two,three,four,five,six"]);
+        narrow.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[1],
+            count: 1,
+        });
+        narrow.managed = Measurement::Reading(1);
+        let mut wide = invocation(1_234_567, &["check"]);
+        wide.cpu = Measurement::Reading("1192%".to_string());
+        wide.compiler = CompilerObservation::Running(Compiler {
+            name:  COMPILER_PROCESS_NAMES[0],
+            count: 123,
+        });
+        wide.managed = Measurement::Reading(123);
+        let mut roster = Roster::new();
+        roster.observe(vec![cargo_group(narrow), cargo_group(wide)], Instant::now());
+        let sccache = SccacheStats::new();
+        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        for width in [64, 200] {
+            let mut buffer = Buffer::empty(Rect::new(0, 0, width, 8));
+            for (index, group) in roster.groups().iter().enumerate() {
+                cells.draw(
+                    &mut buffer,
+                    &TileContent::Group(group.id.clone()),
+                    Rect::new(0, u16::try_from(index).unwrap() * 4, width, 4),
+                    Color::Reset,
+                );
+            }
+            let widths: Vec<_> = roster
+                .groups()
+                .iter()
+                .map(|group| (TileContent::Group(group.id.clone()), width))
+                .collect();
+            let demands = cells.demands(&widths);
+            for demand in &demands.groups {
+                let area = Rect::new(0, 0, width, 32);
+                let mut whole = Buffer::empty(area);
+                let content = TileContent::Group(demand.id.clone());
+                cells.draw(&mut whole, &content, area, Color::Reset);
+                assert_eq!(filled_rows(&whole), demand.rows);
+                assert_eq!(usize::from(cells.rows_drawn(&content, area)), demand.rows);
+            }
+            let first = buffer_line(&buffer, 0);
+            let second = buffer_line(&buffer, 4);
+            for header in TABLE_HEADERS {
+                assert_eq!(
+                    first.find(header),
+                    second.find(header),
+                    "{width}: {first:?}, {second:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compiler_and_runs_follow_the_command_column() {
+        let row = tight_command_row(359_829, 359_762, &["check"]);
+        let rows = [&row];
+        let area = Rect::new(0, 0, 200, 4);
+        let mut buffer = Buffer::empty(area);
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+        let header = buffer_line(&buffer, 0);
+        let command = header.find("command").unwrap();
+        let compiler = header.find("compiler").unwrap();
+        assert_eq!(
+            compiler - command,
+            "cargo check".len() + usize::from(TABLE_COLUMN_SPACING),
+            "{header:?}"
+        );
+        assert_eq!(
+            header.find("runs").unwrap() - compiler,
+            usize::from(cell_width(&format!("{}×1", COMPILER_PROCESS_NAMES[0])))
+                + usize::from(TABLE_COLUMN_SPACING)
+        );
+    }
+
+    #[test]
+    fn the_longest_command_keeps_room_for_the_hidden_rows_mark() {
+        let mut lead = tight_command_row(359_829, 359_762, &["check"]);
+        lead.process.path = "/workspace/project".to_string();
+        let mut later = lead.clone();
+        later.process.pid += 1;
+        later.process.invocation_id = InvocationId::for_test(later.process.pid);
+        let rows = [&lead, &later];
+        let area = Rect::new(0, 0, 200, 3);
+        let mut buffer = Buffer::empty(area);
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+        let header = buffer_line(&buffer, 0);
+        let command = header.find("command").unwrap();
+        let compiler = header.find("compiler").unwrap();
+        let line = buffer_line(&buffer, 2);
+        assert_eq!(&line[command..command + "cargo check".len()], "cargo check");
+        assert_eq!(
+            buffer[(u16::try_from(command + "cargo check".len()).unwrap(), 2)].symbol(),
+            " "
+        );
+        let marker = (u16::try_from(command).unwrap()..u16::try_from(compiler).unwrap())
+            .find(|&x| buffer[(x, 2)].symbol() == ELISION)
+            .unwrap();
+        assert_eq!(
+            usize::from(marker) + 1 + usize::from(TABLE_COLUMN_SPACING),
+            compiler
+        );
+        assert!(
+            usize::from(marker) - command <= "cargo check".len() + 1,
+            "{line:?}"
+        );
+    }
+
+    #[test]
+    fn no_content_row_touches_the_right_frame() {
+        let mut lead = invocation(
+            4100,
+            &["check", "--features", "one,two,three,four,five,six"],
+        );
+        lead.state = CaptureLookup::Registered(CaptureRead::Progress(compiling(998, 1000)));
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![
+                CargoGroup {
+                    lead,
+                    rest: vec![invocation(4101, &["check"])],
+                    ancestry: vec![ancestor(
+                        40,
+                        "agent with a very long command line that wraps across the cell",
+                    )],
+                },
+                cargo_group(invocation(4200, &["check"])),
+            ],
+            Instant::now(),
+        );
+        let sccache = SccacheStats::new();
+        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        for width in [38, 62, 198] {
+            for content in [
+                TileContent::Summary,
+                TileContent::Group(roster.groups()[0].id.clone()),
+            ] {
+                for height in [3, 4, 8, 16] {
+                    let area = Rect::new(0, 0, width, height);
+                    let mut buffer = Buffer::empty(area);
+                    cells.draw(&mut buffer, &content, area, Color::Reset);
+                    for y in area.top()..area.bottom() {
+                        assert_eq!(
+                            buffer[(area.right() - 1, y)].symbol(),
+                            " ",
+                            "{width}, {content:?}, row {y}: {:?}",
+                            buffer_line(&buffer, y)
+                        );
+                    }
+                    if height == 3 {
+                        assert!(
+                            buffer_rows(&buffer)
+                                .iter()
+                                .any(|line| line.contains(ELISION))
+                        );
+                    }
+                    if height == 16 && matches!(content, TileContent::Group(_)) {
+                        assert!(
+                            buffer_rows(&buffer)
+                                .iter()
+                                .any(|line| line.contains("agent"))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_whose_only_value_is_hidden_draws_no_header() {
+        let lead = same_second("/workspace/project", 4100);
+        let mut later = same_second("/workspace/project", 4101);
+        later.process.managed = Measurement::Reading(1);
+        later.process.compiler = CompilerObservation::Unknown;
+        later.process.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
+        let mut visible = same_second("/workspace/visible", 4200);
+        visible.process.managed = Measurement::Reading(1);
+        visible.process.compiler = CompilerObservation::Unknown;
+        visible.process.state = CaptureLookup::Registered(CaptureRead::Progress(RunState::Blocked));
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![
+                CargoGroup {
+                    lead:     lead.process,
+                    rest:     vec![later.process],
+                    ancestry: Vec::new(),
+                },
+                cargo_group(visible.process),
+            ],
+            Instant::now(),
+        );
+        let sccache = SccacheStats::new();
+        let cells = Cells::new(&roster, &[], ProcessTree::Long, &sccache);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 200, 8));
+        for (index, group) in roster.groups().iter().enumerate() {
+            cells.draw(
+                &mut buffer,
+                &TileContent::Group(group.id.clone()),
+                Rect::new(0, u16::try_from(index).unwrap() * 4, 200, 3),
+                Color::Reset,
+            );
+        }
+        let hidden = buffer_line(&buffer, 0);
+        let visible = buffer_line(&buffer, 4);
+        for column in [STATE_COLUMN, COMPILER_COLUMN, MANAGED_COLUMN] {
+            assert!(!hidden.contains(TABLE_HEADERS[column]), "{hidden:?}");
+            let slot = visible.find(TABLE_HEADERS[column]).unwrap();
+            for offset in 0..TABLE_HEADERS[column].len() {
+                assert_eq!(
+                    buffer[(u16::try_from(slot + offset).unwrap(), 0)].symbol(),
+                    " "
+                );
+            }
+        }
+        for column in [
+            PID_COLUMN,
+            PARENT_COLUMN,
+            START_COLUMN,
+            DURATION_COLUMN,
+            CPU_COLUMN,
+            MEMORY_COLUMN,
+            COMMAND_COLUMN,
+        ] {
+            assert_eq!(
+                hidden.find(TABLE_HEADERS[column]),
+                visible.find(TABLE_HEADERS[column])
+            );
+        }
+        assert!(buffer_line(&buffer, 2).contains("4100"));
+        assert!(!buffer_line(&buffer, 2).contains("4101"));
+    }
+
+    #[test]
+    fn columns_drop_before_a_command_name_wraps() {
+        let mut row = row(None);
+        row.process.command = CommandText::of("cargo", &["clippy"]);
+        row.process.pid = 1_359_829;
+
+        for cpu in ["12%", "123456789012345678901234567890%"] {
+            row.process.cpu = Measurement::Reading(cpu.to_string());
+            let rows = [&row];
+            for width in [38, 46] {
+                let mut headers = Vec::new();
+                for kind in [TableKind::Summary, TableKind::Command] {
+                    let area = Rect::new(0, 0, width, 6);
+                    let mut buffer = Buffer::empty(area);
+                    draw_process_table(
+                        &mut buffer,
+                        area,
+                        &rows,
+                        kind,
+                        Color::Reset,
+                        PinnedGroup::Unpinned,
+                        ProcessTree::Long,
+                    );
+                    assert!(
+                        buffer_line(&buffer, 2).contains("cargo clippy"),
+                        "{width}: {:?}",
+                        buffer_rows(&buffer)
+                    );
+                    assert_eq!(buffer_line(&buffer, 3), "");
+                    headers.push(buffer_line(&buffer, 0));
+                }
+                for column in [
+                    PID_COLUMN,
+                    START_COLUMN,
+                    DURATION_COLUMN,
+                    CPU_COLUMN,
+                    MEMORY_COLUMN,
+                    COMMAND_COLUMN,
+                ] {
+                    assert_eq!(
+                        headers[0].contains(TABLE_HEADERS[column]),
+                        headers[1].contains(TABLE_HEADERS[column]),
+                        "{width}, {cpu}, {headers:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_whole_command_keeps_a_blank_cell_before_the_hidden_rows_mark() {
+        let mut lead = same_second("/workspace/project", 410);
+        lead.process.command = CommandText::of("cargo", &["check"]);
+        let mut later = lead.clone();
+        later.process.pid = 411;
+        later.process.invocation_id = InvocationId::for_test(411);
+        let rows = [&lead, &later];
+        let area = Rect::new(0, 0, 38, 3);
+        let mut buffer = Buffer::empty(area);
+        draw_process_table(
+            &mut buffer,
+            area,
+            &rows,
+            TableKind::Command,
+            Color::Reset,
+            PinnedGroup::Unpinned,
+            ProcessTree::Long,
+        );
+        let line = buffer_line(&buffer, 2);
+        let command = line.find("cargo check").unwrap();
+        let marker = line.find(ELISION).unwrap();
+        assert!(marker > command + "cargo check".len(), "{line:?}");
+        assert!(
+            line[command + "cargo check".len()..marker]
+                .chars()
+                .all(|character| character == ' ')
+        );
+        let layout = CellTableLayout::of(
+            &rows,
+            TableKind::Command,
+            area,
+            Color::Reset,
+            ProcessTree::Long,
+        );
+        assert_eq!(
+            marker,
+            usize::from(layout.command_area(area).right() - 1),
+            "{line:?}"
+        );
+    }
+
     /// One row of `buffer` as text, with the blanks to the right of it
     /// trimmed off.
     fn buffer_line(buffer: &Buffer, y: u16) -> String {
@@ -3319,7 +4046,12 @@ mod tests {
     }
 
     /// Text drawn inside one solved table column.
-    fn table_column_text(buffer: &Buffer, layout: &TableLayout, column: usize, y: u16) -> String {
+    fn table_column_text(
+        buffer: &Buffer,
+        layout: &CellTableLayout,
+        column: usize,
+        y: u16,
+    ) -> String {
         let position = layout
             .columns
             .iter()
@@ -3702,7 +4434,10 @@ mod tests {
 
         assert!(text.ends_with(UNAVAILABLE_MEASUREMENT), "{text:?}");
         assert_eq!(
-            compiler_width(&row.process),
+            usize::from(cell_width(
+                &ProcessRowValues::of(&row, SummaryDetail::Full, ProcessTree::Long).cells
+                    [COMPILER_COLUMN]
+            )),
             UNAVAILABLE_MEASUREMENT.chars().count()
         );
     }
@@ -3750,7 +4485,13 @@ mod tests {
         let text = measurement_row_text(&row, TableKind::Command);
 
         assert!(text.ends_with("cargo build"), "{text:?}");
-        assert_eq!(compiler_width(&row.process), 0);
+        assert_eq!(
+            usize::from(cell_width(
+                &ProcessRowValues::of(&row, SummaryDetail::Full, ProcessTree::Long).cells
+                    [COMPILER_COLUMN]
+            )),
+            0
+        );
         assert_eq!(managed_text(&row.process), "");
     }
 
@@ -4098,7 +4839,10 @@ mod tests {
                 );
                 assert_eq!(
                     digits.iter().any(|run| run == pid),
-                    indent_width.saturating_add(cell_width(pid)) <= width,
+                    indent_width
+                        .saturating_add(cell_width(pid))
+                        .saturating_add(CONTENT_RIGHT_INSET)
+                        <= width,
                     "level {level} at width {width}: {digits:?}",
                 );
             }
@@ -4219,7 +4963,7 @@ mod tests {
         assert_eq!(buffer_line(&buffer, 0), " 6218 node");
         assert_eq!(
             buffer_line(&buffer, 1),
-            format!("      ~/.claude/{ELISION}")
+            format!("      ~/.claude/  {ELISION}")
         );
         assert_eq!(buffer_line(&buffer, 2), "", "and nothing past the budget");
     }
@@ -5346,6 +6090,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_wide_directory_tail_fits_its_cell_budget() {
+        for (path, room) in [
+            (format!("/{}", "界".repeat(6)), 10),
+            (format!("/{}AB", "界".repeat(17)), 36),
+        ] {
+            let row = row_at(&path, None);
+            let rows = [&row];
+            let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+            let tail = groups[0].tail_heading("", room);
+            assert!(tail.starts_with(ELISION), "{tail:?}");
+            assert!(cell_width(&tail) <= room, "{room}: {tail:?}");
+            assert!(path.ends_with(tail.strip_prefix(ELISION).unwrap()));
+        }
+    }
+
+    #[test]
+    fn a_wide_directory_heading_keeps_its_marked_tail_and_right_clearance() {
+        let path = format!("/{}AB", "界".repeat(17));
+        let row = row_at(&path, None);
+        let rows = [&row];
+        let groups = group_by_path(&rows, PinnedGroup::Unpinned);
+        let area = Rect::new(0, 0, 38, 6);
+        let room = cleared(area)
+            .width
+            .saturating_sub(cell_width(SECTION_HEADER_INDENT));
+        let fitted = groups[0].fitted_heading(room);
+        for kind in [TableKind::Summary, TableKind::Command] {
+            let mut buffer = Buffer::empty(area);
+            draw_process_table(
+                &mut buffer,
+                area,
+                &rows,
+                kind,
+                Color::Reset,
+                PinnedGroup::Unpinned,
+                ProcessTree::Long,
+            );
+            let mut heading = String::new();
+            let mut x = area.left();
+            while x < area.right() {
+                let symbol = buffer[(x, TABLE_HEADER_HEIGHT)].symbol();
+                heading.push_str(symbol);
+                x = x.saturating_add(cell_width(symbol).max(1));
+            }
+            let heading = heading.trim_end();
+            assert_eq!(heading.trim(), fitted, "{kind:?}: {heading:?}");
+            assert!(heading.contains(ELISION), "{heading:?}");
+            assert!(heading.ends_with("AB"), "{heading:?}");
+            assert_eq!(
+                buffer[(area.right() - 1, TABLE_HEADER_HEIGHT)].symbol(),
+                " "
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_line_keeps_wide_graphemes_within_its_cell_budget() {
+        let text = "❤\u{fe0f}".repeat(6);
+        let mut line = Line::from(text);
+        mark_cut_line(&mut line, 10);
+        assert!(UnicodeWidthStr::width(&line) <= 10, "{line:?}");
+        assert!(line.to_string().ends_with(ELISION));
+    }
+
+    #[test]
+    fn summary_elision_keeps_wide_graphemes_within_its_cell_budget() {
+        let text = "❤\u{fe0f}".repeat(6);
+        let fitted = elide_summary_end(&text, 10);
+        assert!(cell_width(&fitted) <= 10, "{fitted:?}");
+        assert!(fitted.ends_with(ELISION));
+    }
+
     /// Enclosing capture qualifies only the heading; nested fields remain the row's own.
     #[test]
     fn enclosing_and_uncaptured_rows_keep_their_own_directory_and_command() {
@@ -5545,7 +6362,7 @@ mod tests {
         row.process.provenance = RowProvenance::Direct(context);
         let rows = [&row];
         let groups = group_by_path(&rows, PinnedGroup::Unpinned);
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             Rect::new(0, 0, 60, 5),
@@ -5579,7 +6396,7 @@ mod tests {
         assert_eq!(groups[0].path, "~/project");
         assert_eq!(groups[0].rows[1].process.path, "/writer/project");
         let area = Rect::new(0, 0, 80, 10);
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Summary,
             area,
@@ -5919,7 +6736,7 @@ mod tests {
         row.process.command = CommandText::of("cargo", &["check"]);
         let rows = [&row];
         let area = Rect::new(0, 0, 62, 4);
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -5968,7 +6785,9 @@ mod tests {
         let area = Rect::new(
             0,
             0,
-            interior_width.saturating_add(cell_width(SECTION_ITEM_INDENT)),
+            interior_width
+                .saturating_add(cell_width(SECTION_ITEM_INDENT))
+                .saturating_add(CONTENT_RIGHT_INSET),
             height,
         );
         let mut buffer = Buffer::empty(area);
@@ -6050,13 +6869,15 @@ mod tests {
         let row_refs: Vec<&TrackedRow> = rows.iter().collect();
         let indent = cell_width(SECTION_ITEM_INDENT);
         let full_columns = visible_columns(&row_refs, kind);
+        let grid = FrameTableColumnGrid::of(&row_refs, kind, ProcessTree::Long, true);
         let full_width = table_width_with_spacing(
-            &fitted_constraints(&row_refs, &full_columns),
+            &grid.constraints(&grid.command_name_slots),
             TIGHT_TABLE_COLUMN_SPACING,
         );
         for interior_width in interior_widths {
-            let area = Rect::new(0, 0, interior_width + indent, 8);
-            let layout = TableLayout::of(&row_refs, kind, area, Color::Reset, ProcessTree::Long);
+            let area = Rect::new(0, 0, interior_width + indent + CONTENT_RIGHT_INSET, 8);
+            let layout =
+                CellTableLayout::of(&row_refs, kind, area, Color::Reset, ProcessTree::Long);
             let mut buffer = Buffer::empty(area);
             draw_process_table(
                 &mut buffer,
@@ -7029,7 +7850,7 @@ mod tests {
         let mut prior = visible_columns(&blocked_refs, TableKind::Command);
         let mut removed = Vec::new();
         for interior_width in (0..=90).rev() {
-            let layout = TableLayout::of(
+            let layout = CellTableLayout::of(
                 &blocked_refs,
                 TableKind::Command,
                 Rect::new(0, 0, interior_width + indent, 1),
@@ -7134,7 +7955,7 @@ mod tests {
             interior_width.saturating_add(cell_width(SECTION_ITEM_INDENT)),
             6,
         );
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Summary,
             area,
@@ -7148,7 +7969,7 @@ mod tests {
             .take_while(|line| !line.is_empty())
             .collect();
 
-        assert_eq!(command_lines, ["cargo", "metadata"]);
+        assert_eq!(command_lines, ["cargo metadata"]);
     }
 
     #[test]
@@ -7197,11 +8018,8 @@ mod tests {
         );
     }
 
-    /// The `command` column is the one that absorbs the slack, so what
-    /// it is worth has to come off the solved layout rather than off the
-    /// `Min` it is declared with.
     #[test]
-    fn the_command_column_is_measured_at_the_width_it_absorbs() {
+    fn the_command_column_is_capped_by_the_frames_longest_command() {
         let mut row = long_row();
         row.process.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 124 / 10);
         row.process.compiler = CompilerObservation::Running(Compiler {
@@ -7209,24 +8027,45 @@ mod tests {
             count: 1,
         });
         row.process.managed = Measurement::Reading(1);
-        let rows = [row];
-        let rows: Vec<&TrackedRow> = rows.iter().collect();
-        let columns = visible_columns(&rows, TableKind::Command);
-        let constraints = fitted_constraints(&rows, &columns);
-
-        let command_position = columns
-            .iter()
-            .position(|column| *column == COMMAND_COLUMN)
-            .unwrap();
-        let command_width =
-            longest_command_width(&rows, TableKind::Command.detail(), ProcessTree::Long);
-        let narrow_spacing = table_column_spacing(65, &constraints, &columns, command_width);
-        let wide_spacing = table_column_spacing(95, &constraints, &columns, command_width);
-        let narrow = solved_column_widths(65, &constraints, narrow_spacing)[command_position];
-        let wide = solved_column_widths(95, &constraints, wide_spacing)[command_position];
-
-        assert!(narrow > cell_width(TABLE_HEADERS[COMMAND_COLUMN]));
-        assert_eq!(wide.saturating_sub(narrow), 30);
+        let rows = [&row];
+        let command_width = command_line_width(&row, SummaryDetail::Full, ProcessTree::Long);
+        for width in [65, 200] {
+            let area = Rect::new(0, 0, width, 16);
+            let layout = CellTableLayout::of(
+                &rows,
+                TableKind::Command,
+                area,
+                Color::Reset,
+                ProcessTree::Long,
+            );
+            let mut buffer = Buffer::empty(area);
+            draw_process_table(
+                &mut buffer,
+                area,
+                &rows,
+                TableKind::Command,
+                Color::Reset,
+                PinnedGroup::Unpinned,
+                ProcessTree::Long,
+            );
+            let header = buffer_line(&buffer, 0);
+            let command_start = header.find(TABLE_HEADERS[COMMAND_COLUMN]).unwrap();
+            let compiler_start = header.find(TABLE_HEADERS[COMPILER_COLUMN]).unwrap();
+            let drawn_width = compiler_start - command_start - usize::from(layout.column_spacing);
+            if width == 200 {
+                assert_eq!(drawn_width, usize::from(command_width));
+            } else {
+                assert!(drawn_width < usize::from(command_width));
+            }
+            assert!(
+                drawn_width
+                    >= usize::from(command_line_width(
+                        &row,
+                        SummaryDetail::Full,
+                        ProcessTree::Short
+                    ))
+            );
+        }
     }
 
     #[test]
@@ -7327,7 +8166,7 @@ mod tests {
         });
         row.process.managed = Measurement::Reading(1);
         let rows = [&row];
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7361,9 +8200,9 @@ mod tests {
         let area = Rect::new(0, 0, 56, 3);
         let mut buffer = Buffer::empty(area);
         let mut row = row(None);
-        row.process.command = CommandText::of("cargo", &["界", "alpha", "beta", "gamma", "delta"]);
+        row.process.command = CommandText::of("cargo", &["界", "alpha/beta", "gamma", "delta"]);
         let rows = [&row];
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7396,7 +8235,7 @@ mod tests {
         let area = (1..=120)
             .map(|width| Rect::new(0, 0, width, 3))
             .find(|area| {
-                TableLayout::of(
+                CellTableLayout::of(
                     &rows,
                     TableKind::Command,
                     *area,
@@ -7407,7 +8246,7 @@ mod tests {
                     == 11
             })
             .expect("the command column can be eleven cells wide");
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7450,7 +8289,7 @@ mod tests {
         later.process.command = CommandText::of("cargo", &["check"]);
         let final_row = same_second("/workspace/final", 1_881_400);
         let rows = [&lead, &child, &later, &final_row];
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7481,7 +8320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_exact_width_command_uses_a_free_row_before_marking_later_rows() {
+    fn a_whole_longest_command_marks_later_rows_without_using_a_free_row() {
         let area = Rect::new(0, 0, 62, 4);
         let mut buffer = Buffer::empty(area);
         let mut lead = same_second("/workspace/project", 2_398_793);
@@ -7492,7 +8331,7 @@ mod tests {
         lead.process.managed = Measurement::Reading(2);
         let later = same_second("/workspace/later", 2_614_582);
         let rows = [&lead, &later];
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7512,24 +8351,20 @@ mod tests {
 
         assert_eq!(
             layout.column_width(COMMAND_COLUMN),
-            cell_width("cargo nextest run")
+            cell_width("cargo nextest run").saturating_add(TABLE_CONTINUATION_CLEARANCE)
         );
         assert_eq!(
             table_column_text(&buffer, &layout, COMMAND_COLUMN, 2).trim_end(),
-            "cargo nextest"
+            format!("cargo nextest run {ELISION}")
         );
-        let continuation = table_column_text(&buffer, &layout, COMMAND_COLUMN, 3);
-        assert!(continuation.starts_with("run"), "{continuation:?}");
-        assert!(continuation.ends_with(ELISION), "{continuation:?}");
-        assert!(
-            continuation["run".len()..continuation.len() - ELISION.len()]
-                .chars()
-                .all(|character| character == ' ')
+        assert_eq!(
+            table_column_text(&buffer, &layout, COMMAND_COLUMN, 3).trim(),
+            ""
         );
     }
 
     #[test]
-    fn a_whole_exact_width_command_yields_its_last_cell_when_no_row_is_free() {
+    fn a_whole_longest_command_keeps_its_last_letter_when_no_row_is_free() {
         let area = Rect::new(0, 0, 62, 3);
         let mut buffer = Buffer::empty(area);
         let mut lead = same_second("/workspace/project", 2_398_793);
@@ -7540,7 +8375,7 @@ mod tests {
         lead.process.managed = Measurement::Reading(2);
         let later = same_second("/workspace/later", 2_614_582);
         let rows = [&lead, &later];
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7560,11 +8395,11 @@ mod tests {
 
         assert_eq!(
             layout.column_width(COMMAND_COLUMN),
-            cell_width("cargo nextest run")
+            cell_width("cargo nextest run").saturating_add(TABLE_CONTINUATION_CLEARANCE)
         );
         assert_eq!(
             table_column_text(&buffer, &layout, COMMAND_COLUMN, 2),
-            format!("cargo nextest ru{ELISION}")
+            format!("cargo nextest run {ELISION}")
         );
     }
 
@@ -7759,7 +8594,7 @@ mod tests {
             .collect();
         let rows: Vec<&TrackedRow> = rows.iter().collect();
         let area = Rect::new(0, 0, 80, 8);
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7805,7 +8640,7 @@ mod tests {
             .collect();
         let rows: Vec<&TrackedRow> = rows.iter().collect();
         let area = Rect::new(0, 0, 80, 7);
-        let layout = TableLayout::of(
+        let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
             area,
@@ -7836,7 +8671,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrapped_summary_command_cut_at_the_foot_ends_in_the_mark() {
+    fn a_summary_keeps_its_command_name_whole_at_the_foot() {
         let mut row = row(None);
         row.process.pid = 1_359_829;
         row.process.invocation_id = InvocationId::for_test(1_359_829);
@@ -7856,7 +8691,7 @@ mod tests {
         );
 
         let last = buffer_line(&buffer, 2);
-        assert!(last.ends_with(&format!("cargo clip{ELISION}")), "{last:?}");
+        assert!(last.ends_with("cargo clippy"), "{last:?}");
     }
 
     /// The rows below a wrapped one are pushed down by it rather than
