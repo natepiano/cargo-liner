@@ -2,6 +2,9 @@
 //! defaults its sizes and timings start from, and the readout every
 //! cell carries.
 
+#[cfg(test)]
+use ratatui::layout::Rect;
+
 // grid shape
 /// The cell holding the summary. Cells are numbered from one and fill
 /// column by column, so the summary is always the first.
@@ -68,11 +71,80 @@ pub(super) const TILE_ROWS_WIDTH_LABEL: &str = " @ ";
 /// Fixed-point scale a transition's progress is measured on, so the
 /// animation needs no floating point.
 pub(super) const PROGRESS_SCALE: u32 = 1000;
-/// One row beyond an interpolated height, used to find the next content step.
+/// One row toward the destination from the last whole or interpolated height.
 pub(super) const MOVING_HEIGHT_PROBE_STEP: u16 = 1;
-/// Row-use calls made by the seven-cell moving-frame regression.
+/// Command count in the column-foot render regressions.
 #[cfg(test)]
-pub(super) const SEVEN_CELL_MOVING_ROW_PROBE_COUNT: usize = 18;
+pub(super) const COLUMN_FOOT_TEST_GROUP_COUNT: u32 = 5;
+/// Summary demand in the column-foot render regressions.
+#[cfg(test)]
+pub(super) const COLUMN_FOOT_TEST_SUMMARY_ROWS: u16 = 18;
+/// Summary demand in the column-foot key regression.
+#[cfg(test)]
+pub(super) const COLUMN_FOOT_TEST_KEY_SUMMARY_ROWS: usize = 13;
+/// App-level framed-height floor in the column-foot render regressions.
+#[cfg(test)]
+pub(super) const COLUMN_FOOT_TEST_MIN_HEIGHT: u16 = 6;
+/// Smallest complete command body in the column-foot startup regression.
+#[cfg(test)]
+pub(super) const COLUMN_FOOT_TEST_BODY_STEP: u16 = 3;
+/// Grid area below the status line in a 200 by 50 terminal.
+#[cfg(test)]
+pub(super) const COLUMN_FOOT_TEST_AREA: Rect = Rect::new(0, 0, 200, 49);
+/// Content demands in the one-column spare-row motion regression.
+#[cfg(test)]
+pub(super) const LENDING_TEST_DEMANDS: [u16; 7] = [7, 1, 10, 1, 1, 9, 1];
+/// Painted content rows in the one-column spare-row motion regression.
+#[cfg(test)]
+pub(super) const LENDING_TEST_DRAWN: [u16; 7] = [7, 1, 3, 1, 1, 9, 1];
+/// Command whose incomplete body step is skipped by the height search.
+#[cfg(test)]
+pub(super) const LENDING_TEST_WHOLE_GROUP: u32 = 2;
+/// Command below the whole piece whose content is still being cut.
+#[cfg(test)]
+pub(super) const LENDING_TEST_CUT_GROUP: u32 = 5;
+/// Content allocation that ends inside an incomplete command step.
+#[cfg(test)]
+pub(super) const LENDING_TEST_GAP_HEIGHT: u16 = 4;
+/// Keep the spare-row regression in one column through depth changes.
+#[cfg(test)]
+pub(super) const LENDING_TEST_INITIAL_ROWS: usize = 12;
+/// The whole command's framed heights at the removal's two endpoints.
+#[cfg(test)]
+pub(super) const LENDING_TEST_ENDPOINT_HEIGHTS: [u16; 2] = [8, 9];
+/// Title used by the spare-row motion fixture.
+#[cfg(test)]
+pub(super) const LENDING_TEST_SUMMARY_TITLE: &str = "summary";
+/// Intervals sampled across one key in the visible-column-motion regression.
+#[cfg(test)]
+pub(super) const SLIDING_TEST_INTERVALS: u32 = 61;
+/// Keep additions and removals in one column in the slide regression.
+#[cfg(test)]
+pub(super) const SLIDING_TEST_INITIAL_ROWS: usize = 12;
+/// Summary and command rows in the one-column slide regression.
+#[cfg(test)]
+pub(super) const SLIDING_TEST_ROWS: [u16; 6] = [13, 1, 10, 1, 1, 9];
+/// Geometry changes required before an opening or closing key finishes.
+#[cfg(test)]
+pub(super) const SLIDING_TEST_MIN_CHANGES: usize = 3;
+/// Summary and command demands in the paired-entry motion regression.
+#[cfg(test)]
+pub(super) const SUMMARY_STEP_TEST_ROWS: [u16; 4] = [9, 8, 8, 9];
+/// Rows in each complete summary entry.
+#[cfg(test)]
+pub(super) const SUMMARY_STEP_TEST_ENTRY_ROWS: u16 = 2;
+/// Header rows above the summary entries.
+#[cfg(test)]
+pub(super) const SUMMARY_STEP_TEST_HEADER_ROWS: u16 = 1;
+/// Command allocation with one optional ancestry row above its table.
+#[cfg(test)]
+pub(super) const SUMMARY_STEP_TEST_OPTIONAL_HEIGHTS: [u16; 3] = [5, 4, 5];
+/// Piece count reached by adding empty cells to the paired-entry column.
+#[cfg(test)]
+pub(super) const SUMMARY_STEP_TEST_PIECES: usize = 9;
+/// Painted- and retained-row calls made by the seven-cell moving-frame regression.
+#[cfg(test)]
+pub(super) const SEVEN_CELL_MOVING_ROW_PROBE_COUNT: usize = 29;
 /// Painted-row calls made by one changed seven-cell settled frame.
 #[cfg(test)]
 pub(super) const SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT: usize = 8;

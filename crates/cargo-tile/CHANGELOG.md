@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+- A tile entering a column waits for its first body row before drawing its border, so the column foot never shows two stacked rules during motion.
 - Grid motion no longer leaves an empty row above a cell's foot while that cell hides content.
 - Vertically constrained tables either keep every directory gap or yield them all, leaving any spare rows together above the foot.
 - A whole command that exactly fills its column keeps its last letter when later table rows do not fit; when a row is free below it, the last word and continuation mark move there.
