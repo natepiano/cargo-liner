@@ -85,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Running several instances at once no longer kills the desktop backdrop: each display is captured through one persistent multi-client ScreenCaptureKit stream that excludes the terminal's own windows.
 - An ordinary start no longer reports a stalled desktop capture -- a first capture of a display can take seconds, so the screen waits. The notice remains for a worker actually abandoned and replaced.
 - The attract screen's notice names the real cause: the Settings instruction appears only where Screen Recording is denied.
-- A favorites row the parser cannot read can be deleted, and one that moved underneath you is refused with a message rather than deleted wrongly.
+- A favorites row the parser cannot read can be deleted even when unchanged rows move around it; a row whose contents changed or whose locator became ambiguous is refused with a message rather than deleted wrongly.
 - A wedged desktop capture no longer strands the backdrop: an attempt is given up after five seconds and a worker missing a second deadline is replaced, up to three times since its last result.
 - Toasts repaint from the framework's next-visual-change deadline, so an expiring toast no longer holds the app awake.
 - The attract screen comes on when the grid goes idle: settling which window the app is drawn in asked ScreenCaptureKit from the drawing thread, seventy milliseconds a call, so the first seconds of a run drew no frames at all.
