@@ -142,6 +142,51 @@ pub(super) const SUMMARY_STEP_TEST_OPTIONAL_HEIGHTS: [u16; 3] = [5, 4, 5];
 /// Piece count reached by adding empty cells to the paired-entry column.
 #[cfg(test)]
 pub(super) const SUMMARY_STEP_TEST_PIECES: usize = 9;
+/// Project counts before and after a summary grows during motion.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_ENTRIES: [u16; 2] = [3, 4];
+/// Rows in a summary project with its separator present.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_PROJECT_ROWS: u16 = 3;
+/// Complete rows in each command beside the changing summary.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_COMMAND_ROWS: u16 = 9;
+/// Commands present before a key opens another cell.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_GROUPS: u32 = 3;
+/// Empty cells opened before the removal regression.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_EMPTY_CELLS: usize = 2;
+/// Early, late and final moving-frame content changes.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_PROGRESS: [u32; 3] = [250, 750, 983];
+/// Painted row marker in the content-change buffer assertions.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_ROW: &str = "x";
+/// Column spans before a project arrives during a slot opening.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_SPARE_SPANS: [u16; 4] = [12, 12, 12, 12];
+/// Filled source spans with room for two empty cells and three cut commands.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_SOURCE_SPANS: [u16; 6] = [12, 10, 10, 6, 5, 5];
+/// Positions per column in the content-driven column-change regression.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_COLUMN_ROWS: usize = 4;
+/// Project count whose growth changes the summary's column layout.
+#[cfg(test)]
+pub(super) const CONTENT_CHANGE_TEST_COLUMN_ENTRIES: u16 = 12;
+/// Framed donor and recipient heights in the invalid settled allocation.
+#[cfg(test)]
+pub(super) const SETTLED_SPARE_TEST_HEIGHTS: [u16; 2] = [14, 10];
+/// Column spans when a whole summary releases an entry beside cut commands.
+#[cfg(test)]
+pub(super) const DEPARTED_ENTRY_TEST_SPANS: [u16; 7] = [16, 5, 5, 5, 5, 7, 5];
+/// Column spans with an empty departing cell above its height floor.
+#[cfg(test)]
+pub(super) const EMPTY_DONOR_TEST_SPANS: [u16; 5] = [11, 10, 10, 10, 7];
+/// Summary and command spans before a compact entry leaves during an opening.
+#[cfg(test)]
+pub(super) const SUMMARY_DONOR_TEST_SPANS: [u16; 5] = [16, 8, 8, 8, 8];
 /// Painted- and retained-row calls made by the seven-cell moving-frame regression.
 #[cfg(test)]
 pub(super) const SEVEN_CELL_MOVING_ROW_PROBE_COUNT: usize = 29;
@@ -170,3 +215,17 @@ pub(super) const FOCUS_ANIMATION_MILLIS: u64 = 140;
 /// rest in one move. A whole test suite finishing at once would take
 /// longer to walk through cell by cell than anyone would watch.
 pub(super) const MAX_PENDING_STEPS: usize = 64;
+
+/// Shared spans of the resident-empty column before an opening and departure.
+#[cfg(test)]
+pub(super) const RESIDENT_EMPTY_TEST_SPANS: [u16; 8] = [11, 5, 5, 5, 5, 7, 5, 5];
+/// Shared spans of the summary and command before another command opens.
+#[cfg(test)]
+pub(super) const COMMAND_OPENING_TEST_SPANS: [u16; 2] = [24, 24];
+/// Shared spans before a floor-height empty cell departs.
+#[cfg(test)]
+pub(super) const EMPTY_DEPARTURE_TEST_SPANS: [u16; 5] = [11, 5, 10, 11, 11];
+
+/// Source spans of a command lending two rows before the resident trace anchor.
+#[cfg(test)]
+pub(super) const RESIDENT_EMPTY_TEST_START_SPANS: [u16; 8] = [11, 5, 7, 5, 5, 5, 5, 5];
