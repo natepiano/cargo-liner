@@ -4,10 +4,13 @@ use std::ffi::OsString;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::panic;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitCode;
+use std::sync::Once;
 
+use crossterm::cursor::Show;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
 use crossterm::execute;
@@ -29,7 +32,7 @@ use crate::AppIdentity;
 
 /// Run `app` in the alternate screen until it quits or restarts.
 ///
-/// Puts the iTerm2 profile back on a panic, takes the terminal (raw
+/// Restores the terminal and iTerm2 profile on a panic, takes the terminal (raw
 /// mode, the alternate screen, mouse reporting, and `iterm2_profile`
 /// where the session is iTerm2), then calls `start` for the work the
 /// loop polls -- after the setup, so nothing `start` spawns runs
@@ -46,7 +49,6 @@ pub fn run_terminal<A: TerminalApp, W: PollWork<A>>(
     start: impl FnOnce(&A) -> W,
 ) -> ExitCode {
     let binary_name = <A::Identity as AppIdentity>::BINARY_NAME;
-    iterm2::install_panic_restore();
     let (mut terminal, profile_switch) = match setup_terminal::<A::Probe>(iterm2_profile) {
         Ok(started) => started,
         Err(error) => {
@@ -84,6 +86,7 @@ pub fn run_terminal<A: TerminalApp, W: PollWork<A>>(
 fn setup_terminal<P: FrameProbe>(
     iterm2_profile: &str,
 ) -> io::Result<(Terminal<ProbeBackend<P>>, Option<ProfileSwitch>)> {
+    install_panic_restore();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -103,15 +106,30 @@ fn restore_terminal<W: io::Write>(
     profile_switch: Option<&ProfileSwitch>,
 ) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    )?;
+    write_terminal_restore(terminal.backend_mut())?;
     if let Some(switch) = profile_switch {
         switch.leave(terminal.backend_mut())?;
     }
-    terminal.show_cursor()
+    Ok(())
+}
+
+/// Write the controls that return the screen and mouse to the shell.
+fn write_terminal_restore(out: &mut impl io::Write) -> io::Result<()> {
+    execute!(out, DisableMouseCapture, LeaveAlternateScreen, Show)
+}
+
+/// Restore terminal modes before the profile and the existing panic reporter.
+fn install_panic_restore() {
+    static INSTALLED: Once = Once::new();
+    INSTALLED.call_once(|| {
+        iterm2::install_panic_restore();
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = write_terminal_restore(&mut io::stdout());
+            previous(info);
+        }));
+    });
 }
 
 /// Relaunch this binary with the arguments it was started with.
@@ -133,5 +151,20 @@ fn restart_self<I: AppIdentity>() {
     match Command::new(&exe).args(&args).spawn() {
         Ok(_) => std::process::exit(0),
         Err(error) => eprintln!("{}: restart: {error}", I::BINARY_NAME),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_restore_disables_mouse_leaves_the_screen_and_shows_the_cursor() -> io::Result<()> {
+        let mut written = Vec::new();
+        write_terminal_restore(&mut written)?;
+        let expected =
+            b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
+        assert_eq!(written, expected);
+        Ok(())
     }
 }
