@@ -1733,7 +1733,12 @@ mod tests {
             app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
-        assert_eq!(app.framework().toasts.focused_id(), Some(first));
+        assert_eq!(
+            app.framework()
+                .toasts
+                .focused_id(app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(first)
+        );
 
         app.set_focus(FocusedPane::App(TestPaneId::Bar));
         keymap.dispatch_framework_global(GlobalAction::PrevPane, &mut app);
@@ -1741,7 +1746,12 @@ mod tests {
             app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
-        assert_eq!(app.framework().toasts.focused_id(), Some(second));
+        assert_eq!(
+            app.framework()
+                .toasts
+                .focused_id(app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(second)
+        );
     }
 
     #[test]
@@ -1762,13 +1772,23 @@ mod tests {
             dismisses: 0,
         };
 
-        assert_eq!(app.framework().toasts.focused_id(), Some(first));
+        assert_eq!(
+            app.framework()
+                .toasts
+                .focused_id(app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(first)
+        );
         keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
         assert_eq!(
             app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
-        assert_eq!(app.framework().toasts.focused_id(), Some(second));
+        assert_eq!(
+            app.framework()
+                .toasts
+                .focused_id(app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(second)
+        );
 
         keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
         assert_eq!(
@@ -1784,7 +1804,12 @@ mod tests {
             app.framework().focused(),
             &FocusedPane::Framework(FrameworkFocusId::Toasts),
         );
-        assert_eq!(app.framework().toasts.focused_id(), Some(first));
+        assert_eq!(
+            app.framework()
+                .toasts
+                .focused_id(app.framework().toast_pane_focus_state()),
+            crate::ToastFocus::PaneFocusedOn(first)
+        );
     }
 
     #[test]

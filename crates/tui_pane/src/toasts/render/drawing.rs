@@ -6,13 +6,12 @@ use ratatui::style::Color;
 
 use super::layout;
 use super::layout::StackLayout;
-use super::layout::ToastPaneFocus;
 use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
 use crate::constants::TOAST_ROW_GAP;
+use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
-use crate::toasts::ToastId;
 use crate::toasts::ToastView;
 use crate::toasts::manager;
 
@@ -61,8 +60,7 @@ fn render_toasts(
     area: Rect,
     toasts: &[ToastView],
     settings: &ToastSettings,
-    pane_focus_state: PaneFocusState,
-    focused_toast_id: Option<ToastId>,
+    focus: ToastFocus,
 ) -> ToastRenderResult {
     if !settings.toasts_enabled() || toasts.is_empty() {
         return ToastRenderResult {
@@ -78,12 +76,7 @@ fn render_toasts(
     let allocated = layout::allocate_toast_heights(visible_toasts, available, gap);
     let width = manager::toast_card_width(settings, area.width);
 
-    let layout = StackLayout {
-        width,
-        gap,
-        pane_focus: ToastPaneFocus::from(pane_focus_state),
-        focused_toast_id,
-    };
+    let layout = StackLayout { width, gap, focus };
     let hitboxes = match settings.placement {
         ToastPlacement::TopRight => {
             layout::render_top_down(frame, area, visible_toasts, &allocated, layout)
@@ -119,16 +112,9 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super
         ctx: &ToastsRenderCtx,
     ) -> Option<crate::PaneFrameChrome> {
         self.set_draw_area_width(area.width);
-        let focused_id = self.focused_toast_id();
+        let focus = self.focused_toast_id(ctx.pane_focus_state);
         let active = self.active_views(ctx.now);
-        let result = render_toasts(
-            frame,
-            area,
-            &active,
-            self.settings(),
-            ctx.pane_focus_state,
-            focused_id,
-        );
+        let result = render_toasts(frame, area, &active, self.settings(), focus);
         self.set_hits(result.hitboxes);
         None
     }
@@ -164,6 +150,8 @@ mod tests {
     use crate::TrackedItem;
     use crate::TrackedItemActivity;
     use crate::constants::ELISION;
+    use crate::toasts::TrackedItemElapsed;
+    use crate::toasts::TrackedItemLifecycle;
     use crate::toasts::TrackedItemView;
     use crate::toasts::render::card;
 
@@ -274,8 +262,7 @@ mod tests {
                     frame.area(),
                     &views,
                     &settings,
-                    PaneFocusState::Inactive,
-                    None,
+                    ToastFocus::PaneUnfocused,
                 ));
             })
             .expect("toast render test draw should complete");
@@ -325,8 +312,7 @@ mod tests {
                             area,
                             &views,
                             &settings,
-                            PaneFocusState::Inactive,
-                            None,
+                            ToastFocus::PaneUnfocused,
                         )
                         .hitboxes;
                     })
@@ -737,8 +723,7 @@ mod tests {
                         frame.area(),
                         &views,
                         &settings,
-                        PaneFocusState::Inactive,
-                        None,
+                        ToastFocus::PaneUnfocused,
                     )
                     .hitboxes;
                 })
@@ -781,8 +766,7 @@ mod tests {
                     frame.area(),
                     &views,
                     &settings,
-                    PaneFocusState::Inactive,
-                    None,
+                    ToastFocus::PaneUnfocused,
                 ));
             })
             .expect("toast render test draw should complete");
@@ -803,10 +787,10 @@ mod tests {
         let tracked = ["one", "two", "three", "four"]
             .into_iter()
             .map(|label| TrackedItemView {
-                label:           label.to_string(),
-                linger_progress: None,
-                elapsed:         None,
-                activity:        TrackedItemActivity::Progressing,
+                label:     label.to_string(),
+                lifecycle: TrackedItemLifecycle::Running,
+                elapsed:   TrackedItemElapsed::StartUnknown,
+                activity:  TrackedItemActivity::Progressing,
             })
             .collect::<Vec<_>>();
 
@@ -841,8 +825,7 @@ mod tests {
                     frame.area(),
                     &views,
                     &settings,
-                    PaneFocusState::Inactive,
-                    None,
+                    ToastFocus::PaneUnfocused,
                 ));
             })
             .expect("toast render test draw should complete");
@@ -876,10 +859,10 @@ mod tests {
     fn tracked_item_running_line_uses_framework_activity_spinner() {
         let elapsed = Duration::from_millis(100);
         let item = TrackedItemView {
-            label:           "repo".to_string(),
-            linger_progress: None,
-            elapsed:         Some(elapsed),
-            activity:        TrackedItemActivity::Progressing,
+            label:     "repo".to_string(),
+            lifecycle: TrackedItemLifecycle::Running,
+            elapsed:   TrackedItemElapsed::Measured(elapsed),
+            activity:  TrackedItemActivity::Progressing,
         };
 
         let line = card::tracked_item_line(&item, Style::default(), 40);
@@ -892,8 +875,8 @@ mod tests {
         let spinner_color = |activity| {
             let item = TrackedItemView {
                 label: "repo".to_string(),
-                linger_progress: None,
-                elapsed: Some(Duration::from_millis(100)),
+                lifecycle: TrackedItemLifecycle::Running,
+                elapsed: TrackedItemElapsed::Measured(Duration::from_millis(100)),
                 activity,
             };
             card::tracked_item_line(&item, Style::default(), 40)

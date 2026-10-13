@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use ratatui::style::Color;
 use tui_pane::Appearance;
+use tui_pane::ToastActivation;
 use tui_pane::ToastStyle::Error;
 use tui_pane::ToastStyle::Warning;
 
@@ -156,7 +157,9 @@ impl App {
             "Keymap errors (using defaults)",
             body,
             Error,
-            action_path.map(CargoPortToastAction::from),
+            action_path.map_or(ToastActivation::Informational, |path| {
+                ToastActivation::Opens(CargoPortToastAction::from(path))
+            }),
             1,
         );
         self.keymap.set_diagnostics_id(Some(id));
@@ -179,7 +182,9 @@ impl App {
             "Keymap warnings",
             body,
             Warning,
-            action_path.map(CargoPortToastAction::from),
+            action_path.map_or(ToastActivation::Informational, |path| {
+                ToastActivation::Opens(CargoPortToastAction::from(path))
+            }),
             1,
         );
         self.keymap.set_warnings_id(Some(id));
@@ -235,10 +240,13 @@ impl App {
                 .map(|(path, err)| format!("{}: {}", path.display(), err))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let id =
-                self.framework
-                    .toasts
-                    .push_persistent("Themes reload errors", body, Error, None, 1);
+            let id = self.framework.toasts.push_persistent(
+                "Themes reload errors",
+                body,
+                Error,
+                ToastActivation::Informational,
+                1,
+            );
             self.themes.set_diagnostics_id(Some(id));
         }
     }
@@ -308,7 +316,7 @@ impl App {
                 "Theme not found",
                 format!("{miss} (using built-in fallback)"),
                 Error,
-                None,
+                ToastActivation::Informational,
                 1,
             );
             self.themes.set_miss_toast_id(Some(id));

@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use super::ToastActivation;
 use super::body::ToastRenderBody;
 use super::settings::ToastSettings;
 use super::toast::Toast;
@@ -65,7 +66,7 @@ pub(crate) struct ToastSpec<Ctx: AppContext> {
     pub(super) body:               ToastRenderBody,
     pub(super) style:              ToastStyle,
     pub(super) lifetime:           ToastLifetime,
-    pub(super) action:             Option<Ctx::ToastAction>,
+    pub(super) action:             ToastActivation<Ctx::ToastAction>,
     pub(super) min_interior_lines: usize,
     pub(super) item_linger:        Duration,
 }
@@ -228,10 +229,17 @@ mod tests {
     use crate::KeyBind;
     use crate::KeyOutcome;
     use crate::NoToastAction;
+    use crate::PaneFocusState;
     use crate::ToastDuration;
     use crate::ToastTaskId;
     use crate::TrackedItem;
     use crate::TrackedItemKey;
+    use crate::toasts::ToastCountdownState;
+    use crate::toasts::ToastFocus;
+    use crate::toasts::ToastLingerState;
+    use crate::toasts::TrackedItemElapsed;
+    use crate::toasts::TrackedItemLifecycle;
+    use crate::toasts::TrackedItemTiming;
     use crate::toasts::toast::ToastDismissal;
     use crate::toasts::toast::ToastLifetime;
     use crate::toasts::toast::ToastPhase;
@@ -404,7 +412,7 @@ mod tests {
             TrackedItem::new("d", "d"),
         ];
         for item in &mut items {
-            item.started_at = None;
+            item.timing = TrackedItemTiming::StartUnknown;
         }
         assert!(toasts.set_tracked_items(task, &items));
         let toast = toasts
@@ -433,7 +441,7 @@ mod tests {
             TrackedItem::new("d", "d"),
         ];
         for item in &mut items {
-            item.started_at = None;
+            item.timing = TrackedItemTiming::StartUnknown;
         }
         assert!(toasts.set_tracked_items(task, &items));
         let toast = toasts
@@ -465,7 +473,7 @@ mod tests {
             .checked_sub(Duration::from_secs(20))
             .expect("test instant should support a twenty-second offset");
         let mut item = TrackedItem::new("repo", "repo");
-        item.started_at = Some(started_at);
+        item.timing = TrackedItemTiming::Running { started_at };
         assert!(toasts.set_tracked_items(task, &[item]));
         let elapsed = now.saturating_duration_since(started_at);
         let expected = started_at + ACTIVITY_SPINNER.next_frame_boundary(elapsed);
@@ -485,7 +493,7 @@ mod tests {
             .checked_sub(Duration::from_secs(5))
             .expect("test instant should support a five-second offset");
         let mut item = TrackedItem::new("repo", "repo");
-        item.started_at = Some(started_at);
+        item.timing = TrackedItemTiming::Running { started_at };
         assert!(toasts.set_tracked_items(task, &[item]));
 
         let ToastVisualDeadline::At(deadline) = toasts.next_visual_change_deadline(now) else {
@@ -531,11 +539,11 @@ mod tests {
             .expect("task toast should be stored")
             .created_at;
         let mut first = TrackedItem::new("first", "first");
-        first.started_at = None;
-        first.completed_at = Some(completed_at);
+        first.timing = TrackedItemTiming::CompletedWithoutStart { completed_at };
         let mut second = TrackedItem::new("second", "second");
-        second.started_at = None;
-        second.completed_at = Some(completed_at + Duration::from_millis(2_400));
+        second.timing = TrackedItemTiming::CompletedWithoutStart {
+            completed_at: completed_at + Duration::from_millis(2_400),
+        };
         assert!(toasts.set_tracked_items(task, &[first, second]));
         let now = completed_at + Duration::from_millis(4_990);
         let first_item_ends_at = completed_at + Duration::from_secs(5);
@@ -608,8 +616,7 @@ mod tests {
             .expect("task toast should be stored")
             .created_at;
         let mut item = TrackedItem::new("repo", "repo");
-        item.started_at = None;
-        item.completed_at = Some(completed_at);
+        item.timing = TrackedItemTiming::CompletedWithoutStart { completed_at };
         assert!(toasts.set_tracked_items(task, &[item]));
 
         let updated_linger = Duration::from_secs(5);
@@ -692,7 +699,13 @@ mod tests {
     #[test]
     fn persistent_toast_survives_prune() {
         let mut toasts = toasts();
-        let id = toasts.push_persistent("error", "body", ToastStyle::Error, None, 1);
+        let id = toasts.push_persistent(
+            "error",
+            "body",
+            ToastStyle::Error,
+            ToastActivation::Informational,
+            1,
+        );
 
         toasts.prune(Instant::now() + Duration::from_secs(61));
 
@@ -718,8 +731,11 @@ mod tests {
             .into_iter()
             .find(|toast| toast.title() == "Startup")
             .expect("startup colored toast should be active");
-        assert_eq!(view.linger_progress(), None);
-        assert!(view.remaining_secs().is_some());
+        assert_eq!(view.linger(), ToastLingerState::Live);
+        assert!(matches!(
+            view.countdown(),
+            ToastCountdownState::CountingDown { .. }
+        ));
         assert!(
             matches!(view.render_body.public_body(), super::super::ToastBody::Colored { colors, .. } if colors == &[Color::Green])
         );
@@ -797,6 +813,47 @@ mod tests {
             crate::ToastDuration::try_from_secs("test", linger_secs)
                 .expect("test linger duration should be valid");
         t
+    }
+
+    #[test]
+    fn zero_item_linger_preserves_elapsed_without_a_completion_fade() {
+        let mut toasts = toasts_with_linger(0.0);
+        let task = toasts.start_task("task", "");
+        let started_at = Instant::now();
+        let completed_at = started_at + Duration::from_secs(2);
+        let mut item = TrackedItem::new("item", "item");
+        item.timing = TrackedItemTiming::Completed {
+            started_at,
+            completed_at,
+        };
+        assert!(toasts.set_tracked_items(task, &[item]));
+        let toast = toasts
+            .toast_for_task(task)
+            .expect("task toast should be stored");
+        let view = toast.view(completed_at, toasts.settings(), toasts.card_width());
+        assert_eq!(view.linger(), ToastLingerState::Lingering { progress: 1.0 });
+        assert_eq!(
+            view.countdown(),
+            ToastCountdownState::CountingDown { remaining_secs: 0 }
+        );
+        assert_eq!(
+            view.tracked_items()[0].elapsed,
+            TrackedItemElapsed::Measured(Duration::from_secs(2))
+        );
+        assert_eq!(
+            view.tracked_items()[0].lifecycle,
+            TrackedItemLifecycle::CompletedWithoutFade
+        );
+        assert_eq!(
+            toast
+                .view(
+                    completed_at + Duration::from_nanos(1),
+                    toasts.settings(),
+                    toasts.card_width()
+                )
+                .countdown(),
+            ToastCountdownState::Expired
+        );
     }
 
     #[test]
@@ -890,7 +947,8 @@ mod tests {
         let mut toasts = Toasts::<ActionApp>::new();
         let _ = toasts.push_with_action("open", "path", ToastAction::Open);
 
-        let command = toasts.handle_key_command(&KeyBind::from(KeyCode::Enter));
+        let command =
+            toasts.handle_key_command(&KeyBind::from(KeyCode::Enter), PaneFocusState::Active);
 
         assert_eq!(
             command,
@@ -907,7 +965,10 @@ mod tests {
         let first = toasts.push("first", "body");
         let _ = toasts.push("second", "body");
 
-        assert_eq!(toasts.focused_id(), Some(first));
+        assert_eq!(
+            toasts.focused_id(crate::PaneFocusState::Active),
+            ToastFocus::PaneFocusedOn(first)
+        );
     }
 
     #[test]

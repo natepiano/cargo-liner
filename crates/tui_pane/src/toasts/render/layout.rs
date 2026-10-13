@@ -2,34 +2,17 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 
 use super::card;
-use crate::PaneFocusState;
 use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
+use crate::toasts::ToastFocus;
 use crate::toasts::ToastHitbox;
-use crate::toasts::ToastId;
 use crate::toasts::ToastView;
 
 #[derive(Clone, Copy)]
-pub(super) enum ToastPaneFocus {
-    Focused,
-    Unfocused,
-}
-
-impl From<PaneFocusState> for ToastPaneFocus {
-    fn from(focus: PaneFocusState) -> Self {
-        match focus {
-            PaneFocusState::Active => Self::Focused,
-            PaneFocusState::Remembered | PaneFocusState::Inactive => Self::Unfocused,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 pub(super) struct StackLayout {
-    pub(super) width:            u16,
-    pub(super) gap:              u16,
-    pub(super) pane_focus:       ToastPaneFocus,
-    pub(super) focused_toast_id: Option<ToastId>,
+    pub(super) width: u16,
+    pub(super) gap:   u16,
+    pub(super) focus: ToastFocus,
 }
 
 pub(super) fn render_top_down(
@@ -61,14 +44,7 @@ pub(super) fn render_top_down(
             width: layout.width,
             height: card_height,
         };
-        let close_rect = card::render_toast(
-            frame,
-            area,
-            card,
-            toast,
-            layout.pane_focus,
-            layout.focused_toast_id,
-        );
+        let close_rect = card::render_toast(frame, area, card, toast, layout.focus);
         hitboxes.push(ToastHitbox {
             id: toast.id(),
             card_rect: card,
@@ -110,14 +86,7 @@ pub(super) fn render_bottom_up(
             width: layout.width,
             height: card_height,
         };
-        let close_rect = card::render_toast(
-            frame,
-            area,
-            card,
-            toast,
-            layout.pane_focus,
-            layout.focused_toast_id,
-        );
+        let close_rect = card::render_toast(frame, area, card, toast, layout.focus);
         hitboxes.push(ToastHitbox {
             id: toast.id(),
             card_rect: card,

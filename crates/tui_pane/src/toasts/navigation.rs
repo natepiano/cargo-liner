@@ -1,21 +1,38 @@
 use super::ToastId;
-use super::ToastView;
 use super::Toasts;
 use crate::AppContext;
 use crate::CycleDirection;
 use crate::KeyOutcome;
 use crate::ListNavigation;
+use crate::PaneFocusState;
+
+/// Focus of the toast pane and the card selected inside it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastFocus {
+    /// The toast pane does not hold focus.
+    PaneUnfocused,
+    /// The toast pane holds focus without a selected card.
+    PaneFocusedWithoutToast,
+    /// The toast pane holds focus on this card.
+    PaneFocusedOn(ToastId),
+}
 
 impl<Ctx: AppContext> Toasts<Ctx> {
-    /// Return the focused toast identifier.
+    /// Return toast focus using the embedding's current pane focus.
     #[must_use]
-    pub fn focused_id(&self) -> Option<ToastId> { self.focused_toast_id() }
+    pub fn focused_id(&self, pane: PaneFocusState) -> ToastFocus { self.focused_toast_id(pane) }
 
-    /// Return the focused toast identifier.
-    pub fn focused_toast_id(&self) -> Option<ToastId> {
+    /// Return toast focus using the embedding's current pane focus.
+    #[must_use]
+    pub fn focused_toast_id(&self, pane: PaneFocusState) -> ToastFocus {
+        if pane != PaneFocusState::Active {
+            return ToastFocus::PaneUnfocused;
+        }
         self.active_now()
             .get(self.viewport.pos())
-            .map(ToastView::id)
+            .map_or(ToastFocus::PaneFocusedWithoutToast, |toast| {
+                ToastFocus::PaneFocusedOn(toast.id())
+            })
     }
 
     /// Move the toast viewport to the first toast when one exists.

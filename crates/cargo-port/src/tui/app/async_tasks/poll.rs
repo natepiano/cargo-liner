@@ -7,6 +7,7 @@ use tui_pane::SLOW_BG_BATCH_MS;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemActivity;
 use tui_pane::TrackedItemKey;
+use tui_pane::TrackedItemTiming;
 
 use super::constants::MAX_MSGS_PER_FRAME;
 use crate::scan::BackgroundMsg;
@@ -126,8 +127,7 @@ impl App {
                         let result_item = TrackedItem {
                             label,
                             key: TrackedItemKey::new(format!("{path}:result")),
-                            started_at: None,
-                            completed_at: None,
+                            timing: TrackedItemTiming::StartUnknown,
                             activity: TrackedItemActivity::Progressing,
                         };
                         self.framework

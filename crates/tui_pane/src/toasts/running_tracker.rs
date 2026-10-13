@@ -17,6 +17,7 @@ use crate::ToastTaskId;
 use crate::TrackedItem;
 use crate::TrackedItemActivity;
 use crate::TrackedItemKey;
+use crate::TrackedItemTiming;
 
 /// What a [`RunningTracker`] holds per in-flight key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,11 +128,12 @@ impl<K: Eq + Hash> RunningTracker<K> {
             .running
             .iter()
             .map(|(k, entry)| TrackedItem {
-                label:        label_fn(k),
-                key:          key_fn(k),
-                started_at:   Some(entry.started_at),
-                completed_at: None,
-                activity:     entry.activity,
+                label:    label_fn(k),
+                key:      key_fn(k),
+                timing:   TrackedItemTiming::Running {
+                    started_at: entry.started_at,
+                },
+                activity: entry.activity,
             })
             .collect();
         (self.toast, items)
@@ -188,7 +190,12 @@ mod tests {
             t.items_for_toast(ToString::to_string, |key| TrackedItemKey::new(key.clone()));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].activity, TrackedItemActivity::Stalled);
-        assert_eq!(items[0].started_at, Some(started));
+        assert_eq!(
+            items[0].timing,
+            TrackedItemTiming::Running {
+                started_at: started,
+            }
+        );
     }
 
     #[test]

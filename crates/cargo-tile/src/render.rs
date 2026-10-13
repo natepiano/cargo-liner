@@ -3575,6 +3575,7 @@ mod tests {
     use tui_pane::TileGrowth;
     use tui_pane::TilePlacement;
     use tui_pane::TileView;
+    use tui_pane::ToastActivation;
     use tui_pane::ToastStyle;
     use tui_pane::draw_backdrop_notice;
     use tui_pane::fade_to_background;
@@ -9070,7 +9071,7 @@ mod tests {
             "toast title",
             "the toast's body",
             ToastStyle::Normal,
-            None,
+            ToastActivation::Informational,
             8,
         );
         let keymap = std::rc::Rc::clone(&app.keymap);
@@ -9110,7 +9111,7 @@ mod tests {
             "toast title",
             "the toast's body",
             ToastStyle::Normal,
-            None,
+            ToastActivation::Informational,
             8,
         );
         terminal
@@ -9161,7 +9162,7 @@ mod tests {
                 "toast title",
                 "the toast's body",
                 ToastStyle::Normal,
-                None,
+                ToastActivation::Informational,
                 TOAST_LINES,
             );
             let keymap = std::rc::Rc::clone(&app.keymap);

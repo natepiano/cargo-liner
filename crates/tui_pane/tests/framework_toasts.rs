@@ -28,6 +28,7 @@ use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::Pane;
 use tui_pane::Shortcuts;
+use tui_pane::ToastFocus;
 
 tui_pane::action_enum! {
     /// Test-only foo pane actions.
@@ -164,7 +165,8 @@ fn toasts_inactive_while_focused_next_moves_to_app_pane() {
     app.framework.toasts.push("hi", "");
     app.set_focus(FocusedPane::Framework(FrameworkFocusId::Toasts));
     // dismiss the only toast → manager empty, focus stale on Toasts
-    let _ = app.framework.toasts.dismiss_focused();
+    let pane = app.framework.toast_pane_focus_state();
+    let _ = app.framework.toasts.dismiss_focused(pane);
 
     keymap.dispatch_framework_global(GlobalAction::NextPane, &mut app);
     assert_eq!(
@@ -238,8 +240,10 @@ fn entering_toasts_with_next_calls_reset_to_first() {
         &FocusedPane::Framework(FrameworkFocusId::Toasts),
     );
     assert_eq!(
-        app.framework.toasts.focused_id(),
-        Some(a),
+        app.framework
+            .toasts
+            .focused_id(app.framework.toast_pane_focus_state()),
+        ToastFocus::PaneFocusedOn(a),
         "Next-direction entry resets cursor to first toast",
     );
 }
@@ -258,8 +262,10 @@ fn entering_toasts_with_prev_calls_reset_to_last() {
         &FocusedPane::Framework(FrameworkFocusId::Toasts),
     );
     assert_eq!(
-        app.framework.toasts.focused_id(),
-        Some(c),
+        app.framework
+            .toasts
+            .focused_id(app.framework.toast_pane_focus_state()),
+        ToastFocus::PaneFocusedOn(c),
         "Prev-direction entry resets cursor to last toast",
     );
 }

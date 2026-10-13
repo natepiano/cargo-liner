@@ -15,6 +15,7 @@ use super::Toasts;
 use super::TrackedItem;
 use super::TrackedItemActivity;
 use super::TrackedItemKey;
+use super::TrackedItemTiming;
 use super::toast::ToastDismissal;
 use super::toast::ToastLifetime;
 use super::toast::ToastPhase;
@@ -52,7 +53,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     ///
     /// For a toast with tracked items, this marks any still-incomplete
     /// item as completed at `now` and then runs `Self::recompute_task_status`,
-    /// which derives `finished_at = max(item.completed_at)`. That
+    /// which anchors `finished_at` to the latest item completion. That
     /// anchoring makes the "Closing in N" countdown coincide exactly
     /// with the last item's individual `item_linger`.
     ///
@@ -78,8 +79,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             return true;
         }
         for item in &mut toast.tracked_items {
-            if item.completed_at.is_none() {
-                item.completed_at = Some(now);
+            if !item.timing.is_completed() {
+                item.mark_completed(now);
             }
         }
         self.recompute_task_status(task_id);
@@ -215,8 +216,8 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         };
         let mut changed = false;
         for item in &mut toast.tracked_items {
-            if item.completed_at.is_none() && !active_keys.contains(&item.key) {
-                item.completed_at = Some(now);
+            if !item.timing.is_completed() && !active_keys.contains(&item.key) {
+                item.mark_completed(now);
                 changed = true;
             }
         }
@@ -290,7 +291,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     }
 
     /// Restart one tracked item by key. After clearing the item's
-    /// `completed_at`, the toast's lifetime status is recomputed —
+    /// completion, the toast's lifetime status is recomputed —
     /// a previously-finished toast reverts to running.
     pub fn restart_tracked_item(
         &mut self,
@@ -304,8 +305,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let Some(item) = toast.tracked_items.iter_mut().find(|item| item.key == *key) else {
             return false;
         };
-        item.started_at = Some(now);
-        item.completed_at = None;
+        item.timing = TrackedItemTiming::Running { started_at: now };
         self.recompute_task_status(task_id);
         true
     }
@@ -319,7 +319,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let Some(item) = toast.tracked_items.iter_mut().find(|item| item.key == *key) else {
             return false;
         };
-        item.completed_at = Some(now);
+        item.mark_completed(now);
         self.recompute_task_status(task_id);
         true
     }
@@ -338,9 +338,12 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             if !matches!(toast.lifetime, ToastLifetime::Task { .. }) {
                 continue;
             }
-            toast.tracked_items.retain(|item| {
-                item.completed_at
-                    .is_none_or(|completed_at| now.saturating_duration_since(completed_at) < linger)
+            toast.tracked_items.retain(|item| match item.timing {
+                TrackedItemTiming::CompletedWithoutStart { completed_at }
+                | TrackedItemTiming::Completed { completed_at, .. } => {
+                    now.saturating_duration_since(completed_at) < linger
+                },
+                TrackedItemTiming::StartUnknown | TrackedItemTiming::Running { .. } => true,
             });
         }
     }
@@ -368,7 +371,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     /// Recompute a task toast's lifetime status from its tracked-item
     /// state, then call this after every item mutation. Invariant:
     /// the toast is `Finished` if and only if every tracked item
-    /// has `completed_at = Some(_)`, with `finished_at = max(item.completed_at)`.
+    /// is completed, with `finished_at` anchored to its latest completion.
     ///
     /// * All items have `completed_at` → transition to `Finished` with `finished_at` anchored to
     ///   the latest completion. This makes the countdown's expiry coincide with the last item's
@@ -396,11 +399,15 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let all_completed = toast
             .tracked_items
             .iter()
-            .all(|item| item.completed_at.is_some());
+            .all(|item| item.timing.is_completed());
         let latest_completion = toast
             .tracked_items
             .iter()
-            .filter_map(|item| item.completed_at)
+            .filter_map(|item| match item.timing {
+                TrackedItemTiming::CompletedWithoutStart { completed_at }
+                | TrackedItemTiming::Completed { completed_at, .. } => Some(completed_at),
+                TrackedItemTiming::StartUnknown | TrackedItemTiming::Running { .. } => None,
+            })
             .max();
         let linger = self.settings().finished_task_visible.get();
         let Some(toast) = self.toast_for_task_mut(task_id) else {

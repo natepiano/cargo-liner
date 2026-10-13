@@ -4601,6 +4601,7 @@ mod tests {
         use tui_pane::RenderFocus;
         use tui_pane::SettingsLineTarget;
         use tui_pane::SettingsRowPayload;
+        use tui_pane::ToastActivation;
         use tui_pane::ToastId;
         use tui_pane::ToastStyle;
         use tui_pane::Viewport;
@@ -5835,7 +5836,7 @@ mod tests {
                 "Error",
                 "toast body",
                 ToastStyle::Error,
-                None,
+                ToastActivation::Informational,
                 1,
             );
             let toast_len = app.framework.toasts.active_now().len();
@@ -5868,7 +5869,7 @@ mod tests {
                 "Error",
                 "toast body",
                 ToastStyle::Error,
-                None,
+                ToastActivation::Informational,
                 1,
             );
             let toast_len = app.framework.toasts.active_now().len();
@@ -5934,14 +5935,20 @@ mod tests {
 
             let mut app = make_app(&[make_package("demo", &project_dir)]);
             app.config.current_mut().tui.edge_scroll = EdgeScroll::AdvancesPane;
-            let _ = app
-                .framework
-                .toasts
-                .push_persistent("First", "", ToastStyle::Normal, None, 1);
-            let _ = app
-                .framework
-                .toasts
-                .push_persistent("Second", "", ToastStyle::Normal, None, 1);
+            let _ = app.framework.toasts.push_persistent(
+                "First",
+                "",
+                ToastStyle::Normal,
+                ToastActivation::Informational,
+                1,
+            );
+            let _ = app.framework.toasts.push_persistent(
+                "Second",
+                "",
+                ToastStyle::Normal,
+                ToastActivation::Informational,
+                1,
+            );
             app.set_focus_to_pane(PaneId::Toasts);
             app.framework.toasts.reset_to_last();
 
@@ -12623,7 +12630,9 @@ mod tests {
                     toast
                         .tracked_items()
                         .iter()
-                        .filter(|item| item.linger_progress.is_none())
+                        .filter(|item| {
+                            matches!(item.lifecycle, tui_pane::TrackedItemLifecycle::Running)
+                        })
                         .map(|item| item.label.clone())
                         .collect::<Vec<_>>()
                 })
@@ -13823,12 +13832,15 @@ mod tests {
                 .find(|toast| toast.title() == "Startup")
                 .expect("Startup countdown toast should still be visible");
             assert_eq!(
-                startup_toast.linger_progress(),
-                None,
+                startup_toast.linger(),
+                tui_pane::ToastLingerState::Live,
                 "Startup countdown must not use task linger fade"
             );
             assert!(
-                startup_toast.remaining_secs().is_some(),
+                matches!(
+                    startup_toast.countdown(),
+                    tui_pane::ToastCountdownState::CountingDown { .. }
+                ),
                 "Startup countdown should still show Closing in N"
             );
 

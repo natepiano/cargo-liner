@@ -41,30 +41,102 @@ pub enum TrackedItemActivity {
     Stalled,
 }
 
+/// Observed lifetime of a tracked task item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackedItemTiming {
+    /// The item is running, but its start was not observed.
+    StartUnknown,
+    /// The item is running from a known start.
+    Running {
+        /// Time the item started or restarted.
+        started_at: Instant,
+    },
+    /// The item finished without an observed start.
+    CompletedWithoutStart {
+        /// Time the item completed.
+        completed_at: Instant,
+    },
+    /// The item finished after an observed start.
+    Completed {
+        /// Time the item started or restarted.
+        started_at:   Instant,
+        /// Time the item completed.
+        completed_at: Instant,
+    },
+}
+
+impl TrackedItemTiming {
+    /// Return whether the item has completed.
+    #[must_use]
+    pub const fn is_completed(self) -> bool {
+        matches!(
+            self,
+            Self::CompletedWithoutStart { .. } | Self::Completed { .. }
+        )
+    }
+
+    pub(super) fn elapsed(self, now: Instant) -> TrackedItemElapsed {
+        match self {
+            Self::StartUnknown | Self::CompletedWithoutStart { .. } => {
+                TrackedItemElapsed::StartUnknown
+            },
+            Self::Running { started_at } => {
+                TrackedItemElapsed::Measured(now.saturating_duration_since(started_at))
+            },
+            Self::Completed {
+                started_at,
+                completed_at,
+            } => TrackedItemElapsed::Measured(completed_at.saturating_duration_since(started_at)),
+        }
+    }
+}
+
+/// Rendered lifecycle of a tracked task item.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrackedItemLifecycle {
+    /// The item is still running.
+    Running,
+    /// The item completed with its completion fade disabled.
+    CompletedWithoutFade,
+    /// The completed item fades during its linger period.
+    CompletedFading {
+        /// Fade progress from 0.0 to 1.0.
+        progress: f64,
+    },
+}
+
+/// Whether an elapsed duration can be displayed for a tracked item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackedItemElapsed {
+    /// The start was not observed, so no duration can be displayed.
+    StartUnknown,
+    /// Duration from the start to now, or to completion for a finished item.
+    Measured(Duration),
+}
+
 /// One item tracked by a task toast.
 #[derive(Clone, Debug)]
 pub struct TrackedItem {
     /// Display label for the tracked item.
-    pub label:        String,
+    pub label:    String,
     /// Stable key used to update the tracked item.
-    pub key:          TrackedItemKey,
-    /// Time the item started or restarted.
-    pub started_at:   Option<Instant>,
-    /// Time the item completed.
-    pub completed_at: Option<Instant>,
+    pub key:      TrackedItemKey,
+    /// Observed start and completion state.
+    pub timing:   TrackedItemTiming,
     /// Whether the item is progressing or stalled.
-    pub activity:     TrackedItemActivity,
+    pub activity: TrackedItemActivity,
 }
 
 impl TrackedItem {
-    /// Create a tracked item with `started_at` set to now.
+    /// Create a running tracked item starting now.
     pub fn new(label: impl Into<String>, key: impl Into<TrackedItemKey>) -> Self {
         Self {
-            label:        label.into(),
-            key:          key.into(),
-            started_at:   Some(Instant::now()),
-            completed_at: None,
-            activity:     TrackedItemActivity::Progressing,
+            label:    label.into(),
+            key:      key.into(),
+            timing:   TrackedItemTiming::Running {
+                started_at: Instant::now(),
+            },
+            activity: TrackedItemActivity::Progressing,
         }
     }
 
@@ -76,25 +148,36 @@ impl TrackedItem {
     #[must_use]
     pub const fn key(&self) -> &TrackedItemKey { &self.key }
 
-    /// Return the completion timestamp, if present.
+    /// Return the item's observed start and completion state.
     #[must_use]
-    pub const fn completed_at(&self) -> Option<Instant> { self.completed_at }
+    pub const fn timing(&self) -> TrackedItemTiming { self.timing }
 
     /// Mark the item completed at `now`.
-    pub const fn mark_completed(&mut self, now: Instant) { self.completed_at = Some(now); }
+    pub const fn mark_completed(&mut self, now: Instant) {
+        self.timing = match self.timing {
+            TrackedItemTiming::StartUnknown | TrackedItemTiming::CompletedWithoutStart { .. } => {
+                TrackedItemTiming::CompletedWithoutStart { completed_at: now }
+            },
+            TrackedItemTiming::Running { started_at }
+            | TrackedItemTiming::Completed { started_at, .. } => TrackedItemTiming::Completed {
+                started_at,
+                completed_at: now,
+            },
+        };
+    }
 }
 
 /// Render-ready view of one tracked task item.
 #[derive(Clone, Debug)]
 pub struct TrackedItemView {
     /// Display label.
-    pub label:           String,
-    /// Completion linger progress from 0.0 to 1.0, if completed.
-    pub linger_progress: Option<f64>,
+    pub label:     String,
+    /// Running or completed state, including the completion fade policy.
+    pub lifecycle: TrackedItemLifecycle,
     /// Elapsed time since the item started, if known.
-    pub elapsed:         Option<Duration>,
+    pub elapsed:   TrackedItemElapsed,
     /// Whether the item is progressing or stalled.
-    pub activity:        TrackedItemActivity,
+    pub activity:  TrackedItemActivity,
 }
 
 impl TrackedItemView {

@@ -1,3 +1,4 @@
+use tui_pane::ToastActivation;
 use tui_pane::ToastId;
 use tui_pane::ToastStyle::Warning;
 
@@ -37,7 +38,7 @@ impl App {
                     "GitHub CLI not found",
                     "Install gh (https://cli.github.com), run `gh auth login`, then restart cargo-port. CI runs and rate limits are unavailable.",
                     Warning,
-                    None,
+                    ToastActivation::Informational,
                     1,
                 );
             },
@@ -49,7 +50,7 @@ impl App {
                     "GitHub not authenticated",
                     "CI runs and rate limits are unavailable. Run `gh auth login`, then restart cargo-port.",
                     Warning,
-                    None,
+                    ToastActivation::Informational,
                     1,
                 );
             },
@@ -148,9 +149,13 @@ impl App {
         kind: AvailabilityKind,
     ) -> ToastId {
         let (title, body) = service_unavailable_message(service, kind);
-        self.framework
-            .toasts
-            .push_persistent(title, body, Warning, None, 1)
+        self.framework.toasts.push_persistent(
+            title,
+            body,
+            Warning,
+            ToastActivation::Informational,
+            1,
+        )
     }
     /// Spawn the retry / grace probe thread.
     ///

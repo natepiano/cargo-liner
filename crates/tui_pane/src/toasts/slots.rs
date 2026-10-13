@@ -1,7 +1,9 @@
 use crossterm::event::KeyCode;
 use ratatui::layout::Position;
 
+use super::ToastActivation;
 use super::ToastCommand;
+use super::ToastFocus;
 use super::ToastHit;
 use super::ToastHitbox;
 use super::Toasts;
@@ -14,6 +16,7 @@ use crate::Hittable;
 use crate::KeyBind;
 use crate::KeyOutcome;
 use crate::Mode;
+use crate::PaneFocusState;
 use crate::keymap::Action;
 
 impl<Ctx: AppContext> Toasts<Ctx> {
@@ -50,28 +53,29 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     pub fn handle_key_command(
         &mut self,
         bind: &KeyBind,
+        pane: PaneFocusState,
     ) -> (KeyOutcome, ToastCommand<Ctx::ToastAction>) {
         let scope = Self::defaults().into_scope_map();
         if scope.action_for(bind) != Some(ToastsAction::Activate) {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         }
 
-        let Some(id) = self.focused_toast_id() else {
+        let ToastFocus::PaneFocusedOn(id) = self.focused_toast_id(pane) else {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         };
-        let Some(action) = self
-            .entries
-            .iter()
-            .find(|toast| toast.id == id)
-            .and_then(|toast| toast.action.clone())
-        else {
+        let Some(toast) = self.entries.iter().find(|toast| toast.id == id) else {
+            return (KeyOutcome::Unhandled, ToastCommand::None);
+        };
+        let ToastActivation::Opens(action) = toast.action.clone() else {
             return (KeyOutcome::Unhandled, ToastCommand::None);
         };
         (KeyOutcome::Consumed, ToastCommand::Activate(action))
     }
 
     /// Handle a key and return only the key outcome.
-    pub fn handle_key(&mut self, bind: &KeyBind) -> KeyOutcome { self.handle_key_command(bind).0 }
+    pub fn handle_key(&mut self, bind: &KeyBind, pane: PaneFocusState) -> KeyOutcome {
+        self.handle_key_command(bind, pane).0
+    }
 }
 
 impl<Ctx: AppContext> Hittable<ToastHit> for Toasts<Ctx> {

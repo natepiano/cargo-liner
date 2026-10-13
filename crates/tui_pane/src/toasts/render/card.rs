@@ -13,7 +13,6 @@ use unicode_width::UnicodeWidthStr;
 
 use super::fallback_toast_palette;
 use super::format;
-use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
 use crate::constants::ELISION;
 use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
@@ -22,10 +21,14 @@ use crate::constants::TOAST_SIDE_GAP;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
 use crate::title_color;
-use crate::toasts::ToastId;
+use crate::toasts::ToastCountdownState;
+use crate::toasts::ToastFocus;
+use crate::toasts::ToastLingerState;
 use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
 use crate::toasts::TrackedItemActivity;
+use crate::toasts::TrackedItemElapsed;
+use crate::toasts::TrackedItemLifecycle;
 use crate::toasts::TrackedItemView;
 use crate::wrap;
 
@@ -34,15 +37,13 @@ pub(super) fn render_toast(
     area: Rect,
     card: Rect,
     toast: &ToastView,
-    pane_focus: ToastPaneFocus,
-    focused_toast_id: Option<ToastId>,
+    focus: ToastFocus,
 ) -> Rect {
     let palette = fallback_toast_palette();
     let card = card.intersection(area);
     clear_toast_surroundings(frame, area, card);
 
-    let focused =
-        matches!(pane_focus, ToastPaneFocus::Focused) && focused_toast_id == Some(toast.id());
+    let focused = focus == ToastFocus::PaneFocusedOn(toast.id());
     let toast_style = toast.style();
     // Error and warning toasts keep the safety-pinned palette so they
     // stay legible under any user theme. Plain (info) toasts mirror
@@ -110,7 +111,10 @@ pub(super) fn render_toast(
         close_rect,
     );
 
-    if let Some(secs) = toast.remaining_secs() {
+    if let ToastCountdownState::CountingDown {
+        remaining_secs: secs,
+    } = toast.countdown()
+    {
         let countdown = format!(" Closing in {secs} ");
         let countdown_width = u16::try_from(countdown.len()).unwrap_or(u16::MAX);
         let countdown_rect = Rect {
@@ -267,9 +271,10 @@ fn render_body_elision(
         return;
     }
     let row = u16::try_from(lines_for_body.saturating_sub(1)).unwrap_or(u16::MAX);
-    let style = toast.linger_progress().map_or(body_style, |progress| {
-        format::fade_to_style(f64::from(progress))
-    });
+    let style = match toast.linger() {
+        ToastLingerState::Live => body_style,
+        ToastLingerState::Lingering { progress } => format::fade_to_style(f64::from(progress)),
+    };
     frame.render_widget(
         Paragraph::new(ELISION).style(style),
         Rect {
@@ -287,22 +292,20 @@ fn body_lines_plain(
     lines_for_body: usize,
     width: u16,
 ) -> (Vec<Line<'static>>, bool) {
-    let mut lines = toast.linger_progress().map_or_else(
-        || toast.render_body.wrapped_lines(width, body_style),
-        |progress| {
-            toast
-                .body()
-                .split('\n')
-                .flat_map(|line| {
-                    wrap::wrapped_preserving_whitespace(
-                        format::fade_to_color(line, f64::from(progress)).spans,
-                        width,
-                    )
-                    .lines
-                })
-                .collect()
-        },
-    );
+    let mut lines = match toast.linger() {
+        ToastLingerState::Live => toast.render_body.wrapped_lines(width, body_style),
+        ToastLingerState::Lingering { progress } => toast
+            .body()
+            .split('\n')
+            .flat_map(|line| {
+                wrap::wrapped_preserving_whitespace(
+                    format::fade_to_color(line, f64::from(progress)).spans,
+                    width,
+                )
+                .lines
+            })
+            .collect(),
+    };
     let body_was_cut = lines.len() > lines_for_body;
     lines.truncate(lines_for_body);
     (lines, body_was_cut)
@@ -341,8 +344,8 @@ pub(super) fn body_lines_tracked(
 /// stalled, so a caller that reports a stall gets a red spinner without knowing
 /// anything about the palette. An item that is lingering after completion shows
 /// no spinner, so there is nothing to color.
-fn spinner_style(linger_progress: Option<f64>, activity: TrackedItemActivity) -> Style {
-    if linger_progress.is_some() {
+fn spinner_style(lifecycle: TrackedItemLifecycle, activity: TrackedItemActivity) -> Style {
+    if matches!(lifecycle, TrackedItemLifecycle::CompletedFading { .. }) {
         return Style::default();
     }
     let palette = fallback_toast_palette();
@@ -360,18 +363,19 @@ pub(super) fn tracked_item_line(
     const SPINNER_SLOT: usize = 4;
     let palette = fallback_toast_palette();
 
-    let label_style = item
-        .linger_progress
-        .map_or(body_style, format::fade_to_style);
-    let Some(elapsed) = item.elapsed else {
+    let label_style = match item.lifecycle {
+        TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => body_style,
+        TrackedItemLifecycle::CompletedFading { progress } => format::fade_to_style(progress),
+    };
+    let TrackedItemElapsed::Measured(elapsed) = item.elapsed else {
         return Line::from(Span::styled(item.label.clone(), label_style));
     };
 
-    let is_running = item.linger_progress.is_none();
-    let spinner_text = if is_running {
-        format!(" {} ", ACTIVITY_SPINNER.frame_at(elapsed))
-    } else {
-        " ".repeat(SPINNER_SLOT)
+    let spinner_text = match item.lifecycle {
+        TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => {
+            format!(" {} ", ACTIVITY_SPINNER.frame_at(elapsed))
+        },
+        TrackedItemLifecycle::CompletedFading { .. } => " ".repeat(SPINNER_SLOT),
     };
     let duration_text = format::format_elapsed(elapsed);
     let duration_suffix = format!("{duration_text} ");
@@ -380,16 +384,16 @@ pub(super) fn tracked_item_line(
     let label = format::truncate_with_ellipsis(&item.label, label_budget);
     let used = label.width() + spinner_text.width() + suffix_width;
     let padding = line_width.saturating_sub(used);
-    let duration_style = item
-        .linger_progress
-        .map_or_else(|| Style::default().fg(palette.title), format::fade_to_style);
+    let duration_style = match item.lifecycle {
+        TrackedItemLifecycle::Running | TrackedItemLifecycle::CompletedWithoutFade => {
+            Style::default().fg(palette.title)
+        },
+        TrackedItemLifecycle::CompletedFading { progress } => format::fade_to_style(progress),
+    };
     Line::from(vec![
         Span::styled(label, label_style),
         Span::raw(" ".repeat(padding)),
-        Span::styled(
-            spinner_text,
-            spinner_style(item.linger_progress, item.activity),
-        ),
+        Span::styled(spinner_text, spinner_style(item.lifecycle, item.activity)),
         Span::styled(duration_suffix, duration_style),
     ])
 }
