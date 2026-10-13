@@ -101,6 +101,12 @@ fn reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation() {
     reader_regression("cpu-cache-server");
 }
 
+/// Samples drawn close together cannot end CPU observation before its report windows pass.
+#[test]
+fn reader_cpu_observation_waits_for_samples_to_span_reporting_windows() {
+    run_reader_script("--cpu-observation-self-check");
+}
+
 /// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
 /// The reader receives the shim's actual records, with no copied Rust implementation.
 fn reader_regression(scenario: &str) { run_reader_script(scenario); }
