@@ -57,7 +57,7 @@ READER_SCENARIOS = (
     'cpu-cache-server', 'quiet-json-long', 'excluded',
 )
 SELF_CHECK_SCENARIOS = (
-    '--concurrent-deadline-self-check', '--reader-end-self-check',
+    '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
 )
 assert scenario in READER_SCENARIOS or scenario in SELF_CHECK_SCENARIOS, scenario
@@ -599,6 +599,30 @@ def wait_for_cpu_rows(writers: tuple[StartedWriter, ...]) -> str:
     wait_for(rows_are_ready, 'CPU rows do not finish rendering', pause=0)
     return rendered
 
+def cpu_observation_is_complete(readings: list[tuple[float, int]]) -> bool:
+    # Frame count alone cannot prove that the reader covered its reporting windows.
+    return (bool(readings) and readings[-1][0] - readings[0][0] >= observation_window
+            and sum(elapsed >= smoothing_window for elapsed, _ in readings) >= 3)
+
+def assert_cpu_observation_waits_for_reporting_windows() -> None:
+    readings = [(elapsed, 55) for elapsed in (0.0, 0.0199, 0.0378, 0.0812, 0.1125, 0.1417)]
+    assert not cpu_observation_is_complete(readings), 'short-span failure ends observation'
+    # Enough sustained readings still cannot replace the required timestamp span.
+    readings.append((smoothing_window, 55))
+    readings.sort()
+    assert not cpu_observation_is_complete(readings), 'sample count ends observation early'
+    # Exercise the same wait predicate without a reader or actual sleeps.
+    pending = iter((observation_window - 0.001, observation_window))
+    def observe_cpu() -> bool:
+        readings.append((next(pending), 55))
+        return cpu_observation_is_complete(readings)
+    wait_for(observe_cpu, 'self-check samples to cover CPU reporting windows', pause=0)
+    assert readings[-2][0] < observation_window <= readings[-1][0], readings
+    assert not cpu_observation_is_complete([(0.0, 55), (observation_window, 55)]), \
+        'timestamp span alone replaces sustained readings'
+    assert cpu_observation_is_complete([(elapsed, 0) for elapsed, _ in readings]), \
+        'observation wait depends on CPU values instead of timestamp coverage'
+
 def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendered: str) -> str:
     writers = (writer, unrelated)
     if not cpu_rows_are_ready(rendered, writers):
@@ -610,13 +634,13 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
     readings = [(0.0, next(cpu for observed, cpu in initial if observed[1] == writer[1]))]
     other_readings = [next(cpu for observed, cpu in initial if observed[1] == unrelated[1])]
     terminal_frames.take_completed()
-    # Readings climb for one smoothing window; the sustained set fills the rest of the window.
-    deadline = started + observation_window
-    def observe_cpu() -> None:
+    # Wait for collected samples to cover the windows, even if a busy reader draws late.
+    deadline = started + wait_seconds
+    def observe_cpu() -> bool:
         nonlocal rendered
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return
+            return False
         read_terminal(min(0.1, remaining))
         terminal_snapshot()
         for frame in terminal_frames.take_completed():
@@ -627,8 +651,10 @@ def assert_cpu_workload(writer: StartedWriter, unrelated: StartedWriter, rendere
                     readings.append((elapsed, cpu))
                 else:
                     other_readings.append(cpu)
-    while time.monotonic() < deadline:
-        observe_cpu()
+        return cpu_observation_is_complete(readings)
+    wait_for(observe_cpu, 'CPU samples to cover smoothing and three reporting windows',
+             lambda: f': need {observation_window:g}s of samples and three sustained readings; '
+                     f'collected {readings!r}', pause=0, deadline=deadline)
     record_timestamp('CPU observation')
     sustained = [cpu for elapsed, cpu in readings if elapsed >= smoothing_window]
     assert len(sustained) >= 3 and min(sustained) >= 10, (
@@ -1160,6 +1186,13 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
         executor.shutdown()
 
 arm_scenario_deadline()
+
+if scenario == '--cpu-observation-self-check':
+    assert_cpu_observation_waits_for_reporting_windows()
+    record_timestamp('assertions')
+    record_timestamp('cleanup')
+    cancel_scenario_deadline()
+    sys.exit(0)
 
 if scenario == '--terminal-frame-self-check':
     assert_completed_terminal_frames()
