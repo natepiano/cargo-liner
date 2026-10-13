@@ -981,11 +981,11 @@ impl Census {
         if !cpu.is_finite() || cpu < 0.0 {
             return Measurement::Unavailable(MeasurementAbsence::ReadFailed);
         }
-        if previous.accumulated == 0
-            || baseline.accumulated < previous.accumulated
-            || (baseline.accumulated == previous.accumulated && cpu > 0.0)
-        {
+        if previous.accumulated == 0 || baseline.accumulated < previous.accumulated {
             return Measurement::Unavailable(MeasurementAbsence::Unproven);
+        }
+        if baseline.accumulated == previous.accumulated && cpu > 0.0 {
+            return Measurement::Unavailable(MeasurementAbsence::RetainedRate);
         }
         Measurement::Reading(cpu)
     }
@@ -1293,15 +1293,18 @@ impl Census {
             };
             if pid == owner
                 && (cfg!(target_os = "linux")
-                    || (evidence.get(&owner)
-                        == Some(&Measurement::Unavailable(
-                            MeasurementAbsence::FirstObservation,
+                    || (matches!(
+                        evidence.get(&owner),
+                        Some(Measurement::Unavailable(
+                            MeasurementAbsence::FirstObservation | MeasurementAbsence::RetainedRate
                         ))
-                        && !elapsed.is_zero()))
+                    ) && !elapsed.is_zero()))
             {
                 // Linux's lifetime-checked stat read proves even an idle owner's
                 // zero counter independently of sysinfo's unavailable rate.
-                // Darwin's zero may still be a failed task-info read.
+                // Darwin's zero may still be a failed task-info read, while a
+                // nonzero counter is a sound read whatever rate sysinfo kept:
+                // the invocation's rate comes from counters, never that rate.
                 // InvocationCpuHistory still reports FirstObservation for the first sample.
                 evidence.insert(owner, Measurement::Reading(0.0));
             }
@@ -6478,6 +6481,29 @@ mod tests {
         );
     }
 
+    /// An idle owner keeps the rate macOS last computed for it, yet its sound
+    /// counter still lets its invocation publish a reading.
+    #[test]
+    fn an_owner_with_a_retained_rate_still_reads_its_invocation() {
+        let owner = Pid::from_u32(ROOT_PROCESS_PID + 1);
+        let mut census = census_of(&[(owner.as_u32(), ROOT_PROCESS_PID)]);
+        census.cargo.push(owner);
+        census.lifetimes.insert(
+            owner,
+            LifetimeEvidence::Available(ProcessLifetime::for_test(u64::from(owner.as_u32()))),
+        );
+        census.accumulated.insert(owner, Duration::from_millis(10));
+        let mut work = HashMap::from([(owner, InvocationCpuContributions::default())]);
+        let mut evidence = HashMap::from([(
+            owner,
+            Measurement::Unavailable(MeasurementAbsence::RetainedRate),
+        )]);
+        census.collect_cpu_work(&HashMap::new(), &mut work, &mut evidence, |_| {
+            Measurement::Reading(Duration::from_millis(10))
+        });
+        assert_eq!(evidence[&owner], Measurement::Reading(0.0));
+    }
+
     #[test]
     fn proven_registration_identity_changes_preserve_the_same_process_cpu_baseline() {
         let root = tempdir().expect("root");
@@ -6752,13 +6778,15 @@ mod tests {
     }
 
     #[test]
-    fn collection_keeps_a_retained_rate_unproven_when_cpu_time_is_unchanged() {
+    fn collection_names_a_retained_rate_when_cpu_time_is_unchanged() {
         let pid = Pid::from(1);
         let previous = HashMap::from([(pid, cpu_baseline(10))]);
+        let measured = Census::measure_cpu(pid, 80.0, &cpu_baseline(10), &previous);
         assert_eq!(
-            Census::measure_cpu(pid, 80.0, &cpu_baseline(10), &previous),
-            Measurement::Unavailable(MeasurementAbsence::Unproven)
+            measured,
+            Measurement::Unavailable(MeasurementAbsence::RetainedRate)
         );
+        assert_eq!(measured.map(cpu_label).to_string(), UNAVAILABLE_MEASUREMENT);
     }
 
     #[test]
