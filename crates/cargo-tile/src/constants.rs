@@ -43,6 +43,35 @@ pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 2] =
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 
+// family identity
+/// Theme role for the blue family identity hue.
+pub(crate) const FAMILY_BLUE_ROLE: &str = "family_blue";
+/// Theme role for the cyan family identity hue.
+pub(crate) const FAMILY_CYAN_ROLE: &str = "family_cyan";
+/// Theme role for the green family identity hue.
+pub(crate) const FAMILY_GREEN_ROLE: &str = "family_green";
+/// Theme role for the magenta family identity hue.
+pub(crate) const FAMILY_MAGENTA_ROLE: &str = "family_magenta";
+/// Theme role for the orange family identity hue.
+pub(crate) const FAMILY_ORANGE_ROLE: &str = "family_orange";
+/// Theme role for the red family identity hue.
+pub(crate) const FAMILY_RED_ROLE: &str = "family_red";
+/// Theme role for the violet family identity hue.
+pub(crate) const FAMILY_VIOLET_ROLE: &str = "family_violet";
+/// Theme role for the yellow family identity hue.
+pub(crate) const FAMILY_YELLOW_ROLE: &str = "family_yellow";
+
+/// Saturated hues must differ by about 35 degrees on a radius-100 HSL circle.
+/// Ignoring lightness keeps a dark coloured pid distinct from a grey label.
+pub(crate) const FAMILY_COLOR_CLEARANCE: f64 = 60.0;
+/// Radius of the HSL hue circle at full saturation.
+pub(crate) const FAMILY_CHROMA_SCALE: f64 = 100.0;
+/// Degrees spanned by one RGB hue sector.
+pub(crate) const FAMILY_HUE_SECTOR: f64 = 60.0;
+/// Distinct pid families supported before any built-in palette repeats.
+#[cfg(test)]
+pub(crate) const MIN_FAMILY_COLORS: usize = 5;
+
 // settings overlay
 /// Rows of popup border above and below a popup's body.
 #[cfg(test)]
@@ -134,6 +163,11 @@ pub(crate) const SUMMARY_WITHOUT_ROWS_READOUT_WIDTH: u16 = 28;
 /// Seconds a finished row stays on screen, greyed, before it goes, when
 /// `config.toml` says nothing.
 pub(crate) const DEFAULT_FADE_SECONDS: u64 = 3;
+/// Distance between fade alpha levels that keep built-in ink contrast monotone.
+pub(crate) const FADE_ALPHA_STEP: u8 = 2;
+/// Contrast floor for a finished row through the first half of its fade.
+#[cfg(test)]
+pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
 /// Floor on `tiles.fade_seconds`. At zero a finished row goes on the
 /// scan that notices, which is a legitimate choice rather than a
 /// mistake -- some developers want the display to hold only what runs.

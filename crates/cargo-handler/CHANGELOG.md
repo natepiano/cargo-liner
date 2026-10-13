@@ -40,4 +40,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On KDE Plasma the attract screen draws the windows behind the terminal once `assets/cargo-handler.desktop.in` is installed: `scripts/install-desktop-entry.sh --crate cargo-handler`, or the script given a binary named `cargo-handler`. `KWin` grants window capture by executable path, so without the entry the backdrop is the wallpaper.
 
 ### Changed
+- Dark themes use a brighter error red so over-budget row counts and widths stay readable on focused and unfocused cells.
 - In `auto`, the grid shows only the summary when cells would show fewer of its rows than the summary alone; `summary` always shows it alone, and `cells` uses cells whenever they meet their size floor.

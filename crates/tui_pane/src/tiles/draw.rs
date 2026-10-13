@@ -39,6 +39,7 @@ use crate::PaneBorders;
 use crate::PaneChrome;
 use crate::PaneFrame;
 use crate::PaneFrameLabel;
+use crate::blend_color;
 use crate::default_pane_chrome;
 use crate::draw_clipped;
 use crate::error_color;
@@ -63,6 +64,54 @@ pub enum TileGridContents {
     Shown,
     /// Draw the cells and nothing in them.
     Hidden,
+}
+
+/// How far a cell's ink has travelled toward its ground.
+/// Zero retains the ink; [`u8::MAX`] reaches the ground.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellFadeProgress(u8);
+
+impl CellFadeProgress {
+    /// Name an amount on the same scale as [`crate::blend_color`].
+    #[must_use]
+    pub const fn new(amount: u8) -> Self { Self(amount) }
+
+    /// The amount on the zero-to-255 blend scale.
+    #[must_use]
+    pub const fn amount(self) -> u8 { self.0 }
+}
+
+/// Whether a cell's foot follows its contents toward the cell's ground.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CellReadoutFade {
+    /// Retain the foot's original inks.
+    #[default]
+    Unfaded,
+    /// Blend the foot's inks toward the cell's ground.
+    Fading(CellFadeProgress),
+}
+
+/// Ink state shared by every span of a cell's foot.
+#[derive(Clone, Copy)]
+enum CellReadoutInk {
+    Unfaded,
+    Fading {
+        progress: CellFadeProgress,
+        ground:   Color,
+    },
+}
+
+impl CellReadoutInk {
+    fn line(self, mut line: Line<'static>) -> Line<'static> {
+        let Self::Fading { progress, ground } = self else {
+            return line;
+        };
+        for span in &mut line.spans {
+            let ink = line.style.patch(span.style).fg.unwrap_or_else(text_default);
+            span.style = span.style.fg(blend_color(ink, ground, progress.amount()));
+        }
+        line
+    }
 }
 
 /// What the app writes at the left end of the summary cell's readout row.
@@ -102,6 +151,12 @@ pub trait TileCells<Id> {
     /// Text drawn whole or not at all at the left end of the summary
     /// cell's readout row.
     fn summary_foot(&self) -> SummaryFoot { SummaryFoot::Empty }
+
+    /// Fade used by the cell's contents, also applied to every foot span.
+    /// Existing cell providers retain their original readout inks.
+    fn readout_fade(&self, _content: &TileContent<Id>) -> CellReadoutFade {
+        CellReadoutFade::Unfaded
+    }
 
     /// Rows each cell's contents would take given all the room they
     /// want, each measured at the width `widths` gives that cell.
@@ -290,6 +345,12 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
                     content_rows,
                     demand_width,
                     &summary_foot,
+                    match cells.readout_fade(&placement.content) {
+                        CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
+                        CellReadoutFade::Fading(progress) => {
+                            CellReadoutInk::Fading { progress, ground }
+                        },
+                    },
                     |buffer, inner| match &placement.content {
                         TileContent::Empty(number) if draws_name => {
                             draw_number(buffer, *number, inner);
@@ -396,6 +457,7 @@ pub fn draw_tile_cell<Id>(
         rows,
         measured_at,
         &SummaryFoot::Empty,
+        CellReadoutInk::Unfaded,
         |buffer, inner| match content {
             TileContent::Empty(number) => draw_number(buffer, *number, inner),
             TileContent::Summary | TileContent::Group(_) => draw(buffer, inner),
@@ -410,6 +472,7 @@ fn draw_cell(
     rows: usize,
     measured_at: u16,
     summary_foot: &SummaryFoot,
+    ink: CellReadoutInk,
     draw: impl FnOnce(&mut Buffer, Rect),
 ) {
     let contents = content_area(inner);
@@ -418,14 +481,14 @@ fn draw_cell(
     }
     let foot_draw_outcome = match summary_foot {
         SummaryFoot::Empty => SummaryFootDrawOutcome::NotDrawn,
-        SummaryFoot::Text(line) => draw_summary_foot(buffer, inner, line),
+        SummaryFoot::Text(line) => draw_summary_foot(buffer, inner, line, ink),
     };
     match foot_draw_outcome {
         SummaryFootDrawOutcome::NotDrawn => {
-            draw_rows_readout(buffer, inner, rows, measured_at);
+            draw_rows_readout(buffer, inner, rows, measured_at, ink);
         },
         SummaryFootDrawOutcome::DrawnWhole { width } => {
-            draw_rows_readout_after_foot(buffer, inner, rows, measured_at, width);
+            draw_rows_readout_after_foot(buffer, inner, rows, measured_at, width, ink);
         },
     }
 }
@@ -491,7 +554,13 @@ fn measured_width<Id: Eq>(widths: &[(TileContent<Id>, u16)], content: &TileConte
 /// is the whole of what separates a cell asking for too much from a
 /// cell asking against the wrong ruler, and is written red where it
 /// appears.
-fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize, measured_at: u16) {
+fn draw_rows_readout(
+    buffer: &mut Buffer,
+    inner: Rect,
+    rows: usize,
+    measured_at: u16,
+    ink: CellReadoutInk,
+) {
     let ReadoutRow::Reserved(readout) = readout_row(inner) else {
         return;
     };
@@ -499,7 +568,7 @@ fn draw_rows_readout(buffer: &mut Buffer, inner: Rect, rows: usize, measured_at:
         .into_iter()
         .find(|line| line.width() <= usize::from(readout.width))
     {
-        draw_rows_readout_line(buffer, readout, line);
+        draw_rows_readout_line(buffer, readout, ink.line(line));
     }
 }
 
@@ -510,6 +579,7 @@ fn draw_rows_readout_after_foot(
     rows: usize,
     measured_at: u16,
     foot_width: u16,
+    ink: CellReadoutInk,
 ) {
     let ReadoutRow::Reserved(readout) = readout_row(inner) else {
         return;
@@ -523,7 +593,7 @@ fn draw_rows_readout_after_foot(
         .into_iter()
         .find(|line| line.width() <= usize::from(room))
     {
-        draw_rows_readout_line(buffer, readout, line);
+        draw_rows_readout_line(buffer, readout, ink.line(line));
     }
 }
 
@@ -592,6 +662,7 @@ fn draw_summary_foot(
     buffer: &mut Buffer,
     inner: Rect,
     line: &Line<'static>,
+    ink: CellReadoutInk,
 ) -> SummaryFootDrawOutcome {
     let ReadoutRow::Reserved(readout) = readout_row(inner) else {
         return SummaryFootDrawOutcome::NotDrawn;
@@ -600,7 +671,7 @@ fn draw_summary_foot(
     if width > inner.width.saturating_sub(TILE_FOOT_LEFT_INSET) {
         return SummaryFootDrawOutcome::NotDrawn;
     }
-    Paragraph::new(line.clone()).render(
+    Paragraph::new(ink.line(line.clone())).render(
         Rect {
             x: inner.x.saturating_add(TILE_FOOT_LEFT_INSET),
             y: readout.y,
@@ -730,9 +801,10 @@ mod tests {
     };
 
     struct StubCells {
-        summary_foot: SummaryFoot,
-        demands:      TileDemands<u32>,
-        row_counts:   Vec<StubRowCount>,
+        summary_foot:  SummaryFoot,
+        demands:       TileDemands<u32>,
+        row_counts:    Vec<StubRowCount>,
+        readout_fades: Vec<(TileContent<u32>, CellReadoutFade)>,
     }
 
     struct StubRowCount {
@@ -747,8 +819,8 @@ mod tests {
 
         fn demanding(summary: usize, groups: impl IntoIterator<Item = (u32, usize)>) -> Self {
             Self {
-                summary_foot: SummaryFoot::Empty,
-                demands:      TileDemands {
+                summary_foot:  SummaryFoot::Empty,
+                demands:       TileDemands {
                     summary,
                     summary_width: 0,
                     groups: groups
@@ -756,7 +828,8 @@ mod tests {
                         .map(|(id, rows)| TileDemand { id, rows })
                         .collect(),
                 },
-                row_counts:   Vec::new(),
+                row_counts:    Vec::new(),
+                readout_fades: Vec::new(),
             }
         }
 
@@ -775,6 +848,13 @@ mod tests {
         fn summary_title(&self) -> &'static str { "summary" }
 
         fn summary_foot(&self) -> SummaryFoot { self.summary_foot.clone() }
+
+        fn readout_fade(&self, content: &TileContent<u32>) -> CellReadoutFade {
+            self.readout_fades
+                .iter()
+                .find(|(cell, _)| cell == content)
+                .map_or(CellReadoutFade::Unfaded, |(_, fade)| *fade)
+        }
 
         fn group_title(&self, id: &u32) -> Option<Span<'static>> {
             Some(Span::raw(group_title(*id)))
@@ -4357,6 +4437,80 @@ mod tests {
     }
 
     #[test]
+    fn a_fading_cells_readout_fades_with_it() {
+        let previous_tint = crate::focused_pane_tint_enabled();
+        let previous_transparency = crate::transparent_background();
+        crate::set_focused_pane_tint(true);
+        let area = Rect::new(0, 0, 200, 16);
+        for transparent in [false, true] {
+            crate::set_transparent_background(transparent);
+            let mut cells =
+                StubCells::demanding(1, [(7, 100)]).with_summary_foot(SummaryFoot::Text(
+                    Line::from(vec![
+                        Span::raw(FOOT_TEXT),
+                        Span::styled("!", Style::default().fg(success_color())),
+                    ])
+                    .style(Style::default().fg(label_color())),
+                ));
+            let (_, unfaded) = settled_grid_in_view(area, &cells, TileView::Cells, MIN_TILE_HEIGHT);
+            for amount in [0, 64, 128, u8::MAX] {
+                cells.readout_fades = vec![
+                    (
+                        TileContent::Summary,
+                        CellReadoutFade::Fading(CellFadeProgress::new(amount)),
+                    ),
+                    (
+                        TileContent::Group(7),
+                        CellReadoutFade::Fading(CellFadeProgress::new(u8::MAX - amount)),
+                    ),
+                ];
+                let (grid, faded) =
+                    settled_grid_in_view(area, &cells, TileView::Cells, MIN_TILE_HEIGHT);
+                let placements = grid.placements(area, TileGrowth::default());
+                assert_eq!(placements.len(), 2);
+                for placement in placements {
+                    let inner = placement.frame.inner();
+                    let foot_y = inner.bottom() - TILE_ROWS_READOUT_HEIGHT;
+                    let progress =
+                        CellFadeProgress::new(if placement.content == TileContent::Summary {
+                            amount
+                        } else {
+                            u8::MAX - amount
+                        });
+                    assert_eq!(
+                        cells.readout_fade(&placement.content),
+                        CellReadoutFade::Fading(progress)
+                    );
+                    let ground = pane_background(placement.frame.is_focused());
+                    let mut written = 0;
+                    for x in inner.left()..inner.right() {
+                        let before = &unfaded[(x, foot_y)];
+                        let after = &faded[(x, foot_y)];
+                        assert_eq!(after.symbol(), before.symbol());
+                        if before.symbol() != " " {
+                            written += 1;
+                            let ink = if before.fg == Color::Reset {
+                                text_default()
+                            } else {
+                                before.fg
+                            };
+                            assert_eq!(
+                                after.fg,
+                                blend_color(ink, ground, progress.amount()),
+                                "{:?} at {x},{foot_y}; transparent={transparent}",
+                                placement.content
+                            );
+                        }
+                    }
+                    assert!(written > 0);
+                }
+            }
+        }
+        crate::set_focused_pane_tint(previous_tint);
+        crate::set_transparent_background(previous_transparency);
+    }
+
+    #[test]
     fn summary_foot_is_written_only_on_summary_readout_row() {
         let area = Rect::new(0, 0, 80, 16);
         let cells = StubCells::new([7]).with_summary_foot(SummaryFoot::Text(Line::raw(FOOT_TEXT)));
@@ -4396,6 +4550,7 @@ mod tests {
             1,
             inner.width,
             &SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            CellReadoutInk::Unfaded,
             |_, _| {},
         );
 
@@ -4417,6 +4572,7 @@ mod tests {
             1,
             inner.width,
             &SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            CellReadoutInk::Unfaded,
             |_, _| {},
         );
 
@@ -4461,6 +4617,7 @@ mod tests {
                 1,
                 width,
                 &SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+                CellReadoutInk::Unfaded,
                 |_, _| {},
             );
 
@@ -4479,6 +4636,7 @@ mod tests {
                     1,
                     width,
                     &SummaryFoot::Empty,
+                    CellReadoutInk::Unfaded,
                     |_, _| {},
                 );
                 for x in 0..width {
@@ -4499,6 +4657,7 @@ mod tests {
             1,
             inner.width,
             &SummaryFoot::Text(Line::raw(FOOT_TEXT)),
+            CellReadoutInk::Unfaded,
             |_, _| {},
         );
         let row = buffer_line(&buffer, inner.bottom() - TILE_ROWS_READOUT_HEIGHT);
@@ -4537,7 +4696,7 @@ mod tests {
                 .map(line_text)
                 .collect::<Vec<_>>();
             let mut buffer = Buffer::empty(inner);
-            draw_rows_readout(&mut buffer, inner, 22, measured_at);
+            draw_rows_readout(&mut buffer, inner, 22, measured_at, CellReadoutInk::Unfaded);
             let row = buffer_line(&buffer, inner.bottom() - 1);
             let shown = row.trim();
             assert!(

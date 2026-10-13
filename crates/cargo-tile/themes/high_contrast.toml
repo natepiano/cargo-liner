@@ -31,7 +31,7 @@ remembered = { r = 0, g = 25, b = 50 }
 
 [variants.semantic]
 accent       = { color = "LightCyan", bold = true }
-error        = { color = "LightRed", bold = true }
+error        = { color = { r = 255, g = 115, b = 115 }, bold = true }
 inline_error = { color = "LightYellow", bold = true }
 label        = "White"
 success      = { color = "LightGreen", bold = true }
@@ -45,6 +45,14 @@ dim       = "Gray"
 secondary = "White"
 
 [variants.roles]
+family_blue   = { r = 140, g = 150, b = 255 }
+family_green  = { r = 148, g = 210, b = 0 }
+family_magenta= { r = 255, g = 110, b = 207 }
+family_cyan   = { r = 0, g = 205, b = 205 }
+family_orange = { r = 255, g = 185, b = 45 }
+family_violet = { r = 209, g = 130, b = 255 }
+family_yellow = { r = 230, g = 205, b = 0 }
+family_red    = { r = 255, g = 115, b = 115 }
 
 [variants.status]
 bar = { r = 60, g = 60, b = 60 }
@@ -87,6 +95,14 @@ dim       = { r = 80, g = 80, b = 80 }
 secondary = "Black"
 
 [variants.roles]
+family_blue   = { r = 0, g = 15, b = 170 }
+family_green  = { r = 70, g = 105, b = 0 }
+family_magenta= { r = 150, g = 0, b = 100 }
+family_cyan   = { r = 0, g = 105, b = 105 }
+family_orange = { r = 135, g = 89, b = 0 }
+family_violet = { r = 105, g = 0, b = 160 }
+family_yellow = { r = 120, g = 95, b = 0 }
+family_red    = { r = 175, g = 25, b = 40 }
 
 [variants.status]
 bar = { r = 210, g = 210, b = 210 }

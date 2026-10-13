@@ -22,6 +22,7 @@ use crate::census::InvocationId;
 use crate::census::Measurement;
 use crate::census::RunStart;
 use crate::census::VisibleParent;
+use crate::constants::FADE_ALPHA_STEP;
 use crate::theme;
 
 /// Whether a retained row still runs or is fading from its first missing scan.
@@ -144,10 +145,14 @@ impl TrackedRow {
         }
         // Both fit a u32: `fade` is clamped to `MAX_FADE_SECONDS`, and
         // `elapsed` is shorter still to have reached here.
-        let elapsed = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
-        let whole = u32::try_from(fade.as_millis()).unwrap_or(u32::MAX);
-        let travelled = elapsed.saturating_mul(u32::from(u8::MAX)) / whole.max(1);
-        u8::try_from(travelled).unwrap_or(u8::MAX)
+        let elapsed = u64::from(u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX));
+        let whole = u64::from(u32::try_from(fade.as_millis()).unwrap_or(u32::MAX));
+        let travelled = elapsed
+            .saturating_mul(elapsed)
+            .saturating_mul(u64::from(u8::MAX))
+            / whole.saturating_mul(whole).max(1);
+        let alpha = u8::try_from(travelled).unwrap_or(u8::MAX);
+        alpha - alpha % FADE_ALPHA_STEP
     }
 
     /// Whether the row has been finished for longer than `fade`.
@@ -326,8 +331,8 @@ pub(crate) struct Roster {
     /// Kept here rather than worked out per cell because the colour has
     /// to be the same in the summary and in the command's own cell, and
     /// because which colours are free is a question about every group
-    /// at once. An index is held for as long as the family is on screen,
-    /// fading rows included, so a colour never moves under the reader.
+    /// at once. An index is held while the family is on screen and the
+    /// active palette contains it, fading rows included.
     families: HashMap<InvocationId, usize>,
 }
 
@@ -377,7 +382,7 @@ impl Roster {
     /// would shuffle tiles under the reader for no reason.
     pub(crate) fn observe(&mut self, scan: Vec<CargoGroup>, now: Instant) -> bool {
         if scan == self.last {
-            return false;
+            return self.assign_families();
         }
         self.last.clone_from(&scan);
         let arriving: Vec<InvocationId> = scan.iter().map(CargoGroup::id).collect();
@@ -404,8 +409,8 @@ impl Roster {
     /// holds, and stamp it on the rows that draw it.
     ///
     /// A family is a cargo with cargo running under it. Its index is
-    /// kept for as long as it is on screen: reassigning from scratch
-    /// each scan would recolour every cell whenever a build finished,
+    /// kept while it is on screen and inside the active palette:
+    /// reassigning from scratch each scan would recolour every cell whenever a build finished,
     /// which is the most routine event here. A family that goes away
     /// gives its index back, so the palette is spent on what is
     /// actually running.
@@ -419,7 +424,7 @@ impl Roster {
     /// this cannot serve, and it wraps rather than leaving the extra
     /// ones unmarked -- a repeated colour still pairs correctly far
     /// more often than none does.
-    fn assign_families(&mut self) {
+    fn assign_families(&mut self) -> bool {
         let parents: HashSet<InvocationId> = self
             .groups
             .iter()
@@ -443,11 +448,13 @@ impl Roster {
             .map(|row| row.process.invocation_id.clone())
             .collect();
         let mut families = std::mem::take(&mut self.families);
-        families.retain(|id, _| heads.contains(id));
         // Asked of the theme rather than of the palette, because how
         // many colours are left depends on what the column headers are
         // drawn in and that is the reader's to change.
         let count = theme::family_color_count().max(1);
+        let previous_count = families.len();
+        families.retain(|id, index| heads.contains(id) && *index < count);
+        let mut changed = families.len() != previous_count;
         for id in heads {
             if families.contains_key(&id) {
                 continue;
@@ -455,6 +462,7 @@ impl Roster {
             let taken: HashSet<usize> = families.values().copied().collect();
             let free = (0..count).find(|index| !taken.contains(index));
             families.insert(id, free.unwrap_or(families.len() % count));
+            changed = true;
         }
         for group in &mut self.groups {
             for row in group.rows_mut() {
@@ -472,6 +480,7 @@ impl Roster {
             }
         }
         self.families = families;
+        changed
     }
 
     /// Move every fade on and drop whatever has finished one, reporting
@@ -499,6 +508,7 @@ impl Roster {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color;
     use sysinfo::Pid;
 
     use super::*;
@@ -513,7 +523,9 @@ mod tests {
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentities;
     use crate::census::process_identity::ProcessIdentity;
+    use crate::constants::DEFAULT_FADE_SECONDS;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
+    use crate::constants::MIN_FINISHED_ROW_CONTRAST;
     use crate::constants::PORT_SUBCOMMAND_NAME;
     use crate::constants::TEST_INVOCATION_PID;
     use crate::constants::TEST_REPLACEMENT_LIFETIME;
@@ -733,6 +745,66 @@ mod tests {
             .find(|(pid, ..)| *pid == 70001)
             .map(|(_, family, _)| family);
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn surviving_families_take_distinct_colours_when_the_theme_palette_shrinks() {
+        let previous_theme = tui_pane::theme();
+        let variants = theme::builtins::builtins();
+        let dark = &variants[0];
+        let light = &variants[1];
+        assert_eq!(dark.id.as_str(), crate::constants::DEFAULT_DARK_THEME);
+        assert_eq!(light.id.as_str(), crate::constants::DEFAULT_LIGHT_THEME);
+        tui_pane::set_active_theme(std::sync::Arc::new(dark.theme.clone()));
+        let now = start();
+        let fade = Duration::from_secs(DEFAULT_FADE_SECONDS);
+        let mut roster = Roster::new();
+        let scan = vec![
+            family(10, &[11]),
+            family(20, &[21]),
+            family(30, &[31]),
+            family(40, &[41]),
+        ];
+        roster.observe(scan.clone(), now);
+        let first_index = roster.families[&scan[0].id()];
+        let survivors = vec![scan[0].clone(), scan[3].clone()];
+        roster.observe(survivors.clone(), now);
+        roster.advance(now + fade, fade);
+        let colours_before = [
+            theme::family_color(roster.families[&survivors[0].id()]),
+            theme::family_color(roster.families[&survivors[1].id()]),
+        ];
+        let mut smaller_light = light.theme.clone();
+        let first_colour = smaller_light.roles[crate::constants::FAMILY_BLUE_ROLE];
+        for role in [
+            crate::constants::FAMILY_CYAN_ROLE,
+            crate::constants::FAMILY_ORANGE_ROLE,
+            crate::constants::FAMILY_VIOLET_ROLE,
+            crate::constants::FAMILY_YELLOW_ROLE,
+            crate::constants::FAMILY_RED_ROLE,
+        ] {
+            smaller_light.roles.insert(role.to_owned(), first_colour);
+        }
+        tui_pane::set_active_theme(std::sync::Arc::new(smaller_light));
+        let scan_changed = roster.observe(survivors.clone(), now + fade);
+        let colours_after = [
+            theme::family_color(roster.families[&survivors[0].id()]),
+            theme::family_color(roster.families[&survivors[1].id()]),
+        ];
+        let retained_index = roster.families[&survivors[0].id()];
+        let next_scan_changed = roster.observe(survivors.clone(), now + fade);
+        let colours_next_scan = [
+            theme::family_color(roster.families[&survivors[0].id()]),
+            theme::family_color(roster.families[&survivors[1].id()]),
+        ];
+        tui_pane::set_active_theme(previous_theme);
+
+        assert_ne!(colours_before[0], colours_before[1]);
+        assert_ne!(colours_after[0], colours_after[1]);
+        assert_eq!(retained_index, first_index);
+        assert_eq!(colours_next_scan, colours_after);
+        assert!(scan_changed);
+        assert!(!next_scan_changed);
     }
 
     /// A command with nothing running under it has nothing pointing at
@@ -1080,6 +1152,122 @@ mod tests {
         assert!(roster.advance(now + Duration::from_millis(1000), fade));
     }
 
+    #[test]
+    fn a_finished_row_stays_readable_through_the_first_half_of_its_fade() {
+        let now = start();
+        let fade = Duration::from_secs(DEFAULT_FADE_SECONDS);
+        let mut row = TrackedRow::from(group(TEST_INVOCATION_PID, &[]).lead);
+        row.finish(now);
+        let mut steps: Vec<_> = (0..=fade.as_millis())
+            .map(|elapsed| {
+                let elapsed = Duration::from_millis(u64::try_from(elapsed).unwrap_or(u64::MAX));
+                (elapsed, row.faded_at(now + elapsed, fade))
+            })
+            .collect();
+        steps.dedup_by_key(|(_, alpha)| *alpha);
+        let previous_theme = tui_pane::theme();
+        let previous_transparency = tui_pane::transparent_background();
+        let previous_tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_focused_pane_tint(true);
+        for variant in theme::builtins::builtins() {
+            tui_pane::set_active_theme(std::sync::Arc::new(variant.theme.clone()));
+            let mut inks = vec![
+                tui_pane::text_default(),
+                tui_pane::label_color(),
+                tui_pane::success_color(),
+                tui_pane::warning_color(),
+                tui_pane::secondary_text_color(),
+            ];
+            inks.extend(variant.theme.roles.values().map(|style| style.color));
+            for transparent in [false, true] {
+                tui_pane::set_transparent_background(transparent);
+                for focused in [false, true] {
+                    let ground = tui_pane::pane_background(focused);
+                    for ink in &inks {
+                        for elapsed in [Duration::ZERO, fade / 2, fade] {
+                            let drawn = tui_pane::blend_color(
+                                *ink,
+                                ground,
+                                row.faded_at(now + elapsed, fade),
+                            );
+                            let contrast = fade_contrast(drawn, ground);
+                            if elapsed <= fade / 2 {
+                                assert!(
+                                    contrast >= MIN_FINISHED_ROW_CONTRAST,
+                                    "{} {ink:?} on {ground:?} at {elapsed:?}: {contrast:.3}:1, transparent={transparent}, focused={focused}",
+                                    variant.id.as_str()
+                                );
+                            } else {
+                                assert_eq!(drawn, tui_pane::blend_color(ground, ground, 0));
+                            }
+                        }
+                        let mut previous_contrast = fade_contrast(*ink, ground);
+                        for (elapsed, alpha) in &steps {
+                            let contrast =
+                                fade_contrast(tui_pane::blend_color(*ink, ground, *alpha), ground);
+                            assert!(
+                                contrast <= previous_contrast,
+                                "{} {ink:?} on {ground:?} grows in contrast at alpha {alpha}: {previous_contrast:.6} -> {contrast:.6}",
+                                variant.id.as_str()
+                            );
+                            if *elapsed <= fade / 2 {
+                                assert!(
+                                    contrast >= MIN_FINISHED_ROW_CONTRAST,
+                                    "{} {ink:?} on {ground:?} at {elapsed:?}: {contrast:.3}:1",
+                                    variant.id.as_str()
+                                );
+                            }
+                            previous_contrast = contrast;
+                        }
+                    }
+                }
+            }
+        }
+        tui_pane::set_active_theme(previous_theme);
+        tui_pane::set_transparent_background(previous_transparency);
+        tui_pane::set_focused_pane_tint(previous_tint);
+        let mut previous = 0;
+        for elapsed in 0..=fade.as_millis() {
+            let elapsed = Duration::from_millis(u64::try_from(elapsed).unwrap_or(u64::MAX));
+            let alpha = row.faded_at(now + elapsed, fade);
+            assert!(alpha >= previous);
+            previous = alpha;
+        }
+        assert_eq!(previous, u8::MAX);
+        assert!(row.is_expired(now + fade, fade));
+    }
+
+    fn fade_contrast(ink: Color, ground: Color) -> f64 {
+        let ink = fade_luminance(ink);
+        let ground = fade_luminance(ground);
+        (ink.max(ground) + 0.05) / (ink.min(ground) + 0.05)
+    }
+
+    fn fade_luminance(color: Color) -> f64 {
+        let color = tui_pane::blend_color(color, Color::Black, 0);
+        let (red, green, blue) = match color {
+            Color::Rgb(red, green, blue) => (red, green, blue),
+            _ => (0, 0, 0),
+        };
+        assert_eq!(
+            color,
+            Color::Rgb(red, green, blue),
+            "a built-in ink must have measurable channels"
+        );
+        let linear = |channel: u8| {
+            let channel = f64::from(channel) / f64::from(u8::MAX);
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126f64.mul_add(
+            linear(red),
+            0.7152f64.mul_add(linear(green), 0.0722 * linear(blue)),
+        )
+    }
+
     /// The step the fade stands on is what the render layer carries the
     /// row's colour by, so it has to track the spell rather than the
     /// scans inside it.
@@ -1093,9 +1281,16 @@ mod tests {
 
         assert_eq!(roster.groups()[0].lead.faded(), 0, "stamped, not yet gone");
         roster.advance(now + Duration::from_secs(1), fade);
-        assert_eq!(roster.groups()[0].lead.faded(), u8::MAX / 4);
+        let quarter = roster.groups()[0].lead.faded();
+        assert!(quarter > 0 && quarter < u8::MAX / 4);
         roster.advance(now + Duration::from_secs(2), fade);
-        assert_eq!(roster.groups()[0].lead.faded(), u8::MAX / 2);
+        let midpoint = roster.groups()[0].lead.faded();
+        assert!(midpoint > quarter && midpoint < u8::MAX / 2);
+        let longer_fade = fade * 2;
+        let row = &roster.groups()[0].lead;
+        assert_eq!(row.faded_at(now + longer_fade / 4, longer_fade), quarter);
+        assert_eq!(row.faded_at(now + longer_fade / 2, longer_fade), midpoint);
+        assert_eq!(row.faded_at(now + fade, fade), u8::MAX);
     }
 
     /// A row still in the scan is drawn in its own colours, however

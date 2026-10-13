@@ -8,70 +8,137 @@
 pub(crate) mod builtins;
 
 use ratatui::style::Color;
-use tui_pane::color_distance;
-use tui_pane::error_color;
+use tui_pane::Theme;
 use tui_pane::label_color;
 
-/// The colours a family of invocations is tied together by: the pid of
-/// a command that has cargo running under it, and the parent pid on
-/// each of the rows underneath.
-///
-/// The solarized accent set, chosen because legibility against a light
-/// ground and a dark one is the property it was built for -- these are
-/// the eight hues that palette holds constant across both of its
-/// backgrounds. A tie that only reads in one appearance would be no
-/// tie at all in the other, and this one colour has to work in a
-/// theme this app did not ship.
-const FAMILY_COLORS: [Color; 8] = [
-    Color::Rgb(0x26, 0x8B, 0xD2), // blue
-    Color::Rgb(0x85, 0x99, 0x00), // green
-    Color::Rgb(0xD3, 0x36, 0x82), // magenta
-    Color::Rgb(0x2A, 0xA1, 0x98), // cyan
-    Color::Rgb(0xCB, 0x4B, 0x16), // orange
-    Color::Rgb(0x6C, 0x71, 0xC4), // violet
-    Color::Rgb(0xB5, 0x89, 0x00), // yellow
-    Color::Rgb(0xDC, 0x32, 0x2F), // red
+use crate::constants::FAMILY_BLUE_ROLE;
+use crate::constants::FAMILY_CHROMA_SCALE;
+use crate::constants::FAMILY_COLOR_CLEARANCE;
+use crate::constants::FAMILY_CYAN_ROLE;
+use crate::constants::FAMILY_GREEN_ROLE;
+use crate::constants::FAMILY_HUE_SECTOR;
+use crate::constants::FAMILY_MAGENTA_ROLE;
+use crate::constants::FAMILY_ORANGE_ROLE;
+use crate::constants::FAMILY_RED_ROLE;
+use crate::constants::FAMILY_VIOLET_ROLE;
+use crate::constants::FAMILY_YELLOW_ROLE;
+
+/// Theme roles tying a parent's pid to the invocations beneath it.
+const FAMILY_ROLES: [&str; 8] = [
+    FAMILY_BLUE_ROLE,
+    FAMILY_GREEN_ROLE,
+    FAMILY_MAGENTA_ROLE,
+    FAMILY_CYAN_ROLE,
+    FAMILY_ORANGE_ROLE,
+    FAMILY_VIOLET_ROLE,
+    FAMILY_YELLOW_ROLE,
+    FAMILY_RED_ROLE,
 ];
 
-/// How near a family colour may come to one the display already
-/// spends, before it is dropped from the palette. On the scale
-/// [`color_distance`] works in.
-///
-/// Set where it clears both of the colours in [`reserved_colors`] by a
-/// comfortable margin under every theme this app ships, and still
-/// leaves four families to tell apart -- more than the screen has held
-/// at once.
-const FAMILY_COLOR_CLEARANCE: u16 = 200;
+/// HSL hue and saturation with lightness omitted from identity comparisons.
+enum FamilyChroma {
+    TerminalDefault,
+    Hue { horizontal: f64, vertical: f64 },
+}
 
-/// The colours the display already spends on a meaning of their own,
-/// which a family colour must not be read as.
-///
-/// The column headers, because a pid drawn near that colour reads as
-/// an uncoloured pid -- and an uncoloured pid is exactly what a row
-/// with nothing under it gets, the one thing a family colour says it
-/// is not.
-///
-/// And whatever the theme draws an error in, because a pid in that
-/// colour reads as something having gone wrong when the only thing
-/// that has happened is that a command started another one.
-fn reserved_colors() -> [Color; 2] { [label_color(), error_color()] }
+impl FamilyChroma {
+    fn from_color(color: Color) -> Self {
+        let Color::Rgb(red, green, blue) = tui_pane::blend_color(color, Color::Black, 0) else {
+            return Self::TerminalDefault;
+        };
+        let maximum_channel = red.max(green).max(blue);
+        let minimum_channel = red.min(green).min(blue);
+        if maximum_channel == minimum_channel {
+            return Self::Hue {
+                horizontal: 0.0,
+                vertical:   0.0,
+            };
+        }
+        let maximum = f64::from(maximum_channel) / f64::from(u8::MAX);
+        let minimum = f64::from(minimum_channel) / f64::from(u8::MAX);
+        let chroma = maximum - minimum;
+        let saturation = chroma / (1.0 - (maximum + minimum - 1.0).abs());
+        let sector = if maximum_channel == red {
+            (f64::from(green) - f64::from(blue)) / f64::from(u8::MAX) / chroma
+        } else if maximum_channel == green {
+            (f64::from(blue) - f64::from(red)) / f64::from(u8::MAX) / chroma + 2.0
+        } else {
+            (f64::from(red) - f64::from(green)) / f64::from(u8::MAX) / chroma + 4.0
+        };
+        let hue = (sector * FAMILY_HUE_SECTOR).to_radians();
+        let radius = saturation * FAMILY_CHROMA_SCALE;
+        Self::Hue {
+            horizontal: radius * hue.cos(),
+            vertical:   radius * hue.sin(),
+        }
+    }
+}
 
-/// The palette entries standing clear of every colour in `reserved`.
+/// Distance on the hue circle, whose radius is the colour's HSL saturation.
+/// Neutral inks sit at its centre; lightness cannot hide a hue collision.
+/// A terminal default has no measurable hue and does not exclude an ink.
+fn family_colour_distance(color: Color, other: Color) -> f64 {
+    match (
+        FamilyChroma::from_color(color),
+        FamilyChroma::from_color(other),
+    ) {
+        (
+            FamilyChroma::Hue {
+                horizontal,
+                vertical,
+            },
+            FamilyChroma::Hue {
+                horizontal: other_horizontal,
+                vertical: other_vertical,
+            },
+        ) => (horizontal - other_horizontal).hypot(vertical - other_vertical),
+        _ => f64::INFINITY,
+    }
+}
+
+/// Inks used for uncoloured pids, errors, directory headings and progress.
+const fn reserved_colors(theme: &Theme) -> [Color; 5] {
+    [
+        theme.semantic.label.color,
+        theme.semantic.error.color,
+        theme.semantic.accent.color,
+        theme.semantic.success.color,
+        theme.text.default.color,
+    ]
+}
+
+/// Palette entries clear of reserved inks and every previously selected hue.
 ///
 /// Split out from [`family_palette`] so a test can aim it at a theme by
 /// name. The colours that matter are the ones this app ships, and the
 /// theme a test process runs under is the framework's fallback, whose
 /// label colour is a plain grey none of ours is.
-fn palette_clear_of(reserved: &[Color]) -> impl Iterator<Item = Color> + use<'_> {
-    FAMILY_COLORS.into_iter().filter(move |color| {
-        reserved.iter().all(|taken| {
-            color_distance(*color, *taken).is_none_or(|apart| apart >= FAMILY_COLOR_CLEARANCE)
+fn palette_clear_of<'theme>(
+    theme: &'theme Theme,
+    reserved: &'theme [Color],
+) -> impl Iterator<Item = Color> + 'theme {
+    let mut selected = Vec::new();
+    FAMILY_ROLES
+        .into_iter()
+        .zip(builtins::DARK_FAMILY_COLORS)
+        .map(|(role, fallback)| theme.roles.get(role).map_or(fallback, |spec| spec.color))
+        .filter(move |color| {
+            reserved
+                .iter()
+                .all(|taken| family_colour_distance(*color, *taken) >= FAMILY_COLOR_CLEARANCE)
         })
-    })
+        .filter(move |color| {
+            let clear = selected
+                .iter()
+                .all(|taken| family_colour_distance(*color, *taken) >= FAMILY_COLOR_CLEARANCE);
+            if clear {
+                selected.push(*color);
+            }
+            clear
+        })
 }
 
-/// The palette entries a family may be handed, which is every one
-/// standing clear of [`reserved_colors`].
+/// Distinct family hues standing clear of [`reserved_colors`].
 ///
 /// Read from the theme on each call rather than worked out once: the
 /// appearance can change under a running display, and a palette fixed
@@ -80,8 +147,9 @@ fn palette_clear_of(reserved: &[Color]) -> impl Iterator<Item = Color> + use<'_>
 /// kept -- there is nothing to measure it against, and emptying the
 /// palette over one unreadable colour is the worse failure.
 fn family_palette() -> impl Iterator<Item = Color> {
-    let reserved = reserved_colors();
-    palette_clear_of(&reserved)
+    let theme = tui_pane::theme();
+    let reserved = reserved_colors(&theme);
+    palette_clear_of(&theme, &reserved)
         .collect::<Vec<Color>>()
         .into_iter()
 }
@@ -116,6 +184,86 @@ pub(crate) fn family_color(index: usize) -> Color {
 mod tests {
     use super::*;
 
+    pub(super) fn shipped_themes() -> Vec<(String, Theme)> {
+        let mut themes: Vec<_> = builtins::builtins()
+            .into_iter()
+            .map(|variant| (variant.id.as_str().to_owned(), variant.theme))
+            .collect();
+        let starter =
+            toml::from_str::<tui_pane::ThemeFamily>(include_str!("../../themes/starter.toml"));
+        assert!(starter.is_ok(), "starter must parse: {starter:?}");
+        let Ok(starter) = starter else {
+            return themes;
+        };
+        themes.extend(
+            starter
+                .variants
+                .into_iter()
+                .map(|variant| (variant.name.clone(), variant.into_theme())),
+        );
+        themes
+    }
+
+    #[test]
+    fn every_builtin_family_palette_has_five_colours_and_light_matches_dark() {
+        let mut dark_count = 0;
+        let mut light_count = 0;
+        for (name, theme) in shipped_themes() {
+            let reserved = reserved_colors(&theme);
+            let palette: Vec<_> = palette_clear_of(&theme, &reserved).collect();
+            assert!(
+                palette.len() >= crate::constants::MIN_FAMILY_COLORS,
+                "{name}: {palette:?}"
+            );
+            if name == crate::constants::DEFAULT_DARK_THEME {
+                dark_count = palette.len();
+            }
+            if name == crate::constants::DEFAULT_LIGHT_THEME {
+                light_count = palette.len();
+            }
+        }
+        assert_eq!(light_count, dark_count);
+    }
+
+    #[test]
+    fn every_builtin_family_palette_separates_each_pair_of_hues() {
+        for (name, theme) in shipped_themes() {
+            let reserved = reserved_colors(&theme);
+            let palette: Vec<_> = palette_clear_of(&theme, &reserved).collect();
+            for (index, color) in palette.iter().enumerate() {
+                for other in &palette[index + 1..] {
+                    let distance = family_colour_distance(*color, *other);
+                    assert!(
+                        distance >= crate::constants::FAMILY_COLOR_CLEARANCE,
+                        "{name}: {color:?} and {other:?} are {distance:.2} apart"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_builtin_family_colour_clears_the_table_semantic_inks() {
+        for (name, theme) in shipped_themes() {
+            let reserved = reserved_colors(&theme);
+            for color in palette_clear_of(&theme, &reserved) {
+                for taken in [
+                    theme.semantic.label.color,
+                    theme.semantic.error.color,
+                    theme.semantic.accent.color,
+                    theme.semantic.success.color,
+                    theme.text.default.color,
+                ] {
+                    let distance = family_colour_distance(color, taken);
+                    assert!(
+                        distance >= crate::constants::FAMILY_COLOR_CLEARANCE,
+                        "{name}: {color:?} and {taken:?} are {distance:.2} apart"
+                    );
+                }
+            }
+        }
+    }
+
     /// The whole point of the colour is that it says this pid has
     /// cargo running under it. Near the headers it says the opposite,
     /// and near the error colour it says something worse.
@@ -124,11 +272,11 @@ mod tests {
         for index in 0..family_color_count() {
             let color = family_color(index);
 
-            for taken in reserved_colors() {
-                let apart = color_distance(color, taken);
+            for taken in reserved_colors(&tui_pane::theme()) {
+                let apart = family_colour_distance(color, taken);
 
                 assert!(
-                    apart.is_none_or(|apart| apart >= FAMILY_COLOR_CLEARANCE),
+                    apart >= FAMILY_COLOR_CLEARANCE,
                     "{color:?} stands {apart:?} from {taken:?}"
                 );
             }
@@ -149,19 +297,16 @@ mod tests {
     #[test]
     fn every_theme_this_app_ships_leaves_families_to_tell_apart() {
         for variant in builtins::builtins() {
-            let reserved = [
-                variant.theme.semantic.label.color,
-                variant.theme.semantic.error.color,
-            ];
-            let clear: Vec<Color> = palette_clear_of(&reserved).collect();
+            let reserved = reserved_colors(&variant.theme);
+            let clear: Vec<Color> = palette_clear_of(&variant.theme, &reserved).collect();
 
             assert!(clear.len() > 1, "{:?} leaves {clear:?}", variant.id);
             for color in clear {
                 for taken in reserved {
-                    let apart = color_distance(color, taken);
+                    let apart = family_colour_distance(color, taken);
 
                     assert!(
-                        apart.is_none_or(|apart| apart >= FAMILY_COLOR_CLEARANCE),
+                        apart >= FAMILY_COLOR_CLEARANCE,
                         "{:?}: {color:?} stands {apart:?} from {taken:?}",
                         variant.id
                     );

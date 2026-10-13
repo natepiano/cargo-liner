@@ -22,6 +22,8 @@ use ratatui::widgets::Table;
 use ratatui::widgets::Widget;
 use tui_pane::AttractWork;
 use tui_pane::BarPalette;
+use tui_pane::CellFadeProgress;
+use tui_pane::CellReadoutFade;
 use tui_pane::Keymap;
 use tui_pane::PaneFrameLabel;
 use tui_pane::SECTION_HEADER_INDENT;
@@ -364,6 +366,30 @@ impl TileCells<InvocationId> for Cells<'_> {
     fn summary_title(&self) -> &str { SUMMARY_CELL_TITLE }
 
     fn summary_foot(&self) -> SummaryFoot { memory_total(self.roster).foot() }
+
+    fn readout_fade(&self, content: &TileContent) -> CellReadoutFade {
+        let faded = match content {
+            TileContent::Summary => {
+                let rows = summary_rows(self.roster, self.hidden_when_idle);
+                heading_fade(&rows.iter().map(AsRef::as_ref).collect::<Vec<_>>())
+            },
+            TileContent::Group(id) => {
+                let Some(group) = self.roster.groups().iter().find(|group| &group.id == id) else {
+                    return CellReadoutFade::Unfaded;
+                };
+                let rows: Vec<_> = group
+                    .rows()
+                    .skip(usize::from(group.leads_as_ancestor(self.hidden_when_idle)))
+                    .collect();
+                group_fade(group, &rows)
+            },
+            TileContent::Empty(_) => return CellReadoutFade::Unfaded,
+        };
+        match faded {
+            0 => CellReadoutFade::Unfaded,
+            amount => CellReadoutFade::Fading(CellFadeProgress::new(amount)),
+        }
+    }
 
     fn demands(&self, widths: &[(TileContent, u16)]) -> TileDemands {
         frame_tile_demands(self.roster, widths, self.hidden_when_idle, &self.grids)
@@ -1085,7 +1111,7 @@ fn frame_draw_group(
     // The lead's own fade goes into the block whether or not it is a
     // row there: the chain stands over the whole cell, and the cell
     // goes out when the command does.
-    let faded = heading_fade(&rows).min(group.lead.faded());
+    let faded = group_fade(group, &rows);
     // The same measurement [`frame_group_height`] made when the cell
     // asked for its room, so the block is given back exactly what the
     // ask left it.
@@ -2429,6 +2455,11 @@ impl CellTableLayout {
 /// holds its colour while a single row under it is still running.
 fn heading_fade(rows: &[&TrackedRow]) -> u8 {
     rows.iter().map(|row| row.faded()).min().unwrap_or_default()
+}
+
+/// The cell's shared ink follows its rows and the command owning it.
+fn group_fade(group: &TrackedGroup, rows: &[&TrackedRow]) -> u8 {
+    heading_fade(rows).min(group.lead.faded())
 }
 
 /// Render a cargo table: one working-directory header per distinct path,
@@ -7040,6 +7071,125 @@ mod tests {
         let hidden_when_idle = hidden_when_idle();
         let cells = Cells::new(roster, &hidden_when_idle, ProcessTree::Long, &sccache);
         settled_buffer_with_cells(&cells, area)
+    }
+
+    #[test]
+    fn a_finished_commands_cell_reports_the_fade_its_contents_use() {
+        for hidden in [Vec::new(), hidden_when_idle()] {
+            let now = Instant::now();
+            let lead = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
+            let child = invocation(4200, &["build"]);
+            let mut roster = Roster::new();
+            roster.observe(
+                vec![CargoGroup {
+                    lead:     lead.clone(),
+                    rest:     vec![child],
+                    ancestry: Vec::new(),
+                }],
+                now,
+            );
+            roster.observe(vec![cargo_group(lead)], now);
+            roster.advance(
+                now + std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+            );
+            let sccache = SccacheStats::new();
+            let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+            let group = &roster.groups()[0];
+            assert!(group.rows().skip(1).any(|row| row.faded() > 0));
+            assert_eq!(
+                cells.readout_fade(&TileContent::Group(group.id.clone())),
+                CellReadoutFade::Unfaded,
+                "a live lead holds the cell ink"
+            );
+            roster.observe(Vec::new(), now + std::time::Duration::from_secs(1));
+            roster.advance(
+                now + std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+            );
+            let group = &roster.groups()[0];
+            let rows: Vec<_> = group
+                .rows()
+                .skip(usize::from(group.leads_as_ancestor(&hidden)))
+                .collect();
+            let fade = heading_fade(&rows).min(group.lead.faded());
+            assert!(fade > 0);
+            let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+            assert_eq!(
+                cells.readout_fade(&TileContent::Group(group.id.clone())),
+                CellReadoutFade::Fading(CellFadeProgress::new(fade))
+            );
+            assert_eq!(
+                cells.readout_fade(&TileContent::Empty(3)),
+                CellReadoutFade::Unfaded
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_foot_fades_with_its_rows() {
+        let now = Instant::now();
+        let driver = invocation(4100, &[PORT_SUBCOMMAND_NAME]);
+        let mut roster = Roster::new();
+        roster.observe(
+            vec![CargoGroup {
+                lead:     driver.clone(),
+                rest:     vec![invocation(4200, &["build"])],
+                ancestry: Vec::new(),
+            }],
+            now,
+        );
+        roster.observe(vec![cargo_group(driver.clone())], now);
+        roster.advance(
+            now + std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(crate::constants::DEFAULT_FADE_SECONDS),
+        );
+        let hidden = hidden_when_idle();
+        let rows = summary_rows(&roster, &hidden);
+        let fade = heading_fade(&rows.iter().map(AsRef::as_ref).collect::<Vec<_>>());
+        assert!(fade > 0, "promoted rows fade while the driver stays live");
+        let sccache = SccacheStats::new();
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        assert_eq!(
+            cells.readout_fade(&TileContent::Summary),
+            CellReadoutFade::Fading(CellFadeProgress::new(fade))
+        );
+        let area = Rect::new(0, 0, 200, 20);
+        let (grid, buffer) = settled_buffer_with_cells(&cells, area);
+        let summary = grid
+            .placements(area, TileGrowth::default())
+            .into_iter()
+            .find(|cell| cell.content == TileContent::Summary)
+            .expect("summary is drawn");
+        let inner = summary.frame.inner();
+        let foot_y = inner.bottom() - 1;
+        let SummaryFoot::Text(foot) = cells.summary_foot() else {
+            panic!("the summary reports its memory total");
+        };
+        let mut x = inner.x + 1;
+        for span in foot.spans {
+            let ink = span.style.fg.or(foot.style.fg).unwrap_or_else(text_default);
+            for _ in span.content.chars() {
+                assert_eq!(
+                    buffer[(x, foot_y)].fg,
+                    blend_color(ink, pane_background(summary.frame.is_focused()), fade)
+                );
+                x += 1;
+            }
+        }
+        roster.observe(
+            vec![CargoGroup {
+                lead:     driver,
+                rest:     vec![invocation(4300, &["check"])],
+                ancestry: Vec::new(),
+            }],
+            now + std::time::Duration::from_secs(1),
+        );
+        let cells = Cells::new(&roster, &hidden, ProcessTree::Long, &sccache);
+        assert_eq!(
+            cells.readout_fade(&TileContent::Summary),
+            CellReadoutFade::Unfaded
+        );
     }
 
     /// Production cells with the trait's every-row default retained.
