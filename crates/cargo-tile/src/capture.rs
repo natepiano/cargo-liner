@@ -17,6 +17,7 @@ use tui_pane::ToastStyle;
 use crate::app::App;
 use crate::app::CaptureStartupNotice;
 use crate::constants::CAPTURE_INSTALLED_TOAST_VISIBLE;
+use crate::constants::CAPTURE_PROGRESS_TITLE;
 use crate::constants::NOTICE_TOAST_MIN_INTERIOR_LINES;
 use crate::constants::NOTICE_TOAST_VISIBLE;
 use crate::hook;
@@ -53,7 +54,7 @@ fn report(app: &mut App, startup: io::Result<Startup>) {
     }
     if !startup.installed.is_empty() {
         app.framework.toasts.push_timed_runs(
-            "Capture shim installed",
+            CAPTURE_PROGRESS_TITLE,
             vec![
                 ToastRun::new(
                     format!(
@@ -186,7 +187,7 @@ mod tests {
 
         let toasts = app.framework.toasts.active_views(Instant::now());
         assert_eq!(toasts.len(), 1);
-        assert_eq!(toasts[0].title(), "Capture shim installed");
+        assert_eq!(toasts[0].title(), "Capturing cargo progress");
         assert!(toasts[0].body().contains("nightly, stable"));
         assert!(toasts[0].body().contains("cargo tile uninstall"));
         // Installing is the expected outcome, not a problem to keep on

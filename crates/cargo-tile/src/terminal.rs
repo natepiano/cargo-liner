@@ -442,7 +442,7 @@ fraying = "leading"
                     groups:           vec![CargoGroup {
                         lead:     process.clone(),
                         rest:     Vec::new(),
-                        ancestry: Vec::new(),
+                        ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                     }],
                     sccache:          SccacheServer::Stopped,
                     root_status:      Vec::new(),
@@ -486,7 +486,7 @@ fraying = "leading"
                     groups:           vec![CargoGroup {
                         lead:     process.clone(),
                         rest:     Vec::new(),
-                        ancestry: Vec::new(),
+                        ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                     }],
                     sccache:          SccacheServer::Stopped,
                     root_status:      Vec::new(),
@@ -667,7 +667,7 @@ fraying = "leading"
                 groups:           vec![CargoGroup {
                     lead:     process.clone(),
                     rest:     Vec::new(),
-                    ancestry: Vec::new(),
+                    ancestry: crate::census::scan::AncestryWalk::Ended(Vec::new()),
                 }],
                 sccache:          SccacheServer::Stopped,
                 root_status:      capture.root_status,

@@ -6,10 +6,16 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::constants::ARGUMENT_SEPARATOR;
+use crate::constants::CARGO_DEFAULT_PROFILE;
 use crate::constants::CARGO_DISPLAY_NAME;
+use crate::constants::CARGO_GLOBAL_VALUED_OPTIONS;
 use crate::constants::CARGO_PROCESS_NAMES;
+use crate::constants::CARGO_PROFILE_FLAG;
+use crate::constants::CARGO_RELEASE_FLAGS;
+use crate::constants::CARGO_RELEASE_PROFILE;
 use crate::constants::CARGO_SUBCOMMAND_PREFIX;
 use crate::constants::CARGO_TOOLCHAIN_SELECTOR;
+use crate::constants::ELISION;
 use crate::constants::FLAG_MARK;
 use crate::constants::HOME_ALIAS;
 use crate::constants::SELF_PROCESS_NAME;
@@ -65,6 +71,28 @@ pub(crate) struct CommandText {
     arguments:          Vec<String>,
 }
 
+/// Cargo's build profile, independent of arguments passed to its child program.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CargoProfile {
+    /// The usual development profile needs no label.
+    Default,
+    /// Cargo's optimized release profile.
+    Release,
+    /// A profile explicitly named by the invocation.
+    Named(String),
+}
+
+impl CargoProfile {
+    /// Normalize Cargo's two built-in profile names.
+    fn named(name: &str) -> Self {
+        match name {
+            CARGO_DEFAULT_PROFILE => Self::Default,
+            CARGO_RELEASE_PROFILE => Self::Release,
+            name => Self::Named(name.to_string()),
+        }
+    }
+}
+
 impl CommandText {
     /// A command line built from its parts, for the tests elsewhere in
     /// the crate that need an invocation to hand around.
@@ -104,24 +132,46 @@ impl CommandText {
             .is_ok_and(|subcommand| hidden_when_idle.iter().any(|hidden| hidden == subcommand))
     }
 
-    /// The arguments that still name what runs, with everything the
-    /// command was called *with* taken off: `mend` out of `mend
-    /// --manifest-path /tmp/x/Cargo.toml --json`, and `nextest run` out
-    /// of the whole of `nextest run --workspace --all-features`.
+    /// The command's subcommands and toolchain, followed by a cut mark
+    /// whenever arguments were omitted.
     ///
     /// Keeps the toolchain selector, which is part of what runs rather
     /// than an argument to it -- `+nightly fmt` says something `fmt`
     /// alone does not.
     pub(crate) fn named(&self) -> String {
-        self.arguments
-            .iter()
-            .map(String::as_str)
-            .take_while(|word| names_the_command(word))
-            .collect::<Vec<&str>>()
-            .join(" ")
+        named_arguments(self.arguments.iter().map(String::as_str))
     }
 
-    /// The arguments as one line, the summary's own flags in or out.
+    /// The program's file name for Short-view rows.
+    pub(crate) fn program_name(&self) -> &str { program_name(&self.program) }
+
+    /// Read only Cargo's own profile flags, stopping at its argument separator.
+    pub(crate) fn profile(&self) -> CargoProfile {
+        let mut profile = CargoProfile::Default;
+        let mut arguments = self
+            .arguments
+            .iter()
+            .map(String::as_str)
+            .take_while(|argument| *argument != ARGUMENT_SEPARATOR);
+        while let Some(argument) = arguments.next() {
+            if CARGO_RELEASE_FLAGS.contains(&argument) {
+                profile = CargoProfile::Release;
+            } else if argument == CARGO_PROFILE_FLAG {
+                if let Some(name) = arguments.next() {
+                    profile = CargoProfile::named(name);
+                }
+            } else if let Some(name) = argument
+                .strip_prefix(CARGO_PROFILE_FLAG)
+                .and_then(|rest| rest.strip_prefix('='))
+            {
+                profile = CargoProfile::named(name);
+            }
+        }
+        profile
+    }
+
+    /// Display arguments, including the selectors read by [`Self::profile`].
+    /// Trimmed detail omits the summary's rendering and manifest flags.
     pub(crate) fn line(&self, detail: SummaryDetail) -> String {
         if detail == SummaryDetail::Full {
             return self.arguments.join(" ");
@@ -142,8 +192,7 @@ impl CommandText {
                 kept.push(argument);
                 continue;
             }
-            // The word after a bare `--color` is the value it takes,
-            // and goes wherever the flag goes.
+            // A valued flag's next word goes wherever the flag goes.
             if std::mem::take(&mut skipping) {
                 continue;
             }
@@ -166,19 +215,60 @@ impl CommandText {
 /// One whole command line with its arguments taken off, for the steps
 /// of a chain, which are held as a line rather than split.
 ///
-/// The first word is the program however it is spelled, path and all --
-/// a chain step is often reached by its path, and dropping that would
-/// leave a bare `node` or `sh` saying less than the row it heads.
-/// Everything after it is kept only while it still names what runs.
+/// Short view names executables by file name. Cargo retains its subcommands;
+/// other session runners omit arguments and mark that omission.
 pub(crate) fn command_name(line: &str) -> String {
     let mut words = line.split_whitespace();
     let Some(program) = words.next() else {
         return String::new();
     };
-    std::iter::once(program)
-        .chain(words.take_while(|word| names_the_command(word)))
-        .collect::<Vec<&str>>()
-        .join(" ")
+    let program = program_name(program);
+    let arguments =
+        if CARGO_PROCESS_NAMES.contains(&program) || program.starts_with(CARGO_SUBCOMMAND_PREFIX) {
+            named_arguments(words)
+        } else if words.next().is_some() {
+            ELISION.to_string()
+        } else {
+            String::new()
+        };
+    if arguments.is_empty() {
+        program.to_string()
+    } else {
+        format!("{program} {arguments}")
+    }
+}
+
+/// Skip global options before the name, then keep consecutive command words.
+fn named_arguments<'word>(words: impl IntoIterator<Item = &'word str>) -> String {
+    let mut kept = Vec::new();
+    let mut dropped = false;
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        if word == ARGUMENT_SEPARATOR || (!kept.is_empty() && !names_the_command(word)) {
+            dropped = true;
+            break;
+        }
+        if names_the_command(word) {
+            kept.push(word);
+        } else {
+            dropped = true;
+            if CARGO_GLOBAL_VALUED_OPTIONS.contains(&word) {
+                let _ = words.next();
+            }
+        }
+    }
+    if dropped {
+        kept.push(ELISION);
+    }
+    kept.join(" ")
+}
+
+/// Convert a path-bearing executable name at the path API boundary.
+fn program_name(program: &str) -> &str {
+    Path::new(program)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(program)
 }
 
 /// Whether a word standing after the program still names the command
@@ -416,6 +506,233 @@ fn base_name(argument: &OsString) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[test]
+    fn the_short_name_ends_before_subcommand_options() {
+        assert_eq!(
+            command_name("cargo check --locked --offline -j 1"),
+            "cargo check …"
+        );
+        assert_eq!(
+            command_name(
+                "cargo nextest run --test-threads 32 --bin hana -E 'package(hana) & (test(arrange_glyph) | …)'"
+            ),
+            "cargo nextest run …"
+        );
+        assert_eq!(
+            CommandText::of(
+                "cargo",
+                &[
+                    "nextest",
+                    "run",
+                    "--test-threads",
+                    "32",
+                    "--bin",
+                    "hana",
+                    "-E",
+                    "package(hana) & (test(arrange_glyph) | …)",
+                ],
+            )
+            .named(),
+            "nextest run …"
+        );
+        assert_eq!(
+            command_name("cargo --config profile.p19.inherits=\"dev\" build --profile p19 -j 1"),
+            "cargo build …"
+        );
+        assert_eq!(
+            command_name(
+                "cargo test -p cargo-tile --test cli_lifecycle --test shim_modes --test unit_tests"
+            ),
+            "cargo test …"
+        );
+        assert_eq!(
+            command_name("cargo --config x=1 -Z unstable-options build --release"),
+            "cargo build …"
+        );
+        assert_eq!(
+            command_name("cargo --color always -C /tmp/project check"),
+            "cargo check …"
+        );
+        assert_eq!(
+            command_name("cargo --config=x=1 -Zunstable-options -C/tmp/project +nightly fmt"),
+            "cargo +nightly fmt …"
+        );
+    }
+
+    #[test]
+    fn long_arguments_keep_the_release_selector() {
+        let text = CommandText::of("cargo", &["build", "--release", "--locked"]);
+        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
+            assert_eq!(text.line(detail), "build --release --locked");
+        }
+        assert_eq!(text.profile(), CargoProfile::Release);
+        assert_eq!(text.named(), "build …");
+    }
+
+    #[test]
+    fn long_arguments_keep_a_separate_profile_name() {
+        let text = CommandText::of("cargo", &["build", "--profile", "p19c", "--config", "x"]);
+        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
+            assert_eq!(text.line(detail), "build --profile p19c --config x");
+        }
+        assert_eq!(text.profile(), CargoProfile::Named("p19c".to_string()));
+        assert_eq!(text.named(), "build …");
+    }
+
+    #[test]
+    fn long_arguments_keep_an_assigned_profile_name() {
+        let text = CommandText::of("cargo", &["build", "--profile=p19c"]);
+        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
+            assert_eq!(text.line(detail), "build --profile=p19c");
+        }
+        assert_eq!(text.profile(), CargoProfile::Named("p19c".to_string()));
+        assert_eq!(text.named(), "build …");
+    }
+
+    #[test]
+    fn cargo_profiles_are_read_before_the_child_arguments() {
+        for arguments in [
+            vec!["build", "--release"],
+            vec!["build", "-r"],
+            vec!["build", "--profile", "release"],
+            vec!["build", "--profile=release"],
+        ] {
+            let text = CommandText::of("cargo", &arguments);
+            assert_eq!(text.profile(), CargoProfile::Release);
+            assert_eq!(text.named(), "build …");
+            assert_eq!(text.line(SummaryDetail::Full), arguments.join(" "));
+            assert_eq!(text.line(SummaryDetail::Trimmed), arguments.join(" "));
+        }
+        for arguments in [
+            vec!["run", "--", "--release"],
+            vec!["run", "--", "-r"],
+            vec!["run", "--", "--profile", "custom"],
+            vec!["build", "--profile", "dev"],
+            vec!["build", "--profile=dev"],
+            vec!["build"],
+        ] {
+            assert_eq!(
+                CommandText::of("cargo", &arguments).profile(),
+                CargoProfile::Default
+            );
+        }
+        for arguments in [
+            vec!["build", "--profile", "bench"],
+            vec!["build", "--profile=bench"],
+        ] {
+            assert_eq!(
+                CommandText::of("cargo", &arguments).profile(),
+                CargoProfile::Named("bench".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_profile_selectors_stay_in_both_argument_details() {
+        for detail in [SummaryDetail::Full, SummaryDetail::Trimmed] {
+            for arguments in [
+                vec!["build", "--release", "--workspace"],
+                vec!["build", "-r", "--workspace"],
+                vec!["build", "--profile", "release", "--workspace"],
+                vec!["build", "--profile=release", "--workspace"],
+                vec!["build", "--profile", "dev", "--workspace"],
+                vec!["build", "--profile=dev", "--workspace"],
+                vec!["build", "--profile", "bench", "--workspace"],
+                vec!["build", "--profile=bench", "--workspace"],
+            ] {
+                assert_eq!(
+                    CommandText::of("cargo", &arguments).line(detail),
+                    arguments.join(" ")
+                );
+            }
+            assert_eq!(
+                CommandText::of(
+                    "cargo",
+                    &[
+                        "run",
+                        "--release",
+                        "--",
+                        "--release",
+                        "-r",
+                        "--profile",
+                        "dev",
+                        "--profile=bench"
+                    ]
+                )
+                .line(detail),
+                "run --release -- --release -r --profile dev --profile=bench"
+            );
+            assert_eq!(
+                CommandText::of("cargo", &["build", "--profile-of-record", "bench"]).line(detail),
+                "build --profile-of-record bench"
+            );
+        }
+        let text = CommandText::of(
+            "cargo",
+            &[
+                "build",
+                "--color",
+                "always",
+                "--profile",
+                "dev",
+                "--workspace",
+            ],
+        );
+        assert_eq!(
+            text.line(SummaryDetail::Full),
+            "build --color always --profile dev --workspace"
+        );
+        assert_eq!(
+            text.line(SummaryDetail::Trimmed),
+            "build --profile dev --workspace"
+        );
+    }
+
+    #[test]
+    fn the_short_name_keeps_a_subcommand_after_a_flag() {
+        assert_eq!(
+            CommandText::of("cargo", &["--color", "always", "nextest", "run"]).named(),
+            "nextest run …"
+        );
+        assert_eq!(
+            CommandText::of("cargo", &["--locked", "check"]).named(),
+            "check …"
+        );
+        assert_eq!(
+            CommandText::of("cargo", &["--color=always", "+nightly", "nextest", "run"]).named(),
+            "+nightly nextest run …"
+        );
+    }
+
+    #[test]
+    fn the_short_name_marks_dropped_arguments_only_when_it_drops_some() {
+        assert_eq!(command_name("cargo check --workspace"), "cargo check …");
+        assert_eq!(command_name("cargo check"), "cargo check");
+        assert_eq!(
+            CommandText::of("cargo", &["check", "--", "child", "--release"]).named(),
+            "check …"
+        );
+    }
+
+    #[test]
+    fn a_short_view_program_is_named_by_its_file_name() {
+        let cargo = CommandText::of("/nix/store/cargo/bin/cargo", &["check", "--workspace"]);
+        assert_eq!(cargo.program_name(), "cargo");
+        assert_eq!(cargo.named(), "check …");
+        assert_eq!(
+            command_name("/nix/store/runner/bin/Runner.Worker spawnclient 166 175"),
+            "Runner.Worker …"
+        );
+        assert_eq!(
+            command_name("/nix/store/cargo/bin/cargo check --workspace"),
+            "cargo check …"
+        );
+        assert_eq!(
+            command_name("/nix/store/runner/bin/Runner.Listener"),
+            "Runner.Listener"
+        );
+    }
+
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     fn hidden_when_idle() -> Vec<String> {
         DEFAULT_HIDDEN_WHEN_IDLE
@@ -510,6 +827,7 @@ mod tests {
             command_text(&argv, ScannerHome::Unavailable).expect("argv names a cargo binary");
         assert_eq!(text.program, "cargo");
         assert_eq!(text.line(SummaryDetail::Full), "build --release");
+        assert_eq!(text.profile(), CargoProfile::Release);
     }
 
     #[test]
@@ -768,25 +1086,22 @@ mod tests {
     fn a_named_command_keeps_its_subcommands_and_its_toolchain() {
         assert_eq!(
             CommandText::of("cargo", &["nextest", "run", "--workspace"]).named(),
-            "nextest run",
+            "nextest run …",
         );
         assert_eq!(
             CommandText::of("cargo", &["+nightly", "fmt", "--all"]).named(),
-            "+nightly fmt",
+            "+nightly fmt …",
         );
     }
 
-    /// A chain step is held as one line rather than split, and its
-    /// program is often reached by its path -- so the first word stands
-    /// however it is spelled, and only what follows is read for
-    /// arguments. A bare `node` would say less than the row it heads.
+    /// A chain step names the executable while marking omitted arguments.
     #[test]
-    fn a_named_chain_step_keeps_the_path_it_was_reached_by() {
+    fn a_named_chain_step_uses_the_program_file_name() {
         assert_eq!(
             command_name("~/.claude/local/claude --setting on --setting off"),
-            "~/.claude/local/claude",
+            "claude …",
         );
-        assert_eq!(command_name("zsh -c cargo nextest run"), "zsh");
+        assert_eq!(command_name("zsh -c cargo nextest run"), "zsh …");
         assert_eq!(command_name("zed"), "zed");
         assert_eq!(command_name(""), "");
     }
@@ -859,7 +1174,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(mend.named(), "mend");
+        assert_eq!(mend.named(), "mend …");
         assert!(
             mend.line(SummaryDetail::Full).contains("--json"),
             "and the long line still carries every one of them",

@@ -91,6 +91,16 @@ pub enum CellReadoutFade {
     Fading(CellFadeProgress),
 }
 
+/// Whether the measured rows include the cell's complete source content.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CellContentExtent {
+    /// All source content participates in the row measurement.
+    #[default]
+    Measured,
+    /// The source omitted content before its known rows could be measured.
+    CutAtSource,
+}
+
 /// Ink state shared by every span of a cell's foot.
 #[derive(Clone, Copy)]
 enum CellReadoutInk {
@@ -111,6 +121,21 @@ impl CellReadoutInk {
             span.style = span.style.fg(blend_color(ink, ground, progress.amount()));
         }
         line
+    }
+}
+
+/// Source completeness and fading for one cell's readout.
+struct CellReadout {
+    extent: CellContentExtent,
+    ink:    CellReadoutInk,
+}
+
+impl From<CellReadoutInk> for CellReadout {
+    fn from(ink: CellReadoutInk) -> Self {
+        Self {
+            extent: CellContentExtent::Measured,
+            ink,
+        }
     }
 }
 
@@ -147,6 +172,17 @@ enum ReadoutRow {
 pub trait TileCells<Id> {
     /// The title written into the summary cell's top border.
     fn summary_title(&self) -> &str;
+
+    /// Completeness of the source, independent of the cell's measured row demand.
+    fn content_extent(&self, _content: &TileContent<Id>) -> CellContentExtent {
+        CellContentExtent::Measured
+    }
+
+    /// Measured rows shown in the foot at this allocation, excluding surrendered decoration.
+    /// The allocation and motion continue to use the original demand.
+    fn readout_rows(&self, _content: &TileContent<Id>, _area: Rect, measured_rows: usize) -> usize {
+        measured_rows
+    }
 
     /// Text drawn whole or not at all at the left end of the summary
     /// cell's readout row.
@@ -342,13 +378,16 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
                 draw_cell(
                     buffer,
                     inner,
-                    content_rows,
+                    cells.readout_rows(&placement.content, content_area(inner), content_rows),
                     demand_width,
                     &summary_foot,
-                    match cells.readout_fade(&placement.content) {
-                        CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
-                        CellReadoutFade::Fading(progress) => {
-                            CellReadoutInk::Fading { progress, ground }
+                    CellReadout {
+                        extent: cells.content_extent(&placement.content),
+                        ink:    match cells.readout_fade(&placement.content) {
+                            CellReadoutFade::Unfaded => CellReadoutInk::Unfaded,
+                            CellReadoutFade::Fading(progress) => {
+                                CellReadoutInk::Fading { progress, ground }
+                            },
                         },
                     },
                     |buffer, inner| match &placement.content {
@@ -472,9 +511,10 @@ fn draw_cell(
     rows: usize,
     measured_at: u16,
     summary_foot: &SummaryFoot,
-    ink: CellReadoutInk,
+    readout: impl Into<CellReadout>,
     draw: impl FnOnce(&mut Buffer, Rect),
 ) {
+    let CellReadout { extent, ink } = readout.into();
     let contents = content_area(inner);
     if !contents.is_empty() {
         draw(buffer, contents);
@@ -485,10 +525,10 @@ fn draw_cell(
     };
     match foot_draw_outcome {
         SummaryFootDrawOutcome::NotDrawn => {
-            draw_rows_readout(buffer, inner, rows, measured_at, ink);
+            draw_rows_readout(buffer, inner, rows, measured_at, extent, ink);
         },
         SummaryFootDrawOutcome::DrawnWhole { width } => {
-            draw_rows_readout_after_foot(buffer, inner, rows, measured_at, width, ink);
+            draw_rows_readout_after_foot(buffer, inner, rows, measured_at, width, extent, ink);
         },
     }
 }
@@ -559,12 +599,13 @@ fn draw_rows_readout(
     inner: Rect,
     rows: usize,
     measured_at: u16,
+    extent: CellContentExtent,
     ink: CellReadoutInk,
 ) {
     let ReadoutRow::Reserved(readout) = readout_row(inner) else {
         return;
     };
-    if let Some(line) = rows_readout_lines(inner, rows, measured_at)
+    if let Some(line) = extent_readout_lines(inner, rows, measured_at, extent)
         .into_iter()
         .find(|line| line.width() <= usize::from(readout.width))
     {
@@ -579,6 +620,7 @@ fn draw_rows_readout_after_foot(
     rows: usize,
     measured_at: u16,
     foot_width: u16,
+    extent: CellContentExtent,
     ink: CellReadoutInk,
 ) {
     let ReadoutRow::Reserved(readout) = readout_row(inner) else {
@@ -589,7 +631,7 @@ fn draw_rows_readout_after_foot(
         .saturating_sub(TILE_FOOT_LEFT_INSET)
         .saturating_sub(foot_width)
         .saturating_sub(TILE_FOOT_GAP);
-    if let Some(line) = rows_readout_lines(inner, rows, measured_at)
+    if let Some(line) = extent_readout_lines(inner, rows, measured_at, extent)
         .into_iter()
         .find(|line| line.width() <= usize::from(room))
     {
@@ -598,8 +640,15 @@ fn draw_rows_readout_after_foot(
 }
 
 /// Build the styled readouts that fit progressively narrower cells.
-fn rows_readout_lines(inner: Rect, rows: usize, measured_at: u16) -> Vec<Line<'static>> {
-    let reading = if rows <= usize::from(content_area(inner).height) {
+fn extent_readout_lines(
+    inner: Rect,
+    rows: usize,
+    measured_at: u16,
+    extent: CellContentExtent,
+) -> Vec<Line<'static>> {
+    let reading = if extent == CellContentExtent::Measured
+        && rows <= usize::from(content_area(inner).height)
+    {
         success_color()
     } else {
         error_color()
@@ -639,6 +688,11 @@ fn rows_readout_lines(inner: Rect, rows: usize, measured_at: u16) -> Vec<Line<'s
     }
     lines.push(Line::from(content));
     lines
+}
+
+#[cfg(test)]
+fn rows_readout_lines(inner: Rect, rows: usize, measured_at: u16) -> Vec<Line<'static>> {
+    extent_readout_lines(inner, rows, measured_at, CellContentExtent::Measured)
 }
 
 /// Right-align one rows readout that already fits its reserved row.
@@ -805,6 +859,61 @@ mod tests {
         demands:       TileDemands<u32>,
         row_counts:    Vec<StubRowCount>,
         readout_fades: Vec<(TileContent<u32>, CellReadoutFade)>,
+    }
+
+    struct SourceCutCells {
+        cells:  StubCells,
+        extent: CellContentExtent,
+    }
+
+    impl TileCells<u32> for SourceCutCells {
+        fn summary_title(&self) -> &str { self.cells.summary_title() }
+        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
+            self.cells.demands(widths)
+        }
+        fn draw(
+            &self,
+            buffer: &mut Buffer,
+            content: &TileContent<u32>,
+            inner: Rect,
+            ground: Color,
+        ) {
+            self.cells.draw(buffer, content, inner, ground);
+        }
+        fn content_extent(&self, _content: &TileContent<u32>) -> CellContentExtent { self.extent }
+    }
+
+    #[test]
+    fn a_cell_cut_at_its_source_never_reads_whole() {
+        let area = Rect::new(0, 0, 80, 20);
+        for (extent, ink) in [
+            (CellContentExtent::Measured, success_color()),
+            (CellContentExtent::CutAtSource, error_color()),
+        ] {
+            let cells = SourceCutCells {
+                cells: StubCells::new([]),
+                extent,
+            };
+            let mut grid = TileGrid::new();
+            let mut buffer = Buffer::empty(area);
+            draw_tile_grid(
+                &mut buffer,
+                &mut grid,
+                area,
+                TileGrowth::default(),
+                TileGridContents::Shown,
+                &cells,
+            );
+            let y = area.bottom() - 2;
+            let line: String = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect();
+            let actual = line.find("content rows: 1").and_then(|byte| {
+                let byte = byte + "content rows: ".len();
+                u16::try_from(line[..byte].chars().count())
+                    .ok()
+                    .map(|x| buffer[(x, y)].fg)
+            });
+            assert_eq!(actual, Some(ink));
+        }
     }
 
     struct StubRowCount {
@@ -4696,7 +4805,14 @@ mod tests {
                 .map(line_text)
                 .collect::<Vec<_>>();
             let mut buffer = Buffer::empty(inner);
-            draw_rows_readout(&mut buffer, inner, 22, measured_at, CellReadoutInk::Unfaded);
+            draw_rows_readout(
+                &mut buffer,
+                inner,
+                22,
+                measured_at,
+                CellContentExtent::Measured,
+                CellReadoutInk::Unfaded,
+            );
             let row = buffer_line(&buffer, inner.bottom() - 1);
             let shown = row.trim();
             assert!(

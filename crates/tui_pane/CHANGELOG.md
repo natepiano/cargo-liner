@@ -8,6 +8,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 ## [Unreleased]
 
 ### Added
+- `CellContentExtent` and the provided `TileCells::content_extent` method let a cell mark source omissions in its foot without changing its measured row demand; `TileCells::readout_rows` excludes surrendered decoration from the displayed count.
 - `CellReadoutFade`, `CellFadeProgress` and the provided `TileCells::readout_fade` method let apps fade a cell's foot with its contents; existing providers keep unfaded readouts.
 - `TileCells::rows_kept` separates the rows a cell retains before lending room to its column mates from the rows its content paints.
 - `TileView` configures `tiles.view` as `auto`, `summary` or `cells`; `TileGrid::set_view`, `FrameworkSetting::TileView`, `AppConfig::tile_view_mut` and `SettingsRows::tile_view` connect it to each app and its settings overlay.

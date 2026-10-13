@@ -26,6 +26,7 @@ pub use action::TileAction;
 pub use constants::MIN_INITIAL_ROWS;
 pub use constants::TABLE_CELL;
 pub use constants::TILE_ROWS_CONTENT_LABEL;
+pub use draw::CellContentExtent;
 pub use draw::CellFadeProgress;
 pub use draw::CellReadoutFade;
 pub use draw::SummaryFoot;

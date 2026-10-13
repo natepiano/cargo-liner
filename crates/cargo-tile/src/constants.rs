@@ -197,7 +197,19 @@ pub(crate) const ELISION: &str = "\u{2026}";
 /// It is the only titled cell: a command's cell already says which
 /// command it is on every row it draws. The leading space holds the
 /// word off the corner glyph the title is set against.
-pub(crate) const SUMMARY_CELL_TITLE: &str = " summary";
+pub(crate) const SUMMARY_CELL_TITLE: &str = " summary ";
+/// The capture-installation card describes the work it starts.
+pub(crate) const CAPTURE_PROGRESS_TITLE: &str = "Capturing cargo progress";
+/// Delimiters around a command's non-default build profile.
+pub(crate) const PROFILE_LABEL_OPEN: &str = "[";
+/// Closing delimiter around a command's non-default build profile.
+pub(crate) const PROFILE_LABEL_CLOSE: &str = "]";
+/// Linux reports every online logical processor in this system-wide table.
+#[cfg(target_os = "linux")]
+pub(crate) const MACHINE_CPU_STAT_FILE: &str = "/proc/stat";
+/// Prefix of the per-processor rows in Linux's CPU statistics.
+#[cfg(target_os = "linux")]
+pub(crate) const MACHINE_CPU_STAT_PREFIX: &str = "cpu";
 /// Cells of the summary cell's top border the sccache label never
 /// gets: the two corner glyphs, and one line cell kept between the
 /// label and the right corner so the two do not run together.
@@ -222,10 +234,6 @@ pub(crate) const ANCESTRY_GAP_HEIGHT: u16 = 1;
 pub(crate) const ANCESTRY_LEVEL_INDENT: &str = " ";
 /// Fewest cells in which an ancestry command is shown.
 pub(crate) const ANCESTRY_MIN_COMMAND_WIDTH: u16 = 8;
-/// Rows the ancestry block needs before it can drop levels out of the
-/// middle rather than off the end: one for the top-level parent, one
-/// for the elision, and one for the level nearest the command.
-pub(crate) const ANCESTRY_MIN_ELIDED_ROWS: usize = 3;
 /// The bare `--` handing everything after it to whatever cargo runs.
 /// Those arguments are the other program's, so the summary passes them
 /// through untouched however they are spelled.
@@ -481,9 +489,36 @@ pub(crate) const TIGHT_TABLE_COLUMN_SPACING: u16 = 1;
 /// None of them launched anything -- they passed a command through --
 /// and a row for one says only that a terminal was involved, which the
 /// row above it already said.
-pub(crate) const TRANSPARENT_PROCESS_NAMES: [&str; 9] = [
-    "login", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh",
+pub(crate) const TRANSPARENT_PROCESS_NAMES: [&str; 10] = [
+    "login", "sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "nu",
 ];
+/// Launchers that pass execution to another program rather than owning the session.
+pub(crate) const EXEC_WRAPPER_PROCESS_NAMES: [&str; 14] = [
+    "env",
+    "nice",
+    "nohup",
+    "setsid",
+    "stdbuf",
+    "timeout",
+    "time",
+    "sudo",
+    "doas",
+    "script",
+    "ionice",
+    "chrt",
+    "taskset",
+    "caffeinate",
+];
+/// Cargo flags selecting its optimized profile.
+pub(crate) const CARGO_RELEASE_FLAGS: [&str; 2] = ["--release", "-r"];
+/// Cargo's global options whose separate values precede the subcommand name.
+pub(crate) const CARGO_GLOBAL_VALUED_OPTIONS: [&str; 4] = ["--color", "--config", "-Z", "-C"];
+/// Cargo flag naming a build profile.
+pub(crate) const CARGO_PROFILE_FLAG: &str = "--profile";
+/// Cargo's default development profile.
+pub(crate) const CARGO_DEFAULT_PROFILE: &str = "dev";
+/// Cargo's optimized profile.
+pub(crate) const CARGO_RELEASE_PROFILE: &str = "release";
 /// CPU, mem, compiler and managed columns share this marker when no reading is established.
 pub(crate) const UNAVAILABLE_MEASUREMENT: &str = "--";
 /// Shown in `start` when a process's timestamp cannot be interpreted.

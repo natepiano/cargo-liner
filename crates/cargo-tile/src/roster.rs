@@ -22,7 +22,9 @@ use crate::census::InvocationId;
 use crate::census::Measurement;
 use crate::census::RunStart;
 use crate::census::VisibleParent;
+use crate::census::scan::AncestryWalk;
 use crate::constants::FADE_ALPHA_STEP;
+use crate::render::SessionColumnWidths;
 use crate::theme;
 
 /// Whether a retained row still runs or is fading from its first missing scan.
@@ -172,7 +174,7 @@ pub(crate) struct TrackedGroup {
     /// What stands above the command, outermost first. Refreshed with
     /// the rest of the group: a chain is read fresh every scan, and a
     /// process in it that exits is one the next scan no longer carries.
-    ancestry:        Vec<Ancestor>,
+    ancestry:        AncestryWalk<Ancestor>,
 }
 
 impl From<CargoGroup> for TrackedGroup {
@@ -199,7 +201,7 @@ impl TrackedGroup {
     }
 
     /// What stands above the command, outermost first.
-    pub(crate) fn ancestry(&self) -> &[Ancestor] { &self.ancestry }
+    pub(crate) const fn ancestry(&self) -> &AncestryWalk<Ancestor> { &self.ancestry }
 
     /// Whether the command itself belongs at the foot of its cell's
     /// ancestry chain rather than in the table.
@@ -317,15 +319,14 @@ impl TrackedGroup {
 }
 
 /// Every group the display knows about, running or fading.
-#[derive(Default)]
 pub(crate) struct Roster {
     /// Groups in scan order -- newest command first -- with finished
     /// ones held in place until they expire.
-    groups:   Vec<TrackedGroup>,
+    groups:        Vec<TrackedGroup>,
     /// The scan last folded in, kept so an identical one can be
     /// recognised and skipped. With nothing building, the display has no
     /// reason to repaint four times a second.
-    last:     Vec<CargoGroup>,
+    last:          Vec<CargoGroup>,
     /// The palette index each family holds, by the invocation heading it.
     ///
     /// Kept here rather than worked out per cell because the colour has
@@ -333,21 +334,31 @@ pub(crate) struct Roster {
     /// because which colours are free is a question about every group
     /// at once. An index is held while the family is on screen and the
     /// active palette contains it, fading rows included.
-    families: HashMap<InvocationId, usize>,
+    families:      HashMap<InvocationId, usize>,
+    /// Metadata columns keep the widest machine or session reading.
+    column_widths: SessionColumnWidths,
+}
+
+impl Default for Roster {
+    fn default() -> Self { Self::new() }
 }
 
 impl Roster {
     /// An empty roster.
     pub(crate) fn new() -> Self {
         Self {
-            groups:   Vec::new(),
-            last:     Vec::new(),
-            families: HashMap::new(),
+            groups:        Vec::new(),
+            last:          Vec::new(),
+            families:      HashMap::new(),
+            column_widths: crate::render::SessionColumnWidths::machine(),
         }
     }
 
     /// The groups to display, newest first.
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
+
+    /// Metadata widths retained across every frame in this session.
+    pub(crate) const fn column_widths(&self) -> SessionColumnWidths { self.column_widths }
 
     /// The identity of every group that gets a cell, in order -- what
     /// [`tui_pane::TileGrid::sync`] assigns cells from.
@@ -387,6 +398,10 @@ impl Roster {
         self.last.clone_from(&scan);
         let arriving: Vec<InvocationId> = scan.iter().map(CargoGroup::id).collect();
         for group in scan {
+            self.column_widths.observe(&group.lead);
+            for process in &group.rest {
+                self.column_widths.observe(process);
+            }
             match self
                 .groups
                 .iter_mut()
@@ -523,6 +538,7 @@ mod tests {
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentities;
     use crate::census::process_identity::ProcessIdentity;
+    use crate::census::scan::AncestryWalk;
     use crate::constants::DEFAULT_FADE_SECONDS;
     use crate::constants::DEFAULT_HIDDEN_WHEN_IDLE;
     use crate::constants::MIN_FINISHED_ROW_CONTRAST;
@@ -957,7 +973,7 @@ mod tests {
         CargoGroup {
             lead:     process(lead),
             rest:     rest.iter().copied().map(process).collect(),
-            ancestry: Vec::new(),
+            ancestry: AncestryWalk::Ended(Vec::new()),
         }
     }
 
