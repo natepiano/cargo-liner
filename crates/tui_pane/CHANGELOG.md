@@ -13,6 +13,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `SummaryFoot` and `TileCells::summary_foot` let an app write text at the left end of the summary cell's readout row. The text is drawn whole or not at all, and the rows readout stays right-aligned when both lines fit.
 
 ### Changed
+- Toast bodies retain styled runs with explicit line-break policies, words that fit move whole to a fresh line, and cards keep one cleared row above, below and between them.
 - The tile grid automatic view shows command cells only when the summary draws at least as many content rows beside them as alone. The choice changes on settled frames and stays fixed through motion; returning to cells requires the whole summary to fit or a three-row spare margin.
 - Tile columns give available rows first to cells below their exact framed demand. A summary no more than half a position short borrows the difference from its tallest mates without taking any tile below its height floor.
 - `wrapped` is the shared boundary-aware text wrapper, including comma break points; toast bodies retain their written spacing, and `render_toasts` now takes the body area it draws within.

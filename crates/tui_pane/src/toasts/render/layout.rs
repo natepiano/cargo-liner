@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 
 use super::card;
 use crate::PaneFocusState;
+use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastId;
@@ -39,14 +40,14 @@ pub(super) fn render_top_down(
     layout: StackLayout,
 ) -> Vec<ToastHitbox> {
     let mut hitboxes = Vec::with_capacity(toasts.len());
-    let mut cursor_y = area.y;
+    let mut cursor_y = area.y.saturating_add(TOAST_ROW_GAP);
     for (toast, &alloc_height) in toasts.iter().zip(allocated) {
         if alloc_height == 0 {
             continue;
         }
         let card_height = toast.desired_height().min(alloc_height);
         if card_height == 0
-            || cursor_y.saturating_add(card_height) > area.y.saturating_add(area.height)
+            || cursor_y.saturating_add(card_height) > area.bottom().saturating_sub(TOAST_ROW_GAP)
         {
             break;
         }
@@ -86,7 +87,7 @@ pub(super) fn render_bottom_up(
     layout: StackLayout,
 ) -> Vec<ToastHitbox> {
     let mut hitboxes = Vec::with_capacity(toasts.len());
-    let mut cursor_y = area.y.saturating_add(area.height);
+    let mut cursor_y = area.bottom().saturating_sub(TOAST_ROW_GAP);
     for (toast, &alloc_height) in toasts.iter().zip(allocated).rev() {
         if alloc_height == 0 {
             continue;
@@ -96,7 +97,7 @@ pub(super) fn render_bottom_up(
             continue;
         }
         cursor_y = cursor_y.saturating_sub(card_height);
-        if cursor_y < area.y {
+        if cursor_y < area.y.saturating_add(TOAST_ROW_GAP) {
             break;
         }
         let x = area
@@ -128,20 +129,26 @@ pub(super) fn render_bottom_up(
     hitboxes
 }
 
-pub(super) fn allocate_toast_heights(toasts: &[ToastView], available: u16) -> Vec<u16> {
+pub(super) fn allocate_toast_heights(toasts: &[ToastView], available: u16, gap: u16) -> Vec<u16> {
     let mut alloc = vec![0u16; toasts.len()];
     let total_min = toasts
         .iter()
         .map(ToastView::min_height)
-        .fold(0u16, u16::saturating_add);
+        .fold(0u16, u16::saturating_add)
+        .saturating_add(
+            gap.saturating_mul(u16::try_from(toasts.len().saturating_sub(1)).unwrap_or(u16::MAX)),
+        );
 
     if total_min > available {
         let mut used = 0u16;
+        let mut drawn = 0;
         for (idx, toast) in toasts.iter().enumerate().rev() {
             let min_height = toast.min_height();
-            if used.saturating_add(min_height) <= available {
+            let cost = min_height.saturating_add(if drawn > 0 { gap } else { 0 });
+            if used.saturating_add(cost) <= available {
                 alloc[idx] = min_height;
-                used = used.saturating_add(min_height);
+                used = used.saturating_add(cost);
+                drawn += 1;
             }
         }
         return alloc;

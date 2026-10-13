@@ -8,7 +8,10 @@
 
 use std::io;
 
+use ratatui::style::Style;
 use tui_pane::LIST_SEPARATOR;
+use tui_pane::RunBreaks;
+use tui_pane::ToastRun;
 use tui_pane::ToastStyle;
 
 use crate::app::App;
@@ -49,13 +52,28 @@ fn report(app: &mut App, startup: io::Result<Startup>) {
         return;
     }
     if !startup.installed.is_empty() {
-        app.framework.toasts.push_timed_styled(
+        app.framework.toasts.push_timed_runs(
             "Capture shim installed",
-            format!(
-                "In front of cargo for {}. Runs started from now on report progress; \
-                 `cargo tile uninstall` gives cargo its name back.",
-                startup.installed.join(LIST_SEPARATOR)
-            ),
+            vec![
+                ToastRun::new(
+                    format!(
+                        "Cargo commands now report progress for {}. Run ",
+                        startup.installed.join(LIST_SEPARATOR)
+                    ),
+                    Style::default(),
+                    RunBreaks::AtSpaces,
+                ),
+                ToastRun::new(
+                    "cargo tile uninstall",
+                    Style::default().fg(tui_pane::accent_color()),
+                    RunBreaks::Never,
+                ),
+                ToastRun::new(
+                    " to stop capturing progress.",
+                    Style::default(),
+                    RunBreaks::AtSpaces,
+                ),
+            ],
             CAPTURE_INSTALLED_TOAST_VISIBLE,
             NOTICE_TOAST_MIN_INTERIOR_LINES,
             ToastStyle::Success,
@@ -119,7 +137,17 @@ fn report(app: &mut App, startup: io::Result<Startup>) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
     use std::time::Instant;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use toml::Table;
+    use tui_pane::PaneFocusState;
+    use tui_pane::Renderable;
+    use tui_pane::ToastSettings;
+    use tui_pane::ToastsRenderCtx;
 
     use super::*;
     use crate::constants::SUPPORTED_REGISTRATION_VERSION;
@@ -164,6 +192,89 @@ mod tests {
         // Installing is the expected outcome, not a problem to keep on
         // the settings overlay.
         assert_eq!(app.capture_note, CaptureStartupNotice::Quiet);
+    }
+
+    #[test]
+    fn the_capture_toast_names_its_undo_command_on_one_line() {
+        let toolchain = "nightly-2026-09-03-x86_64-unknown-linux-gnu";
+        let command = "cargo tile uninstall";
+        let previous_theme = tui_pane::theme();
+        let variants = crate::theme::builtins::builtins();
+        assert_ne!(
+            variants[0].theme.semantic.accent.color, variants[1].theme.semantic.accent.color,
+            "the dark and light themes use different command inks",
+        );
+        for variant in variants {
+            let expected_ink = variant.theme.semantic.accent.color;
+            tui_pane::set_active_theme(Arc::new(variant.theme));
+            for card_width in [36, 58] {
+                let mut app = App::new_for_test().unwrap();
+                let table: Table = format!("[toasts]\nwidth = {card_width}\n").parse().unwrap();
+                app.framework
+                    .toasts
+                    .set_settings(ToastSettings::from_table(&table).unwrap());
+                report(
+                    &mut app,
+                    Ok(Startup {
+                        installed: vec![toolchain.to_owned()],
+                        ..Startup::default()
+                    }),
+                );
+                let now = Instant::now() + Duration::from_secs(3);
+                let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        Renderable::render(
+                            &mut app.framework.toasts,
+                            frame,
+                            frame.area(),
+                            &ToastsRenderCtx {
+                                now,
+                                pane_focus_state: PaneFocusState::Inactive,
+                            },
+                        );
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let rows: Vec<String> = (0..buffer.area.height)
+                    .map(|y| {
+                        (0..buffer.area.width)
+                            .map(|x| buffer[(x, y)].symbol())
+                            .collect()
+                    })
+                    .collect();
+                let command_rows: Vec<_> = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| row.contains(command))
+                    .collect();
+                assert_eq!(command_rows.len(), 1, "card width {card_width}: {rows:?}");
+                let (y, row) = command_rows[0];
+                let command_x = row[..row.find(command).unwrap()].chars().count();
+                let y = u16::try_from(y).unwrap();
+                for x in command_x..command_x + command.len() {
+                    assert_eq!(
+                        buffer[(u16::try_from(x).unwrap(), y)].fg,
+                        expected_ink,
+                        "card width {card_width}: {row}",
+                    );
+                }
+                let toasts = app.framework.toasts.active_views(now);
+                assert_eq!(toasts.len(), 1);
+                let body = toasts[0].body();
+                assert_eq!(
+                    body,
+                    format!(
+                        "Cargo commands now report progress for {toolchain}. Run {command} to stop capturing progress."
+                    ),
+                );
+                assert!(!rows.iter().any(|row| row.contains('`')));
+                if card_width == 58 {
+                    assert!(rows.iter().any(|row| row.contains(toolchain)), "{rows:?}");
+                }
+            }
+        }
+        tui_pane::set_active_theme(previous_theme);
     }
 
     #[test]

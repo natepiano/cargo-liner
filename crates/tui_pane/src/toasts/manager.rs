@@ -1,7 +1,7 @@
 use std::time::Duration;
 use std::time::Instant;
 
-use super::body::ToastBody;
+use super::body::ToastRenderBody;
 use super::settings::ToastSettings;
 use super::toast::Toast;
 use super::toast::ToastLifetime;
@@ -62,7 +62,7 @@ impl ToastVisualDeadline {
 
 pub(crate) struct ToastSpec<Ctx: AppContext> {
     pub(super) title:              String,
-    pub(super) body:               ToastBody,
+    pub(super) body:               ToastRenderBody,
     pub(super) style:              ToastStyle,
     pub(super) lifetime:           ToastLifetime,
     pub(super) action:             Option<Ctx::ToastAction>,
@@ -720,7 +720,9 @@ mod tests {
             .expect("startup colored toast should be active");
         assert_eq!(view.linger_progress(), None);
         assert!(view.remaining_secs().is_some());
-        assert_eq!(view.body_line_colors(), Some(&[Color::Green][..]));
+        assert!(
+            matches!(view.render_body.public_body(), super::super::ToastBody::Colored { colors, .. } if colors == &[Color::Green])
+        );
     }
 
     #[test]

@@ -43,9 +43,13 @@ pub(crate) const TOAST_BODY_HORIZONTAL_PADDING: u16 = 1;
 pub(crate) const TOAST_FULL_WIDTH_SLACK: u16 = 8;
 /// Cleared cells between a toast card and each horizontal edge of its draw area.
 pub(crate) const TOAST_SIDE_GAP: u16 = 1;
+/// Cleared rows around toast cards and between cards in a stack.
+pub(crate) const TOAST_ROW_GAP: u16 = 1;
 
 /// Characters after which an overlong word may wrap.
 pub(crate) const WRAP_BREAK_AFTER: &str = "/-=_.:,";
+/// Preferred boundary inside an overlong hyphenated word.
+pub(crate) const WRAP_HYPHEN: char = '-';
 
 /// Indent for a popup section header, and for anything else standing at
 /// the same level -- the working-directory headings over cargo-tile's

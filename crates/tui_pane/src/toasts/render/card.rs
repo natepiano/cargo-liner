@@ -17,6 +17,7 @@ use super::layout::ToastPaneFocus;
 use crate::ACTIVITY_SPINNER;
 use crate::constants::ELISION;
 use crate::constants::TOAST_BODY_HORIZONTAL_PADDING;
+use crate::constants::TOAST_ROW_GAP;
 use crate::constants::TOAST_SIDE_GAP;
 use crate::inactive_border_color;
 use crate::inactive_title_color;
@@ -26,7 +27,7 @@ use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
 use crate::toasts::TrackedItemActivity;
 use crate::toasts::TrackedItemView;
-use crate::toasts::body;
+use crate::wrap;
 
 pub(super) fn render_toast(
     frame: &mut Frame,
@@ -148,13 +149,18 @@ fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
         .right()
         .saturating_add(TOAST_SIDE_GAP)
         .min(area.right());
+    let clear_top = card.top().saturating_sub(TOAST_ROW_GAP).max(area.top());
+    let clear_bottom = card
+        .bottom()
+        .saturating_add(TOAST_ROW_GAP)
+        .min(area.bottom());
     frame.render_widget(
         Clear,
         Rect {
             x:      clear_left,
-            y:      card.y,
+            y:      clear_top,
             width:  clear_right.saturating_sub(clear_left),
-            height: card.height,
+            height: clear_bottom.saturating_sub(clear_top),
         },
     );
     join_adjacent_frame_columns(frame, area, card);
@@ -281,18 +287,22 @@ fn body_lines_plain(
     lines_for_body: usize,
     width: u16,
 ) -> (Vec<Line<'static>>, bool) {
-    let line_colors = toast.body_line_colors();
-    let mut lines = body::wrapped_body_lines(toast.body(), width, |index, line| {
-        toast.linger_progress().map_or_else(
-            || {
-                let style = line_colors
-                    .and_then(|colors| colors.get(index).copied())
-                    .map_or(body_style, |color| Style::default().fg(color));
-                Line::from(Span::styled(line.to_owned(), style))
-            },
-            |progress| format::fade_to_color(line, f64::from(progress)),
-        )
-    });
+    let mut lines = toast.linger_progress().map_or_else(
+        || toast.render_body.wrapped_lines(width, body_style),
+        |progress| {
+            toast
+                .body()
+                .split('\n')
+                .flat_map(|line| {
+                    wrap::wrapped_preserving_whitespace(
+                        format::fade_to_color(line, f64::from(progress)).spans,
+                        width,
+                    )
+                    .lines
+                })
+                .collect()
+        },
+    );
     let body_was_cut = lines.len() > lines_for_body;
     lines.truncate(lines_for_body);
     (lines, body_was_cut)

@@ -16,7 +16,9 @@ mod toast;
 mod view;
 
 pub use action::ToastsAction;
+pub use body::RunBreaks;
 pub use body::ToastBody;
+pub use body::ToastRun;
 pub use body::toast_body_width;
 pub use format::format_toast_items;
 pub use ids::ColoredToastId;

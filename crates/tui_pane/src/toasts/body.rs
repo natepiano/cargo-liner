@@ -33,36 +33,101 @@ impl ToastBody {
             Self::Lines(lines) | Self::Colored { lines, .. } => lines.join("\n"),
         }
     }
+}
 
-    /// The per-line foreground colors, when this body carries them.
-    pub(super) fn line_colors(&self) -> Option<Vec<Color>> {
-        match self {
-            Self::Colored { colors, .. } => Some(colors.clone()),
-            Self::Text(_) | Self::Lines(_) => None,
+/// Where a styled toast run permits a line break.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunBreaks {
+    /// Break between words, or inside words wider than a line.
+    AtSpaces,
+    /// Keep the run together on one line. A run too wide for the line,
+    /// counting short text glued after it, is cut and marked with `…`.
+    /// Explicit newlines still start a new line.
+    Never,
+}
+
+/// Toast text with its drawing style and line-break policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToastRun {
+    /// Text drawn by this run.
+    pub text:   String,
+    /// Style applied over the toast's body style.
+    pub style:  Style,
+    /// Permitted line breaks inside this run.
+    pub breaks: RunBreaks,
+}
+
+impl ToastRun {
+    /// Build styled toast text with an explicit line-break policy.
+    #[must_use]
+    pub fn new(text: impl Into<String>, style: Style, breaks: RunBreaks) -> Self {
+        Self {
+            text: text.into(),
+            style,
+            breaks,
         }
-    }
-
-    pub(super) fn wrapped_line_count(&self, width: usize) -> usize {
-        let width = u16::try_from(width.max(1)).unwrap_or(u16::MAX);
-        wrapped_body_lines(&self.as_text(), width, |_, line| {
-            Line::from(Span::styled(line.to_owned(), Style::default()))
-        })
-        .len()
-        .max(1)
     }
 }
 
-pub(super) fn wrapped_body_lines(
-    body: &str,
-    width: u16,
-    mut styled_line: impl FnMut(usize, &str) -> Line<'static>,
-) -> Vec<Line<'static>> {
-    body.split('\n')
-        .enumerate()
-        .flat_map(|(index, line)| {
-            wrap::wrapped_preserving_whitespace(styled_line(index, line).spans, width).lines
-        })
-        .collect()
+/// Body content retained through measuring and drawing a toast.
+#[derive(Clone, Debug)]
+pub(super) enum ToastRenderBody {
+    Text(ToastBody),
+    StyledRuns {
+        body: ToastBody,
+        runs: Vec<ToastRun>,
+    },
+}
+
+impl From<ToastBody> for ToastRenderBody {
+    fn from(body: ToastBody) -> Self { Self::Text(body) }
+}
+
+impl ToastRenderBody {
+    pub(super) fn styled(runs: Vec<ToastRun>) -> Self {
+        let text = runs.iter().map(|run| run.text.as_str()).collect::<String>();
+        Self::StyledRuns {
+            body: ToastBody::from(text),
+            runs,
+        }
+    }
+
+    pub(super) const fn public_body(&self) -> &ToastBody {
+        match self {
+            Self::Text(body) | Self::StyledRuns { body, .. } => body,
+        }
+    }
+
+    pub(super) fn as_text(&self) -> String { self.public_body().as_text() }
+
+    pub(super) fn wrapped_line_count(&self, width: usize) -> usize {
+        let width = u16::try_from(width.max(1)).unwrap_or(u16::MAX);
+        self.wrapped_lines(width, Style::default()).len().max(1)
+    }
+
+    pub(super) fn wrapped_lines(&self, width: u16, style: Style) -> Vec<Line<'static>> {
+        match self {
+            Self::Text(body) => body
+                .as_text()
+                .split('\n')
+                .enumerate()
+                .flat_map(|(index, line)| {
+                    let line_style = match body {
+                        ToastBody::Colored { colors, .. } => {
+                            colors.get(index).map_or(style, |color| style.fg(*color))
+                        },
+                        ToastBody::Text(_) | ToastBody::Lines(_) => style,
+                    };
+                    wrap::wrapped_preserving_whitespace(
+                        vec![Span::styled(line.to_owned(), line_style)],
+                        width,
+                    )
+                    .lines
+                })
+                .collect(),
+            Self::StyledRuns { runs, .. } => wrap::wrapped_runs(runs, width, style).lines,
+        }
+    }
 }
 
 impl From<String> for ToastBody {
@@ -88,4 +153,40 @@ pub(super) fn card_body_width(card_width: u16) -> usize {
         BLOCK_BORDER_WIDTH
             .saturating_add(usize::from(TOAST_BODY_HORIZONTAL_PADDING).saturating_mul(2)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_nonbreaking_run_moves_whole_to_the_next_line() {
+        let highlight = Style::default().fg(Color::Cyan);
+        let body = ToastRenderBody::styled(vec![
+            ToastRun::new(
+                "To stop reporting, run ",
+                Style::default(),
+                RunBreaks::AtSpaces,
+            ),
+            ToastRun::new("cargo tile uninstall", highlight, RunBreaks::Never),
+            ToastRun::new(".", Style::default(), RunBreaks::AtSpaces),
+        ]);
+        let lines = body.wrapped_lines(32, Style::default());
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(text, ["To stop reporting, run", "cargo tile uninstall."]);
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|span| span.content == "cargo tile uninstall" && span.style == highlight)
+        );
+    }
 }
