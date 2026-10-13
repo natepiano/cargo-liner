@@ -30,6 +30,8 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - `TileGrid` lets the summary count as two cells, then three, up to what its column holds, whenever normal rebalancing leaves it short, pushing every other cell one place on; it gives each cell back once it fits in fewer. Cell numbers stay logical, the summary is served before the focus ring in its column, and at the fit limit it is clipped as before.
 
 ### Fixed
+- Moving tile heights keep destination bounds ordered when a previous allocation falls outside the destination's permitted height range.
+- Panics restore raw mode, mouse reporting, the alternate screen and cursor visibility before printing the panic message, while retaining iTerm2 profile restoration.
 - Tile motion keeps pieces inside their column bands, gives resident cells’ transferable spare rows at once, and lets a waiting command claim a key’s opening within the same motion. Content changes keep emptied residents at their height floor beside cutting mates and retarget filled destinations on the same clock. Entering and departing cells slide throughout that clock.
 - An incomplete tile gives unused content rows to column mates that can paint them, including optional ancestry rows. The motion ends at the same filled allocation the settled frame uses.
 - Cells added or removed within a column slide through intermediate heights. Spare-row sharing keeps opening and closing allocations at their nearest filled height, and transfers without content-step gaps round once per column so fractional steps do not wait until the final frame.

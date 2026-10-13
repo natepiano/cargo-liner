@@ -1465,7 +1465,10 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             else {
                 continue;
             };
-            let previous_span = previous.saturating_sub(1);
+            let previous_span = previous
+                .saturating_sub(1)
+                .max(bounds[index].smallest)
+                .min(bounds[index].largest);
             if empty {
                 bounds[index].largest = previous_span;
             } else {
@@ -8126,6 +8129,53 @@ mod tests {
             depth_status: DestinationDepthStatus::Resolved,
         });
         (grid, area, growth)
+    }
+
+    #[test]
+    fn a_previous_empty_height_below_the_destination_floor_keeps_ordered_bounds() {
+        let (mut grid, area, growth) =
+            exact_slot_height_motion(&[9, 3], &[6, 6], vec![Slot::Empty(0)], vec![Slot::Empty(0)]);
+        let previous = grid.drawing_at_with_height_snap(area, growth, 0, &HeightSnap::Off);
+        let heights = previous
+            .placements()
+            .map(|placement| placement.frame.clip().height)
+            .collect::<Vec<_>>();
+        assert_eq!(heights, [9, 3]);
+        grid.motion_heights = MotionHeightPath {
+            area,
+            growth,
+            progress: 0,
+            piece_heights: heights,
+        };
+        grid.set_min_tile_height(6);
+        grid.demands = TileDemands {
+            summary:       100,
+            summary_width: 0,
+            groups:        Vec::new(),
+        };
+
+        grid.measure_row_steps(
+            area,
+            growth,
+            1,
+            SummaryProbeDemands::new(usize::MAX, usize::MAX),
+            |content, area| match content {
+                TileContent::Empty(_) => 0,
+                _ => area.height,
+            },
+            |content, area| match content {
+                TileContent::Empty(_) => 0,
+                _ => area.height,
+            },
+        );
+
+        let destination = grid.resolved_grid(area, &grid.drawn_held(), growth);
+        assert_eq!(destination.min_tile_height, 6);
+        assert_eq!(destination.resolved.panes.len(), 2);
+        for pane in &destination.resolved.panes {
+            assert!((destination.min_tile_height..=area.height).contains(&pane.area.height));
+        }
+        assert_eq!(destination.resolved.panes[1].area.height, 6);
     }
 
     /// Draw the exact-height fixture with every candidate height filled.
