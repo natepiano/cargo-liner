@@ -33,8 +33,8 @@ accent       = { r = 0, g = 95, b = 135 }
 error        = { r = 170, g = 0, b = 0 }
 inline_error = { r = 180, g = 95, b = 0 }
 label        = { r = 60, g = 100, b = 90 }
-success      = { r = 0, g = 120, b = 0 }
-warning      = { r = 180, g = 95, b = 0 }
+success      = { r = 0, g = 116, b = 0 }
+warning      = { r = 145, g = 76, b = 0 }
 
 [variants.text]
 bg_focus  = "White"
@@ -44,6 +44,14 @@ dim       = { r = 130, g = 130, b = 130 }
 secondary = { r = 70, g = 70, b = 70 }
 
 [variants.roles]
+family_blue   = { r = 0, g = 15, b = 170 }
+family_green  = { r = 70, g = 105, b = 0 }
+family_magenta= { r = 150, g = 0, b = 100 }
+family_cyan   = { r = 0, g = 105, b = 105 }
+family_orange = { r = 135, g = 89, b = 0 }
+family_violet = { r = 105, g = 0, b = 160 }
+family_yellow = { r = 120, g = 95, b = 0 }
+family_red    = { r = 175, g = 25, b = 40 }
 
 [variants.status]
 bar = { r = 220, g = 220, b = 220 }

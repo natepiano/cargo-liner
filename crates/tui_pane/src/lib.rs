@@ -494,6 +494,8 @@ pub use theme::theme;
 pub use theme::title_color;
 pub use theme::transparent_background;
 pub use theme::warning_color;
+pub use tiles::CellFadeProgress;
+pub use tiles::CellReadoutFade;
 pub use tiles::MIN_INITIAL_ROWS;
 pub use tiles::SummaryFoot;
 pub use tiles::TABLE_CELL;

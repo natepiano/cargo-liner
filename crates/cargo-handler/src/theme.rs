@@ -367,7 +367,7 @@ fn default_dark() -> Theme {
         },
         semantic:    SemanticTheme {
             accent:       StyleSpec::from_color(Color::Cyan),
-            error:        StyleSpec::from_color(Color::Red),
+            error:        StyleSpec::from_color(Color::Rgb(255, 115, 115)),
             inline_error: StyleSpec::from_color(Color::Yellow),
             success:      StyleSpec::from_color(Color::Green),
             label:        StyleSpec::from_color(Color::Rgb(150, 190, 180)),
@@ -467,7 +467,7 @@ fn high_contrast_dark() -> Theme {
         },
         semantic:    SemanticTheme {
             accent:       StyleSpec::bold(Color::LightCyan),
-            error:        StyleSpec::bold(Color::LightRed),
+            error:        StyleSpec::bold(Color::Rgb(255, 115, 115)),
             inline_error: StyleSpec::bold(Color::LightYellow),
             success:      StyleSpec::bold(Color::LightGreen),
             label:        StyleSpec::from_color(Color::Rgb(175, 215, 200)),
@@ -561,6 +561,25 @@ mod tests {
     const HC_TEMPLATE: &str = include_str!("../themes/high_contrast.toml");
     const LIGHT_TEMPLATE: &str = include_str!("../themes/default_light.toml");
     const STARTER_TEMPLATE: &str = include_str!("../themes/starter.toml");
+
+    const XTERM_ANSI_COLORS: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (205, 0, 0),
+        (0, 205, 0),
+        (205, 205, 0),
+        (0, 0, 238),
+        (205, 0, 205),
+        (0, 205, 205),
+        (229, 229, 229),
+        (127, 127, 127),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (92, 92, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
 
     /// Parse one template and return its variants, asserting the schema
     /// version and the expected variant count.
@@ -706,5 +725,102 @@ mod tests {
                 DEFAULT_HC_LIGHT_THEME,
             ]
         );
+    }
+
+    fn linear_channel(channel: u8) -> f64 {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(red: u8, green: u8, blue: u8) -> f64 {
+        0.2126f64.mul_add(
+            linear_channel(red),
+            0.7152f64.mul_add(linear_channel(green), 0.0722 * linear_channel(blue)),
+        )
+    }
+
+    fn xterm_rgb(color: Color) -> (u8, u8, u8) {
+        let named = match color {
+            Color::Black | Color::Reset => 0,
+            Color::Red => 1,
+            Color::Green => 2,
+            Color::Yellow => 3,
+            Color::Blue => 4,
+            Color::Magenta => 5,
+            Color::Cyan => 6,
+            Color::Gray => 7,
+            Color::DarkGray => 8,
+            Color::LightRed => 9,
+            Color::LightGreen => 10,
+            Color::LightYellow => 11,
+            Color::LightBlue => 12,
+            Color::LightMagenta => 13,
+            Color::LightCyan => 14,
+            Color::White => 15,
+            Color::Rgb(red, green, blue) => return (red, green, blue),
+            Color::Indexed(index) => return xterm_indexed_rgb(index),
+        };
+        XTERM_ANSI_COLORS[named]
+    }
+
+    fn xterm_indexed_rgb(index: u8) -> (u8, u8, u8) {
+        if let Some(rgb) = XTERM_ANSI_COLORS.get(usize::from(index)) {
+            return *rgb;
+        }
+        if index < 232 {
+            const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+            let offset = index - 16;
+            return (
+                LEVELS[usize::from(offset / 36)],
+                LEVELS[usize::from((offset % 36) / 6)],
+                LEVELS[usize::from(offset % 6)],
+            );
+        }
+        let gray = 8 + 10 * (index - 232);
+        (gray, gray, gray)
+    }
+
+    fn contrast_ratio(foreground: Color, background: Color) -> f64 {
+        let (foreground_red, foreground_green, foreground_blue) = xterm_rgb(foreground);
+        let (background_red, background_green, background_blue) = xterm_rgb(background);
+        let foreground = relative_luminance(foreground_red, foreground_green, foreground_blue);
+        let background = relative_luminance(background_red, background_green, background_blue);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
+    fn for_each_pane_ground(theme: &Theme, mut check: impl FnMut(bool, bool, Color)) {
+        let previous_theme = tui_pane::theme();
+        let previous_transparency = tui_pane::transparent_background();
+        let previous_tint = tui_pane::focused_pane_tint_enabled();
+        tui_pane::set_active_theme(std::sync::Arc::new(theme.clone()));
+        tui_pane::set_focused_pane_tint(true);
+        for transparent in [false, true] {
+            tui_pane::set_transparent_background(transparent);
+            for focused in [false, true] {
+                check(transparent, focused, tui_pane::pane_background(focused));
+            }
+        }
+        tui_pane::set_active_theme(previous_theme);
+        tui_pane::set_transparent_background(previous_transparency);
+        tui_pane::set_focused_pane_tint(previous_tint);
+    }
+
+    #[test]
+    fn the_readout_count_meets_contrast_on_both_grounds_in_every_built_in_theme() {
+        for variant in builtins() {
+            for_each_pane_ground(&variant.theme, |transparent, focused, ground| {
+                let ink = tui_pane::error_color();
+                let contrast = contrast_ratio(ink, ground);
+                assert!(
+                    contrast >= 4.5,
+                    "{} readout count and width {ink:?} on {ground:?}: {contrast:.2}:1, transparent={transparent}, focused={focused}",
+                    variant.id.as_str()
+                );
+            });
+        }
     }
 }

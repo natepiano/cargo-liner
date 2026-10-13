@@ -31,7 +31,7 @@ remembered = { r = 0, g = 25, b = 50 }
 
 [variants.semantic]
 accent       = { color = "LightCyan", bold = true }
-error        = { color = "LightRed", bold = true }
+error        = { color = { r = 255, g = 115, b = 115 }, bold = true }
 inline_error = { color = "LightYellow", bold = true }
 label        = { r = 175, g = 215, b = 200 }
 success      = { color = "LightGreen", bold = true }

@@ -34,7 +34,7 @@ remembered = { r = 40, g = 40, b = 40 }
 
 [variants.semantic]
 accent       = "Cyan"
-error        = "Red"
+error        = { r = 255, g = 115, b = 115 }
 inline_error = "Yellow"
 label        = { r = 150, g = 190, b = 180 }
 success      = "Green"
