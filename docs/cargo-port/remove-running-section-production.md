@@ -10,8 +10,8 @@
 - **Showrunner checkout:** `/home/natepiano/rust/cargo-liner`
 - **Showrunner session:** cargo-liner
 - **Log:** `docs/cargo-port/remove-running-section-log.md`. It is git-excluded and holds one line per event.
-- **User zone:** `America/Los_Angeles`. Every time the showrunner reports is in this zone only.
-- **Updates:** every 120 minutes. Each update reports every unit in full.
+- **User zone:** `America/New_York`. Every time the showrunner reports is in this zone only.
+- **Updates:** on demand. Each update reports every unit in full.
 - **Merge tests:** a change to `crates/tui_pane` also tests `cargo-tile`, `cargo-handler` and `cargo-port`, which build on it.
 - **Capacity:** 32 cores, 60 GB (17 GB free on 2026-10-06), three units.
 

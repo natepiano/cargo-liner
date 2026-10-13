@@ -48,14 +48,14 @@ dim       = "DarkGray"
 secondary = "Gray"
 
 [variants.roles]
-family_blue   = { r = 140, g = 150, b = 255 }
-family_green  = { r = 148, g = 210, b = 0 }
-family_magenta= { r = 255, g = 110, b = 207 }
-family_cyan   = { r = 0, g = 205, b = 205 }
-family_orange = { r = 255, g = 185, b = 45 }
-family_violet = { r = 209, g = 130, b = 255 }
-family_yellow = { r = 230, g = 205, b = 0 }
-family_red    = { r = 255, g = 115, b = 115 }
+family_blue    = { r = 140, g = 150, b = 255 }
+family_cyan    = { r = 0, g = 205, b = 205 }
+family_green   = { r = 148, g = 210, b = 0 }
+family_magenta = { r = 255, g = 110, b = 207 }
+family_orange  = { r = 255, g = 185, b = 45 }
+family_red     = { r = 255, g = 115, b = 115 }
+family_violet  = { r = 209, g = 130, b = 255 }
+family_yellow  = { r = 230, g = 205, b = 0 }
 
 [variants.status]
 bar = { r = 58, g = 58, b = 58 }
