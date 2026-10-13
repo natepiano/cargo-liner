@@ -57,6 +57,7 @@ READER_SCENARIOS = (
     'cpu-cache-server', 'quiet-json-long', 'excluded',
 )
 SELF_CHECK_SCENARIOS = (
+    '--blocked-invocation-self-check',
     '--concurrent-deadline-self-check', '--cpu-observation-self-check', '--reader-end-self-check',
     '--scenario-deadline-self-check', '--terminal-frame-self-check',
 )
@@ -884,6 +885,10 @@ def unavailable_measurements(row: str) -> int:
     # A border delimits that cell just as whitespace delimits the inner cells.
     return row.replace('│', ' ').split().count('--')
 
+def blocked_invocation_in_rendered(marker: str, rendered: str) -> bool:
+    # Process discovery can publish the row before captured output supplies its state.
+    return any(marker in line and 'blocked' in line for line in rendered.splitlines())
+
 def carrier_source_in_rendered(writer: RegistrationCarrier, source: str, rendered: str) -> bool:
     lines = rendered.splitlines()
     matching = [index for index, line in enumerate(lines) if writer[1].name in line]
@@ -1075,6 +1080,29 @@ def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path,
              'excluded live command loses its capture after the sweep')
     return rendered
 
+def assert_blocked_invocation_readiness() -> None:
+    marker = 'probe-first'
+    discovered = 'summary\n│ 1890 -- cargo build ' + marker
+    unrelated_blocked = discovered + '\n│ 1891 blocked cargo check probe-unrelated'
+    ready = 'summary\n│ 1890 blocked cargo build ' + marker
+    assert not blocked_invocation_in_rendered(marker, discovered), 'row discovery ends state wait'
+    assert not blocked_invocation_in_rendered(marker, unrelated_blocked), \
+        'another invocation supplies the blocked state'
+    frames = iter((discovered, unrelated_blocked, ready))
+    observed = []
+    def row_is_blocked() -> bool:
+        rendered = next(frames)
+        observed.append(rendered)
+        return blocked_invocation_in_rendered(marker, rendered)
+    wait_for(row_is_blocked, 'self-check invocation to render its blocked state', pause=0)
+    assert observed == [discovered, unrelated_blocked, ready], observed
+    # Excluded commands require both nested rows to reach their asserted state.
+    markers = ('probe-nested-check', 'probe-nested-test')
+    nested = 'summary\n│ 1890 blocked cargo check probe-nested-check\n│ 1891 -- cargo test probe-nested-test'
+    assert not all(blocked_invocation_in_rendered(name, nested) for name in markers), nested
+    nested = nested.replace('1891 --', '1891 blocked')
+    assert all(blocked_invocation_in_rendered(name, nested) for name in markers), nested
+
 def assert_completed_terminal_frames() -> None:
     global terminal_rows, terminal_columns
     def split_frame(frame: bytes) -> Snapshot:
@@ -1186,6 +1214,13 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
         executor.shutdown()
 
 arm_scenario_deadline()
+
+if scenario == '--blocked-invocation-self-check':
+    assert_blocked_invocation_readiness()
+    record_timestamp('assertions')
+    record_timestamp('cleanup')
+    cancel_scenario_deadline()
+    sys.exit(0)
 
 if scenario == '--cpu-observation-self-check':
     assert_cpu_observation_waits_for_reporting_windows()
@@ -1331,14 +1366,19 @@ try:
                   if scenario == 'excluded' else first[1].name)
         marker_is_ready = marker in rendered
         if scenario == 'excluded':
-            marker_is_ready = all('probe-nested-' + root.name + '-' + command in rendered
-                                  for command in ('check', 'test'))
+            marker_is_ready = all(blocked_invocation_in_rendered(
+                'probe-nested-' + root.name + '-' + command, rendered)
+                for command in ('check', 'test'))
+        elif scenario in ('locale', 'quiet-json-long'):
+            marker_is_ready = blocked_invocation_in_rendered(marker, rendered)
         elif scenario == 'child-source-switch':
             marker_is_ready = carrier_source_in_rendered(
                 required(carrier, 'child-source-switch setup does not assign carrier'),
                 'process', rendered)
         return marker_is_ready and 'summary' in rendered
-    wait_for(reader_has_scanned, 'production reader does not display the live cargo row', pause=0)
+    readiness = ('live cargo row with its blocked state'
+                 if scenario in ('locale', 'quiet-json-long', 'excluded') else 'live cargo row')
+    wait_for(reader_has_scanned, 'production reader does not display the ' + readiness, pause=0)
     record_timestamp('first frame')
     rendered = screen()
     assert 'summary' in rendered, rendered
