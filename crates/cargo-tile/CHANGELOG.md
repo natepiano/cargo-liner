@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A panic is appended to `panic.log` beside `config.toml` -- the time, where it was raised, its message and a backtrace -- and the file's path is printed after the terminal is restored, so the report is not lost with the alternate screen.
 - `[tiles] view`, stepped under Tiles in the settings overlay, selects `auto`, `summary` or `cells`; `auto` is the default.
 - The summary cell's bottom row shows the memory of running commands, with `+` when only part of the total is readable and `--` when none of it is.
 - A `mem` column: the command's resident memory, its compilers and tests included, in gibibytes.

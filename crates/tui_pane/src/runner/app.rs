@@ -4,6 +4,7 @@
 
 use std::io;
 use std::io::Stdout;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
@@ -49,6 +50,13 @@ pub trait TerminalApp: KeymapEditContext + SettingsHost + 'static {
     /// A left press at `position`. Every other mouse event only records
     /// where the pointer is.
     fn click(&mut self, position: Position);
+
+    /// The file a panic is appended to, read once as the terminal is
+    /// taken: the time, where the panic was raised, its message and a
+    /// backtrace. The path is printed to standard error once the
+    /// terminal has been handed back, so the report outlasts the
+    /// alternate screen it was raised under. `None` records nothing.
+    fn panic_log(&self) -> Option<PathBuf> { None }
 
     /// Called ahead of every frame, drawn or not, outside the draw
     /// itself, for work too slow to spend inside one.

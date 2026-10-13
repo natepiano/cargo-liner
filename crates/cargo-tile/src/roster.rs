@@ -354,6 +354,15 @@ impl Roster {
         }
     }
 
+    /// An empty roster sized for a stated machine rather than the one running the test.
+    #[cfg(test)]
+    pub(crate) fn for_test(column_widths: SessionColumnWidths) -> Self {
+        Self {
+            column_widths,
+            ..Self::new()
+        }
+    }
+
     /// The groups to display, newest first.
     pub(crate) fn groups(&self) -> &[TrackedGroup] { &self.groups }
 

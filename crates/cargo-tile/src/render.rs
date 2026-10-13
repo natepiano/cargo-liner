@@ -5221,7 +5221,10 @@ mod tests {
     #[test]
     fn a_value_changing_length_moves_no_column() {
         let mut process = invocation(20, &["check"]);
-        let mut roster = Roster::new();
+        let mut roster = Roster::for_test(SessionColumnWidths::for_machine(
+            16,
+            16 * BYTES_PER_GIBIBYTE,
+        ));
         let mut headers = Vec::new();
         for (cpu, memory) in [
             ("765%", 9 * BYTES_PER_GIBIBYTE),
@@ -5374,7 +5377,10 @@ mod tests {
         let mut last = invocation(501, &["twentycharacternamexx"]);
         last.path = "~/last".to_string();
         last.directory_identity = WorkingDirectoryIdentity::Absolute("/last".into());
-        let mut roster = Roster::new();
+        let mut roster = Roster::for_test(SessionColumnWidths::for_machine(
+            16,
+            16 * BYTES_PER_GIBIBYTE,
+        ));
         roster.observe(vec![cargo_group(first), cargo_group(last)], Instant::now());
         let area = Rect::new(0, 0, 40, 5);
         let mut buffer = Buffer::empty(area);

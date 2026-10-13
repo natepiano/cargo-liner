@@ -1,15 +1,23 @@
 //! Taking the terminal, handing it back, and relaunching the binary.
 
+use std::backtrace::Backtrace;
 use std::ffi::OsString;
+use std::fs;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::panic;
+use std::panic::Location;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitCode;
 use std::sync::Once;
 
+use chrono::SecondsFormat;
+use chrono::Utc;
 use crossterm::cursor::Show;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
@@ -24,6 +32,8 @@ use ratatui::backend::CrosstermBackend;
 use super::app::FrameProbe;
 use super::app::PollWork;
 use super::app::TerminalApp;
+use super::constants::PANIC_LOCATION_UNKNOWN;
+use super::constants::PANIC_PAYLOAD_NOT_TEXT;
 use super::event_loop;
 use super::event_loop::ProbeBackend;
 use super::iterm2;
@@ -32,7 +42,8 @@ use crate::AppIdentity;
 
 /// Run `app` in the alternate screen until it quits or restarts.
 ///
-/// Restores the terminal and iTerm2 profile on a panic, takes the terminal (raw
+/// Restores the terminal and iTerm2 profile on a panic and appends the
+/// panic to [`TerminalApp::panic_log`], takes the terminal (raw
 /// mode, the alternate screen, mouse reporting, and `iterm2_profile`
 /// where the session is iTerm2), then calls `start` for the work the
 /// loop polls -- after the setup, so nothing `start` spawns runs
@@ -49,13 +60,15 @@ pub fn run_terminal<A: TerminalApp, W: PollWork<A>>(
     start: impl FnOnce(&A) -> W,
 ) -> ExitCode {
     let binary_name = <A::Identity as AppIdentity>::BINARY_NAME;
-    let (mut terminal, profile_switch) = match setup_terminal::<A::Probe>(iterm2_profile) {
-        Ok(started) => started,
-        Err(error) => {
-            eprintln!("{binary_name}: terminal setup: {error}");
-            return ExitCode::FAILURE;
-        },
-    };
+    let panic_log = app.panic_log();
+    let (mut terminal, profile_switch) =
+        match setup_terminal::<A::Probe>(iterm2_profile, binary_name, panic_log) {
+            Ok(started) => started,
+            Err(error) => {
+                eprintln!("{binary_name}: terminal setup: {error}");
+                return ExitCode::FAILURE;
+            },
+        };
     let mut work = start(app);
     let loop_result = event_loop::event_loop(&mut terminal, app, &mut work);
     app.before_exit();
@@ -85,8 +98,10 @@ pub fn run_terminal<A: TerminalApp, W: PollWork<A>>(
 /// is counted.
 fn setup_terminal<P: FrameProbe>(
     iterm2_profile: &str,
+    binary_name: &'static str,
+    panic_log: Option<PathBuf>,
 ) -> io::Result<(Terminal<ProbeBackend<P>>, Option<ProfileSwitch>)> {
-    install_panic_restore();
+    install_panic_restore(binary_name, panic_log);
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -118,8 +133,15 @@ fn write_terminal_restore(out: &mut impl io::Write) -> io::Result<()> {
     execute!(out, DisableMouseCapture, LeaveAlternateScreen, Show)
 }
 
-/// Restore terminal modes before the profile and the existing panic reporter.
-fn install_panic_restore() {
+/// Restore terminal modes before the profile and the existing panic
+/// reporter, then append the panic to `panic_log` and name the file on
+/// standard error.
+///
+/// The path is printed last, below the message the existing reporter
+/// prints, and only when the append succeeded: a hook that cannot write
+/// the file says nothing about it rather than naming a file that does not
+/// hold this panic.
+fn install_panic_restore(binary_name: &'static str, panic_log: Option<PathBuf>) {
     static INSTALLED: Once = Once::new();
     INSTALLED.call_once(|| {
         iterm2::install_panic_restore();
@@ -128,8 +150,43 @@ fn install_panic_restore() {
             let _ = disable_raw_mode();
             let _ = write_terminal_restore(&mut io::stdout());
             previous(info);
+            let Some(path) = &panic_log else {
+                return;
+            };
+            let message = info.payload_as_str().unwrap_or(PANIC_PAYLOAD_NOT_TEXT);
+            let backtrace = Backtrace::force_capture();
+            if append_panic_report(path, message, info.location(), &backtrace).is_ok() {
+                let _ = writeln!(
+                    io::stderr(),
+                    "{binary_name}: panic recorded in {}",
+                    path.display()
+                );
+            }
         }));
     });
+}
+
+/// Append one panic to `path`: the time in UTC, where it was raised, its
+/// message and `backtrace`. The file's directory is created when missing.
+///
+/// Every failure is returned rather than raised, since this runs inside
+/// the panic hook, where a second panic aborts the process.
+fn append_panic_report(
+    path: &Path,
+    message: &str,
+    location: Option<&Location<'_>>,
+    backtrace: &Backtrace,
+) -> io::Result<()> {
+    if let Some(directory) = path.parent() {
+        fs::create_dir_all(directory)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let time = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    let location = location.map_or_else(|| PANIC_LOCATION_UNKNOWN.to_string(), ToString::to_string);
+    writeln!(
+        file,
+        "{time} panicked at {location}:\n{message}\nbacktrace:\n{backtrace}"
+    )
 }
 
 /// Relaunch this binary with the arguments it was started with.
@@ -157,6 +214,33 @@ fn restart_self<I: AppIdentity>() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_report_holds_its_message_location_and_backtrace() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("missing").join("panic.log");
+        let location = Location::caller();
+        append_panic_report(
+            &path,
+            "the grid lost a tile",
+            Some(location),
+            &Backtrace::force_capture(),
+        )?;
+        let report = fs::read_to_string(&path)?;
+        assert!(report.contains("the grid lost a tile"), "{report}");
+        assert!(
+            report.contains(&format!("panicked at {location}:")),
+            "{report}"
+        );
+        let backtrace = report
+            .split_once("\nbacktrace:\n")
+            .map(|(_, backtrace)| backtrace.trim());
+        assert!(
+            backtrace.is_some_and(|frames| !frames.is_empty()),
+            "{report}"
+        );
+        Ok(())
+    }
 
     #[test]
     fn terminal_restore_disables_mouse_leaves_the_screen_and_shows_the_cursor() -> io::Result<()> {

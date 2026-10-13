@@ -26,6 +26,7 @@ use tui_pane::KeymapError;
 use tui_pane::KeymapUiContext;
 use tui_pane::NoToastAction;
 use tui_pane::SettingStep;
+use tui_pane::SettingsFileSpec;
 use tui_pane::SettingsHost;
 use tui_pane::TerminalApp;
 use tui_pane::TileGridHost;
@@ -36,9 +37,11 @@ use crate::census::ExcludedCommands;
 use crate::census::InvocationId;
 use crate::config::CargoTile;
 use crate::config::LoadedConfig;
+use crate::constants::CONFIG_DIRNAME;
 use crate::constants::KEYMAP_TOML_HEADER;
 use crate::constants::MIN_CELL_HEIGHT;
 use crate::constants::MIN_CELL_WIDTH;
+use crate::constants::PANIC_LOG_FILENAME;
 use crate::globals::AppGlobalAction;
 use crate::keymap;
 use crate::probe::FrameLog;
@@ -297,6 +300,11 @@ impl TerminalApp for App {
     }
 
     fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
+
+    /// `<os config dir>/cargo-tile/panic.log`, beside `config.toml`.
+    fn panic_log(&self) -> Option<PathBuf> {
+        SettingsFileSpec::new(CONFIG_DIRNAME, PANIC_LOG_FILENAME).resolved_path()
+    }
 
     /// Settling the window costs several round trips to the window
     /// server, which is far longer than a frame, and `terminal.draw` is
