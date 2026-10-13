@@ -107,6 +107,12 @@ fn reader_cpu_observation_waits_for_samples_to_span_reporting_windows() {
     run_reader_script("--cpu-observation-self-check");
 }
 
+/// A discovered invocation cannot borrow blocked state from another row or an earlier frame.
+#[test]
+fn reader_waits_for_blocked_state_on_the_matching_invocation_row() {
+    run_reader_script("--blocked-invocation-self-check");
+}
+
 /// Drive the production terminal loop through a PTY; Python owns every child and terminal fd.
 /// The reader receives the shim's actual records, with no copied Rust implementation.
 fn reader_regression(scenario: &str) { run_reader_script(scenario); }
