@@ -1,5 +1,8 @@
 //! Exercise capture permissions through an isolated installed toolchain.
 
+#[path = "../src/shim_registration/parallel_cases.rs"]
+mod parallel_cases;
+
 /// Keep filesystem and environment changes confined to each child invocation.
 #[cfg(test)]
 #[allow(
@@ -25,6 +28,8 @@ mod tests {
     use std::time::Instant;
 
     use tempfile::TempDir;
+
+    use super::parallel_cases;
 
     /// The stand-in for the real cargo, run after `DESCRIPTOR_PROBE`. It records what it
     /// was given, then `SHIM_TEST_SCENARIO` selects what it does; unset, it writes one
@@ -632,36 +637,39 @@ exec {link} "$@"
     /// The additional identity fields are readable by the group before publication too.
     #[test]
     fn extended_registration_is_world_readable_before_publication() {
-        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            let toolchain = InstalledToolchain::new();
-            let link = Command::new("sh")
-                .args(["-c", "command -v ln"])
-                .output()
-                .expect("locate native publication utility");
-            assert!(link.status.success());
-            let link = String::from_utf8(link.stdout).expect("UTF-8 utility path");
-            write_executable(
-                &toolchain.directory.path().join("toolchain/bin/ln"),
-                &format!(
-                    r#"#!/bin/sh
+        parallel_cases::run(
+            [CapturePath::Pty, CapturePath::NoTerminal],
+            |capture_path| {
+                let toolchain = InstalledToolchain::new();
+                let link = Command::new("sh")
+                    .args(["-c", "command -v ln"])
+                    .output()
+                    .expect("locate native publication utility");
+                assert!(link.status.success());
+                let link = String::from_utf8(link.stdout).expect("UTF-8 utility path");
+                write_executable(
+                    &toolchain.directory.path().join("toolchain/bin/ln"),
+                    &format!(
+                        r#"#!/bin/sh
 set -eu
 cp -p "$1" "$SHIM_TEST_OBSERVATIONS/staged-registration"
 exec {} "$@"
 "#,
-                    shell_word(link.trim_end())
-                ),
-            );
-            let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
-            toolchain.assert_cargo(&output, 0o066, &["build"]);
-            toolchain.assert_capture_modes(capture_path);
-            let staged = toolchain.observations.join("staged-registration");
-            assert_mode(&staged, 0o644);
-            let published = entries(&toolchain.observations.join("root/state/pids"));
-            assert_eq!(
-                fs::read(staged).expect("complete staging record"),
-                fs::read(&published[0]).expect("published record")
-            );
-        }
+                        shell_word(link.trim_end())
+                    ),
+                );
+                let output = toolchain.run(capture_path, HomeSelection::Present, 0o066, &["build"]);
+                toolchain.assert_cargo(&output, 0o066, &["build"]);
+                toolchain.assert_capture_modes(capture_path);
+                let staged = toolchain.observations.join("staged-registration");
+                assert_mode(&staged, 0o644);
+                let published = entries(&toolchain.observations.join("root/state/pids"));
+                assert_eq!(
+                    fs::read(staged).expect("complete staging record"),
+                    fs::read(&published[0]).expect("published record")
+                );
+            },
+        );
     }
 
     /// Without a unique generation, capture must fail before publishing a repeatable name.
@@ -766,7 +774,7 @@ exec {} "$@"
     /// Repair the owned parent and hierarchy without chmod of unrelated descendants.
     #[test]
     fn owner_repairs_parent_and_account_modes_without_touching_other_data() {
-        for parent_mode in [0o700, 0o755, 0o777] {
+        parallel_cases::run([0o700, 0o755, 0o777], |parent_mode| {
             let toolchain = InstalledToolchain::new();
             let unrelated = toolchain.root.join("state/unrelated/nested");
             fs::create_dir_all(&unrelated).expect("create old hierarchy");
@@ -793,7 +801,7 @@ exec {} "$@"
             }
             assert_mode(&unrelated, 0o711);
             assert_mode(&sentinel, 0o600);
-        }
+        });
     }
 
     /// Account, state, and registration symlinks must never redirect a write.
@@ -1017,7 +1025,7 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
     /// caller did not hand down.
     #[test]
     fn caller_descriptors_reach_captured_cargo() {
-        for descriptor in ["4", "8", "9"] {
+        parallel_cases::run(["4", "8", "9"], |descriptor| {
             let toolchain = InstalledToolchain::new();
             toolchain.install_tee_recorder();
             let mut command = toolchain.no_terminal(&["build"]);
@@ -1047,7 +1055,7 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
                 toolchain.observed(&format!("descriptor-{descriptor}")),
                 b"through the descriptor\n"
             );
-        }
+        });
     }
 
     /// Cargo's stdout reaches the caller byte for byte around the pipe, and the log
@@ -1288,11 +1296,14 @@ case "$*" in *"/state/pids") {} 0500 "$SHIM_TEST_DEFAULT_ROOT" ;; esac
     /// Accounts without a home environment still reach cargo and publish capture.
     #[test]
     fn unset_home_does_not_abort_either_capture_path() {
-        for capture_path in [CapturePath::Pty, CapturePath::NoTerminal] {
-            let toolchain = InstalledToolchain::new();
-            let output = toolchain.run(capture_path, HomeSelection::Unset, 0o077, &["build"]);
-            toolchain.assert_cargo(&output, 0o077, &["build"]);
-            toolchain.assert_capture_modes(capture_path);
-        }
+        parallel_cases::run(
+            [CapturePath::Pty, CapturePath::NoTerminal],
+            |capture_path| {
+                let toolchain = InstalledToolchain::new();
+                let output = toolchain.run(capture_path, HomeSelection::Unset, 0o077, &["build"]);
+                toolchain.assert_cargo(&output, 0o077, &["build"]);
+                toolchain.assert_capture_modes(capture_path);
+            },
+        );
     }
 }

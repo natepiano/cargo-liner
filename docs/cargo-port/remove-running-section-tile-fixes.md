@@ -63,7 +63,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
   - A command cell is never narrower than 40 cells in cargo-tile. A window that cannot hold the grid at that width shows the summary alone, filling the window (user, 2026-10-08: cells are useless when too small).
   - Every literal the code names lives in its crate's `constants.rs` (existing crate convention).
   - No test takes a second. Render tests are pure and run on buffers; none waits on the clock (user rule, memory `no-multi-second-tests`).
-  - A `tui_pane` change reaches `cargo-handler` and `cargo-port`; a gate that touches `tui_pane` also runs `verify.sh test` for both (production doc, Merge tests). No existing `tui_pane` public signature changes, and `cargo-handler`'s cell sizes do not change (author's calls).
+  - A `tui_pane` change reaches `cargo-handler` and `cargo-port`; a gate that touches `tui_pane` also runs `verify.sh test` for both (production doc, Merge tests). No existing `tui_pane` public signature changes, and `cargo-handler`'s cell sizes do not change (author's calls). The approved exceptions (the user, from the Phase 12 review) are the public signatures Phase 19 names — toast timing, toast action, toast focus and tracked-item timing — and `TileCells::group_title`, which Phase 20 changes. Phase 20's other public items are additions only: `draw_tile_grid` keeps its signature, and a retained boundary that answers `Option`, such as `cell_at`, converts from a named internal answer at that boundary alone.
   - Format with `cargo +nightly fmt` only (user rule, memory `rustfmt-nightly-only`).
   - No UX guide covers cargo-tile (production doc, Production rules): design checks judge by the three gods in `~/.claude/docs/decision_criteria.md`.
   - Captures are the unit director's, taken before each checkpoint notice with a design check by a fresh helper (showrunner's gate). Screens are pty captures of the real `target/debug/cargo-tile tile`, replayed with pyte and split into frames on `\x1b[?25l`; the settled screen is the last completed frame, never a byte-offset sample.
@@ -476,49 +476,26 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
 
 ### Phase 16 — Readable inks, and a foot that fades  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Every ink on the grid meets its contrast floor on both grounds of every built-in theme, a finished row stays readable through the first half of its fade, and a fading cell's foot, and the summary's, fades with its contents.
-
-**Spec:**
-
-Evidence: shots in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/ph8/shots/`, text beside each in its `.txt`. Contrast is measured from cell colours, never PNG pixels (Phase 7 gotcha). Reproduce each item in a failing test before changing anything.
-
-Inks (built-in themes Default Dark and Default Light, transparent off; grounds are the ones `tui_pane` paints, `pane_background(true)` and `pane_background(false)`, `crates/tui_pane/src/pane/chrome.rs`; shots read #0e0e11 and #2e2e39 dark, #e0e0e9 light summary):
-1. **Pid identity colours** (`crates/cargo-tile/src/theme/mod.rs` `FAMILY_COLORS` 25, `family_color` 105: one solarized set for both appearances; light 2.44 to 3.47:1, dark magenta 2.95:1 on the summary grounds). Rule: every colour `family_color` can hand out measures 4.5:1 or more on both grounds of the active theme, and the clearance and more-than-one-family tests still pass. One set cannot meet it in both appearances (it would need relative luminance ≥ 0.30 on #2e2e39 and ≤ 0.13 on #e0e0e9), so the set follows the appearance. Test: `every_family_colour_meets_contrast_on_both_grounds_in_every_built_in_theme`.
-2. **The red count in the foot readout** (`crates/tui_pane/src/tiles/draw.rs` `rows_readout_lines` 539 writes the count in `error_color()`; Default Dark `error = Red` (`crates/cargo-tile/src/theme/builtins.rs:86`) draws #cd0000: 3.30:1 on #0e0e11, 2.30:1 on #2e2e39). Rule: the over-budget count, and the `@ W` width written in the same ink, measure 4.5:1 or more on both grounds in every built-in theme of cargo-tile, and of cargo-handler, which draws the same readout (`crates/cargo-handler/src/theme.rs:370`). Test: `the_readout_count_meets_contrast_on_both_grounds_in_every_built_in_theme`, one in each app.
-3. **Light summary green** (Default Light `success = Rgb(0, 120, 0)`, `builtins.rs:136`: 4.33:1 on #e0e0e9; the shot read 4.05:1 from pixels). Rule: every ink a table row draws at fade 0 (`text_default`, `label_color`, `success_color`, `warning_color`, `secondary_text_color`) measures 4.5:1 or more on both grounds in every built-in theme. Test: `table_inks_meet_contrast_on_both_grounds_in_every_built_in_theme`, next to `status_line_text_meets_contrast_in_every_built_in_theme` (builtins.rs 436, whose `contrast_ratio` it reuses).
-
-Fade:
-4. **Dimmed finished rows** (`crates/cargo-tile/src/roster.rs` `faded_at` 137 carries a finished row toward its ground evenly over `DEFAULT_FADE_SECONDS`; the summary's #607374 on #2e2e39 is that blend about half way, 2.95:1). Rule (author's call; the fade stays an exit): a finished row's ink stays at 3:1 or more on its ground until half of the fade has run, then reaches the ground at the end; summary and cells alike. Measured against the inks items 1 to 3 land. Test: `a_finished_row_stays_readable_through_the_first_half_of_its_fade`.
-5. **A fading cell's foot fades with it** (`draw.rs` `draw_cell` 415 → `draw_rows_readout` 502 writes full-strength inks; deep L59–L69 show a near-black cell with a bright `content rows: 10  r/c: 9/124`). Rule: every span of the foot readout, and of the summary foot, is drawn as `blend_color(ink, ground, fade)` with the cell's own fade and ground, the same fade its contents use. `TileCells` gains one provided method returning the cell's fade as a named state, `CellReadoutFade::{Unfaded, Fading(CellFadeProgress)}` with `CellFadeProgress` a named amount, never an `Option<u8>`; its default is `Unfaded`, so cargo-handler (`crates/cargo-handler/src/render.rs`) and `draw_tile_cell` keep today's drawing with no edit. cargo-tile answers a command cell from the one function `draw_group` uses (`heading_fade(&rows).min(group.lead.faded())`, render.rs 959) and the summary from `heading_fade` over `summary_rows(...)`, the rows the summary draws. Existing `Option` states in `TileCells` this item does not touch (`group_title`) stay as they are. Tests: `draw.rs` `a_fading_cells_readout_fades_with_it` through `draw_tile_grid` with `StubCells`; `render.rs` `a_finished_commands_cell_reports_the_fade_its_contents_use` and `the_summary_foot_fades_with_its_rows`.
-
-Changelogs: one Changed line each under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md` and `crates/tui_pane/CHANGELOG.md`, and in `crates/cargo-handler/CHANGELOG.md` when its theme changes.
+- Every ink cargo-tile draws measures 4.5:1 or more on both grounds (`pane_background(true)` and `pane_background(false)`) in each built-in theme (Default Dark, Default Light, High Contrast, starter), transparent off and on; the lowest is 4.63:1. Contrast is measured from cell colours, never PNG pixels.
+- Pid family colours are theme roles, eight `family_*` entries per theme. `family_color(index)` hands out only those clear of the reserved inks (label, error, default text, accent/heading, success) by one HSL hue-and-saturation clearance, `FAMILY_COLOR_CLEARANCE = 60.0` on a radius-100 saturation circle; every built-in theme yields at least five, pairwise separate.
+- The over-budget count and the `@ W` width in the foot readout draw in the error ink; the summary's running arguments draw in the success ink.
+- A fading cell's foot readout, and the summary's foot, blend toward the ground with the fade of the rows above them. `TileCells::readout_fade` (provided, default `CellReadoutFade::Unfaded`) returns `CellReadoutFade::{Unfaded, Fading(CellFadeProgress)}`; cargo-handler keeps the default.
 
 **Files:**
-- `crates/cargo-tile/src/theme/mod.rs`, `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/*.toml` — family colours as theme roles, inks, contrast tests.
-- `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/*.toml` — readout red, its test.
-- `crates/cargo-tile/src/roster.rs` — fade curve and its test.
-- `crates/cargo-tile/src/render.rs` — the cell and summary fade answers, their tests.
-- `crates/tui_pane/src/tiles/draw.rs` — `CellReadoutFade`, the provided method, the faded foot, render test.
-- `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the exports of `CellReadoutFade` and `CellFadeProgress`; `test` owns both.
-- `crates/cargo-tile/src/constants.rs` — any new literal.
-- `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md` — Changed lines.
-- `crates/tui_pane/src/wrap.rs`, `crates/tui_pane/src/toasts/body.rs` — only when the owed frame check reads worse: the repair and its test.
+- `crates/cargo-tile/src/theme/mod.rs` — family colour roles, clearance filter, contrast and clearance tests.
+- `crates/cargo-tile/src/theme/builtins.rs`, `crates/cargo-tile/themes/*.toml` — per-theme inks and family colours.
+- `crates/cargo-tile/src/constants.rs` — `FAMILY_COLOR_CLEARANCE`.
+- `crates/cargo-tile/src/render.rs` — ink use and the cell and summary fade answers; `roster.rs` — test fixture.
+- `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/*.toml` — shared theme roles.
+- `crates/tui_pane/src/tiles/draw.rs` — `CellReadoutFade`, `CellFadeProgress`, the faded foot and readout inks; exported from `tiles/mod.rs` and `lib.rs`.
 
-**Seats:** 2 writers — theme data and contrast tests, and the fade path from roster to foot.
-- `impl` — items 1 to 3: `crates/cargo-tile/src/theme/`, `crates/cargo-tile/themes/`, `crates/cargo-handler/src/theme.rs`, `crates/cargo-handler/themes/`, the cargo-handler changelog. Posts on the board when the inks are final.
-- `test` — opens as impl; items 4 and 5: `crates/cargo-tile/src/roster.rs`, `crates/cargo-tile/src/render.rs`, `crates/tui_pane/src/tiles/draw.rs`, the cargo-tile and tui_pane changelogs; hub: `crates/cargo-tile/src/constants.rs`. Does item 5 first; starts item 4 only after `impl` posts its inks final, because item 4 measures them.
+**Gotchas:** A per-channel colour distance cannot separate dark saturated inks from a dark grey label on a light ground; hue and saturation can. Any theme change must keep five family colours clear of the reserved inks. A pid takes its family colour only while its family's child rows are drawn.
 
-**Constraints from prior phases:** Theme installation does not keep the resolved `Appearance`, so `family_color` cannot ask it: encode the family hues as cargo-tile theme roles in `builtins.rs` and each theme file, so each theme carries its own set and the active theme selects it. Phase 4: no ink changed then; any ink change now is checked on both themes, transparent on and off. `theme/state.rs` keeps its four `#[expect(clippy::expect_used)]`. Phase 7: `status_line_text_meets_contrast_in_every_built_in_theme` holds status inks at `MIN_STATUS_LINE_TEXT_CONTRAST` = 4.5, and named colours resolve through its xterm table. Phase 14 makes column offsets frame-wide and insets every row one cell from the right frame. New public items are only `CellReadoutFade`, `CellFadeProgress` and the provided `TileCells` method; no existing `tui_pane` public signature changes. cargo-handler's cell sizes do not change. No new `#[allow]` or `#[expect]`.
+**Ruled out:** a per-theme clearance or a branch on a theme's name — one mechanism serves every theme; one family set for both appearances — no set meets 4.5:1 on both dark and light grounds.
 
-**Acceptance gate:**
-- Owed from phase 15 (the showrunner's landing call, 2026-10-12): phase 15 was checkpointed with its live frame check not run, because a build hold blocked every capture. It runs at the first build-hold status reading `no build hold`, on phase 15's checkpoint binary, judged against phase 14's numbers; the result goes to the showrunner either way, and a worse result is repaired before this phase's checkpoint. Inputs, all under `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/`: the helper's brief `live15_prompt.txt`, the exact commands in `probe12/HANDOFF_live15.txt`, the comparison script `probe12/g15.py`, phase 14's numbers in `probe12/out/results_p14.txt` (section `P14d`), and the binary `ph15/cargo-tile`. The unit director runs it through a helper; the helper's last line reads `PHASE 15: NO WORSE THAN PHASE 14` or `PHASE 15: WORSE ON <gates>`. A worse result is a repair of phase 15's own files by seat `impl`, who wrote them, with a failing test first: `crates/tui_pane/src/wrap.rs` and `crates/tui_pane/src/toasts/body.rs`, then `test tui_pane` and `test cargo-tile`, because cargo-tile's tables use the same wrapper.
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test takes a second or more.
-- Unit director's captures, the eight shots, on both themes, transparent off and on: every measured ink at its floor from cell colours, and a fading cell's foot as dim as its contents.
-- A fresh helper's design check of those shots: pass.
-
-### Phase 17 — The named slow tests run in under a second  · status: todo
+### Phase 17 — The named slow tests run in under a second  · status: done
 
 #### Work Order
 
@@ -526,21 +503,21 @@ Changelogs: one Changed line each under `## [Unreleased]` in `crates/cargo-tile/
 
 **Spec:**
 
-1. **Shorten the named slow tests** (add-ons the showrunner placed here, 2026-10-12, with one more test the unit director saw at a second or more in phase 15's runs). Built first, before Phase 20's item 1 runs, so that phase's six measurements see the shortened suite. Each test keeps what it asserts: none is weakened, split to hide its time, or marked ignored. Where a real spawned process sets the floor, the seat reports the measured floor in its summary and does not weaken the test to get under it.
+1. **Shorten the named slow tests** (add-ons the showrunner placed here, 2026-10-12, with one more test the unit director saw at a second or more in phase 15's runs). Built first, before Phase 21's item 1 runs, so that phase's six measurements see the shortened suite. Each test keeps what it asserts: none is weakened, split to hide its time, or marked ignored. Where a real spawned process sets the floor, the seat reports the measured floor in its summary and does not weaken the test to get under it.
    - `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (0.65 to 0.88 s quiet, 2.15 s under load): under 0.3 s.
-   - `tui_pane` `tiles::grid::tests::unchanged_mates_stay_between_their_endpoints_during_plus_and_minus_motion` (1.587 s in phase 15's run): under a second with the other suites running.
+   - `tui_pane` `tiles::grid::tests::unchanged_mates_stay_between_their_endpoints_during_plus_and_minus_motion` (1.587 s in phase 15's run): under a second with the other suites running. The test gathers its initial row steps once and exercises the moving-height measurements on each frame after that.
    - cargo-tile's reader scenarios: `reader_keeps_parent_family_across_its_only_childs_source_switch` (1.295 s; 1.856 s in phase 15's run) and every other reader scenario seen at a second or more. Each under a second with the other suites running.
    - cargo-tile's shim registration tests, each of which waits on a spawned process: `reader_scenarios::reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.158 s; 2.313 s in phase 15's run), `wire::darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment` (1.136 s), `shared_capture::darwin_membership_beyond_the_credential_limit_keeps_account_children_running` (1.029 s), `wire::non_json_arguments_preserve_both_quiet_spellings` (1.026 s), `wire::darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback` (1.003 s), `shared_capture::staged_executable_installs_toolchains_and_cleans_up` (2.366 s once), and in `shim_modes`: `extended_registration_is_world_readable_before_publication` (1.061 s), `unset_home_does_not_abort_either_capture_path` (1.196 s), `caller_descriptors_reach_captured_cargo` (1.512 s), `owner_repairs_parent_and_account_modes_without_touching_other_data` (1.497 s) and `reader_accepts_live_writer_under_different_locale_and_timezone` (2.134 s). Each under 0.5 s on a quiet machine and under a second at a load average of 42.
 
 **Files:**
 - `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/tiles/grid.rs` — item 1's two `tui_pane` tests.
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/tests/shim_modes.rs` — item 1's cargo-tile tests and the test support they share.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/src/shim_registration/parallel_cases.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py`, `crates/cargo-tile/tests/shim_modes.rs` — item 1's cargo-tile tests and the test support they share.
 
 **Seats:** 2 writers — two writers on disjoint files, split by crate. Each runs lint once and its package's suite.
-- `impl` — shortens cargo-tile's tests: `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/tests/shim_modes.rs`.
+- `impl` — shortens cargo-tile's tests: `crates/cargo-tile/src/shim_registration/reader_scenarios.rs`, `crates/cargo-tile/src/shim_registration/wire.rs`, `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/src/shim_registration/parallel_cases.rs`, `crates/cargo-tile/src/shim_registration/reader_scenario.py`, `crates/cargo-tile/tests/shim_modes.rs`.
 - `test` — opens as impl; shortens `tui_pane`'s two: `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/tiles/grid.rs`.
 
-**Constraints from prior phases:** Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios. Phase 20 orders the tests that stay slow and runs after this phase, so its measurements see the suite this phase ships.
+**Constraints from prior phases:** Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios. Phase 21 orders the tests that stay slow and runs after this phase, so its measurements see the suite this phase ships.
 
 **Acceptance gate:**
 - Item 1: `test tui_pane` and `test cargo-tile` pass; each named test runs under its stated time in this phase's test runs on natedev and asserts what it asserted before; a test held up by a real spawned process is listed with its measured floor.
@@ -551,7 +528,7 @@ Changelogs: one Changed line each under `## [Unreleased]` in `crates/cargo-tile/
 
 #### Work Order
 
-**Goal:** Each command shows its own progress once, ancestry marks a cut one way, the Short view keeps the subcommand, marks dropped arguments and names one session runner by file name, the summary title has its blank cell, and no column moves when a value changes length.
+**Goal:** Each command shows its own progress once, ancestry marks a cut one way, the Short view keeps the subcommand, marks dropped arguments and names one session runner by file name, the summary title has its blank cell, no column moves when a value changes length, and a pid's family colour follows the rows drawn.
 
 **Spec:**
 
@@ -575,13 +552,13 @@ Evidence: shots in `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes
 11. **The summary's spare row goes to a cell that hides an ancestry level** (phase 14 design check on the build after its second repair round: `w40` line 14, `w48` line 11, `toast40` line 11). The summary draws one blank row above its foot while cells in its column hide ancestry levels behind `…`. Phase 13's retrospective records the cause: the retained-row answer (`rows_kept`) used as the receiving-step answer counts an optional ancestry row a command paints as no increase, so the row has no taker. Rule (showrunner's call, 2026-10-12): the summary's spare row goes to a cell that hides an ancestry level. A cell that hides an ancestry level is a taker of a column mate's spare row, in settled frames and in motion; phase 14's rules still hold (no blank row to keep moving, heights one way within a key, no added row probe per moving frame). Files: `crates/cargo-tile/src/render.rs` (`rows_kept` and the shared measurement); if the receiving step needs an answer of its own in `crates/tui_pane/src/tiles/grid.rs`, the unit director adds that file to a seat at dispatch. Test, on the render path: `the_summary_gives_its_spare_row_to_a_cell_hiding_an_ancestry_level`.
 12. **A heading's `…` marks only a cut that removes characters** (same design check: `w40` lines 9 and 38, `toast40` lines 6 and 35). A heading whose owner tag is dropped reads `…/rust/tool-based-ui-frame-time`, where `~/rust/tool-based-ui-frame-time` is the same width, so a whole path reads as cut. Rule (showrunner's call, 2026-10-12): `…` marks only a cut that removes characters; when dropping the owner tag alone makes the path fit, the heading draws the path whole from `~`. Test: `a_heading_that_fits_without_its_tag_is_drawn_whole`.
 13. **An argument mark stays on its command's row** (phase 14's full design check: `w48` line 17). An ancestry row, `1158012 /run/current-system/sw/bin/python3`, fills its row exactly, so its argument mark wraps onto line 18, a row that holds only `…`, in a cell that hides 3 rows. Rule (showrunner's call, 2026-10-12): the argument mark stays on the command's own row, and a wrap row never holds only `…`. Item 4's file-name rule removes this instance; the rule holds for every row that carries a mark. Test: `a_wrap_row_never_holds_only_the_mark`.
-14. **A key that lands while a command's motion runs joins that motion** (`crates/tui_pane/src/tiles/grid.rs`: `add`, `remove`, the pending queue, `open_waiting_commands_in_current_motion`; moved here from phase 14's live check by the showrunner's landing call, 2026-10-12). Evidence, the controlled workload (200x50, cells view) on phase 14's build after its second repair round: a `+` that lands 7 to 112 ms after a command claims a cell waits 0.96 to 1.08 s for its slot, because the key queues behind the command's motion. In that wait the summary takes 4 rows and gives them back when the slot enters (second round, sixth `+`: height 13 to 17 at +0.451 s, 17 to 13 at +1.077 s, 13 to 11 at +1.438 s), and a command cell takes one row and gives it back (third `+`, both rounds: 5 to 6 at +0.281 s, 6 to 5 at +1.421 s). Rule (showrunner's call, 2026-10-12): a key that lands while a command's motion runs joins that motion, and no piece takes a row it gives back. Phase 14 already does this for a command whose cell opening is still queued; this item covers the command that has claimed an existing cell or whose cell has entered. Tests, on the render path: `a_key_landing_after_a_command_claims_a_cell_joins_its_motion`, `no_piece_takes_a_row_it_gives_back_when_a_queued_key_enters`. Gate: the unit director's capture reads 0 reversal flags and one motion on every key that lands within 0.15 s after a command arrives or claims a cell.
-15. **The summary's separator rows give way before a cell hides a process row** (phase 14's design check on its checkpoint build: `w40` lines 5, 8, 11 and 15 against lines 32 and 42). Settled, at 40 columns: the summary keeps four blank rows between its projects while two cells in its column each hide a process row behind `…`. The summary has a compact form without those rows (`v77_cells`). Rule (showrunner, 2026-10-12): the summary drops its blank rows between projects, earliest first, before any cell hides a process row. Mechanism: `ProcessTablePlan::keep_gaps` keeps every separator or none today, and the summary's row measurement reports kept = drawn with the separators in it (`render.rs` ~437, ~2599, ~2637), so this needs the table plan and the row allocation changed together: one shared measurement that names which separators stand. Tests: a summary gives some separators and keeps the rest when a mate needs fewer rows than it has; separators go earliest first; all separators stand when no mate hides a process row.
-16. **A parent's row stands before its child's, and is the row kept under a cut** (same design check: `v77_cells` lines 22 and 27, `w40` line 42, `toast200` line 45, `deep126x80` line 75). A child `cargo` row stands above the row whose pid is its parent, and where rows are cut the child is the one kept: `tool-based-ui-trunk` draws only `3208428 3208354 cargo …` while the summary names its parent, `cargo nextest run`. Other cells list the parent first. There before Phase 14. Rule (showrunner, 2026-10-12, placed in this phase): a parent stands before its child, so under a cut the kept row is the command the summary names. `group_by_path` sorts by `(started, pid)`, which does not give this. Directory groups keep today's order; the rule orders rows inside a group. Tests: a parent that is not the group's lead stands before its child; a child whose parent sits in another directory group leaves both groups' order unchanged.
-17. **A command names its profile when it is not the default** (the user's requirement, relayed by the showrunner through hana on 2026-10-12: "for the command we show in the summary and in the cells - it is important to show that it's a release if that option was invoked - don't show debug as it is the default - but if some other profile is invoked then yes, we'd want to see it"). A release run (`--release`, `-r`, `--profile release`, `--profile=release`) always shows that it is a release, in the summary row and in the command's cell. Any other named profile shows too. The default dev profile never shows: an explicit `--profile dev` is dropped from the shown line like the noise flags. The mark survives every width cut: a row that cuts its command still shows the profile. One form in both places; its spelling and placement are the unit director's call under the style guide, stated in the phase report. `SummaryDetail::Trimmed` keeps `--release` in the text today, so first find where the user loses it (a width cut that drops the command's tail is the lead) and name that place in the phase report. Read before dispatch, 2026-10-12: two places lose it. The Short process tree draws `CommandText::named()` (`render.rs` ~2085, ~2941, ~3045), which keeps words only up to the first flag (`census/command_text.rs` `named`, `names_the_command`), so `build --release` draws as `build` at any width. `CommandText::line()` keeps `--release` under both `SummaryDetail` values (it drops only `SUMMARY_HIDDEN_VALUED_FLAGS`), so the Long view and the summary lose it only where a row cuts the command's tail. The seat confirms both in failing tests first. The census reads the profile from cargo's own arguments only, up to the `--` that ends them, so a child program's `--release` or `-r` is never read as cargo's. `CommandText` hands the drawing the profile as a named state (such as `CargoProfile::{Default, Release, Named(..)}`, never an `Option<String>`), and both views draw the mark from that one state; seat `test` owns it in `census/command_text.rs` and publishes it on the board before `impl` draws it. Tests: `cargo run -- --release` shows no mark; a release run shows the mark in the summary row and in the cell under each of the four spellings; a named profile other than dev shows; `--profile dev` and no profile flag show none; the mark is still drawn at the narrowest width that cuts the command, in the summary row and in the cell.
-18. **The capture toast's title is in plain words** (phase 15's design check on its checkpoint build, 2026-10-12: `toast200` line 43, `toast64` line 43, `toast40` line 41). The card's title still reads `Capture shim installed` while its body no longer names the shim. The title says what the body says, in the body's words: `Capturing cargo progress` (the showrunner's ruling, 2026-10-12: it uses the body's own verb). Site: `crates/cargo-tile/src/capture.rs` line 56, and its test at line 189. No other toast title changes.
-19. **A column leaves only when a drawn row cannot hold it** (same design check: `w40_cut` line 46, and `w40` lines 29 to 30 against `toast40` line 21). Two cases. First: at 40 columns with the summary cut, the summary draws only `pid` and `command`, though `pid cpu mem command` with its mark takes 30 of the 36 cells. A row hidden below the cut, with a 20-cell command, sizes the command column and drops `cpu` and `mem`. Rule: only rows that are drawn size the frame's column grid and decide which columns drop. Second, cause not found: `w40` draws `pid parent command` in 30 of 36 cells with no `cpu`, while the 40-column toast frame draws `cpu` in 33 cells. Lead, not verified: `FrameTableColumnGrid::columns_for_command_name` (`render.rs` ~2253) budgets the summary's drops against command-cell slots. The seat reproduces each case in a failing render test first, and reports the cause of the second before repairing it. Phase 14's grids stand: `FrameColumnGrids` (`render.rs` ~2133) holds two independent grids, one over the rows of every command cell and one over the summary's rows. Command tables still share one set of column offsets, and the summary keeps its own. How the first case is built (showrunner's ruling, 2026-10-12): rows this frame can never draw do not size a grid. `FrameColumnGrids::new` takes the frame's inner height, and a summary row past that height is left out of the summary's grid; there is no second pass and no state between frames, so demands, drawing and row probes still read one immutable result. What this leaves: a row hidden by a smaller allocation still sizes the grid; a shot that shows it goes to Phase 21 as a two-pass follow-up. Tests for the first case: a summary whose last project lies past the frame's height, with a 20-cell command, still draws `cpu` and `mem`; a row inside the frame's height with that command still drops them.
-20. **The ancestry block hides only the levels it must** (same design check: `w48` lines 25 to 35). A cell hid two levels (`tmux`, three rows, and `claude`, one row) behind the mark while one row stood blank above its foot; hiding the three-row level alone fills the cell exactly. Cause, read in the code on 2026-10-12: `ancestry_fit` (`render.rs` ~1500) lowers a count of levels until the block fits, and the mark takes one of the counted places. So the form that hides one level of a five-level chain has the count of the whole chain, and is never measured. That held while every level took one row; a wrapped level takes more. Built with item 2 as one change by seat `impl`: item 2 draws the mark inline and removes `AncestryLevel::Elided`, so the mark no longer takes a counted place and every form is measured. Rule: the fit is in rows, not levels. It keeps the root when the budget is two rows or more, then as many of the levels nearest the table as the budget holds, with item 2's inline mark at the head of the first of them. Each candidate is measured with `ancestry_height` on the levels as they will be drawn, mark included, because the mark's cells can push a level onto one more row. The parent of the table's row is always the last level kept, and item 2 sets the forms at budgets of one and two. A level is hidden only when the rows left cannot hold it, so a blank row may stand above the foot only when the hidden level nearest the table needs more rows than are left. Tests: a chain of heights 2, 3, 1, 1, 1 at a budget of 6 keeps the root and the three levels nearest the table and hides only the three-row level, which the one row left cannot hold (today's code hides two levels); a chain of heights 1, 1, 2, 1, 1 at a budget of 5 hides only its second level and fills the budget exactly; a chain of one-row levels draws item 2's form; a budget past the chain's length still measures the whole chain once (the cost `ancestry_fit`'s comment names).
+14. **The summary's separator rows give way before a cell hides a process row** (phase 14's design check on its checkpoint build: `w40` lines 5, 8, 11 and 15 against lines 32 and 42). Settled, at 40 columns: the summary keeps four blank rows between its projects while two cells in its column each hide a process row behind `…`. The summary has a compact form without those rows (`v77_cells`). Rule (showrunner, 2026-10-12): the summary drops its blank rows between projects, earliest first, before any cell hides a process row. Mechanism: `ProcessTablePlan::keep_gaps` keeps every separator or none today, and the summary's row measurement reports kept = drawn with the separators in it (`render.rs` ~437, ~2599, ~2637), so this needs the table plan and the row allocation changed together: one shared measurement that names which separators stand. Tests: a summary gives some separators and keeps the rest when a mate needs fewer rows than it has; separators go earliest first; all separators stand when no mate hides a process row.
+15. **A parent's row stands before its child's, and is the row kept under a cut** (same design check: `v77_cells` lines 22 and 27, `w40` line 42, `toast200` line 45, `deep126x80` line 75). A child `cargo` row stands above the row whose pid is its parent, and where rows are cut the child is the one kept: `tool-based-ui-trunk` draws only `3208428 3208354 cargo …` while the summary names its parent, `cargo nextest run`. Other cells list the parent first. There before Phase 14. Rule (showrunner, 2026-10-12, placed in this phase): a parent stands before its child, so under a cut the kept row is the command the summary names. `group_by_path` sorts by `(started, pid)`, which does not give this. Directory groups keep today's order; the rule orders rows inside a group. Tests: a parent that is not the group's lead stands before its child; a child whose parent sits in another directory group leaves both groups' order unchanged.
+16. **A command names its profile when it is not the default** (the user's requirement, relayed by the showrunner through hana on 2026-10-12: "for the command we show in the summary and in the cells - it is important to show that it's a release if that option was invoked - don't show debug as it is the default - but if some other profile is invoked then yes, we'd want to see it"). A release run (`--release`, `-r`, `--profile release`, `--profile=release`) always shows that it is a release, in the summary row and in the command's cell. Any other named profile shows too. The default dev profile never shows: an explicit `--profile dev` is dropped from the shown line like the noise flags. The mark survives every width cut: a row that cuts its command still shows the profile. One form in both places; its spelling and placement are the unit director's call under the style guide, stated in the phase report. `SummaryDetail::Trimmed` keeps `--release` in the text today, so first find where the user loses it (a width cut that drops the command's tail is the lead) and name that place in the phase report. Read before dispatch, 2026-10-12: two places lose it. The Short process tree draws `CommandText::named()` (`render.rs` ~2085, ~2941, ~3045), which keeps words only up to the first flag (`census/command_text.rs` `named`, `names_the_command`), so `build --release` draws as `build` at any width. `CommandText::line()` keeps `--release` under both `SummaryDetail` values (it drops only `SUMMARY_HIDDEN_VALUED_FLAGS`), so the Long view and the summary lose it only where a row cuts the command's tail. The seat confirms both in failing tests first. The census reads the profile from cargo's own arguments only, up to the `--` that ends them, so a child program's `--release` or `-r` is never read as cargo's. `CommandText` hands the drawing the profile as a named state (such as `CargoProfile::{Default, Release, Named(..)}`, never an `Option<String>`), and both views draw the mark from that one state; seat `test` owns it in `census/command_text.rs` and publishes it on the board before `impl` draws it. Tests: `cargo run -- --release` shows no mark; a release run shows the mark in the summary row and in the cell under each of the four spellings; a named profile other than dev shows; `--profile dev` and no profile flag show none; the mark is still drawn at the narrowest width that cuts the command, in the summary row and in the cell.
+17. **The capture toast's title is in plain words** (phase 15's design check on its checkpoint build, 2026-10-12: `toast200` line 43, `toast64` line 43, `toast40` line 41). The card's title still reads `Capture shim installed` while its body no longer names the shim. The title says what the body says, in the body's words: `Capturing cargo progress` (the showrunner's ruling, 2026-10-12: it uses the body's own verb). Site: `crates/cargo-tile/src/capture.rs` line 56, and its test at line 189. No other toast title changes.
+18. **A column leaves only when a drawn row cannot hold it** (same design check: `w40_cut` line 46, and `w40` lines 29 to 30 against `toast40` line 21). Two cases. First: at 40 columns with the summary cut, the summary draws only `pid` and `command`, though `pid cpu mem command` with its mark takes 30 of the 36 cells. A row hidden below the cut, with a 20-cell command, sizes the command column and drops `cpu` and `mem`. Rule: only rows that are drawn size the frame's column grid and decide which columns drop. Second, cause not found: `w40` draws `pid parent command` in 30 of 36 cells with no `cpu`, while the 40-column toast frame draws `cpu` in 33 cells. Lead, not verified: `FrameTableColumnGrid::columns_for_command_name` (`render.rs` ~2253) budgets the summary's drops against command-cell slots. The seat reproduces each case in a failing render test first, and reports the cause of the second before repairing it. Phase 14's grids stand: `FrameColumnGrids` (`render.rs` ~2133) holds two independent grids, one over the rows of every command cell and one over the summary's rows. Command tables still share one set of column offsets, and the summary keeps its own. How the first case is built (showrunner's ruling, 2026-10-12): rows this frame can never draw do not size a grid. `FrameColumnGrids::new` takes the frame's inner height, and a summary row past that height is left out of the summary's grid; there is no second pass and no state between frames, so demands, drawing and row probes still read one immutable result. What this leaves: a row hidden by a smaller allocation still sizes the grid; a shot that shows it goes to Phase 20 as a two-pass follow-up. Tests for the first case: a summary whose last project lies past the frame's height, with a 20-cell command, still draws `cpu` and `mem`; a row inside the frame's height with that command still drops them.
+19. **The ancestry block hides only the levels it must** (same design check: `w48` lines 25 to 35). A cell hid two levels (`tmux`, three rows, and `claude`, one row) behind the mark while one row stood blank above its foot; hiding the three-row level alone fills the cell exactly. Cause, read in the code on 2026-10-12: `ancestry_fit` (`render.rs` ~1500) lowers a count of levels until the block fits, and the mark takes one of the counted places. So the form that hides one level of a five-level chain has the count of the whole chain, and is never measured. That held while every level took one row; a wrapped level takes more. Built with item 2 as one change by seat `impl`: item 2 draws the mark inline and removes `AncestryLevel::Elided`, so the mark no longer takes a counted place and every form is measured. Rule: the fit is in rows, not levels. It keeps the root when the budget is two rows or more, then as many of the levels nearest the table as the budget holds, with item 2's inline mark at the head of the first of them. Each candidate is measured with `ancestry_height` on the levels as they will be drawn, mark included, because the mark's cells can push a level onto one more row. The parent of the table's row is always the last level kept, and item 2 sets the forms at budgets of one and two. A level is hidden only when the rows left cannot hold it, so a blank row may stand above the foot only when the hidden level nearest the table needs more rows than are left. Tests: a chain of heights 2, 3, 1, 1, 1 at a budget of 6 keeps the root and the three levels nearest the table and hides only the three-row level, which the one row left cannot hold (today's code hides two levels); a chain of heights 1, 1, 2, 1, 1 at a budget of 5 hides only its second level and fills the budget exactly; a chain of one-row levels draws item 2's form; a budget past the chain's length still measures the whole chain once (the cost `ancestry_fit`'s comment names).
+20. **A pid's family colour follows the rows this allocation draws** (Phase 16's rule: a pid takes its family colour only while its family's child rows are drawn). Today `pid_style` (`render.rs`) picks the colour from `TrackedRow::family` alone, which `Roster::assign_families` (`roster.rs`) sets from managed counts and retained links, not from the rows a cell draws, so a parent pid keeps its family colour after its child row is cut. Rule: the family links are derived from the final table plan of each allocation, as a named per-allocation state, so a parent pid loses its family colour when its child row is cut and gets it back when that row is drawn. The roster's palette identity — which colour a family holds — is kept apart and does not change with the cut. Test: `a_parent_pid_loses_its_family_colour_while_its_child_row_is_cut` — a buffer test that reads the parent pid's colour back with the child row cut (no family colour) and with it visible (the family colour).
 
 **Pending decision: what a heading shows when its path cannot be read; and whether text with double-width characters wraps by the cells it takes**
 
@@ -606,24 +583,23 @@ Recommendation:
 Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGELOG.md`.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs` — progress per command, ancestry form, the Short-view session runner, the session widths of `cpu` and `mem`, tests.
+- `crates/cargo-tile/src/render.rs` — progress per command, ancestry form, the Short-view session runner, the session widths of `cpu` and `mem`, item 20's per-allocation family links and `pid_style`, tests.
 - `crates/cargo-tile/src/census/command_text.rs` — `named` and the program's file name, their tests.
 - `crates/cargo-tile/src/census/scan.rs` — the `nu` classification test, and item 8's walk outcome.
-- `crates/cargo-tile/src/roster.rs` — `TrackedGroup` carries the walk outcome.
+- `crates/cargo-tile/src/roster.rs` — `TrackedGroup` carries the walk outcome; `Roster::assign_families` keeps the palette identity apart from item 20's drawn links.
 - `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/shim_registration/rows_readout.rs` — fixtures that build a group's ancestry, where the walk outcome changes them.
 - `crates/cargo-tile/src/constants.rs` — `SUMMARY_CELL_TITLE`, the shell and wrapper lists, any new literal.
-- `crates/cargo-tile/src/capture.rs` — item 18's title and its test (seat `impl`).
+- `crates/cargo-tile/src/capture.rs` — item 17's title and its test (seat `impl`).
 - `crates/cargo-tile/CHANGELOG.md` — the Changed line.
 - `crates/tui_pane/src/tiles/draw.rs` — item 8's `CellContentExtent`, the provided `TileCells` method, the readout's colour, and its render test.
 - `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the export of `CellContentExtent`.
-- `crates/tui_pane/CHANGELOG.md` — one Added line for `CellContentExtent`, and one Fixed line for item 14.
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/constants.rs` — item 14, with its render tests in `draw.rs`.
+- `crates/tui_pane/CHANGELOG.md` — one Added line for `CellContentExtent`.
 
-**Seats:** 2 writers — the Short-view naming in the census is disjoint from the drawing; everything drawn, `tui_pane` included, has one owner because items 14 to 16 join the table plan to the grid's row allocation.
-- `impl` — `render.rs`, roster and fixture propagation, constants and changelogs, and all `tui_pane` grid, draw and export files; items 14 to 16.
+**Seats:** 2 writers — the Short-view naming in the census is disjoint from the drawing; everything drawn, `tui_pane` included, has one owner because items 11 and 14 join the table plan to the grid's row allocation.
+- `impl` — `render.rs`, roster and fixture propagation, constants and changelogs, and all `tui_pane` draw and export files; items 11, 14, 15 and 20.
 - `test` — `census/command_text.rs` and `census/scan.rs`; publishes the naming and ancestry-walk APIs on the board before `impl` consumes them.
 
-**Constraints from prior phases:** Phase 6 and 7: `ELISION` is cargo-tile's one mark; `AncestryLevel::AncestorAfterElision` and `mark_cut_line` (`render.rs` ~1157) are the ancestry cut mark. Phase 9: tables are planned before drawing (`ProcessTablePlan`), and a cut command fills its column before its mark. Phase 14 makes column offsets frame-wide through its staged grid, moves compiler and runs after command, insets every row one cell from the right frame, and drops columns before a command name wraps; the `state` slot in item 1 follows Phase 14's optional-column rule. Phase 12: content steps change moving heights, and `rows_drawn` and `rows_kept` come from one measurement (`content_row_use`); this phase's ancestry, naming and row-order changes keep that single source. Phase 13: retained rows protect a donor and painted rows decide a receiving step, so an optional ancestry row a command paints counts as an increase; `no_piece_rests_on_a_row_it_cannot_fill_while_a_mate_cuts_content` passes unchanged. New public items are only `CellContentExtent` and its provided `TileCells` method, both for item 8's foot. No new `#[allow]` or `#[expect]`. Ruling (showrunner, 2026-10-12): the cut mark's cell after `command` is always reserved, in a frame with no cut command too, so `compiler` stands two cells past the frame's longest command and no column moves when a command becomes cut or stops being cut. `compiler` follows the reserved command column by the normal column gap; `FrameTableColumnGrid::of` (`render.rs` ~2198) reserves the mark's cell only when `following_rows` holds, and `compiler_and_runs_follow_the_command_column` (~3754) asserts the single-row layout without it: reserve it always, change that expectation on purpose, and add a test comparing single-row, many-row, whole and cut frames with every column at one offset. Phase 14 fact: `content_row_use` is a `#[cfg(test)]` wrapper; production measures through `Cells::row_use`, `frame_content_row_use` and the immutable `FrameColumnGrids` (`render.rs` ~337, ~421, ~437, ~2133), so a change keeps that cache and both frame-wide grids. Current line references: `heading_gauge` ~3323, `ancestry_fit` ~1500, `ancestry_allocation` ~1564, `ancestry_levels` ~1625, `ancestry_lines` ~1734, `mark_cut_line` ~1285, `frame_summary_width` ~603 (was `summary_width`). Items 7 and 12 are one defect in `PathGroup::fitted_heading` (~1976): one repair, both examples tested. Phase 15: `crates/tui_pane/src/wrap.rs` has two rules. The public `wrapped` treats every span boundary as a word boundary and joins words with one unstyled space (`adjacent_spans_are_separate_words_joined_by_one_space`); cargo-tile's command cells pass a program and its arguments as two spans and depend on it. The crate-private `wrapped_runs` and `wrapped_preserving_whitespace` keep text that runs on across a style change as one word (`a_word_that_crosses_a_style_boundary_moves_whole_to_a_fresh_line`). So a part of a command drawn in its own style, item 17's profile mark included, is its own span only where a space belongs before it. A long name now breaks after a hyphen before it breaks inside a word, so ancestry rows are counted with the wrapper (`ancestry_rows`), never from text length. Any edit to `wrap.rs` also runs `test cargo-tile`.
+**Constraints from prior phases:** Phase 6 and 7: `ELISION` is cargo-tile's one mark; `AncestryLevel::AncestorAfterElision` and `mark_cut_line` (`render.rs` ~1157) are the ancestry cut mark. Phase 9: tables are planned before drawing (`ProcessTablePlan`), and a cut command fills its column before its mark. Phase 14 makes column offsets frame-wide through its staged grid, moves compiler and runs after command, insets every row one cell from the right frame, and drops columns before a command name wraps; the `state` slot in item 1 follows Phase 14's optional-column rule. Phase 12: content steps change moving heights, and `rows_drawn` and `rows_kept` come from one measurement (`content_row_use`); this phase's ancestry, naming and row-order changes keep that single source. Phase 13: retained rows protect a donor and painted rows decide a receiving step, so an optional ancestry row a command paints counts as an increase; `no_piece_rests_on_a_row_it_cannot_fill_while_a_mate_cuts_content` passes unchanged. New public items are only `CellContentExtent` and its provided `TileCells` method, both for item 8's foot. No new `#[allow]` or `#[expect]`. Ruling (showrunner, 2026-10-12): the cut mark's cell after `command` is always reserved, in a frame with no cut command too, so `compiler` stands two cells past the frame's longest command and no column moves when a command becomes cut or stops being cut. `compiler` follows the reserved command column by the normal column gap; `FrameTableColumnGrid::of` (`render.rs` ~2198) reserves the mark's cell only when `following_rows` holds, and `compiler_and_runs_follow_the_command_column` (~3754) asserts the single-row layout without it: reserve it always, change that expectation on purpose, and add a test comparing single-row, many-row, whole and cut frames with every column at one offset. Phase 14 fact: `content_row_use` is a `#[cfg(test)]` wrapper; production measures through `Cells::row_use`, `frame_content_row_use` and the immutable `FrameColumnGrids` (`render.rs` ~337, ~421, ~437, ~2133), so a change keeps that cache and both frame-wide grids. Current line references: `heading_gauge` ~3323, `ancestry_fit` ~1500, `ancestry_allocation` ~1564, `ancestry_levels` ~1625, `ancestry_lines` ~1734, `mark_cut_line` ~1285, `frame_summary_width` ~603 (was `summary_width`). Items 7 and 12 are one defect in `PathGroup::fitted_heading` (~1976): one repair, both examples tested. Phase 15: `crates/tui_pane/src/wrap.rs` has two rules. The public `wrapped` treats every span boundary as a word boundary and joins words with one unstyled space (`adjacent_spans_are_separate_words_joined_by_one_space`); cargo-tile's command cells pass a program and its arguments as two spans and depend on it. The crate-private `wrapped_runs` and `wrapped_preserving_whitespace` keep text that runs on across a style change as one word (`a_word_that_crosses_a_style_boundary_moves_whole_to_a_fresh_line`). So a part of a command drawn in its own style, item 16's profile mark included, is its own span only where a space belongs before it. A long name now breaks after a hyphen before it breaks inside a word, so ancestry rows are counted with the wrapper (`ancestry_rows`), never from text length. Any edit to `wrap.rs` also runs `test cargo-tile`. Phase 16: every ink this phase introduces — the ancestry mark, the hidden-rows mark, the profile mark — takes an existing readable theme role, so it keeps 4.5:1 on both grounds in every built-in theme; every shipped palette keeps at least five `family_*` colours clear of the five reserved inks. `CellContentExtent` changes how the foot readout is classed, and Phase 16's `CellReadoutFade` applies after that class, so a cut-at-source count fades with its cell. A render regression combines a source-cut chain with a fading foot, in a summary and in a cell, each on its focused ground, and reads the foot's ink back from the buffer: the cut state never restores an unfaded foot ink.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler`, `... test cargo-port` green; the named tests pass; no test takes a second or more.
@@ -633,41 +609,43 @@ Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGE
 - Item 11, in the unit director's shots: at 40 and 48 columns and in the 40-column toast, the summary draws no blank row above its foot while a cell in its column hides an ancestry level.
 - Item 12, in the unit director's shots: no heading begins with `…` where its path from `~` fits the same width.
 - Item 13, in the unit director's shots: no row holds only `…` under a command that wrapped.
-- Item 17, in the unit director's shots: a release run shows its profile in the summary row and in its cell, in Short view and in Long view, and in a row whose command is cut.
-- Items 18 to 20, in the unit director's shots: the toast's title reads its new words at 200, 64 and 40 columns; at 40 columns a cut summary draws `cpu` and `mem` wherever its drawn rows hold them; no cell hides an ancestry level that the rows standing blank above its foot would hold.
+- Item 16, in the unit director's shots: a release run shows its profile in the summary row and in its cell, in Short view and in Long view, and in a row whose command is cut.
+- Item 20: `a_parent_pid_loses_its_family_colour_while_its_child_row_is_cut` passes, and in the unit director's shots no parent pid shows its family colour while its child row is cut.
+- Items 17 to 19, in the unit director's shots: the toast's title reads its new words at 200, 64 and 40 columns; at 40 columns a cut summary draws `cpu` and `mem` wherever its drawn rows hold them; no cell hides an ancestry level that the rows standing blank above its foot would hold.
 - The shot set gains one shot of a long command cut at a cell's foot, filling its column before its `…` (phase 14's design check had no such shot).
 - These earlier table tests pass unchanged: Phase 9's `a_table_that_yields_one_gap_yields_them_all_before_its_foot`, `a_fully_drawn_table_keeps_every_inter_group_gap` and `a_cut_command_fills_its_column_before_the_mark`; Phase 14's `stacked_command_cells_share_one_column_grid` and `columns_drop_before_a_command_name_wraps`.
 - Unit director's captures, the eight shots (w200, w64, w48, w40, toast200, toast64, toast40, deep126x80): no two commands share a percent, one ancestry form, `cargo nextest run`'s inner cargo named with its subcommand, a Short-view name ending in ` …` exactly when it dropped arguments, a Short-view ancestry of one row naming the session runner by file name, no `/nix/store` path in Short view, and `┌ summary ─`.
 - Phase 12's motion snap tests, Phase 13's `no_unchanged_cell_reverses_height_across_one_key`, and `painted_and_retained_rows_share_one_measurement` pass unchanged; the unit director's frame probe over toast64 and w200 in motion, and over the controlled workload that starts and stops projects on the key, reads 0 moving pieces with a blank row above their foot, and each key's last moving frame equals the settled frame after it, read through cargo-tile's `Cells`. Reversal and second-motion flags count only on keys with no content change in their window.
 - A fresh helper's design check of those shots: pass.
 
-### Phase 19 — Toast timing and group titles are named states  · status: todo
+### Phase 19 — Toast timing is a named state  · status: todo
 
 #### Work Order
 
-**Goal:** Two public `tui_pane` APIs stop handing callers a bare `Option` for a domain state: a toast's timing reads as a named state, and a cell's group title reads as a named title. What the screen shows does not change. Three more toast states join them by the showrunner's placement (2026-10-12): a toast's action, toast focus, and a tracked item's start and finish.
+**Goal:** A toast's timing stops handing callers a bare `Option` for a domain state and reads as a named state. What the screen shows does not change. Three more toast states join it by the showrunner's placement (2026-10-12): a toast's action, toast focus, and a tracked item's start and finish.
 
 **Spec:**
-- **Toast timing.** `ToastView::linger_progress`, `ToastView::remaining_secs` and `TrackedItemView`'s public fields `linger_progress` and `elapsed` (`crates/tui_pane/src/toasts/item.rs` ~89; its only getter is `label()`) in `crates/tui_pane/src/toasts` hold named types, as do the renderer arguments fed from them, such as `spinner_style`'s: `ToastLingerState`, `ToastCountdownState` and `TrackedItemTiming`, or names like them. Each says what the absent case means. Any `Option` getter that stays exists only to convert at the boundary. Callers in cargo-port and cargo-tile move to the new types.
-- **Group title.** `TileCells::group_title(&Id) -> Option<Span>` becomes a semantic title such as `TileGroupTitle::{Untitled, Titled(..)}`. Every implementor moves to it: cargo-tile and cargo-handler.
+- **Toast timing.** `ToastView::linger_progress`, `ToastView::remaining_secs` and `TrackedItemView`'s public fields `linger_progress` and `elapsed` (`crates/tui_pane/src/toasts/item.rs` ~89; its only getter is `label()`) in `crates/tui_pane/src/toasts` hold named types, as do the renderer arguments fed from them, such as `spinner_style`'s: `ToastLingerState`, `ToastCountdownState` and `TrackedItemTiming`, or names like them. Each says what the absent case means. The types tell a toast's policy — live, lingering, counting down — apart from a tracked item's lifetime — start unknown, running, completed — and no wrapper is as ambiguous as the `Option` it replaces. Any `Option` getter that stays exists only to convert at the boundary. Callers in cargo-port and cargo-tile move to the new types.
 - **Toast action** (add-on, placed here by the showrunner, 2026-10-12). `ToastSpec.action` (`manager.rs` ~47), `Toast.action` (`toast.rs` ~141) and the public inputs in `commands.rs` (~138 and ~161) hold a bare `Option<Ctx::ToastAction>`, which hides that an available action takes a body row. They become a named type such as `ToastActivation<A>::{Informational, Opens(A)}` that states its row cost, and every caller in cargo-port converts.
-- **Toast focus** (add-on, placed here by the showrunner, 2026-10-12). `StackLayout` in `crates/tui_pane/src/toasts/render/layout.rs` pairs `ToastPaneFocus` with `focused_toast_id: Option<ToastId>`, so a focused toast in an unfocused pane can be built. One type such as `ToastFocus::{PaneUnfocused, PaneFocusedWithoutToast, PaneFocusedOn(ToastId)}` replaces the pair, so the meaningless pair cannot be built.
+- **Toast focus** (add-on, placed here by the showrunner, 2026-10-12). `StackLayout` in `crates/tui_pane/src/toasts/render/layout.rs` pairs `ToastPaneFocus` with `focused_toast_id: Option<ToastId>`, so a focused toast in an unfocused pane can be built. One type such as `ToastFocus::{PaneUnfocused, PaneFocusedWithoutToast, PaneFocusedOn(ToastId)}` replaces the pair, so the meaningless pair cannot be built. The conversion reaches the domain boundary: `Toasts::focused_toast_id` and `focused_id` (`crates/tui_pane/src/toasts/navigation.rs`) return `Option<ToastId>` today, `crates/tui_pane/src/toasts/slots.rs` reads it, and cargo-port's dismiss caller (`crates/cargo-port/src/tui/app/dismiss.rs`) consumes it; each moves to the named focus, as do the `focused_toast_id` arguments in `render/card.rs` and `render/drawing.rs`, so the renderer never rebuilds the pair.
 - **Tracked item timing** (add-on, placed here by the showrunner, 2026-10-12). `TrackedItem`'s public fields `started_at` and `completed_at` and its getter `completed_at()` (`crates/tui_pane/src/toasts/item.rs`) are bare `Option<Instant>`, set and read by `crates/tui_pane/src/toasts/lifecycle.rs`, beneath the view's timing states above. The item's timing becomes one named state, the unknown-start behavior is kept, and no public field or getter of `TrackedItem` holds a bare `Option` for it.
 - Apply the Type Design Contract and the user's style guide. No behavior change, no new `#[allow]` or `#[expect]`.
 
 **Files:**
 - `crates/tui_pane/src/toasts/view.rs`, `crates/tui_pane/src/toasts/item.rs`, `crates/tui_pane/src/toasts/toast.rs`, `crates/tui_pane/src/toasts/manager.rs`, `crates/tui_pane/src/toasts/mod.rs` — the named timing types and their getters.
 - `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs` — readers of the timing getters.
-- `crates/tui_pane/src/tiles/draw.rs` — `TileCells::group_title` and its named title.
-- `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the exports of the new public types.
+- `crates/tui_pane/src/toasts/navigation.rs`, `crates/tui_pane/src/toasts/slots.rs` — the focused toast's answer and its reader.
+- `crates/tui_pane/src/lib.rs` — the exports of the new public types.
 - `crates/cargo-port/src/tui/app/mod.rs` — the toast timing caller.
-- `crates/cargo-handler/src/render.rs` — the `group_title` implementor; any cargo-tile implementor or caller found by search moves too.
+- `crates/cargo-port/src/tui/app/dismiss.rs` — the focused toast's dismiss caller.
 - `crates/tui_pane/src/toasts/commands.rs`, `crates/tui_pane/src/toasts/lifecycle.rs`, `crates/tui_pane/src/toasts/render/layout.rs` — the toast action's public inputs, the tracked item's timing writes and reads, and toast focus; cargo-port's callers of the toast action, found by search, convert too.
 - `crates/tui_pane/CHANGELOG.md` — one Changed line.
 
-**Seats:** 1 writer.
+**Seats:** 1 writer + 1 tester.
+- `impl` — the toast modules, their exports and the cargo-port callers: every file above.
+- `test` — no source file; checks on each candidate that toast buffers are unchanged, and checks the unknown-start and focus-state regressions.
 
-**Constraints from prior phases:** Phase 15 left the toast timing getters as they were, outside its items. Phase 15: a toast body is a list of `ToastRun`s, each with `RunBreaks::{AtSpaces, Never}`, wrapped by the crate-private `wrapped_runs`; the public `wrapped` treats every span boundary as a word boundary, and cargo-tile's tables depend on that, so this phase leaves `crates/tui_pane/src/wrap.rs` and the body's runs alone, and any edit to `wrap.rs` also runs `test cargo-tile`. Phase 16 kept `group_title`'s signature. These two changes are the public signature changes those phases deferred. The user approved them from the Phase 12 review.
+**Constraints from prior phases:** Phase 15 left the toast timing getters as they were, outside its items. Phase 15: a toast body is a list of `ToastRun`s, each with `RunBreaks::{AtSpaces, Never}`, wrapped by the crate-private `wrapped_runs`; the public `wrapped` treats every span boundary as a word boundary, and cargo-tile's tables depend on that, so this phase leaves `crates/tui_pane/src/wrap.rs` and the body's runs alone, and any edit to `wrap.rs` also runs `test cargo-tile`. This phase's changes are the public signature changes Phase 15 deferred, and the approved exceptions the Delegation Context names. The user approved them from the Phase 12 review. `TileCells::group_title` is Phase 20's.
 
 **Acceptance gate:**
 - No public getter or public field named above holds a bare `Option` for its domain state, and no named accessor hides one kept beneath it.
@@ -675,7 +653,426 @@ Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGE
 - lint and the tui_pane, cargo-tile, cargo-handler and cargo-port suites pass, with no test at a second or more.
 - Rendered output is unchanged: the existing toast and tile render tests pass without edits to what they assert.
 
-### Phase 20 — Slow tests start first  · status: todo
+### Phase 20 — Every cell moves toward one target layout  · status: todo
+
+#### Work Order
+
+**Goal:** The tile grid's motion is rebuilt on one model (the user, via the showrunner, 2026-10-12: "Do the rewrite"). One pure target layout is computed fresh on every change (a scan, `+` or `-`, a resize). Each cell keeps the one rect it shows now and moves toward its target by a deterministic `step(displayed, target, dt)`. Any change retargets every cell from where it stands, at once. There is no step queue: `pending`, `Transition.source`, `motion_heights`, `retargeted_destination`, `DestinationDepthStatus` and the in-motion special cases all go. Drawing reads state and never writes layout back, and a cell is always one rect, so its rows never exist in two places. A cell's group title reads as a named title. Every motion case below, every motion ruling in force, and every kept test of visible behaviour passes on the new model, and the live capture counts 0 failures on each rule below.
+
+**Spec:** Evidence for every item: the round 3 build's live capture B, `results_p14.txt` sections `P14d.1` and `P14d.4` (copied into the delegate session directory before dispatch). Notation: start-end(h height, N content rows / R rows drawn, CUT = content hidden, IN = entering this frame); times are from the key.
+
+1. **A cell that opens while another slides in starts at its opening height.** Known at Phase 14's checkpoint and worse than the Phase 13 build; Phase 14's last repair turn stopped without a repair. First `+` of a round, both rounds, at +0.009 s and +0.014 s, with a command's cell 0.10 s into its entry slide:
+   `+0.000s 0-20(h20,N9/R19) 20-41(h21,N10/R20) 41-48(h7,N10/R6 CUT)`
+   `+0.009s 0-12(h12,N9/R11) 12-31(h19,N10/R18) 31-43(h12,N10/R11 IN) 43-48(h5,N10/R4 CUT)`
+   A cell appears at its end height in one frame, the summary drops 8 rows in that frame, and the cell that was sliding in falls from h7 to h5. On the Phase 13 build the same key brought one piece that entered at h2 and slid for 0.62 s. Required: the opening piece slides from its opening height; a piece still entering stays an entering piece and its height does not fall while its band has room (item 16); the residents move along the clock.
+2. **A cell admitted into a running motion slides from its opening height.** Known at Phase 14's checkpoint and worse than the Phase 13 build, as item 1. Third `+` of a round, both rounds, at +0.205 s and +0.191 s:
+   `+0.189s 0-17(h17,N15/R16) 17-22(h5 CUT) 22-30(h8 CUT) 30-39(h9 CUT) 39-48(h9 CUT)`
+   `+0.205s 0-17(h17,N15/R16) 17-22(h5 CUT) 22-28(h6 CUT) 28-35(h7 CUT) 35-42(h7 CUT) 42-48(h6,N10/R5 CUT)`
+   A command's cell enters at h6 in one frame and three cutting mates lose 2 rows each. On the Phase 13 build it entered at h2 and reached h5 0.71 s later.
+3. **An empty cell slides out across a summary depth step.** 1 and 3 cells per round still lose their last 3 or 4 rows in one frame, each on a frame where the summary's depth steps (Phase 13 build: 4 and 3). Worst, second round, tenth key (`-`), +1.294 s, from h4:
+   `+1.284s 0-11(h11,N12/R10 CUT) 11-16(h5,N0/R4) 16-20(h4,N0/R3) 20-29(h9 CUT) 29-38(h9 CUT) 38-48(h10 CUT IN)`
+   `+1.294s 0-14(h14,N12/R13) 14-19(h5,N0/R4) 19-29(h10 CUT) 29-38(h9 CUT) 38-48(h10 CUT IN)`
+   Required: a leaving piece is drawn until its slide ends, also across a depth step.
+4. **The summary moves along the clock.** The summary changes height by 4 rows in one frame on 4 keys of the two rounds while its content does not change (the Phase 13 build does the same on 3). Required: no resident changes height by more than 3 rows in one frame, outside the named transfers of items 5 and 15.
+5. **A rule for a cell that is itself sliding.** Every frame the resident spare-row count still binds (25 and 95 per round; Phase 13 build 267 and 186) is one of two forms: the cutting mate entered 0.10 s before the key and is still sliding in; or the holder's own content shrank less than 0.75 s earlier and it now slides down where it dropped in one frame before. The second form sets item 4's rule against the spare-row rule. Ruling (showrunner, 2026-10-12): a cell whose own content shrinks is a resident, so it gives its rows at once to a mate that cuts, with no slide; rows no mate wants follow the existing clock. Item 4's limit therefore excepts a resident giving rows to a cutting mate, and the first form (a mate still sliding in) is an entering piece under Phase 14's ruling. The capture tool's classes follow this.
+6. **One motion per key, read on keys free of arrivals.** The reversal and one-motion gates could not be judged: no key of the workload was free of a command arriving in its window, and arrivals aimed at the second and third keys land 0.19 to 0.22 s after them (0.02 to 0.05 s before them on the round 2 build; cause not determined). Find the cause of the shift, give the workload keys with no arrival, then require 0 reversals and one motion per key on those.
+7. **The checks Phase 14 did not run:** the changing-width capture for band escapes, and the frame probe (`cap6`) repeated on a quiet machine.
+8. **A staying cell keeps its rows on a key that frees room.** Phase 14's design check on its checkpoint build, `motion_09_minus` line 22 and `motion_10_minus` lines 26 and 31: a cell that stays shows two process rows before and after the key (`motion_08_minus`, `motion_11_minus`) and one row with `…` 0.33 s into it, while the summary already stands at its full 16 rows with four blank rows between projects. A piece is leaving in both shots, but the pieces cut are staying ones. One frame per key cannot tell a dip inside the key from a settled six-cell layout, so read it on the live capture first. Required: on `-`, a staying cell keeps the rows it had, and the summary grows only by rows the leaving cell has given up.
+
+Diagnosis from Phase 14's last repair turn, for items 1 and 2: `open_waiting_commands_in_current_motion` changes the slots while it keeps the running transition's source and clock, and seeds the new piece's previous height to 1; `drawing_at` then draws the new piece at that shared clock's position. A piece admitted into a running motion has no admission time of its own. Two fixtures built from the live heights did not reproduce the entry-at-height frame, so the first step is to instrument the admission path on the live workload and record the transition's source, destination and clock at the frame of each case. The design below answers it: each admitted cell owns its `AdmissionTiming`, and the joint step moves the dividers under item 16's rule.
+
+Each repaired item has a render-path regression that fails without it, built from the live roles (resident, entering and how far into its slide, leaving; opening queued or cell claimed), and its fixture joins `every_frame_of_a_key_keeps_the_motion_rules`.
+
+9. **A summary that can give a row gives it on the arrival frame, even while a piece is leaving** (the showrunner's placement, 2026-10-12, from phase 15's live frame check, which read worse than phase 14 on this alone). Seen: a third project arrives while the summary stands eight rows high with no spare row and a leaving piece two rows high stands below it; for two frames (36 ms) the summary draws its header, two projects, one blank row and its foot, with the third project hidden behind the cut, and only then gives the row. Rule, written as behaviour so it holds for whatever motion model this phase lands: on every frame, a summary that hides a project behind its cut draws no blank row above its foot; when an arrival leaves one of its rows unused, its height drops on that same frame, whatever else in its column is moving. Cause in today's code, for reference only: `snapped_band_piece_dividers` in `crates/tui_pane/src/tiles/grid.rs`, on `FilledBandPath::NoFilledPath`, returns the heights held before whenever their dividers reach the band floor, without rechecking that a resident now leaves a gap; a leaving piece two rows high makes the joint search fail (`piece_span_bounds`'s leaving guard and `snapped_piece_fit`'s minimum-height rejection). That file is the same in phases 14 and 15, so phase 15 did not cause it. Evidence: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/live15_reply.txt`, `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/probe12/out/results_p15.txt` (sections `P15 gates` and `P15 control`), and the kept captures `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/probe12/keepcap_c_p15b/c_cells7_r1.json` (key8 `-`, +0.317 s) against `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/probe12/keepcap_c_p14ctl/c_cells7_r2.json` (key8 `-`, +0.223 s). Test: `a_summary_gives_its_unused_row_on_the_arrival_frame_while_a_piece_leaves`, through the real draw path, reading the drawn buffer back on every frame.
+
+10. **A job cell that changes columns lays its content out once** (add-on, answered by the user via the showrunner, 2026-10-12: covered by the rewrite). A job cell's heading and ancestry are its name, and today its two pieces lay content out separately (`draw_placements`, `TileCells::draw`; cargo-tile's `Cells`), so a row shows twice or drops out while the cell changes columns, a closing column included. Evidence: `P/ph3s/shots/ph3s_on_12_close_motion.png`, `ph3s_off_09_close_later.png`, capture `P/ph3s/off/cap.json` key 13 at 1.2 s. On the new model a cell is one rect, so this holds by construction; a render test with a job cell crossing columns in both directions shows each content row at most once per frame.
+11. **A `-` pressed during a motion starts at once** (add-on, answered as item 10). Today a queued key waits in `pending` until the preceding transition's 720 ms timer ends, 0.64 to 0.93 s late with nothing changing on screen (`P/ph2d/off/ph2d_off_08_close_motion.png`). On the new model a key retargets every cell on the frame it arrives; a test presses `-` mid-motion and sees every cell's target change, and the first moved frame, within one frame.
+12. **A key that lands while a command's motion runs joins that motion** (from phase 14's live check, by the showrunner's landing call, 2026-10-12). Evidence, the controlled workload (200x50, cells view) on phase 14's build after its second repair round: a `+` that lands 7 to 112 ms after a command claims a cell waits 0.96 to 1.08 s for its slot, because the key queues behind the command's motion. In that wait the summary takes 4 rows and gives them back when the slot enters (second round, sixth `+`: height 13 to 17 at +0.451 s, 17 to 13 at +1.077 s, 13 to 11 at +1.438 s), and a command cell takes one row and gives it back (third `+`, both rounds: 5 to 6 at +0.281 s, 6 to 5 at +1.421 s). Rule (showrunner's call, 2026-10-12): a key that lands while a command's motion runs joins that motion, and no piece takes a row it gives back. This holds for a command whose cell opening has not yet entered, one that has claimed an existing cell, and one whose cell has entered; on the new model the key retargets every cell on its frame. Tests, on the render path: `a_key_landing_after_a_command_claims_a_cell_joins_its_motion`, `no_piece_takes_a_row_it_gives_back_when_a_queued_key_enters` (no piece's height rises and then falls back within the key). Gate: the unit director's capture reads 0 reversal flags and one motion on every key that lands within 0.15 s after a command arrives or claims a cell.
+13. **A cell's group title is a named title** (the title is drawn by the painter this phase replaces). `TileCells::group_title(&Id) -> Option<Span>` becomes a semantic title such as `TileGroupTitle::{Untitled, Titled(..)}`, with its match in the drawing, its exports from `tiles/mod.rs` and `lib.rs`, and every implementor: cargo-handler (`crates/cargo-handler/src/render.rs`, `group_title`) and `draw.rs`'s test `StubCells`. cargo-tile keeps the provided default, which answers `Untitled`. What the screen shows does not change.
+14. **A cell that changes column or order position closes out of its old spot, then opens in its new one** (showrunner's ruling, 2026-10-12). Over the first half of its travel the cell closes out of its old spot; over the second half it opens in its new spot. It is one rect at every frame, never overlapping or crossing another cell, and it keeps its content, title and focus throughout. Commands that end together close together, not one cell at a time. A straight slide drawn over its neighbours is not allowed. `a_cell_changing_column_is_drawn_in_both`, `commands_ending_together_close_one_cell_at_a_time` and the reorder tests (`a_cell_the_order_overtakes_closes_and_comes_back_in_behind`, `the_order_changing_cascades_down_the_rest_of_the_grid`, `no_step_of_a_reorder_draws_two_cells_crossing`, `a_reorder_leaves_the_cell_count_where_it_found_it`, `focus_waits_for_a_cell_that_closed_to_let_the_order_through`) are ported to this rule, each keeping its titles, content identity, focus, final order and non-crossing assertions.
+15. **Filled heights win over the three-row step** (showrunner's ruling, 2026-10-12). When the nearest height a resident's content fills is more than three rows from its displayed height, the cell moves straight to that height as a named transfer, as a content shrink does under item 5, so no blank row ever shows. Item 4's limit excepts this transfer. `a_height_search_reaches_the_nearest_valid_height_each_way` keeps its 19 and 27 heights.
+16. **An entering cell keeps its displayed height while its band has room** (showrunner's ruling, 2026-10-12). A retarget that asks an entering cell for less height than it displays leaves the cell at its displayed height while its band can hold it. When the band cannot fit it, the cell moves toward its new target at the resident rate, and its admission clock continues; it is never restarted.
+
+**Design** (approved by the showrunner, 2026-10-12). The rewrite keeps one target layout and one displayed rect per cell. Neighbouring cells share separators, conserve their column's rows and hand useful content rows over in one frame, so the grid advances by one joint step rather than by independent rect interpolation.
+
+*Model.* The public `TileGrid`, `TileDemand`, `TileDemands`, `TileContent` and `TilePlacement` interfaces stay. These semantic types replace the internal motion implementation:
+- `CellIdentity<Id>::{Summary, Command(Id), Vacant(VacantCellId)}` names a physical cell apart from its displayed number and content. A command claiming a vacant cell keeps that cell's identity, rect and admission timing.
+- `DisplayedCell<Id>` owns its identity, current content, one displayed rect, presence and travel clock. It owns no source rect, endpoint copy, previous-height vector or queued destination.
+- `CellPresence::{Resident, Entering(AdmissionTiming), Leaving(DepartureTiming)}` selects the motion rule. An existing entry stays entering across a retarget; claiming its cell does not create another entry.
+- `CellTravel::{Settled, Travelling(TravelTiming)}` says whether geometry needs another frame. `TravelTiming` holds elapsed and remaining duration, not a source layout.
+- `TargetLayout<Id>` holds the settled cell rects, column bands, summary depth and span, focus navigation lanes and the resolved display mode.
+- `CellTarget::{Present(Rect), Withdrawn(ExitEdge)}` tells an ordinary destination from removal. A withdrawn cell keeps its displayed rect until its slide has finished.
+- `CellRowUse` holds painted rows, retained rows and `ContentFit::{Filled, Whole, HidesContent}`. Painted rows decide whether a receiving allocation draws more; retained rows protect donors.
+- `RowTransfer::{None, ImmediateContentRelease { donors, recipients }}` records the one event in which every participating cell may exceed the three-row limit (items 5 and 15). The update produces it; the painter never infers it.
+- `RetainedCellAllocation` keeps today's stepped-demand stickiness as an explicit input to layout, never a second geometry authority.
+- `GridCellHit::{Outside, Summary, Cell(..)}` and `RemovalCandidate::{NoneAvailable, VacantCell(..)}` replace the internal optional answers; the public `cell_at -> Option<usize>` converts at its boundary alone.
+
+*Modules.* Target allocation lives in `tiles/target_layout.rs`, motion in `tiles/motion.rs`, and identity and state ownership plus the existing public methods in `tiles/grid.rs`. Timing literals stay in `tiles/constants.rs`; the ripple settings leave `tiles/settings.rs`. `tiles/mod.rs` and `lib.rs` own the additive preparation API.
+
+*Target layout.* `target_layout(inputs, content) -> TargetLayout` is pure in its observable result. Its inputs are the area, growth, floor and view settings, the reconciled cell identities and order, focus, the current content revision, the retained demand and allocation policy, and immutable content measurements. It reuses the existing `columns`, `fits`, summary depth and span rules, apportioning, summary priority and focus priority. It evaluates content at the candidate destination widths before it publishes a target, so no provisional depth is published and repaired on the first draw; the width and depth search is bounded and deterministic, with an explicit tie order. A fresh target is computed whenever a scan changes relevant content, a key changes cells or focus allocation, settings change, or the terminal resizes. An unchanged observation may reuse its result, but never restarts travel because another frame occurred.
+
+*Step.* `step(displayed, target, dt) -> DisplayedLayout` takes the whole displayed grid. It first proposes each cell's advance, then resolves shared column boundaries and useful row transfers jointly. It uses integer fixed-point coordinates and an injected duration, and reads no `Instant` inside layout or stepping. For unchanged topology and unrestricted geometry, the residual easing fraction `(ease(elapsed + dt) - ease(elapsed)) / (1 - ease(elapsed))` advances the current rect toward its target without a stored source rect; it clamps at the remaining duration and lands exactly on the target. Stable cell order decides rounding and every allocation tie.
+
+*Joint projection.* The step conserves each band's rows, shares each separator, respects resident floors, prevents ordinary resident height reversals toward a fixed target, and selects useful filled allocations from the current content measurements. A small leaving cell does not invalidate the resident allocation: its timed allocation is accounted for apart from resident content-fit eligibility, so today's `FilledBandPath::NoFilledPath` fallback that keeps an obsolete gap goes.
+
+*Retarget.* A retarget replaces the whole target at once and starts from the stored displayed rects. It never rebuilds positions from a previous endpoint or advances an old queued step. Entering and leaving clocks survive content-only retargets; a newly admitted cell gets its own clock. A new key updates every target on its frame, with resident travel timing assigned to that key; unchanged frame observations do not extend its deadline.
+
+*Opening and withdrawal.* A new opening starts at its named border-only opening allocation and gets 720 ms from its own admission, whatever another cell's elapsed motion. A leaving cell releases rows along its slide and is erased only at its terminal invisible allocation. Item 16 sets what an entering cell does when a retarget asks it for less than it displays.
+
+*Preparation and painting.* A preparation operation observes `TileCells`, resolves the target, gathers the existing shared row measurements, steps once, and publishes an immutable `PreparedTileFrame`. The painter reads that frame and calls the content provider once per visible cell. `draw_tile_grid` keeps its public signature and performs no layout mutation; cargo-tile and cargo-handler prepare before calling it. Hit-testing and navigation read the same published geometry. cargo-tile keeps its immutable `FrameColumnGrids` and the shared `Cells::row_use` measurement in `render.rs`: measuring at candidate sizes is distinct from drawing, and each displayed cell gets one final content layout and one paint. Phase 16's `CellReadoutFade`, focused ground selection, summary-foot fading and whole-or-absent readout candidates stay.
+
+*Removed mechanisms and their replacements:*
+
+| Removed | Replacement |
+|---|---|
+| `pending`, `Step`, the queue and advance machinery | Reconcile identities and publish one latest target |
+| `Transition.source` | The rect in each `DisplayedCell` |
+| `motion_heights` | Heights already in those rects |
+| `retargeted_destination` | The sole `TargetLayout`, recomputed from current inputs |
+| `DestinationDepthStatus` | Complete width and depth resolution before the target is published |
+| Admission into a shared running clock | Per-cell `AdmissionTiming` |
+| `HeightSnap::previous_height -> Option<u16>` | No height-history lookup; current geometry is always present |
+| Draw-time selected-height and layout writeback | The update's joint step and the immutable prepared frame |
+| Two `TilePiece`s and a `PieceName` per crossing cell | One displayed cell and one content paint |
+
+*How each item and ruling holds:*
+- Entering and leaving slides: presence controls timed opening and withdrawal, apart from residents' content allocation.
+- Resident content shrink (item 5): usable rows go to cutting resident mates on that observation's frame; donor and recipients form one `RowTransfer`. Rows with no useful resident recipient follow the clock.
+- Spare rows: useful transfer among residents holds on every prepared frame and among all cells of a settled layout; entering and leaving allocations keep their slide exemption.
+- Item 1: a second opening starts at its own opening allocation, while an existing entry keeps its identity and admission clock.
+- Item 2: admitting a command during motion creates one new timed entry, or claims an existing physical cell.
+- Item 3: a leaving cell's visibility depends on its withdrawal lifetime, not on a summary depth transition.
+- Item 4: the joint step applies the three-row resident limit, except the named transfers of items 5 and 15.
+- Item 6: target replacement leaves no second queued motion; reversal is judged between actual external changes, on workload keys free of arrivals.
+- Item 7: the changing-width containment captures and the quiet-machine frame probe stay.
+- Item 8: on removal, staying cells keep the rows they already paint; summary growth takes only rows the withdrawal released.
+- Item 9: resident row use is recomputed on the arrival frame and the summary's unused row is released before stepping; a two-row leaving cell cannot veto that transfer.
+- Items 10 and 14: one displayed rect gives one content layout and one paint per frame.
+- Items 11 and 12: a key publishes every affected target on receipt and moves toward them within one frame.
+- Item 13: the painter matches `TileGroupTitle`.
+- The readable floor: cargo-tile's six-row and 40-column floors hold for resident cells and settled layouts; cargo-handler's framework floors stay.
+- Phase 14's live guarantees: the seventh-key empty-cell floor, no summary blank row hiding content, one physical entry per `+`, and containment hold as explicit buffer or capture assertions.
+- Probe cost: the shared measurement cache stays; a seven-cell moving frame makes at most 29 row-measurement calls, and painting causes no repeated measurement.
+- Height and admission types: the current rect and named admission timing replace optional history and the height-1 sentinel.
+
+*Cost.* Today a moving frame resolves endpoint layouts, builds possibly duplicated pieces, gathers row probes, searches band dividers, stores selected heights and rebuilds drawing geometry; `nearest_band_piece_dividers` also clones growing divider vectors while it explores candidates. The new frame makes one measurement and preparation pass, one joint step and one paint per cell. Rect proposals and projection are linear in cells and bands; the useful-height allocation still needs a bounded joint search for sparse content steps, so it is not claimed linear. It stores scalar scores and predecessor indices instead of candidate divider vectors, indexes row answers by cell, and builds the chosen rects once. Painting triggers no allocation search and duplicates no content plan.
+
+**Test map.** This covers all 157 `grid.rs` tests and 73 `draw.rs` tests. *Keep* means the test body and its assertion stay unchanged, with any pure helper they need. *Port* means every visible assertion stays while fixtures that write `held`, `Transition`, source geometry, queued states or height vectors become displayed-cell and target fixtures. Arbitrary `drawing_at(raw)` samples become deterministic update-and-step samples (independent fixture states where the samples are deliberately unordered); queue completion becomes stepping to settled geometry; and a test inspects the immutable prepared frame instead of rebuilding an endpoint during drawing.
+
+`grid.rs` — keep:
+
+```text
+the_configured_tile_floor_fits_each_column_count_at_its_shared_width
+the_framework_floor_still_fits_three_columns_in_twenty_two
+fits_holds_at_the_height_floor_and_fails_one_row_under
+the_summary_asks_for_the_fewest_columns_that_hold_its_width
+the_first_column_fills_before_a_second_one_opens
+the_cell_past_the_initial_rows_rearranges_the_whole_grid
+the_columns_fill_the_smallest_square_that_holds_them
+redistribute_keeps_the_columns_within_one_cell_of_each_other
+a_full_square_grows_a_row_before_it_grows_a_column
+twelve_thirteen_and_fourteen_cells_under_each_fill
+both_fills_open_the_same_number_of_columns
+redistributed_columns_differ_by_at_most_one_taller_first
+the_grid_comes_back_down_the_way_it_went_up
+the_fifth_column_opens_once_every_column_stands_five_tall
+the_square_after_five_grows_the_same_way
+every_arrangement_holds_exactly_the_cells_asked_for
+nothing_already_placed_moves_until_the_grid_rearranges
+initial_rows_below_one_is_treated_as_one
+a_cell_that_has_run_out_of_room_takes_what_an_idle_one_is_not_using
+room_reaches_a_cell_from_either_side_of_it
+a_column_where_everything_fits_divides_evenly
+a_cell_gives_up_every_row_its_contents_do_not_need
+no_cell_is_pushed_below_what_a_cell_can_be_read_at
+no_piece_gets_a_row_past_its_ask_while_a_column_mate_is_short
+an_unusable_row_moves_when_its_cell_is_furthest_below_demand
+a_freed_row_goes_to_a_mate_whose_next_step_it_completes
+a_cell_made_whole_gives_no_row_away
+a_freed_row_stays_when_no_mates_next_step_fits
+demand_holds_still_until_it_has_a_whole_step_more_to_ask_for
+the_focused_cell_wins_the_room_that_does_not_go_round
+focus_changes_nothing_while_there_is_room_to_go_round
+focus_takes_nothing_from_a_column_that_has_no_room_to_spare
+easing_pins_both_ends
+```
+
+`grid.rs` — port:
+
+```text
+motion_rules::a_resident_empty_cell_takes_no_row_while_mates_cut
+motion_rules::a_command_cell_slides_in_when_its_content_arrives_mid_slide
+motion_rules::an_empty_cell_slides_out_across_a_summary_depth_step
+motion_rules::every_frame_of_a_key_keeps_the_motion_rules
+reused_pids_keep_distinct_tiles_and_focus
+a_column_at_the_exact_floor_draws_no_piece_under_it
+a_widened_summary_leaves_no_piece_under_the_floor
+no_resident_piece_is_under_the_floor_in_flight
+a_shrinking_summary_that_widens_keeps_resident_pieces_at_the_floor
+holds_in_counts_the_headed_summary_depth
+a_demand_change_in_one_frame_decides_the_view_from_that_frames_rows
+changed_row_answers_recommit_an_unchanged_settled_view
+a_one_row_change_in_the_summarys_ask_does_not_flip_the_view
+a_click_anywhere_in_the_summary_alone_picks_the_summary
+focus_returns_to_its_cell_with_the_cells
+a_widened_summary_keeps_its_height_and_the_next_column_starts_below_it
+a_column_with_no_room_below_the_summary_stops_it
+the_summary_widens_only_when_the_setting_is_on
+the_arrows_treat_a_widened_summary_as_heading_what_it_covers
+an_exact_demand_change_redivides_without_motion
+a_shrinking_cell_updates_its_exact_demand_across_a_step_boundary
+a_cell_keeps_what_it_grew_to_while_nothing_encroaches
+a_cell_hands_its_room_back_once_another_encroaches
+a_column_re_dividing_travels_the_way_a_cell_moving_does
+a_column_divided_by_demand_covers_its_area_the_way_an_even_one_does
+a_column_starts_where_the_one_before_it_ends
+a_row_starts_where_the_one_above_it_ends
+a_settled_grid_places_one_piece_per_cell
+placements_are_the_summary_alone_while_the_cells_are_hidden
+the_table_cell_is_never_removed
+a_grid_with_no_room_refuses_to_grow
+a_cell_changing_column_is_drawn_in_both
+a_wrapping_cell_shares_its_column_edges_with_the_cells_that_stay
+a_wrapping_cell_leaving_with_its_column_is_squeezed_off_the_edge
+a_cell_taking_its_column_with_it_closes_off_the_right_edge
+a_cell_leaving_a_column_that_stays_closes_onto_its_floor
+adding_the_tenth_live_cell_never_draws_a_survivor_in_a_third_column
+a_key_that_changes_slots_and_depth_queues_one_step
+no_unchanged_cell_reverses_height_across_one_key
+a_key_whose_new_widths_change_demands_still_moves_once
+a_departure_uses_recorded_heights_when_its_rows_drop_to_zero
+seven_cell_plus_and_minus_start_every_piece_one_way
+filled_motion_sources_begin_at_their_settled_heights
+mixed_height_changes_move_each_piece_one_way
+a_large_height_shrink_moves_one_way
+three_snapped_mates_move_one_way
+mixed_snapped_height_changes_move_one_way
+unchanged_mates_stay_between_their_endpoints_during_plus_and_minus_motion
+selected_piece_heights_are_not_reversed_by_absolute_divider_limits
+a_shrinking_piece_skips_the_height_that_leaves_a_row_unused
+a_resize_during_motion_draws_every_column_inside_the_new_area
+returning_to_a_motion_source_area_keeps_the_resized_destination
+an_every_other_height_shrink_moves_one_way
+a_height_search_reaches_the_nearest_valid_height_each_way
+a_painted_optional_row_fills_a_moving_height
+a_growing_resident_uses_the_current_frames_whole_row_count
+a_widening_resident_uses_its_current_widths_whole_row_count
+a_departing_piece_with_no_content_can_collapse
+a_moving_piece_snaps_to_a_height_its_content_fills
+a_whole_moving_piece_gives_spare_rows_to_a_cutting_mate
+a_summary_shrink_starts_filled_and_never_reverses
+a_content_change_keeps_residents_at_their_last_filled_heights
+a_snapped_height_moves_one_way_through_a_motion
+a_column_still_tiles_its_band_while_pieces_snap
+two_stepped_mates_both_stand_at_heights_they_fill
+arriving_and_leaving_pieces_snap_without_a_floor
+a_seven_cell_moving_frame_limits_row_probes
+a_settled_frame_measures_each_cell_size_once_and_requests_no_frame
+changed_retained_rows_update_the_next_settled_transfer
+column_bands_tile_the_area_through_a_transition
+pieces_in_a_column_share_their_separators_through_a_transition
+motion_endpoints_keep_every_present_cell_in_its_settled_rect
+a_motion_frame_applies_unused_rows_to_its_own_arrangement
+a_cell_claimed_during_an_opening_stays_in_its_transition_column
+a_command_arriving_opens_its_own_cell
+a_command_arriving_takes_the_first_empty_cell
+the_cells_stand_in_the_order_they_are_demanded_in
+re_ordering_leaves_an_empty_cell_where_it_was_made
+a_command_leaving_the_middle_moves_the_rest_forward
+one_departing_piece_is_in_flight_while_the_grid_closes
+a_command_leaving_the_middle_closes_the_grid_in_one_step
+a_cell_the_order_overtakes_closes_and_comes_back_in_behind
+the_order_changing_cascades_down_the_rest_of_the_grid
+no_step_of_a_reorder_draws_two_cells_crossing
+a_reorder_leaves_the_cell_count_where_it_found_it
+focus_waits_for_a_cell_that_closed_to_let_the_order_through
+commands_ending_together_close_one_cell_at_a_time
+no_piece_in_a_closing_column_changes_height
+a_cell_leaving_a_column_that_stays_slides_off_its_edge
+a_middle_departure_starts_on_its_before_rows_between_its_neighbours
+removing_refuses_to_close_a_cell_holding_a_command
+removing_closes_the_last_cell_that_plus_opened
+the_summary_holds_focus_to_begin_with
+focus_walks_the_grid_and_stops_at_its_edges
+tab_walks_every_cell_and_comes_back_round
+focus_follows_a_cell_through_a_closing
+focus_falls_back_to_the_summary_when_its_command_ends
+focus_stays_on_an_empty_cell_a_command_claims
+a_click_inside_a_cell_takes_the_focus_ring
+a_click_outside_the_grid_finds_no_cell
+minus_takes_out_the_focused_empty_cell
+minus_leaves_a_running_command_alone
+minus_with_no_empty_cell_changes_nothing
+summary_depth::a_summary_one_row_short_takes_it_from_its_mates
+summary_depth::a_summary_far_short_still_takes_a_second_position
+summary_depth::summary_depth_never_falls_as_the_summary_asks_for_more
+summary_depth::no_mate_goes_under_the_minimum_to_feed_the_summary
+summary_depth::the_summary_counts_as_the_fewest_cells_that_hold_it
+summary_depth::the_summary_gives_a_cell_back_once_it_fits_in_fewer
+summary_depth::a_deeper_summary_pushes_every_cell_one_place_on
+summary_depth::a_deeper_summary_tiles_its_column
+summary_depth::a_capped_summary_places_every_cell_without_an_empty_column
+summary_depth::widths_follow_capped_summary_positions_before_the_next_sync
+summary_depth::the_summary_never_takes_the_grid_past_fits
+summary_depth::the_summary_is_served_before_the_focus_ring
+summary_depth::moving_focus_never_changes_the_summary_depth
+summary_depth::the_arrows_move_by_position_beside_a_deep_summary
+summary_depth::a_click_on_any_part_of_a_deep_summary_focuses_it
+summary_depth::adding_under_new_growth_queues_its_summary_depth
+summary_depth::cell_numbers_hold_while_the_summary_deepens
+summary_depth::deepening_travels_the_way_a_closing_cell_does_in_reverse
+summary_depth::a_steady_summary_queues_nothing
+summary_depth::a_deeper_summary_widens_over_the_columns_its_depth_opens
+```
+
+Port notes for `grid.rs`:
+- Floor, summary depth and span, and sticky-allocation tests read the pure target and the explicit retained policy.
+- Admission, claim and focus tests inspect stable physical identities and the prepared displayed layout.
+- Height tests read current rects after `step`; `HeightSnap` and divider-search fixtures become measured content-fit fixtures, under item 15 for sparse heights.
+- The departure-recording test seeds the displayed rect directly; no settled-source snapshot is needed.
+- Probe tests assert upper bounds: 29 moving calls and the existing settled measurement budget, with uniqueness kept and `tick() == false` when settled. Exact equality would reject a cheaper implementation.
+- "Queues one step" and "queues nothing" tests keep their one-motion and no-extra-motion guarantees without inspecting a queue.
+- Changed-column and sequential reorder or departure tests port to item 14. Resize tests keep containment and the rule that stale geometry never returns, without assuming every resize ends motion.
+
+`grid.rs` — retire: `every_queued_state_keeps_surviving_cells_in_an_endpoint_column`. It enumerates `pending` arrangements and checks their endpoint-column assignment; those intermediate queued arrangements no longer exist. Its visible containment protection stays in the port of `adding_the_tenth_live_cell_never_draws_a_survivor_in_a_third_column` and in the live changing-width checks.
+
+`draw.rs` — keep:
+
+```text
+summary_foot_is_written_only_on_summary_readout_row
+summary_foot_leaves_wide_readout_against_right_inset
+summary_foot_shares_with_the_short_readout_candidate
+summary_foot_is_drawn_whole_or_absent_at_every_width
+draw_tile_cell_draws_only_the_readout_on_its_foot_row
+the_rows_readout_is_a_whole_candidate_at_every_width
+a_cell_with_one_body_row_draws_its_contents_and_no_readout
+an_empty_tile_number_uses_the_only_body_row_before_the_readout
+```
+
+`draw.rs` — port:
+
+```text
+a_cell_lends_no_row_it_must_take_back_within_one_key
+a_toast_width_summary_never_draws_compact_with_room_above_its_foot
+a_turn_that_grows_content_and_height_draws_no_blank_row
+a_summary_hiding_rows_beside_cells_shows_alone
+a_width_responsive_summary_uses_each_views_own_demand
+summary_view_shows_the_summary_alone_while_cells_fit
+cells_view_shows_cells_whenever_they_fit_at_the_floor
+no_view_draws_a_cell_under_its_floor
+the_view_holds_through_a_motion
+the_summary_shows_no_blank_row_while_a_cell_in_its_column_is_short
+a_cell_draws_no_spare_row_while_a_column_mate_hides_rows
+reported_unused_rows_go_to_the_most_short_column_mate
+a_piece_in_flight_leaves_no_cell_unpainted
+a_line_over_an_overlapped_cell_sits_on_the_screen_ground
+a_new_column_draws_its_whole_frame_while_its_first_cell_rises
+a_piece_entering_the_middle_column_leaves_the_bottom_frame_whole
+an_edge_only_piece_adds_no_line_above_the_column_frame
+an_arriving_piece_draws_no_line_until_it_has_a_row
+a_cell_arriving_at_a_column_foot_leaves_no_line_before_its_first_row
+a_content_change_mid_motion_leaves_no_blank_row
+a_departed_summary_entry_gives_its_spare_rows_to_cutting_mates_at_once
+a_summary_losing_content_during_a_key_gives_its_spare_rows_at_once
+an_empty_departing_cell_gives_rows_along_its_slide
+a_command_growing_before_a_key_keeps_its_drawn_rows
+a_key_claimed_by_a_waiting_command_brings_no_second_empty_piece
+no_cell_cuts_a_row_while_a_mate_holds_a_spare_row_it_could_give
+a_content_change_keeps_the_motion_clock_with_a_key_waiting
+an_arriving_cell_keeps_advancing_when_content_retargets_its_key
+a_resize_ends_a_content_retarget_for_good
+a_content_retarget_that_changes_columns_keeps_its_clock_and_filled_rows
+a_widening_summary_keeps_every_piece_inside_its_moving_band
+a_narrowing_summary_keeps_every_piece_inside_its_moving_band
+a_wider_summary_discards_a_destination_from_different_columns
+a_settled_spare_row_check_rejects_a_donor_beside_a_cutting_mate
+a_command_claims_its_empty_cell_without_hiding_a_departing_mate
+a_rendered_claim_joins_the_motion_after_an_independent_scan
+no_piece_rests_on_a_row_it_cannot_fill_while_a_mate_cuts_content
+a_key_that_adds_or_removes_a_cell_slides_its_column
+the_first_cell_below_a_summary_slides_in_and_out
+the_last_cell_leaves_in_steps_with_its_narrowing_column
+startup_cells_leave_no_line_before_their_first_row
+a_title_is_on_screen_once_while_its_cell_moves_right_and_columns_stay
+a_title_is_on_screen_once_while_its_cell_moves_right_and_a_column_closes
+a_title_is_on_screen_once_while_its_cell_moves_left_and_its_column_closes
+a_title_is_on_screen_once_while_its_cell_moves_left_and_columns_stay
+an_empty_cell_number_is_on_screen_once_while_it_moves_right_and_columns_stay
+an_empty_cell_number_is_on_screen_once_while_it_moves_right_and_a_column_closes
+an_empty_cell_number_is_on_screen_once_while_it_moves_left_and_its_column_closes
+an_empty_cell_number_is_on_screen_once_while_it_moves_left_and_columns_stay
+a_departing_cell_keeps_its_title_while_its_border_is_visible
+content_glyphs_do_not_cover_ground_only_rows
+no_line_is_doubled_through_a_transition
+two_cells_entering_a_column_never_double_a_frame_line
+a_collapsing_cell_leaves_no_ground_only_row_between_neighbours
+sliding_pieces_leave_no_band_row_on_the_screen_ground
+a_sliding_arrival_shows_its_nearest_content_row_with_its_first_visible_row
+a_fading_cells_readout_fades_with_it
+a_grid_too_wide_for_its_window_draws_the_summary_alone
+the_cells_stand_settled_in_the_first_frame_that_holds_them
+a_command_refused_in_a_small_window_opens_when_there_is_room
+a_command_refused_for_height_opens_when_there_is_room
+a_hidden_grid_too_small_draws_nothing
+a_closing_column_in_flight_never_draws_a_cell_under_the_floor
+a_depth_change_in_flight_never_draws_a_cell_under_the_floor
+hidden_grid_draws_no_summary_foot
+```
+
+Port notes for `draw.rs`: hand-built `TilePiece` fixtures become one-cell prepared-frame fixtures, and public-grid tests prepare before painting. Buffer text, glyph, ground, title-count, fade, useful-row and floor assertions stay. Clock and source-cache assertions become admission and deadline continuity and latest-target assertions. `a_content_change_keeps_the_motion_clock_with_a_key_waiting` keeps content continuity, with the explicitly queued second key replaced by immediate retargeting. The title-once and crossing tests follow item 14. `draw.rs` retires none.
+
+New tests:
+
+| Item | Test | Behaviour pinned |
+|---|---|---|
+| 1 | `a_second_opening_starts_at_its_own_opening_height` | A cell opens during an existing entry; the new cell starts small, and the existing entry neither restarts nor shrinks. |
+| 2 | `a_mid_motion_admission_has_its_own_720ms_clock` | A command admitted late in another motion; its first displayed allocation and its full admission lifetime are its own. |
+| 3 | `a_leaving_cell_survives_a_summary_depth_change_until_its_slide_ends` | Every rendered frame across the depth change; no disappearance from more than two rows. |
+| 4 | `ordinary_residents_change_by_at_most_three_rows_per_frame` | Resident heights and transfer classes on the production frame cadence. |
+| 5 | `content_shrink_transfers_rows_atomically_to_cutting_residents` | Donor and every recipient change on the observation frame; the unused remainder follows the clock. |
+| 6 | `an_arrival_free_key_reaches_one_target_without_height_reversal` | `+` and `-`, both fills, a settled start, no arrivals; one completion and heights that move one way. |
+| 7 | `resizing_every_frame_keeps_the_displayed_grid_inside_the_area` | Shrink, grow and return through column and depth changes; no geometry escapes and no stale endpoint returns. |
+| 8 | `minus_preserves_staying_content_until_departure_releases_rows` | Staying process rows stay visible; summary growth takes no rows the departure has not released. |
+| 9 | `a_summary_gives_its_unused_row_on_the_arrival_frame_while_a_piece_leaves` | The real draw path, a leaving cell two rows high, a new summary project; on the arrival frame the buffer has no blank row while a project is hidden. |
+| 10 | `a_job_crossing_columns_draws_each_content_row_once_per_frame` | Both directions and a closing column, with distinct heading, ancestry and process markers; one provider paint and at most one copy of each row. |
+| 11 | `minus_during_motion_retargets_every_cell_within_one_frame` | Target publication on receipt, geometry continuity at `dt = 0`, and the first movement on the next frame. |
+| 14 | `a_cell_changing_column_closes_then_opens_as_one_rect` | Both directions and a closing column; one rect per frame, closing over the first half and opening over the second, no overlap or crossing, content, title and focus kept. |
+| 15 | `a_resident_moves_straight_to_a_filled_height_more_than_three_rows_away` | The move is one named transfer and no frame shows a blank row. |
+| 16 | `an_entering_cell_keeps_its_height_while_its_band_has_room` | A retarget below its displayed height; it holds while the band has room, moves at the resident rate when it does not, and its admission clock never restarts. |
+| departure | `a_finished_jobs_cell_leaves_instead_of_staying_an_empty_box` | When a command's job finishes, its cell slides out and is removed; no frame leaves it as a bordered box with no name. |
+
+Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `painting_twice_changes_no_layout_state`, `an_unchanged_scan_does_not_extend_travel`, and `claiming_an_entering_vacant_cell_preserves_its_identity_and_admission`.
+
+**Files:**
+- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs` — the motion code, the painter, `TileGroupTitle` and their tests.
+- `crates/tui_pane/src/tiles/target_layout.rs`, `crates/tui_pane/src/tiles/motion.rs` — new: the pure target layout and the step.
+- `crates/tui_pane/src/tiles/settings.rs` — the ripple step settings, which the new model drops.
+- `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — the additive preparation API and the `TileGroupTitle` export.
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-handler/src/render.rs` — the render callers, which prepare a frame before they call `draw_tile_grid`, and cargo-handler's `group_title`.
+- `crates/cargo-tile/src/shim_registration/app_scenarios.rs` — the whole-frame test helpers, where the preparation step reaches them; the in-module tests in `draw.rs`, `grid.rs` and both apps' `render.rs` that call `draw_tile_grid` move with it.
+- `crates/tui_pane/CHANGELOG.md` — one Fixed line, one Changed line for the group title, and one Added line for the preparation API.
+
+**Seats:** 1 writer + 1 tester — the items sit in one motion path, so one seat writes.
+- `impl` — every source file above: the motion and painter code, the exports, both apps' render callers and their test callers, and the `tui_pane` changelog; lists each new test that reaches 0.8 s in the phase report.
+- `test` — no source file; owns the live fixture, capture and cost lanes. Before any repair it replays the live cases on the build Phase 18 leaves and writes each item's fixture roles and expected heights for `impl`; then it runs the live capture tools and the per-frame cost comparison on each candidate build.
+
+**Constraints from prior phases:** Phase 14's ruling holds: a piece that is entering or leaving slides, and the spare-row rule binds cells that are neither, and every settled frame. Everything Phase 14's live check met stays met: the emptied cell on the seventh key stands 0 frames above its floor, the summary shows 0 blank rows, no empty cell leaves from its full floor height, one piece per `+`, 0 band escapes. No new row probe or row measurement per moving frame; the seven-cell moving budget stays 29, and speed stays within 1 ms of the Phase 13 build. Three repair rounds in Phase 14 each fixed their fixture and moved the defect to a neighbouring live state (memory `attempts-tile-phase14-motion-rows`): a repair is proved on the live capture before it closes. Phase 21 runs after this phase by the showrunner's landing call and measures the suite it ships. This phase runs after Phase 18, which changes the summary's spare-row taker, its separators and the row order (its items 11, 14 and 15): replay every case on the build Phase 18 leaves before repairing, and keep Phase 18's shared measurements. Items 5 and 8 may already be partly met (`draw.rs` tests ~2522 and ~2535 cover immediate summary donation): repair only what a replayed live failure shows. The immediate transfers items 5 and 15 permit are each one event for every piece they touch: the resident that gives or moves rows and each mate that takes them may change by more than 3 rows in that frame; the Goal, the tests and the capture tool's counters class them the same way, and the jump gate excepts them. Type design: `HeightSnap::previous_height -> Option<u16>` (`grid.rs` ~367) folds disabled probing into missing history, and `open_waiting_commands_in_current_motion` (~2128) stands a new piece in at height 1; the repair names admission time and height history as states at that boundary, with no bare `Option` or height sentinel as the answer. The shared fixture is `grid.rs::tests::motion_rules::every_frame_of_a_key_keeps_the_motion_rules`. This phase does not edit `.config/nextest.toml`: it lists each new test that reaches 0.8 s, and Phase 21's measurement and exact-name override place it. `draw_tile_grid` keeps its public signature: it becomes a read-only painter, and a frame is prepared before it through an additive preparation API, so drawing writes no layout state. Phase 16 kept `group_title`'s signature; this phase's change to it is the approved exception the Delegation Context names.
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`: green, no test at a second or more.
+- Live, controlled workload, two rounds, read with the Phase 14 tools: command cells at once 0; pieces vanishing from over 2 rows 0; resident jumps over 3 rows 0 outside the named transfers of items 5 and 15; binding spare-row frames 0 under item 5's ruling; on keys free of arrivals 0 reversals and one motion per key; band escapes 0 on the changing-width capture.
+- Speed on a quiet machine: moving and settled medians within 1 ms of the Phase 13 build.
+- Shots of the motion keys and a design check by a fresh helper.
+- The live frame check against the build before this phase reads no worse on every gate, and per-frame cost on natedev is no more than that build's.
+- Item 12, in the unit director's capture: 0 reversal flags and one motion on every key that lands within 0.15 s after a command arrives or claims a cell.
+- No `pending`, `Transition.source`, `motion_heights`, `retargeted_destination` or `DestinationDepthStatus` remains, and no draw path writes layout state; `draw_tile_grid`'s signature is unchanged.
+- `TileCells::group_title` returns no bare `Option`, and the existing tile render tests pass without edits to the titles they assert.
+- Every test the Test map keeps passes unchanged; every ported test keeps its visible assertions; every new test passes, `a_finished_jobs_cell_leaves_instead_of_staying_an_empty_box` included.
+- Probe tests hold the ceilings: at most 29 row-measurement calls on a seven-cell moving frame, the existing settled budget, and no measurement caused by painting.
+- Cost: `test` compares the byte-identical candidate against the build before this phase on a quiet natedev, over event frames as well as steady moving and settled frames; per-frame cost is no higher, and the Phase 13 1 ms gate holds.
+- The unit director's notice lists each retired `grid.rs` test with its reason.
+
+### Phase 21 — Slow tests start first  · status: todo
 
 #### Work Order
 
@@ -687,6 +1084,7 @@ Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGE
 2. **The slow set** is every test at 0.8 s or more in any of the six runs, less the seven reader scenarios the config already orders. Known members to confirm by name with `cargo nextest list`: in `cargo-tile::unit_tests`, `progress::capture::…::incomplete_registration_inventory_sweeps_any_sampled_proven_pair`, eight in `shim_registration::wire::`, two in `hook::`; two each in `cargo-tile::shim_modes` and `cargo-tile::cli_lifecycle`; in `cargo-handler`, `census::codex::…::reads_threads_by_id_whoever_started_them` and `…::reads_interactive_threads_created_in_the_span`; in `tui_pane`, `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw`.
 3. **One override.** Append to `.config/nextest.toml` one `[[profile.default.overrides]]` with `priority = 80` and a `filter` that names each slow test exactly: `binary_id(<id>) & (test(=<name>) | …)` per binary, joined with `|`. No regular expressions, so a test added later is not swept in by accident. A comment above it says what the list is, the threshold, the date measured, and how to re-measure. nextest resolves each setting from the first override that sets it, so the two existing priorities (100, 90), the `cargo-tile-readers` group and both `slow-timeout` entries keep working unchanged; the new override sets `priority` alone and names none of the reader scenarios.
 4. **Measure after**, the same three runs per machine. A non-reader test that crosses 0.8 s in an after run and is not in the filter joins it, and the three after runs repeat once on both machines; a second newcomer is reported in the summary rather than chased.
+5. **Two reader scenarios still over a second.** `shim_registration::reader_scenarios::reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.70 s) and `reader_keeps_parent_family_across_its_only_childs_source_switch` (1.20 s) measured over a second at load 56 after Phase 17's two repairs. Measured cause: the real reader process's own startup, release to first complete frame 0.51 s and to the CPU rows 0.44 s more, before the fixed 0.25 s observation; the test scaffolding is already overlapped. Measure both in the six runs; where either stays at a second or more on a quiet natedev, record that measured floor in the summary and send the showrunner a proposal for a reader-startup speedup rather than editing the test.
 
 **Files:**
 - `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
@@ -695,77 +1093,10 @@ Changelog: one Changed line under `## [Unreleased]` in `crates/cargo-tile/CHANGE
 - `impl` — owns `.config/nextest.toml`, publishes its `sha256sum` on the board after each edit, and runs every natedev before and after run; checks every exact filter name.
 - `test` — no source file; copies the candidate config to the Mac clone (`scp` over `ssh mac` into `/Users/natemccoy/rust/cargo-liner-measure/.config/nextest.toml` after the checkout), verifies the same sha256 before each after-run batch, runs every Mac run, and hands `impl` the named JUnit files, the slow set and the start order. The before runs use the clean phase tip.
 
-**Constraints from prior phases:** This phase runs after Phases 1 to 19, every phase planned to add tests or change shared grid code, so its timings measure the suite those phases ship. Phase 21 follows it by the showrunner's landing call (2026-10-12) and checks its own tests against this phase's line. Phases 1 to 16, 18 and 19 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second for its own tests, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set. Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios.
+**Constraints from prior phases:** This phase runs after Phases 1 to 20, every phase planned to add tests or change shared grid code, so its timings measure the suite those phases ship. It runs last by the showrunner's packaging call (2026-10-12), after Phase 20's last checkpoint when that phase lands in several, so its override names the suite Phase 20's motion rewrite leaves. Phase 20 lists each new test that reached 0.8 s in its report; this phase confirms each by name and by measurement. Phase 17 shortened several of item 2's known members, and Phase 20 replaces most grid and draw tests, so item 2's known list is confirmed against the six runs and `cargo nextest list`, never assumed: a known member under 0.8 s in every run stays out of the filter. Exact-name discovery, the reader priorities and group, and both timeouts hold as item 3 states. Phases 1 to 16 and 18 to 20 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second for its own tests, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set. Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios.
 
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile` once, after the config edit: green.
 - `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
 - After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
-
-### Phase 21 — A cell that enters, leaves or settles moves on the clock  · status: todo
-
-#### Work Order
-
-**Goal:** In every frame of a key's motion on the controlled workload, a piece that enters or leaves slides, no piece changes height by more than one slide step in a frame, and the live capture counts 0 failures on each rule below. These are the motion cases Phase 14's live checks left open when the showrunner called its landing (2026-10-12: no fourth repair round; the open motion cases form a new last phase).
-
-**Spec:** Evidence for every item: the round 3 build's live capture B, `results_p14.txt` sections `P14d.1` and `P14d.4` (copied into the delegate session directory before dispatch). Notation: start-end(h height, N content rows / R rows drawn, CUT = content hidden, IN = entering this frame); times are from the key.
-
-1. **A cell that opens while another slides in starts at its opening height.** Known at Phase 14's checkpoint and worse than the Phase 13 build; Phase 14's last repair turn stopped without a repair. First `+` of a round, both rounds, at +0.009 s and +0.014 s, with a command's cell 0.10 s into its entry slide:
-   `+0.000s 0-20(h20,N9/R19) 20-41(h21,N10/R20) 41-48(h7,N10/R6 CUT)`
-   `+0.009s 0-12(h12,N9/R11) 12-31(h19,N10/R18) 31-43(h12,N10/R11 IN) 43-48(h5,N10/R4 CUT)`
-   A cell appears at its end height in one frame, the summary drops 8 rows in that frame, and the cell that was sliding in falls from h7 to h5. On the Phase 13 build the same key brought one piece that entered at h2 and slid for 0.62 s. Required: the opening piece slides from its opening height; a piece still entering stays an entering piece and its height never falls; the residents move along the clock.
-2. **A cell admitted into a running motion slides from its opening height.** Known at Phase 14's checkpoint and worse than the Phase 13 build, as item 1. Third `+` of a round, both rounds, at +0.205 s and +0.191 s:
-   `+0.189s 0-17(h17,N15/R16) 17-22(h5 CUT) 22-30(h8 CUT) 30-39(h9 CUT) 39-48(h9 CUT)`
-   `+0.205s 0-17(h17,N15/R16) 17-22(h5 CUT) 22-28(h6 CUT) 28-35(h7 CUT) 35-42(h7 CUT) 42-48(h6,N10/R5 CUT)`
-   A command's cell enters at h6 in one frame and three cutting mates lose 2 rows each. On the Phase 13 build it entered at h2 and reached h5 0.71 s later.
-3. **An empty cell slides out across a summary depth step.** 1 and 3 cells per round still lose their last 3 or 4 rows in one frame, each on a frame where the summary's depth steps (Phase 13 build: 4 and 3). Worst, second round, tenth key (`-`), +1.294 s, from h4:
-   `+1.284s 0-11(h11,N12/R10 CUT) 11-16(h5,N0/R4) 16-20(h4,N0/R3) 20-29(h9 CUT) 29-38(h9 CUT) 38-48(h10 CUT IN)`
-   `+1.294s 0-14(h14,N12/R13) 14-19(h5,N0/R4) 19-29(h10 CUT) 29-38(h9 CUT) 38-48(h10 CUT IN)`
-   Required: a leaving piece is drawn until its slide ends, also across a depth step.
-4. **The summary moves along the clock.** The summary changes height by 4 rows in one frame on 4 keys of the two rounds while its content does not change (the Phase 13 build does the same on 3). Required: no resident changes height by more than 3 rows in one frame.
-5. **A rule for a cell that is itself sliding.** Every frame the resident spare-row count still binds (25 and 95 per round; Phase 13 build 267 and 186) is one of two forms: the cutting mate entered 0.10 s before the key and is still sliding in; or the holder's own content shrank less than 0.75 s earlier and it now slides down where it dropped in one frame before. The second form sets item 4's rule against the spare-row rule. Ruling (showrunner, 2026-10-12): a cell whose own content shrinks is a resident, so it gives its rows at once to a mate that cuts, with no slide; rows no mate wants follow the existing clock. Item 4's limit therefore excepts a resident giving rows to a cutting mate, and the first form (a mate still sliding in) is an entering piece under Phase 14's ruling. The capture tool's classes follow this.
-6. **One motion per key, read on keys free of arrivals.** The reversal and one-motion gates could not be judged: no key of the workload was free of a command arriving in its window, and arrivals aimed at the second and third keys land 0.19 to 0.22 s after them (0.02 to 0.05 s before them on the round 2 build; cause not determined). Find the cause of the shift, give the workload keys with no arrival, then require 0 reversals and one motion per key on those.
-7. **The checks Phase 14 did not run:** the changing-width capture for band escapes, and the frame probe (`cap6`) repeated on a quiet machine.
-8. **A staying cell keeps its rows on a key that frees room.** Phase 14's design check on its checkpoint build, `motion_09_minus` line 22 and `motion_10_minus` lines 26 and 31: a cell that stays shows two process rows before and after the key (`motion_08_minus`, `motion_11_minus`) and one row with `…` 0.33 s into it, while the summary already stands at its full 16 rows with four blank rows between projects. A piece is leaving in both shots, but the pieces cut are staying ones. One frame per key cannot tell a dip inside the key from a settled six-cell layout, so read it on the live capture first. Required: on `-`, a staying cell keeps the rows it had, and the summary grows only by rows the leaving cell has given up.
-
-Diagnosis from Phase 14's last repair turn, for items 1 and 2: `open_waiting_commands_in_current_motion` changes the slots while it keeps the running transition's source and clock, and seeds the new piece's previous height to 1; `drawing_at` then draws the new piece at that shared clock's position. A piece admitted into a running motion has no admission time of its own. Two fixtures built from the live heights did not reproduce the entry-at-height frame, so the first step is to instrument the admission path on the live workload and record the transition's source, destination and clock at the frame of each case. The design question: what owns an admitted piece's origin and remaining slide time, and how do the dividers move without lowering a piece that is still entering.
-
-Each repaired item has a render-path regression that fails without it, built from the live roles (resident, entering and how far into its slide, leaving; opening queued or cell claimed), and its fixture joins `every_frame_of_a_key_keeps_the_motion_rules`.
-
-**Pending decision: whether a job cell that changes columns is laid out once; and whether a `-` pressed during a motion starts at once**
-
-These are two add-ons that change what the user sees, so each answer is the user's and arrives through the showrunner (showrunner, 2026-10-12). The answers, for each one: build it in this phase, put it on the next-items list, or drop it. This phase does not dispatch while the block stands.
-
-Actual problem:
-1. A job cell's heading and ancestry are its name, and its two pieces lay content out separately (`crates/tui_pane/src/tiles`: `draw_placements`, `TileCells::draw`; cargo-tile's `Cells`), so a row shows twice or drops out while the cell changes columns, in a closing column too.
-2. A `-` pressed during a motion starts 0.64 to 0.93 s late with nothing changing on screen (`TileGrid`'s step queue). Phase 13's third repair round found the cause: a queued key waits in `pending` until the preceding transition's 720 ms timer ends, even after its geometry has reached its end.
-
-What exists now:
-- First: Found in Phase 3. Shots `P/ph3s/shots/ph3s_on_12_close_motion.png` and `ph3s_off_09_close_later.png`; capture `P/ph3s/off/cap.json` key 13 at 1.2 s.
-- Second: Found in Phases 2 and 13. Shot `P/ph2d/off/ph2d_off_08_close_motion.png`; the live check saw a `-` start 0.55 s late, 0.19 s after the previous key's last visible change.
-
-What should change:
-- First: Content is laid out once and the two pieces show consecutive rows; a render test with a job cell crossing in both directions shows each content row at most once per frame. If built, Files gains cargo-tile's `Cells` in `crates/cargo-tile/src/render.rs`.
-- Second: The step starts within one frame of the previous motion's last visible change, or the wait is visible.
-
-Recommendation:
-1. Build it in this phase: the doubled or missing row shows in normal use during a motion, and this phase owns the motion code.
-2. Build it in this phase: a key that answers more than half a second late is a defect against Fast, the cause is known, and it lives in this phase's file.
-9. **A summary that can give a row gives it on the arrival frame, even while a piece is leaving** (the showrunner's placement, 2026-10-12, from phase 15's live frame check, which read worse than phase 14 on this alone). Seen: a third project arrives while the summary stands eight rows high with no spare row and a leaving piece two rows high stands below it; for two frames (36 ms) the summary draws its header, two projects, one blank row and its foot, with the third project hidden behind the cut, and only then gives the row. Rule, written as behaviour so it holds for whatever motion model this phase lands: on every frame, a summary that hides a project behind its cut draws no blank row above its foot; when an arrival leaves one of its rows unused, its height drops on that same frame, whatever else in its column is moving. Cause in today's code, for reference only: `snapped_band_piece_dividers` in `crates/tui_pane/src/tiles/grid.rs`, on `FilledBandPath::NoFilledPath`, returns the heights held before whenever their dividers reach the band floor, without rechecking that a resident now leaves a gap; a leaving piece two rows high makes the joint search fail (`piece_span_bounds`'s leaving guard and `snapped_piece_fit`'s minimum-height rejection). That file is the same in phases 14 and 15, so phase 15 did not cause it. Evidence: `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/live15_reply.txt`, `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/probe12/out/results_p15.txt` (sections `P15 gates` and `P15 control`), and the kept captures `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/probe12/keepcap_c_p15b/c_cells7_r1.json` (key8 `-`, +0.317 s) against `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-tile-fixes/da82452f-3640-4dec-b6c5-0c783d77e79f/scratchpad/probe12/keepcap_c_p14ctl/c_cells7_r2.json` (key8 `-`, +0.223 s). Test: `a_summary_gives_its_unused_row_on_the_arrival_frame_while_a_piece_leaves`, through the real draw path, reading the drawn buffer back on every frame.
-
-**Files:**
-- `crates/tui_pane/src/tiles/grid.rs`, `crates/tui_pane/src/tiles/draw.rs`, `crates/tui_pane/src/tiles/constants.rs` — the motion code and its tests.
-- `crates/tui_pane/CHANGELOG.md` — one Fixed line.
-
-**Seats:** 1 writer + 1 tester — the items sit in one motion path, so one seat writes.
-- `impl` — `grid.rs`, `draw.rs`, `tiles/constants.rs`, the `tui_pane` changelog, and `.config/nextest.toml` only when a new test reaches 0.8 s.
-- `test` — no source file; before any repair it replays the live cases, writes each item's fixture roles and expected heights for `impl`, then runs the live capture tools on each candidate build.
-
-**Constraints from prior phases:** Phase 14's ruling holds: a piece that is entering or leaving slides, and the spare-row rule binds cells that are neither, and every settled frame. Everything Phase 14's live check met stays met: the emptied cell on the seventh key stands 0 frames above its floor, the summary shows 0 blank rows, no empty cell leaves from its full floor height, one piece per `+`, 0 band escapes. No new row probe or row measurement per moving frame; the seven-cell moving budget stays 29, and speed stays within 1 ms of the Phase 13 build. Three repair rounds in Phase 14 each fixed their fixture and moved the defect to a neighbouring live state (memory `attempts-tile-phase14-motion-rows`): a repair is proved on the live capture before it closes. This phase runs after Phase 20 by the showrunner's landing call; a test it adds that reaches 0.8 s joins Phase 20's override. This phase runs after Phase 18, which changes the same admission and queuing path (its item 14), the summary's separators and row order: replay every case on the build Phase 18 leaves before repairing, and keep Phase 18's key-joining regressions and shared measurements. Items 5 and 8 may already be partly met (`draw.rs` tests ~2522 and ~2535 cover immediate summary donation): repair only what a replayed live failure shows. The immediate transfer item 5 permits is one event for every piece it touches: the resident that gives rows and each mate that takes them may change by more than 3 rows in that frame; the Goal, the tests and the capture tool's counters class it the same way, and the jump gate excepts it. Type design: `HeightSnap::previous_height -> Option<u16>` (`grid.rs` ~367) folds disabled probing into missing history, and `open_waiting_commands_in_current_motion` (~2128) stands a new piece in at height 1; the repair names admission time and height history as states at that boundary, with no bare `Option` or height sentinel as the answer. The shared fixture is `grid.rs::tests::motion_rules::every_frame_of_a_key_keeps_the_motion_rules`. A new test reaching 0.8 s joins Phase 20's exact-name filter in `.config/nextest.toml`, which `impl` then edits, keeping Phase 20's reader priorities and timeout rules.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` once, then `verify.sh test` for `tui_pane`, `cargo-tile`, `cargo-handler` and `cargo-port`: green, no test at a second or more.
-- Live, controlled workload, two rounds, read with the Phase 14 tools: command cells at once 0; pieces vanishing from over 2 rows 0; resident jumps over 3 rows 0 outside the immediate transfer item 5 permits; binding spare-row frames 0 under item 5's ruling; on keys free of arrivals 0 reversals and one motion per key; band escapes 0 on the changing-width capture.
-- Speed on a quiet machine: moving and settled medians within 1 ms of the Phase 13 build.
-- Shots of the motion keys and a design check by a fresh helper.

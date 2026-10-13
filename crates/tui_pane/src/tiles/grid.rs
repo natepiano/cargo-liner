@@ -8442,6 +8442,80 @@ mod tests {
         );
     }
 
+    /// Painted rows at every height of the endpoint-and-midpoint fixture.
+    fn endpoint_painted_rows(endpoints: &[(u16, u16)], height: u16) -> Vec<Vec<u16>> {
+        endpoints
+            .iter()
+            .map(|&(start, end)| {
+                let filled = [start, u16::midpoint(start, end), end];
+                (0..=height)
+                    .map(|height| {
+                        let framed = height
+                            .saturating_add(TILE_BORDER_ROWS)
+                            .saturating_add(TILE_ROWS_READOUT_HEIGHT);
+                        if filled.contains(&framed) {
+                            height
+                        } else {
+                            height.saturating_sub(1)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    /// Both sides of every individual or aggregate integer height transfer.
+    fn single_column_height_steps(drawing: &TileDrawing<u32>) -> Vec<u32> {
+        let mut changes = Vec::new();
+        let (mut grown, mut shrunk) = (0_u16, 0_u16);
+        for piece in &drawing.pieces {
+            if let PieceHeightSnap::Search { start, end } = piece.height_snap {
+                changes.push(start.abs_diff(end));
+                grown = grown.saturating_add(end.saturating_sub(start));
+                shrunk = shrunk.saturating_add(start.saturating_sub(end));
+            }
+        }
+        changes.extend([grown, shrunk]);
+        changes.sort_unstable();
+        changes.dedup();
+        let mut prior = vec![0; changes.len()];
+        let mut steps = vec![0, PROGRESS_SCALE];
+        for raw in 1..=PROGRESS_SCALE {
+            let heights = changes
+                .iter()
+                .map(|&change| lerp(0, change, eased(raw)))
+                .collect::<Vec<_>>();
+            if heights != prior {
+                steps.extend([raw.saturating_sub(1), raw]);
+                prior = heights;
+            }
+        }
+        steps.sort_unstable();
+        steps.dedup();
+        steps
+    }
+
+    /// The endpoint fixture's painted rows, including its unbounded probe.
+    fn endpoint_rows_drawn(
+        content: &TileContent<u32>,
+        area: Rect,
+        painted_rows: &[Vec<u16>],
+    ) -> u16 {
+        if area.height == u16::MAX {
+            return TEST_HEIGHT;
+        }
+        let index = match content {
+            TileContent::Summary => 0,
+            TileContent::Group(id) => usize::try_from(*id).unwrap_or(usize::MAX),
+            TileContent::Empty(_) => return 0,
+        };
+        painted_rows
+            .get(index)
+            .and_then(|rows| rows.get(usize::from(area.height)))
+            .copied()
+            .unwrap_or_else(|| area.height.saturating_sub(1))
+    }
+
     #[test]
     fn unchanged_mates_stay_between_their_endpoints_during_plus_and_minus_motion() {
         let fewer = [19, 7, 8, 8, 8, 7];
@@ -8460,41 +8534,57 @@ mod tests {
                 .copied()
                 .zip(after.iter().copied())
                 .collect::<Vec<_>>();
+            let painted_rows = endpoint_painted_rows(&endpoints, area.height);
+            let alone_area = draw::content_area(frame_inner(area));
             let mut prior = before.to_vec();
-            for raw in 0..=PROGRESS_SCALE {
+            let mut heights = Vec::with_capacity(before.len().max(after.len()));
+            let opening = grid.drawing_at_with_height_snap(area, growth, 0, &HeightSnap::Off);
+            assert_eq!(opening.column_bands, [area]);
+            let steps = single_column_height_steps(&opening);
+            let mut raw = 0;
+            loop {
+                let mut probed_summary_alone = false;
+                let mut rows_drawn = |content: &TileContent<u32>, probe_area: Rect| {
+                    if *content == TileContent::Summary && probe_area == alone_area {
+                        probed_summary_alone = true;
+                    }
+                    endpoint_rows_drawn(content, probe_area, &painted_rows)
+                };
                 grid.measure_row_steps(
                     area,
                     growth,
                     raw,
                     SummaryProbeDemands::new(usize::MAX, usize::MAX),
-                    |content, area| {
-                        if area.height == u16::MAX {
-                            return TEST_HEIGHT;
-                        }
-                        let framed = area
-                            .height
-                            .saturating_add(TILE_BORDER_ROWS)
-                            .saturating_add(TILE_ROWS_READOUT_HEIGHT);
-                        let index = match content {
-                            TileContent::Summary => 0,
-                            TileContent::Group(id) => usize::try_from(*id).unwrap_or(usize::MAX),
-                            TileContent::Empty(_) => return 0,
-                        };
-                        if endpoints.get(index).is_some_and(|&(start, end)| {
-                            [start, u16::midpoint(start, end), end].contains(&framed)
-                        }) {
-                            area.height
-                        } else {
-                            area.height.saturating_sub(1)
-                        }
-                    },
+                    &mut rows_drawn,
                     |_, area| area.height,
                 );
-                let heights = grid
-                    .drawing_at(area, growth, raw)
-                    .placements()
-                    .map(|placement| placement.frame.clip().height)
-                    .collect::<Vec<_>>();
+                assert!(
+                    probed_summary_alone,
+                    "summary allocation is not probed at {raw}"
+                );
+                if raw == PROGRESS_SCALE {
+                    assert_eq!(grid.motion_heights.piece_heights, [] as [u16; 0]);
+                } else {
+                    assert_eq!(grid.motion_heights.progress, raw);
+                    assert_ne!(grid.motion_heights.piece_heights, [] as [u16; 0]);
+                }
+                let destination = grid.resolved_grid(area, &grid.drawn_held(), growth);
+                assert_eq!(destination.columns, [area]);
+                assert_eq!(
+                    destination
+                        .resolved
+                        .panes
+                        .iter()
+                        .map(|pane| pane.area.height)
+                        .collect::<Vec<_>>(),
+                    after
+                );
+                heights.clear();
+                heights.extend(
+                    grid.drawing_at(area, growth, raw)
+                        .placements()
+                        .map(|placement| placement.frame.clip().height),
+                );
                 for (index, (&height, &(start, end))) in heights.iter().zip(&endpoints).enumerate()
                 {
                     assert!(
@@ -8511,7 +8601,21 @@ mod tests {
                         "piece {index} moves away from {end} at {raw}: {prior:?} to {heights:?}"
                     );
                 }
-                prior = heights;
+                if raw == PROGRESS_SCALE {
+                    break;
+                }
+                // Stable probes repeat until the next integer transfer;
+                // changing heights still advance on consecutive frames.
+                raw = if heights == prior {
+                    steps
+                        .iter()
+                        .copied()
+                        .find(|&step| step > raw)
+                        .unwrap_or(PROGRESS_SCALE)
+                } else {
+                    raw.saturating_add(1)
+                };
+                std::mem::swap(&mut prior, &mut heights);
             }
         }
     }

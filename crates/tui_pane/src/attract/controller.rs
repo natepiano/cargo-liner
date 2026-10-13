@@ -1362,8 +1362,9 @@ mod tests {
 
     #[test]
     fn random_settings_corpus_reaches_every_variant_and_applies_every_draw() {
+        let area = Rect::new(0, 0, 8, 4);
         let mut attract = Attract::new();
-        attract.record_terminal_resize(AREA);
+        attract.record_terminal_resize(area);
         let mut modes = HashSet::new();
         let mut band_directions = HashSet::new();
         let mut band_fraying = HashSet::new();
@@ -1385,8 +1386,8 @@ mod tests {
                     assert!((1..=400).contains(&settings.speed));
                     assert!((8..=2000).contains(&settings.tail_speed));
                     let width_ceiling = match settings.direction {
-                        BandDirection::Left | BandDirection::Right => u32::from(AREA.width),
-                        BandDirection::Up | BandDirection::Down => u32::from(AREA.height),
+                        BandDirection::Left | BandDirection::Right => u32::from(area.width),
+                        BandDirection::Up | BandDirection::Down => u32::from(area.height),
                     };
                     assert!((1..=width_ceiling).contains(&settings.width));
                     band_directions.insert(settings.direction);
