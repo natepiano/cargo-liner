@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from datetime import datetime, timezone
 import codecs
 from collections.abc import Callable
 import errno
@@ -141,6 +139,8 @@ def prepare_fixture() -> None:
     _ = (work / 'build').write_text('''accumulate_own_cpu() {
     if [ -r "/proc/$$/stat" ]; then
         while :; do
+            remaining=1000
+            while [ "$remaining" -gt 0 ]; do remaining=$((remaining - 1)); done
             read -r pid comm state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime stime remainder < "/proc/$$/stat"
             [ "$((utime + stime))" -gt 0 ] && return
         done
@@ -266,14 +266,6 @@ def reader_terminal() -> int:
 
 def start_reader_process(reader_environment: dict[str, str]) -> None:
     global reader, terminal
-    if scenario == 'cpu-cache-server':
-        prerequisites = (
-            root / ('probe-first-' + root.name) / 'cpu-ready',
-            root / ('probe-unrelated-' + root.name) / 'cpu-ready',
-            root / 'cpu-server/compiler-pid',
-        )
-        missing = [str(path) for path in prerequisites if not path.exists()]
-        assert not missing, 'reader starts before CPU baselines: ' + ', '.join(missing)
     record_timestamp('reader exec')
     reader, terminal = pty.fork()
     if reader == 0:
@@ -283,6 +275,19 @@ def start_reader_process(reader_environment: dict[str, str]) -> None:
             _ = (root / 'reader-terminal').write_text(os.ttyname(0))
         reader_environment['CARGO_TILE_TEST_READER'] = scenario
         os.execve(binary, [binary, '--exact', 'shim_registration::reader_scenarios::reader_child', '--nocapture'], reader_environment)
+
+def release_cpu_reader() -> None:
+    prerequisites = (
+        root / ('probe-first-' + root.name) / 'cpu-ready',
+        root / ('probe-unrelated-' + root.name) / 'cpu-ready',
+        root / 'cpu-server/compiler-pid',
+    )
+    missing = [str(path) for path in prerequisites if not path.exists()]
+    assert not missing, 'reader starts before CPU baselines: ' + ', '.join(missing)
+    with named_wait('reader to accept CPU baselines'):
+        with (root / 'reader-start').open('wb') as barrier:
+            assert barrier.write(b'R') == 1
+    record_timestamp('CPU reader released')
 
 def wait_for(predicate: Callable[[], object], description: str,
              diagnostics: Callable[[], str] | None = None, *, pause: float = 0.02,
@@ -299,7 +304,7 @@ def wait_for(predicate: Callable[[], object], description: str,
         raise AssertionError(description + details)
 
 class WriterNotification:
-    """Wake one source-switch fixture shell without a polling process."""
+    """Wake a fixture shell without a polling process."""
 
     def __init__(self, observations: Path) -> None:
         path = observations / 'notification'
@@ -317,29 +322,40 @@ class WriterNotification:
 
 writer_notifications: dict[Path, WriterNotification] = {}
 
-def start_writer(name: str, writer_home: Path, command: str = 'build',
-                 nested_directory: Path | None = None, directory: Path = work,
-                 arguments: tuple[str, ...] = (),
-                 additional_environment: tuple[tuple[str, str], ...] = ()) -> StartedWriter:
+class LaunchedWriter:
+    def __init__(self, child: subprocess.Popen[bytes], observations: Path,
+                 writer_home: Path, nested_observations: tuple[Path, ...]) -> None:
+        self.child = child
+        self.observations = observations
+        self.writer_home = writer_home
+        self.nested_observations = nested_observations
+
+def launch_writer(name: str, writer_home: Path, command: str = 'build',
+                  directory: Path = work, arguments: tuple[str, ...] = (),
+                  additional_environment: tuple[tuple[str, str], ...] = (),
+                  nested_commands: tuple[str, ...] = ()) -> LaunchedWriter:
     name += '-' + root.name
     observations = root / name
     observations.mkdir()
-    if scenario == 'child-source-switch':
-        writer_notifications[observations] = WriterNotification(observations)
+    writer_notifications[observations] = WriterNotification(observations)
     child_environment = dict(environment, HOME=str(writer_home), OBSERVED=str(observations))
     child_environment.update(additional_environment)
-    if nested_directory is not None:
-        nested_directory.mkdir()
-        for nested_command in ('check', 'test'):
-            (observations / nested_command).mkdir()
-            _ = shutil.copyfile(work / 'build', nested_directory / nested_command)
-        child_environment.update(NESTED_WORK=str(nested_directory),
-                                 NESTED_MARKER='probe-nested-' + root.name)
+    for nested_command in nested_commands:
+        nested = observations / nested_command
+        nested.mkdir()
+        writer_notifications[nested] = WriterNotification(nested)
     with (observations / 'output').open('wb') as output:
         child = subprocess.Popen(['sh', str(bin_directory / 'cargo'), command, name, *arguments],
                                  cwd=directory, env=child_environment, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=output, start_new_session=True)
     writers.append((child, observations))
+    nested_observations = tuple(observations / command for command in nested_commands)
+    return LaunchedWriter(child, observations, writer_home, nested_observations)
+
+def finish_writer_start(launch: LaunchedWriter) -> StartedWriter:
+    child, observations = launch.child, launch.observations
+    writer_home = launch.writer_home
+    name = observations.name
     wait_for(lambda: (observations / 'output').stat().st_size > 0,
              'writer produces no output', pause=0.005)
     record_timestamp('writer first output ' + name)
@@ -355,16 +371,30 @@ def start_writer(name: str, writer_home: Path, command: str = 'build',
     inherited = (observations / 'environment').read_bytes().split(b'\0')
     assert inherited == [writer_locale.encode(), environment['TZ'].encode(),
                          writer_locale.encode(), os.fsencode(writer_home), b'']
-    if nested_directory is not None:
-        for nested_command in ('check', 'test'):
-            nested = observations / nested_command
-            wait_for(lambda: (nested / 'enclosing-pid').exists()
-                     and (nested / 'enclosing-pid').read_text() == str(child.pid),
-                     'nested command does not inherit the enclosing capture')
-            nested_pid = (nested / 'cargo-pid').read_text()
-            assert not list(pids.glob(nested_pid + '.*')), 'nested command publishes a capture'
+    for nested in launch.nested_observations:
+        wait_for(lambda: (nested / 'enclosing-pid').exists()
+                 and (nested / 'enclosing-pid').read_text() == str(child.pid),
+                 'nested command does not inherit the enclosing capture')
+        nested_pid = (nested / 'cargo-pid').read_text()
+        assert not list(pids.glob(nested_pid + '.*')), 'nested command publishes a capture'
     record_timestamp('writer ' + name)
     return child, observations, registration, fields, log
+
+def start_writer(name: str, writer_home: Path, command: str = 'build',
+                 nested_directory: Path | None = None, directory: Path = work,
+                 arguments: tuple[str, ...] = (),
+                 additional_environment: tuple[tuple[str, str], ...] = ()) -> StartedWriter:
+    nested_commands = ()
+    if nested_directory is not None:
+        nested_directory.mkdir()
+        nested_commands = ('check', 'test')
+        for nested_command in nested_commands:
+            _ = shutil.copyfile(work / 'build', nested_directory / nested_command)
+        additional_environment = (*additional_environment,
+                                  ('NESTED_WORK', str(nested_directory)),
+                                  ('NESTED_MARKER', 'probe-nested-' + root.name))
+    return finish_writer_start(launch_writer(
+        name, writer_home, command, directory, arguments, additional_environment, nested_commands))
 
 def copy_publication_to_foreign_root(writer: StartedWriter) -> None:
     registration = other_capture / 'state/pids' / writer[2].name
@@ -445,6 +475,7 @@ done
         stat = Path('/proc/' + str(child.pid) + '/stat').read_bytes()
         fields[3] = stat.rsplit(b') ', 1)[1].split()[19]
     else:
+        from datetime import datetime, timezone
         started = subprocess.run(['ps', '-p', str(child.pid), '-o', 'lstart='], check=True,
                                  capture_output=True, text=True,
                                  env=dict(environment, LC_ALL='C', TZ='UTC0'),
@@ -468,6 +499,7 @@ def prepare_cpu_workload() -> None:
 
     server = root / 'cpu-server'
     server.mkdir()
+    os.mkfifo(server / 'request')
     environment['CPU_SERVER'] = str(server)
     environment['CPU_TARGET'] = str(work / 'target')
     (work / 'target/debug/deps').mkdir(parents=True)
@@ -476,18 +508,21 @@ def prepare_cpu_workload() -> None:
     environment['RUSTC_WRAPPER'] = str(bin_directory / 'sccache')
     compiler = server / 'compile.sh'
     _ = compiler.write_text('''printf '%s' "$$" > "$CPU_SERVER/compiler-pid"
-while [ ! -f "$CPU_SERVER/release" ]; do :; done
+while [ ! -f "$CPU_SERVER/release" ]; do
+    remaining=1000
+    while [ "$remaining" -gt 0 ]; do remaining=$((remaining - 1)); done
+done
 ''')
     service = server / 'serve.sh'
     _ = service.write_text('''printf '%s' "$$" > "$CPU_SERVER/server-pid"
-while [ ! -f "$CPU_SERVER/request" ]; do sleep 0.005; done
+IFS= read -r request < "$CPU_SERVER/request"
 "$CPU_RUSTC" "$CPU_COMPILE" --crate-name cache_fixture --out-dir "$CPU_TARGET/debug/deps" &
 wait
 ''')
     client = server / 'client.sh'
     _ = client.write_text('''printf '%s' "$$" > "$OBSERVED/client-pid"
-printf 'compile' > "$CPU_SERVER/request"
-while [ ! -f "$OBSERVED/release" ]; do sleep 0.005; done
+printf 'compile\\n' > "$CPU_SERVER/request"
+IFS= read -r notification < "$OBSERVED/notification"
 ''')
     _ = workload.write_text('exec "$RUSTC_WRAPPER" ' + shlex.quote(str(client)) + '\n')
     server_environment = dict(environment, CPU_RUSTC=str(bin_directory / 'rustc'),
@@ -514,6 +549,9 @@ def finish_cpu_workload_start() -> None:
     record_timestamp('cache server ready')
 
 def process_parent(pid: int) -> int:
+    if sys.platform == 'linux':
+        stat = Path('/proc/' + str(pid) + '/stat').read_bytes()
+        return int(stat.rsplit(b') ', 1)[1].split()[1])
     return int(subprocess.run(['ps', '-p', str(pid), '-o', 'ppid='], check=True,
                               capture_output=True, text=True,
                               timeout=wait_seconds).stdout.strip())
@@ -662,6 +700,11 @@ def end_reader(request: bytes | signal.Signals, exit_seconds: float = READER_EXI
         except ProcessLookupError:
             pass
         request_name = request.name
+        if request == signal.SIGKILL:
+            with named_wait('reader to exit after SIGKILL'):
+                _ = os.waitpid(reader_pid(), 0)
+            close_reader_terminal()
+            return
     description = 'reader to exit after ' + request_name
     with named_wait(description):
         if reader_exited_before(time.monotonic() + exit_seconds, terminal_fd):
@@ -683,6 +726,7 @@ class CompletedTerminalFrames:
 
     # Match the valid prefix even when its terminator has not arrived.
     csi: ClassVar[re.Pattern[str]] = re.compile(r'\x1b\[[0-?]*[ -/]*([@-~]?)')
+    printable: ClassVar[re.Pattern[str]] = re.compile(r'[^\x00-\x1f]+')
     osc: ClassVar[re.Pattern[str]] = re.compile(r'\x1b\][^\x07\x1b]*(\x07|\x1b\\)?')
 
     def __init__(self) -> None:
@@ -748,10 +792,17 @@ class CompletedTerminalFrames:
             elif character == '\n':
                 self.row += 1
             elif character >= ' ':
-                if 0 <= self.row < self.rows and 0 <= self.column < self.columns:
-                    self.cells[self.row][self.column] = character
-                    self.colors[self.row][self.column] = self.foreground
-                self.column += 1
+                match = required(self.printable.match(self.pending, index), 'printable run is absent')
+                text = match[0]
+                if 0 <= self.row < self.rows:
+                    beginning = max(0, self.column)
+                    end = min(self.columns, self.column + len(text))
+                    if beginning < end:
+                        self.cells[self.row][beginning:end] = text[beginning - self.column:end - self.column]
+                        self.colors[self.row][beginning:end] = [self.foreground] * (end - beginning)
+                self.column += len(text)
+                index = match.end()
+                continue
             index += 1
         self.pending = self.pending[index:]
 
@@ -992,7 +1043,7 @@ def assert_excluded_command(enclosing: StartedWriter, nested_directory: Path,
     # Observe another captured write after the reader has pruned the ended
     # sibling; a mere retained empty filename would not prove live capture.
     assert all(not path.exists() for path in removed), 'reader has not swept the sibling'
-    (enclosing[1] / 'pulse').touch()
+    trigger_writer(enclosing[1], 'pulse')
     wait_for(lambda: enclosing[4].exists()
              and b'writer remains captured after reader scan' in enclosing[4].read_bytes(),
              'excluded live command loses its capture after the sweep')
@@ -1096,6 +1147,7 @@ def assert_concurrent_deadline_names_pending_wait() -> None:
         with named_wait('concurrent pending predicate'):
             second_started.set()
             release_second.wait()
+    from concurrent.futures import ThreadPoolExecutor
     executor = ThreadPoolExecutor(max_workers=2)
     try:
         first = executor.submit(finish_first_wait)
@@ -1161,26 +1213,41 @@ try:
     unrelated: StartedWriter | None = None
     carrier: RegistrationCarrier | None = None
     reader_environment = dict(environment, LC_ALL='C', LANG='POSIX', TZ='UTC-11')
+    if scenario == 'locale':
+        link_named_shell(bin_directory / 'sccache')
+    if scenario in ('cpu-cache-server', 'locale'):
+        reader_environment['PATH'] = str(bin_directory) + os.pathsep + os.environ.get('PATH', os.defpath)
+        reader_environment['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=' + str(root / 'session-bus')
     # Family assertions observe ANSI foregrounds even when the outer test runner is uncolored.
     _ = reader_environment.pop('NO_COLOR', None)
     if scenario == 'cpu-cache-server':
         idle = root / 'idle-workload.sh'
-        _ = idle.write_text('while [ ! -f "$OBSERVED/release" ]; do sleep 0.005; done\n')
+        _ = idle.write_text('IFS= read -r notification < "$OBSERVED/notification"\n')
         unrelated_directory = home / ('unrelated-cpu-' + root.name)
         unrelated_directory.mkdir()
         _ = shutil.copyfile(work / 'build', unrelated_directory / 'build')
         other_target = unrelated_directory / 'target'
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            first_start = executor.submit(
-                start_writer, first_name, home, first_command, nested_directory,
-                arguments=first_arguments)
-            unrelated_start = executor.submit(
-                start_writer, 'probe-unrelated', home, directory=unrelated_directory,
-                command='build', arguments=('--target-dir', str(other_target)),
-                additional_environment=(('CPU_WORKLOAD', str(idle)),))
-            finish_cpu_workload_start()
-            first = first_start.result()
-            unrelated = unrelated_start.result()
+        os.mkfifo(root / 'reader-start')
+        start_reader_process(reader_environment)
+        first_start = launch_writer(first_name, home, first_command,
+                                    arguments=first_arguments)
+        unrelated_start = launch_writer(
+            'probe-unrelated', home, directory=unrelated_directory,
+            command='build', arguments=('--target-dir', str(other_target)),
+            additional_environment=(('CPU_WORKLOAD', str(idle)),))
+        finish_cpu_workload_start()
+        wait_for(lambda: all((launch.observations / 'cpu-ready').exists()
+                             for launch in (first_start, unrelated_start))
+                 and (root / 'cpu-server/compiler-pid').exists(),
+                 'CPU baselines are not established', pause=0.001)
+        release_cpu_reader()
+        first = finish_writer_start(first_start)
+        unrelated = finish_writer_start(unrelated_start)
+    elif scenario == 'locale':
+        first_start = launch_writer(first_name, home, first_command,
+                                    arguments=first_arguments)
+        start_reader_process(reader_environment)
+        first = finish_writer_start(first_start)
     else:
         first = start_writer(first_name, home, first_command, nested_directory,
                              arguments=first_arguments)
@@ -1301,10 +1368,9 @@ except Exception:
 finally:
     record_timestamp('cleanup start')
     try:
-        if cache_server is not None:
-            (root / 'cpu-server/release').touch()
+        for server_process in detached_servers:
             try:
-                os.killpg(cache_server, signal.SIGTERM)
+                os.killpg(server_process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
         for observations in parent_owned_children:
@@ -1313,13 +1379,14 @@ finally:
         for _, observations in writers:
             for nested_command in ('check', 'test'):
                 if (observations / nested_command).is_dir():
-                    (observations / nested_command / 'release').touch()
+                    trigger_writer(observations / nested_command, 'release')
             trigger_writer(observations, 'release')
         record_timestamp('cleanup releases sent')
     finally:
         try:
             if reader is not None and reader != 0:
-                request = signal.SIGTERM if scenario == 'settings-scroll-burst' else b'q'
+                request = (signal.SIGKILL if scenario in ('cpu-cache-server', 'locale') else
+                           signal.SIGTERM if scenario == 'settings-scroll-burst' else b'q')
                 end_reader(request)
             record_timestamp('cleanup reader ended')
         finally:

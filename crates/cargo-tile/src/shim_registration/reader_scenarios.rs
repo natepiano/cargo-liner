@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::fs::File;
+use std::io::Read;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -51,8 +52,14 @@ const READER_SCENARIO_SCRIPT: &str = concat!(
 #[test]
 fn reader_child() -> std::io::Result<()> {
     if let Some(scenario) = std::env::var_os("CARGO_TILE_TEST_READER") {
-        let parent = std::env::current_dir()?.join("capture");
-        let grid_motion = if scenario == "child-source-switch" {
+        let root = std::env::current_dir()?;
+        if scenario == "cpu-cache-server" {
+            let mut ready = [0];
+            File::open(root.join("reader-start"))?.read_exact(&mut ready)?;
+            assert_eq!(ready, [b'R']);
+        }
+        let parent = root.join("capture");
+        let grid_motion = if matches!(scenario.to_str(), Some("child-source-switch" | "locale")) {
             GridMotion::Immediate
         } else {
             GridMotion::Animated
@@ -129,6 +136,7 @@ fn reader_script_result(scenario: &str, deadline: ScenarioDeadline) -> ReaderSce
     let cadence = CensusCadence::for_test();
     let mut command = Command::new("python3");
     command
+        .arg("-S")
         .arg(READER_SCENARIO_SCRIPT)
         .arg(directory.path())
         .arg(std::env::current_exe().expect("integration reader executable"))

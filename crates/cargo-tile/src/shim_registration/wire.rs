@@ -13,6 +13,9 @@ use tempfile::TempDir;
 
 use crate::constants::REGISTRATION_MAGIC;
 
+#[path = "parallel_cases.rs"]
+mod parallel_cases;
+
 /// Whether native birth assertions need to distinguish the shim from setup children.
 enum BirthTimeSeparation {
     Unnecessary,
@@ -108,6 +111,63 @@ impl InstalledShim {
         self.command_recorded_in(observations, arguments)
             .output()
             .expect("execute copied shim with stand-in cargo")
+    }
+
+    fn observe_live_log(&self) {
+        let observer = self.path("tools/observe-live-log.py");
+        fs::write(
+            &observer,
+            r"import os
+from pathlib import Path
+import shutil
+import sys
+import time
+
+account = Path(os.environ['SHIM_TEST_ACCOUNT_DIRECTORY'])
+observations = Path(os.environ['SHIM_TEST_OBSERVATIONS'])
+deadline = time.monotonic() + 0.2
+while time.monotonic() < deadline:
+    for log in account.glob('run-*.log'):
+        if b'registration log marker\n' in log.read_bytes():
+            shutil.copyfile(log, observations / log.name)
+            sys.exit(37)
+    time.sleep(0.001)
+sys.stderr.write('capture never wrote the cargo stderr marker\n')
+sys.exit(98)
+",
+        )
+        .expect("install bounded live log observer");
+        let cargo = self.path("bin/cargo-tile-real");
+        let source = fs::read_to_string(&cargo).expect("read recording cargo");
+        let start = source
+            .find("    remaining=200\n")
+            .expect("log observation loop");
+        let end = source[start..]
+            .find("\nfi\nexit 37")
+            .expect("log observation end")
+            + start;
+        executable(
+            &cargo,
+            &format!(
+                "{}    exec python3 '{}'{}",
+                &source[..start],
+                observer
+                    .to_str()
+                    .expect("UTF-8 observer path")
+                    .replace('\'', "'\\''"),
+                &source[end..],
+            ),
+        );
+    }
+
+    fn assert_live_log(&self, observations: &str) {
+        let registration = self.registration_at(observations);
+        let fields = registration.fields();
+        let log = std::str::from_utf8(fields[4]).expect("UTF-8 log name");
+        assert_eq!(
+            fs::read(self.path(observations).join(log)).expect("live capture log"),
+            b"registration log marker\n"
+        );
     }
 
     /// Allow tests to change only the child environment and invocation schedule.
@@ -677,22 +737,52 @@ fn separate_json_format_removes_repeated_quiet_only_before_separator() {
 
 #[test]
 fn non_json_arguments_preserve_both_quiet_spellings() {
-    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    assert_executed_arguments(
-        &fixture,
-        "observations/without-quiet",
-        &["check", "probe-mismatch"],
-        &["check", "probe-mismatch"],
+    parallel_cases::run(
+        [
+            vec!["check", "probe-mismatch"],
+            vec!["check", "probe-mismatch", "--quiet"],
+            vec!["check", "probe-mismatch", "-q"],
+        ],
+        |arguments| {
+            let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+            fixture.observe_live_log();
+            assert_executed_arguments(&fixture, "observations/run", &arguments, &arguments);
+            fixture.assert_live_log("observations/run");
+        },
     );
-    for quiet in ["--quiet", "-q"] {
-        let arguments = ["check", "probe-mismatch", quiet];
-        assert_executed_arguments(
-            &fixture,
-            &format!("observations/{quiet}"),
-            &arguments,
-            &arguments,
-        );
-    }
+}
+
+#[test]
+fn live_log_handshake_rejects_capture_buffered_until_cargo_exits() {
+    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+    fixture.observe_live_log();
+    executable(
+        &fixture.path("tools/tee"),
+        r"#!/usr/bin/env python3
+import sys
+
+data = sys.stdin.buffer.read()
+assert sys.argv[1] == '-a'
+for name in sys.argv[2:]:
+    with open(name, 'ab') as log:
+        log.write(data)
+sys.stdout.buffer.write(data)
+",
+    );
+    let output = fixture.run(&["check", "probe-mismatch", "--quiet"]);
+    assert_eq!(output.status.code(), Some(98));
+    assert_eq!(output.stdout, b"cargo stdout\n");
+    assert_eq!(
+        output.stderr,
+        b"registration log marker\ncapture never wrote the cargo stderr marker\n"
+    );
+    let registration = fixture.registration();
+    let fields = registration.fields();
+    let log = std::str::from_utf8(fields[4]).expect("UTF-8 log name");
+    assert!(
+        !fixture.path("observations").join(log).exists(),
+        "cargo cannot observe a marker buffered until its exit"
+    );
 }
 
 #[test]
@@ -973,8 +1063,9 @@ fn publication_after_final_confirmation_survives_delayed_unlinks() {
 /// Real calendar conversion stays unambiguous without changing cargo's environment.
 #[test]
 fn darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment() {
-    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    for timezone in ["UTC0", "UTC-11"] {
+    parallel_cases::run(["UTC0", "UTC-11"], |timezone| {
+        let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+        fixture.observe_live_log();
         let observations = format!("observations/{timezone}");
         install_darwin_observers(&fixture, &observations);
         let output = fixture
@@ -985,6 +1076,7 @@ fn darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment() {
             .output()
             .expect("run controlled Darwin writer");
         assert_cargo_result(&output);
+        fixture.assert_live_log(&observations);
         assert_eq!(
             fixture.registration_at(&observations).fields()[3],
             b"1788957296"
@@ -1000,7 +1092,7 @@ fn darwin_birth_conversion_scopes_locale_and_keeps_cargo_environment() {
             &nul_fields(&cargo)[..3],
             [b"POSIX".as_slice(), timezone.as_bytes(), b"C"]
         );
-    }
+    });
 }
 
 /// BSD ps column padding must not reach date or contaminate cargo's capture log.
@@ -1076,9 +1168,9 @@ fn darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback() {
         births_and_utc_offsets[1].0 + births_and_utc_offsets[1].1,
         "both epochs convert to the same local time"
     );
-    let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
-    let mut published = Vec::new();
-    for (birth, _) in births_and_utc_offsets {
+    let published = parallel_cases::run(births_and_utc_offsets, |(birth, _)| {
+        let fixture = InstalledShim::new(BirthTimeSeparation::Unnecessary);
+        fixture.observe_live_log();
         let birth = birth.to_string();
         let observations = format!("observations/{birth}");
         install_darwin_fallback_observers(&fixture, &observations);
@@ -1092,16 +1184,17 @@ fn darwin_birth_conversion_distinguishes_both_sides_of_dst_fallback() {
             .output()
             .expect("publish during the repeated DST hour");
         assert_cargo_result(&output);
+        fixture.assert_live_log(&observations);
         let registration = fixture.registration_at(&observations);
         assert_eq!(registration.fields()[3], birth.as_bytes());
-        published.push(registration.fields()[3].to_vec());
         let cargo = fs::read(fixture.path(&format!("{observations}/locale-settings")))
             .expect("cargo records its inherited timezone");
         assert_eq!(
             &nul_fields(&cargo)[..3],
             [b"POSIX".as_slice(), timezone.as_bytes(), b"C"]
         );
-    }
+        registration.fields()[3].to_vec()
+    });
     assert_ne!(published[0], published[1]);
 }
 

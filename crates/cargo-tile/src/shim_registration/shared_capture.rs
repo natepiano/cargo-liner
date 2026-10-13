@@ -1,6 +1,7 @@
 //! Acceptance checks using production discovery, rendering, and installer entry points.
 
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
@@ -132,25 +133,28 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
             path.display()
         );
     }
-    assert_eq!(
-        fs::read(&copy).expect("staged bytes"),
-        fs::read(cargo_tile()).expect("original installer bytes")
-    );
-    let reports = hook::run_account_hooks(
-        std::slice::from_ref(&account),
-        staged.path(),
-        HookOperation::Install,
-    );
+    assert_same_executable_bytes(&copy, cargo_tile());
+    let (reports, original_reports) = std::thread::scope(|scope| {
+        let original_reports = scope.spawn(|| {
+            hook::run_account_hooks(
+                std::slice::from_ref(&original),
+                cargo_tile(),
+                HookOperation::Install,
+            )
+        });
+        let reports = hook::run_account_hooks(
+            std::slice::from_ref(&account),
+            staged.path(),
+            HookOperation::Install,
+        );
+        (
+            reports,
+            original_reports.join().expect("original installer reports"),
+        )
+    });
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
-    assert_eq!(
-        reports,
-        hook::run_account_hooks(
-            std::slice::from_ref(&original),
-            cargo_tile(),
-            HookOperation::Install
-        )
-    );
+    assert_eq!(reports, original_reports);
     for toolchain in ["stable", "nightly"] {
         let bin = account
             .home
@@ -164,24 +168,54 @@ fn staged_executable_installs_toolchains_and_cleans_up() {
             b"#!/bin/sh\nexit 37\n"
         );
     }
-    let reports = hook::run_account_hooks(
-        std::slice::from_ref(&account),
-        staged.path(),
-        HookOperation::Install,
-    );
-    assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
-    assert_eq!(
-        reports,
-        hook::run_account_hooks(
-            std::slice::from_ref(&original),
-            cargo_tile(),
-            HookOperation::Install
+    let (reports, original_reports) = std::thread::scope(|scope| {
+        let original_reports = scope.spawn(|| {
+            hook::run_account_hooks(
+                std::slice::from_ref(&original),
+                cargo_tile(),
+                HookOperation::Install,
+            )
+        });
+        let reports = hook::run_account_hooks(
+            std::slice::from_ref(&account),
+            staged.path(),
+            HookOperation::Install,
+        );
+        (
+            reports,
+            original_reports.join().expect("original installer reports"),
         )
-    );
+    });
+    assert_eq!(reports[0].outcome, AccountHookOutcome::Completed);
+    assert_eq!(reports, original_reports);
     drop(staged);
     assert!(!copy.exists(), "dropping the guard removes the executable");
     assert!(!parent.exists(), "dropping the guard removes its directory");
     assert!(directory.path().is_dir(), "the supplied parent survives");
+}
+
+fn assert_same_executable_bytes(staged: &Path, original: &Path) {
+    let mut staged = fs::File::open(staged).expect("staged bytes");
+    let mut original = fs::File::open(original).expect("original installer bytes");
+    let length = staged.metadata().expect("staged length").len();
+    assert_eq!(length, original.metadata().expect("original length").len());
+    let mut remaining = length;
+    let mut staged_bytes = vec![0; 64 * 1024];
+    let mut original_bytes = vec![0; 64 * 1024];
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(staged_bytes.len() as u64))
+            .expect("bounded executable chunk");
+        staged
+            .read_exact(&mut staged_bytes[..count])
+            .expect("staged chunk");
+        original
+            .read_exact(&mut original_bytes[..count])
+            .expect("original chunk");
+        assert_eq!(staged_bytes[..count], original_bytes[..count]);
+        remaining -= count as u64;
+    }
+    assert_eq!(staged.read(&mut staged_bytes).expect("staged end"), 0);
+    assert_eq!(original.read(&mut original_bytes).expect("original end"), 0);
 }
 
 /// A failed exec names the affected account and does not stop subsequent account reports.
