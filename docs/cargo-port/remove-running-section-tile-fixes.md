@@ -516,7 +516,7 @@ Test-only changes; nothing a user sees changed, and every shortened test asserts
 
 **Ruled out:** further cuts to the reader tests' scaffolding — the cost sits in the production reader's startup.
 
-### Phase 18 — Toast timing is a named state  · status: todo
+### Phase 18 — Toast timing is a named state  · status: done
 
 #### Work Order
 
@@ -1057,6 +1057,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 3. **One override.** Append to `.config/nextest.toml` one `[[profile.default.overrides]]` with `priority = 80` and a `filter` that names each slow test exactly: `binary_id(<id>) & (test(=<name>) | …)` per binary, joined with `|`. No regular expressions, so a test added later is not swept in by accident. A comment above it says what the list is, the threshold, the date measured, and how to re-measure. nextest resolves each setting from the first override that sets it, so the two existing priorities (100, 90), the `cargo-tile-readers` group and both `slow-timeout` entries keep working unchanged; the new override sets `priority` alone and names none of the reader scenarios.
 4. **Measure after**, the same three runs per machine. A non-reader test that crosses 0.8 s in an after run and is not in the filter joins it, and the three after runs repeat once on both machines; a second newcomer is reported in the summary rather than chased.
 5. **Two reader scenarios still over a second.** `shim_registration::reader_scenarios::reader_attributes_compiler_cache_server_cpu_to_the_requesting_invocation` (1.70 s) and `reader_keeps_parent_family_across_its_only_childs_source_switch` (1.20 s) measured over a second at load 56 after Phase 17's two repairs. Measured cause: the real reader process's own startup, release to first complete frame 0.51 s and to the CPU rows 0.44 s more, before the fixed 0.25 s observation; the test scaffolding is already overlapped. Measure both in the six runs; where either stays at a second or more on a quiet natedev, record that measured floor in the summary and send the showrunner a proposal for a reader-startup speedup rather than editing the test.
+6. **Three more tests over a second under load.** `tiles::draw::tests::a_toast_width_summary_never_draws_compact_with_room_above_its_foot` (tui_pane, 1.19 s and 1.05 s at load 43) and cargo-handler `census::codex::tests::reads_threads_by_id_whoever_started_them` (1.53 s) and `reads_interactive_threads_created_in_the_span` (2.27 s) passed a second in Phase 18's suite runs under heavy load; Phase 18 does not touch them, and the two cargo-handler tests took 0.13–0.14 s in a later run. Measure each in the six runs; for any at a second or more on a quiet natedev, measure its cause, record it in the summary, and send the showrunner a fix proposal, as item 5 does; none of their files is in this phase's Files.
 
 **Files:**
 - `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.

@@ -1,3 +1,5 @@
+use tui_pane::ToastFocus;
+
 use super::App;
 use crate::lint;
 use crate::project::Visibility::Dismissed;
@@ -10,11 +12,14 @@ impl App {
     /// Resolve the currently focused pane into a dismiss target, if one exists.
     pub(in crate::tui) fn focused_dismiss_target(&self) -> Option<DismissTarget> {
         match self.focused_pane_id() {
-            PaneId::Toasts => self
+            PaneId::Toasts => match self
                 .framework
                 .toasts
-                .focused_toast_id()
-                .map(DismissTarget::Toast),
+                .focused_toast_id(self.framework.toast_pane_focus_state())
+            {
+                ToastFocus::PaneFocusedOn(id) => Some(DismissTarget::Toast(id)),
+                ToastFocus::PaneUnfocused | ToastFocus::PaneFocusedWithoutToast => None,
+            },
             PaneId::ProjectList => self
                 .project_list
                 .selected_row()

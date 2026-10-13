@@ -1,44 +1,51 @@
 use ratatui::layout::Rect;
 
+use super::ToastActivation;
 use super::ToastId;
 use super::ToastStyle;
 use super::TrackedItemView;
 use super::body::ToastRenderBody;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ToastActionState {
-    Available,
-    None,
+/// Whether a toast's body is live or fading after its task finished.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ToastLingerState {
+    /// The body uses its live style.
+    Live,
+    /// The completed task's body fades through its linger period.
+    Lingering {
+        /// Fade progress from 0.0 to 1.0.
+        progress: f32,
+    },
 }
 
-impl ToastActionState {
-    const fn has_action(self) -> bool { matches!(self, Self::Available) }
-}
-
-impl From<bool> for ToastActionState {
-    fn from(has_action: bool) -> Self {
-        if has_action {
-            Self::Available
-        } else {
-            Self::None
-        }
-    }
+/// Whether a toast has a closing countdown to display.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastCountdownState {
+    /// The toast has no timed closing policy.
+    NoCountdown,
+    /// The toast's closing deadline has not passed.
+    CountingDown {
+        /// Seconds until closing, rounded up.
+        remaining_secs: u64,
+    },
+    /// The closing deadline has passed; no countdown is displayed.
+    Expired,
 }
 
 /// Render-ready view of a toast.
 #[derive(Clone, Debug)]
 pub struct ToastView {
-    pub(super) id:              ToastId,
-    pub(super) title:           String,
-    pub(super) body:            String,
-    pub(super) render_body:     ToastRenderBody,
-    pub(super) style:           ToastStyle,
-    pub(super) action_state:    ToastActionState,
-    pub(super) linger_progress: Option<f32>,
-    pub(super) remaining_secs:  Option<u64>,
-    pub(super) tracked_items:   Vec<TrackedItemView>,
-    pub(super) min_height:      u16,
-    pub(super) desired_height:  u16,
+    pub(super) id:             ToastId,
+    pub(super) title:          String,
+    pub(super) body:           String,
+    pub(super) render_body:    ToastRenderBody,
+    pub(super) style:          ToastStyle,
+    pub(super) activation:     ToastActivation<()>,
+    pub(super) linger:         ToastLingerState,
+    pub(super) countdown:      ToastCountdownState,
+    pub(super) tracked_items:  Vec<TrackedItemView>,
+    pub(super) min_height:     u16,
+    pub(super) desired_height: u16,
 }
 
 impl ToastView {
@@ -60,15 +67,15 @@ impl ToastView {
 
     /// Return whether Enter can activate an action for this toast.
     #[must_use]
-    pub const fn has_action(&self) -> bool { self.action_state.has_action() }
+    pub const fn has_action(&self) -> bool { matches!(self.activation, ToastActivation::Opens(())) }
 
-    /// Return task linger progress from 0.0 to 1.0, if finished.
+    /// Return whether this toast's body is live or lingering.
     #[must_use]
-    pub const fn linger_progress(&self) -> Option<f32> { self.linger_progress }
+    pub const fn linger(&self) -> ToastLingerState { self.linger }
 
-    /// Return remaining seconds for a timed toast, if applicable.
+    /// Return this toast's closing countdown state.
     #[must_use]
-    pub const fn remaining_secs(&self) -> Option<u64> { self.remaining_secs }
+    pub const fn countdown(&self) -> ToastCountdownState { self.countdown }
 
     /// Return the tracked items rendered in this toast.
     #[must_use]

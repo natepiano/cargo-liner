@@ -17,6 +17,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use sysinfo::Pid;
 use tempfile::TempDir;
+use tui_pane::FocusedPane;
+use tui_pane::FrameworkFocusId;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
@@ -245,9 +247,14 @@ fn assert_startup(startup: Startup) {
     }
     let rendered = draw(&mut terminal, &mut app);
     assert!(!rendered.contains("Newer capture shim kept"), "{rendered}");
+    let previous_focus = *app.framework.focused();
+    app.framework
+        .set_focused(FocusedPane::Framework(FrameworkFocusId::Toasts));
     for _ in &remaining {
-        assert!(app.framework.toasts.dismiss_focused());
+        let pane = app.framework.toast_pane_focus_state();
+        assert!(app.framework.toasts.dismiss_focused(pane));
     }
+    app.framework.set_focused(previous_focus);
 
     for _ in 0..2 {
         assert_settings_notices(&mut terminal, &mut app, &expected);

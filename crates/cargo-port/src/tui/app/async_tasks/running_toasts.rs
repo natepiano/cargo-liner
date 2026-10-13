@@ -4,6 +4,7 @@ use tui_pane::ReactivateOutcome;
 use tui_pane::ToastTaskId;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemKey;
+use tui_pane::TrackedItemTiming;
 use tui_pane::format_toast_items;
 use tui_pane::toast_body_width;
 
@@ -125,7 +126,14 @@ impl App {
                         .toasts
                         .refresh_tracked_item_activity(task_id, running_items);
                     for item in running_items {
-                        if let Some(started) = item.started_at {
+                        if let TrackedItemTiming::Running {
+                            started_at: started,
+                        }
+                        | TrackedItemTiming::Completed {
+                            started_at: started,
+                            ..
+                        } = item.timing
+                        {
                             self.framework
                                 .toasts
                                 .restart_tracked_item(task_id, &item.key, started);

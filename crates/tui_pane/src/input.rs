@@ -115,7 +115,8 @@ pub fn dispatch_focused_toasts<Ctx>(ctx: &mut Ctx, bind: &KeyBind) -> bool
 where
     Ctx: AppContext,
 {
-    let (outcome, command) = ctx.framework_mut().toasts.handle_key_command(bind);
+    let pane = ctx.framework().toast_pane_focus_state();
+    let (outcome, command) = ctx.framework_mut().toasts.handle_key_command(bind, pane);
     if let ToastCommand::Activate(action) = command {
         ctx.handle_toast_action(action);
     }

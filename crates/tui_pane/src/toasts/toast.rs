@@ -2,16 +2,19 @@ use std::time::Duration;
 use std::time::Instant;
 
 use super::ToastBody;
+use super::ToastCountdownState;
 use super::ToastId;
+use super::ToastLingerState;
 use super::ToastTaskId;
 use super::ToastView;
 use super::TrackedItem;
+use super::TrackedItemLifecycle;
+use super::TrackedItemTiming;
 use super::TrackedItemView;
 use super::body;
 use super::body::ToastRenderBody;
 use super::manager::ToastVisualDeadline;
 use super::render;
-use super::view::ToastActionState;
 use crate::ACTIVITY_SPINNER;
 use crate::AppContext;
 use crate::ToastSettings;
@@ -28,6 +31,35 @@ pub enum ToastStyle {
     Warning,
     /// Error toast style.
     Error,
+}
+
+/// Whether a toast is informational or offers an action on Enter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToastActivation<A> {
+    /// No action hint row is needed.
+    Informational,
+    /// Opening this payload reserves one body row for the action hint.
+    Opens(A),
+}
+
+impl<A> ToastActivation<A> {
+    /// Return the number of body rows reserved for the action hint.
+    #[must_use]
+    pub const fn body_rows(&self) -> usize {
+        match self {
+            Self::Informational => 0,
+            Self::Opens(_) => 1,
+        }
+    }
+
+    /// Borrow the action payload without changing its activation policy.
+    #[must_use]
+    pub const fn as_ref(&self) -> ToastActivation<&A> {
+        match self {
+            Self::Informational => ToastActivation::Informational,
+            Self::Opens(action) => ToastActivation::Opens(action),
+        }
+    }
 }
 
 /// Lifetime policy for a toast entry.
@@ -139,7 +171,7 @@ pub struct Toast<Ctx: AppContext> {
     pub(super) lifetime:           ToastLifetime,
     pub(super) phase:              ToastPhase,
     pub(super) dismissal:          ToastDismissal,
-    pub(super) action:             Option<Ctx::ToastAction>,
+    pub(super) action:             ToastActivation<Ctx::ToastAction>,
     pub(super) tracked_items:      Vec<TrackedItem>,
     pub(super) created_at:         Instant,
     pub(super) min_interior_lines: usize,
@@ -163,7 +195,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
     pub const fn style(&self) -> ToastStyle { self.style }
 
     /// Return this toast's action payload, if any.
-    pub const fn action(&self) -> Option<&Ctx::ToastAction> { self.action.as_ref() }
+    pub const fn action(&self) -> ToastActivation<&Ctx::ToastAction> { self.action.as_ref() }
 
     pub(super) const fn task_id(&self) -> Option<ToastTaskId> {
         match self.lifetime {
@@ -266,28 +298,40 @@ impl<Ctx: AppContext> Toast<Ctx> {
             body: self.body.as_text(),
             render_body: self.body.clone(),
             style: self.style,
-            action_state: ToastActionState::from(self.action.is_some()),
-            linger_progress: self.linger_progress(now),
-            remaining_secs: self.remaining_secs(now),
+            activation: match self.action {
+                ToastActivation::Informational => ToastActivation::Informational,
+                ToastActivation::Opens(_) => ToastActivation::Opens(()),
+            },
+            linger: self.linger(now),
+            countdown: self.countdown(now),
             tracked_items: self
                 .tracked_items
                 .iter()
                 .map(|item| {
-                    let elapsed = item.started_at.map(|started_at| {
-                        let ended_at = item.completed_at.unwrap_or(now);
-                        ended_at.saturating_duration_since(started_at)
-                    });
-                    let linger_progress = item.completed_at.and_then(|completed_at| {
-                        (!self.item_linger.is_zero()).then(|| {
-                            linger_fade_progress(
-                                now.saturating_duration_since(completed_at),
-                                self.item_linger,
-                            )
-                        })
-                    });
+                    let elapsed = item.timing.elapsed(now);
+                    let lifecycle = match item.timing {
+                        TrackedItemTiming::CompletedWithoutStart { completed_at }
+                        | TrackedItemTiming::Completed { completed_at, .. }
+                            if !self.item_linger.is_zero() =>
+                        {
+                            TrackedItemLifecycle::CompletedFading {
+                                progress: linger_fade_progress(
+                                    now.saturating_duration_since(completed_at),
+                                    self.item_linger,
+                                ),
+                            }
+                        },
+                        TrackedItemTiming::CompletedWithoutStart { .. }
+                        | TrackedItemTiming::Completed { .. } => {
+                            TrackedItemLifecycle::CompletedWithoutFade
+                        },
+                        TrackedItemTiming::StartUnknown | TrackedItemTiming::Running { .. } => {
+                            TrackedItemLifecycle::Running
+                        },
+                    };
                     TrackedItemView {
                         label: item.label.clone(),
-                        linger_progress,
+                        lifecycle,
                         elapsed,
                         activity: item.activity,
                     }
@@ -472,32 +516,29 @@ impl<Ctx: AppContext> Toast<Ctx> {
         self.tracked_items.iter().fold(
             ToastVisualDeadline::NoVisualChangeScheduled,
             |deadline, item| {
-                let item_deadline = item.completed_at.map_or_else(
-                    || {
-                        item.started_at.map_or(
-                            ToastVisualDeadline::NoVisualChangeScheduled,
-                            |started_at| {
-                                let elapsed = now.saturating_duration_since(started_at);
-                                let spinner = checked_future_deadline(
-                                    now,
-                                    started_at,
-                                    ACTIVITY_SPINNER.next_frame_boundary(elapsed),
-                                );
-                                let elapsed_readout = checked_future_deadline(
-                                    now,
-                                    started_at,
-                                    next_elapsed_readout_boundary(elapsed),
-                                );
-                                spinner.earlier(elapsed_readout)
-                            },
-                        )
+                let item_deadline = match item.timing {
+                    TrackedItemTiming::StartUnknown => ToastVisualDeadline::NoVisualChangeScheduled,
+                    TrackedItemTiming::Running { started_at } => {
+                        let elapsed = now.saturating_duration_since(started_at);
+                        let spinner = checked_future_deadline(
+                            now,
+                            started_at,
+                            ACTIVITY_SPINNER.next_frame_boundary(elapsed),
+                        );
+                        let elapsed_readout = checked_future_deadline(
+                            now,
+                            started_at,
+                            next_elapsed_readout_boundary(elapsed),
+                        );
+                        spinner.earlier(elapsed_readout)
                     },
-                    |completed_at| {
+                    TrackedItemTiming::CompletedWithoutStart { completed_at }
+                    | TrackedItemTiming::Completed { completed_at, .. } => {
                         checked_future_deadline(now, completed_at, self.item_linger).earlier(
                             next_linger_fade_deadline(now, completed_at, self.item_linger),
                         )
                     },
-                );
+                };
                 deadline.earlier(item_deadline)
             },
         )
@@ -511,14 +552,14 @@ impl<Ctx: AppContext> Toast<Ctx> {
         } else {
             self.tracked_items.len()
         };
-        let action_lines = usize::from(self.action.is_some());
+        let action_lines = self.action.body_rows();
         let interior = self
             .min_interior_lines
             .max(item_lines.saturating_add(action_lines));
         (interior + 2).try_into().unwrap_or(u16::MAX)
     }
 
-    fn linger_progress(&self, now: Instant) -> Option<f32> {
+    fn linger(&self, now: Instant) -> ToastLingerState {
         let ToastLifetime::Task {
             status:
                 ToastTaskStatus::Finished {
@@ -528,20 +569,25 @@ impl<Ctx: AppContext> Toast<Ctx> {
             ..
         } = self.lifetime
         else {
-            return None;
+            return ToastLingerState::Live;
         };
         if linger.is_zero() {
-            return Some(1.0);
+            return ToastLingerState::Lingering { progress: 1.0 };
         }
         let elapsed = now.saturating_duration_since(finished_at);
-        Some((elapsed.as_secs_f32() / linger.as_secs_f32()).clamp(0.0, 1.0))
+        ToastLingerState::Lingering {
+            progress: (elapsed.as_secs_f32() / linger.as_secs_f32()).clamp(0.0, 1.0),
+        }
     }
 
-    fn remaining_secs(&self, now: Instant) -> Option<u64> {
+    fn countdown(&self, now: Instant) -> ToastCountdownState {
         match self.lifetime {
-            ToastLifetime::Timed { timeout_at } => timeout_at
-                .checked_duration_since(now)
-                .map(whole_seconds_rounded_up),
+            ToastLifetime::Timed { timeout_at } => timeout_at.checked_duration_since(now).map_or(
+                ToastCountdownState::Expired,
+                |remaining| ToastCountdownState::CountingDown {
+                    remaining_secs: whole_seconds_rounded_up(remaining),
+                },
+            ),
             ToastLifetime::Task {
                 status:
                     ToastTaskStatus::Finished {
@@ -549,14 +595,17 @@ impl<Ctx: AppContext> Toast<Ctx> {
                         linger,
                     },
                 ..
-            } => (finished_at + linger)
-                .checked_duration_since(now)
-                .map(whole_seconds_rounded_up),
+            } => (finished_at + linger).checked_duration_since(now).map_or(
+                ToastCountdownState::Expired,
+                |remaining| ToastCountdownState::CountingDown {
+                    remaining_secs: whole_seconds_rounded_up(remaining),
+                },
+            ),
             ToastLifetime::Task {
                 status: ToastTaskStatus::Running,
                 ..
             }
-            | ToastLifetime::Persistent => None,
+            | ToastLifetime::Persistent => ToastCountdownState::NoCountdown,
         }
     }
 }

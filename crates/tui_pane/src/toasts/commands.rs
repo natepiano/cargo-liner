@@ -5,7 +5,9 @@ use ratatui::style::Color;
 
 use super::ColoredToastId;
 use super::Toast;
+use super::ToastActivation;
 use super::ToastBody;
+use super::ToastFocus;
 use super::ToastId;
 use super::ToastRun;
 use super::ToastSpec;
@@ -22,7 +24,13 @@ use crate::AppContext;
 impl<Ctx: AppContext> Toasts<Ctx> {
     /// Push a persistent informational toast.
     pub fn push(&mut self, title: impl Into<String>, body: impl Into<String>) -> ToastId {
-        self.push_persistent_styled(title, body, ToastStyle::Normal, None, 1)
+        self.push_persistent_styled(
+            title,
+            body,
+            ToastStyle::Normal,
+            ToastActivation::Informational,
+            1,
+        )
     }
 
     /// Push a persistent toast with an explicit style.
@@ -32,7 +40,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         body: impl Into<String>,
         style: ToastStyle,
     ) -> ToastId {
-        self.push_persistent_styled(title, body, style, None, 1)
+        self.push_persistent_styled(title, body, style, ToastActivation::Informational, 1)
     }
 
     /// Push a persistent toast with an action payload.
@@ -42,7 +50,13 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         body: impl Into<String>,
         action: Ctx::ToastAction,
     ) -> ToastId {
-        self.push_persistent_styled(title, body, ToastStyle::Normal, Some(action), 1)
+        self.push_persistent_styled(
+            title,
+            body,
+            ToastStyle::Normal,
+            ToastActivation::Opens(action),
+            1,
+        )
     }
 
     /// Push a status toast that auto-closes after
@@ -91,7 +105,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
                 lifetime: ToastLifetime::Timed {
                     timeout_at: now + timeout,
                 },
-                action: None,
+                action: ToastActivation::Informational,
                 min_interior_lines,
                 item_linger: Duration::ZERO,
             },
@@ -117,7 +131,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
                 lifetime: ToastLifetime::Timed {
                     timeout_at: now + timeout,
                 },
-                action: None,
+                action: ToastActivation::Informational,
                 min_interior_lines,
                 item_linger: Duration::ZERO,
             },
@@ -143,7 +157,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
                     task_id: id,
                     status:  ToastTaskStatus::Running,
                 },
-                action: None,
+                action: ToastActivation::Informational,
                 min_interior_lines,
                 item_linger: Duration::ZERO,
             },
@@ -163,7 +177,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         title: impl Into<String>,
         body: impl Into<String>,
         style: ToastStyle,
-        action: Option<Ctx::ToastAction>,
+        action: ToastActivation<Ctx::ToastAction>,
         min_interior_lines: usize,
     ) -> ToastId {
         self.push_entry(
@@ -186,7 +200,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         title: impl Into<String>,
         body: impl Into<String>,
         style: ToastStyle,
-        action: Option<Ctx::ToastAction>,
+        action: ToastActivation<Ctx::ToastAction>,
         min_interior_lines: usize,
     ) -> ToastId {
         self.push_persistent(title, body, style, action, min_interior_lines)
@@ -207,7 +221,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
                 body:               ToastBody::Colored { lines, colors }.into(),
                 style:              ToastStyle::Normal,
                 lifetime:           ToastLifetime::Persistent,
-                action:             None,
+                action:             ToastActivation::Informational,
                 min_interior_lines: 1,
                 item_linger:        Duration::ZERO,
             },
@@ -243,8 +257,11 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     }
 
     /// Start dismissing the currently focused toast.
-    pub fn dismiss_focused(&mut self) -> bool {
-        self.focused_toast_id().is_some_and(|id| self.dismiss(id))
+    pub fn dismiss_focused(&mut self, pane: crate::PaneFocusState) -> bool {
+        match self.focused_toast_id(pane) {
+            ToastFocus::PaneFocusedOn(id) => self.dismiss(id),
+            ToastFocus::PaneUnfocused | ToastFocus::PaneFocusedWithoutToast => false,
+        }
     }
 
     fn push_entry(&mut self, spec: ToastSpec<Ctx>, now: Instant) -> ToastId {

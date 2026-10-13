@@ -8,6 +8,7 @@ use tui_pane::FrameworkFocusId;
 use tui_pane::KeyBind as TuiKeyBind;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemActivity;
+use tui_pane::TrackedItemTiming;
 use tui_pane::Viewport;
 
 use super::BuildMode;
@@ -747,11 +748,12 @@ fn handle_ci_fetch_more(app: &mut App) {
         .toasts
         .start_task("Fetching CI", &project_name);
     let item = TrackedItem {
-        label:        project_name,
-        key:          integration::path_key(&ci_path),
-        started_at:   Some(std::time::Instant::now()),
-        completed_at: None,
-        activity:     TrackedItemActivity::Progressing,
+        label:    project_name,
+        key:      integration::path_key(&ci_path),
+        timing:   TrackedItemTiming::Running {
+            started_at: std::time::Instant::now(),
+        },
+        activity: TrackedItemActivity::Progressing,
     };
     app.set_task_tracked_items(task_id, &[item]);
     app.ci.set_fetch_toast(Some(task_id));

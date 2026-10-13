@@ -45,6 +45,7 @@ use crate::GlobalShortcutsPane;
 use crate::KeymapPane;
 use crate::LoadedSettings;
 use crate::Mode;
+use crate::PaneFocusState;
 use crate::SettingsPane;
 use crate::SettingsRowHit;
 use crate::SettingsStore;
@@ -175,6 +176,15 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// The currently focused pane.
     #[must_use]
     pub const fn focused(&self) -> &FocusedPane<Ctx::AppPaneId> { &self.focused }
+
+    /// Return whether the toast pane currently holds framework focus.
+    #[must_use]
+    pub const fn toast_pane_focus_state(&self) -> crate::PaneFocusState {
+        match self.focused {
+            FocusedPane::Framework(FrameworkFocusId::Toasts) => PaneFocusState::Active,
+            _ => PaneFocusState::Inactive,
+        }
+    }
 
     /// Update the currently focused pane.
     pub const fn set_focused(&mut self, focus: FocusedPane<Ctx::AppPaneId>) {
@@ -469,11 +479,7 @@ impl<Ctx: AppContext> Framework<Ctx> {
     /// 2. Else if an overlay is open, close it.
     /// 3. Else return `false`.
     pub fn dismiss_framework(&mut self) -> bool {
-        if matches!(
-            self.focused,
-            FocusedPane::Framework(FrameworkFocusId::Toasts)
-        ) && self.toasts.dismiss_focused()
-        {
+        if self.toasts.dismiss_focused(self.toast_pane_focus_state()) {
             return true;
         }
         self.close_overlay()

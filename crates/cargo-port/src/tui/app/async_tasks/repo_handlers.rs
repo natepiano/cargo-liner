@@ -7,6 +7,7 @@ use std::time::Instant;
 use tui_pane::PERF_LOG_TARGET;
 use tui_pane::TrackedItem;
 use tui_pane::TrackedItemActivity;
+use tui_pane::TrackedItemTiming;
 
 use super::constants::PR_CHECK_POLL_SECS;
 use crate::ci;
@@ -203,8 +204,9 @@ impl App {
         let item = TrackedItem {
             label,
             key: key.into(),
-            started_at: None,
-            completed_at: Some(Instant::now()),
+            timing: TrackedItemTiming::CompletedWithoutStart {
+                completed_at: Instant::now(),
+            },
             activity: TrackedItemActivity::Progressing,
         };
         let reuse = self
@@ -300,8 +302,9 @@ impl App {
         let item = TrackedItem {
             label,
             key: key.into(),
-            started_at: None,
-            completed_at: Some(Instant::now()),
+            timing: TrackedItemTiming::CompletedWithoutStart {
+                completed_at: Instant::now(),
+            },
             activity: TrackedItemActivity::Progressing,
         };
         let reuse = self
