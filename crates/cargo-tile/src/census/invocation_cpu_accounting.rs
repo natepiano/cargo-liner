@@ -93,6 +93,9 @@ pub(crate) enum MeasurementAbsence {
     ReadFailed,
     /// The available evidence cannot distinguish a reading from an unread value.
     Unproven,
+    /// The counter read is sound and unchanged, but the rate is the platform's
+    /// last one: macOS keeps a process's previous rate until its counter moves.
+    RetainedRate,
 }
 
 impl<T> Measurement<T> {
@@ -942,6 +945,7 @@ mod tests {
             MeasurementAbsence::FirstObservation,
             MeasurementAbsence::ReadFailed,
             MeasurementAbsence::Unproven,
+            MeasurementAbsence::RetainedRate,
         ] {
             let mut cpu = InvocationCpuHistory::default();
             let now = Instant::now();
@@ -1267,6 +1271,7 @@ mod tests {
             MeasurementAbsence::FirstObservation,
             MeasurementAbsence::ReadFailed,
             MeasurementAbsence::Unproven,
+            MeasurementAbsence::RetainedRate,
         ] {
             let mut smoothing = InvocationCpuAccounting::default();
             let now = start();

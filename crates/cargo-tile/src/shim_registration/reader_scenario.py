@@ -842,7 +842,8 @@ class CompletedTerminalFrames:
             position = parameters.split(';')
             self.row = int(position[0] or 1) - 1
             self.column = int(position[1] or 1) - 1 if len(position) > 1 else 0
-        elif command == 'J' and parameters in ('2', '3'):
+        # Entering the alternate screen hides the test harness's own lines.
+        elif (command == 'J' and parameters in ('2', '3')) or (command == 'h' and parameters == '?1049'):
             self.cells = [[' '] * self.columns for _ in range(self.rows)]
             self.colors = [[None] * self.columns for _ in range(self.rows)]
         elif command == 'K' and 0 <= self.row < self.rows:
