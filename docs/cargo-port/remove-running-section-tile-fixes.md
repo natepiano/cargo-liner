@@ -53,7 +53,7 @@ one thing though - cargo tile becomes useless when it is too small - the only wa
   - `crates/cargo-tile/src/shim_registration/app_scenarios.rs` — whole-frame test helpers `draw` (317), `draw_settled` (594).
   - `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md`, `crates/cargo-tile/README.md` — user docs; each changelog has an `## [Unreleased]` section.
   - `.config/nextest.toml` — two priority overrides (100 and 90), group `cargo-tile-readers`, two `slow-timeout` overrides.
-- **Test lanes:** `cargo-tile` — `crates/cargo-tile/tests/` (`unit_tests.rs` compiles every `src` module with its `#[cfg(test)]` tests into the binary `cargo-tile::unit_tests`). `tui_pane` — `crates/tui_pane/tests/`; frame, tile and status-line tests live in-module because they read private items. `cargo-handler` — none.
+- **Test lanes:** `cargo-tile` — `crates/cargo-tile/tests/` (`unit_tests.rs` compiles every `src` module with its `#[cfg(test)]` tests into the binary `cargo-tile::unit_tests`). `tui_pane` — `crates/tui_pane/tests/`; frame, tile and status-line tests live in-module because they read private items. `cargo-handler` — in-module tests in the binary's own test target, among them `crates/cargo-handler/src/census/codex.rs`; find its exact binary ID with `cargo nextest list`.
 - **Build:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-tile`
 - **Test:** `bash ~/.claude/scripts/delegate/verify.sh test cargo-tile`
 - **Lint:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-tile`
@@ -518,38 +518,26 @@ Test-only changes; nothing a user sees changed, and every shortened test asserts
 
 ### Phase 18 — Toast timing is a named state  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A toast's timing stops handing callers a bare `Option` for a domain state and reads as a named state. What the screen shows does not change. Three more toast states join it by the showrunner's placement (2026-10-12): a toast's action, toast focus, and a tracked item's start and finish.
-
-**Spec:**
-- **Toast timing.** `ToastView::linger_progress`, `ToastView::remaining_secs` and `TrackedItemView`'s public fields `linger_progress` and `elapsed` (`crates/tui_pane/src/toasts/item.rs` ~89; its only getter is `label()`) in `crates/tui_pane/src/toasts` hold named types, as do the renderer arguments fed from them, such as `spinner_style`'s: `ToastLingerState`, `ToastCountdownState` and `TrackedItemTiming`, or names like them. Each says what the absent case means. The types tell a toast's policy — live, lingering, counting down — apart from a tracked item's lifetime — start unknown, running, completed — and no wrapper is as ambiguous as the `Option` it replaces. Any `Option` getter that stays exists only to convert at the boundary. Callers in cargo-port and cargo-tile move to the new types.
-- **Toast action** (add-on, placed here by the showrunner, 2026-10-12). `ToastSpec.action` (`manager.rs` ~47), `Toast.action` (`toast.rs` ~141) and the public inputs in `commands.rs` (~138 and ~161) hold a bare `Option<Ctx::ToastAction>`, which hides that an available action takes a body row. They become a named type such as `ToastActivation<A>::{Informational, Opens(A)}` that states its row cost, and every caller in cargo-port converts.
-- **Toast focus** (add-on, placed here by the showrunner, 2026-10-12). `StackLayout` in `crates/tui_pane/src/toasts/render/layout.rs` pairs `ToastPaneFocus` with `focused_toast_id: Option<ToastId>`, so a focused toast in an unfocused pane can be built. One type such as `ToastFocus::{PaneUnfocused, PaneFocusedWithoutToast, PaneFocusedOn(ToastId)}` replaces the pair, so the meaningless pair cannot be built. The conversion reaches the domain boundary: `Toasts::focused_toast_id` and `focused_id` (`crates/tui_pane/src/toasts/navigation.rs`) return `Option<ToastId>` today, `crates/tui_pane/src/toasts/slots.rs` reads it, and cargo-port's dismiss caller (`crates/cargo-port/src/tui/app/dismiss.rs`) consumes it; each moves to the named focus, as do the `focused_toast_id` arguments in `render/card.rs` and `render/drawing.rs`, so the renderer never rebuilds the pair.
-- **Tracked item timing** (add-on, placed here by the showrunner, 2026-10-12). `TrackedItem`'s public fields `started_at` and `completed_at` and its getter `completed_at()` (`crates/tui_pane/src/toasts/item.rs`) are bare `Option<Instant>`, set and read by `crates/tui_pane/src/toasts/lifecycle.rs`, beneath the view's timing states above. The item's timing becomes one named state, the unknown-start behavior is kept, and no public field or getter of `TrackedItem` holds a bare `Option` for it.
-- Apply the Type Design Contract and the user's style guide. No behavior change, no new `#[allow]` or `#[expect]`.
+Toast timing, activation, focus and tracked-item lifetimes are named public states in `tui_pane`; no public field or getter holds a bare `Option` for them, and rendered output is unchanged.
+- `ToastView::linger() -> ToastLingerState::{Live, Lingering { progress: f32 }}` and `ToastView::countdown() -> ToastCountdownState::{NoCountdown, CountingDown { remaining_secs: u64 }}` (`toasts/view.rs`).
+- `ToastActivation<A>::{Informational, Opens(A)}` (`toasts/toast.rs`) holds a toast's action in `ToastSpec`, `Toast` and the push inputs in `commands.rs`; `body_rows()` states its row cost (0 or 1); `Toast::action()` returns `ToastActivation<&Ctx::ToastAction>`.
+- `ToastFocus::{PaneUnfocused, PaneFocusedWithoutToast, PaneFocusedOn(ToastId)}` (`toasts/navigation.rs`) is computed per query from the pane's focus and the viewport. Focus queries take that focus as input: `Toasts::focused_id(pane)`, `focused_toast_id(pane)`, `dismiss_focused(pane)`, `handle_key_command(bind, pane)`, `handle_key(bind, pane)`, with `pane: PaneFocusState` supplied by `Framework::toast_pane_focus_state()`. `StackLayout` holds one `focus: ToastFocus`, which the card renderer reads.
+- `TrackedItem.timing: TrackedItemTiming::{StartUnknown, Running { started_at }, CompletedWithoutStart { completed_at }, Completed { started_at, completed_at }}` (`toasts/item.rs`), with `is_completed()`; an unknown start stays unknown after completion.
+- `TrackedItemView` carries `lifecycle: TrackedItemLifecycle::{Running, CompletedWithoutFade, CompletedFading { progress: f64 }}` and `elapsed: TrackedItemElapsed::{StartUnknown, Measured(Duration)}`, both produced by `Toast::view`.
 
 **Files:**
-- `crates/tui_pane/src/toasts/view.rs`, `crates/tui_pane/src/toasts/item.rs`, `crates/tui_pane/src/toasts/toast.rs`, `crates/tui_pane/src/toasts/manager.rs`, `crates/tui_pane/src/toasts/mod.rs` — the named timing types and their getters.
-- `crates/tui_pane/src/toasts/render/card.rs`, `crates/tui_pane/src/toasts/render/drawing.rs` — readers of the timing getters.
-- `crates/tui_pane/src/toasts/navigation.rs`, `crates/tui_pane/src/toasts/slots.rs` — the focused toast's answer and its reader.
-- `crates/tui_pane/src/lib.rs` — the exports of the new public types.
-- `crates/cargo-port/src/tui/app/mod.rs` — the toast timing caller.
-- `crates/cargo-port/src/tui/app/dismiss.rs` — the focused toast's dismiss caller.
-- `crates/tui_pane/src/toasts/commands.rs`, `crates/tui_pane/src/toasts/lifecycle.rs`, `crates/tui_pane/src/toasts/render/layout.rs` — the toast action's public inputs, the tracked item's timing writes and reads, and toast focus; cargo-port's callers of the toast action, found by search, convert too.
-- `crates/tui_pane/CHANGELOG.md` — one Changed line.
+- `crates/tui_pane/src/toasts/{view,toast,item,navigation,commands,slots,lifecycle,manager,running_tracker}.rs`, `render/{card,drawing,layout}.rs` — the named states, their producers and readers.
+- `crates/tui_pane/src/framework/mod.rs`, `src/input.rs`, `src/lib.rs` — pane focus supply, key routing, exports.
+- `crates/tui_pane/tests/toast_states.rs` — each focus state, unknown start, zero-linger completion, linger, countdown, activation.
+- `crates/cargo-port/src/tui/app/{mod,dismiss}.rs`, `tui/app/async_tasks/*`, `tui/panes/actions.rs`; `crates/cargo-tile/src/render.rs`, `shim_registration/app_scenarios.rs` — callers on the new types.
 
-**Seats:** 1 writer + 1 tester.
-- `impl` — the toast modules, their exports and the cargo-port callers: every file above.
-- `test` — no source file; checks on each candidate that toast buffers are unchanged, and checks the unknown-start and focus-state regressions.
+**Binds later work:** any toast focus query or key handler needs the pane's `PaneFocusState`; none answers focus on its own.
 
-**Constraints from prior phases:** Phase 15 left the toast timing getters as they were, outside its items. Phase 15: a toast body is a list of `ToastRun`s, each with `RunBreaks::{AtSpaces, Never}`, wrapped by the crate-private `wrapped_runs`; the public `wrapped` treats every span boundary as a word boundary, and cargo-tile's tables depend on that, so this phase leaves `crates/tui_pane/src/wrap.rs` and the body's runs alone, and any edit to `wrap.rs` also runs `test cargo-tile`. This phase's changes are the public signature changes Phase 15 deferred, and the approved exceptions the Delegation Context names. The user approved them from the Phase 12 review. `TileCells::group_title` is Phase 20's.
-
-**Acceptance gate:**
-- No public getter or public field named above holds a bare `Option` for its domain state, and no named accessor hides one kept beneath it.
-- A test covers each of toast focus's three states, and a test pins a tracked item whose start is unknown.
-- lint and the tui_pane, cargo-tile, cargo-handler and cargo-port suites pass, with no test at a second or more.
-- Rendered output is unchanged: the existing toast and tile render tests pass without edits to what they assert.
+**Gotchas:**
+- `CompletedWithoutFade` is the zero-linger case and keeps the spinner plus frozen elapsed row, so output matches the earlier rendering.
+- A focus getter that ignores pane focus reports a focused card in an unfocused pane; `leaving_the_toast_pane_suspends_selection_commands_until_focus_returns` pins it.
 
 ### Phase 19 — One reading per command, one ancestry form, and a titled summary  · status: todo
 
@@ -1063,7 +1051,7 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `.config/nextest.toml` — one override and its comment. In scope for this unit by the showrunner's word (2026-10-08), though the Units row does not list it.
 
 **Seats:** 1 writer + 1 tester — one configuration owner and two measurement lanes on a byte-identical candidate.
-- `impl` — owns `.config/nextest.toml`, publishes its `sha256sum` on the board after each edit, and runs every natedev before and after run; checks every exact filter name.
+- `impl` — owns `.config/nextest.toml`, publishes its `sha256sum` on the board after each edit, and runs every natedev before and after run; checks every exact filter name. It also owns Spec items 5 and 6's quiet evidence: it times each named test on natedev with the 1-minute load below a quarter of the cores, records that load beside each time, and gives each test a disposition.
 - `test` — no source file; copies the candidate config to the Mac clone (`scp` over `ssh mac` into `/Users/natemccoy/rust/cargo-liner-measure/.config/nextest.toml` after the checkout), verifies the same sha256 before each after-run batch, runs every Mac run, and hands `impl` the named JUnit files, the slow set and the start order. The before runs use the clean phase tip.
 
 **Constraints from prior phases:** This phase runs after Phases 1 to 20, every phase planned to add tests or change shared grid code, so its timings measure the suite those phases ship. It runs last by the showrunner's packaging call (2026-10-12), after Phase 20's last checkpoint when that phase lands in several, so its override names the suite Phase 20's motion rewrite leaves. Phase 20 lists each new test that reached 0.8 s in its report; this phase confirms each by name and by measurement. Phase 17 shortened several of item 2's known members, and Phase 20 replaces most grid and draw tests, so item 2's known list is confirmed against the six runs and `cargo nextest list`, never assumed: a known member under 0.8 s in every run stays out of the filter. Exact-name discovery, the reader priorities and group, and both timeouts hold as item 3 states. Phases 1 to 16 and 18 to 20 added render tests to `tui_pane` and `cargo-tile`; each gate asked for under a second for its own tests, and this phase's line is 0.8 s, so the six measurements decide whether any of them joins the slow set. Seen over a second during Phase 8's runs under load: `tui_pane` `attract::controller::tests::random_settings_corpus_reaches_every_variant_and_applies_every_draw` (1.52 s) and several reader and `shim_modes` scenarios.
@@ -1073,3 +1061,4 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - `cargo nextest list` resolves every name in the new filter (no unmatched filter warning) on both machines.
 - After the change, on each machine: sorted by start `timestamp`, the source-switch reader is first, and no test outside the reader group and the slow set starts before the last slow-set test starts. The reader group still runs one at a time, and a `cargo-tile::shim_modes` test still carries its 30 s `slow-timeout`.
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
+- The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
