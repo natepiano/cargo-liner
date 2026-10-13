@@ -7,10 +7,12 @@ use super::ColoredToastId;
 use super::Toast;
 use super::ToastBody;
 use super::ToastId;
+use super::ToastRun;
 use super::ToastSpec;
 use super::ToastStyle;
 use super::ToastTaskId;
 use super::Toasts;
+use super::body::ToastRenderBody;
 use super::toast::ToastDismissal;
 use super::toast::ToastLifetime;
 use super::toast::ToastPhase;
@@ -84,7 +86,33 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_entry(
             ToastSpec {
                 title: title.into(),
-                body: ToastBody::from(body.into()),
+                body: ToastBody::from(body.into()).into(),
+                style,
+                lifetime: ToastLifetime::Timed {
+                    timeout_at: now + timeout,
+                },
+                action: None,
+                min_interior_lines,
+                item_linger: Duration::ZERO,
+            },
+            now,
+        )
+    }
+
+    /// Push a timed toast whose runs retain styles and line-break policies.
+    pub fn push_timed_runs(
+        &mut self,
+        title: impl Into<String>,
+        runs: Vec<ToastRun>,
+        timeout: Duration,
+        min_interior_lines: usize,
+        style: ToastStyle,
+    ) -> ToastId {
+        let now = Instant::now();
+        self.push_entry(
+            ToastSpec {
+                title: title.into(),
+                body: ToastRenderBody::styled(runs),
                 style,
                 lifetime: ToastLifetime::Timed {
                     timeout_at: now + timeout,
@@ -109,7 +137,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_entry(
             ToastSpec {
                 title: title.into(),
-                body: ToastBody::from(body.into()),
+                body: ToastBody::from(body.into()).into(),
                 style: ToastStyle::Normal,
                 lifetime: ToastLifetime::Task {
                     task_id: id,
@@ -141,7 +169,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         self.push_entry(
             ToastSpec {
                 title: title.into(),
-                body: ToastBody::from(body.into()),
+                body: ToastBody::from(body.into()).into(),
                 style,
                 lifetime: ToastLifetime::Persistent,
                 action,
@@ -176,7 +204,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let id = self.push_entry(
             ToastSpec {
                 title:              title.into(),
-                body:               ToastBody::Colored { lines, colors },
+                body:               ToastBody::Colored { lines, colors }.into(),
                 style:              ToastStyle::Normal,
                 lifetime:           ToastLifetime::Persistent,
                 action:             None,

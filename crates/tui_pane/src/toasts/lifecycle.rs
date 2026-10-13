@@ -118,7 +118,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let Some(toast) = self.toast_for_task_mut(task_id) else {
             return false;
         };
-        toast.body = ToastBody::from(body.into());
+        toast.body = ToastBody::from(body.into()).into();
         toast.refresh_entrance_phase_at_width(&settings, card_width);
         true
     }
@@ -135,7 +135,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
         let Some(toast) = self.toast_for_colored_mut(id) else {
             return false;
         };
-        toast.body = ToastBody::Colored { lines, colors };
+        toast.body = ToastBody::Colored { lines, colors }.into();
         toast.refresh_entrance_phase_at_width(&settings, card_width);
         true
     }

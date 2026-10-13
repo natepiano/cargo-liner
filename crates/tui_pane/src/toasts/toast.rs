@@ -8,6 +8,7 @@ use super::ToastView;
 use super::TrackedItem;
 use super::TrackedItemView;
 use super::body;
+use super::body::ToastRenderBody;
 use super::manager::ToastVisualDeadline;
 use super::render;
 use super::view::ToastActionState;
@@ -133,7 +134,7 @@ pub enum ToastDismissal {
 pub struct Toast<Ctx: AppContext> {
     pub(super) id:                 ToastId,
     pub(super) title:              String,
-    pub(super) body:               ToastBody,
+    pub(super) body:               ToastRenderBody,
     pub(super) style:              ToastStyle,
     pub(super) lifetime:           ToastLifetime,
     pub(super) phase:              ToastPhase,
@@ -153,7 +154,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
     pub fn title(&self) -> &str { &self.title }
 
     /// Return this toast's structured body.
-    pub const fn body(&self) -> &ToastBody { &self.body }
+    pub const fn body(&self) -> &ToastBody { self.body.public_body() }
 
     /// Return this toast's body as display text.
     pub fn body_text(&self) -> String { self.body.as_text() }
@@ -263,7 +264,7 @@ impl<Ctx: AppContext> Toast<Ctx> {
             id: self.id,
             title: self.title.clone(),
             body: self.body.as_text(),
-            body_line_colors: self.body.line_colors(),
+            render_body: self.body.clone(),
             style: self.style,
             action_state: ToastActionState::from(self.action.is_some()),
             linger_progress: self.linger_progress(now),

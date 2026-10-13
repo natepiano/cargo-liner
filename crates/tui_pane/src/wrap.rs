@@ -12,17 +12,18 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 
+use crate::constants::ELISION;
 use crate::constants::WRAP_BREAK_AFTER;
+use crate::constants::WRAP_HYPHEN;
+use crate::toasts::RunBreaks;
+use crate::toasts::ToastRun;
 
-/// One word of the line being wrapped, carrying the style of the span it
-/// came out of so a line broken between two spans keeps both.
+/// One word or indivisible run being wrapped, carrying its drawing style.
 struct Word {
     /// Whitespace that precedes the word.
     separator: WordSeparator,
-    /// The word, with no whitespace in it.
-    text:      String,
-    /// The style the span it came from draws in.
-    style:     Style,
+    /// Contiguous styled text, with each run's permitted breaks.
+    runs:      Vec<ToastRun>,
 }
 
 /// Whitespace before a word and whether wrapping may consume it.
@@ -95,18 +96,73 @@ impl BoundaryWrap {
 
     /// Put `word` on the line being filled.
     ///
-    /// The break falls before the word when whitespace is the best break.
-    /// A boundary that leaves at least half a line filled may split the word;
-    /// otherwise a word no line can hold is written across as many lines as
-    /// it takes.
+    /// A word that fits a fresh line moves there whole. Longer words use
+    /// a punctuation boundary or the width; indivisible runs carry a cut mark.
     fn push(&mut self, word: &Word) {
-        let mut rest = word.text.as_str();
+        let cells = word
+            .runs
+            .iter()
+            .map(|run| cell_count(&run.text))
+            .sum::<usize>();
         let mut separator = &word.separator;
+        if cells <= self.width && cells > self.room(separator) && self.used > 0 {
+            self.wrap();
+            separator = &WordSeparator::None;
+        }
+        if cells <= self.room(separator) {
+            self.write_runs(separator, &word.runs, 0, usize::MAX);
+            return;
+        }
+        let mut index = 0;
+        while index < word.runs.len() {
+            let run = &word.runs[index];
+            if matches!(run.breaks, RunBreaks::AtSpaces) {
+                let end = word.runs[index..]
+                    .iter()
+                    .position(|run| matches!(run.breaks, RunBreaks::Never))
+                    .map_or(word.runs.len(), |offset| index + offset);
+                self.push_breakable(&word.runs[index..end], separator);
+                index = end;
+            } else {
+                let suffix = word.runs[index + 1..]
+                    .iter()
+                    .take_while(|run| matches!(run.breaks, RunBreaks::AtSpaces))
+                    .map(|run| cell_count(&run.text))
+                    .sum::<usize>();
+                let reserved = if suffix < self.width { suffix } else { 0 };
+                if self.used > 0 && cell_count(&run.text) + reserved > self.room(separator) {
+                    self.wrap();
+                    separator = &WordSeparator::None;
+                }
+                let room = self.room(separator).saturating_sub(reserved);
+                if cell_count(&run.text) <= room {
+                    self.write(separator, &run.text, run.style);
+                } else {
+                    let (head, _) =
+                        split_at_cells(&run.text, room.saturating_sub(cell_count(ELISION)));
+                    self.write(separator, &format!("{head}{ELISION}"), run.style);
+                }
+                index += 1;
+            }
+            separator = &WordSeparator::None;
+        }
+    }
+
+    /// Wrap breakable text while retaining styles across cuts.
+    fn push_breakable(&mut self, runs: &[ToastRun], mut separator: &WordSeparator) {
+        let text = runs.iter().map(|run| run.text.as_str()).collect::<String>();
+        let mut rest = text.as_str();
+        let mut offset = 0;
         while !rest.is_empty() {
             let room = self.room(separator);
             if cell_count(rest) <= room {
-                self.write(separator, rest, word.style);
+                self.write_runs(separator, runs, offset, rest.len());
                 return;
+            }
+            if self.used > 0 && cell_count(rest) <= self.width {
+                self.wrap();
+                separator = &WordSeparator::None;
+                continue;
             }
             if room == 0 && (self.used > 0 || separator.is_break_point()) {
                 self.wrap();
@@ -114,12 +170,20 @@ impl BoundaryWrap {
                 continue;
             }
             let candidate = split_at_cells(rest, room).0;
-            let boundary = candidate
+            let hyphen = candidate
                 .char_indices()
                 .rev()
-                .find(|(_, character)| WRAP_BREAK_AFTER.contains(*character))
+                .filter(|(_, character)| *character == WRAP_HYPHEN)
                 .map(|(index, character)| index.saturating_add(character.len_utf8()))
-                .filter(|&index| cell_count(&rest[..index]) >= self.width.saturating_add(1) / 2);
+                .find(|&index| rest[..index].chars().any(char::is_alphanumeric));
+            let boundary = hyphen.or_else(|| {
+                candidate
+                    .char_indices()
+                    .rev()
+                    .find(|(_, character)| WRAP_BREAK_AFTER.contains(*character))
+                    .map(|(index, character)| index.saturating_add(character.len_utf8()))
+                    .filter(|&index| cell_count(&rest[..index]) >= self.width.saturating_add(1) / 2)
+            });
             let Some(boundary) = boundary else {
                 if separator.is_break_point() {
                     self.wrap();
@@ -127,7 +191,8 @@ impl BoundaryWrap {
                     continue;
                 }
                 let (head, tail) = split_at_cells(rest, room);
-                self.write(separator, head, word.style);
+                self.write_runs(separator, runs, offset, head.len());
+                offset += head.len();
                 rest = tail;
                 separator = &WordSeparator::None;
                 if !rest.is_empty() {
@@ -136,12 +201,40 @@ impl BoundaryWrap {
                 continue;
             };
             let (head, tail) = rest.split_at(boundary);
-            self.write(separator, head, word.style);
+            self.write_runs(separator, runs, offset, head.len());
+            offset += head.len();
             rest = tail;
             separator = &WordSeparator::None;
             if !rest.is_empty() {
                 self.wrap();
             }
+        }
+    }
+
+    /// Draw a byte range of contiguous runs in their original styles.
+    fn write_runs(
+        &mut self,
+        separator: &WordSeparator,
+        runs: &[ToastRun],
+        start: usize,
+        len: usize,
+    ) {
+        let mut offset: usize = 0;
+        let end = start.saturating_add(len);
+        let mut separator = separator;
+        for run in runs {
+            let run_end = offset.saturating_add(run.text.len());
+            let left = start.max(offset);
+            let right = end.min(run_end);
+            if left < right {
+                self.write(
+                    separator,
+                    &run.text[left - offset..right - offset],
+                    run.style,
+                );
+                separator = &WordSeparator::None;
+            }
+            offset = run_end;
         }
     }
 
@@ -169,9 +262,10 @@ impl BoundaryWrap {
 
 /// `spans` broken into lines no wider than `width`.
 ///
-/// Breaks fall at whitespace wherever whitespace will do, and runs of it
-/// come back as the one space that separates two words. A `width` of
-/// nought leaves no wrap to make, so the spans come back as the single
+/// Each span contributes its own whitespace-separated words: a span boundary
+/// is always a word boundary, even without whitespace in the text. Words are
+/// joined by one unstyled space, consumed when a line breaks there. A `width`
+/// of nought leaves no wrap to make, so the spans come back as the single
 /// line they arrived as.
 #[must_use]
 pub fn wrapped(spans: Vec<Span<'static>>, width: u16) -> Text<'static> {
@@ -184,6 +278,40 @@ pub(crate) fn wrapped_preserving_whitespace(
     width: u16,
 ) -> Text<'static> {
     wrapped_with_whitespace(spans, width, WhitespaceHandling::Preserve)
+}
+
+/// Wrap styled toast runs, retaining their whitespace and hard line breaks.
+pub(crate) fn wrapped_runs(runs: &[ToastRun], width: u16, style: Style) -> Text<'static> {
+    let mut paragraphs = vec![Vec::new()];
+    for run in runs {
+        for (index, text) in run.text.split('\n').enumerate() {
+            if index > 0 {
+                paragraphs.push(Vec::new());
+            }
+            if let Some(paragraph) = paragraphs.last_mut() {
+                paragraph.push(ToastRun::new(text, style.patch(run.style), run.breaks));
+            }
+        }
+    }
+    Text::from(
+        paragraphs
+            .into_iter()
+            .flat_map(|runs| {
+                if width == 0 {
+                    return vec![Line::from(
+                        runs.into_iter()
+                            .map(|run| Span::styled(run.text, run.style))
+                            .collect::<Vec<_>>(),
+                    )];
+                }
+                let mut wrap = BoundaryWrap::new(usize::from(width));
+                for word in preserved_run_words(runs) {
+                    wrap.push(&word);
+                }
+                wrap.finish().lines
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Wrap `spans` according to the requested whitespace behavior.
@@ -227,8 +355,7 @@ fn collapsed_words(spans: Vec<Span<'static>>) -> Vec<Word> {
                     };
                     Word {
                         separator,
-                        text: text.to_owned(),
-                        style: span.style,
+                        runs: vec![ToastRun::new(text, span.style, RunBreaks::AtSpaces)],
                     }
                 })
                 .collect::<Vec<Word>>()
@@ -238,15 +365,44 @@ fn collapsed_words(spans: Vec<Span<'static>>) -> Vec<Word> {
 
 /// Words with their original leading and inter-word whitespace.
 fn preserved_words(spans: Vec<Span<'static>>) -> Vec<Word> {
+    preserved_run_words(
+        spans
+            .into_iter()
+            .map(|span| ToastRun::new(span.content.into_owned(), span.style, RunBreaks::AtSpaces))
+            .collect(),
+    )
+}
+
+fn preserved_run_words(runs: Vec<ToastRun>) -> Vec<Word> {
     let mut words = Vec::new();
     let mut pending_whitespace = String::new();
     let mut whitespace_style = Style::default();
     let mut saw_word = false;
 
-    for span in spans {
+    for span in runs {
+        if matches!(span.breaks, RunBreaks::Never) {
+            let leading = span.text.len() - span.text.trim_start().len();
+            let trailing = span.text.trim_end().len().max(leading);
+            for (text, is_whitespace) in [
+                (&span.text[..leading], true),
+                (&span.text[leading..trailing], false),
+                (&span.text[trailing..], true),
+            ] {
+                push_preserved_run(
+                    &mut words,
+                    &mut pending_whitespace,
+                    &mut whitespace_style,
+                    &mut saw_word,
+                    text,
+                    is_whitespace,
+                    &span,
+                );
+            }
+            continue;
+        }
         let mut run = String::new();
         let mut run_is_whitespace = None;
-        for character in span.content.chars() {
+        for character in span.text.chars() {
             let is_whitespace = character.is_whitespace();
             if run_is_whitespace.is_some_and(|kind| kind != is_whitespace) {
                 push_preserved_run(
@@ -256,7 +412,7 @@ fn preserved_words(spans: Vec<Span<'static>>) -> Vec<Word> {
                     &mut saw_word,
                     &run,
                     run_is_whitespace.unwrap_or(false),
-                    span.style,
+                    &span,
                 );
                 run.clear();
             }
@@ -270,7 +426,7 @@ fn preserved_words(spans: Vec<Span<'static>>) -> Vec<Word> {
             &mut saw_word,
             &run,
             run_is_whitespace.unwrap_or(false),
-            span.style,
+            &span,
         );
     }
     words
@@ -284,8 +440,9 @@ fn push_preserved_run(
     saw_word: &mut bool,
     run: &str,
     is_whitespace: bool,
-    style: Style,
+    styled_run: &ToastRun,
 ) {
+    let style = styled_run.style;
     if run.is_empty() {
         return;
     }
@@ -303,11 +460,17 @@ fn push_preserved_run(
     } else {
         WordSeparator::Indentation(take(pending_whitespace), *whitespace_style)
     };
-    words.push(Word {
-        separator,
-        text: run.to_owned(),
-        style,
-    });
+    let run = ToastRun::new(run, style, styled_run.breaks);
+    if matches!(separator, WordSeparator::None)
+        && let Some(word) = words.last_mut()
+    {
+        word.runs.push(run);
+    } else {
+        words.push(Word {
+            separator,
+            runs: vec![run],
+        });
+    }
     *saw_word = true;
 }
 
@@ -329,6 +492,8 @@ fn split_at_cells(text: &str, cells: usize) -> (&str, &str) {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use ratatui::style::Color;
+
     use super::*;
 
     /// The plain text of each line, which is what the breaks are about.
@@ -345,6 +510,98 @@ mod tests {
     }
 
     fn spans(text: &str) -> Vec<Span<'static>> { vec![Span::raw(text.to_owned())] }
+
+    #[test]
+    fn adjacent_spans_are_separate_words_joined_by_one_space() {
+        let program = Style::default().fg(Color::Green);
+        let argument = Style::default().fg(Color::Cyan);
+        let text = wrapped(
+            vec![
+                Span::styled("cargo", program),
+                Span::styled("check", argument),
+            ],
+            20,
+        );
+        assert_eq!(lines(&text), ["cargo check"]);
+        assert_eq!(
+            text.lines[0].spans,
+            vec![
+                Span::styled("cargo", program),
+                Span::raw(" "),
+                Span::styled("check", argument),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_word_that_crosses_a_style_boundary_moves_whole_to_a_fresh_line() {
+        let first = Style::default().fg(Color::Green);
+        let second = Style::default().fg(Color::Cyan);
+        let runs = vec![
+            ToastRun::new("prefix foo", first, RunBreaks::AtSpaces),
+            ToastRun::new("bar", second, RunBreaks::AtSpaces),
+        ];
+        for text in [
+            wrapped_runs(&runs, 10, Style::default()),
+            wrapped_preserving_whitespace(
+                vec![
+                    Span::styled("prefix foo", first),
+                    Span::styled("bar", second),
+                ],
+                10,
+            ),
+        ] {
+            assert_eq!(lines(&text), ["prefix", "foobar"]);
+            assert_eq!(text.lines[1].spans[0].style, first);
+            assert_eq!(text.lines[1].spans[1].style, second);
+        }
+        assert_eq!(
+            lines(&wrapped_runs(&runs, 4, Style::default())),
+            ["pref", "ix", "foob", "ar"],
+        );
+    }
+
+    #[test]
+    fn text_glued_to_a_nonbreaking_run_stays_on_its_line() {
+        let command_style = Style::default().fg(Color::Cyan);
+        let runs = vec![
+            ToastRun::new("Run ", Style::default(), RunBreaks::AtSpaces),
+            ToastRun::new("cargo tile uninstall", command_style, RunBreaks::Never),
+            ToastRun::new(". Done", Style::default(), RunBreaks::AtSpaces),
+        ];
+        for (width, expected) in [
+            (24, vec!["Run", "cargo tile uninstall.", "Done"]),
+            (20, vec!["Run", "cargo tile uninsta….", "Done"]),
+            (12, vec!["Run", "cargo tile….", "Done"]),
+        ] {
+            let text = wrapped_runs(&runs, width, Style::default());
+            assert_eq!(lines(&text), expected);
+            assert!(
+                text.lines
+                    .iter()
+                    .all(|line| line.width() <= usize::from(width))
+            );
+            let command = &text.lines[1];
+            assert_eq!(command.spans[0].style, command_style);
+            assert_eq!(
+                command.spans.last().expect("punctuation span").style,
+                Style::default()
+            );
+        }
+    }
+
+    #[test]
+    fn a_hyphenated_word_moves_whole_when_it_fits_a_fresh_line() {
+        let toolchain = "nightly-2026-09-03-x86_64-unknown-linux-gnu.";
+        assert_eq!(
+            lines(&wrapped(spans(&format!("Capturing for {toolchain}")), 56)),
+            ["Capturing for", toolchain],
+        );
+        assert_eq!(
+            lines(&wrapped(spans(toolchain), 24)),
+            ["nightly-2026-09-03-", "x86_64-unknown-linux-", "gnu."],
+        );
+    }
 
     #[test]
     fn a_line_that_fits_is_left_alone() {
@@ -410,10 +667,14 @@ mod tests {
     fn a_broken_words_tail_shares_its_continuation_with_following_words() {
         assert_eq!(
             lines(&wrapped(
-                spans("long-ancestor …76jzc-tmux-3.6a/bin/tmux new-session"),
+                spans("long-ancestor abcdefghijklmnopqrstuvwxyz0123456789-long tail"),
                 38,
             )),
-            vec!["long-ancestor …76jzc-tmux-3.6a/bin/", "tmux new-session",]
+            vec![
+                "long-ancestor",
+                "abcdefghijklmnopqrstuvwxyz0123456789-",
+                "long tail"
+            ]
         );
     }
 

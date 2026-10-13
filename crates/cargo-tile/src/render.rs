@@ -8992,8 +8992,19 @@ mod tests {
     fn the_frame_ends_with_toasts_then_favorites_then_the_framework_overlay() {
         // Tall enough to reach up under every popup, so the frame shows
         // which of the two is drawn over the other.
-        const TOAST_LINES: usize = 8;
-        for (opener, expected) in FRAME_TAIL_CASES {
+        const TOAST_LINES: usize = 7;
+        for (opener, mut expected) in FRAME_TAIL_CASES {
+            match opener {
+                None => {
+                    expected[10] = "│ └──────────────────────────────────────────────────────┘ │";
+                    expected[11] = "│                                                          │";
+                },
+                Some(GlobalAction::OpenGlobalShortcuts) => {
+                    expected[10] = "│ └──│   Focus the tile to the left        left      │───┘ │";
+                    expected[11] = "│    │   Focus the tile to the right       right     │     │";
+                },
+                _ => {},
+            }
             let mut app = App::new_for_test().expect("test app should build");
             app.started = Instant::now();
             app.framework.toasts.push_persistent(

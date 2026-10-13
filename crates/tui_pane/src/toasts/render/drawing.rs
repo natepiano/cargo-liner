@@ -10,6 +10,7 @@ use super::layout::ToastPaneFocus;
 use crate::PaneFocusState;
 use crate::ToastPlacement;
 use crate::ToastSettings;
+use crate::constants::TOAST_ROW_GAP;
 use crate::toasts::ToastHitbox;
 use crate::toasts::ToastId;
 use crate::toasts::ToastView;
@@ -72,12 +73,9 @@ fn render_toasts(
     let max_visible = settings.max_visible.get().max(1);
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
-    let gap: u16 = 0;
-    let available =
-        area.height.saturating_sub(gap.saturating_mul(
-            u16::try_from(visible_toasts.len().saturating_sub(1)).unwrap_or(u16::MAX),
-        ));
-    let allocated = layout::allocate_toast_heights(visible_toasts, available);
+    let gap = TOAST_ROW_GAP;
+    let available = area.height.saturating_sub(TOAST_ROW_GAP.saturating_mul(2));
+    let allocated = layout::allocate_toast_heights(visible_toasts, available, gap);
     let width = manager::toast_card_width(settings, area.width);
 
     let layout = StackLayout {
@@ -299,6 +297,75 @@ mod tests {
     }
 
     #[test]
+    fn a_toast_keeps_one_cleared_row_above_and_below() {
+        for placement in [ToastPlacement::TopRight, ToastPlacement::BottomRight] {
+            for count in [1, 2] {
+                let mut settings = settings_with_width(12);
+                settings.placement = placement;
+                let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
+                for _ in 0..count {
+                    let _ = toasts.push("notice", "body");
+                }
+                let views = toasts.active_views(Instant::now() + Duration::from_secs(1));
+                let backend = TestBackend::new(30, 16);
+                let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+                let mut hitboxes = Vec::new();
+                terminal
+                    .draw(|frame| {
+                        let block = ratatui::widgets::Block::default()
+                            .borders(ratatui::widgets::Borders::ALL);
+                        let area = block.inner(frame.area());
+                        frame.render_widget(block, frame.area());
+                        frame.render_widget(
+                            Paragraph::new(vec![Line::from("G".repeat(28)); 14]),
+                            area,
+                        );
+                        hitboxes = render_toasts(
+                            frame,
+                            area,
+                            &views,
+                            &settings,
+                            PaneFocusState::Inactive,
+                            None,
+                        )
+                        .hitboxes;
+                    })
+                    .expect("toast stack should render");
+                assert_eq!(hitboxes.len(), count);
+                let buffer = terminal.backend().buffer();
+                for hitbox in &hitboxes {
+                    let card = hitbox.card_rect;
+                    assert!(card.top() > 1);
+                    assert!(card.bottom() < 15);
+                    for row in [card.top() - 1, card.bottom()] {
+                        for column in card.left() - 1..=card.right() {
+                            assert_eq!(
+                                buffer[(column, row)].symbol(),
+                                " ",
+                                "{placement:?}: {column},{row}"
+                            );
+                        }
+                    }
+                }
+                for column in 1..29 {
+                    assert_eq!(buffer[(column, 0)].symbol(), line::HORIZONTAL);
+                    assert_eq!(buffer[(column, 15)].symbol(), line::HORIZONTAL);
+                }
+                for row in 1..15 {
+                    assert_eq!(buffer[(0, row)].symbol(), line::VERTICAL);
+                    assert_eq!(buffer[(29, row)].symbol(), line::VERTICAL);
+                }
+                if count == 2 {
+                    assert_eq!(
+                        hitboxes[0].card_rect.bottom() + 1,
+                        hitboxes[1].card_rect.top()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_toast_is_as_tall_as_its_drawn_body() {
         let (plain_height, plain_rows) = rendered_plain_toast(TestToastAction::Absent, 20);
         assert_eq!(plain_height, 5);
@@ -503,7 +570,7 @@ mod tests {
             terminal.backend().buffer()[(guard.x, guard.y)].symbol(),
             "G"
         );
-        assert_eq!(toasts.hits[0].card_rect, Rect::new(6, 8, 10, 3));
+        assert_eq!(toasts.hits[0].card_rect, Rect::new(6, 7, 10, 3));
     }
 
     #[test]
@@ -641,14 +708,58 @@ mod tests {
 
     #[test]
     fn a_toast_body_without_room_ends_in_the_mark() {
-        let (_, rows) = rendered_plain_toast(TestToastAction::Absent, 4);
-        let last_body_row = rows[2].chars().skip(2).take(12).collect::<String>();
+        let (_, rows) = rendered_plain_toast(TestToastAction::Absent, 6);
+        let last_body_row = rows[3].chars().skip(2).take(12).collect::<String>();
 
         assert!(last_body_row.trim_end().ends_with(ELISION));
     }
 
     #[test]
-    fn configured_toast_gap_does_not_insert_blank_rows_between_cards() {
+    fn a_stack_gap_is_charged_only_between_drawn_cards() {
+        for placement in [ToastPlacement::TopRight, ToastPlacement::BottomRight] {
+            let mut settings = settings_with_width(12);
+            settings.placement = placement;
+            let mut toasts = Toasts::<TestApp>::with_settings(settings.clone());
+            let _ = toasts.push("older", "old");
+            let newest = toasts.push("newer", "new");
+            let views = toasts.active_views(Instant::now() + Duration::from_secs(1));
+            let backend = TestBackend::new(30, 5);
+            let mut terminal = Terminal::new(backend).expect("terminal should initialize");
+            let mut hitboxes = Vec::new();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(
+                        Paragraph::new(vec![Line::from("G".repeat(30)); 5]),
+                        frame.area(),
+                    );
+                    hitboxes = render_toasts(
+                        frame,
+                        frame.area(),
+                        &views,
+                        &settings,
+                        PaneFocusState::Inactive,
+                        None,
+                    )
+                    .hitboxes;
+                })
+                .expect("toast stack should render");
+            assert_eq!(hitboxes.len(), 1, "{placement:?}");
+            assert_eq!(hitboxes[0].id, newest);
+            let card = hitboxes[0].card_rect;
+            assert_eq!(card.y, 1);
+            assert_eq!(card.height, 3);
+            let buffer = terminal.backend().buffer();
+            for row in [0, 4] {
+                for column in card.left() - 1..=card.right() {
+                    assert_eq!(buffer[(column, row)].symbol(), " ");
+                }
+            }
+            assert_eq!(buffer[(card.left() + 2, 2)].symbol(), "n");
+        }
+    }
+
+    #[test]
+    fn a_toast_stack_keeps_one_cleared_row_between_cards() {
         let table: Table = "[toasts]\ngap = 1\n"
             .parse()
             .expect("toast settings TOML should parse");
@@ -681,9 +792,9 @@ mod tests {
             .hitboxes;
         assert_eq!(hitboxes.len(), 2);
         assert_eq!(
-            hitboxes[0].card_rect.bottom(),
+            hitboxes[0].card_rect.bottom() + 1,
             hitboxes[1].card_rect.y,
-            "toast cards should be adjacent with no blank row"
+            "toast cards should have one cleared row between them"
         );
     }
 
