@@ -58,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The settings overlay's two Commands lists are typed in: Enter opens `excluded` or `hidden_when_idle` as text, entries separated by commas or spaces, Enter again writes `config.toml` and applies it on the spot -- the scan picks up `excluded` on its next pass -- and Esc leaves the list as it was.
 
 ### Changed
+- Commands keep their own progress, profile and parent order; Short view names the session runner, ancestry cuts stay inline, and metadata columns retain their session widths.
 - Built-in grid inks meet their contrast floors, pid families use at least five distinct hues clear of table semantic inks in each theme, finished rows stay readable through the first half of their fade, and cell and summary foot readouts fade with their contents.
 - The capture toast explains progress reporting in plain words and highlights `cargo tile uninstall` on one line.
 - Command cells share column widths across each frame, keep compiler and runs beside the command, leave the right frame clear, and label only columns with visible values. Summary and command tables share column drops that keep command names whole, and shortened directory headings fit their terminal-cell width.

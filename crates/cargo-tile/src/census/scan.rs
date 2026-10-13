@@ -353,7 +353,37 @@ pub(crate) struct CargoGroup {
     /// What stands above [`lead`](Self::lead), outermost first, ending
     /// at the process that started it. Empty for a command whose
     /// parents cannot be read.
-    pub(crate) ancestry: Vec<Ancestor>,
+    pub(crate) ancestry: AncestryWalk<Ancestor>,
+}
+
+/// Known ancestors retain whether the bounded parent walk reached its end.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AncestryWalk<T> {
+    /// No further readable, non-root, unvisited parent remains.
+    Ended(Vec<T>),
+    /// Another parent remains beyond the walk's limit.
+    LimitCut(Vec<T>),
+}
+
+impl<T> AncestryWalk<T> {
+    /// Known levels, ordered from the outermost ancestor to the nearest.
+    pub(crate) fn as_slice(&self) -> &[T] {
+        match self {
+            Self::Ended(levels) | Self::LimitCut(levels) => levels,
+        }
+    }
+
+    /// Unavailable process metadata may omit levels without changing why the walk stopped.
+    fn filter_map<U>(self, filter: impl FnMut(T) -> Option<U>) -> AncestryWalk<U> {
+        match self {
+            Self::Ended(levels) => {
+                AncestryWalk::Ended(levels.into_iter().filter_map(filter).collect())
+            },
+            Self::LimitCut(levels) => {
+                AncestryWalk::LimitCut(levels.into_iter().filter_map(filter).collect())
+            },
+        }
+    }
 }
 
 impl CargoGroup {
@@ -547,7 +577,9 @@ fn scan(
     let mut capture = Capture::take(roots);
     let mut detailed = census.detailed();
     for pid in capture.registered_pids().into_iter().map(Pid::from_u32) {
-        for candidate in std::iter::once(pid).chain(census.ancestor_pids(pid)) {
+        for candidate in
+            std::iter::once(pid).chain(census.ancestor_pids(pid).as_slice().iter().copied())
+        {
             if !detailed.contains(&candidate) {
                 detailed.push(candidate);
             }
@@ -1636,7 +1668,7 @@ impl Census {
         let mut pids = self.cargo.clone();
         pids.extend(self.compilers.iter().map(|&(pid, _)| pid));
         for &pid in &self.cargo {
-            for ancestor in self.ancestor_pids(pid) {
+            for &ancestor in self.ancestor_pids(pid).as_slice() {
                 if !pids.contains(&ancestor) {
                     pids.push(ancestor);
                 }
@@ -1652,21 +1684,22 @@ impl Census {
     /// it tells one command from no other. [`PARENT_WALK_LIMIT`] bounds
     /// it the way it bounds the compiler walk, and a pid already on the
     /// chain ends it outright, so a reparented cycle cannot spin here.
-    fn ancestor_pids(&self, pid: Pid) -> Vec<Pid> {
+    fn ancestor_pids(&self, pid: Pid) -> AncestryWalk<Pid> {
         let mut chain = Vec::new();
         let mut current = pid;
-        for _ in 0..PARENT_WALK_LIMIT {
-            let Some(&parent) = self.parents.get(&current) else {
-                break;
-            };
+        while let Some(&parent) = self.parents.get(&current) {
             if parent.as_u32() <= ROOT_PROCESS_PID || chain.contains(&parent) {
                 break;
+            }
+            if chain.len() == PARENT_WALK_LIMIT {
+                chain.reverse();
+                return AncestryWalk::LimitCut(chain);
             }
             chain.push(parent);
             current = parent;
         }
         chain.reverse();
-        chain
+        AncestryWalk::Ended(chain)
     }
 
     /// What stands above `pid`, as the command's own cell lists it:
@@ -1690,17 +1723,18 @@ impl Census {
         system: &ProcessObservations<'_>,
         home: ScannerHome<'_>,
         pid: Pid,
-    ) -> Vec<Ancestor> {
-        self.ancestor_pids(pid)
-            .into_iter()
-            .filter_map(|pid| system.process(pid))
-            .filter(|process| !command_text::names_cargo(process.cmd()))
-            .map(|process| Ancestor {
+    ) -> AncestryWalk<Ancestor> {
+        self.ancestor_pids(pid).filter_map(|pid| {
+            let process = system.process(pid)?;
+            if command_text::names_cargo(process.cmd()) {
+                return None;
+            }
+            Some(Ancestor {
                 pid:            process.pid().as_u32(),
                 command:        describe(process, home),
                 passes_through: is_transparent(process.name()),
             })
-            .collect()
+        })
     }
 
     /// What the capture behind `pid` reports, if one is behind it.
@@ -1916,7 +1950,7 @@ impl Census {
                             .identities
                             .get(child)
                             .is_some_and(|identity| self.identities.get(pid) == Some(identity))
-                        && self.ancestor_pids(*child).contains(pid)
+                        && self.ancestor_pids(*child).as_slice().contains(pid)
                 })
             })
             .collect();
@@ -2042,7 +2076,7 @@ impl Census {
     ) -> Vec<CargoGroup> {
         let children = self.cargo_children();
         let mut candidates = self.cargo.clone();
-        candidates.sort_by_key(|pid| self.ancestor_pids(*pid).len());
+        candidates.sort_by_key(|pid| self.ancestor_pids(*pid).as_slice().len());
         let mut rows: Vec<CargoProcess> = Vec::new();
         for pid in candidates {
             if !rows.iter().any(|row| row.pid == pid.as_u32())
@@ -2204,9 +2238,12 @@ impl Census {
             };
             let mut lead = rows.remove(index);
             let ancestry = self.ancestry(system, home, Pid::from_u32(lead.pid));
-            lead.parent = ancestry.last().map_or(VisibleParent::None, |ancestor| {
-                VisibleParent::Ancestor(ancestor.pid)
-            });
+            lead.parent = ancestry
+                .as_slice()
+                .last()
+                .map_or(VisibleParent::None, |ancestor| {
+                    VisibleParent::Ancestor(ancestor.pid)
+                });
             for row in &mut rows {
                 row.nested = matches!(&row.parent, VisibleParent::Invocation { id: parent, .. } if parent != &id);
             }
@@ -2290,7 +2327,7 @@ impl Census {
         lead.compiler = aggregate_compilers(&attributed.compilers, whole_group);
         self.annotate_capture(&mut lead, capture, home);
         let ancestry = self.ancestry(system, home, root);
-        lead.parent = self.drawn_parent(root, &ancestry);
+        lead.parent = self.drawn_parent(root, ancestry.as_slice());
 
         let mut dated: Vec<(u64, CargoProcess)> = managed
             .into_iter()
@@ -2323,7 +2360,7 @@ impl Census {
                 // this row is waiting on, mirrored into the log of the
                 // run it is inside.
                 self.annotate_capture(&mut managed_row, capture, home);
-                managed_row.parent = self.drawn_parent(pid, &ancestry);
+                managed_row.parent = self.drawn_parent(pid, ancestry.as_slice());
                 managed_row.nested = !children
                     .get(&root)
                     .is_some_and(|started_by_the_lead| started_by_the_lead.contains(&pid));
@@ -2747,7 +2784,9 @@ pub(crate) fn cpu_label(cpu: f32) -> String {
 /// Whether a process only passed a command through rather than being
 /// what launched it, per [`TRANSPARENT_PROCESS_NAMES`].
 fn is_transparent(name: &OsStr) -> bool {
-    name.to_str()
+    Path::new(name)
+        .file_name()
+        .and_then(OsStr::to_str)
         .is_some_and(|name| TRANSPARENT_PROCESS_NAMES.contains(&name))
 }
 
@@ -5766,7 +5805,7 @@ mod tests {
             let groups = vec![CargoGroup {
                 lead:     directory_row(),
                 rest:     Vec::new(),
-                ancestry: Vec::new(),
+                ancestry: AncestryWalk::Ended(Vec::new()),
             }];
             census_of(&[(10, 20)]).associate_status(&mut capture, &groups);
             let associations = &capture.root_status[preferred_index].associations;
@@ -6090,11 +6129,11 @@ mod tests {
 
         assert_eq!(
             census.ancestor_pids(Pid::from_u32(64432)),
-            vec![
+            AncestryWalk::Ended(vec![
                 Pid::from_u32(6218),
                 Pid::from_u32(12444),
                 Pid::from_u32(12445),
-            ],
+            ]),
         );
     }
 
@@ -6106,7 +6145,7 @@ mod tests {
 
         assert_eq!(
             census.ancestor_pids(Pid::from_u32(64432)),
-            vec![Pid::from_u32(12445)],
+            AncestryWalk::Ended(vec![Pid::from_u32(12445)]),
         );
     }
 
@@ -6118,7 +6157,7 @@ mod tests {
 
         assert_eq!(
             census.ancestor_pids(Pid::from_u32(64432)),
-            vec![Pid::from_u32(901), Pid::from_u32(900)],
+            AncestryWalk::Ended(vec![Pid::from_u32(901), Pid::from_u32(900)]),
         );
     }
 
@@ -6130,6 +6169,91 @@ mod tests {
         for name in ["zsh", "bash", "sh", "login"] {
             assert!(is_transparent(OsStr::new(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn nu_is_a_transparent_launcher() {
+        assert!(is_transparent(OsStr::new("nu")));
+        assert!(is_transparent(OsStr::new("/nix/store/shell/bin/nu")));
+    }
+
+    #[test]
+    fn a_parent_walk_reports_a_cut_only_when_an_unvisited_parent_remains() {
+        for count in [
+            0,
+            PARENT_WALK_LIMIT - 1,
+            PARENT_WALK_LIMIT,
+            PARENT_WALK_LIMIT + 1,
+        ] {
+            let parents: Vec<_> = (0..count)
+                .map(|index| {
+                    let offset = u32::try_from(index).expect("fixture fits a pid");
+                    (100 + offset, 101 + offset)
+                })
+                .chain(std::iter::once((
+                    100 + u32::try_from(count).expect("fixture fits a pid"),
+                    ROOT_PROCESS_PID,
+                )))
+                .collect();
+            let census = census_of(&parents);
+            let walk = census.ancestor_pids(Pid::from_u32(100));
+            assert_eq!(walk.as_slice().len(), count.min(PARENT_WALK_LIMIT));
+            let expected: Vec<_> = (0..count.min(PARENT_WALK_LIMIT))
+                .rev()
+                .map(|index| Pid::from_u32(101 + u32::try_from(index).expect("fixture fits a pid")))
+                .collect();
+            assert_eq!(walk.as_slice(), expected);
+            assert_eq!(
+                matches!(walk, AncestryWalk::LimitCut(_)),
+                count > PARENT_WALK_LIMIT
+            );
+        }
+        let mut parents: Vec<_> = (0..PARENT_WALK_LIMIT)
+            .map(|index| {
+                let offset = u32::try_from(index).expect("fixture fits a pid");
+                (100 + offset, 101 + offset)
+            })
+            .collect();
+        parents.push((
+            100 + u32::try_from(PARENT_WALK_LIMIT).expect("fixture fits a pid"),
+            101,
+        ));
+        assert!(matches!(
+            census_of(&parents).ancestor_pids(Pid::from_u32(100)),
+            AncestryWalk::Ended(_)
+        ));
+        parents.pop();
+        assert!(matches!(
+            census_of(&parents).ancestor_pids(Pid::from_u32(100)),
+            AncestryWalk::Ended(_)
+        ));
+    }
+
+    #[test]
+    fn unreadable_and_cargo_ancestors_do_not_erase_a_walk_limit_cut() {
+        let parents: Vec<_> = (0..=PARENT_WALK_LIMIT)
+            .map(|index| {
+                let offset = u32::try_from(index).expect("fixture fits a pid");
+                (100 + offset, 101 + offset)
+            })
+            .collect();
+        let census = census_of(&parents);
+        let runner_argv = [
+            OsString::from("/nix/store/runner/bin/Runner.Worker"),
+            "spawnclient".into(),
+        ];
+        let cargo_argv = [OsString::from("cargo"), "check".into()];
+        let observations = ProcessObservations::new([
+            ProcessObservation::cargo(101, &runner_argv),
+            ProcessObservation::cargo(102, &cargo_argv),
+        ]);
+        let ancestry = census.ancestry(&observations, ScannerHome::Unavailable, Pid::from_u32(100));
+        assert!(matches!(ancestry, AncestryWalk::LimitCut(_)));
+        assert_eq!(ancestry.as_slice().len(), 1);
+        assert_eq!(ancestry.as_slice()[0].pid, 101);
+        assert!(
+            matches!(census.ancestry(&ProcessObservations::default(), ScannerHome::Unavailable, Pid::from_u32(100)), AncestryWalk::LimitCut(levels) if levels.is_empty())
+        );
     }
 
     #[test]

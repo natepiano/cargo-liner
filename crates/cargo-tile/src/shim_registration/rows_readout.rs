@@ -57,7 +57,7 @@ fn collision_roster() -> Roster {
         vec![CargoGroup {
             lead,
             rest: vec![child],
-            ancestry,
+            ancestry: crate::census::scan::AncestryWalk::Ended(ancestry),
         }],
         Instant::now(),
     );
