@@ -42,6 +42,8 @@ pub(crate) const DEFAULT_HIDDEN_WHEN_IDLE: [&str; 2] =
 /// Id of the built-in light variant, and the `appearance.light_theme`
 /// default.
 pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
+/// File under [`CONFIG_DIRNAME`] each panic is appended to.
+pub(crate) const PANIC_LOG_FILENAME: &str = "panic.log";
 
 // family identity
 /// Theme role for the blue family identity hue.

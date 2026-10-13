@@ -18,7 +18,6 @@ workspace = true
 # Capture of the desktop behind the terminal window, and the attract-mode animation drawn from it.
 # Off by default because only an app that draws an idle screen has any use for it.
 backdrop = [
-  "dep:chrono",
   "dep:image",
   "dep:objc2-core-graphics",
   "dep:screencapturekit",
@@ -30,8 +29,9 @@ clipboard = ["crossterm/osc52"]
 default = ["clipboard"]
 
 [dependencies]
-# Save times on the attract favorites `backdrop` keeps in `favorites.toml`.
-chrono             = { workspace = true, optional = true }
+# Save times on the attract favorites `backdrop` keeps in `favorites.toml`, and the time on each
+# entry `run_terminal` appends to an app's panic log.
+chrono             = { workspace = true }
 crossbeam-channel  = { workspace = true }
 crossterm          = { workspace = true }
 dark-light         = { workspace = true }

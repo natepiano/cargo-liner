@@ -1,5 +1,6 @@
 //! Constants for the runner: the full-repaint cadence and its marker,
-//! and the environment iTerm2 announces itself through.
+//! the panic log's fallback text, and the environment iTerm2 announces
+//! itself through.
 
 use ratatui::style::Modifier;
 
@@ -38,3 +39,10 @@ pub(super) const ITERM2_TERM_PROGRAM: &str = "iTerm.app";
 /// Environment variable iTerm2 sets to the name of the profile the
 /// session started on.
 pub(super) const ITERM2_PROFILE_ENV: &str = "ITERM_PROFILE";
+
+// panic log
+/// Written in place of a panic's location when the hook is not given one.
+pub(super) const PANIC_LOCATION_UNKNOWN: &str = "an unknown location";
+/// Written in place of a panic's message when its payload is not text,
+/// as the standard library's own hook prints it.
+pub(super) const PANIC_PAYLOAD_NOT_TEXT: &str = "Box<dyn Any>";
