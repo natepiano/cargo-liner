@@ -28,7 +28,8 @@ use crate::ids::WorktreeKind;
 /// The name of the administrative directory or file at a worktree root.
 const GIT_DIRECTORY_NAME: &str = ".git";
 
-/// Canonical directories that bound filesystem worktree discovery.
+/// Ceiling directories that bound filesystem worktree discovery, canonicalized as git canonicalizes
+/// them.
 struct DiscoveryCeilings(Vec<PathBuf>);
 
 impl DiscoveryCeilings {
@@ -46,20 +47,29 @@ impl DiscoveryCeilings {
 }
 
 impl From<&OsStr> for DiscoveryCeilings {
-    /// Parse a path list as git does: an entry that is empty, relative, or missing is ignored,
-    /// and the rest still apply.
+    /// Parse a path list as git does, through `env::split_paths`.
     fn from(list: &OsStr) -> Self { env::split_paths(list).collect() }
 }
 
 impl FromIterator<PathBuf> for DiscoveryCeilings {
+    /// Drop relative entries. Drop empty entries and keep later absolute entries as given.
+    /// Canonicalize earlier absolute entries, keeping them as given on failure.
+    /// This follows git's `setup.c` `canonicalize_ceiling_entry`, except on failure.
     fn from_iter<Paths: IntoIterator<Item = PathBuf>>(paths: Paths) -> Self {
-        Self(
-            paths
-                .into_iter()
-                .filter(|path| path.is_absolute())
-                .filter_map(|path| fs::canonicalize(path).ok())
-                .collect(),
-        )
+        let mut ceilings = Vec::new();
+        let mut canonicalize_entries = true;
+        for path in paths {
+            if path.as_os_str().is_empty() {
+                canonicalize_entries = false;
+            } else if path.is_absolute() {
+                ceilings.push(if canonicalize_entries {
+                    fs::canonicalize(&path).unwrap_or(path)
+                } else {
+                    path
+                });
+            }
+        }
+        Self(ceilings)
     }
 }
 
@@ -492,6 +502,8 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
 
     use tempfile::tempdir;
 
@@ -539,6 +551,63 @@ mod tests {
     }
 
     #[test]
+    fn a_ceiling_named_through_a_symlink_stops_the_walk() {
+        let repository = test_support::scratch_repository();
+        let ceiling = repository.path().join("ceiling");
+        let child = ceiling.join("child");
+        fs::create_dir_all(&child).expect("child directory should exist");
+        let temporary_directory = tempdir().expect("temporary directory should exist");
+        let link = temporary_directory.path().join("link");
+        symlink(&ceiling, &link).expect("ceiling symlink should exist");
+        let ceilings = DiscoveryCeilings::from_iter([link]);
+
+        assert!(matches!(
+            WorktreeContext::discover_with_ceilings(&child, &ceilings),
+            Err(LedgerError::RepositoryNotFound)
+        ));
+    }
+
+    #[test]
+    fn a_ceiling_after_an_empty_entry_is_kept_as_given() {
+        let repository = test_support::scratch_repository();
+        let ceiling = repository.path().join("ceiling");
+        let child = ceiling.join("child");
+        fs::create_dir_all(&child).expect("child directory should exist");
+        let temporary_directory = tempdir().expect("temporary directory should exist");
+        let link = temporary_directory.path().join("link");
+        symlink(&ceiling, &link).expect("ceiling symlink should exist");
+        let mut list = std::ffi::OsString::from(":");
+        list.push(&link);
+        let ceilings = DiscoveryCeilings::from(list.as_os_str());
+
+        let context = WorktreeContext::discover_with_ceilings(&child, &ceilings)
+            .expect("an unresolved symlink ceiling should not stop discovery");
+
+        assert_eq!(ceilings.0, [link]);
+        assert_eq!(
+            context.repository_root(),
+            fs::canonicalize(repository.path()).expect("repository should canonicalize")
+        );
+    }
+
+    #[test]
+    fn a_ceiling_that_cannot_canonicalize_is_kept_as_given() {
+        let temporary_directory = tempdir().expect("temporary directory should exist");
+        let missing_ceiling = temporary_directory.path().join("missing");
+
+        let ceilings = DiscoveryCeilings::from_iter([missing_ceiling.clone()]);
+
+        assert_eq!(ceilings.0, [missing_ceiling]);
+    }
+
+    #[test]
+    fn a_relative_ceiling_is_dropped() {
+        let ceilings = DiscoveryCeilings::from_iter([PathBuf::from("relative")]);
+
+        assert_eq!(ceilings.0, Vec::<PathBuf>::new());
+    }
+
+    #[test]
     fn the_invocation_directory_is_examined_even_at_the_ceiling() {
         let repository = test_support::scratch_repository();
         let ceilings = DiscoveryCeilings::from_iter([repository.path().to_path_buf()]);
@@ -546,7 +615,10 @@ mod tests {
         let context = WorktreeContext::discover_with_ceilings(repository.path(), &ceilings)
             .expect("invocation directory should be discovered");
 
-        assert_eq!(context.repository_root(), repository.path());
+        assert_eq!(
+            context.repository_root(),
+            fs::canonicalize(repository.path()).expect("repository should canonicalize")
+        );
     }
 
     #[test]
@@ -559,7 +631,10 @@ mod tests {
         let context = WorktreeContext::discover_with_ceilings(&child, &ceilings)
             .expect("the repository above the invocation directory should be discovered");
 
-        assert_eq!(context.repository_root(), repository.path());
+        assert_eq!(
+            context.repository_root(),
+            fs::canonicalize(repository.path()).expect("repository should canonicalize")
+        );
     }
 
     #[test]

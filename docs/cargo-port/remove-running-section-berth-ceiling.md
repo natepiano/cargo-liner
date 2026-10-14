@@ -23,9 +23,9 @@ Measured 2026-10-14 on the Mac's `main` checkout at 50fdf062 (the code this bran
 ## Delegation Context
 
 - **Project:** `cargo-berth`, the worktree reservation ledger and hook engine. Discovery finds the containing worktree from `.git` metadata alone, without running git.
-- **Project started:** 2026-10-14
+- **Project started:** 2026-10-14T18:53:51.781+00:00
 - **Worktree:** `/home/natepiano/rust/cargo-liner-berth-ceiling`, branch `remove-running-section-berth-ceiling`. Every seat works only here, and every Work Order names it. The showrunner set both (production doc, Units table).
-- **Base commit:** `020b71036178086a73cc8331ff5ba7b6f25f79d3`. The Mac clone starts from it.
+- **Base commit:** `edc0f0ebf711f1b63b0e1ef68a92312f2776e09a`. The Mac clone `/Users/natemccoy/rust/cargo-liner-berth-ceiling` is checked out detached there.
 - **Stack:** Rust workspace and cargo-nextest. The crate has no lib target: unit tests live in the binary `cargo-berth::bin/cargo-berth`, so select them with `--bins`, not `--lib`.
 - **Key files:**
   - `crates/cargo-berth/src/ledger/worktree_context.rs`:
@@ -52,7 +52,9 @@ Measured 2026-10-14 on the Mac's `main` checkout at 50fdf062 (the code this bran
 
 ## Phases
 
-### Phase 1 — Ceilings read as git reads them, and the ceiling tests pass on the Mac  · status: todo
+### Phase 1 — Ceilings read as git reads them, and the ceiling tests pass on the Mac  · status: done
+
+**Depends on:** none
 
 #### Work Order
 
@@ -92,14 +94,16 @@ Measured 2026-10-14 on the Mac's `main` checkout at 50fdf062 (the code this bran
 - `docs/cargo-berth/as-built/test-git-and-discovery.md` — discovery section
 - `crates/cargo-berth/CHANGELOG.md` — one Changed entry
 
-**Seats:** 1 writer. `impl` owns all the files, the `answers` test files included when item 6 lands there, and runs the natedev gate. The unit director runs the Mac lane on the candidate.
+**Seats:** 1 writer + 1 tester. The Work Order's ceiling work all lands in one file, so the tester takes the leak instead.
+- `impl` — Spec items 1–5 and 7: `crates/cargo-berth/src/ledger/worktree_context.rs` (its in-module tests included), the as-built doc and the changelog.
+- `test` — Spec item 6: reproduces the leak in the Mac clone (`/Users/natemccoy/rust/cargo-liner-berth-ceiling`, at the base commit, made by the unit director) and owns `crates/cargo-berth/tests/answers.rs` and the `crates/cargo-berth/tests/support/` helpers that test uses, if the cause is there.
 
 **Mac lane:**
 1. Clone once on the Mac, from its local repository so no network is needed: `ssh mac 'git clone --quiet /Users/natemccoy/rust/cargo-liner /Users/natemccoy/rust/cargo-liner-berth-ceiling'`. Skip this step if the clone exists. Its tree sits outside `/tmp` on purpose.
 2. Bring the base commit over:
-   - On natedev: `git -C /home/natepiano/rust/cargo-liner-berth-ceiling bundle create <session dir>/base.bundle 50fdf062..020b7103`.
+   - On natedev: `git -C /home/natepiano/rust/cargo-liner-berth-ceiling bundle create <session dir>/base.bundle 50fdf062..remove-running-section-berth-ceiling`.
    - `scp` the bundle to the Mac.
-   - On the Mac: `git -C /Users/natemccoy/rust/cargo-liner-berth-ceiling fetch <bundle> HEAD`, then `checkout --detach 020b71036178086a73cc8331ff5ba7b6f25f79d3`.
+   - On the Mac: `git -C /Users/natemccoy/rust/cargo-liner-berth-ceiling fetch <bundle> HEAD`, then `checkout --detach edc0f0ebf711f1b63b0e1ef68a92312f2776e09a`.
    - Check that `git status --short` is empty.
 3. `scp` every changed candidate source file into the clone: `crates/cargo-berth/src/ledger/worktree_context.rs`, plus any test file item 6 changes. Each `sha256sum` must match natedev's.
 4. Run the suite: `ssh mac 'cd /Users/natemccoy/rust/cargo-liner-berth-ceiling && zsh -lc "cargo nextest run -p cargo-berth --no-fail-fast; echo nextest-exit=\$?"' > <session dir>/mac-berth.log 2>&1`. Run it in the background.
@@ -110,7 +114,7 @@ Measured 2026-10-14 on the Mac's `main` checkout at 50fdf062 (the code this bran
 **Acceptance gate:**
 - `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`: green.
 - `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`: green on natedev, and each new test runs under 0.1 s.
-- Mac lane: `nextest-exit=0`, and the `Summary` shows every test passed, the 2 former failures and the 4 new tests included. No `LEAK` on `answers a_defer_answer_adds_no_blocking_holder`, unless Spec item 6 found the cause in product code and the proposal went to the showrunner.
+- Mac lane: `nextest-exit=0`, and the `Summary` shows every test passed, the 2 former failures and the 4 new tests included. An intermittent `LEAK` flag is accepted while every test passes and `nextest-exit=0` (showrunner, 2026-10-14): item 6 measured it as a race in nextest 0.9.136 on macOS, fixed in 0.9.145 (PR 3553), and the Mac upgrade went to natedev.
 - The checkpoint notice gives the Mac `Summary` line with its wall time next to natedev's suite wall time, the TMPDIR route (`zsh -lc`, `/var/folders`), the candidate's sha256 and the leak's cause.
 
 **Constraints from prior phases:** none. This is the only phase. `berth-hook-hang-unit` merged 50fdf062 and did not touch `worktree_context.rs`. The last change to that file was `berth-flake` phase 2 (d09f44c1), which added ceilings.
