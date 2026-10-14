@@ -296,6 +296,9 @@ impl Sides {
     /// This set with `side` added.
     const fn with(self, side: Side) -> Self { Self(self.0 | side.bit()) }
 
+    /// This set with `side` removed.
+    const fn without(self, side: Side) -> Self { Self(self.0 & !side.bit()) }
+
     /// Every side either set holds.
     const fn merge(self, other: Self) -> Self { Self(self.0 | other.0) }
 
@@ -521,6 +524,45 @@ impl GridLines {
                     Side::Right,
                 ));
                 self.mark(frame, x, y, sides);
+            }
+        }
+    }
+
+    /// Open one pane spanning its neighbours' bands so nothing crosses it.
+    /// Interior cells lose every side; edge cells lose their inward side,
+    /// while corners keep their existing joins.
+    pub(crate) fn open(&mut self, rect: Rect) {
+        if rect.is_empty() {
+            return;
+        }
+        let (left, right) = (rect.left(), rect.right() - 1);
+        let (top, bottom) = (rect.top(), rect.bottom() - 1);
+        let visible = rect.intersection(self.area);
+        for y in visible.top()..visible.bottom() {
+            for x in visible.left()..visible.right() {
+                let on_column_edge = x == left || x == right;
+                let on_row_edge = y == top || y == bottom;
+                if on_column_edge && on_row_edge {
+                    continue;
+                }
+                let index = self.index(x, y);
+                let cell = &mut self.cells[index];
+                if !on_column_edge && !on_row_edge {
+                    cell.sides = Sides::none();
+                } else {
+                    if y == top {
+                        cell.sides = cell.sides.without(Side::Down);
+                    }
+                    if y == bottom {
+                        cell.sides = cell.sides.without(Side::Up);
+                    }
+                    if x == left {
+                        cell.sides = cell.sides.without(Side::Right);
+                    }
+                    if x == right {
+                        cell.sides = cell.sides.without(Side::Left);
+                    }
+                }
             }
         }
     }
@@ -805,6 +847,38 @@ mod tests {
         let mut buffer = Buffer::empty(area);
         grid_lines.render(&mut buffer, chrome(), PaneBorders::Shared);
         buffer
+    }
+
+    #[test]
+    fn a_spanning_pane_opens_band_lines_and_keeps_border_joins() {
+        let area = Rect::new(3, 2, 11, 7);
+        let summary = Rect::new(3, 2, 11, 4);
+        let mut grid_lines = GridLines::new(area);
+        for rect in [
+            Rect::new(3, 2, 6, 7),
+            Rect::new(8, 2, 6, 7),
+            Rect::new(3, 5, 6, 4),
+            Rect::new(8, 5, 6, 4),
+            summary,
+        ] {
+            grid_lines.add(PaneFrame::new(rect));
+        }
+        grid_lines.open(summary);
+        let mut buffer = Buffer::empty(area);
+        grid_lines.render(&mut buffer, chrome(), PaneBorders::Shared);
+
+        assert_eq!(
+            rows(&buffer, area),
+            [
+                "┌─────────┐",
+                "│         │",
+                "│         │",
+                "├────┬────┤",
+                "│    │    │",
+                "│    │    │",
+                "└────┴────┘",
+            ]
+        );
     }
 
     /// The same, for panes that each close their own box.
