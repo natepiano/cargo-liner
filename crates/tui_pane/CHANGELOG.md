@@ -19,7 +19,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 - Toast timing, activation, focus and tracked-item lifetimes use named public states while preserving their rendered output.
 - Cell foot readouts and summary foot spans follow the fade and ground of their contents.
 - Toast bodies retain styled runs with explicit line-break policies, words that fit move whole to a fresh line, and cards keep one cleared row above, below and between them.
-- The tile grid automatic view shows command cells only when the summary draws at least as many content rows beside them as alone. The choice changes on settled frames and stays fixed through motion; returning to cells requires the whole summary to fit or a three-row spare margin.
+- The tile grid automatic view shows command cells whenever every cell fits the area at its floor; the area alone decides, and rows a cell cannot show go to its hidden count. The choice changes on settled frames and stays fixed through motion.
 - Tile columns give available rows first to cells below their exact framed demand. A summary no more than half a position short borrows the difference from its tallest mates without taking any tile below its height floor.
 - `wrapped` is the shared boundary-aware text wrapper, including comma break points; toast bodies retain their written spacing, and `render_toasts` now takes the body area it draws within.
 - Toast cards grow to the rows their bodies draw at the available card width, wrap each explicit line through `wrapped`, pad the body on both sides, fill widths that leave less than eight cells beside them, and reserve an available action row; when the stack gives a body fewer rows, its last visible row ends in `…`.
@@ -33,6 +33,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 - A summary spanning column bands clears their dividers from its interior and keeps the border joins to the columns below.
+- The tile grid automatic view no longer drops every command cell when tall column mates leave the summary fewer rows than it draws alone.
 - Moving tile heights keep destination bounds ordered when a previous allocation falls outside the destination's permitted height range.
 - Panics restore raw mode, mouse reporting, the alternate screen and cursor visibility before printing the panic message, while retaining iTerm2 profile restoration.
 - Tile motion keeps pieces inside their column bands, gives resident cells’ transferable spare rows at once, and lets a waiting command claim a key’s opening within the same motion. Content changes keep emptied residents at their height floor beside cutting mates and retarget filled destinations on the same clock. Entering and departing cells slide throughout that clock.

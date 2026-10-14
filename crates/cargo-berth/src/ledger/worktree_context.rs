@@ -56,19 +56,14 @@ impl FromIterator<PathBuf> for DiscoveryCeilings {
     /// Canonicalize earlier absolute entries, keeping them as given on failure.
     /// This follows git's `setup.c` `canonicalize_ceiling_entry`, except on failure.
     fn from_iter<Paths: IntoIterator<Item = PathBuf>>(paths: Paths) -> Self {
-        let mut ceilings = Vec::new();
-        let mut canonicalize_entries = true;
-        for path in paths {
-            if path.as_os_str().is_empty() {
-                canonicalize_entries = false;
-            } else if path.is_absolute() {
-                ceilings.push(if canonicalize_entries {
-                    fs::canonicalize(&path).unwrap_or(path)
-                } else {
-                    path
-                });
-            }
-        }
+        let mut paths = paths.into_iter();
+        let mut ceilings: Vec<PathBuf> = paths
+            .by_ref()
+            .take_while(|path| !path.as_os_str().is_empty())
+            .filter(|path| path.is_absolute())
+            .map(|path| fs::canonicalize(&path).unwrap_or(path))
+            .collect();
+        ceilings.extend(paths.filter(|path| path.is_absolute()));
         Self(ceilings)
     }
 }
@@ -499,6 +494,7 @@ fn read_git_administrative_layout(
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    use std::env;
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
@@ -576,8 +572,8 @@ mod tests {
         let temporary_directory = tempdir().expect("temporary directory should exist");
         let link = temporary_directory.path().join("link");
         symlink(&ceiling, &link).expect("ceiling symlink should exist");
-        let mut list = std::ffi::OsString::from(":");
-        list.push(&link);
+        let list =
+            env::join_paths([PathBuf::new(), link.clone()]).expect("ceiling list should join");
         let ceilings = DiscoveryCeilings::from(list.as_os_str());
 
         let context = WorktreeContext::discover_with_ceilings(&child, &ceilings)

@@ -63,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Built-in grid inks meet their contrast floors, pid families use at least five distinct hues clear of table semantic inks in each theme, finished rows stay readable through the first half of their fade, and cell and summary foot readouts fade with their contents.
 - The capture toast explains progress reporting in plain words and highlights `cargo tile uninstall` on one line.
 - Command cells share column widths across each frame, keep compiler and runs beside the command, leave the right frame clear, and label only columns with visible values. Summary and command tables share column drops that keep command names whole, and shortened directory headings fit their terminal-cell width.
-- In `auto`, the grid shows only the summary when cells would show fewer of its rows than the summary alone; `summary` always shows it alone, and `cells` uses cells whenever they meet their size floor.
+- In `auto` and `cells`, the grid shows command cells whenever they meet their size floor, and summary rows that do not fit go to its hidden-rows count; `summary` always shows it alone.
 - The summary stays at its current grid depth when it is no more than half a position short and the cells in its column can spare the rows, and cells hiding rows receive available column height before a shorter cell gains a blank trailing row.
 - Vertically cut tables fill the last command line before its `…`, and use an inter-directory blank row for the next heading and process when those rows would otherwise be hidden.
 - Toasts stay inside the tile frame, and shortened ancestry always marks its cut and uses the rows available to it.
@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A narrow summary keeps each value whole or marks its cut with `…`; a shortened directory keeps the end of its path, and its memory foot is whole or absent.
 
 ### Fixed
+- In `auto`, busy command cells no longer switch the grid to the summary alone; summary rows that do not fit beside them go to its hidden-rows count.
 - A tile entering a column waits for its first body row before drawing its border, so the column foot never shows two stacked rules during motion.
 - Grid motion no longer leaves an empty row above a cell's foot while that cell hides content.
 - Vertically constrained tables either keep every directory gap or yield them all, leaving any spare rows together above the foot.

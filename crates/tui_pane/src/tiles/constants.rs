@@ -32,9 +32,6 @@ pub(super) const TILE_BORDER_ROWS: u16 = 2;
 /// re-divides on the move from a quiet cell to a busy one rather than
 /// on every scan that added a row or rewrapped a command line.
 pub(super) const TILE_DEMAND_STEP: usize = 3;
-/// Unused content rows the summary keeps before `auto` returns from
-/// the summary alone to command cells.
-pub(super) const AUTO_VIEW_RETURN_MARGIN: u16 = 3;
 /// Divisor that makes half of one summary position the largest shortfall
 /// the summary may take from its column mates without adding a position.
 pub(super) const SUMMARY_SLOT_SHORTFALL_DIVISOR: u16 = 2;
@@ -189,10 +186,10 @@ pub(super) const EMPTY_DONOR_TEST_SPANS: [u16; 5] = [11, 10, 10, 10, 7];
 pub(super) const SUMMARY_DONOR_TEST_SPANS: [u16; 5] = [16, 8, 8, 8, 8];
 /// Painted- and retained-row calls made by the seven-cell moving-frame regression.
 #[cfg(test)]
-pub(super) const SEVEN_CELL_MOVING_ROW_PROBE_COUNT: usize = 29;
+pub(super) const SEVEN_CELL_MOVING_ROW_PROBE_COUNT: usize = 28;
 /// Painted-row calls made by one changed seven-cell settled frame.
 #[cfg(test)]
-pub(super) const SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT: usize = 8;
+pub(super) const SEVEN_CELL_SETTLED_DRAWN_PROBE_COUNT: usize = 7;
 /// Retained-row calls made by one changed seven-cell settled frame.
 #[cfg(test)]
 pub(super) const SEVEN_CELL_SETTLED_KEPT_PROBE_COUNT: usize = 7;
