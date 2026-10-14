@@ -54,67 +54,26 @@ Measured 2026-10-14 on the Mac's `main` checkout at 50fdf062 (the code this bran
 
 ### Phase 1 — Ceilings read as git reads them, and the ceiling tests pass on the Mac  · status: done
 
-**Depends on:** none
+#### As-built
 
-#### Work Order
-
-**Worktree:** `/home/natepiano/rust/cargo-liner-berth-ceiling`, branch `remove-running-section-berth-ceiling`.
-
-**Goal:** `DiscoveryCeilings` treats each `GIT_CEILING_DIRECTORIES` entry as git's `canonicalize_ceiling_entry` does, except that an entry which cannot be canonicalized is kept as given. Every `ledger::worktree_context` test passes on natedev and on the Mac. The full `cargo-berth` suite passes on the Mac, the route to offloading it there.
-
-**Spec:**
-
-1. **`impl FromIterator<PathBuf> for DiscoveryCeilings`** walks the entries in order. Replace the two-filter chain with one fold or loop that follows these rules:
-   - A relative entry is dropped, wherever it sits.
-   - An empty entry is dropped. From then on, every later absolute entry is kept as given, without `fs::canonicalize`. This is git's rule.
-   - An absolute entry before any empty entry is replaced by its `fs::canonicalize` result. When canonicalization fails, the entry is kept as given (showrunner's brief). It cannot match a canonical ancestor of an existing directory, so it bounds nothing, and it never blocks the other entries.
-   - The non-UTF-8 behaviour stays as it is, and its test keeps passing.
-2. **Doc comments** say what each item does now:
-   - On the struct: "Ceiling directories that bound filesystem worktree discovery, canonicalized as git canonicalizes them."
-   - On `From<&OsStr>`: it parses the path list as git does.
-   - On `FromIterator`: the three rules above, with a pointer to git's `setup.c` `canonicalize_ceiling_entry`.
-3. **Fix the two Mac failures.** In `the_invocation_directory_is_examined_even_at_the_ceiling` and `a_ceiling_at_the_invocation_directory_does_not_stop_the_walk`, compare `context.repository_root()` with `fs::canonicalize(repository.path())`, not with the path as given. Change nothing else in those tests.
-4. **New module tests.** Each one is pure, runs well under a second, and fails on Linux when its rule is broken:
-   - `a_ceiling_named_through_a_symlink_stops_the_walk` — the Mac's `/var` case, rebuilt on Linux. Take a scratch repository with `ceiling/child`. Make a second `tempdir()` that holds a symlink `link → <repo>/ceiling`, created with `std::os::unix::fs::symlink`. Build `DiscoveryCeilings::from_iter([link])`. Discovery from `child` returns `RepositoryNotFound`.
-   - `a_ceiling_after_an_empty_entry_is_kept_as_given` — the same layout, with the list `":" + link` parsed through `DiscoveryCeilings::from(&OsStr)`. Discovery from `child` finds the repository, so the symlinked ceiling no longer stops the walk, which is git's behaviour. Also assert that the stored entries equal `[link]`.
-   - `a_ceiling_that_cannot_canonicalize_is_kept_as_given` — `from_iter` of an absolute path under a tempdir that does not exist. The stored entries equal that path. The test module reads the private tuple field directly.
-   - `a_relative_ceiling_is_dropped` — `from_iter([PathBuf::from("relative")])` stores nothing.
-5. **As-built.** `docs/cargo-berth/as-built/test-git-and-discovery.md`:
-   - Rewrite the `FromIterator` bullet (line 32) to state the three rules.
-   - Change `DiscoveryCeilings(Vec<PathBuf>) … holds canonical ceiling directories` to "holds ceiling directories, canonical except entries after an empty entry and entries that fail to canonicalize".
-   - Add the four new test names to the module-test list (line 39).
-6. **The leaky test (showrunner add-on, 2026-10-14).** `cargo-berth::answers a_defer_answer_adds_no_blocking_holder` (`crates/cargo-berth/tests/answers.rs:1701`) passed on the Mac but was flagged `LEAK`: some process it started still held its stdout or stderr when the test ended. A gate run on the Mac should come back clean.
-   - Find what leaks. Run that test repeatedly on the Mac clone, then run the `answers` binary repeatedly, and name the process that survives the test.
-   - If the cause is in the test or its helpers, fix it in this phase: the test waits for the child or no longer hands it the pipe. Add the file to the Files below.
-   - If the cause is in product code, do not fix it here. Record the measured cause and send it to the showrunner as a proposal.
-7. **Changelog.** `crates/cargo-berth/CHANGELOG.md`, `## [Unreleased]` → `### Changed`, one entry: "`GIT_CEILING_DIRECTORIES` is read as git reads it: entries after an empty entry are used as given, without resolving symlinks, and an absolute entry that cannot be resolved is kept as given instead of being dropped."
+- `impl FromIterator<PathBuf> for DiscoveryCeilings` reads entries in order: a relative entry is dropped wherever it sits; an absolute entry before the first empty entry is replaced by its `fs::canonicalize` result, or kept as given when canonicalization fails; the first empty entry ends canonicalization, and every later absolute entry is kept as given. It is a `take_while` over a `by_ref` iterator, then an `extend` with the remaining absolute entries.
+- `impl From<&OsStr> for DiscoveryCeilings` parses the path list through `env::split_paths`; non-UTF-8 handling is unchanged.
+- The rules follow git's `setup.c` `canonicalize_ceiling_entry`, with one difference: git drops an entry that fails to canonicalize, cargo-berth keeps it as given. Such an entry cannot match a canonical ancestor of an existing directory, so it bounds nothing and never blocks the other entries.
+- Invariant: `DiscoveryCeilings(Vec<PathBuf>)` holds ceiling directories, canonical except entries after an empty entry and entries that fail to canonicalize.
+- Module tests `a_ceiling_named_through_a_symlink_stops_the_walk`, `a_ceiling_after_an_empty_entry_is_kept_as_given`, `a_ceiling_that_cannot_canonicalize_is_kept_as_given` and `a_relative_ceiling_is_dropped` read the private tuple field directly. `the_invocation_directory_is_examined_even_at_the_ceiling` and `a_ceiling_at_the_invocation_directory_does_not_stop_the_walk` compare `context.repository_root()` with `fs::canonicalize(repository.path())`.
 
 **Files:**
 - `crates/cargo-berth/src/ledger/worktree_context.rs` — `DiscoveryCeilings` impls, doc comments, module tests
-- `docs/cargo-berth/as-built/test-git-and-discovery.md` — discovery section
-- `crates/cargo-berth/CHANGELOG.md` — one Changed entry
+- `docs/cargo-berth/as-built/test-git-and-discovery.md` — discovery section: ceiling rules, module-test list
+- `docs/cargo-berth/as-built/worktree-coordination.md` — ceiling row
+- `crates/cargo-berth/CHANGELOG.md` — Unreleased/Changed entry on `GIT_CEILING_DIRECTORIES` parsing
 
-**Seats:** 1 writer + 1 tester. The Work Order's ceiling work all lands in one file, so the tester takes the leak instead.
-- `impl` — Spec items 1–5 and 7: `crates/cargo-berth/src/ledger/worktree_context.rs` (its in-module tests included), the as-built doc and the changelog.
-- `test` — Spec item 6: reproduces the leak in the Mac clone (`/Users/natemccoy/rust/cargo-liner-berth-ceiling`, at the base commit, made by the unit director) and owns `crates/cargo-berth/tests/answers.rs` and the `crates/cargo-berth/tests/support/` helpers that test uses, if the cause is there.
+**Gotchas:**
+- macOS tempdirs live under `/var`, a symlink to `/private/var`; a test comparing a discovered root with a tempdir path canonicalizes the tempdir path first.
+- cargo-berth has no lib target; its unit tests run under `--bins`.
+- The intermittent nextest `LEAK` on `answers a_defer_answer_adds_no_blocking_holder` on macOS is nextest 0.9.136's capture-pipe race (a child inherits a sibling test's stdout pipe), fixed in nextest 0.9.145 (PR 3553); a Mac run counts as passing when every test passes and nextest exits 0.
+- Over ssh to the Mac the remote exit status is unreliable; read the nextest `Summary` line and an explicitly echoed exit code.
 
-**Mac lane:**
-1. Clone once on the Mac, from its local repository so no network is needed: `ssh mac 'git clone --quiet /Users/natemccoy/rust/cargo-liner /Users/natemccoy/rust/cargo-liner-berth-ceiling'`. Skip this step if the clone exists. Its tree sits outside `/tmp` on purpose.
-2. Bring the base commit over:
-   - On natedev: `git -C /home/natepiano/rust/cargo-liner-berth-ceiling bundle create <session dir>/base.bundle 50fdf062..remove-running-section-berth-ceiling`.
-   - `scp` the bundle to the Mac.
-   - On the Mac: `git -C /Users/natemccoy/rust/cargo-liner-berth-ceiling fetch <bundle> HEAD`, then `checkout --detach edc0f0ebf711f1b63b0e1ef68a92312f2776e09a`.
-   - Check that `git status --short` is empty.
-3. `scp` every changed candidate source file into the clone: `crates/cargo-berth/src/ledger/worktree_context.rs`, plus any test file item 6 changes. Each `sha256sum` must match natedev's.
-4. Run the suite: `ssh mac 'cd /Users/natemccoy/rust/cargo-liner-berth-ceiling && zsh -lc "cargo nextest run -p cargo-berth --no-fail-fast; echo nextest-exit=\$?"' > <session dir>/mac-berth.log 2>&1`. Run it in the background.
-   - `zsh -lc` gives TMPDIR as `/var/folders/…`, which is the case the brief names.
-   - Read the `Summary` line and `nextest-exit=`. The ssh exit status gave a wrong answer on 2026-10-14, so do not use it.
-5. After the checkpoint, remove the Mac clone: `ssh mac 'rm -rf /Users/natemccoy/rust/cargo-liner-berth-ceiling'`.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth`: green.
-- `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth`: green on natedev, and each new test runs under 0.1 s.
-- Mac lane: `nextest-exit=0`, and the `Summary` shows every test passed, the 2 former failures and the 4 new tests included. An intermittent `LEAK` flag is accepted while every test passes and `nextest-exit=0` (showrunner, 2026-10-14): item 6 measured it as a race in nextest 0.9.136 on macOS, fixed in 0.9.145 (PR 3553), and the Mac upgrade went to natedev.
-- The checkpoint notice gives the Mac `Summary` line with its wall time next to natedev's suite wall time, the TMPDIR route (`zsh -lc`, `/var/folders`), the candidate's sha256 and the leak's cause.
-
-**Constraints from prior phases:** none. This is the only phase. `berth-hook-hang-unit` merged 50fdf062 and did not touch `worktree_context.rs`. The last change to that file was `berth-flake` phase 2 (d09f44c1), which added ceilings.
+**Ruled out:**
+- Dropping a ceiling that fails to canonicalize, as git does — kept as given, since it bounds nothing.
+- A cargo-berth workaround for the macOS `LEAK` — the cause is in nextest, fixed upstream in 0.9.145.
