@@ -412,14 +412,16 @@ fn collect_module_items(
         let mut child_module_path = module_path.to_vec();
         child_module_path.push(module_name.clone());
         if let Some((_, child_items)) = &item_mod.content {
-            collect_module_items(
-                child_items,
-                &directories.inside_inline_module(&module_name),
-                &child_module_path,
-                visited,
-                source_files,
-                structural_parent_module_paths,
-            )?;
+            for directory in directories.inside_inline_module(item_mod) {
+                collect_module_items(
+                    child_items,
+                    &directory,
+                    &child_module_path,
+                    visited,
+                    source_files,
+                    structural_parent_module_paths,
+                )?;
+            }
             continue;
         }
 

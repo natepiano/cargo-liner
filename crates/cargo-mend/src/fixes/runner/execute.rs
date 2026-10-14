@@ -95,7 +95,7 @@ impl MendRunner<'_> {
         )?;
         // Created after the check, which `cargo fix` may have rewritten files
         // during.
-        let sources = ParsedSources::default();
+        let sources = ParsedSources::for_selection(self.selection);
         let diagnostics_config = &self.loaded_config.diagnostics_config;
         let enabled = |codes: &[DiagnosticCode]| {
             codes

@@ -38,7 +38,7 @@ pub(crate) enum FileModulePath {
 /// relative to the directory holding that file, while a plain `mod name;` is
 /// relative to the module's own directory — the same directory for `mod.rs`,
 /// `lib.rs`, and `main.rs`, but `<dir>/<stem>` for every other file.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ModuleDirectories {
     file:   PathBuf,
     module: PathBuf,
@@ -76,13 +76,37 @@ impl ModuleDirectories {
         }
     }
 
-    /// The bases a `mod` written inside inline module `name` resolves against.
+    /// The bases a child declaration inside an inline module resolves against.
     ///
-    /// Both collapse onto the inline module's directory: inside a `mod` block
-    /// even a `#[path]` is relative to the module directory, inline components
-    /// included.
-    pub(crate) fn inside_inline_module(&self, name: &str) -> Self {
-        let module = self.module.join(name);
+    /// An inline module's own `#[path]` replaces its directory. Conditional
+    /// paths retain every candidate because this walk does not evaluate cfg.
+    pub(crate) fn inside_inline_module(&self, declaration: &ItemMod) -> Vec<Self> {
+        let direct = declaration.attrs.iter().filter_map(direct_path_attribute);
+        let mut directories = direct
+            .map(|path| self.inline_path(&path))
+            .collect::<Vec<_>>();
+        if directories.is_empty() {
+            let module = self.module.join(declaration.ident.unraw().to_string());
+            directories.push(Self {
+                file: module.clone(),
+                module,
+            });
+        }
+        for path in declaration
+            .attrs
+            .iter()
+            .flat_map(conditional_path_attributes)
+        {
+            let directory = self.inline_path(&path);
+            if !directories.contains(&directory) {
+                directories.push(directory);
+            }
+        }
+        directories
+    }
+
+    fn inline_path(&self, path: &str) -> Self {
+        let module = self.file.join(path);
         Self {
             file: module.clone(),
             module,
@@ -148,12 +172,18 @@ impl ModuleMap {
     /// reading each through `sources`. Callers ask
     /// [`ParsedSources::module_map`], which resolves each source root once.
     pub(super) fn resolve(source_root: &Path, sources: &ParsedSources) -> Self {
+        Self::for_crate_roots(&crate_root_files(source_root), sources)
+    }
+
+    /// Merge each target's mount chains before deciding whether a file has a
+    /// single module path suitable for relative rewrites.
+    pub(super) fn for_crate_roots(crate_roots: &[PathBuf], sources: &ParsedSources) -> Self {
         let mut merged = Self {
             declarations: FxHashMap::default(),
             ungated:      FxHashSet::default(),
         };
-        for crate_root in crate_root_files(source_root) {
-            merged.absorb(Self::for_crate_root(&crate_root, sources));
+        for crate_root in crate_roots {
+            merged.absorb(Self::for_crate_root(crate_root, sources));
         }
         merged
     }
@@ -313,11 +343,9 @@ impl ModuleWalk<'_> {
             };
 
             if let Some((_, inline_items)) = &declaration.content {
-                self.walk_items(
-                    inline_items,
-                    &directories.inside_inline_module(&module_name),
-                    &child,
-                );
+                for directory in directories.inside_inline_module(declaration) {
+                    self.walk_items(inline_items, &directory, &child);
+                }
                 continue;
             }
 
@@ -473,10 +501,38 @@ mod tests {
 
     #[test]
     fn an_inline_module_moves_both_bases_into_its_directory() {
+        let declaration = syn::parse_str("mod inner {}").expect("parse inline module");
         let directories = ModuleDirectories::for_file(Path::new("/repo/src/a/b.rs"))
-            .inside_inline_module("inner");
+            .inside_inline_module(&declaration)
+            .remove(0);
         assert_eq!(directories.file, Path::new("/repo/src/a/b/inner"));
         assert_eq!(directories.module, Path::new("/repo/src/a/b/inner"));
+    }
+
+    #[test]
+    fn an_inline_path_attribute_resolves_child_files_at_its_declared_directory() {
+        let crate_dir = tempdir().expect("create inline mount crate");
+        let source_root = crate_dir.path().join("src");
+        fs::create_dir_all(source_root.join("parent")).expect("create parent directory");
+        fs::write(source_root.join("lib.rs"), "mod parent;\n").expect("write crate root");
+        fs::write(source_root.join("parent/mod.rs"), "mod scan;\n").expect("write parent");
+        fs::write(
+            source_root.join("parent/scan.rs"),
+            "#[cfg(test)]\n#[path = \".\"]\nmod tests { #[path = \"x.rs\"] mod x; }\n",
+        )
+        .expect("write inline test mount");
+        fs::write(source_root.join("parent/x.rs"), "").expect("write test child");
+        let map = ModuleMap::resolve(&source_root, &ParsedSources::default());
+        assert_eq!(
+            map.file_module_path(&source_root, &source_root.join("parent/x.rs")),
+            Some(FileModulePath::Known(vec![
+                "parent".to_string(),
+                "scan".to_string(),
+                "tests".to_string(),
+                "x".to_string(),
+            ]))
+        );
+        assert!(map.is_test_only(&source_root.join("parent/x.rs")));
     }
 
     #[test]

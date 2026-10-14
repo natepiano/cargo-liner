@@ -3,6 +3,62 @@ use std::path::Path;
 use crate::support::*;
 
 #[test]
+fn nested_path_test_mounts_keep_the_crate_qualified_call() {
+    let temp = tempdir().expect("create nested mount fixture");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::create_dir_all(temp.path().join("src/parent")).expect("create parent directory");
+    fs::create_dir(temp.path().join("tests")).expect("create test directory");
+    for (name, text) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"nested_path_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/lib.rs", "mod parent;\n"),
+        (
+            "src/parent/mod.rs",
+            "pub(crate) fn value() -> u32 { 7 }\nmod scan;\n",
+        ),
+        (
+            "src/parent/scan.rs",
+            "#[cfg(test)]\n#[path = \".\"]\nmod tests {\n    #[path = \"x.rs\"]\n    mod x;\n}\n",
+        ),
+        (
+            "src/parent/x.rs",
+            "#[test]\nfn reads_parent() { let value = crate::parent::value(); assert_eq!(value, 7); }\n",
+        ),
+        (
+            "tests/shared.rs",
+            "#[path = \"../src/parent/mod.rs\"]\nmod parent;\n#[path = \"../src/parent/mod.rs\"]\nmod mounted;\n",
+        ),
+    ] {
+        fs::write(temp.path().join(name), text).expect("write nested mount fixture");
+    }
+    init_git_repo(temp.path());
+    let output = mend_command_for(&temp.path().join("Cargo.toml"))
+        .args(["--fix", "--all-targets"])
+        .output()
+        .expect("fix nested mount fixture");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = fs::read_to_string(temp.path().join("src/parent/x.rs")).expect("read fixed child");
+    assert!(text.contains("crate::parent::value()"), "{text}");
+    let check = cargo_command()
+        .current_dir(temp.path())
+        .args(["check", "--all-targets"])
+        .output()
+        .expect("check fixed mount fixture");
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
 fn fix_all_preserves_cfg_on_rewritten_module_import() {
     if std::env::var_os("CARGO_MEND_SKIP_NETWORK_TESTS").is_some() {
         eprintln!(
