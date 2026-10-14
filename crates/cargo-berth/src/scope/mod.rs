@@ -51,6 +51,14 @@ impl PathCase {
             Self::Insensitive => left.to_lowercase() == right.to_lowercase(),
         }
     }
+
+    /// Spell a component so two components are `component_eq` exactly when their keys are equal.
+    pub(super) fn component_key(self, component: &str) -> String {
+        match self {
+            Self::Sensitive => component.to_owned(),
+            Self::Insensitive => component.to_lowercase(),
+        }
+    }
 }
 
 impl DeclaredReservationScopeSet {
