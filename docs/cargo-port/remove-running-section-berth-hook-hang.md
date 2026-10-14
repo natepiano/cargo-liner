@@ -43,63 +43,23 @@ The showrunner (cargo-liner, 2026-10-13 23:2x EDT), relaying the user: "Cargo be
 ## Phases
 
 ### Phase 1 — The hook reduces scopes in near-linear time and asks each holder once  · status: done
-**Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo-berth hook post-tool-use` in the reproduction copy of tool-based-ui-trunk returns instead of spinning, because scope reduction is near-linear and a holder's protection is worked out once per subject instead of once per changed path.
-
-**Spec:**
-
-*The measured cause.* Three stack samples of the spinning hook all read `scope::antichain::reduce` ← `RetainedReservationSet::protection_for_conflict` ← `conflicts_with_holders` ← `blocking_coverage_for_drift` ← `drift::classification::blocking_coverage` ← `PreLockForeignPathClassification::build`. `build` asks coverage once per changed path; each ask runs `conflicts_with_holders` twice; each run calls `protection_for_conflict` for every foreign worktree; that joins the protected scopes of every blocking reservation the worktree holds, duplicates kept, and reduces them. `reduce` compares every scope with every other, and each comparison allocates two strings and two vectors. tool-based-ui-geometry-material held 13 blocking reservations whose merge extents total 4,732 scopes, 364 distinct: 22.4 million comparisons per reduction.
-
-*Fix A — `reduce` in near-linear time, `crates/cargo-berth/src/scope/antichain.rs`. Landed in `e82cd2d2`; seats do not rewrite it. Review reads it against this spec, and a confirmed finding is repaired in that file.* Keep the signature `pub(super) fn reduce(scopes: ReservationScopeSet, path_case: PathCase) -> ReservationScopeSet` and return exactly what today's function returns, in the same order, for every input. Today's rule, restated: a scope is dropped when (1) a `Tree` scope sits on one of its strict ancestor paths, or (2) it is a `File` and a `Tree` scope has the same path, wherever that tree stands in the list, or (3) an earlier scope has the same path and the same kind. Everything else is kept in its original position order. A `File` never removes a `Tree`. Two paths are the same when every component is equal under `PathCase::component_eq`, so the key for a path is its components, each lower-cased with `str::to_lowercase` under `PathCase::Insensitive` and untouched under `PathCase::Sensitive`. Build the keys once, hold the tree keys and the seen `(key, kind)` pairs in hash sets, and decide each scope by looking up its own key and each of its ancestor prefixes. No pair of scopes is ever compared. Leave `contains` and `overlaps` as they are: their callers compare one pair. Keep the empty-result fallback `ReservationScopeSet::try_from(reduced).unwrap_or(scopes)`.
-
-Tests in the same file:
-- Keep today's quadratic body as a test-only function `reduce_by_pairs` and assert `reduce` equals it, scope for scope, on a generated corpus: nested trees, a tree and a file on one path in both orders, repeated scopes, sibling files, paths that differ only in case, under both `PathCase` values.
-- `reduction_of_the_reported_shape_is_immediate`: 13 copies of 364 distinct file scopes (4,732 scopes) reduce to those 364 in first-occurrence order, and the call returns in under 100 ms, measured with `std::time::Instant`.
-
-*Fix B — a holder's protection once per subject, `crates/cargo-berth/src/reservation/retention.rs` and `crates/cargo-berth/src/drift/classification.rs`.* Add
-
-```rust
-/// What blocks one subject's changed paths, with every holder's protection worked out once.
-pub(crate) struct DriftCoverageProbe<'reservations> { /* private */ }
-
-impl RetainedReservationSet {
-    pub(crate) fn drift_coverage_probe(
-        &self,
-        subject_worktree_id: WorktreeId,
-        subject_coordination_run_id: CoordinationRunId,
-        path_case: PathCase,
-    ) -> DriftCoverageProbe<'_>;
-}
-
-impl DriftCoverageProbe<'_> {
-    pub(crate) fn coverage(&self, candidate: &ReservationScopeSet) -> DriftBlockingCoverage;
-}
-```
-
-The probe holds the two holder lists `blocking_coverage_for_drift` reads today: the holders standing with the subject (the predicate `!holder.is_foreign_to_coordination_run_in_worktree(run, worktree)`) and the foreign ones (the predicate without the `!`). Each entry is the holder `conflicts_with_holders` would pick, with the `ConflictProtection::Protected` representative and reduced scopes from `protection_for_conflict`, computed when the probe is built. Split `conflicts_with_holders` into that selection step and a per-candidate overlap step, so `conflicts_with_holders` itself stays one call of each and every other caller (`conflicts`, `bind_widened_scopes`, `conflicts_for_authorized_edit`) is untouched. `coverage` runs only the overlap step: `NoForeignStanding` when the standing list overlaps the candidate, otherwise `Foreign(conflicts)` or `Unclaimed` from the foreign list, exactly as lines 445–466 decide today. `RecordedAt::now()` for `activity` is read once when the probe is built. `blocking_coverage_for_drift` remains and becomes `self.drift_coverage_probe(..).coverage(candidate)`, so its existing tests prove the probe.
-
-In `classification.rs`, build one probe per subject reservation before `changes.visit_paths` in both `PreLockForeignPathClassification::build` (line 79) and `classify_locked` (line 369), from `reservation.actor().worktree` and `reservation.actor().run`, and pass it to the free `blocking_coverage` and to `PreLockForeignPathClassification::blocking_coverage` in place of the reservation set. The two passes read different reservation sets, the snapshot before the lock and the replay under it, so no probe is shared between them: "once per drift run" is once per subject per pass. (Unit director's reading of the showrunner's words; sharing across the passes would give a stale answer.)
-
-Test in `retention.rs` `mod tests`, `drift_coverage_of_the_reported_shape_ends_well_under_a_second`: replay a journal in which one foreign worktree holds 13 blocking reservations, each with a merge extent of the same 364 file scopes (4,732 in all), and a subject reservation in another worktree. Build one probe for the subject and ask coverage for 200 changed paths: 100 inside the 364 and 100 outside. Assert every inside path answers `Foreign` with one conflict naming the first of the 13 as representative, every outside path answers `Unclaimed`, and the whole test body ends in under one second by `Instant`. Before the fix the same questions through `blocking_coverage_for_drift` cost 400 reductions of 22.4 million comparisons each.
-
-*Timing in the reproduction copy (unit director, not a seat).* The copy is `/tmp/claude-1000/-home-natepiano-rust-cargo-liner-berth-hook-hang/65ab15a1-f7b8-4ef7-b1d0-7d7b24f0df2d/scratchpad/repro`: hana's `.git` copied without its ledger, the ledger snapshot from `/home/natepiano/.claude/state/berth-fix/inbox/20261014T025825Z-hana/ledger-snapshot.tar.gz` extracted into it, trunk's files at `12375bcb1` with `.git` pointed at the copy, and `payload.json` naming session `b83cfc96-7997-43ed-b401-7525476cb633`. `scratchpad/time_hook.sh <repro dir> <binary> <limit seconds>` restores the snapshot and times one hook run. Before: the installed `~/.cargo/bin/cargo-berth` with a 600 s limit. After: `target/release/cargo-berth` built from this branch. Report both figures. Measured after the fast pass (2026-10-13, strace plus a perf profile of a frame-pointer build of `e82cd2d2`, 24.8 s wall, 17.5 s CPU): drift coverage 9.8 s (`protection_for_conflict` 8.6 s of it: path keys 3.1 s, `remaining_protection` 2.1 s, scope clones 2.0 s; the overlap step about 1 s), journal replay 3.7 s, `commit_target_reachability` 1.6 s, git subprocesses 5.4 s wall (the 84 merge-tree/diff pairs 1.4 s). Fix B removes the largest part. The showrunner set cutting the 20 s as the main goal; report the after figure and the next-largest part, and change nothing beyond Fix B in this phase.
+- `pub(super) fn reduce(scopes: ReservationScopeSet, path_case: PathCase) -> ReservationScopeSet` keys each path by its components, case-folded under `PathCase::Insensitive` (`PathCase::component_key`), and decides each scope by hash lookups of its own key and each ancestor prefix; no pair of scopes is compared. Its output equals the old quadratic rule scope for scope and in order: drop a scope under a strict-ancestor `Tree`, a `File` sharing a path with any `Tree`, or a repeat of an earlier (path, kind); a `File` never removes a `Tree`. The empty-result fallback `ReservationScopeSet::try_from(reduced).unwrap_or(scopes)` remains. `contains` and `overlaps` stay pairwise.
+- `pub(crate) struct DriftCoverageProbe<'reservations>` holds one subject's standing and foreign holders, each with its `ConflictProtection::Protected` representative and reduced scopes computed once at build, and `RecordedAt::now()` read once. `RetainedReservationSet::drift_coverage_probe(&self, subject_worktree_id: WorktreeId, subject_coordination_run_id: CoordinationRunId, path_case: PathCase) -> DriftCoverageProbe<'_>` builds it; `DriftCoverageProbe::coverage(&self, candidate: &ReservationScopeSet) -> DriftBlockingCoverage` runs only the overlap step and answers `NoForeignStanding`, `Foreign(conflicts)` or `Unclaimed` as before.
+- `conflicts_with_holders` is `protected_conflict_holders` (selection) followed by `conflicts_overlapping_holders` (per-candidate overlap); `conflicts`, `bind_widened_scopes` and `conflicts_for_authorized_edit` are unchanged. `conflicts_for_drift` is gone; `blocking_coverage_for_drift` is a `#[cfg(test)]` wrapper over the probe.
+- `PreLockForeignPathClassification::build` and `classify_locked` build one probe per subject reservation, from `reservation.actor().worktree` and `.run`, before `changes.visit_paths`; both `blocking_coverage` functions take the probe.
+- Hook on the reported ledger: 600 s (killed) → 20.4 s with keyed reduction → 7.8 s with the probe, same answer.
 
 **Files:**
-- `crates/cargo-berth/src/scope/antichain.rs` — landed in `e82cd2d2` (`reduce`, `reduce_by_pairs`, equivalence and shape tests); reviewed in this phase, edited only by a repair.
-- `crates/cargo-berth/src/reservation/retention.rs` — `DriftCoverageProbe`, `drift_coverage_probe`, the split of `conflicts_with_holders`, `blocking_coverage_for_drift` as a wrapper, and the shape test.
-- `crates/cargo-berth/src/drift/classification.rs` — one probe per subject in `build` and `classify_locked`; `blocking_coverage` takes the probe.
-- `crates/cargo-berth/src/reservation/mod.rs` — re-export `DriftCoverageProbe` if `drift` cannot name it otherwise.
+- `crates/cargo-berth/src/scope/antichain.rs`, `crates/cargo-berth/src/scope/mod.rs` — keyed `reduce`, test-only `reduce_by_pairs` as reference, equivalence test over both `PathCase` values, 4,732-scope timing test.
+- `crates/cargo-berth/src/reservation/retention.rs` — `DriftCoverageProbe`, the selection/overlap split, the test wrapper, the 13-reservation timing test.
+- `crates/cargo-berth/src/drift/classification.rs` — one probe per subject per pass.
 
-**Seats:** 2 writers — Fix A has landed, so the work is Fix B, split by file: the probe in `reservation`, its use in `drift`. The probe's signatures above are fixed, so `test` codes against them while `impl` writes them.
-- `impl` — `crates/cargo-berth/src/reservation/retention.rs` (the probe, the split of `conflicts_with_holders`, the wrapper, the shape test); hub: `crates/cargo-berth/src/reservation/mod.rs` (the re-export).
-- `test` — opens as impl: `crates/cargo-berth/src/drift/classification.rs` (one probe per subject in `build` and `classify_locked`; both `blocking_coverage` functions take the probe).
+**Binds later work:** the probe and keyed reduction stay as landed; a probe is built per subject per pass. The 3.7 s journal-replay figure predates the probe; profile the current build before acting on it.
 
-**Constraints from prior phases:** none.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` all green; `reduction_of_the_reported_shape_is_immediate`, the `reduce_by_pairs` equivalence test and `drift_coverage_of_the_reported_shape_ends_well_under_a_second` pass; every existing `blocking_coverage_for_drift` test passes unchanged; the unit director states the before and after hook times in the reproduction copy.
+**Gotchas:** never share a probe between the pre-lock and locked passes — they read different reservation sets (snapshot vs. replay under the lock), so a shared probe answers from a stale ledger.
 
 ### Phase 2 — The hook replays the journal in a fraction of its 3.7 s  · status: todo
 **Depends on:** Phase 1
