@@ -61,32 +61,34 @@ The showrunner (cargo-liner, 2026-10-13 23:2x EDT), relaying the user: "Cargo be
 
 **Gotchas:** never share a probe between the pre-lock and locked passes — they read different reservation sets (snapshot vs. replay under the lock), so a shared probe answers from a stale ledger.
 
-### Phase 2 — The hook replays the journal in a fraction of its 3.7 s  · status: todo
+### Phase 2 — The hook finds overlaps by key lookup and walks each target's history once  · status: done
 **Depends on:** Phase 1
 
 #### Work Order
 
-**Goal:** journal replay in the reproduction copy's hook run costs a fraction of its measured 3.7 s, with every replayed answer unchanged.
+**Goal:** the post-tool-use hook in the matched-checkpoint copy runs well under its 5.7 s baseline, with the same 234,414-byte answer.
 
 **Spec:**
 
-The showrunner (cargo-liner, 2026-10-13): "journal replay (3.7 s) becomes your next phase in this unit, without waiting to ask me; add it to the plan now. After that, report the time left and its split, and I decide whether anything further is worth a phase."
+The showrunner (cargo-liner, 2026-10-14): "retarget Phase 2 as you recommend, with both cuts. 5.7 s on every tool call is still too slow to stop at. Measure from the matched-checkpoint copy from now on and state that baseline (5.7 s) in the plan. After the phase, report the hook time and the remaining split, git wall time included."
 
-*Measured (perf, frame-pointer build of `e82cd2d2`).* `Ledger::begin_locked_transaction` → `Journal::replay_repairing_tail_from_checkpoint` → `ReplayCheckpoint::replay_journal` → `JournalReplay::extended_over` costs 3.7 s. Of that, `decode_complete_records` takes 3.2 s, and its record split (`position` on a byte slice inside `decode_complete_records`) alone takes 2.3 s. A gdb sample also landed in `Reservation::retain_target_proof` under `RetainedReservationSet::apply_evidence`, in `memcmp`.
+*Baseline.* The replay checkpoint is keyed to the journal file's device and inode, so a restored snapshot replays the whole 346 MB journal; a real ledger replays only the tail past its checkpoint. With the checkpoint matched to the restored journal the hook runs 5.7 s. A perf profile of that run (inclusive): target reachability about 30 %, the drift overlap step about 23 %; journal replay is no longer a top item.
 
-*Before dispatch, the unit director profiles the replay alone in the copy, names the cut that removes the largest share, and writes it here as the concrete Spec.* The candidates the profile must decide between: the record split scanning the whole journal once per record, rather than once overall; a checkpoint that does not cover the journal tail the hook replays; and the evidence retention comparison. The answer stays identical: the same `RetainedReservationSet` after replay, checked by a test that replays the same journal through the old and the new paths.
+*Cut 1 — overlap by key lookup (`reservation/retention.rs`).* `DriftCoverageProbe::coverage` runs `conflicts_overlapping_holders`, which scans every held scope of every holder for each changed path and calls `ReservationScope::overlaps`/`contains`, allocating strings per comparison. When the probe is built, index each holder's held scopes by case-folded component keys (`ReservationScope::component_keys`, shared with `scope::antichain::reduce`): a file key set, a tree key set, and for each held tree its key. A candidate scope overlaps a held scope exactly when one contains the other: a held tree on the candidate's key or any ancestor prefix of it, a held file on the candidate's exact key, or, for a candidate tree, any held scope whose key starts with the candidate's key. `coverage` answers from lookups and builds each `ReservationConflict` exactly as `conflicts_overlapping_holders` does today: same holders, same order, same `overlapping_scopes` (the contained side of each overlap, then `minimal_antichain`). `conflicts_with_holders` and its other callers keep the scan. Keep the scan as the reference in a test that asks both the index and `conflicts_overlapping_holders` the same candidates (files and trees, nested, case-only differences, both `PathCase` values) and asserts equal answers.
 
-Test: a unit test replays a journal of the copy's size class (thousands of records), asserts the replayed set equals the reference, and ends in well under a second.
+*Cut 2 — one ancestry walk per target (`git/reachability.rs`).* `classify_candidates_against_target` calls `CommitAncestryGraph::first_parent_commits_after(target, candidate)` once per resolved candidate, and that calls `ancestors_including(candidate)`, building a `HashSet<GitObjectId>` of the candidate's entire history every time. Compute every candidate's interval from one walk: walk the target's first-parent chain once, then find, for each candidate, the first chain commit that is an ancestor of the candidate (inclusive), without building a full ancestor set per candidate (for example, one marking pass from all candidates that stops at chain commits, or deduplicating candidates and memoizing). Each interval is the chain prefix before that commit, the exact `Vec<GitObjectId>` `first_parent_commits_after` returns today, including when the walk reaches a root. `first_parent_commits_after` keeps its one other caller, `CommitAncestryGraph::earliest_containing_matches`, and serves as the reference in a test of both on graphs with merges, shared ancestry, repeated candidates, candidates on and off the first-parent chain, and a chain that reaches a root.
+
+Each cut gets a timing test of the reported size class (hundreds of holders' scopes; a history of thousands of commits with dozens of candidates) that ends in well under a second.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/journal.rs` — `decode_complete_records`, `JournalReplay::extended_over`.
-- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — `ReplayCheckpoint::replay_journal`.
-- `crates/cargo-berth/src/reservation/record.rs` — `retain_target_proof`, only if the profile names it.
+- `crates/cargo-berth/src/reservation/retention.rs` — the probe's key index, `DriftCoverageProbe::coverage`, the equivalence and timing tests.
+- `crates/cargo-berth/src/scope/mod.rs`, `crates/cargo-berth/src/scope/antichain.rs` — `ReservationScope::component_keys`, the one keying of a scope that `reduce` and the probe share.
+- `crates/cargo-berth/src/git/reachability.rs` — `classify_candidates_against_target`, `CommitAncestryGraph::first_parent_commits_after`, `ancestors_including`, the equivalence and timing tests.
 
-**Seats:** 2 writers — set when the concrete Spec is written; by default `impl` owns `ledger/`, `test` owns `reservation/record.rs` and the replay equivalence test.
-- `impl` — `crates/cargo-berth/src/ledger/journal.rs`, `crates/cargo-berth/src/ledger/replay_checkpoint.rs`.
-- `test` — opens as impl: `crates/cargo-berth/src/reservation/record.rs`.
+**Seats:** 2 writers
+- `impl` — `crates/cargo-berth/src/reservation/retention.rs`; `crates/cargo-berth/src/scope/mod.rs` and `scope/antichain.rs` (only `ReservationScope::component_keys`).
+- `test` — opens as impl: `crates/cargo-berth/src/git/reachability.rs`.
 
-**Constraints from prior phases:** Phase 1's probe and reduction stay as landed.
+**Constraints from prior phases:** the keyed reduction and `DriftCoverageProbe` stay as landed; a probe is built per subject per pass and never shared between the pre-lock and locked passes.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` all green; the replay equivalence test passes; the unit director states the hook time in the copy and the split of what is left.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` all green; both equivalence tests and both timing tests pass; the unit director states the hook time in the matched-checkpoint copy against the 5.7 s baseline and the remaining split, git wall time included.

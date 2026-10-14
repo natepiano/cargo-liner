@@ -44,7 +44,7 @@ pub(super) fn reduce(scopes: ReservationScopeSet, path_case: PathCase) -> Reserv
     ReservationScopeSet::try_from(reduced).unwrap_or(scopes)
 }
 
-fn component_keys(scope: &ReservationScope, path_case: PathCase) -> Vec<String> {
+pub(super) fn component_keys(scope: &ReservationScope, path_case: PathCase) -> Vec<String> {
     scope
         .path
         .to_string()
