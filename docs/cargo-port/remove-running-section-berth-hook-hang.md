@@ -64,31 +64,18 @@ The showrunner (cargo-liner, 2026-10-13 23:2x EDT), relaying the user: "Cargo be
 ### Phase 2 — The hook finds overlaps by key lookup and walks each target's history once  · status: done
 **Depends on:** Phase 1
 
-#### Work Order
+#### As-built
 
-**Goal:** the post-tool-use hook in the matched-checkpoint copy runs well under its 5.7 s baseline, with the same 234,414-byte answer.
-
-**Spec:**
-
-The showrunner (cargo-liner, 2026-10-14): "retarget Phase 2 as you recommend, with both cuts. 5.7 s on every tool call is still too slow to stop at. Measure from the matched-checkpoint copy from now on and state that baseline (5.7 s) in the plan. After the phase, report the hook time and the remaining split, git wall time included."
-
-*Baseline.* The replay checkpoint is keyed to the journal file's device and inode, so a restored snapshot replays the whole 346 MB journal; a real ledger replays only the tail past its checkpoint. With the checkpoint matched to the restored journal the hook runs 5.7 s. A perf profile of that run (inclusive): target reachability about 30 %, the drift overlap step about 23 %; journal replay is no longer a top item.
-
-*Cut 1 — overlap by key lookup (`reservation/retention.rs`).* `DriftCoverageProbe::coverage` runs `conflicts_overlapping_holders`, which scans every held scope of every holder for each changed path and calls `ReservationScope::overlaps`/`contains`, allocating strings per comparison. When the probe is built, index each holder's held scopes by case-folded component keys (`ReservationScope::component_keys`, shared with `scope::antichain::reduce`): a file key set, a tree key set, and for each held tree its key. A candidate scope overlaps a held scope exactly when one contains the other: a held tree on the candidate's key or any ancestor prefix of it, a held file on the candidate's exact key, or, for a candidate tree, any held scope whose key starts with the candidate's key. `coverage` answers from lookups and builds each `ReservationConflict` exactly as `conflicts_overlapping_holders` does today: same holders, same order, same `overlapping_scopes` (the contained side of each overlap, then `minimal_antichain`). `conflicts_with_holders` and its other callers keep the scan. Keep the scan as the reference in a test that asks both the index and `conflicts_overlapping_holders` the same candidates (files and trees, nested, case-only differences, both `PathCase` values) and asserts equal answers.
-
-*Cut 2 — one ancestry walk per target (`git/reachability.rs`).* `classify_candidates_against_target` calls `CommitAncestryGraph::first_parent_commits_after(target, candidate)` once per resolved candidate, and that calls `ancestors_including(candidate)`, building a `HashSet<GitObjectId>` of the candidate's entire history every time. Compute every candidate's interval from one walk: walk the target's first-parent chain once, then find, for each candidate, the first chain commit that is an ancestor of the candidate (inclusive), without building a full ancestor set per candidate (for example, one marking pass from all candidates that stops at chain commits, or deduplicating candidates and memoizing). Each interval is the chain prefix before that commit, the exact `Vec<GitObjectId>` `first_parent_commits_after` returns today, including when the walk reaches a root. `first_parent_commits_after` keeps its one other caller, `CommitAncestryGraph::earliest_containing_matches`, and serves as the reference in a test of both on graphs with merges, shared ancestry, repeated candidates, candidates on and off the first-parent chain, and a chain that reaches a root.
-
-Each cut gets a timing test of the reported size class (hundreds of holders' scopes; a history of thousands of commits with dozens of candidates) that ends in well under a second.
+- `KeyedConflictProtection` (in `reservation/retention.rs`) indexes each holder's held scopes once, at probe build, by case-folded component keys: a file-key map, a tree-key map, and a `BTreeMap` of keys for descendant lookup. `DriftCoverageProbe::coverage` finds overlaps from those lookups — a held tree on the candidate's key or an ancestor prefix, a held file on the exact key, and for a candidate tree every held key under it — and builds each `ReservationConflict` through `conflict_for_overlap`, the constructor the scan path also uses: same holders, same order, same `overlapping_scopes`. `conflicts_with_holders` and its other callers keep the scan.
+- `ReservationScope::component_keys(&self, path_case: PathCase)` in `scope/mod.rs` is the one keying of a scope; `scope::antichain::reduce` and the probe both use it, and `PathCase::component_key` stays `pub(super)`.
+- `CommitAncestryGraph::first_parent_intervals_after` returns every candidate's first-parent interval from one walk of the target's chain, using `first_parent_ancestry_boundary`, a memoized search that finds each candidate's first ancestor on the chain without building a full ancestor set per candidate. Each interval equals what `first_parent_commits_after` returns, including when the walk reaches a root. `classify_candidates_against_target` uses it; `first_parent_commits_after` stays for `earliest_containing_matches`.
+- Hook in the matched-checkpoint copy: 5.7 s → 2.69 s, same 234,414-byte answer. Remaining split: git subprocesses 1.11 s of wall time (84 `merge-tree`, 84 `diff`, `update-ref`, `rev-list`, `status`); CPU samples cargo-berth 54 %, git 46 %; the largest cargo-berth item is the incursion check's linear find of each incident's reservation by id (about 19 %), and allocation about 15 %.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/retention.rs` — the probe's key index, `DriftCoverageProbe::coverage`, the equivalence and timing tests.
-- `crates/cargo-berth/src/scope/mod.rs`, `crates/cargo-berth/src/scope/antichain.rs` — `ReservationScope::component_keys`, the one keying of a scope that `reduce` and the probe share.
-- `crates/cargo-berth/src/git/reachability.rs` — `classify_candidates_against_target`, `CommitAncestryGraph::first_parent_commits_after`, `ancestors_including`, the equivalence and timing tests.
+- `crates/cargo-berth/src/reservation/retention.rs` — `KeyedConflictProtection`, `conflict_for_overlap`, keyed `coverage`, equivalence test against the scan, 13-holder timing test.
+- `crates/cargo-berth/src/scope/mod.rs`, `crates/cargo-berth/src/scope/antichain.rs` — `ReservationScope::component_keys` over the antichain's `pub(super)` `component_keys`.
+- `crates/cargo-berth/src/git/reachability.rs` — `first_parent_intervals_after`, `first_parent_ancestry_boundary`, equivalence test against per-candidate walks, large merged-history timing test.
 
-**Seats:** 2 writers
-- `impl` — `crates/cargo-berth/src/reservation/retention.rs`; `crates/cargo-berth/src/scope/mod.rs` and `scope/antichain.rs` (only `ReservationScope::component_keys`).
-- `test` — opens as impl: `crates/cargo-berth/src/git/reachability.rs`.
+**Binds later work:** the hook baseline is 2.69 s in the matched-checkpoint copy; the incursion check's id find is the next cost.
 
-**Constraints from prior phases:** the keyed reduction and `DriftCoverageProbe` stay as landed; a probe is built per subject per pass and never shared between the pre-lock and locked passes.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` all green; both equivalence tests and both timing tests pass; the unit director states the hook time in the matched-checkpoint copy against the 5.7 s baseline and the remaining split, git wall time included.
+**Ruled out:** a phase of its own for allocation; allocation is fixed only where it sits on the incursion path.
