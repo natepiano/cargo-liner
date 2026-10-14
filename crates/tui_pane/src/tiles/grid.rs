@@ -55,7 +55,6 @@ use ratatui::layout::Position;
 use ratatui::layout::Rect;
 
 use super::action::TileAction;
-use super::constants::AUTO_VIEW_RETURN_MARGIN;
 use super::constants::MIN_INITIAL_ROWS;
 use super::constants::MIN_TILE_HEIGHT;
 use super::constants::MOVING_HEIGHT_PROBE_STEP;
@@ -1005,24 +1004,6 @@ pub(super) enum GridDisplay {
     SummaryAlone,
 }
 
-/// The summary's content-row demand at each width compared by `auto` view.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct SummaryProbeDemands {
-    /// Its demand at the width it receives beside command cells.
-    beside_cells: usize,
-    /// Its demand when it fills the grid area.
-    alone:        usize,
-}
-
-impl SummaryProbeDemands {
-    pub(super) const fn new(beside_cells: usize, alone: usize) -> Self {
-        Self {
-            beside_cells,
-            alone,
-        }
-    }
-}
-
 /// What one arrangement is drawn at: the rows every cell is holding
 /// and which of them has the focus ring.
 ///
@@ -1187,8 +1168,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
     /// Sets the rule that chooses command cells or the summary alone.
     ///
     /// A motion retains the view it began with. A settled grid applies
-    /// an explicit view at once; `auto` is committed after the frame has
-    /// probed both summary allocations.
+    /// an explicit view at once; `auto` is committed by the next settled
+    /// frame.
     pub const fn set_view(&mut self, view: TileView) {
         self.settings.view = view;
         if !matches!(self.motion, GridMotion::Settled) {
@@ -1212,7 +1193,6 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         area: Rect,
         growth: TileGrowth,
         progress: u32,
-        summary_demands: SummaryProbeDemands,
         mut rows_drawn: impl FnMut(&TileContent<Id>, Rect) -> u16,
         mut rows_kept: impl FnMut(&TileContent<Id>, Rect) -> u16,
     ) {
@@ -1270,17 +1250,8 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             &mut rows_drawn,
             &mut rows_kept,
         );
-        let summary = TileContent::Summary;
-        let cells_area = cells_grid
-            .cell(TABLE_CELL)
-            .map_or(Rect::ZERO, |cell| draw::content_area(frame_inner(cell)));
-        let cells_rows =
-            measure_frame_row_usage(&mut frame_row_usage, &summary, cells_area, &mut rows_drawn);
-        let alone_area = draw::content_area(frame_inner(area));
-        let alone_rows =
-            measure_frame_row_usage(&mut frame_row_usage, &summary, alone_area, &mut rows_drawn);
         self.frame_row_usage = frame_row_usage;
-        self.commit_display(cells_area, cells_rows, alone_rows, summary_demands);
+        self.commit_display();
         if matches!(self.motion, GridMotion::Settled) {
             self.last_settled_geometry = if self.held_display == GridDisplay::Cells {
                 LastSettledCellGeometry::Drawn {
@@ -1644,35 +1615,17 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         };
     }
 
-    /// Commit the view chosen by one settled frame's two summary probes.
-    fn commit_display(
-        &mut self,
-        cells_area: Rect,
-        cells_rows: u16,
-        alone_rows: u16,
-        summary_demands: SummaryProbeDemands,
-    ) {
+    /// Commit the view for a settled frame whose cells fit the area.
+    ///
+    /// Only the area decides: rows a cell cannot show go to its hidden
+    /// count rather than switching the view.
+    const fn commit_display(&mut self) {
         if !matches!(self.motion, GridMotion::Settled) {
             return;
         }
-        let cells_ask = u16::try_from(summary_demands.beside_cells).unwrap_or(u16::MAX);
-        let alone_ask = u16::try_from(summary_demands.alone).unwrap_or(u16::MAX);
-        let cells_rows = cells_rows.min(cells_ask);
-        let alone_rows = alone_rows.min(alone_ask);
         self.held_display = match self.settings.view {
             TileView::Summary => GridDisplay::SummaryAlone,
-            TileView::Cells => GridDisplay::Cells,
-            TileView::Auto if cells_rows < alone_rows => GridDisplay::SummaryAlone,
-            TileView::Auto if self.held_display == GridDisplay::Cells => GridDisplay::Cells,
-            TileView::Auto => {
-                let whole_ask = usize::from(cells_rows) >= summary_demands.beside_cells;
-                let spare = cells_area.height.saturating_sub(cells_rows);
-                if whole_ask || spare >= AUTO_VIEW_RETURN_MARGIN {
-                    GridDisplay::Cells
-                } else {
-                    GridDisplay::SummaryAlone
-                }
-            },
+            TileView::Auto | TileView::Cells => GridDisplay::Cells,
         };
     }
 
@@ -5439,7 +5392,6 @@ mod tests {
             let growth = redistribute(SLIDING_TEST_INITIAL_ROWS);
             let widths = grid.content_widths(area, growth);
             let mut demands = cells.demands(&widths);
-            let summary = demands.summary;
             demands.summary += usize::from(TILE_ROWS_READOUT_HEIGHT);
             for group in &mut demands.groups {
                 group.rows += usize::from(TILE_ROWS_READOUT_HEIGHT);
@@ -5454,7 +5406,6 @@ mod tests {
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(summary, summary),
                 |content, area| cells.rows_drawn(content, area),
                 |content, area| cells.rows_kept(content, area),
             );
@@ -6393,37 +6344,25 @@ mod tests {
         );
     }
 
-    fn summary_cells_area(grid: &TileGrid<u32>, area: Rect, growth: TileGrowth) -> Rect {
-        let resolved = grid.resolved_grid(area, &grid.drawn_held(), growth);
-        resolved
-            .cell(TABLE_CELL)
-            .map(|cell| draw::content_area(frame_inner(cell)))
-            .expect("the cells view places the summary")
-    }
-
     #[test]
-    fn a_demand_change_in_one_frame_decides_the_view_from_that_frames_rows() {
+    fn an_auto_view_keeps_cells_while_the_summary_draws_fewer_rows_beside_them() {
         let area = Rect::new(0, 0, TEST_TILE_WIDTH.saturating_mul(2), 20);
         let growth = TileGrowth::default();
-        let mut cells = SameFrameSummaryCells { alone_rows: 5 };
+        let cells = SameFrameSummaryCells { alone_rows: 8 };
         let mut grid = TileGrid::<u32>::new();
         grid.set_min_tile_width(TEST_TILE_WIDTH);
         draw_view_frame(&mut grid, &cells, area, growth);
         grid.settle_for_test();
         draw_view_frame(&mut grid, &cells, area, growth);
+
         assert_eq!(grid.display(), GridDisplay::Cells);
-
-        cells.alone_rows = 8;
-        draw_view_frame(&mut grid, &cells, area, growth);
-
-        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
     }
 
     #[test]
-    fn changed_row_answers_recommit_an_unchanged_settled_view() {
+    fn an_auto_view_returns_to_cells_while_the_summary_is_cut_beside_them() {
         let area = Rect::new(0, 0, TEST_WIDTH, 18);
         let growth = TileGrowth::default();
-        let mut cells = ViewProbeCells {
+        let cells = ViewProbeCells {
             summary_demand: 11,
             summary_drawn:  6,
             group_demand:   11,
@@ -6434,51 +6373,11 @@ mod tests {
         draw_view_frame(&mut grid, &cells, area, growth);
         grid.settle_for_test();
         draw_view_frame(&mut grid, &cells, area, growth);
+        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+
         grid.set_view(TileView::Auto);
         draw_view_frame(&mut grid, &cells, area, growth);
-        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
 
-        cells.summary_drawn = 4;
-        draw_view_frame(&mut grid, &cells, area, growth);
-
-        assert_eq!(grid.display(), GridDisplay::Cells);
-    }
-
-    #[test]
-    fn a_one_row_change_in_the_summarys_ask_does_not_flip_the_view() {
-        let area = Rect::new(0, 0, TEST_WIDTH, 18);
-        let growth = TileGrowth::default();
-        let mut cells = ViewProbeCells {
-            summary_demand: 11,
-            summary_drawn:  6,
-            group_demand:   11,
-            group_drawn:    6,
-        };
-        let mut grid = TileGrid::<u32>::new();
-        grid.set_view(TileView::Summary);
-        draw_view_frame(&mut grid, &cells, area, growth);
-        grid.settle_for_test();
-        draw_view_frame(&mut grid, &cells, area, growth);
-        grid.set_view(TileView::Auto);
-        draw_view_frame(&mut grid, &cells, area, growth);
-        let cells_area = summary_cells_area(&grid, area, growth);
-        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
-
-        cells.summary_demand = 10;
-        draw_view_frame(&mut grid, &cells, area, growth);
-        assert_eq!(summary_cells_area(&grid, area, growth), cells_area);
-        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
-
-        cells.summary_demand = 9;
-        cells.summary_drawn = 4;
-        draw_view_frame(&mut grid, &cells, area, growth);
-        assert_eq!(summary_cells_area(&grid, area, growth), cells_area);
-        assert_eq!(grid.display(), GridDisplay::Cells);
-
-        cells.summary_demand = 10;
-        cells.summary_drawn = 6;
-        draw_view_frame(&mut grid, &cells, area, growth);
-        assert_eq!(summary_cells_area(&grid, area, growth), cells_area);
         assert_eq!(grid.display(), GridDisplay::Cells);
     }
 
@@ -7939,17 +7838,11 @@ mod tests {
 
         let contents = [TileContent::Summary, TileContent::Group(1)];
         let mut paths = vec![Vec::new(); contents.len()];
-        let beside_summary =
-            crate::TileCells::demands(cells, &grid.content_widths(area, growth)).summary;
-        let alone_summary =
-            crate::TileCells::demands(cells, &[(TileContent::Summary, frame_inner(area).width)])
-                .summary;
         for raw in 0..=PROGRESS_SCALE {
             grid.measure_row_steps(
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(beside_summary, alone_summary),
                 |content, area| crate::TileCells::rows_drawn(cells, content, area),
                 |content, area| crate::TileCells::rows_kept(cells, content, area),
             );
@@ -8158,7 +8051,6 @@ mod tests {
             area,
             growth,
             1,
-            SummaryProbeDemands::new(usize::MAX, usize::MAX),
             |content, area| match content {
                 TileContent::Empty(_) => 0,
                 _ => area.height,
@@ -8189,7 +8081,6 @@ mod tests {
             area,
             growth,
             raw,
-            SummaryProbeDemands::new(usize::MAX, usize::MAX),
             |_, area| area.height,
             |_, area| area.height,
         );
@@ -8206,7 +8097,6 @@ mod tests {
             area,
             growth,
             PROGRESS_SCALE,
-            SummaryProbeDemands::new(usize::MAX, usize::MAX),
             |content, area| match content {
                 TileContent::Empty(_) => 0,
                 TileContent::Summary | TileContent::Group(_) => area.height,
@@ -8253,7 +8143,6 @@ mod tests {
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(usize::MAX, usize::MAX),
                 |content, area| match content {
                     TileContent::Group(2) | TileContent::Empty(_) => 0,
                     TileContent::Summary | TileContent::Group(_) => area.height,
@@ -8311,7 +8200,6 @@ mod tests {
             area,
             growth,
             raw,
-            SummaryProbeDemands::new(usize::MAX, usize::MAX),
             |content, area| match content {
                 TileContent::Group(1) | TileContent::Empty(_) => 0,
                 TileContent::Summary | TileContent::Group(_) => area.height,
@@ -8418,7 +8306,6 @@ mod tests {
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(usize::MAX, usize::MAX),
                 |content, area| {
                     if area.height == u16::MAX {
                         return area.height;
@@ -8585,7 +8472,6 @@ mod tests {
                 .zip(after.iter().copied())
                 .collect::<Vec<_>>();
             let painted_rows = endpoint_painted_rows(&endpoints, area.height);
-            let alone_area = draw::content_area(frame_inner(area));
             let mut prior = before.to_vec();
             let mut heights = Vec::with_capacity(before.len().max(after.len()));
             let opening = grid.drawing_at_with_height_snap(area, growth, 0, &HeightSnap::Off);
@@ -8593,24 +8479,12 @@ mod tests {
             let steps = single_column_height_steps(&opening);
             let mut raw = 0;
             loop {
-                let mut probed_summary_alone = false;
-                let mut rows_drawn = |content: &TileContent<u32>, probe_area: Rect| {
-                    if *content == TileContent::Summary && probe_area == alone_area {
-                        probed_summary_alone = true;
-                    }
-                    endpoint_rows_drawn(content, probe_area, &painted_rows)
-                };
                 grid.measure_row_steps(
                     area,
                     growth,
                     raw,
-                    SummaryProbeDemands::new(usize::MAX, usize::MAX),
-                    &mut rows_drawn,
+                    |content, probe_area| endpoint_rows_drawn(content, probe_area, &painted_rows),
                     |_, area| area.height,
-                );
-                assert!(
-                    probed_summary_alone,
-                    "summary allocation is not probed at {raw}"
                 );
                 if raw == PROGRESS_SCALE {
                     assert_eq!(grid.motion_heights.piece_heights, [] as [u16; 0]);
@@ -8765,7 +8639,6 @@ mod tests {
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(usize::MAX, usize::MAX),
                 |content, area| {
                     let framed = area
                         .height
@@ -8941,7 +8814,6 @@ mod tests {
             area,
             growth,
             raw,
-            SummaryProbeDemands::new(usize::MAX, usize::MAX),
             |_, area| match area.height {
                 0..=16 => area.height,
                 17..=23 => 16,
@@ -9007,7 +8879,6 @@ mod tests {
             area,
             growth,
             raw,
-            SummaryProbeDemands::new(usize::MAX, usize::MAX),
             |content, area| {
                 *calls = calls.saturating_add(1);
                 let fills = match content {
@@ -9207,7 +9078,6 @@ mod tests {
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(usize::MAX, usize::MAX),
                 |content, area| match content {
                     TileContent::Summary if area.height == u16::MAX => 15,
                     TileContent::Summary if [5, 7].contains(&area.height) => {
@@ -9262,7 +9132,6 @@ mod tests {
                 area,
                 growth,
                 raw,
-                SummaryProbeDemands::new(usize::MAX, usize::MAX),
                 |content, area| {
                     if area.height == u16::MAX {
                         return TEST_HEIGHT;
@@ -9527,7 +9396,6 @@ mod tests {
             area,
             growth,
             raw,
-            SummaryProbeDemands::new(100, 100),
             |content, area| {
                 drawn_calls += 1;
                 if area.height == u16::MAX {
@@ -9581,7 +9449,6 @@ mod tests {
             area,
             growth,
             PROGRESS_SCALE,
-            SummaryProbeDemands::new(100, 100),
             |content, area| {
                 drawn.push((content.clone(), area));
                 area.height
@@ -9613,7 +9480,6 @@ mod tests {
             area,
             growth,
             PROGRESS_SCALE,
-            SummaryProbeDemands::new(100, 100),
             |content, area| {
                 drawn.push((content.clone(), area));
                 area.height
@@ -9656,12 +9522,10 @@ mod tests {
             summary_span:  1,
             summary_depth: 1,
         };
-        let summary_demands = SummaryProbeDemands::new(usize::MAX, usize::MAX);
         grid.measure_row_steps(
             area,
             growth,
             PROGRESS_SCALE,
-            summary_demands,
             |_, area| area.height,
             |_, area| area.height,
         );
@@ -9675,7 +9539,6 @@ mod tests {
             area,
             growth,
             PROGRESS_SCALE,
-            summary_demands,
             |_, area| area.height,
             |content, area| match content {
                 TileContent::Summary | TileContent::Group(2 | 3) if area.height == 4 => {
@@ -9902,7 +9765,6 @@ mod tests {
             area,
             growth,
             PROGRESS_SCALE / 2,
-            SummaryProbeDemands::new(100, 100),
             |content, area| match content {
                 TileContent::Group(3) => area.height.saturating_sub(1),
                 TileContent::Summary | TileContent::Group(_) | TileContent::Empty(_) => area.height,

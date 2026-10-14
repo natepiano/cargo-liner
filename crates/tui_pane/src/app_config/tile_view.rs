@@ -12,8 +12,8 @@ use crate::app_settings::SettingStep;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TileView {
-    /// Show command cells only while the summary draws as many rows
-    /// beside them as it draws alone.
+    /// Show command cells whenever each one fits at its configured
+    /// floor; the area alone decides, never the rows a cell shows.
     #[default]
     Auto,
     /// Give the whole grid area to the summary.
