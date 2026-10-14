@@ -233,17 +233,18 @@ mod tests {
         assert_eq!(
             machine_state(finished(Some(0), report)),
             MachineState::Answered(vec![AgentRow {
-                agent:        Agent::Claude,
-                service_tier: ServiceTier::Unrecorded,
-                name:         "natemccoy-30".to_string(),
-                status:       Some("idle".to_string()),
-                started:      5,
-                pid:          80_020,
-                desktop:      None,
-                directory:    "~".to_string(),
-                branch:       None,
-                launched_by:  None,
-                children:     Vec::new(),
+                agent:           Agent::Claude,
+                service_tier:    ServiceTier::Unrecorded,
+                name:            "natemccoy-30".to_string(),
+                status:          Some("idle".to_string()),
+                started:         5,
+                process_started: 5,
+                pid:             80_020,
+                desktop:         None,
+                directory:       "~".to_string(),
+                branch:          None,
+                launched_by:     None,
+                children:        Vec::new(),
             }])
         );
         assert_eq!(

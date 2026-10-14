@@ -9,11 +9,12 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AgentCell {
     /// The machine's heading in the summary.
-    pub(crate) machine: String,
+    pub(crate) machine:         String,
     /// The agent's process id on that machine.
-    pub(crate) pid:     u32,
-    /// When the agent's process started, in unix seconds.
-    pub(crate) started: u64,
+    pub(crate) pid:             u32,
+    /// The process's own birth in unix seconds, apart from the session
+    /// age shown; the session start for an older remote probe.
+    pub(crate) process_started: u64,
 }
 
 /// The grid of cells, the summary first.

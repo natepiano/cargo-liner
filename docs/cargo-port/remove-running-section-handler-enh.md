@@ -40,35 +40,20 @@ Shot: the live handler at 429×90 with `tiles.widen_summary = true`. The summary
 
 **Depends on:** none
 
-#### Work Order
+#### As-built
 
-**Goal:** no lattice cell is drawn inside the summary's interior at any width, and its border joins the column lines below it cleanly: `─` along its top where a band edge used to meet it, `┬` along its bottom where the column line carries on below.
-
-**Spec:**
-
-1. **`GridLines::open(&mut self, rect: Rect)`** in `frame.rs` (pub, next to `add_rule`): every cell strictly inside `rect` loses all of its sides. On `rect`'s own edges, each cell loses the side that points inward (Down on the top row, Up on the bottom row, Right on the left column, Left on the right column), and the corners stay as they are. Its doc says it is for one pane spanning neighbours' bands, so nothing crosses it.
-2. **`draw_placements`**: once all lines are added, and before `render`, call `grid_lines.open(rect)` for the summary piece's `line_frame.rect()`. Do it only when `has_visible_body_row` holds for that piece. Collect the rect in the loop and open it after the loop, so that no band or piece added later puts a line back.
-3. **Tests:**
-   - `frame.rs`: two side-by-side panes with a third pane spanning both above them. After `open` on the spanning pane, its interior is blank, its top is unbroken `─`, and its bottom carries `┬` where the column line leaves it.
-   - `draw.rs`: a widened summary across two bands (`widen_summary: true`, stub cells wide enough to span). No `is_lattice_glyph` cell sits inside the summary's inner rect.
-   - `cargo-handler/src/render.rs`: the gate test at 429×89 (the live body). `widen_summary` is on, there are enough agents with long directories that the summary spans two columns, and it is settled. Assert that the summary spans more than one band and that no row of the summary's inner rect holds a lattice glyph. The test reads the summary's rect off the drawn buffer's `┌ summary` corner and its bottom border, not off any private API.
-4. **Live shot:** after install, take a screenshot of the running handler (429×90). The summary rows are unbroken.
-5. **CHANGELOG** for both crates, under `## [Unreleased]` / `### Fixed`.
+- `GridLines::open(&mut self, rect: Rect)` (crate-private, `frame.rs`, beside `add_rule`) opens one pane that spans its neighbours' bands: every cell strictly inside `rect` loses all sides, each edge cell loses its inward side, and corners keep their joins. `Sides::without(side)` supports it.
+- `draw_placements` collects each visible summary piece's `line_frame.rect()` and opens them after every band and piece line is added, before `render`, so a widened summary (`summary_span > 1`) reads as one unbroken pane and its bottom border keeps `┬` where a column line continues below.
+- Tests: `a_spanning_pane_opens_band_lines_and_keeps_border_joins` (frame.rs), `a_widened_summary_has_no_interior_band_divider` (draw.rs), and `the_live_width_summary_spans_bands_without_an_interior_divider` (cargo-handler `render.rs`, 429×89, reading the summary's rect off the drawn `┌ summary` corner; helper `drawn_buffer_in(app, body)`).
 
 **Files:**
-- `crates/tui_pane/src/pane/frame.rs` — new `GridLines::open` beside `add_rule`, and its test.
-- `crates/tui_pane/src/tiles/draw.rs` — `draw_placements` opens the summary's rect before `render`; a widened-summary test.
-- `crates/cargo-handler/src/render.rs` — the 429×89 gate test.
-- `crates/tui_pane/CHANGELOG.md`, `crates/cargo-handler/CHANGELOG.md` — a `### Fixed` line each.
+- `crates/tui_pane/src/pane/frame.rs` — `Sides::without`, `GridLines::open`, its test.
+- `crates/tui_pane/src/tiles/draw.rs` — opens summary frames before render; the widened-summary test.
+- `crates/cargo-handler/src/render.rs` — the 429×89 test and `drawn_buffer_in`.
 
-**Workers:** 1 writer — nothing splits: one small change, with each test in the module of the code it covers.
-- `impl` — every file above.
+**Gotchas:** `open` must run after every `add`; a band added later puts the line back.
 
-**Constraints from prior phases:** none. tile-fixes holds uncommitted edits in `frame.rs` and `draw.rs`, so touch only the lines this Spec names.
-
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint tui_pane` clean, then `verify.sh test tui_pane`, `verify.sh test cargo-handler` and `verify.sh test cargo-tile` green, including the three new tests. Then a live shot of the handler at 429×90 shows the summary rows unbroken.
-
-### Phase 2 — cargo-handler paints at once and fills in as data arrives  · status: todo
+### Phase 2 — cargo-handler paints at once and fills in as data arrives  · status: done
 
 **Depends on:** Phase 1 (`crates/cargo-handler/src/render.rs`)
 
@@ -88,27 +73,34 @@ Shot: the live handler at 429×90 with `tiles.widen_summary = true`. The summary
 
 **Spec:**
 1. **Measure first.** Add a startup timing log, modelled on cargo-tile's `CARGO_TILE_FRAME_LOG` (`crates/cargo-tile/src/probe.rs:76, 138`), named `CARGO_HANDLER_FRAME_LOG`. It records, in ms since process start: the config load, the appearance read returning, entering the alternate screen, the first frame flushed, each `identify` pass (start and end), the first `CensusUpdate::Local`, and each remote's answer. Run the installed build on natedev with the log on, under the current load. Record the timings and the load average in this plan before changing anything else. The fixes below are kept or dropped by what the log shows.
+   **Baseline, 2026-10-14 17:24 EDT** (instrumented dev build, 429×90 pty, load average 162 at start and 145 at end): config 12 ms, appearance read 42 ms, alternate screen 48 ms, first frame flushed at 127 ms. Each `identify` pass took at most 119 ms. The first `CensusUpdate::Local` (43 rows) arrived at 36 291 ms, and no remote answered within 40 s. The wait is the local census scan, so step 4 is kept, and the slowest stage inside `LocalScanner::scan` is found and logged first. Steps 2 and 3 are dropped: the appearance read costs 30 ms and identification never holds a frame long, so the tui_pane files they name stay untouched.
 2. **Appearance never holds the first frame.** Enter the terminal and draw at once with the configured theme (or the last known system appearance). Apply the portal's answer when it arrives, through the watcher that already follows changes. Do not add a timeout in place of this.
 3. **Window identification off the UI thread.** `identify` runs on a worker and reports back through a channel that `before_draw` drains. A pass in flight never delays a frame.
 4. **Census in stages.** `schedule.rs` dispatches the remote probes before or alongside the local scan. `LocalScanner::scan` sends a first `CensusUpdate::Local` right after `classify::agent_rows` (`scan.rs:165`), with the rows it has, then the full rows when the rest is read. `Census::apply` and `drain_census` already repaint on a change.
+   Only the first scan publishes the classified rows ahead of the rest: once a completed local answer has gone out, each later scan publishes once, so a refresh never shows agents without their branches, launchers and children. A cell keeps its key across that first refinement: `AgentRow` carries the process's own start time for cell identity, apart from `started`, which `attach_session_starts` moves back to the transcript's first line for the age shown. Found by the writer, 2026-10-14: a resumed Claude session's key changed between the two publications, closing its cell and dropping focus.
 5. **Tests:** a test that the first frame is drawn before a slow data source answers. Give the census a source that holds its answer, and assert that the summary frame is in the buffer, with the machine's scanning heading, before the source is released. Add a unit test that the staged scan sends the classified rows before the detailed ones. No test sleeps or takes a second.
 6. **Measure again** on natedev under load with the log on. Record time to first frame and time to first agent row, each with the load average beside it.
+   **Staged build, 2026-10-14 18:31 EDT** (dev build, 429×90 pty, load average 196 at start and 103 at end): first frame flushed at 11 ms, and the first agent rows (43) on screen at 118 ms. The first scan's details took 7.1 s more. Two cold first reads make up that 7.1 s, and the same reads under load 162 made the 36 s baseline: `transcript_launchers`, reading each transcript to find the agent that launched it (4.4 s cold, 5 ms warm), and `codex_app_server_threads`, reading the Codex rollouts (2.4 s cold, 3 ms warm). Every other stage took under 0.2 s. natedev lists no remote machines, so no remote answer was expected.
+   **With the first-scan-only and stable-key fixes, 2026-10-14 18:47 EDT** (same setup, 20 s, load average 62 at start and 60 at end): first frame at 22 ms, first agent rows (43) at 223 ms, the first scan's details 10.5 s later, and each later scan published once.
 7. **CHANGELOG** for cargo-handler (and tui_pane, if `poller.rs` or the window identification changes there), under `### Fixed` or `### Changed`.
+8. **Retired `/clippy` in two cargo-port doc comments** (showrunner add-on, placed here). natedev retired `/clippy` (~/.claude main 33f5527d), and no outside reader reads cargo-port's `latest.json` marker any more (searched ~/.claude scripts, commands, docs and hooks, and the workspace, 2026-10-14). Reword the doc comments on `RunFinalizeGuard` (`crates/cargo-port/src/lint/runtime/command.rs:200-206`) and `read_status_from_disk` (`crates/cargo-port/src/lint/runtime/supervisor.rs:358-365`) to drop "external readers (the `/clippy` cache check)" and say who does read a stranded `Running` marker: cargo-port's own status read (`read_status_from_disk`) and the lint status it shows. Comment-only; leave the `clippy.log` paths in `history.rs` and `copy_data.rs` alone, as they are log file names.
 
 **Files:**
 - `crates/cargo-handler/src/terminal.rs` — no wait on the appearance read before the first frame; the startup log.
 - `crates/cargo-handler/src/app.rs` — `before_draw` drains identification results, never runs a pass itself.
 - `crates/cargo-handler/src/census/schedule.rs`, `crates/cargo-handler/src/census/scan.rs` — staged answers, remotes not behind the local scan.
+- `crates/cargo-handler/src/census/mod.rs`, `crates/cargo-handler/src/census/classify.rs`, `crates/cargo-handler/src/agent_cell.rs`, `crates/cargo-handler/src/tiles.rs` — a cell keyed by its process's own start time, apart from the session age shown.
 - `crates/tui_pane/src/theme/poller.rs` — a non-blocking startup appearance read, only if step 2 needs one there. Claim it through cargo-berth, and send any overlap to the showrunner.
 - `crates/tui_pane/src/attract/controller.rs` — identification moved to a worker, only if step 3 needs it there (same claim rule).
 - `crates/tui_pane/src/backdrop/desktop/platform/linux/window.rs` — only if step 3 needs it there (same claim rule).
 - `crates/cargo-handler/CHANGELOG.md` — a line under `### Fixed`.
 - `crates/tui_pane/CHANGELOG.md` — a line, if tui_pane changes.
+- `crates/cargo-port/src/lint/runtime/command.rs`, `crates/cargo-port/src/lint/runtime/supervisor.rs` — the two doc comments in step 8.
 
 **Workers:** 1 writer + 1 tester.
 - `impl` — every production file above.
 - `test` — opens as impl. It writes the first-frame-before-slow-source test and the staged-scan test from this Spec in the modules they cover, messaging `impl` when it needs a hook in production code, such as a census source the test can hold.
 
-**Constraints from prior phases:** Phase 1 added `GridLines::open` and the 429×89 gate test in `render.rs`. Keep that test green.
+**Constraints from prior phases:** Phase 1 added the crate-private `GridLines::open` in tui_pane and the 429×89 gate test `the_live_width_summary_spans_bands_without_an_interior_divider` in `render.rs` (with a `drawn_buffer_in(app, body)` helper). Keep that test green. Phase 1's live capture (installed build, a 429×90 pty, load average 50) saw the first bytes 8 ms after launch and the summary filled within 40 s, so step 1's log decides how much of the 20 s is before the first frame and how much is census.
 
 **Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-handler` clean, then `verify.sh test cargo-handler` and `verify.sh test tui_pane` green with the new tests. A measured time to first frame on natedev under load, with the load average beside it, recorded before and after in this plan.

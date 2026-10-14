@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- On startup, agents appear before their details are read. A refresh never drops details, a resumed session keeps its cell, and remote probes no longer wait for the local scan.
 - A widened agents summary draws unbroken rows across column bands, including long directories.
 - `appearance.mode = "auto"` selects the light or dark theme from the system before the first frame and follows changes while cargo-handler runs.
 

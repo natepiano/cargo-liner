@@ -3,7 +3,7 @@
 //! back over ssh.
 //!
 //! ```json
-//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","status":"busy","started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
+//! {"schema":3,"machine":"natedev","rows":[{"agent":"claude","service_tier":"unrecorded","name":"enh/handler","status":"busy","started":1790000000,"process_started":1790000000,"pid":428044,"desktop":"cargo handler","directory":"~/rust/handler","branch":"enh/handler","launched_by":null,"children":[{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":3911067,"name":"Run the tests","started":1790000100}]}]}
 //! ```
 
 use std::io;
@@ -19,6 +19,44 @@ use super::scan::LocalScanner;
 use crate::constants::BINARY_NAME;
 use crate::constants::PROBE_SCHEMA;
 use crate::constants::UNREADABLE_PROBE_REASON;
+
+/// A probe row before compatibility defaults are resolved into domain values.
+#[derive(Deserialize)]
+pub(super) struct ProbeAgentRow {
+    agent:           super::Agent,
+    #[serde(default)]
+    service_tier:    super::ServiceTier,
+    name:            String,
+    status:          Option<String>,
+    started:         u64,
+    /// Older probes supply their identity through `started` instead.
+    process_started: Option<u64>,
+    pid:             u32,
+    desktop:         Option<String>,
+    directory:       String,
+    branch:          Option<String>,
+    launched_by:     Option<u32>,
+    children:        Vec<super::ChildRow>,
+}
+
+impl From<ProbeAgentRow> for AgentRow {
+    fn from(row: ProbeAgentRow) -> Self {
+        Self {
+            agent:           row.agent,
+            service_tier:    row.service_tier,
+            name:            row.name,
+            status:          row.status,
+            started:         row.started,
+            process_started: row.process_started.unwrap_or(row.started),
+            pid:             row.pid,
+            desktop:         row.desktop,
+            directory:       row.directory,
+            branch:          row.branch,
+            launched_by:     row.launched_by,
+            children:        row.children,
+        }
+    }
+}
 
 /// What the probe prints.
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -109,30 +147,32 @@ mod tests {
             machine: "mac".to_string(),
             rows:    vec![
                 AgentRow {
-                    agent:        Agent::Codex,
-                    service_tier: ServiceTier::Unrecorded,
-                    name:         "ChatGPT".to_string(),
-                    status:       None,
-                    started:      1_790_000_000,
-                    pid:          76_130,
-                    desktop:      None,
-                    directory:    "/".to_string(),
-                    branch:       None,
-                    launched_by:  None,
-                    children:     Vec::new(),
+                    agent:           Agent::Codex,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "ChatGPT".to_string(),
+                    status:          None,
+                    started:         1_790_000_000,
+                    process_started: 1_790_000_000,
+                    pid:             76_130,
+                    desktop:         None,
+                    directory:       "/".to_string(),
+                    branch:          None,
+                    launched_by:     None,
+                    children:        Vec::new(),
                 },
                 AgentRow {
-                    agent:        Agent::Claude,
-                    service_tier: ServiceTier::Unrecorded,
-                    name:         "natemccoy-30".to_string(),
-                    status:       Some("idle".to_string()),
-                    started:      1_790_000_100,
-                    pid:          80_020,
-                    desktop:      None,
-                    directory:    "~".to_string(),
-                    branch:       Some("main".to_string()),
-                    launched_by:  None,
-                    children:     vec![
+                    agent:           Agent::Claude,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "natemccoy-30".to_string(),
+                    status:          Some("idle".to_string()),
+                    started:         1_790_000_100,
+                    process_started: 1_790_000_100,
+                    pid:             80_020,
+                    desktop:         None,
+                    directory:       "~".to_string(),
+                    branch:          Some("main".to_string()),
+                    launched_by:     None,
+                    children:        vec![
                         child(
                             0,
                             ChildKind::Shell,
@@ -175,17 +215,18 @@ mod tests {
                     ],
                 },
                 AgentRow {
-                    agent:        Agent::Claude,
-                    service_tier: ServiceTier::Unrecorded,
-                    name:         "worker".to_string(),
-                    status:       Some("busy".to_string()),
-                    started:      1_790_000_130,
-                    pid:          81_020,
-                    desktop:      None,
-                    directory:    "~".to_string(),
-                    branch:       None,
-                    launched_by:  Some(80_020),
-                    children:     Vec::new(),
+                    agent:           Agent::Claude,
+                    service_tier:    ServiceTier::Unrecorded,
+                    name:            "worker".to_string(),
+                    status:          Some("busy".to_string()),
+                    started:         1_790_000_130,
+                    process_started: 1_790_000_130,
+                    pid:             81_020,
+                    desktop:         None,
+                    directory:       "~".to_string(),
+                    branch:          None,
+                    launched_by:     Some(80_020),
+                    children:        Vec::new(),
                 },
             ],
         }
@@ -201,15 +242,15 @@ mod tests {
             json,
             concat!(
                 r#"{"schema":3,"machine":"mac","rows":["#,
-                r#"{"agent":"codex","service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
-                r#"{"agent":"claude","service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
+                r#"{"agent":"codex","service_tier":"unrecorded","name":"ChatGPT","status":null,"started":1790000000,"process_started":1790000000,"pid":76130,"desktop":null,"directory":"/","branch":null,"launched_by":null,"children":[]},"#,
+                r#"{"agent":"claude","service_tier":"unrecorded","name":"natemccoy-30","status":"idle","started":1790000100,"process_started":1790000100,"pid":80020,"desktop":null,"directory":"~","branch":"main","launched_by":null,"children":["#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80100,"name":"Run the mesh","started":1790000110},"#,
                 r#"{"depth":1,"kind":{"under_shell":"codex"},"service_tier":"unrecorded","pid":80200,"name":"app-server","started":1790000111},"#,
                 r#"{"depth":2,"kind":"thread","service_tier":"fast","pid":null,"name":"phase 1","started":1790000112},"#,
                 r#"{"depth":0,"kind":"subagent","service_tier":"unrecorded","pid":null,"name":"Review","started":1790000120},"#,
                 r#"{"depth":0,"kind":"shell","service_tier":"unrecorded","pid":80300,"name":"Re-arm the progress timer","started":1790000125,"timer":{"started":1790000125,"deadline":1790000425}},"#,
                 r#"{"depth":0,"kind":{"session":"claude"},"service_tier":"unrecorded","pid":81020,"name":"worker","started":1790000130}]},"#,
-                r#"{"agent":"claude","service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
+                r#"{"agent":"claude","service_tier":"unrecorded","name":"worker","status":"busy","started":1790000130,"process_started":1790000130,"pid":81020,"desktop":null,"directory":"~","branch":null,"launched_by":80020,"children":[]}]}"#,
             )
         );
         assert_eq!(
@@ -218,9 +259,8 @@ mod tests {
         );
     }
 
-    /// A row printed before the desktop and the branch were read, with
-    /// neither field, reads back with neither, and a row naming them
-    /// keeps them.
+    /// Older rows omit desktop, branch and process birth; absent birth
+    /// uses the session start, while desktop and branch remain optional.
     #[test]
     fn a_row_without_a_desktop_or_branch_reads_back_with_none() {
         let output = concat!(
@@ -229,16 +269,20 @@ mod tests {
             r#"{"agent":"claude","name":"berth-fix","status":"idle","started":1790000100,"pid":2165974,"desktop":"berth_fix","directory":"~/rust/berth","branch":"fix/berth","launched_by":null,"children":[]}]}"#,
         );
 
-        let read: Vec<(Option<String>, Option<String>)> = parse_report(output.as_bytes())
+        let read: Vec<(Option<String>, Option<String>, u64)> = parse_report(output.as_bytes())
             .expect("a report should parse")
             .into_iter()
-            .map(|row| (row.desktop, row.branch))
+            .map(|row| (row.desktop, row.branch, row.process_started))
             .collect();
         assert_eq!(
             read,
             [
-                (None, None),
-                (Some("berth_fix".to_string()), Some("fix/berth".to_string())),
+                (None, None, 1_790_000_000),
+                (
+                    Some("berth_fix".to_string()),
+                    Some("fix/berth".to_string()),
+                    1_790_000_100
+                ),
             ]
         );
     }

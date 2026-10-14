@@ -807,6 +807,7 @@ mod tests {
             name: format!("pid {pid}"),
             status: None,
             started,
+            process_started: started,
             pid,
             desktop: None,
             directory: HOME.to_string(),

@@ -262,6 +262,7 @@ mod tests {
             name: name.to_string(),
             status: None,
             started: 0,
+            process_started: 0,
             pid,
             desktop: None,
             directory: "~".to_string(),

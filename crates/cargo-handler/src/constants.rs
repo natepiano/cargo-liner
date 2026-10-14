@@ -24,6 +24,8 @@ pub(crate) const DEFAULT_LIGHT_THEME: &str = "Default Light";
 pub(crate) const TEST_CONFIG_ROOT: &str = "/<config>";
 
 // lifecycle
+/// Environment variable naming the optional startup timing log.
+pub(crate) const FRAME_LOG_VARIABLE: &str = "CARGO_HANDLER_FRAME_LOG";
 /// The binary's own name: what the command line calls itself in help
 /// and in anything it reports going wrong, and the fallback executable
 /// name when the running binary's path cannot be resolved for a

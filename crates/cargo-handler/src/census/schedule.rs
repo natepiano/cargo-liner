@@ -17,6 +17,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(test)]
 use super::AgentRow;
 use super::CensusUpdate;
 use super::RemoteMachines;
@@ -26,6 +27,7 @@ use super::remote::SshRunner;
 use super::scan::LocalScanner;
 use crate::constants::LOCAL_SCAN_INTERVAL;
 use crate::constants::REMOTE_PROBE_INTERVAL;
+use crate::startup_log;
 
 /// How often the scheduler looks at each machine.
 #[derive(Clone, Copy, Debug)]
@@ -48,14 +50,29 @@ impl Cadence {
 /// threads.
 type InFlight = Arc<Mutex<HashSet<String>>>;
 
+/// Whether a completed local scan permits another scheduler round.
+enum ScanSchedule {
+    NextRound,
+    Finished,
+}
+
 /// Start the census of this machine and of the hosts `remotes` names,
 /// probing over ssh, and hand back the channel it answers on.
 pub(crate) fn spawn(remotes: RemoteMachines) -> Receiver<CensusUpdate> {
     let mut scanner = LocalScanner::new();
-    spawn_with(
+    spawn_staged_with(
         remotes,
         Arc::new(SshRunner::new()),
-        move || scanner.scan(),
+        move |sender| {
+            let mut schedule = ScanSchedule::NextRound;
+            scanner.scan_staged(|rows| {
+                startup_log::startup_local_answer(&rows);
+                if sender.send(CensusUpdate::Local(rows)).is_err() {
+                    schedule = ScanSchedule::Finished;
+                }
+            });
+            schedule
+        },
         Cadence::LIVE,
     )
 }
@@ -67,10 +84,10 @@ pub(crate) fn spawn(remotes: RemoteMachines) -> Receiver<CensusUpdate> {
 /// in the settings overlay is probed from the next round on. The
 /// scheduler ends at the first answer it cannot send, which is once the
 /// receiver is gone.
-fn spawn_with(
+fn spawn_staged_with(
     remotes: RemoteMachines,
     runner: Arc<dyn RemoteRunner>,
-    mut scan_local: impl FnMut() -> Vec<AgentRow> + Send + 'static,
+    mut scan_local: impl FnMut(&Sender<CensusUpdate>) -> ScanSchedule + Send + 'static,
     cadence: Cadence,
 ) -> Receiver<CensusUpdate> {
     let (sender, receiver) = mpsc::channel();
@@ -80,17 +97,17 @@ fn spawn_with(
         let mut next_remote = next_local;
         loop {
             let now = Instant::now();
-            if now >= next_local {
-                if sender.send(CensusUpdate::Local(scan_local())).is_err() {
-                    return;
-                }
-                next_local = now + cadence.local;
-            }
             if now >= next_remote {
                 for host in remotes.snapshot() {
                     dispatch(host, &runner, &in_flight, &sender);
                 }
                 next_remote = now + cadence.remote;
+            }
+            if now >= next_local {
+                if matches!(scan_local(&sender), ScanSchedule::Finished) {
+                    return;
+                }
+                next_local = now + cadence.local;
             }
             thread::sleep(
                 next_local
@@ -100,6 +117,44 @@ fn spawn_with(
         }
     });
     receiver
+}
+
+/// Adapt the completed-answer source used by the existing cadence tests.
+#[cfg(test)]
+fn spawn_with(
+    remotes: RemoteMachines,
+    runner: Arc<dyn RemoteRunner>,
+    mut scan_local: impl FnMut() -> Vec<AgentRow> + Send + 'static,
+    cadence: Cadence,
+) -> Receiver<CensusUpdate> {
+    spawn_staged_with(
+        remotes,
+        runner,
+        move |sender| {
+            if sender.send(CensusUpdate::Local(scan_local())).is_ok() {
+                ScanSchedule::NextRound
+            } else {
+                ScanSchedule::Finished
+            }
+        },
+        cadence,
+    )
+}
+
+/// Run one real scheduler scan with a source the startup test can hold.
+#[cfg(test)]
+pub(crate) fn spawn_with_test_source(
+    mut scan_local: impl FnMut(&Sender<CensusUpdate>) + Send + 'static,
+) -> Receiver<CensusUpdate> {
+    spawn_staged_with(
+        RemoteMachines::new(Vec::new()),
+        Arc::new(SshRunner::new()),
+        move |sender| {
+            scan_local(sender);
+            ScanSchedule::Finished
+        },
+        Cadence::LIVE,
+    )
 }
 
 /// Probe `host` on a thread of its own, unless its last probe is still
@@ -128,6 +183,7 @@ fn dispatch(
             .remove(&host);
         // No receiver means the app has quit, and the answer has nowhere
         // to go.
+        startup_log::startup_event(&format!("remote_answer {host}"));
         let _ = sender.send(CensusUpdate::Remote { host, state });
     });
 }

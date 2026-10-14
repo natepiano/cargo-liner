@@ -195,9 +195,9 @@ pub(crate) fn cell_order<'a>(machines: &[Machine<'a>]) -> Vec<AgentEntry<'a>> {
             });
             cells.push(AgentEntry {
                 id: AgentCell {
-                    machine: machine.name.to_string(),
-                    pid:     row.pid,
-                    started: row.started,
+                    machine:         machine.name.to_string(),
+                    pid:             row.pid,
+                    process_started: row.process_started,
                 },
                 row,
                 launcher,
@@ -976,6 +976,7 @@ mod tests {
             name: name.to_string(),
             status: Some("busy".to_string()),
             started: NOW - age,
+            process_started: NOW - age,
             pid,
             desktop: None,
             directory: format!("~/rust/{name}"),
@@ -1067,9 +1068,9 @@ mod tests {
     fn entry<'a>(row: &'a AgentRow, launcher: Option<&'a str>) -> AgentEntry<'a> {
         AgentEntry {
             id: AgentCell {
-                machine: "natedev".to_string(),
-                pid:     row.pid,
-                started: row.started,
+                machine:         "natedev".to_string(),
+                pid:             row.pid,
+                process_started: row.process_started,
             },
             row,
             launcher,
@@ -1552,6 +1553,55 @@ mod tests {
             name:  "natedev",
             state: natedev,
         }])
+    }
+
+    #[test]
+    fn older_probe_rows_keep_pid_reuse_protection_from_their_start_times() {
+        let older_row = |started| {
+            serde_json::from_value::<AgentRow>(serde_json::json!({
+                "agent": "claude",
+                "name": "remote agent",
+                "status": "idle",
+                "started": started,
+                "pid": BOSS,
+                "directory": "~",
+                "launched_by": null,
+                "children": []
+            }))
+            .expect("an older probe row should parse")
+        };
+        let first = older_row(NOW - HOUR);
+        let reused = older_row(NOW);
+        assert_eq!(first.process_started, first.started);
+        assert_eq!(reused.process_started, reused.started);
+        let first = MachineState::Answered(vec![first]);
+        let reused = MachineState::Answered(vec![reused]);
+        assert_ne!(natedev_cells(&first)[0].id, natedev_cells(&reused)[0].id);
+    }
+
+    #[test]
+    fn a_resumed_claude_session_keeps_its_cell_key_when_its_age_moves_earlier() {
+        let row = agent(BOSS, "resumed", HOUR, None);
+        let process_started = row.process_started;
+        let classified = MachineState::Answered(vec![row.clone()]);
+        let detailed = MachineState::Answered(vec![AgentRow {
+            started: process_started - HOUR,
+            ..row.clone()
+        }]);
+        let classified_cells = natedev_cells(&classified);
+        let detailed_cells = natedev_cells(&detailed);
+        assert_ne!(
+            classified_cells[0].row.started,
+            detailed_cells[0].row.started
+        );
+        assert_eq!(classified_cells[0].id.process_started, process_started);
+        assert_eq!(classified_cells[0].id, detailed_cells[0].id);
+
+        let reused_pid = MachineState::Answered(vec![AgentRow {
+            process_started: process_started + 1,
+            ..row
+        }]);
+        assert_ne!(classified_cells[0].id, natedev_cells(&reused_pid)[0].id);
     }
 
     /// Where it all fits, a top-level agent's cell hangs the tree of the
@@ -2044,9 +2094,9 @@ mod tests {
         assert_eq!(
             cells[0].id,
             AgentCell {
-                machine: "natedev".to_string(),
-                pid:     BOSS,
-                started: NOW - 23 * HOUR,
+                machine:         "natedev".to_string(),
+                pid:             BOSS,
+                process_started: NOW - 23 * HOUR,
             }
         );
     }
