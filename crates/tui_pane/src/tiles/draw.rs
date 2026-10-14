@@ -28,7 +28,6 @@ use super::constants::TILE_ROWS_RIGHT_INSET;
 use super::constants::TILE_ROWS_WIDTH_LABEL;
 use super::grid::GridDisplay;
 use super::grid::PieceName;
-use super::grid::SummaryProbeDemands;
 use super::grid::TileContent;
 use super::grid::TileDemands;
 use super::grid::TileDrawing;
@@ -273,7 +272,6 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
     let mut cells_demands = cells.demands(&cells_widths);
     let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
     let mut alone_demands = cells.demands(&alone_widths);
-    let summary_demands = SummaryProbeDemands::new(cells_demands.summary, alone_demands.summary);
     add_readout_rows(&mut cells_demands, &cells_widths);
     add_readout_rows(&mut alone_demands, &alone_widths);
     grid.sync_rendered_demands(&cells_demands, growth);
@@ -282,7 +280,6 @@ pub fn draw_tile_grid<Id: Clone + Eq + Debug>(
         area,
         growth,
         progress,
-        summary_demands,
         |content, area| cells.rows_drawn(content, area),
         |content, area| cells.rows_kept(content, area),
     );
@@ -990,31 +987,6 @@ mod tests {
         }
     }
 
-    struct WidthResponsiveSummary;
-
-    impl TileCells<u32> for WidthResponsiveSummary {
-        fn summary_title(&self) -> &'static str { "summary" }
-
-        fn demands(&self, widths: &[(TileContent<u32>, u16)]) -> TileDemands<u32> {
-            let width = measured_width(widths, &TileContent::Summary);
-            TileDemands {
-                summary:       if width < TEST_TILE_WIDTH { 5 } else { 8 },
-                summary_width: 0,
-                groups:        (1..=5).map(|id| TileDemand { id, rows: 1 }).collect(),
-            }
-        }
-
-        fn rows_drawn(&self, content: &TileContent<u32>, area: Rect) -> u16 {
-            match content {
-                TileContent::Summary if area.width < TEST_TILE_WIDTH => 5,
-                TileContent::Summary => 8,
-                TileContent::Group(_) | TileContent::Empty(_) => area.height,
-            }
-        }
-
-        fn draw(&self, _: &mut Buffer, _: &TileContent<u32>, _: Rect, _: Color) {}
-    }
-
     struct Toast64MotionCells {
         groups:       u32,
         summary_rows: usize,
@@ -1572,8 +1544,6 @@ mod tests {
         let mut cells_demands = cells.demands(&cells_widths);
         let alone_widths = measurement_widths(grid, area, growth, GridDisplay::SummaryAlone);
         let mut alone_demands = cells.demands(&alone_widths);
-        let summary_demands =
-            SummaryProbeDemands::new(cells_demands.summary, alone_demands.summary);
         add_readout_rows(&mut cells_demands, &cells_widths);
         add_readout_rows(&mut alone_demands, &alone_widths);
         grid.sync_rendered_demands(&cells_demands, growth);
@@ -1581,7 +1551,6 @@ mod tests {
             area,
             growth,
             raw,
-            summary_demands,
             |content, area| cells.rows_drawn(content, area),
             |content, area| cells.rows_kept(content, area),
         );
@@ -1862,44 +1831,15 @@ mod tests {
     }
 
     #[test]
-    fn a_summary_hiding_rows_beside_cells_shows_alone() {
+    fn a_summary_hiding_rows_beside_cells_keeps_the_cells() {
         let area = Rect::new(0, 0, 77, 40);
         let min_tile_height = 14;
         let cells = StubCells::demanding(50, (1..=5).map(|id| (id, 1)))
             .with_rows_drawn(TileContent::Summary, 50);
         let (grid, buffer) = settled_grid_in_view(area, &cells, TileView::Auto, min_tile_height);
 
-        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
-        assert!(!buffer_text(&buffer).contains("group body"));
-    }
-
-    #[test]
-    fn a_width_responsive_summary_uses_each_views_own_demand() {
-        let area = Rect::new(0, 0, TEST_TILE_WIDTH.saturating_mul(2), 20);
-        let growth = TileGrowth::default();
-        let cells = WidthResponsiveSummary;
-        let mut grid = TileGrid::new();
-        grid.set_min_tile_width(TEST_TILE_WIDTH);
-        let mut buffer = Buffer::empty(area);
-        draw_tile_grid(
-            &mut buffer,
-            &mut grid,
-            area,
-            growth,
-            TileGridContents::Shown,
-            &cells,
-        );
-        grid.settle_for_test();
-        draw_tile_grid(
-            &mut buffer,
-            &mut grid,
-            area,
-            growth,
-            TileGridContents::Shown,
-            &cells,
-        );
-
-        assert_eq!(grid.display(), GridDisplay::SummaryAlone);
+        assert_eq!(grid.display(), GridDisplay::Cells);
+        assert!(buffer_text(&buffer).contains("group body"));
     }
 
     #[test]
@@ -1981,6 +1921,7 @@ mod tests {
             TileGridContents::Shown,
             &busy,
         );
+        grid.set_view(TileView::Summary);
         assert_eq!(grid.display(), GridDisplay::Cells);
 
         grid.settle_for_test();
