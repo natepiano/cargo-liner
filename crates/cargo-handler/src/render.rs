@@ -672,17 +672,18 @@ fraying = "leading"
             timer: None,
         };
         AgentRow {
-            agent:        Agent::Claude,
-            service_tier: ServiceTier::Unrecorded,
-            name:         "boss of bosses".to_string(),
-            status:       Some("idle".to_string()),
-            started:      NOW - age,
-            pid:          1_579_022,
-            desktop:      None,
-            directory:    "~/rust/hana_catalyst/docs/hana".to_string(),
-            branch:       None,
-            launched_by:  None,
-            children:     vec![
+            agent:           Agent::Claude,
+            service_tier:    ServiceTier::Unrecorded,
+            name:            "boss of bosses".to_string(),
+            status:          Some("idle".to_string()),
+            started:         NOW - age,
+            process_started: NOW - age,
+            pid:             1_579_022,
+            desktop:         None,
+            directory:       "~/rust/hana_catalyst/docs/hana".to_string(),
+            branch:          None,
+            launched_by:     None,
+            children:        vec![
                 child(
                     0,
                     ChildKind::Shell,

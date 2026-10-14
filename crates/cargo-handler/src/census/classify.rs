@@ -304,19 +304,20 @@ fn claude_row(
     }
     let directory = session.cwd.as_deref().or(process.directory.as_deref());
     Some(AgentRow {
-        agent:        Agent::Claude,
-        service_tier: ServiceTier::Unrecorded,
-        name:         session.label(),
-        status:       session.status.clone(),
-        started:      process.started,
-        pid:          process.pid,
-        desktop:      None,
-        directory:    directory_label(directory, home),
-        branch:       None,
-        launched_by:  process
+        agent:           Agent::Claude,
+        service_tier:    ServiceTier::Unrecorded,
+        name:            session.label(),
+        status:          session.status.clone(),
+        started:         process.started,
+        process_started: process.started,
+        pid:             process.pid,
+        desktop:         None,
+        directory:       directory_label(directory, home),
+        branch:          None,
+        launched_by:     process
             .parent
             .filter(|parent| session.is_from_desktop_app() && table.contains_key(parent)),
-        children:     Vec::new(),
+        children:        Vec::new(),
     })
 }
 
@@ -324,17 +325,18 @@ fn claude_row(
 /// process holding the sessions the app started on this machine.
 fn desktop_app_row(process: &ProcessEntry, home: Option<&Path>) -> AgentRow {
     AgentRow {
-        agent:        Agent::Claude,
-        service_tier: ServiceTier::Unrecorded,
-        name:         CLAUDE_DESKTOP_APP.to_string(),
-        status:       None,
-        started:      process.started,
-        pid:          process.pid,
-        desktop:      None,
-        directory:    directory_label(process.directory.as_deref(), home),
-        branch:       None,
-        launched_by:  None,
-        children:     Vec::new(),
+        agent:           Agent::Claude,
+        service_tier:    ServiceTier::Unrecorded,
+        name:            CLAUDE_DESKTOP_APP.to_string(),
+        status:          None,
+        started:         process.started,
+        process_started: process.started,
+        pid:             process.pid,
+        desktop:         None,
+        directory:       directory_label(process.directory.as_deref(), home),
+        branch:          None,
+        launched_by:     None,
+        children:        Vec::new(),
     }
 }
 
@@ -370,6 +372,7 @@ fn codex_row(
         name,
         status: None,
         started: process.started,
+        process_started: process.started,
         pid: process.pid,
         desktop: None,
         directory: directory_label(process.directory.as_deref(), home),

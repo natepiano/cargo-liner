@@ -382,6 +382,7 @@ mod tests {
             name: name.to_string(),
             status: status.map(str::to_string),
             started: NOW - age,
+            process_started: NOW - age,
             pid,
             desktop: None,
             directory: directory.to_string(),

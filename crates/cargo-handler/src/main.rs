@@ -12,6 +12,7 @@ mod interaction;
 mod keymap;
 mod render;
 mod settings;
+mod startup_log;
 mod summary;
 mod terminal;
 mod theme;

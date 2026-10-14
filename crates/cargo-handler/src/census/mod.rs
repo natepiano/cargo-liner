@@ -130,47 +130,50 @@ impl From<&str> for ServiceTier {
 /// cell draws it, and as the probe prints it. The field order is the
 /// probe's JSON order.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "probe::ProbeAgentRow")]
 pub(crate) struct AgentRow {
     /// Claude Code or Codex.
-    pub(crate) agent:        Agent,
+    pub(crate) agent:           Agent,
     /// The tier a Codex agent asked for; [`ServiceTier::Unrecorded`] for
     /// Claude Code. Missing from a probe printed before it existed.
-    #[serde(default)]
-    pub(crate) service_tier: ServiceTier,
+    pub(crate) service_tier:    ServiceTier,
     /// The session's name, or what stands in for one.
-    pub(crate) name:         String,
+    pub(crate) name:            String,
     /// What the session says it is doing: `idle`, `busy` or `shell`
     /// for Claude Code, and nothing for Codex, which reports none.
-    pub(crate) status:       Option<String>,
+    pub(crate) status:          Option<String>,
     /// When the agent's session began, in unix seconds: for Claude Code
     /// the first line of its transcript, so a session resumed or
     /// restarted keeps its age, else when its process started.
-    pub(crate) started:      u64,
+    pub(crate) started:         u64,
+    /// When the agent's process itself started, in unix seconds, for
+    /// stable cell identity even when its session predates the process.
+    /// An older probe omits this field; its session start supplies the
+    /// identity used by that probe version at the wire boundary.
+    pub(crate) process_started: u64,
     /// The agent's process id on its own machine.
-    pub(crate) pid:          u32,
+    pub(crate) pid:             u32,
     /// The names of the KDE virtual desktops the agent's terminal window
     /// is on, or [`ALL_DESKTOPS_LABEL`](crate::constants::ALL_DESKTOPS_LABEL)
     /// for a window on every one; none where no window was matched to
     /// the agent. Read on Linux under `KWin` alone, and missing from a
     /// probe printed before it existed.
-    #[serde(default)]
-    pub(crate) desktop:      Option<String>,
+    pub(crate) desktop:         Option<String>,
     /// The directory the agent runs in, with its machine's home
     /// directory written as `~`.
-    pub(crate) directory:    String,
+    pub(crate) directory:       String,
     /// The branch checked out where the agent runs, or for a detached
     /// `HEAD` the start of its commit; none outside a repository.
     /// Missing from a probe printed before it existed.
-    #[serde(default)]
-    pub(crate) branch:       Option<String>,
+    pub(crate) branch:          Option<String>,
     /// The pid of the row that opened this one: the agent that opened it
     /// in a tmux session, or the row standing for the Claude desktop app
     /// that holds it. None for an agent a person started outside the
     /// app, which is what makes it top level.
-    pub(crate) launched_by:  Option<u32>,
+    pub(crate) launched_by:     Option<u32>,
     /// What the agent is running, in the order its cell draws it: each
     /// row is followed by the rows it started, one level deeper.
-    pub(crate) children:     Vec<ChildRow>,
+    pub(crate) children:        Vec<ChildRow>,
 }
 
 impl AgentRow {
@@ -475,6 +478,7 @@ mod tests {
             name: "enh/handler".to_string(),
             status: Some("busy".to_string()),
             started,
+            process_started: started,
             pid: 428_044,
             desktop: None,
             directory: "~/rust/handler".to_string(),
