@@ -719,6 +719,11 @@ fraying = "leading"
     /// measured to [`NOW`].
     fn drawn_buffer(app: &mut App) -> Buffer {
         let body = Rect::new(0, 0, WIDTH, HEIGHT - STATUS_LINE_HEIGHT);
+        drawn_buffer_in(app, body)
+    }
+
+    /// The grid at a chosen body size with ages measured to [`NOW`].
+    fn drawn_buffer_in(app: &mut App, body: Rect) -> Buffer {
         let growth = app.loaded_config.config.tiles.growth();
         let cells = Cells::new(
             app.census
@@ -761,6 +766,61 @@ fraying = "leading"
         app.tiles.settle_for_test();
 
         assert_eq!(drawn_grid(&mut app), ONE_AGENT_CELL);
+    }
+
+    #[test]
+    fn the_live_width_summary_spans_bands_without_an_interior_divider() {
+        let body = Rect::new(0, 0, 429, 89);
+        let mut app = laid_out_app();
+        app.loaded_config.config.tiles.widen_summary = true;
+        let agents = (0..5)
+            .map(|index| AgentRow {
+                pid: 1_579_022 + index,
+                name: format!("agent {index}"),
+                directory: format!(
+                    "~/rust/cargo-liner-handler-enh/{}",
+                    "long-directory/".repeat(14)
+                ),
+                children: Vec::new(),
+                ..boss(21 * 60 * 60)
+            })
+            .collect();
+        app.census.apply(CensusUpdate::Local(agents));
+        drawn_buffer_in(&mut app, body);
+        app.tiles.settle_for_test();
+        let buffer = drawn_buffer_in(&mut app, body);
+
+        let (left, top) = (body.top()..body.bottom())
+            .find_map(|y| {
+                (body.left()..body.right()).find_map(|x| {
+                    let corner: String = (x..(x + 9).min(body.right()))
+                        .map(|column| buffer[(column, y)].symbol())
+                        .collect();
+                    (corner == "┌ summary").then_some((x, y))
+                })
+            })
+            .expect("summary's top-left corner is drawn");
+        let right = (left + 1..body.right())
+            .find(|&x| matches!(buffer[(x, top)].symbol(), "┐" | "┬"))
+            .expect("summary's top-right corner is drawn");
+        let bottom = (top + 1..body.bottom())
+            .find(|&y| matches!(buffer[(left, y)].symbol(), "├" | "└"))
+            .expect("summary's bottom border is drawn");
+        assert!(
+            (left + 1..right).any(|x| buffer[(x, bottom)].symbol() == "┬"),
+            "summary spans a column line that continues below it"
+        );
+        for y in top + 1..bottom {
+            for x in left + 1..right {
+                assert!(
+                    !buffer[(x, y)]
+                        .symbol()
+                        .chars()
+                        .any(|glyph| ('\u{2500}'..='\u{257f}').contains(&glyph)),
+                    "summary has a lattice glyph at ({x}, {y})"
+                );
+            }
+        }
     }
 
     /// The agent's name in the summary and the title of its cell are

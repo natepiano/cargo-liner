@@ -342,6 +342,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         buffer.set_style(area, Style::default().bg(ground));
     }
     let mut grid_lines = GridLines::new(area);
+    let mut summary_frames = Vec::new();
     for &column in &drawing.column_bands {
         grid_lines.add(PaneFrame::new(column));
     }
@@ -404,6 +405,7 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
         }
         match &placement.content {
             TileContent::Summary => {
+                summary_frames.push(line_frame.rect());
                 if draws_name {
                     grid_lines.add_titled(line_frame, cells.summary_title());
                 } else {
@@ -426,6 +428,9 @@ pub(super) fn draw_placements<Id: Clone + Eq + Debug>(
             },
             TileContent::Empty(_) => grid_lines.add(line_frame),
         }
+    }
+    for rect in summary_frames {
+        grid_lines.open(rect);
     }
     // Neighbouring tiles meet on one line, so no cell belongs to a
     // single tile. Focus is the background tint under a tile's contents,
@@ -4881,6 +4886,58 @@ mod tests {
                 assert!(
                     !is_lattice_glyph(buffer[(x, y)].symbol()),
                     "summary-only frame has an interior divider at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_widened_summary_has_no_interior_band_divider() {
+        let growth = TileGrowth {
+            initial_rows:  4,
+            fill:          TileFill::Redistribute,
+            widen_summary: true,
+        };
+        let mut cells = StubCells::new(1..=5);
+        cells.demands.summary_width = 120;
+        let mut grid = TileGrid::new();
+        grid.set_min_tile_width(TEST_TILE_WIDTH);
+        let mut buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+        grid.settle_for_test();
+        buffer = Buffer::empty(TITLE_AREA);
+        draw_tile_grid(
+            &mut buffer,
+            &mut grid,
+            TITLE_AREA,
+            growth,
+            TileGridContents::Shown,
+            &cells,
+        );
+
+        let drawing = grid.drawing_at(TITLE_AREA, growth, PROGRESS_SCALE);
+        assert_eq!(drawing.column_bands.len(), 2);
+        let summary = drawing
+            .placements()
+            .find(|piece| piece.content == TileContent::Summary);
+        assert!(summary.is_some(), "the summary is drawn");
+        let Some(summary) = summary.map(|piece| piece.frame.clip()) else {
+            return;
+        };
+        assert!(summary.width > drawing.column_bands[0].width);
+        let inner = frame_inner(summary);
+        for y in inner.top()..inner.bottom() {
+            for x in inner.left()..inner.right() {
+                assert!(
+                    !is_lattice_glyph(buffer[(x, y)].symbol()),
+                    "widened summary has an interior divider at ({x}, {y})"
                 );
             }
         }
