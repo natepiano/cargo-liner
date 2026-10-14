@@ -12,6 +12,8 @@ use syn::parse_file;
 
 use super::module_map;
 use super::module_map::ModuleMap;
+use crate::compiler::SOURCE_DIR_SRC;
+use crate::selection::Selection;
 
 /// One source file's text, parsed on the first request for its syntax.
 pub(crate) struct ParsedSource {
@@ -51,6 +53,26 @@ pub(crate) struct ParsedSources {
 }
 
 impl ParsedSources {
+    /// Seed module maps from Cargo's target roots, including integration tests
+    /// and targets whose manifest paths do not follow the directory defaults.
+    pub(crate) fn for_selection(selection: &Selection) -> Self {
+        let sources = Self::default();
+        for package in &selection.packages {
+            let source_root = module_map::lexically_normalized(&package.root.join(SOURCE_DIR_SRC));
+            let crate_roots = package
+                .targets
+                .iter()
+                .map(|target| target.src_path.clone())
+                .collect::<Vec<_>>();
+            let map = ModuleMap::for_crate_roots(&crate_roots, &sources);
+            sources
+                .module_maps
+                .borrow_mut()
+                .insert(source_root, Rc::new(map));
+        }
+        sources
+    }
+
     /// The text of `path`, read on the first request. A read failure is
     /// returned and not kept, so a later request reads again.
     pub(crate) fn source(&self, path: &Path) -> io::Result<Rc<ParsedSource>> {
