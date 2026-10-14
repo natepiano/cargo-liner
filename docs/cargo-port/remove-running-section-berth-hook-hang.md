@@ -64,31 +64,139 @@ The showrunner (cargo-liner, 2026-10-13 23:2x EDT), relaying the user: "Cargo be
 ### Phase 2 — The hook finds overlaps by key lookup and walks each target's history once  · status: done
 **Depends on:** Phase 1
 
+#### As-built
+
+- `KeyedConflictProtection` (in `reservation/retention.rs`) indexes each holder's held scopes once, at probe build, by case-folded component keys: a file-key map, a tree-key map, and a `BTreeMap` of keys for descendant lookup. `DriftCoverageProbe::coverage` finds overlaps from those lookups — a held tree on the candidate's key or an ancestor prefix, a held file on the exact key, and for a candidate tree every held key under it — and builds each `ReservationConflict` through `conflict_for_overlap`, the constructor the scan path also uses: same holders, same order, same `overlapping_scopes`. `conflicts_with_holders` and its other callers keep the scan.
+- `ReservationScope::component_keys(&self, path_case: PathCase)` in `scope/mod.rs` is the one keying of a scope; `scope::antichain::reduce` and the probe both use it, and `PathCase::component_key` stays `pub(super)`.
+- `CommitAncestryGraph::first_parent_intervals_after` returns every candidate's first-parent interval from one walk of the target's chain, using `first_parent_ancestry_boundary`, a memoized search that finds each candidate's first ancestor on the chain without building a full ancestor set per candidate. Each interval equals what `first_parent_commits_after` returns, including when the walk reaches a root. `classify_candidates_against_target` uses it; `first_parent_commits_after` stays for `earliest_containing_matches`.
+- Hook in the matched-checkpoint copy: 5.7 s → 2.69 s, same 234,414-byte answer. Remaining split: git subprocesses 1.11 s of wall time (84 `merge-tree`, 84 `diff`, `update-ref`, `rev-list`, `status`); CPU samples cargo-berth 54 %, git 46 %; the largest cargo-berth item is the incursion check's linear find of each incident's reservation by id (about 19 %), and allocation about 15 %.
+
+**Files:**
+- `crates/cargo-berth/src/reservation/retention.rs` — `KeyedConflictProtection`, `conflict_for_overlap`, keyed `coverage`, equivalence test against the scan, 13-holder timing test.
+- `crates/cargo-berth/src/scope/mod.rs`, `crates/cargo-berth/src/scope/antichain.rs` — `ReservationScope::component_keys` over the antichain's `pub(super)` `component_keys`.
+- `crates/cargo-berth/src/git/reachability.rs` — `first_parent_intervals_after`, `first_parent_ancestry_boundary`, equivalence test against per-candidate walks, large merged-history timing test.
+
+**Binds later work:** the hook baseline is 2.69 s in the matched-checkpoint copy; the incursion check's id find is the next cost.
+
+**Ruled out:** a phase of its own for allocation; allocation is fixed only where it sits on the incursion path.
+
+### Phase 3 — The incursion check finds each reservation by id lookup  · status: done
+**Depends on:** Phase 2
+
 #### Work Order
 
-**Goal:** the post-tool-use hook in the matched-checkpoint copy runs well under its 5.7 s baseline, with the same 234,414-byte answer.
+**Goal:** the post-tool-use hook in the matched-checkpoint copy runs under its 2.69 s baseline with the same 234,414-byte answer, and the incursion check's cost no longer grows with ledger size times incident count.
 
 **Spec:**
 
-The showrunner (cargo-liner, 2026-10-14): "retarget Phase 2 as you recommend, with both cuts. 5.7 s on every tool call is still too slow to stop at. Measure from the matched-checkpoint copy from now on and state that baseline (5.7 s) in the plan. After the phase, report the hook time and the remaining split, git wall time included."
+The showrunner (cargo-liner, 2026-10-14): "Yes to a phase 3 for the incursion lookup: a lookup quadratic in ledger size grows as the ledger grows (733 reservations today), so an id index is worth it even at 2.69 s. Keep it to that one cut and its test. Allocation at 15% is not a phase of its own: fix it inside phase 3 only where it sits on the same path."
 
-*Baseline.* The replay checkpoint is keyed to the journal file's device and inode, so a restored snapshot replays the whole 346 MB journal; a real ledger replays only the tail past its checkpoint. With the checkpoint matched to the restored journal the hook runs 5.7 s. A perf profile of that run (inclusive): target reachability about 30 %, the drift overlap step about 23 %; journal replay is no longer a top item.
+*The cost (`reservation/retention.rs`).* `RetainedReservationSet::observe_incursion(entering, blocked_paths)` calls `incursion_path_coverage` once per blocked path, and each call iterates `incursion_incidents_of_coordination_identity(entering)`, which for every retained incident calls `self.reservation(incident.reservation_id)`, a linear `find` over every reservation. One observation therefore costs blocked paths × incidents × reservations. In the profile of the matched-checkpoint hook this `find` under `incursion_incidents_of_coordination_identity` is about 19 % of samples, the largest cargo-berth item.
 
-*Cut 1 — overlap by key lookup (`reservation/retention.rs`).* `DriftCoverageProbe::coverage` runs `conflicts_overlapping_holders`, which scans every held scope of every holder for each changed path and calls `ReservationScope::overlaps`/`contains`, allocating strings per comparison. When the probe is built, index each holder's held scopes by case-folded component keys (`ReservationScope::component_keys`, shared with `scope::antichain::reduce`): a file key set, a tree key set, and for each held tree its key. A candidate scope overlaps a held scope exactly when one contains the other: a held tree on the candidate's key or any ancestor prefix of it, a held file on the candidate's exact key, or, for a candidate tree, any held scope whose key starts with the candidate's key. `coverage` answers from lookups and builds each `ReservationConflict` exactly as `conflicts_overlapping_holders` does today: same holders, same order, same `overlapping_scopes` (the contained side of each overlap, then `minimal_antichain`). `conflicts_with_holders` and its other callers keep the scan. Keep the scan as the reference in a test that asks both the index and `conflicts_overlapping_holders` the same candidates (files and trees, nested, case-only differences, both `PathCase` values) and asserts equal answers.
+*The cut.* `incursion_incidents_of_coordination_identity(reservation)` decides membership by id lookup: one pass over the reservations collects the ids whose `actor.has_coordination_identity(worktree, run)` holds into a `HashSet<ReservationId>`, and the incident filter asks that set. An incident whose reservation id is unknown stays excluded, as `is_ok_and` excludes it today. Incidents come back in the same order. `observe_incursion` collects that identity's incidents once and passes them to `incursion_path_coverage`, so the per-path loop scans only the identity's incidents and builds nothing per path; `incursion_path_coverage` keeps its holder-containment rule and its Outstanding-first, then Answered, then Uncovered answer. The other callers (`recovery.rs`, `board/alerts.rs`) keep the same signature and answers. Fix allocation only on this path (for example the per-path clones in `observe_incursion`, when they can be avoided without changing its returned sets). `RetainedReservationSet::reservation` and its other callers stay as they are.
 
-*Cut 2 — one ancestry walk per target (`git/reachability.rs`).* `classify_candidates_against_target` calls `CommitAncestryGraph::first_parent_commits_after(target, candidate)` once per resolved candidate, and that calls `ancestors_including(candidate)`, building a `HashSet<GitObjectId>` of the candidate's entire history every time. Compute every candidate's interval from one walk: walk the target's first-parent chain once, then find, for each candidate, the first chain commit that is an ancestor of the candidate (inclusive), without building a full ancestor set per candidate (for example, one marking pass from all candidates that stops at chain commits, or deduplicating candidates and memoizing). Each interval is the chain prefix before that commit, the exact `Vec<GitObjectId>` `first_parent_commits_after` returns today, including when the walk reaches a root. `first_parent_commits_after` keeps its one other caller, `CommitAncestryGraph::earliest_containing_matches`, and serves as the reference in a test of both on graphs with merges, shared ancestry, repeated candidates, candidates on and off the first-parent chain, and a chain that reaches a root.
-
-Each cut gets a timing test of the reported size class (hundreds of holders' scopes; a history of thousands of commits with dozens of candidates) that ends in well under a second.
+*Tests.* An equivalence test asks the keyed `incursion_incidents_of_coordination_identity` and a test-only copy of the linear filter (`self.reservation(id).is_ok_and(...)`) the same question across reservations of the same run in the same worktree, the same run in another worktree, another run in the same worktree, and an incident naming an unknown reservation, and asserts equal sequences. A timing test builds hundreds of reservations and hundreds of incidents with an observation of dozens of blocked paths, and asserts `observe_incursion` finishes in under 250 ms. The existing `observe_incursion` tests keep passing unchanged.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/retention.rs` — the probe's key index, `DriftCoverageProbe::coverage`, the equivalence and timing tests.
-- `crates/cargo-berth/src/scope/mod.rs`, `crates/cargo-berth/src/scope/antichain.rs` — `ReservationScope::component_keys`, the one keying of a scope that `reduce` and the probe share.
-- `crates/cargo-berth/src/git/reachability.rs` — `classify_candidates_against_target`, `CommitAncestryGraph::first_parent_commits_after`, `ancestors_including`, the equivalence and timing tests.
+- `crates/cargo-berth/src/reservation/retention.rs` — `incursion_incidents_of_coordination_identity`, `observe_incursion`, `incursion_path_coverage`, the equivalence and timing tests.
+
+**Seats:** 1 writer
+- `impl` — `crates/cargo-berth/src/reservation/retention.rs`.
+
+**Constraints from prior phases:** `KeyedConflictProtection`, `DriftCoverageProbe` and `first_parent_intervals_after` stay as landed; a probe is built per subject per pass and never shared between the pre-lock and locked passes.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` then `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; the equivalence and timing tests pass; the unit director states the hook time in the matched-checkpoint copy against the 2.69 s baseline and the remaining split, git wall time included.
+
+### Phase 4 — The slow lifecycle tests run well under a second  · status: todo
+**Depends on:** Phase 3
+
+#### Work Order
+
+**Goal:** each test in the `lifecycle` binary that takes a second or more on a quiet machine runs well under a second and proves what it proves today, or its floor is named and measured where real product work sets it.
+
+**Spec:**
+
+The showrunner (cargo-liner, 2026-10-14): "The user's standing rule is that a test taking seconds is a defect to fix … Aim for each well under a second without weakening what it proves. Where a floor is set by real product work (for example, git operations the test must perform), say so with the measured floor rather than forcing it. Measure each test before and after on a quiet machine, and list them in the checkpoint." And: "include the 17 at 1.0–1.5 s as targets too. The bar is each test under a second … If that makes phase 4 too large, split it into 4 and 5 by fixture family."
+
+*Targets* (quiet full-suite run of the phase 2 tree, total 8.07 s), all in `cargo-berth::lifecycle`:
+
+| Test | Quiet time |
+| --- | --- |
+| `checkpoint_ranges_survive_two_rebases_reconciled_before_fast_forward` | 2.17 s |
+| `checkpoint_ranges_survive_two_rebases_reconciled_during_integration` | 2.11 s |
+| `split_checkpoint_survives_stacked_branches_rewritten_with_update_refs` | 1.83 s |
+| `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_lower_first` | 1.77 s |
+| `upper_checkpoint_keeps_the_full_split_interval_when_update_refs_writes_upper_first` | 1.74 s |
+| `split_checkpoint_survives_an_active_phases_rewritten_retention_ref` | 1.59 s |
+| `interactive_split_keeps_both_protected_hunks_in_the_active_phase` | 1.34 s |
+| `interactive_split_keeps_both_protected_hunks_in_the_checkpoint` | 1.29 s |
+| `integration_cover::cover_ends_after_integration_lands_by_merge_or_fast_forward` | 1.26 s |
+| `split_checkpoint_survives_switching_the_issuing_checkout_before_board` | 1.18 s |
+| `merge_extent::lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward` | 1.10 s |
+| `soft_reset_split_keeps_both_protected_hunks_in_the_active_phase` | 1.05 s |
+| `soft_reset_split_keeps_both_protected_hunks_in_the_checkpoint` | 1.02 s |
+| `refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors` | 1.01 s |
+
+*Method.* For each target, find where its time goes before changing it: count the `cargo-berth` process launches and git subprocesses it runs, and time fixture setup apart from the behavior under test. Cut cost the assertions do not need: repeated repository setup (build once, or start from `RepositoryTemplate`/`IntegrationRepository` in `cargo-berth-test-support`), repeated full `cargo-berth` launches where one launch answers several assertions, git operations that rebuild state already present, and waits on time. Every assertion stays, and so does every scenario step the test's name promises (two rebases, both `update-refs` write orders, interactive and soft-reset splits, merge and fast-forward landings).
+
+*Floors.* Where the remaining time is product work the test must perform (a fixed number of git operations or `cargo-berth` invocations the scenario needs), stop and record the measured floor and what sets it in the seat's summary instead of weakening the test.
+
+*Measurement.* Each seat records each target's time before and after from `verify.sh test cargo-berth --filter <name>` output. The unit director re-measures every target on a quiet machine at the checkpoint and lists them there.
+
+**Files:**
+- `crates/cargo-berth/tests/lifecycle.rs` — the lifecycle targets.
+- `crates/cargo-berth/tests/support/split_rebase.rs`, `crates/cargo-berth/tests/support/reanchoring.rs` — the split-rebase and reanchoring scenarios the targets run.
+- `crates/cargo-berth-test-support/src/lib.rs`, `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth-test-support/src/repository_template.rs` — shared fixtures, only where a target's setup cost lives there.
 
 **Seats:** 2 writers
-- `impl` — `crates/cargo-berth/src/reservation/retention.rs`; `crates/cargo-berth/src/scope/mod.rs` and `scope/antichain.rs` (only `ReservationScope::component_keys`).
-- `test` — opens as impl: `crates/cargo-berth/src/git/reachability.rs`.
+- `impl` — `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/support/split_rebase.rs`, and the hub `crates/cargo-berth-test-support/src/` (sole owner; `test` messages it for a fixture change).
+- `test` — opens as impl: `crates/cargo-berth/tests/support/reanchoring.rs` (the reanchoring and `update-refs` scenarios).
 
-**Constraints from prior phases:** the keyed reduction and `DriftCoverageProbe` stay as landed; a probe is built per subject per pass and never shared between the pre-lock and locked passes.
+**Constraints from prior phases:** production code is not changed by this phase; the incursion id lookup, `KeyedConflictProtection`, `DriftCoverageProbe` and `first_parent_intervals_after` stay as landed.
 
-**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh check cargo-berth`, `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` and `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` all green; both equivalence tests and both timing tests pass; the unit director states the hook time in the matched-checkpoint copy against the 5.7 s baseline and the remaining split, git wall time included.
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` then `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; every target under one second on a quiet machine or carrying a named, measured floor; the unit director lists every target's before and after time in the checkpoint notice.
+
+### Phase 5 — The slow board, edges, liveness, gate and compaction tests run well under a second  · status: todo
+**Depends on:** Phase 4
+
+#### Work Order
+
+**Goal:** each test in the `board`, `edges`, `liveness`, `gate` and `compaction` binaries that takes a second or more on a quiet machine runs well under a second and proves what it proves today, or its floor is named and measured where real product work sets it.
+
+**Spec:**
+
+The showrunner's rule and method are Phase 4's, quoted there: every assertion stays, floors set by real product work are measured and named, each target's time before and after is listed in the checkpoint.
+
+*Targets* (same quiet run):
+
+| Test | Binary | Quiet time |
+| --- | --- | --- |
+| `cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations` | board | 2.36 s |
+| `an_existing_reservation_covers_only_when_it_targets_the_integration_parent` | board | 1.58 s |
+| `every_reachable_edge_readiness_has_its_own_action_or_settlement` | board | 1.35 s |
+| `reachability_integrates_every_outstanding_subject_without_scoped_comparisons` | board | 1.32 s |
+| `rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries` | board | 1.15 s |
+| `proof_subject_changes_force_rechecks_at_an_unchanged_target` | board | 1.15 s |
+| `targets_include_the_repository_trunk_and_only_non_released_reservations` | board | 1.06 s |
+| `unconstrained_holders_show_all_liveness_states_and_distinct_history_failures` | board | 1.02 s |
+| `successor_round_robin_covers_every_head` | edges | 1.62 s |
+| `predecessor_graph_has_fixed_cold_cost` | edges | 1.04 s |
+| `checkpoint_readiness_covers_incorporation_and_missing_objects` | edges | 1.03 s |
+| `recovery_dispositions_validate_evidence_and_remain_distinct_after_replay` | liveness | 1.57 s |
+| `hook_outer_gate_deadline_expires_while_worker_waits_on_the_mutation_lock` | gate | 1.08 s |
+| `compaction_changes_no_reader_output_and_a_second_run_finds_nothing` | compaction | 1.03 s |
+
+*Method, floors and measurement:* as in Phase 4. A test whose name asserts a cost bound (`predecessor_graph_has_fixed_cold_cost`, `cold_proof_subjects_bound_git_evaluation_…`) keeps its bound; a deadline test (`hook_outer_gate_deadline_expires_…`) may shorten the deadline only through an existing test-facing setting, never by changing production timing.
+
+**Files:**
+- `crates/cargo-berth/tests/board.rs` — the board targets.
+- `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/liveness.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/compaction.rs` — the other targets.
+- `crates/cargo-berth-test-support/src/lib.rs`, `crates/cargo-berth-test-support/src/integration_repository.rs`, `crates/cargo-berth-test-support/src/repository_template.rs` — shared fixtures, only where a target's setup cost lives there.
+
+**Seats:** 2 writers
+- `impl` — `crates/cargo-berth/tests/board.rs` and the hub `crates/cargo-berth-test-support/src/` (sole owner; `test` messages it for a fixture change).
+- `test` — opens as impl: `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/liveness.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/compaction.rs`.
+
+**Constraints from prior phases:** production code is not changed by this phase; Phase 4's fixture changes stay as landed.
+
+**Acceptance gate:** `bash ~/.claude/scripts/delegate/verify.sh lint cargo-berth` then `bash ~/.claude/scripts/delegate/verify.sh test cargo-berth` green; every target under one second on a quiet machine or carrying a named, measured floor; the unit director lists every target's before and after time in the checkpoint notice.
