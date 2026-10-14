@@ -26,6 +26,7 @@
 | tile-fixes-unit | docs/cargo-port/remove-running-section-tile-fixes.md | /home/natepiano/rust/cargo-liner-tile-fixes | remove-running-section-tile-fixes | — | crates/tui_pane, crates/cargo-tile, crates/cargo-handler, docs/cargo-tile |
 | berth-hook-hang-unit | `docs/cargo-berth/as-built/hook-cost.md` (as-built; plan done) | removed 2026-10-14 | `remove-running-section-berth-hook-hang` (deleted) | — | crates/cargo-berth/, crates/cargo-berth-test-support/ |
 | berth-ceiling-unit | docs/cargo-port/remove-running-section-berth-ceiling.md | /home/natepiano/rust/cargo-liner-berth-ceiling | remove-running-section-berth-ceiling | — | crates/cargo-berth/ |
+| handler-enh-unit | standby | /home/natepiano/rust/cargo-liner-handler-enh | remove-running-section-handler-enh | — | crates/cargo-handler/ |
 
 ## Hub files
 
