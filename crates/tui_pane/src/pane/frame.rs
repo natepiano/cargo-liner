@@ -531,7 +531,7 @@ impl GridLines {
     /// Open one pane spanning its neighbours' bands so nothing crosses it.
     /// Interior cells lose every side; edge cells lose their inward side,
     /// while corners keep their existing joins.
-    pub fn open(&mut self, rect: Rect) {
+    pub(crate) fn open(&mut self, rect: Rect) {
         if rect.is_empty() {
             return;
         }

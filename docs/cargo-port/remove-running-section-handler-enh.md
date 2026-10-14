@@ -36,7 +36,7 @@ Shot: the live handler at 429×90 with `tiles.widen_summary = true`. The summary
 
 ## Phases
 
-### Phase 1 — A spanning summary has no divider through it  · status: todo
+### Phase 1 — A spanning summary has no divider through it  · status: done
 
 **Depends on:** none
 
