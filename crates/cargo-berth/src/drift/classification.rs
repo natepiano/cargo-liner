@@ -34,6 +34,7 @@ use crate::ledger::ReservationScopeSet;
 use crate::ledger::ScopeKind;
 use crate::ledger::WidenCause;
 use crate::reservation::DriftBlockingCoverage;
+use crate::reservation::DriftCoverageProbe;
 use crate::reservation::IncursionObservation;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationReplayError;
@@ -76,11 +77,12 @@ impl PreLockForeignPathClassification {
         let mut candidates = Vec::new();
         for reservation_id in subject_ids {
             let reservation = reservations.reservation(*reservation_id)?;
+            let probe = subject_coverage_probe(reservations, reservation, path_case);
             changes.visit_paths(*reservation_id, |path| {
                 if reservation_covers_path(reservation, path, path_case) {
                     return;
                 }
-                match blocking_coverage(reservations, reservation, None, path, path_case) {
+                match blocking_coverage(&probe, None, path) {
                     DriftBlockingCoverage::NoForeignStanding | DriftBlockingCoverage::Unclaimed => {
                     },
                     DriftBlockingCoverage::Foreign(_) => {
@@ -124,18 +126,11 @@ impl PreLockForeignPathClassification {
     /// Which holders block the path, as of the moment the subject wrote it.
     fn blocking_coverage(
         &self,
-        reservations: &RetainedReservationSet,
+        probe: &DriftCoverageProbe<'_>,
         subject: &Reservation,
         path: &ReservationScopePath,
-        path_case: PathCase,
     ) -> DriftBlockingCoverage {
-        blocking_coverage(
-            reservations,
-            subject,
-            self.written_at(subject, path),
-            path,
-            path_case,
-        )
+        blocking_coverage(probe, self.written_at(subject, path), path)
     }
 
     /// When the subject last committed to a path it reached only through its phase range.
@@ -366,11 +361,12 @@ pub(super) fn classify_locked(
         }
         let reservation = reservations.reservation(*reservation_id)?;
         let mut builder = DriftEffectBuilder::default();
+        let probe = subject_coverage_probe(reservations, reservation, path_case);
         changes.visit_paths(*reservation_id, |path| {
             if reservation_covers_path(reservation, path, path_case) {
                 return;
             }
-            match prior.blocking_coverage(reservations, reservation, path, path_case) {
+            match prior.blocking_coverage(&probe, reservation, path) {
                 DriftBlockingCoverage::NoForeignStanding => {},
                 DriftBlockingCoverage::Unclaimed => {
                     if !changes.carries_work(path)
@@ -611,6 +607,14 @@ fn another_run_stands_accused(
         })
 }
 
+fn subject_coverage_probe<'reservations>(
+    reservations: &'reservations RetainedReservationSet,
+    subject: &Reservation,
+    path_case: PathCase,
+) -> DriftCoverageProbe<'reservations> {
+    reservations.drift_coverage_probe(subject.actor().worktree, subject.actor().run, path_case)
+}
+
 fn reservation_covers_path(
     reservation: &Reservation,
     path: &ReservationScopePath,
@@ -642,11 +646,9 @@ fn reservation_covers_path(
 /// onto later is dated by the claim, earlier than it should be, so such a holder is kept
 /// rather than dropped: the error is on the reporting side.
 fn blocking_coverage(
-    reservations: &RetainedReservationSet,
-    subject: &Reservation,
+    probe: &DriftCoverageProbe<'_>,
     written_at: Option<CommitterTime>,
     path: &ReservationScopePath,
-    path_case: PathCase,
 ) -> DriftBlockingCoverage {
     let Ok(candidate) = ReservationScopeSet::try_from(vec![ReservationScope {
         path: path.clone(),
@@ -654,12 +656,7 @@ fn blocking_coverage(
     }]) else {
         return DriftBlockingCoverage::Unclaimed;
     };
-    let coverage = reservations.blocking_coverage_for_drift(
-        &candidate,
-        subject.actor().worktree,
-        subject.actor().run,
-        path_case,
-    );
+    let coverage = probe.coverage(&candidate);
     let DriftBlockingCoverage::Foreign(conflicts) = coverage else {
         return coverage;
     };
