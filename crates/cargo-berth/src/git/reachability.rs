@@ -178,6 +178,15 @@ struct ResolvedTargetCommitHistory {
     graph:  CommitAncestryGraph,
 }
 
+/// Which pass of `first_parent_ancestry_boundary` a pending commit is waiting for.
+#[derive(Clone, Copy)]
+enum BoundaryVisit {
+    /// Its parents still have to be pushed and resolved.
+    ParentsPending,
+    /// Its parents are resolved, so its own boundary is their minimum.
+    ParentsVisited,
+}
+
 impl CommitAncestryGraph {
     /// Walk each ancestor once while advancing from the oldest first-parent commit.
     fn earliest_containing_matches(
@@ -262,8 +271,8 @@ impl CommitAncestryGraph {
         chain_length: usize,
         boundaries: &mut HashMap<GitObjectId, usize>,
     ) -> usize {
-        let mut pending = vec![(candidate, false)];
-        while let Some((commit, parents_visited)) = pending.pop() {
+        let mut pending = vec![(candidate, BoundaryVisit::ParentsPending)];
+        while let Some((commit, boundary_visit)) = pending.pop() {
             if boundaries.contains_key(commit) {
                 continue;
             }
@@ -271,16 +280,23 @@ impl CommitAncestryGraph {
                 .parents_by_commit
                 .get(commit)
                 .map_or(&[][..], Vec::as_slice);
-            if parents_visited {
-                let boundary = parents
-                    .iter()
-                    .map(|parent| boundaries[parent])
-                    .min()
-                    .unwrap_or(chain_length);
-                boundaries.insert(commit.clone(), boundary);
-            } else {
-                pending.push((commit, true));
-                pending.extend(parents.iter().map(|parent| (parent, false)));
+            match boundary_visit {
+                BoundaryVisit::ParentsVisited => {
+                    let boundary = parents
+                        .iter()
+                        .map(|parent| boundaries[parent])
+                        .min()
+                        .unwrap_or(chain_length);
+                    boundaries.insert(commit.clone(), boundary);
+                },
+                BoundaryVisit::ParentsPending => {
+                    pending.push((commit, BoundaryVisit::ParentsVisited));
+                    pending.extend(
+                        parents
+                            .iter()
+                            .map(|parent| (parent, BoundaryVisit::ParentsPending)),
+                    );
+                },
             }
         }
         boundaries[candidate]

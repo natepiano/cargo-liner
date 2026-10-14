@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::record::Reservation;
 use super::record::ReservationHolderActivity;
 use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
@@ -50,6 +51,30 @@ pub(crate) struct ReservationConflict {
 }
 
 impl ReservationConflict {
+    /// Describe `holder` as `conflicts_overlapping_holders` and `DriftCoverageProbe::coverage`
+    /// both report it: its identity and provenance, the overlap, and its freshness at
+    /// `observed_at`.
+    pub(super) fn for_overlap(
+        holder: &Reservation,
+        overlap_scope_revision: OverlapScopeRevision,
+        overlapping_scopes: ReservationScopeSet,
+        observed_at: &RecordedAt,
+    ) -> Self {
+        Self {
+            reservation_id: holder.id,
+            reservation_revision: holder.revision,
+            overlap_scope_revision,
+            holder_worktree_id: holder.actor.worktree,
+            holder_run_id: holder.actor.run,
+            head_snapshot: holder.head_snapshot.clone(),
+            source: holder.source.clone(),
+            purpose: holder.purpose.clone(),
+            overlapping_scopes,
+            claimed_at: holder.claimed_at.clone(),
+            activity: holder.freshness(observed_at).into(),
+        }
+    }
+
     /// Return a compact display label for the holder's branch state.
     pub(crate) fn holder_branch(&self) -> String {
         match &self.head_snapshot {
