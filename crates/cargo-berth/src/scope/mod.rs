@@ -147,6 +147,11 @@ impl ReservationScope {
     pub(crate) fn contains(&self, other: &Self, path_case: PathCase) -> bool {
         antichain::contains(self, other, path_case)
     }
+
+    /// Spell each path component so two scopes share a path exactly when their keys are equal.
+    pub(crate) fn component_keys(&self, path_case: PathCase) -> Vec<String> {
+        antichain::component_keys(self, path_case)
+    }
 }
 
 impl ReservationScopeSet {

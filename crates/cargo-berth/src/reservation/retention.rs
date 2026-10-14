@@ -5,6 +5,8 @@
 //! coverage, and editing-identity question the crate asks is answered from this set, and
 //! every journal operation is applied to it here.
 
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use serde::Deserialize;
@@ -181,8 +183,8 @@ pub(crate) struct RetainedReservationSet {
 
 /// What blocks one subject's changed paths, with every holder's protection worked out once.
 pub(crate) struct DriftCoverageProbe<'reservations> {
-    standing_holders: Vec<ProtectedConflictHolder<'reservations>>,
-    foreign_holders:  Vec<ProtectedConflictHolder<'reservations>>,
+    standing_holders: Vec<KeyedConflictProtection<'reservations>>,
+    foreign_holders:  Vec<KeyedConflictProtection<'reservations>>,
     path_case:        PathCase,
     observed_at:      RecordedAt,
 }
@@ -193,28 +195,124 @@ struct ProtectedConflictHolder<'reservations> {
     scopes:         ReservationScopeSet,
 }
 
+/// A holder's protection searchable by exact paths, ancestor trees, and descendants.
+struct KeyedConflictProtection<'reservations> {
+    holder:                 ProtectedConflictHolder<'reservations>,
+    file_keys:              HashMap<Vec<String>, Vec<usize>>,
+    tree_keys:              HashMap<Vec<String>, Vec<usize>>,
+    descendant_keys:        BTreeMap<Vec<String>, Vec<usize>>,
+    overlap_scope_revision: OverlapScopeRevision,
+}
+
+impl<'reservations> KeyedConflictProtection<'reservations> {
+    fn new(holder: ProtectedConflictHolder<'reservations>, path_case: PathCase) -> Self {
+        let mut file_keys = HashMap::<_, Vec<_>>::new();
+        let mut tree_keys = HashMap::<_, Vec<_>>::new();
+        let mut descendant_keys = BTreeMap::<_, Vec<_>>::new();
+        for (index, scope) in holder.scopes.as_slice().iter().enumerate() {
+            let key = scope.component_keys(path_case);
+            let exact_keys = match scope.kind {
+                ScopeKind::File => &mut file_keys,
+                ScopeKind::Tree => &mut tree_keys,
+            };
+            exact_keys.entry(key.clone()).or_default().push(index);
+            descendant_keys.entry(key).or_default().push(index);
+        }
+        let overlap_scope_revision = OverlapScopeRevision::from(&holder.scopes);
+        Self {
+            holder,
+            file_keys,
+            tree_keys,
+            descendant_keys,
+            overlap_scope_revision,
+        }
+    }
+
+    fn overlapping_scopes(
+        &self,
+        candidate: &ReservationScopeSet,
+        candidate_keys: &[Vec<String>],
+    ) -> Vec<ReservationScope> {
+        let mut matches = Vec::new();
+        for (candidate_index, (scope, key)) in
+            candidate.as_slice().iter().zip(candidate_keys).enumerate()
+        {
+            let ancestor_end = match scope.kind {
+                ScopeKind::File => key.len() + 1,
+                ScopeKind::Tree => key.len(),
+            };
+            for end in 1..ancestor_end {
+                if let Some(indices) = self.tree_keys.get(&key[..end]) {
+                    matches.extend(indices.iter().map(|index| (*index, candidate_index, true)));
+                }
+            }
+            match scope.kind {
+                ScopeKind::File => {
+                    if let Some(indices) = self.file_keys.get(key.as_slice()) {
+                        matches.extend(indices.iter().map(|index| (*index, candidate_index, true)));
+                    }
+                },
+                ScopeKind::Tree => {
+                    for (held_key, indices) in self.descendant_keys.range(key.clone()..) {
+                        if !held_key.starts_with(key) {
+                            break;
+                        }
+                        matches.extend(indices.iter().map(|index| {
+                            let held = &self.holder.scopes.as_slice()[*index];
+                            let held_contains = held_key == key && held.kind == ScopeKind::Tree;
+                            (*index, candidate_index, held_contains)
+                        }));
+                    }
+                },
+            }
+        }
+        // The scan emits held scopes first, then candidates; reduction keeps that order.
+        matches.sort_unstable_by_key(|(held, candidate, _)| (*held, *candidate));
+        matches
+            .into_iter()
+            .map(|(held, candidate_index, held_contains)| {
+                if held_contains {
+                    candidate.as_slice()[candidate_index].clone()
+                } else {
+                    self.holder.scopes.as_slice()[held].clone()
+                }
+            })
+            .collect()
+    }
+}
+
 impl DriftCoverageProbe<'_> {
     /// Classify a candidate against this subject's standing and foreign protection.
     pub(crate) fn coverage(&self, candidate: &ReservationScopeSet) -> DriftBlockingCoverage {
-        if !conflicts_overlapping_holders(
-            &self.standing_holders,
-            candidate,
-            self.path_case,
-            &self.observed_at,
-        )
-        .is_empty()
-        {
+        let candidate_keys = candidate
+            .as_slice()
+            .iter()
+            .map(|scope| scope.component_keys(self.path_case))
+            .collect::<Vec<_>>();
+        if self.standing_holders.iter().any(|holder| {
+            !holder
+                .overlapping_scopes(candidate, &candidate_keys)
+                .is_empty()
+        }) {
             return DriftBlockingCoverage::NoForeignStanding;
         }
-        let conflicts = conflicts_overlapping_holders(
-            &self.foreign_holders,
-            candidate,
-            self.path_case,
-            &self.observed_at,
-        )
-        .into_iter()
-        .map(|(_, conflict)| conflict)
-        .collect::<Vec<_>>();
+        let conflicts = self
+            .foreign_holders
+            .iter()
+            .filter_map(|protected| {
+                let overlapping_scopes = protected.overlapping_scopes(candidate, &candidate_keys);
+                let Ok(overlapping_scopes) = ReservationScopeSet::try_from(overlapping_scopes)
+                else {
+                    return None;
+                };
+                Some(conflict_for_overlap(
+                    protected.holder.representative,
+                    protected.overlap_scope_revision.clone(),
+                    overlapping_scopes.minimal_antichain(self.path_case),
+                    &self.observed_at,
+                ))
+            })
+            .collect::<Vec<_>>();
         if conflicts.is_empty() {
             DriftBlockingCoverage::Unclaimed
         } else {
@@ -470,8 +568,14 @@ impl RetainedReservationSet {
                 )
             });
         DriftCoverageProbe {
-            standing_holders,
-            foreign_holders,
+            standing_holders: standing_holders
+                .into_iter()
+                .map(|holder| KeyedConflictProtection::new(holder, path_case))
+                .collect(),
+            foreign_holders: foreign_holders
+                .into_iter()
+                .map(|holder| KeyedConflictProtection::new(holder, path_case))
+                .collect(),
             path_case,
             observed_at,
         }
@@ -1943,23 +2047,38 @@ fn conflicts_overlapping_holders<'reservations>(
                 .map(|overlapping_scopes| {
                     (
                         holder,
-                        ReservationConflict {
-                            reservation_id:         holder.id,
-                            reservation_revision:   holder.revision,
-                            overlap_scope_revision: OverlapScopeRevision::from(held_scopes),
-                            holder_worktree_id:     holder.actor.worktree,
-                            holder_run_id:          holder.actor.run,
-                            head_snapshot:          holder.head_snapshot.clone(),
-                            source:                 holder.source.clone(),
-                            purpose:                holder.purpose.clone(),
-                            overlapping_scopes:     overlapping_scopes.minimal_antichain(path_case),
-                            claimed_at:             holder.claimed_at.clone(),
-                            activity:               holder.freshness(observed_at).into(),
-                        },
+                        conflict_for_overlap(
+                            holder,
+                            OverlapScopeRevision::from(held_scopes),
+                            overlapping_scopes.minimal_antichain(path_case),
+                            observed_at,
+                        ),
                     )
                 })
         })
         .collect()
+}
+
+/// Describe the same holder snapshot for both scanned and keyed overlap answers.
+fn conflict_for_overlap(
+    holder: &Reservation,
+    overlap_scope_revision: OverlapScopeRevision,
+    overlapping_scopes: ReservationScopeSet,
+    observed_at: &RecordedAt,
+) -> ReservationConflict {
+    ReservationConflict {
+        reservation_id: holder.id,
+        reservation_revision: holder.revision,
+        overlap_scope_revision,
+        holder_worktree_id: holder.actor.worktree,
+        holder_run_id: holder.actor.run,
+        head_snapshot: holder.head_snapshot.clone(),
+        source: holder.source.clone(),
+        purpose: holder.purpose.clone(),
+        overlapping_scopes,
+        claimed_at: holder.claimed_at.clone(),
+        activity: holder.freshness(observed_at).into(),
+    }
 }
 
 impl IncursionIncident {
@@ -1987,19 +2106,24 @@ mod tests {
 
     use super::AuthorizedEditingIdentity;
     use super::DriftBlockingCoverage;
+    use super::DriftCoverageProbe;
     use super::EditBlockingStatus;
     use super::IncursionIncidentStatus;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::IntegrationWitness;
+    use super::KeyedConflictProtection;
+    use super::ProtectedConflictHolder;
     use super::ReservationConflict;
     use super::RetainedReservationSet;
     use super::WorktreeOccupancy;
+    use super::conflicts_overlapping_holders;
     use crate::coordination_identity::CoordinationIdentityProvenance;
     use crate::coordination_identity::PresentedCoordinationRun;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
     use crate::ids::ProjectionGeneration;
+    use crate::ids::RecordedAt;
     use crate::ids::ReservationId;
     use crate::ids::ReservationScopePath;
     use crate::ids::WorktreeId;
@@ -2010,6 +2134,7 @@ mod tests {
     use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
+    use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
     use crate::reservation::RecordedTarget;
@@ -2863,6 +2988,244 @@ mod tests {
             EditBlockingStatus::Blocking
         );
         Ok(())
+    }
+
+    #[test]
+    fn keyed_drift_coverage_matches_the_scope_scan() -> Result<(), Box<dyn std::error::Error>> {
+        let mut events = Vec::new();
+        for (index, id) in [
+            RESERVATION_ID,
+            FOREIGN_RESERVATION_ID,
+            SIBLING_RESERVATION_ID,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut claim = serde_json::to_value(claim_event_for(id, "presented")?)?;
+            claim["projection_generation"] = json!(index + 1);
+            events.push(serde_json::from_value(claim)?);
+        }
+        let reservations = RetainedReservationSet::replay(&events)?;
+        let held_scopes = [
+            test_scope_set(&[
+                ("Src", ScopeKind::Tree),
+                ("src/lib.rs", ScopeKind::File),
+                ("same", ScopeKind::File),
+                ("same", ScopeKind::Tree),
+                ("same", ScopeKind::File),
+                ("İ/leaf", ScopeKind::File),
+            ])?,
+            test_scope_set(&[
+                ("src/lib.rs", ScopeKind::File),
+                ("src/deep", ScopeKind::Tree),
+                ("src/deep/leaf", ScopeKind::Tree),
+                ("other", ScopeKind::File),
+                ("same", ScopeKind::Tree),
+                ("same", ScopeKind::File),
+            ])?,
+            test_scope_set(&[("own", ScopeKind::Tree), ("OWN", ScopeKind::File)])?,
+        ];
+        let candidate_pool = indexed_coverage_candidates()?;
+        for path_case in [PathCase::Sensitive, PathCase::Insensitive] {
+            let holders = reservations
+                .reservations
+                .iter()
+                .zip(&held_scopes)
+                .map(|(representative, scopes)| ProtectedConflictHolder {
+                    representative,
+                    scopes: scopes.clone(),
+                })
+                .collect::<Vec<_>>();
+            let probe = DriftCoverageProbe {
+                standing_holders: vec![KeyedConflictProtection::new(
+                    ProtectedConflictHolder {
+                        representative: holders[2].representative,
+                        scopes:         holders[2].scopes.clone(),
+                    },
+                    path_case,
+                )],
+                foreign_holders: holders[..2]
+                    .iter()
+                    .map(|holder| {
+                        KeyedConflictProtection::new(
+                            ProtectedConflictHolder {
+                                representative: holder.representative,
+                                scopes:         holder.scopes.clone(),
+                            },
+                            path_case,
+                        )
+                    })
+                    .collect(),
+                path_case,
+                observed_at: RecordedAt::now(),
+            };
+            for first in candidate_pool.as_slice() {
+                assert_indexed_coverage(
+                    &probe,
+                    &holders,
+                    &ReservationScopeSet::try_from(vec![first.clone()])?,
+                );
+                for second in candidate_pool.as_slice() {
+                    let candidates =
+                        ReservationScopeSet::try_from(vec![first.clone(), second.clone()])?;
+                    assert_indexed_coverage(&probe, &holders, &candidates);
+                }
+            }
+            assert_indexed_coverage(&probe, &holders, &candidate_pool);
+        }
+        Ok(())
+    }
+
+    fn indexed_coverage_candidates() -> Result<ReservationScopeSet, Box<dyn std::error::Error>> {
+        test_scope_set(&[
+            ("src", ScopeKind::File),
+            ("src", ScopeKind::Tree),
+            ("SRC", ScopeKind::Tree),
+            ("Src/lib.rs", ScopeKind::File),
+            ("src/lib.rs", ScopeKind::Tree),
+            ("src/deep/leaf/file", ScopeKind::File),
+            ("src/deep", ScopeKind::Tree),
+            ("same", ScopeKind::File),
+            ("SAME", ScopeKind::Tree),
+            ("same/child", ScopeKind::File),
+            ("other", ScopeKind::Tree),
+            ("other/child", ScopeKind::File),
+            ("own/leaf", ScopeKind::File),
+            ("OWN", ScopeKind::Tree),
+            ("i̇", ScopeKind::Tree),
+            ("İ/LEAF", ScopeKind::File),
+            ("unclaimed", ScopeKind::Tree),
+            ("src-sibling", ScopeKind::File),
+        ])
+    }
+
+    fn test_scope_set(
+        specs: &[(&str, ScopeKind)],
+    ) -> Result<ReservationScopeSet, Box<dyn std::error::Error>> {
+        let scopes = specs
+            .iter()
+            .map(|(path, kind)| {
+                Ok(ReservationScope {
+                    path: path.parse()?,
+                    kind: *kind,
+                })
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        Ok(ReservationScopeSet::try_from(scopes)?)
+    }
+
+    fn assert_indexed_coverage(
+        probe: &DriftCoverageProbe<'_>,
+        holders: &[ProtectedConflictHolder<'_>],
+        candidate: &ReservationScopeSet,
+    ) {
+        let standing = conflicts_overlapping_holders(
+            &holders[2..],
+            candidate,
+            probe.path_case,
+            &probe.observed_at,
+        );
+        let foreign = conflicts_overlapping_holders(
+            &holders[..2],
+            candidate,
+            probe.path_case,
+            &probe.observed_at,
+        )
+        .into_iter()
+        .map(|(_, conflict)| conflict)
+        .collect::<Vec<_>>();
+        match probe.coverage(candidate) {
+            DriftBlockingCoverage::NoForeignStanding => assert_ne!(standing, Vec::new()),
+            DriftBlockingCoverage::Unclaimed => assert!(standing.is_empty() && foreign.is_empty()),
+            DriftBlockingCoverage::Foreign(actual) => {
+                assert_eq!(standing, Vec::new());
+                assert_eq!(actual, foreign);
+            },
+        }
+    }
+
+    #[test]
+    fn keyed_drift_coverage_of_thirteen_holders_is_under_250_ms()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let started = Instant::now();
+        let reservations = thirteen_mixed_scope_holders()?;
+        let probe = reservations.drift_coverage_probe(
+            SECOND_WORKTREE_ID.parse()?,
+            SECOND_RUN_ID.parse()?,
+            PathCase::Insensitive,
+        );
+        assert_eq!(probe.foreign_holders.len(), 13);
+        assert_eq!(
+            probe
+                .foreign_holders
+                .iter()
+                .map(|held| held.holder.scopes.as_slice().len())
+                .sum::<usize>(),
+            4732
+        );
+        for index in 0..100 {
+            let path = if index % 2 == 0 {
+                format!("mixed/scope-{index:03}")
+            } else {
+                format!("mixed/scope-{index:03}/child")
+            };
+            let inside = test_scope_set(&[(&path, ScopeKind::File)])?;
+            let DriftBlockingCoverage::Foreign(conflicts) = probe.coverage(&inside) else {
+                return Err("an indexed inside path should name all thirteen holders".into());
+            };
+            assert_eq!(conflicts.len(), 13);
+            for (holder_index, conflict) in conflicts.iter().enumerate() {
+                assert_eq!(
+                    conflict.reservation_id,
+                    probe.foreign_holders[holder_index].holder.representative.id
+                );
+                assert_eq!(conflict.overlapping_scopes, inside);
+            }
+            let outside =
+                test_scope_set(&[(&format!("outside/scope-{index:03}"), ScopeKind::Tree)])?;
+            assert!(matches!(
+                probe.coverage(&outside),
+                DriftBlockingCoverage::Unclaimed
+            ));
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "indexed coverage took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    fn thirteen_mixed_scope_holders() -> Result<RetainedReservationSet, Box<dyn std::error::Error>>
+    {
+        let scopes = (0..364)
+            .map(|index| {
+                json!({
+                    "path": format!("mixed/scope-{index:03}"),
+                    "kind": if index % 2 == 0 { "file" } else { "tree" },
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut events = Vec::new();
+        for index in 0..13 {
+            let id = format!("01900a1b-2c3d-7e4f-8a5b-{:012x}", 100 + index);
+            let mut claim = serde_json::to_value(claim_event_for(&id, "presented")?)?;
+            claim["actor"]["worktree"] =
+                json!(format!("01900a1b-2c3d-7e4f-8a5b-{:012x}", 500 + index));
+            claim["projection_generation"] = json!(index * 2 + 1);
+            events.push(serde_json::from_value(claim)?);
+            events.push(journal_event(
+                index * 2 + 2,
+                &json!({
+                    "op": "merge_extent_observed", "reservation_id": id,
+                    "extent": { "status": "protected", "key": {
+                        "trunk": TRUNK_OID, "head": PROTECTED_TIP,
+                        "working_tree": { "tracked_paths": [], "untracked_paths": [] },
+                    }, "scopes": scopes }, "run_status": "editing",
+                }),
+            )?);
+        }
+        Ok(RetainedReservationSet::replay(&events)?)
     }
 
     #[test]
