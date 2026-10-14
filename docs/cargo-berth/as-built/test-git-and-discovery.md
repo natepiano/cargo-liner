@@ -27,16 +27,16 @@ The setting travels through the inherited environment. Git hands it to managed h
 `crates/cargo-berth/src/ledger/worktree_context.rs`:
 
 - `is_git_directory(&Path)` holds for a directory with a `HEAD` file and `objects/` and `refs/` directories.
-- `DiscoveryCeilings(Vec<PathBuf>)` (private) holds canonical ceiling directories.
+- `DiscoveryCeilings(Vec<PathBuf>)` (private) holds ceiling directories, canonical except entries after an empty entry and entries that fail to canonicalize.
   - `from_environment()` reads `GIT_CEILING_DIRECTORIES` with `env::var_os`; unset is an empty list.
   - `impl From<&OsStr>` parses a path list as git does, through `env::split_paths`.
-  - `impl FromIterator<PathBuf>` keeps the absolute entries that canonicalize. Empty, relative and missing entries are dropped and the rest still apply; a non-UTF-8 entry is kept.
-  - `contains(&Path)` compares canonical paths.
+  - `impl FromIterator<PathBuf>` drops relative entries wherever they occur. An empty entry is dropped and makes every later absolute entry remain as given, without canonicalization. Earlier absolute entries are canonicalized, or kept as given when canonicalization fails. Non-UTF-8 entries follow the same rules. This follows git's `setup.c` `canonicalize_ceiling_entry`, except that failed canonicalization keeps the entry.
+  - `contains(&Path)` compares stored ceilings with canonical ancestor paths.
 - `WorktreeContext::discover(dir)` calls `discover_with_ceilings(dir, &DiscoveryCeilings::from_environment())`.
 - `discover_with_ceilings` canonicalizes the invocation directory and walks its `ancestors()`. Any directory other than the invocation directory that is a ceiling ends the walk before it is examined. At each examined directory, a `.git` passing `is_git_directory` is a main worktree, a `.git` file is followed through its `gitdir:` to a main or linked worktree, and anything else moves the walk up. An exhausted walk returns `LedgerError::RepositoryNotFound`.
 - `from_registered_root`, for roots read from git's worktree registry, accepts any `.git` directory whose canonical path is the common git directory. It uses neither `is_git_directory` nor ceilings.
 
-Module tests: `an_empty_git_directory_is_not_a_repository`, `discovery_stops_at_the_ceiling`, `the_invocation_directory_is_examined_even_at_the_ceiling`, `a_ceiling_at_the_invocation_directory_does_not_stop_the_walk`, `a_ceiling_list_entry_that_is_not_utf8_leaves_the_other_ceilings`. The bare-`.git` fixtures in `coordination_identity.rs` and `drift/execution.rs` create `HEAD`, `objects/` and `refs/`.
+Module tests: `an_empty_git_directory_is_not_a_repository`, `discovery_stops_at_the_ceiling`, `a_ceiling_named_through_a_symlink_stops_the_walk`, `a_ceiling_after_an_empty_entry_is_kept_as_given`, `a_ceiling_that_cannot_canonicalize_is_kept_as_given`, `a_relative_ceiling_is_dropped`, `the_invocation_directory_is_examined_even_at_the_ceiling`, `a_ceiling_at_the_invocation_directory_does_not_stop_the_walk`, `a_ceiling_list_entry_that_is_not_utf8_leaves_the_other_ceilings`. The bare-`.git` fixtures in `coordination_identity.rs` and `drift/execution.rs` create `HEAD`, `objects/` and `refs/`.
 
 ### Integration tests outside any repository
 
@@ -69,7 +69,7 @@ Four tests run `cargo-berth` in a temporary directory that must not resolve to a
 - **The gate trace test is the one exception.** It starts `cargo-berth` with `Command::new(executable)` and a wrapped `PATH` in `tests/gate.rs`, so its git runs maintenance. It runs in a private copy, not a template, so no reader can see that child.
 - **A fixture `.git` needs three entries.** A test that makes a bare `.git` directory must also create `HEAD`, `objects/` and `refs/`, or discovery skips it.
 - **Inlined environment policy.** `tests/board.rs`, `tests/hooks.rs` and `tests/ledger.rs` each inline a copy of their `run_berth` environment policy to add the ceiling. A change to that policy must reach the copies.
-- **Canonical ceilings.** Ceilings and the invocation directory compare after canonicalization, so on macOS a `/tmp` ceiling matches a walk through `/private/tmp`.
+- **Canonical ceilings.** Before an empty entry, a resolvable ceiling is canonicalized, so on macOS a `/tmp` ceiling matches a walk through `/private/tmp`. After an empty entry, ceilings stay as given and symlinks are not resolved; the invocation directory and its ancestors remain canonical.
 - **Not handled:**
   - An ambient `GIT_CONFIG_PARAMETERS` (`-c maintenance.auto=…`) would take precedence over the overlay. No test path sets one.
   - `remove_stale_builds` deletes another key's template build. A relink of `target/debug/cargo-berth` partway through a run would change the key and delete a template that readers of the old key are still copying. CI never relinks during the test step; a shared reader lock would close it if it is ever seen.
@@ -81,6 +81,6 @@ Four tests run `cargo-berth` in a temporary directory that must not resolve to a
 - **Why unit tests are covered too:** with only the integration helpers fixed, a `GIT_TRACE2` over a full cargo-berth test run still held 323 detached maintenance starts, every one from a fixture helper in cargo-berth's own unit-test binary. One exported constructor in the existing dev-dependency covers them, and a full run traces 0 maintenance starts.
 - **Why template readers stay unlocked:** the race was a process left running after the build, not a reader-writer conflict. `instantiate` only copies a template once `.complete` exists (each liveness test, run alone, changed no file under it), so once the build leaves nothing running the template is immutable and readers need no lock.
 - **Why discovery checks for a git directory:** an empty `.git` directory is not a repository to git, and accepting one let a test outside any repository resolve to a ledger under whatever sat above its temp directory. `HEAD`, `objects/` and `refs/` are the entries git itself requires.
-- **Why ceilings follow git's rules:** a user or test that bounds git's discovery with `GIT_CEILING_DIRECTORIES` bounds cargo-berth's the same way, including git's treatment of the invocation directory and of empty, relative and missing entries.
+- **Why ceilings follow git's rules:** a user or test that bounds git's discovery with `GIT_CEILING_DIRECTORIES` bounds cargo-berth's the same way, including git's treatment of the invocation directory, relative entries and the empty entry that disables later canonicalization. An absolute entry that cannot canonicalize is kept as given; it cannot match a canonical ancestor of an existing directory and bounds nothing.
 - **Why tests pass ceilings as values:** `env::set_var` is `unsafe` in Rust 2024 and visible to every thread in the process. `discover_with_ceilings` takes the ceilings as an argument so the walk is tested without touching the environment.
 - **Why `from_registered_root` accepts any `.git` directory:** its roots come from git's own worktree registry, so rejecting a partial `.git` there would contradict git.
