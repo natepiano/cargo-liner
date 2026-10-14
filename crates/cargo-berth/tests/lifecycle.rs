@@ -53,6 +53,42 @@ const INITIALIZED_REFTABLE_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     ..INITIALIZED_REPOSITORY
 };
 
+/// The empty-ledger main checkout used by the integration landing scenarios.
+const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
+    target_directory: env!("CARGO_TARGET_TMPDIR"),
+    executable:       BERTH_EXECUTABLE,
+    name:             "integration-main",
+    build:            |root| {
+        let git = GitDriver {
+            cleared_environment: &[
+                RUN_ENVIRONMENT,
+                SESSION_ENVIRONMENT,
+                "GIT_DIR",
+                "GIT_COMMON_DIR",
+            ],
+            ..GIT
+        };
+        git.run(root, ["init", "--quiet", "--initial-branch=main"]);
+        for (key, value) in [
+            ("user.name", "Berth Test"),
+            ("user.email", "berth@example.invalid"),
+            ("maintenance.auto", "false"),
+            ("gc.auto", "0"),
+        ] {
+            git.run(root, ["config", key, value]);
+        }
+        cargo_berth_test_support::write_file(root, "README.md", "initial\n");
+        git.run(root, ["add", "README.md"]);
+        git.run(root, ["commit", "--quiet", "-m", "initial"]);
+        assert_success(&run_berth(root, &["init", "--json"]));
+        git.run(root, ["add", CONFIGURATION_PATH]);
+        git.run_without_hooks(
+            root,
+            ["commit", "--quiet", "-m", "track berth configuration"],
+        );
+    },
+};
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -258,7 +294,7 @@ mod integration_cover {
 
     #[test]
     fn cover_ends_after_integration_lands_by_merge_or_fast_forward() {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let lane = repo.lane("landing-lane", "integration");
         let claimed = repo.claim(&lane, "file:lane.txt", FIRST_RUN, None);
         assert_success(&claimed);
@@ -2026,7 +2062,7 @@ mod merge_extent {
 
     #[test]
     fn lanes_release_when_their_integration_target_receives_a_merge_commit_or_fast_forward() {
-        let repo = IntegrationRepository::new(BERTH);
+        let repo = IntegrationRepository::from_template(super::INTEGRATION_MAIN);
         let a = repo.lane("lane-a", "integration");
         let b = repo.lane("lane-b", "integration");
         let a_claim = repo.claim(&a, "file:shared.txt", FIRST_RUN, None);

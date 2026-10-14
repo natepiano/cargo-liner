@@ -3754,7 +3754,7 @@ mod tests {
         Ok(())
     }
 
-    /// The pre-optimization membership rule, retained as an independent ordering reference.
+    /// The membership rule as a scan over every reservation, an independent ordering reference.
     fn incursion_incidents_by_reservation_scan<'retained>(
         reservations: &'retained RetainedReservationSet,
         subject: &Reservation,

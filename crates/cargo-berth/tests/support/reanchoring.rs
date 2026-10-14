@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
+use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::berth_command;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -926,13 +927,17 @@ pub(super) fn failed_append_preserves_rewrite_marker_and_retention() {
 }
 
 pub(super) fn refused_reanchor_preserves_live_and_orphaned_checkpoint_anchors() {
+    let fixture = RewriteFixture::new();
+    let id = fixture.start_phase();
+    fixture.commit("one", "base");
+    fixture.checkpoint(&id);
+    let before = board(fixture.root());
+    let old_tip = retained_tip(&fixture, &id);
+    let prepared_repository = DirectorySnapshot::capture(fixture.root());
+    let prepared_worktrees = DirectorySnapshot::capture(fixture.worktrees.path());
     for orphaned in [false, true] {
-        let fixture = RewriteFixture::new();
-        let id = fixture.start_phase();
-        fixture.commit("one", "base");
-        fixture.checkpoint(&id);
-        let before = board(fixture.root());
-        let old_tip = retained_tip(&fixture, &id);
+        prepared_repository.restore(fixture.root());
+        prepared_worktrees.restore(fixture.worktrees.path());
         let marker = fixture.deferred_amend("discarded", "base");
         if orphaned {
             fs::rename(

@@ -97,7 +97,7 @@ The showrunner (cargo-liner, 2026-10-13 23:2x EDT), relaying the user: "Cargo be
 
 **Gotchas:** journal replay rejects an unknown reservation charge, so the unknown-id equivalence case injects an incident into the retained vector directly.
 
-### Phase 4 — The slow tests run well under a second  · status: todo
+### Phase 4 — The slow tests run well under a second  · status: done
 **Depends on:** Phase 3
 
 #### Work Order
