@@ -2,13 +2,13 @@
 
 A reference for the next engineer modifying `tui_pane`'s desktop-backdrop feature.
 Covers the capture pipeline under `crates/tui_pane/src/backdrop/` (behind the opt-in
-`backdrop` feature that only `cargo-tile` enables), the moving-band renderer that paints
+`backdrop` feature that `cargo-tile` and `cargo-handler` enable), the moving-band renderer that paints
 a captured desktop under drifting glyphs, and the failure→notice reporting that completes
 the story in cargo-tile's attract screen.
 
-`tui_pane` is the reusable ratatui pane framework shared by `cargo-tile` and `cargo-port`;
-all backdrop code sits behind `#[cfg(feature = "backdrop")]`, which only `cargo-tile`
-enables.
+`tui_pane` is the reusable ratatui pane framework shared by `cargo-tile`, `cargo-handler`
+and `cargo-port`; all backdrop code sits behind `#[cfg(feature = "backdrop")]`, which
+`cargo-tile` and `cargo-handler` enable.
 
 ---
 
@@ -333,9 +333,10 @@ The attract screen turns backdrop state into at most one status line.
   is logged **only on a discriminant transition** of its fields via
   `backdrop_diagnostic_record` (`backdrop: report=… capture_status=… captured_window_id=…
   latest_attempt_window_selection=…`); `note_backdrop_attempts` writes one
-  `backdrop_attempt:` line per drained `CompletedCaptureAttemptDiagnostic`. Both are inert
-  unless `CARGO_TILE_FRAME_LOG` is set (and each process truncates that file on first
-  write, so two instances need distinct paths).
+  `backdrop_attempt:` line per drained `CompletedCaptureAttemptDiagnostic`. Both go through
+  the app's `FrameProbe::note` and are inert unless its log is set: cargo-tile's
+  `CARGO_TILE_FRAME_LOG` (each process truncates that file on first write, so two instances
+  need distinct paths) or cargo-handler's `CARGO_HANDLER_FRAME_LOG` (appended to).
 
 ### Moving band — `tui_pane/src/backdrop/band.rs`
 
@@ -489,12 +490,14 @@ minimum of the two boundary distances).
   and no `verify.sh` line catches it.
 - **`verify.sh` cannot see backdrop code.** `tui_pane`'s `default = ["clipboard"]` and
   `verify.sh` composes no `--features`, so `check|test|lint tui_pane` build with backdrop
-  off and never run its unit tests. Only `cargo-tile` enables the feature; behavior that
+  off and never run its unit tests. Only `cargo-tile` and `cargo-handler` enable the feature; behavior that
   must actually execute needs a cargo-tile-side test driving the framework API, or `cargo
   test -p tui_pane --features backdrop`.
 - **`CARGO_TILE_FRAME_LOG` is off by default** and each process truncates the file on its
-  first write — two instances sharing one path erase each other. The neutral
+  first write — two instances sharing one path erase each other. cargo-tile's neutral
   `CaptureUnavailable` line names this variable rather than promising a recording.
+  cargo-handler's `CARGO_HANDLER_FRAME_LOG` is also off by default and is appended to,
+  never truncated.
 
 ---
 
