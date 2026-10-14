@@ -888,20 +888,25 @@ impl RetainedReservationSet {
         entering: &Reservation,
         blocked_paths: &BlockedIncursionPathSet,
     ) -> IncursionObservation {
+        let incidents = self
+            .incursion_incidents_of_coordination_identity(entering)
+            .collect::<Vec<_>>();
         let mut outstanding = None;
         let mut outstanding_paths = Vec::new();
         let mut uncovered_paths = Vec::new();
         for blocked in blocked_paths.as_slice() {
-            match self.incursion_path_coverage(entering, blocked) {
+            match Self::incursion_path_coverage(&incidents, blocked) {
                 IncursionPathCoverage::Outstanding(incident_id) => {
                     outstanding.get_or_insert(incident_id);
-                    outstanding_paths.push(blocked.clone());
+                    outstanding_paths.push(blocked);
                 },
                 IncursionPathCoverage::Answered => {},
-                IncursionPathCoverage::Uncovered => uncovered_paths.push(blocked.clone()),
+                IncursionPathCoverage::Uncovered => uncovered_paths.push(blocked),
             }
         }
-        if let Ok(blocked_paths) = BlockedIncursionPathSet::try_from(uncovered_paths) {
+        if let Ok(blocked_paths) = BlockedIncursionPathSet::try_from(
+            uncovered_paths.into_iter().cloned().collect::<Vec<_>>(),
+        ) {
             return IncursionObservation::NewlyObserved {
                 incident_id: IncursionIncidentId::new(),
                 blocked_paths,
@@ -909,7 +914,9 @@ impl RetainedReservationSet {
         }
         match (
             outstanding,
-            BlockedIncursionPathSet::try_from(outstanding_paths),
+            BlockedIncursionPathSet::try_from(
+                outstanding_paths.into_iter().cloned().collect::<Vec<_>>(),
+            ),
         ) {
             (Some(incident_id), Ok(blocked_paths)) => IncursionObservation::AlreadyOutstanding {
                 incident_id,
@@ -926,12 +933,11 @@ impl RetainedReservationSet {
     /// path, every holder observed against it now already covers what this observation
     /// would report.
     fn incursion_path_coverage(
-        &self,
-        entering: &Reservation,
+        incidents: &[&IncursionIncident],
         blocked: &BlockedIncursionPath,
     ) -> IncursionPathCoverage {
         let mut answered = false;
-        for incident in self.incursion_incidents_of_coordination_identity(entering) {
+        for incident in incidents {
             if !incident
                 .blocked_paths()
                 .holders_of(&blocked.path)
@@ -969,10 +975,15 @@ impl RetainedReservationSet {
         reservation: &Reservation,
     ) -> impl Iterator<Item = &IncursionIncident> {
         let (worktree, run) = (reservation.actor.worktree, reservation.actor.run);
-        self.incursion_incidents.iter().filter(move |incident| {
-            self.reservation(incident.reservation_id)
-                .is_ok_and(|charged| charged.actor.has_coordination_identity(worktree, run))
-        })
+        let reservation_ids = self
+            .reservations
+            .iter()
+            .filter(|charged| charged.actor.has_coordination_identity(worktree, run))
+            .map(|charged| charged.id)
+            .collect::<HashSet<_>>();
+        self.incursion_incidents
+            .iter()
+            .filter(move |incident| reservation_ids.contains(&incident.reservation_id))
     }
 
     /// Iterate over the incursion incidents that still require a disposition.
@@ -2108,12 +2119,14 @@ mod tests {
     use super::DriftBlockingCoverage;
     use super::DriftCoverageProbe;
     use super::EditBlockingStatus;
+    use super::IncursionIncident;
     use super::IncursionIncidentStatus;
     use super::IncursionObservation;
     use super::IntegrationEvidenceStatus;
     use super::IntegrationWitness;
     use super::KeyedConflictProtection;
     use super::ProtectedConflictHolder;
+    use super::Reservation;
     use super::ReservationConflict;
     use super::RetainedReservationSet;
     use super::WorktreeOccupancy;
@@ -3676,6 +3689,148 @@ mod tests {
             [reservation_id]
         );
         Ok(())
+    }
+
+    #[test]
+    fn incursion_identity_lookup_matches_the_reservation_scan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut other_worktree = claim_event_for(OTHER_WORKTREE_RESERVATION_ID, "presented")?;
+        other_worktree.actor.worktree = SECOND_WORKTREE_ID.parse()?;
+        let mut other_run = claim_event_for(OTHER_RUN_RESERVATION_ID, "presented")?;
+        other_run.actor.run = SECOND_RUN_ID.parse()?;
+        let mut events = vec![
+            claim_event("presented")?,
+            claim_event_for(SIBLING_RESERVATION_ID, "presented")?,
+            other_worktree,
+            other_run,
+        ];
+        let charged_ids = [
+            SIBLING_RESERVATION_ID,
+            OTHER_WORKTREE_RESERVATION_ID,
+            RESERVATION_ID,
+            OTHER_RUN_RESERVATION_ID,
+            SIBLING_RESERVATION_ID,
+        ];
+        let incident_ids = (0..charged_ids.len())
+            .map(|index| format!("01900a1b-2c3d-7e4f-8a5b-{:012x}", 500 + index))
+            .collect::<Vec<_>>();
+        for (index, charged_id) in charged_ids.iter().enumerate() {
+            events.push(journal_event(
+                u64::try_from(index)? + 5,
+                &json!({
+                    "op": "incursion", "incident_id": incident_ids[index],
+                    "reservation_id": charged_id,
+                    "blocked_paths": [{"path": "src/lib.rs", "holders": [FOREIGN_RESERVATION_ID]}],
+                }),
+            )?);
+        }
+        let mut reservations = RetainedReservationSet::replay(&events)?;
+        // Replay rejects unknown charges; inject one to exercise the filter's exclusion rule.
+        let mut unknown = reservations.incursion_incidents[0].clone();
+        unknown.id = SECOND_INCIDENT_ID.parse()?;
+        unknown.reservation_id = FOREIGN_RESERVATION_ID.parse()?;
+        reservations.incursion_incidents.insert(2, unknown);
+        for subject in reservations.iter() {
+            let actual = reservations
+                .incursion_incidents_of_coordination_identity(subject)
+                .map(IncursionIncident::id)
+                .collect::<Vec<_>>();
+            let expected = incursion_incidents_by_reservation_scan(&reservations, subject)
+                .map(IncursionIncident::id)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            assert_ne!(actual, Vec::new());
+        }
+        let same_party = reservations
+            .incursion_incidents_of_coordination_identity(
+                reservations.reservation(RESERVATION_ID.parse()?)?,
+            )
+            .map(|incident| incident.id().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            same_party,
+            [0, 2, 4].map(|index| incident_ids[index].clone())
+        );
+        Ok(())
+    }
+
+    /// The pre-optimization membership rule, retained as an independent ordering reference.
+    fn incursion_incidents_by_reservation_scan<'retained>(
+        reservations: &'retained RetainedReservationSet,
+        subject: &Reservation,
+    ) -> impl Iterator<Item = &'retained IncursionIncident> {
+        let (worktree, run) = (subject.actor.worktree, subject.actor.run);
+        reservations
+            .incursion_incidents
+            .iter()
+            .filter(move |incident| {
+                reservations
+                    .reservation(incident.reservation_id)
+                    .is_ok_and(|charged| charged.actor.has_coordination_identity(worktree, run))
+            })
+    }
+
+    #[test]
+    fn incursion_observation_of_hundreds_of_incidents_is_under_250_ms()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservations = hundreds_of_incursion_incidents()?;
+        assert_eq!(reservations.reservations.len(), 600);
+        assert_eq!(reservations.incursion_incidents.len(), 600);
+        let entering = &reservations.reservations[0];
+        let holders = ForeignReservationIdSet::try_from(vec![FOREIGN_RESERVATION_ID.parse()?])?;
+        let observed = BlockedIncursionPathSet::try_from(
+            (0..64)
+                .map(|index| {
+                    Ok(BlockedIncursionPath {
+                        path:    format!("entered/file-{:03}.rs", 599 - index).parse()?,
+                        holders: holders.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?,
+        )?;
+        let started = Instant::now();
+        let observation = reservations.observe_incursion(entering, &observed);
+        let elapsed = started.elapsed();
+        let IncursionObservation::AlreadyOutstanding {
+            incident_id,
+            blocked_paths,
+        } = observation
+        else {
+            return Err("the retained incidents should cover every observed path".into());
+        };
+        assert_eq!(incident_id, reservations.incursion_incidents[599].id());
+        assert_eq!(blocked_paths, observed);
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "incursion observation took {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    fn hundreds_of_incursion_incidents()
+    -> Result<RetainedReservationSet, Box<dyn std::error::Error>> {
+        let mut events = Vec::new();
+        for index in 0..600 {
+            let id = format!("01900a1b-2c3d-7e4f-8a5b-{:012x}", 1000 + index);
+            let mut claim = serde_json::to_value(claim_event_for(&id, "presented")?)?;
+            claim["projection_generation"] = json!(index + 1);
+            events.push(serde_json::from_value(claim)?);
+        }
+        for index in 0..600 {
+            events.push(journal_event(
+                index + 601,
+                &json!({
+                    "op": "incursion",
+                    "incident_id": format!("01900a1b-2c3d-7e4f-8a5b-{:012x}", 2000 + index),
+                    "reservation_id": format!("01900a1b-2c3d-7e4f-8a5b-{:012x}", 1000 + index),
+                    "blocked_paths": [{
+                        "path": format!("entered/file-{index:03}.rs"),
+                        "holders": [FOREIGN_RESERVATION_ID],
+                    }],
+                }),
+            )?);
+        }
+        Ok(RetainedReservationSet::replay(&events)?)
     }
 
     #[test]
