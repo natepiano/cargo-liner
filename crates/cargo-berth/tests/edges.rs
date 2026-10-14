@@ -549,7 +549,9 @@ fn assert_checkpoint_transition(
                 fixture.repository.path(),
                 &["reflog", "expire", "--expire=now", "--all"],
             );
-            git(fixture.repository.path(), &["gc", "--prune=now"]);
+            // These fixture commits are loose objects. Prune them after expiring reflogs;
+            // repacking reachable history cannot affect the missing-object assertion.
+            git(fixture.repository.path(), &["prune", "--expire=now"]);
             assert!(
                 !git_status(
                     fixture.repository.path(),

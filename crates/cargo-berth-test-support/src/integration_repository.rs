@@ -17,6 +17,7 @@ use tempfile::TempDir;
 use tempfile::tempdir;
 
 use crate::DirectorySnapshot;
+use crate::RepositoryTemplate;
 use crate::berth_command;
 use crate::git_driver::GitDriver;
 use crate::git_driver::OptionalLocks;
@@ -107,23 +108,48 @@ impl IntegrationRepository {
             root,
             ["commit", "--quiet", "-m", "track berth configuration"],
         );
+        integration_repository.add_integration_worktree();
         integration_repository
-            .git_driver()
-            .add_worktree_without_hooks(
-                root,
-                &integration_repository.integration,
-                "integration",
-                "main",
-            );
-        integration_repository.integration = fs::canonicalize(&integration_repository.integration)
-            .expect("canonical integration worktree");
-        integration_repository.commit_file(
-            &integration_repository.integration,
+    }
+
+    /// Copy an initialized `main` template with its berth policy already committed.
+    ///
+    /// The template must have no reservations or linked worktrees. The integration checkout
+    /// and its first commit still run here, including the hooks that record its identity.
+    ///
+    /// # Panics
+    ///
+    /// Panics as [`RepositoryTemplate::instantiate`] does, or when git fails.
+    #[must_use]
+    pub fn from_template(template: RepositoryTemplate) -> Self {
+        let repository = template.instantiate();
+        let worktrees = tempdir().expect("worktree parent");
+        let integration = worktrees.path().join("integration");
+        let mut integration_repository = Self {
+            executable: template.executable,
+            repository,
+            worktrees,
+            integration,
+        };
+        integration_repository.add_integration_worktree();
+        integration_repository
+    }
+
+    fn add_integration_worktree(&mut self) {
+        self.git_driver().add_worktree_without_hooks(
+            self.root(),
+            &self.integration,
+            "integration",
+            "main",
+        );
+        self.integration =
+            fs::canonicalize(&self.integration).expect("canonical integration worktree");
+        self.commit_file(
+            &self.integration,
             "integration.txt",
             "integration\n",
             "integration start",
         );
-        integration_repository
     }
 
     /// Capture the main worktree and every linked worktree, for [`Self::restore`].

@@ -5,6 +5,7 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::IntegrationRepository;
 use cargo_berth_test_support::OptionalLocks;
@@ -34,6 +35,13 @@ const INITIALIZED_REPOSITORY: RepositoryTemplate = RepositoryTemplate {
     executable:       BERTH_EXECUTABLE,
     name:             "initialized",
     build:            build_initialized_repository,
+};
+
+/// The empty-ledger main checkout shared by the integration-target scenarios.
+const INTEGRATION_MAIN: RepositoryTemplate = RepositoryTemplate {
+    name: "integration-main",
+    build: build_integration_main,
+    ..INITIALIZED_REPOSITORY
 };
 
 use std::fs;
@@ -195,9 +203,11 @@ fn deleted_target_uses_main_without_an_uncovered_alert() {
 
 #[test]
 fn an_existing_reservation_covers_only_when_it_targets_the_integration_parent() {
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
+    repo.git(repo.root(), &["branch", "other-target", "main"]);
+    let baseline = repo.capture();
     for unrelated_target in [false, true] {
-        let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
-        repo.git(repo.root(), &["branch", "other-target", "main"]);
+        repo.restore(&baseline);
         let initial_target = if unrelated_target {
             "main"
         } else {
@@ -287,7 +297,7 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 
 #[test]
 fn targets_include_the_repository_trunk_and_only_non_released_reservations() {
-    let repo = IntegrationRepository::new(BERTH_EXECUTABLE);
+    let repo = IntegrationRepository::from_template(INTEGRATION_MAIN);
     let a = repo.lane("board-target-a", "integration");
     let b = repo.lane("board-target-b", "integration");
     let main_claim = repo.claim(repo.root(), "file:main.txt", FIRST_RUN, None);
@@ -1515,6 +1525,8 @@ fn independent_ready_reservations_are_an_unnumbered_tie() {
 #[test]
 fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
     let fixture = ordered_fixture();
+    let repository = DirectorySnapshot::capture(fixture.repository.path());
+    let worktrees = DirectorySnapshot::capture(fixture.worktrees.path());
     assert_waiting_reason(
         &board_data(fixture.repository.path()),
         "predecessor_checkpoint",
@@ -1569,7 +1581,9 @@ fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
         "fulfilled_successor_contains_predecessor"
     );
 
-    let cancelled_fixture = ordered_fixture();
+    repository.restore(fixture.repository.path());
+    worktrees.restore(fixture.worktrees.path());
+    let cancelled_fixture = &fixture;
     let abandoned = run_berth_with_run(
         &cancelled_fixture.predecessor_root,
         &[
@@ -1595,6 +1609,8 @@ fn every_reachable_edge_readiness_has_its_own_action_or_settlement() {
 fn rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries() {
     let rewritten_fixture = ordered_fixture();
     checkpoint_predecessor(&rewritten_fixture);
+    let repository = DirectorySnapshot::capture(rewritten_fixture.repository.path());
+    let worktrees = DirectorySnapshot::capture(rewritten_fixture.worktrees.path());
     git(
         rewritten_fixture.repository.path(),
         &["commit", "--quiet", "--amend", "-m", "rewritten trunk"],
@@ -1607,8 +1623,9 @@ fn rewritten_and_unknown_predecessor_evidence_have_distinct_recoveries() {
         "resolve --integrated-as <target-oid>"
     );
 
-    let unknown_fixture = ordered_fixture();
-    checkpoint_predecessor(&unknown_fixture);
+    repository.restore(rewritten_fixture.repository.path());
+    worktrees.restore(rewritten_fixture.worktrees.path());
+    let unknown_fixture = &rewritten_fixture;
     // `resolve --integrated-as` correctly rejects an unavailable object, so the protected-tip
     // snapshot is made unavailable directly to exercise the model's `ObjectUnknown` row.
     rewrite_checkpoint_protected_tip(
@@ -1772,9 +1789,9 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
 fn unconstrained_holders_show_all_liveness_states_and_distinct_history_failures() {
     let repository = initialized_repository();
     git(repository.path(), &["add", ".claude/config/berth.toml"]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let live_root = add_worktree(repository.path(), worktrees.path(), "live-holder");
@@ -4912,10 +4929,16 @@ fn comparisons_without_retained_verdicts_advance_through_every_distinct_subject(
 
 #[test]
 fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservations() {
-    assert_historical_candidate_subject_budget();
-    assert_mapped_acceptance_defers_historical_subjects();
+    let historical = historical_integration_fixture();
+    let repository = DirectorySnapshot::capture(historical.reservation.repository.path());
+    let worktrees = DirectorySnapshot::capture(historical.worktrees.path());
+    assert_historical_candidate_subject_budget(&historical, &repository, &worktrees);
+    repository.restore(historical.reservation.repository.path());
+    worktrees.restore(historical.worktrees.path());
+    assert_mapped_acceptance_defers_historical_subjects(&historical);
     for target_rewrite in [TargetRewrite::Equivalent, TargetRewrite::Different] {
         let one = rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
+        let baseline = DirectorySnapshot::capture(one.repository.path());
         let one_trace = run_board_with_git_trace(one.repository.path());
         assert!(one_trace.output.status.success());
         let one_argv = scoped_patch_git_argv(
@@ -4929,9 +4952,9 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
             ProofSubjectSimilarity::Distinct,
             ProofSubjectSimilarity::Duplicate,
         ] {
-            let two =
-                rewritten_reservation_fixture(target_rewrite, ReservationCompletion::Released);
-            let additional_reservation_ids = append_released_reservations(&two, 1, similarity);
+            baseline.restore(one.repository.path());
+            let two = &one;
+            let additional_reservation_ids = append_released_reservations(two, 1, similarity);
             let two_trace = run_board_with_git_trace(two.repository.path());
             assert!(two_trace.output.status.success());
             let two_argv = scoped_patch_git_argv(
@@ -4984,8 +5007,7 @@ fn cold_proof_subjects_bound_git_evaluation_for_distinct_and_duplicate_reservati
 }
 
 /// A mapped acceptance spends actual trunk's admission before historical discovery can run.
-fn assert_mapped_acceptance_defers_historical_subjects() {
-    let fixture = historical_integration_fixture();
+fn assert_mapped_acceptance_defers_historical_subjects(fixture: &HistoricalIntegrationFixture) {
     let reservation = &fixture.reservation;
     let root = reservation.repository.path();
     let duplicates = append_comparison_reservations(
@@ -4994,7 +5016,7 @@ fn assert_mapped_acceptance_defers_historical_subjects() {
         ProofSubjectSimilarity::Duplicate,
         ReservationCompletion::Outstanding,
     );
-    let mapped_id = append_pending_mapped_subject(&fixture);
+    let mapped_id = append_pending_mapped_subject(fixture);
     let first = run_board_with_git_trace(root);
     assert!(
         first.output.status.success(),
@@ -5016,7 +5038,7 @@ fn assert_mapped_acceptance_defers_historical_subjects() {
 
     invalidate_projection(root);
     let second = run_board_with_git_trace(root);
-    assert_historical_settlement(&fixture, &second);
+    assert_historical_settlement(fixture, &second);
     assert_eq!(historical_candidate_queries(&second), 1);
     assert_eq!(
         historical_candidate_certifications(&second, &fixture.witness),
@@ -5026,7 +5048,7 @@ fn assert_mapped_acceptance_defers_historical_subjects() {
     let duplicate = board_reservation_snapshot(&second_board["payload"]["data"], &duplicates[0]);
     assert_eq!(
         duplicate["integration_evidence"]["status"],
-        historical_evidence(&fixture)
+        historical_evidence(fixture)
     );
 }
 
@@ -5116,12 +5138,17 @@ fn append_pending_mapped_subject(fixture: &HistoricalIntegrationFixture) -> Stri
 }
 
 /// Discovery and certification share one observed-trunk admission, including duplicate witnesses.
-fn assert_historical_candidate_subject_budget() {
+fn assert_historical_candidate_subject_budget(
+    fixture: &HistoricalIntegrationFixture,
+    repository: &DirectorySnapshot,
+    worktrees: &DirectorySnapshot,
+) {
     for similarity in [
         ProofSubjectSimilarity::Distinct,
         ProofSubjectSimilarity::Duplicate,
     ] {
-        let fixture = historical_integration_fixture();
+        repository.restore(fixture.reservation.repository.path());
+        worktrees.restore(fixture.worktrees.path());
         let reservation = &fixture.reservation;
         let extra = append_comparison_reservations(
             reservation,
@@ -5130,7 +5157,7 @@ fn assert_historical_candidate_subject_budget() {
             ReservationCompletion::Outstanding,
         );
         let traced = run_board_with_git_trace(reservation.repository.path());
-        assert_historical_settlement(&fixture, &traced);
+        assert_historical_settlement(fixture, &traced);
         assert_eq!(historical_candidate_queries(&traced), 1);
         assert_eq!(
             historical_candidate_certifications(&traced, &fixture.witness),
@@ -5150,14 +5177,14 @@ fn assert_historical_candidate_subject_budget() {
             ProofSubjectSimilarity::Duplicate => {
                 assert_eq!(
                     snapshot["integration_evidence"]["status"],
-                    historical_evidence(&fixture)
+                    historical_evidence(fixture)
                 );
                 let verdicts = reservation_verdicts(reservation.repository.path(), &extra[0]);
                 assert_eq!(verdicts.len(), 1);
                 assert_eq!(verdicts[0]["target"], reservation.target);
                 assert_eq!(
                     verdicts[0]["witness"],
-                    historical_evidence(&fixture)["witness"]
+                    historical_evidence(fixture)["witness"]
                 );
             },
             ProofSubjectSimilarity::Distinct | ProofSubjectSimilarity::DistinctCommittedScope => {
@@ -5413,7 +5440,7 @@ enum ProofSubjectSimilarity {
 
 struct OrderedFixture {
     repository:       TempDir,
-    _worktrees:       TempDir,
+    worktrees:        TempDir,
     predecessor_root: PathBuf,
     successor_root:   PathBuf,
     predecessor_id:   String,
@@ -6726,9 +6753,9 @@ fn canonical_git_command_sequence(invocations: &[String]) -> Vec<&str> {
 fn ordered_fixture() -> OrderedFixture {
     let repository = initialized_repository();
     git(repository.path(), &["add", ".claude/config/berth.toml"]);
-    git(
+    GIT.run_without_hooks(
         repository.path(),
-        &["commit", "--quiet", "-m", "configure berth"],
+        ["commit", "--quiet", "-m", "configure berth"],
     );
     let worktrees = tempdir().expect("worktree directory should exist");
     let predecessor_root = add_worktree(repository.path(), worktrees.path(), "predecessor");
@@ -6748,7 +6775,7 @@ fn ordered_fixture() -> OrderedFixture {
     let successor_id = reservation_id(&successor);
     OrderedFixture {
         repository,
-        _worktrees: worktrees,
+        worktrees,
         predecessor_root,
         successor_root,
         predecessor_id,
@@ -6901,6 +6928,37 @@ fn foreign_worktree(repository: &TempDir, name: &str) -> (TempDir, PathBuf) {
 }
 
 fn initialized_repository() -> TempDir { INITIALIZED_REPOSITORY.instantiate() }
+
+fn build_integration_main(root: &Path) {
+    let git = GitDriver {
+        optional_locks: OptionalLocks::Taken,
+        cleared_environment: &[
+            "CARGO_BERTH_RUN",
+            "CARGO_BERTH_SESSION_ID",
+            "GIT_DIR",
+            "GIT_COMMON_DIR",
+        ],
+        ..GIT
+    };
+    git.run(root, ["init", "--quiet", "--initial-branch=main"]);
+    for (key, value) in [
+        ("user.name", "Berth Test"),
+        ("user.email", "berth@example.invalid"),
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+    ] {
+        git.run(root, ["config", key, value]);
+    }
+    fs::write(root.join("README.md"), "initial\n").expect("initial source should write");
+    git.run(root, ["add", "README.md"]);
+    git.run(root, ["commit", "--quiet", "-m", "initial"]);
+    assert_success(&run_berth(root, &["init", "--json"]));
+    git.run(root, ["add", CONFIGURATION_PATH]);
+    git.run_without_hooks(
+        root,
+        ["commit", "--quiet", "-m", "track berth configuration"],
+    );
+}
 
 fn build_initialized_repository(repository_root: &Path) {
     git(

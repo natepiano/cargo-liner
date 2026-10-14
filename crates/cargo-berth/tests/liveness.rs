@@ -1948,7 +1948,7 @@ fn validate_rewritten_integration_replacement(repository: &Path) {
             .status
             .success()
     );
-    git(repository, &["switch", "--quiet", "main"]);
+    GIT.run_without_hooks(repository, ["switch", "--quiet", "main"]);
     let rejected = run_berth(
         repository,
         &[
