@@ -1085,7 +1085,7 @@ enum CommandOutputOwnership {
 impl CheckArguments {
     fn into_check_request(self) -> Result<CheckRequest, String> {
         let reservation_selection = self.reservation.map_or(
-            CheckReservationSelection::SessionMappingOrSingleActive,
+            CheckReservationSelection::SessionMappingOrNew,
             CheckReservationSelection::Explicit,
         );
         DeclaredReservationScopeSet::parse(self.path_arguments.paths, ScopeKind::File)

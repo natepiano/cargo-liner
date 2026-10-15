@@ -28,12 +28,6 @@ const CARGO_BERTH_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 /// The one corpus entry this suite compares against the real binary itself.
 const AMBIGUOUS_FIRST_TOUCH_ENTRY: &str =
     "test_pre_edit_renders_an_ambiguous_first_touch_from_the_engine_message";
-/// The session the frozen entry's Claude Code hook payload carried.
-///
-/// Claude Code sets `CLAUDE_CODE_SESSION_ID` to its payloads' `session_id`, so the real
-/// check runs under that variable alone and, like the hook, prints its recovery command
-/// without naming the session.
-const AMBIGUOUS_FIRST_TOUCH_SESSION_ID: &str = "fixture-session";
 /// Corpus entries whose frozen text this suite compares, each named beside the test
 /// that drives it.
 const THIS_SUITE_TEXT_COMPARED_ENTRIES: [(&str, &str); 1] = [(
@@ -629,11 +623,15 @@ fn ambiguous_first_touch_envelope() -> ShellOracleResult<Value> {
     require_success(&newer_claim, "newer overlapping claim")?;
     fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))?;
 
-    let ambiguous = run_berth_under_claude_code_session(
-        repository.path(),
-        &["check", "file:shared/child.rs", "--json"],
-        AMBIGUOUS_FIRST_TOUCH_SESSION_ID,
-    )?;
+    // Bare check is ambiguous only without a usable session. Its recovery text is
+    // the same plain command the edit hook prints for a Claude Code session.
+    let ambiguous = berth_command(BERTH_EXECUTABLE)
+        .args(["check", "file:shared/child.rs", "--json"])
+        .current_dir(repository.path())
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(CARGO_BERTH_SESSION_ENVIRONMENT)
+        .env_remove(CLAUDE_CODE_SESSION_ENVIRONMENT)
+        .output()?;
     if ambiguous.status.code() != Some(1) {
         return Err(failure(format!(
             "ambiguous first touch should exit 1: stdout={} stderr={}",
@@ -665,21 +663,6 @@ fn run_berth(repository: &Path, arguments: &[&str], session_id: &str) -> ShellOr
         .args(arguments)
         .current_dir(repository)
         .env(CARGO_BERTH_SESSION_ENVIRONMENT, session_id)
-        .output()?)
-}
-
-/// Run `cargo-berth` the way a Claude Code session's Bash tool does: its session named by
-/// `CLAUDE_CODE_SESSION_ID` alone.
-fn run_berth_under_claude_code_session(
-    repository: &Path,
-    arguments: &[&str],
-    session_id: &str,
-) -> ShellOracleResult<Output> {
-    Ok(berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository)
-        .env_remove(CARGO_BERTH_SESSION_ENVIRONMENT)
-        .env(CLAUDE_CODE_SESSION_ENVIRONMENT, session_id)
         .output()?)
 }
 

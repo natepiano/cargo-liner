@@ -274,11 +274,13 @@ fn ambiguous_first_touch_envelope() -> TestResult<Value> {
     require_success(&newer_claim, "newer first-touch candidate")?;
     fs::remove_file(repository.path().join(SESSION_MAPPING_PATH))?;
 
-    let ambiguous = run_berth(
-        repository.path(),
-        &["check", "file:shared/child.rs", "--json"],
-        "engine-instructions-selection",
-    )?;
+    let ambiguous = berth_command(BERTH_EXECUTABLE)
+        .args(["check", "file:shared/child.rs", "--json"])
+        .current_dir(repository.path())
+        .env_remove(CARGO_BERTH_RUN_ENVIRONMENT)
+        .env_remove(CARGO_BERTH_SESSION_ENVIRONMENT)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .output()?;
     require_exit_code(&ambiguous, 1, "ambiguous first-touch check")?;
     json_output(&ambiguous, "ambiguous first-touch check")
 }

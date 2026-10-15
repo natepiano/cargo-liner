@@ -398,6 +398,9 @@ pub(crate) enum FirstTouchConflictHandling {
 pub(crate) enum CheckReservationSelection {
     /// Use a valid harness-session mapping or the acting run's only active reservation.
     SessionMappingOrSingleActive,
+    /// Use a valid mapping, open new work for an unmapped session, or join sole active work
+    /// when no usable harness session id is available.
+    SessionMappingOrNew,
     /// Continue the named active reservation held by the acting run and worktree.
     Explicit(ReservationId),
 }
@@ -590,7 +593,10 @@ enum FirstTouchClaimRejection {
         scopes:    ReservationScopeSet,
         conflicts: Vec<ReservationConflict>,
     },
-    AlreadyHeld(Box<CommittedFirstTouchAcquisition>),
+    AlreadyHeld {
+        acquisition:     Box<CommittedFirstTouchAcquisition>,
+        session_mapping: AlreadyHeldSessionMapping,
+    },
     Replay(ReservationReplayError),
     CoordinationIdentity(CoordinationIdentityRejection),
     InvalidCanonicalWorktreeRoot,
@@ -599,6 +605,14 @@ enum FirstTouchClaimRejection {
     AmbiguousActiveRunReservations {
         candidate_reservation_ids: WireOrderedReservationIds,
     },
+}
+
+/// Whether covered paths select a reservation for the current harness session.
+enum AlreadyHeldSessionMapping {
+    /// Keep a fresh phase session unmapped when siblings cover its entire request.
+    PreserveUnmappedSession,
+    /// Persist the reservation the invocation selected.
+    PublishSelectedReservation,
 }
 
 fn acquire(
@@ -939,13 +953,24 @@ fn first_touch_execution_from_outcome(
             publish_coordination_run_marker(worktree_context, coordination_run_id),
             reservation_selection.reported_session_mapping_publication(session_mapping_publication),
         )),
-        LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::AlreadyHeld(output)) => {
-            let session_mapping_publication = reservation_selection
-                .reported_session_mapping_publication(session::publish_reservation_identity(
-                    &worktree_context.ledger_directory(),
-                    coordination_run_id,
-                    output.reservation_id,
-                ));
+        LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::AlreadyHeld {
+            acquisition: output,
+            session_mapping,
+        }) => {
+            let publication = match session_mapping {
+                AlreadyHeldSessionMapping::PreserveUnmappedSession => {
+                    SessionIdentityMappingPublication::LeftUnmapped
+                },
+                AlreadyHeldSessionMapping::PublishSelectedReservation => {
+                    session::publish_reservation_identity(
+                        &worktree_context.ledger_directory(),
+                        coordination_run_id,
+                        output.reservation_id,
+                    )
+                },
+            };
+            let session_mapping_publication =
+                reservation_selection.reported_session_mapping_publication(publication);
             Ok(first_touch_acquired_execution(
                 *output,
                 coordination_run_id,
@@ -1007,7 +1032,7 @@ impl CheckReservationSelection {
         publication: SessionIdentityMappingPublication,
     ) -> SessionIdentityMappingPublication {
         match self {
-            Self::SessionMappingOrSingleActive => publication,
+            Self::SessionMappingOrSingleActive | Self::SessionMappingOrNew => publication,
             Self::Explicit(_) => publication.for_explicit_reservation_selection(),
         }
     }
@@ -1529,6 +1554,20 @@ fn select_first_touch_reservation_reuse(
             )
         },
         FirstTouchSessionReservationMapping::AvailableSessionWithoutMapping
+            if matches!(
+                check_reservation_selection,
+                CheckReservationSelection::SessionMappingOrNew
+            ) =>
+        {
+            append_unheld_first_touch_scopes(
+                reservations,
+                repository_trunk,
+                protected_scopes,
+                conflicts,
+                context,
+            )
+        },
+        FirstTouchSessionReservationMapping::AvailableSessionWithoutMapping
         | FirstTouchSessionReservationMapping::HarnessSessionUnavailable => {
             reuse_first_touch_reservation(
                 reservations,
@@ -1558,6 +1597,51 @@ enum FirstTouchReservationReuse {
 enum FirstTouchProtectedScopeOwnership<'reservation> {
     AlreadyHeld(&'reservation Reservation),
     Residual(ReservationScopeSet),
+}
+
+/// Open a phase only for paths its active siblings do not already hold.
+fn append_unheld_first_touch_scopes(
+    reservations: &RetainedReservationSet,
+    repository_trunk: &IntegrationTarget,
+    protected_scopes: ReservationScopeSet,
+    conflicts: FirstTouchConflictOutcome,
+    context: FirstTouchReservationReuseContext,
+) -> FirstTouchReservationReuse {
+    // Anchor the shared partition rule on the first requested path's holder when all
+    // paths are covered. No reservation is selected for the new phase itself yet.
+    let first_holder = protected_scopes.as_slice().iter().find_map(|candidate| {
+        reservations.iter().find(|sibling| {
+            sibling.is_active_for_coordination_run_and_worktree(
+                context.coordination_run_id,
+                context.worktree_id,
+            ) && sibling
+                .scopes()
+                .as_slice()
+                .iter()
+                .any(|held| held.contains(candidate, context.path_case))
+        })
+    });
+    let scopes = match first_holder {
+        Some(sibling) => match partition_first_touch_protected_scopes(
+            reservations,
+            &protected_scopes,
+            sibling,
+            context.path_case,
+        ) {
+            FirstTouchProtectedScopeOwnership::AlreadyHeld(holder) => {
+                return already_held_first_touch(
+                    holder,
+                    repository_trunk,
+                    protected_scopes,
+                    conflicts,
+                    AlreadyHeldSessionMapping::PreserveUnmappedSession,
+                );
+            },
+            FirstTouchProtectedScopeOwnership::Residual(scopes) => scopes,
+        },
+        None => protected_scopes,
+    };
+    FirstTouchReservationReuse::AppendRequired { scopes, conflicts }
 }
 
 fn reuse_first_touch_reservation(
@@ -1606,6 +1690,7 @@ fn reuse_first_touch_reservation(
                 repository_trunk,
                 protected_scopes,
                 conflicts,
+                AlreadyHeldSessionMapping::PublishSelectedReservation,
             );
         },
         FirstTouchProtectedScopeOwnership::Residual(residual) => residual,
@@ -1648,6 +1733,7 @@ fn widen_first_touch_reservation(
             repository_trunk,
             protected_scopes,
             conflicts,
+            AlreadyHeldSessionMapping::PublishSelectedReservation,
         );
     };
     let validation = match reservations.bind_widened_scopes(reservation, &added_scopes, path_case) {
@@ -1729,20 +1815,24 @@ fn already_held_first_touch(
     repository_trunk: &IntegrationTarget,
     scopes: ReservationScopeSet,
     conflicts: FirstTouchConflictOutcome,
+    session_mapping: AlreadyHeldSessionMapping,
 ) -> FirstTouchReservationReuse {
     FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
-        FirstTouchClaimRejection::AlreadyHeld(Box::new(CommittedFirstTouchAcquisition {
-            kind: FirstTouchReservationAcquisitionKind::AlreadyHeld,
-            reservation_id: reservation.id(),
-            target: Box::new(TargetView::from_recorded(
-                reservation.target(),
-                repository_trunk,
-                reservation.comparison_snapshot(),
-            )),
-            phase_start_head: reservation.phase_start_head().clone(),
-            scopes,
-            conflicts,
-        })),
+        FirstTouchClaimRejection::AlreadyHeld {
+            acquisition: Box::new(CommittedFirstTouchAcquisition {
+                kind: FirstTouchReservationAcquisitionKind::AlreadyHeld,
+                reservation_id: reservation.id(),
+                target: Box::new(TargetView::from_recorded(
+                    reservation.target(),
+                    repository_trunk,
+                    reservation.comparison_snapshot(),
+                )),
+                phase_start_head: reservation.phase_start_head().clone(),
+                scopes,
+                conflicts,
+            }),
+            session_mapping,
+        },
     ))
 }
 

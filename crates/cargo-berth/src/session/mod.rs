@@ -255,6 +255,9 @@ pub(crate) enum FirstTouchSessionReservationMapping {
 pub(crate) enum SessionIdentityMappingPublication {
     /// The mapping reflects the reservation, including when no harness session required an entry.
     Published,
+    /// Active sibling reservations already hold every requested path, so the harness session
+    /// stays unmapped and a later bare check under it opens new work.
+    LeftUnmapped,
     /// An explicit selection affected this command but could not become session state.
     ExplicitSelectionAppliesOnlyToCurrentInvocation {
         /// Why a later command cannot reuse the explicit selection.
@@ -293,7 +296,7 @@ impl SessionIdentityMappingPublication {
         match (self, next) {
             (unavailable @ Self::Unavailable { .. }, _)
             | (_, unavailable @ Self::Unavailable { .. }) => unavailable,
-            (Self::Published, next) => next,
+            (Self::Published | Self::LeftUnmapped, next) => next,
             (
                 current_invocation @ Self::ExplicitSelectionAppliesOnlyToCurrentInvocation {
                     ..

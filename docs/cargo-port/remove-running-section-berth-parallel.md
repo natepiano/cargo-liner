@@ -31,8 +31,10 @@ Read 2026-10-15 at 6d01f704.
 ## Delegation Context
 
 - **Project:** `cargo-berth`, the worktree reservation ledger and hook engine.
+- **Project started:** 2026-10-15T19:00:00.632+00:00
 - **Worktree:** `/home/natepiano/rust/cargo-liner-berth-parallel`, branch `remove-running-section-berth-parallel`. Every seat works only here, and every Work Order names it.
 - **Base commit:** `6d01f70494ead626313d07ddd862e81190744ee9`.
+- **Test lanes:** `crates/cargo-berth/tests/`.
 - **Stack:** Rust workspace, cargo-nextest. The crate has no lib target: unit tests live in `cargo-berth::bin/cargo-berth` (`--bins`); integration tests in `crates/cargo-berth/tests/`.
 - **Key files:**
   - `crates/cargo-berth/src/cli.rs` — `CheckArguments::into_check_request` (1085).
@@ -57,7 +59,9 @@ Read 2026-10-15 at 6d01f704.
 
 ## Phases
 
-### Phase 1 — One reservation per phase session, and the director's Bash calls fold nothing  · status: todo
+### Phase 1 — One reservation per phase session, and the director's Bash calls fold nothing  · status: done
+
+**Depends on:** none
 
 #### Work Order
 
@@ -70,16 +74,29 @@ Read 2026-10-15 at 6d01f704.
 1. **`CheckReservationSelection::SessionMappingOrNewReservation`.** New variant: "Use a valid harness-session mapping; a usable session id with no mapping opens a new reservation in the acting run; with no session id, the acting run's only active reservation." `CheckArguments::into_check_request` uses it when `--reservation` is absent. The pre-tool-use hook keeps `SessionMappingOrSingleActive`. `reported_session_mapping_publication` treats it as `SessionMappingOrSingleActive`.
 2. **`select_first_touch_reservation_reuse`.** Under the new selection, `AvailableSessionWithoutMapping` returns `AppendRequired` with the protected scopes left after removing every path an active sibling of the acting run and worktree holds (reuse the partition rule; factor a reservation-free form of `partition_first_touch_protected_scopes` if needed). When nothing is left, report `already_held` under the sibling that holds the first path, exactly as the existing reuse does, and publish no mapping move. `Mapped` and `HarnessSessionUnavailable` behave as today. The appended `Claim` publishes the phase session's mapping through `apply_journal_event`, unchanged.
 3. **`PostCommitWideningSelection::SoleRunCandidate`.** New variant: "Widen the acting run's only active reservation in this worktree; with several, attribute nothing and name them." `post_tool_use_drift_request` uses it. In `resolve_post_commit` it is `SessionMappingOrSingleCandidate` without the mapping arm: `[]` → `NotNeeded`, `[one]` → `Selected`, more → `Ambiguous(candidates)`; an unidentified run → `NotNeeded`. The post-commit git hook keeps `SessionMappingOrSingleCandidate`.
-4. **End-to-end test** `a_director_runs_two_phases_each_with_its_own_reservation` in `tests/lifecycle.rs` (or a new `tests/parallel_phases.rs` if lifecycle's helpers do not fit), under 1 s:
+4. **End-to-end test** `a_director_runs_two_phases_each_with_its_own_reservation` in a new `crates/cargo-berth/tests/parallel_phases.rs` (copy the small session and hook helpers it needs from `tests/lifecycle.rs` and `tests/hooks.rs`), under 1 s:
    - Director session `dir-sid`. `check file:a.rs` under `CARGO_BERTH_SESSION_ID=dir-sid.phase-15` → reservation R15.
    - `check file:b.rs` under `dir-sid.phase-16` → a different id R16, same coordination run; R15's scopes are still only `a.rs`.
    - Map `dir-sid` onto R15 (a `check --reservation R15` under `dir-sid`), write unheld `c.rs`, run `hook post-tool-use` with a Bash payload whose `session_id` is `dir-sid`. No `widen` event; the drift answer names both R15 and R16 as candidates for `c.rs`.
    - Release R15; R16 is still active and holds `b.rs`.
 5. **Docs.** `worktree-coordination.md` line 268: state the three selection cases of bare `check`. `json-contract.md` 721: the ambiguity now arises only with no usable session id. CHANGELOG `### Changed`: one entry for each change, in user terms.
 
-**Files:** `src/cli.rs`, `src/verb/claim.rs`, `src/drift/selection.rs`, `src/hook/post_tool_use.rs`, one test file, the two as-built docs, `CHANGELOG.md`. Tests whose expectation was the old join (unmapped session joining the sole reservation through `check`) are updated to the new rule, each named in the phase report.
+**Files:**
+- `crates/cargo-berth/src/cli.rs` — bare `check` uses the new selection
+- `crates/cargo-berth/src/verb/claim.rs` — `CheckReservationSelection::SessionMappingOrNewReservation` and its locked selection
+- `crates/cargo-berth/src/drift/selection.rs` — `PostCommitWideningSelection::SoleRunCandidate`
+- `crates/cargo-berth/src/hook/post_tool_use.rs` — the hook's drift request uses it
+- `crates/cargo-berth/tests/parallel_phases.rs` — new end-to-end test
+- `docs/cargo-berth/as-built/worktree-coordination.md`, `docs/cargo-berth/as-built/json-contract.md` — the selection rules
+- `crates/cargo-berth/CHANGELOG.md` — two Changed entries
 
-**Seats:** 1 writer.
+Tests whose expectation was the old join (unmapped session joining the sole reservation through `check`) are updated to the new rule, each named in the phase report.
+
+**Workers:** 1 writer + 1 tester. The new test is written from the Spec alone, beside the engine change.
+- `impl` — `src/cli.rs`, `src/verb/claim.rs`, `src/drift/selection.rs`, `src/hook/post_tool_use.rs`, the two as-built docs, `CHANGELOG.md`, and edits to existing tests the new rule breaks.
+- `test` — the new `crates/cargo-berth/tests/parallel_phases.rs` holding Spec item 4, run against the base tree first to show it fails.
+
+**Constraints from prior phases:** none; this is the first phase.
 
 **Acceptance gate:**
 - The end-to-end test fails at the base commit and passes after (the writer shows the failing run first).
@@ -87,6 +104,8 @@ Read 2026-10-15 at 6d01f704.
 - **Install.** After the showrunner merges the checkpoint, install cargo-berth from the merged commit on natedev and the Mac, as for berth-hook-hang, and confirm `cargo-berth --version` on both. The unit does it if the showrunner asks.
 
 ### Phase 2 — Robust tests  · status: todo
+
+**Depends on:** Phase 1
 
 #### Work Order
 
@@ -107,8 +126,16 @@ Read 2026-10-15 at 6d01f704.
 9. The reservation limit counts phase reservations: at `maximum_reservations`, a new phase check returns `reservation_limit_reached`.
 10. The hook's ambiguous-attribution line reads correctly for the parallel case (names the candidates and the recovery `drift --reservation <id>`), stated once.
 
-**Files:** `crates/cargo-berth/tests/*.rs`, any engine file a failing test points at, as-built docs for any rule a fix adds.
+**Files:**
+- `crates/cargo-berth/tests/parallel_phases.rs` — cases 1–4, 7–9
+- `crates/cargo-berth/tests/hooks.rs` — cases 5, 6, 10
+- `crates/cargo-berth/src/` — only an engine file a failing test points at
+- `docs/cargo-berth/as-built/worktree-coordination.md` — any rule a fix adds
 
-**Seats:** 1 writer.
+**Workers:** 1 writer + 1 tester.
+- `impl` — any engine file a failing test points at, and the as-built docs for any rule a fix adds.
+- `test` — the ten tests, in `crates/cargo-berth/tests/parallel_phases.rs` and the neighbouring test files named per case.
+
+**Constraints from prior phases:** maintained by phase review after Phase 1.
 
 **Acceptance gate:** `verify.sh lint cargo-berth` and `verify.sh test cargo-berth` green; every new test under 1 s; the phase report lists each case with its test name. If an engine fix landed, install again as in Phase 1.
