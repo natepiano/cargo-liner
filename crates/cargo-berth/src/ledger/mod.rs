@@ -60,6 +60,7 @@ pub(crate) use journal::ClaimHeadCommit;
 pub(crate) use journal::ClaimHeadSnapshot;
 pub(crate) use journal::ClaimSource;
 pub(crate) use journal::CollisionPathSet;
+pub(crate) use journal::ExplicitWidenReason;
 pub(crate) use journal::ForcedIntegrationReason;
 pub(crate) use journal::ForeignReservationIdSet;
 pub(crate) use journal::FullRefName;

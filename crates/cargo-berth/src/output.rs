@@ -98,8 +98,8 @@ use crate::session::CurrentSessionMappingRemoval;
 use crate::session::HarnessSessionIdentity;
 use crate::session::HarnessSessionSource;
 use crate::session::SessionIdentityMappingPublication;
-use crate::verb::claim::FirstTouchReservationAcquisition;
-use crate::verb::claim::FirstTouchReservationAcquisitionKind;
+use crate::verb::claim::ReservationAcquisition;
+use crate::verb::claim::ReservationAcquisitionKind;
 use crate::worktree::WorktreeEnrollmentReport;
 
 const INITIALIZED_MESSAGE: &str = "Initialized the cargo-berth ledger.";
@@ -1260,6 +1260,13 @@ impl From<CurrentSessionMappingRemoval> for IdentityPayload {
 #[schemars(rename = "claim_payload")]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum ClaimPayload {
+    /// An explicit claim continued an existing reservation.
+    Acquired {
+        /// Recorded identity and publication of the selected reservation.
+        acquisition: ReservationAcquisition,
+        /// Requested scopes retained by the selected reservation, or answer-only scopes.
+        scopes:      ReservationScopeSet,
+    },
     /// A reservation was appended with this minimal antichain.
     Claimed {
         /// The newly issued reservation identity.
@@ -1471,7 +1478,7 @@ enum CheckPayload {
         /// The minimal exact-file antichain evaluated by the hook.
         scopes:      ReservationScopeSet,
         /// The complete first-touch result that permits the edit.
-        acquisition: FirstTouchReservationAcquisition,
+        acquisition: ReservationAcquisition,
         /// Every holder the repository's default answer authorized this edit against, with no
         /// integration order recorded; absent when no foreign holder overlapped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2103,6 +2110,44 @@ impl OutputEnvelope {
         Self::ledger_unreadable_stated_as(command_verb, &error.to_string(), audience)
     }
 
+    /// Report a named claim while preserving its acquisition and sibling coverage.
+    pub(crate) fn selected_claim(
+        acquisition: ReservationAcquisition,
+        scopes: ReservationScopeSet,
+    ) -> Self {
+        let id = acquisition.reservation_id;
+        let answer_only = matches!(
+            acquisition.kind,
+            ReservationAcquisitionKind::AlreadyHeld | ReservationAcquisitionKind::Answered
+        );
+        let message = message_with_session_mapping_publication(
+            format!("Recorded claim on reservation {id}."),
+            &acquisition.session_mapping_publication,
+        );
+        let presentation = session_mapping_publication_presentation(
+            &message,
+            &acquisition.session_mapping_publication,
+        );
+        Self {
+            output_contract_version: OUTPUT_CONTRACT_VERSION,
+            verb: CommandVerb::Claim,
+            status: if answer_only {
+                OutputStatus::Answered
+            } else {
+                OutputStatus::Widened
+            },
+            exit_code: BerthExit::Clear,
+            reservations: vec![id],
+            blocked_by: Vec::new(),
+            message,
+            presentation,
+            payload: OutputPayload::from_facts(OutputFacts::Claim(ClaimPayload::Acquired {
+                acquisition,
+                scopes,
+            })),
+        }
+    }
+
     /// Build the successful result for one appended claim.
     pub(crate) fn claimed(
         reservation_id: ReservationId,
@@ -2489,6 +2534,14 @@ impl OutputEnvelope {
         }
     }
 
+    /// Refuse a named claim's repeated ordering with the same policy as `sequence`.
+    pub(crate) fn claim_duplicate_ordering(before: ReservationId, after: ReservationId) -> Self {
+        let mut output = Self::sequence_rejected(before, after, SequenceRejectionKind::Duplicate);
+        output.verb = CommandVerb::Claim;
+        output.payload = OutputPayload::from_facts(OutputFacts::NoFacts);
+        output
+    }
+
     /// Build an integration rejection that retains the inactive identity source.
     pub(crate) fn integration_rejected(
         reservation_id: ReservationId,
@@ -2599,17 +2652,20 @@ impl OutputEnvelope {
     /// holder.
     pub(crate) fn clear_check(
         scopes: ReservationScopeSet,
-        acquisition: FirstTouchReservationAcquisition,
+        acquisition: ReservationAcquisition,
         answered: Option<WireOrderedReservationIds>,
     ) -> Self {
         let message = match acquisition.kind {
-            FirstTouchReservationAcquisitionKind::Appended => {
+            ReservationAcquisitionKind::Appended => {
                 "No foreign reservation overlaps the requested paths; a first-touch reservation was acquired."
             },
-            FirstTouchReservationAcquisitionKind::Widened => {
+            ReservationAcquisitionKind::Widened => {
                 "No foreign reservation overlaps the requested paths; the acting run's first-touch reservation was widened."
             },
-            FirstTouchReservationAcquisitionKind::AlreadyHeld => {
+            ReservationAcquisitionKind::Answered => {
+                "The overlap answer was recorded without acquiring paths."
+            },
+            ReservationAcquisitionKind::AlreadyHeld => {
                 "No foreign reservation overlaps the requested paths; the acting run already holds them."
             },
         };
@@ -4380,7 +4436,7 @@ impl From<&[ReservationDriftResult]> for ObservedDriftEffect {
 enum DriftCondition<'report> {
     /// Post-write first touch protected the changed paths.
     FirstTouch {
-        acquisition: &'report FirstTouchReservationAcquisition,
+        acquisition: &'report ReservationAcquisition,
         scopes:      &'report ReservationScopeSet,
     },
     /// The write entered foreign reservations and nothing was reserved.
@@ -4513,20 +4569,20 @@ fn post_tool_use_feedback(
 }
 
 /// State what one post-write first touch did with the changed paths.
-fn first_touch_line(
-    acquisition: &FirstTouchReservationAcquisition,
-    scopes: &ReservationScopeSet,
-) -> String {
+fn first_touch_line(acquisition: &ReservationAcquisition, scopes: &ReservationScopeSet) -> String {
     let reservation_id = acquisition.reservation_id.to_string();
     let paths = scope_paths(scopes.as_slice());
     match acquisition.kind {
-        FirstTouchReservationAcquisitionKind::Appended => {
+        ReservationAcquisitionKind::Appended => {
             presentation::first_touch_reservation_line(&reservation_id, &paths)
         },
-        FirstTouchReservationAcquisitionKind::Widened => {
+        ReservationAcquisitionKind::Widened => {
             presentation::automatic_widening_line(&reservation_id, &paths)
         },
-        FirstTouchReservationAcquisitionKind::AlreadyHeld => {
+        ReservationAcquisitionKind::Answered => {
+            format!("cargo-berth recorded an overlap answer on reservation {reservation_id}")
+        },
+        ReservationAcquisitionKind::AlreadyHeld => {
             presentation::already_reserved_line(&reservation_id, &paths)
         },
     }

@@ -101,7 +101,7 @@ Read 2026-10-15 at 6d01f704.
 
 **Gotchas:** hooks-band test times swing from about 0.3 s to 2–3 s under machine load, unchanged tests included.
 
-### Phase 3 — Answer an overlap for one named phase  · status: todo
+### Phase 3 — Answer an overlap for one named phase  · status: done
 
 **Depends on:** Phase 2
 

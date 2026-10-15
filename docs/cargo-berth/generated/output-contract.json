@@ -2122,7 +2122,7 @@
               "type": "object"
             },
             {
-              "description": "A `--defer` claim answered while the run held this reservation, without widening it.",
+              "description": "A claim recorded an answer on this reservation without widening it.",
               "properties": {
                 "origin": {
                   "const": "answer",
@@ -3933,7 +3933,7 @@
         "FirstTouchReservationAcquisition": {
           "oneOf": [
             {
-              "description": "The complete durable identity and publication result of first-touch protection.",
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
@@ -3961,7 +3961,7 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation that protects the paths."
+                  "description": "The reservation selected by the transaction."
                 },
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
@@ -3984,7 +3984,7 @@
               "type": "object"
             },
             {
-              "description": "The complete durable identity and publication result of first-touch protection.",
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
@@ -4012,7 +4012,7 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation that protects the paths."
+                  "description": "The reservation selected by the transaction."
                 },
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
@@ -4035,7 +4035,7 @@
               "type": "object"
             },
             {
-              "description": "The complete durable identity and publication result of first-touch protection.",
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
@@ -4063,7 +4063,58 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation that protects the paths."
+                  "description": "The reservation selected by the transaction."
+                },
+                "session_mapping_publication": {
+                  "$ref": "#/$defs/SessionIdentityMappingPublication",
+                  "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_id",
+                "target",
+                "coordination_run_id",
+                "phase_start_head",
+                "marker_publication",
+                "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
+              "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
+                "coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The coordination run that owns the reservation."
+                },
+                "kind": {
+                  "const": "answered",
+                  "type": "string"
+                },
+                "marker_publication": {
+                  "$ref": "#/$defs/coordination_run_marker_publication",
+                  "description": "Whether the worktree marker records the coordination run."
+                },
+                "phase_start_head": {
+                  "description": "The original phase-start commit retained by the reservation.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation selected by the transaction."
                 },
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
@@ -6937,6 +6988,29 @@
         "claim_payload": {
           "description": "Typed outcomes returned by `claim`.",
           "oneOf": [
+            {
+              "description": "An explicit claim continued an existing reservation.",
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/FirstTouchReservationAcquisition",
+                  "description": "Recorded identity and publication of the selected reservation."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Requested scopes retained by the selected reservation, or answer-only scopes."
+                },
+                "status": {
+                  "const": "acquired",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "acquisition",
+                "scopes"
+              ],
+              "type": "object"
+            },
             {
               "description": "A reservation was appended with this minimal antichain.",
               "properties": {
@@ -10168,7 +10242,7 @@
               "type": "object"
             },
             {
-              "description": "A `--defer` claim answered while the run held this reservation, without widening it.",
+              "description": "A claim recorded an answer on this reservation without widening it.",
               "properties": {
                 "origin": {
                   "const": "answer",
@@ -11921,7 +11995,7 @@
         "FirstTouchReservationAcquisition": {
           "oneOf": [
             {
-              "description": "The complete durable identity and publication result of first-touch protection.",
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
@@ -11949,7 +12023,7 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation that protects the paths."
+                  "description": "The reservation selected by the transaction."
                 },
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
@@ -11972,7 +12046,7 @@
               "type": "object"
             },
             {
-              "description": "The complete durable identity and publication result of first-touch protection.",
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
@@ -12000,7 +12074,7 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation that protects the paths."
+                  "description": "The reservation selected by the transaction."
                 },
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
@@ -12023,7 +12097,7 @@
               "type": "object"
             },
             {
-              "description": "The complete durable identity and publication result of first-touch protection.",
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
               "properties": {
                 "already_held": {
                   "description": "Requested paths that active siblings already protect instead of this reservation.",
@@ -12051,7 +12125,58 @@
                 },
                 "reservation_id": {
                   "$ref": "#/$defs/uuid_v7_identifier",
-                  "description": "The reservation that protects the paths."
+                  "description": "The reservation selected by the transaction."
+                },
+                "session_mapping_publication": {
+                  "$ref": "#/$defs/SessionIdentityMappingPublication",
+                  "description": "Whether the harness session mapping records the reservation."
+                },
+                "target": {
+                  "$ref": "#/$defs/TargetView",
+                  "description": "The target retained by the acquired reservation."
+                }
+              },
+              "required": [
+                "kind",
+                "reservation_id",
+                "target",
+                "coordination_run_id",
+                "phase_start_head",
+                "marker_publication",
+                "session_mapping_publication"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The durable identity and publication result of reservation acquisition or a named answer.",
+              "properties": {
+                "already_held": {
+                  "description": "Requested paths that active siblings already protect instead of this reservation.",
+                  "items": {
+                    "$ref": "#/$defs/SiblingHeldScopes"
+                  },
+                  "type": "array"
+                },
+                "coordination_run_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The coordination run that owns the reservation."
+                },
+                "kind": {
+                  "const": "answered",
+                  "type": "string"
+                },
+                "marker_publication": {
+                  "$ref": "#/$defs/coordination_run_marker_publication",
+                  "description": "Whether the worktree marker records the coordination run."
+                },
+                "phase_start_head": {
+                  "description": "The original phase-start commit retained by the reservation.",
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "reservation_id": {
+                  "$ref": "#/$defs/uuid_v7_identifier",
+                  "description": "The reservation selected by the transaction."
                 },
                 "session_mapping_publication": {
                   "$ref": "#/$defs/SessionIdentityMappingPublication",
@@ -14644,6 +14769,29 @@
         "claim_payload": {
           "description": "Typed outcomes returned by `claim`.",
           "oneOf": [
+            {
+              "description": "An explicit claim continued an existing reservation.",
+              "properties": {
+                "acquisition": {
+                  "$ref": "#/$defs/FirstTouchReservationAcquisition",
+                  "description": "Recorded identity and publication of the selected reservation."
+                },
+                "scopes": {
+                  "$ref": "#/$defs/ReservationScopeSet",
+                  "description": "Requested scopes retained by the selected reservation, or answer-only scopes."
+                },
+                "status": {
+                  "const": "acquired",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "acquisition",
+                "scopes"
+              ],
+              "type": "object"
+            },
             {
               "description": "A reservation was appended with this minimal antichain.",
               "properties": {

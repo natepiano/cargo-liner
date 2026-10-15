@@ -573,9 +573,9 @@ pub(crate) enum JournalOperation {
     /// no path from any lane: it only authorizes the answering worktree's edits on the answered
     /// scopes.
     Answer {
-        /// The acting run's oldest active reservation in the answering worktree, which the
-        /// ordering graph holds against each deferred blocker and against no overridden one;
-        /// absent when it held none.
+        /// The explicitly selected reservation, or the acting run's oldest active reservation
+        /// in the answering worktree for an ordinary claim. Absent when an ordinary answer
+        /// had no active reservation. Replay binds every recorded answer to this endpoint.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reservation_id: Option<ReservationId>,
         /// The paths the claim named.
@@ -1106,6 +1106,11 @@ nonempty_claim_text!(
     "A non-empty explanation for one explicit reservation widening.",
     "an explicit widen reason cannot be empty"
 );
+impl ExplicitWidenReason {
+    /// The caller deliberately continued an explicitly selected claim.
+    pub(crate) fn named_claim() -> Self { Self("claim --reservation".to_owned()) }
+}
+
 nonempty_claim_text!(
     preserve,
     WorkPlanReference,
@@ -1398,6 +1403,10 @@ nonempty_journal_set!(
     "A non-empty set of complete scopes added by one widening.",
     "a reservation scope addition set cannot be empty"
 );
+impl From<&ReservationScopeAdditionSet> for ReservationScopeSet {
+    fn from(additions: &ReservationScopeAdditionSet) -> Self { Self(additions.0.clone()) }
+}
+
 nonempty_journal_set!(
     ForeignReservationIdSet,
     ReservationId,

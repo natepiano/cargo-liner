@@ -361,12 +361,25 @@ impl OrderingGraph {
         })
     }
 
+    /// Whether the answer would repeat an existing directed pair of reservation endpoints.
+    pub(crate) fn contains_sequence(
+        &self,
+        requester: ReservationId,
+        blocker: SequencedBlocker,
+    ) -> bool {
+        self.endpoint_pairs.contains(&directed_endpoints(
+            requester,
+            blocker.blocker,
+            blocker.direction,
+        ))
+    }
+
     /// Return every live edge between the holder `sequenced_blocker` names and one of
     /// `requesters` that points the opposite way to the order the answer chose.
     ///
     /// `requesters` are the claimant's nonterminal reservations in its own coordination run and
-    /// worktree. An edge in the answer's own direction is no contradiction, so the claim keeps it
-    /// and adds its own beside it.
+    /// worktree. An edge in the answer's own direction is no contradiction. A new reservation
+    /// may add its own edge beside it; a named reservation must check duplicate endpoints first.
     pub(crate) fn contradicted_orderings(
         &self,
         sequenced_blocker: SequencedBlocker,
